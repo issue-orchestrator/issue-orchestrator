@@ -56,7 +56,7 @@ from ..contracts.ui_openapi_models import (
     IssueDetailPayload,
     IssueRowPayload,
 )
-from ..control.queue_cache import QueueCache, QueueMutationStatus
+from ..control.queue_cache import QueueCache, QueueMutationStatus, clear_issue_refresh, record_issue_refreshes
 from ..events import EventName
 from ..execution.manifest_accessor import (
     ArtifactNotFoundError,
@@ -797,11 +797,9 @@ async def refresh_issue(issue_number: int) -> JSONResponse:
     outcome = queue_cache.upsert_refreshed_issue(issue)
     refreshed_at = time.time()
     if outcome.status == QueueMutationStatus.ACCEPTED:
-        state.issue_refresh_timestamps[issue_number] = refreshed_at
-        state.issue_last_refreshed_at[issue_number] = refreshed_at
+        record_issue_refreshes(state, {issue_number}, refreshed_at)
     else:
-        state.issue_refresh_timestamps.pop(issue_number, None)
-        state.issue_last_refreshed_at.pop(issue_number, None)
+        clear_issue_refresh(state, issue_number)
     queue_cache.prune_refresh_timestamps()
 
     return JSONResponse({
@@ -3798,15 +3796,13 @@ def _enqueue_reset_retry_issue(
     outcome = queue_cache.upsert_refreshed_issue(refreshed_issue)
     refreshed_at = time.time()
     if outcome.status == QueueMutationStatus.ACCEPTED:
-        state.issue_refresh_timestamps[issue_number] = refreshed_at
-        state.issue_last_refreshed_at[issue_number] = refreshed_at
+        record_issue_refreshes(state, {issue_number}, refreshed_at)
         queue_cache.prune_refresh_timestamps()
         if issue_number not in state.priority_queue:
             state.priority_queue.insert(0, issue_number)
         return None
 
-    state.issue_refresh_timestamps.pop(issue_number, None)
-    state.issue_last_refreshed_at.pop(issue_number, None)
+    clear_issue_refresh(state, issue_number)
     return _make_reset_failure(
         issue_number,
         result,

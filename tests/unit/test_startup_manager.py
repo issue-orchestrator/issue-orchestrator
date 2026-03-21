@@ -431,6 +431,11 @@ class TestStartupManagerAwaitingMergeRecovery:
         entry = sample_state.session_history[0]
         assert entry.issue_number == 4057
         assert entry.pr_url == "https://github.com/owner/repo/pull/5337"
+        assert 4057 in sample_state.issue_refresh_timestamps
+        assert 4057 in sample_state.issue_last_refreshed_at
+        assert sample_state.issue_refresh_timestamps[4057] == pytest.approx(
+            sample_state.issue_last_refreshed_at[4057]
+        )
         mock_repository_host.get_prs_for_issue.assert_called_once_with(4057, state="open")
         assert "Recovered 1 pr-pending issue(s) into dashboard history" in caplog.text
 
@@ -465,6 +470,11 @@ class TestStartupManagerAwaitingMergeRecovery:
         assert entry.status == "completed"
         assert entry.pr_url == "https://github.com/owner/repo/pull/5337"
         assert entry.agent_type == "agent:backend"
+        assert 4057 in sample_state.issue_refresh_timestamps
+        assert 4057 in sample_state.issue_last_refreshed_at
+        assert sample_state.issue_refresh_timestamps[4057] == pytest.approx(
+            sample_state.issue_last_refreshed_at[4057]
+        )
         assert "Recovered 1 pr-pending issue(s) into dashboard history" in caplog.text
 
     @pytest.mark.asyncio

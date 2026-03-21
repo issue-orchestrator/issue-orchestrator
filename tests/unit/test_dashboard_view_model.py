@@ -507,6 +507,45 @@ def test_view_model_history_routing():
     assert 11 in blocked_numbers
 
 
+def test_awaiting_merge_history_item_is_not_stale_when_startup_recovery_seeded_freshness():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    config.queue_refresh_seconds = 300
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Recovered awaiting merge",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=0,
+                pr_url="https://github.com/owner/repo/pull/5337",
+                status_reason="Recovered awaiting merge state on startup",
+            )
+        ],
+        issue_refresh_timestamps={4057: datetime.now().timestamp()},
+        issue_last_refreshed_at={4057: datetime.now().timestamp()},
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    awaiting_column = next(col for col in view_model.flow_columns if col["id"] == "awaiting-merge")
+    assert len(awaiting_column["items"]) == 1
+    awaiting_card = awaiting_column["items"][0]
+    assert awaiting_card["issue_number"] == 4057
+    assert awaiting_card["is_stale"] is False
+    assert awaiting_card["last_refreshed_age_seconds"] is not None
+
+
 def test_exclude_flow_overlaps_handles_string_issue_numbers():
     backlog_items = [{"issue_number": 4070, "title": "Backlog"}]
     queue_items = [{"issue_number": "4070", "title": "Queued"}]

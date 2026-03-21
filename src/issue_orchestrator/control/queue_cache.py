@@ -68,7 +68,7 @@ class QueueCache:
         self._state.cached_queue_issues = [
             issue for issue in self._state.cached_queue_issues if issue.number != issue_number
         ]
-        self._state.issue_refresh_timestamps.pop(issue_number, None)
+        clear_issue_refresh(self._state, issue_number)
         self.prune_refresh_timestamps()
 
     def evaluate_issue(self, issue: "Issue") -> QueueMutationStatus:
@@ -112,6 +112,25 @@ class QueueCache:
         if (time.time() - self._state.ui_visible_updated_at) > _UI_VISIBILITY_STALENESS_SECONDS:
             return set()
         return set(self._state.ui_visible_issue_numbers)
+
+
+def record_issue_refreshes(
+    state: "OrchestratorState",
+    refreshed_numbers: set[int],
+    refreshed_at: float,
+) -> None:
+    """Record freshness for tracked issues in both dashboard freshness maps."""
+    if not refreshed_numbers:
+        return
+    for issue_number in refreshed_numbers:
+        state.issue_refresh_timestamps[issue_number] = refreshed_at
+        state.issue_last_refreshed_at[issue_number] = refreshed_at
+
+
+def clear_issue_refresh(state: "OrchestratorState", issue_number: int) -> None:
+    """Clear freshness metadata for an issue from both dashboard freshness maps."""
+    state.issue_refresh_timestamps.pop(issue_number, None)
+    state.issue_last_refreshed_at.pop(issue_number, None)
 
 
 def _matches_scope(config: "Config", issue: "Issue") -> bool:
