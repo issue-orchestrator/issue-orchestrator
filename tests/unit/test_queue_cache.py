@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from issue_orchestrator.control.queue_cache import QueueCache, QueueMutationStatus
+from issue_orchestrator.control.queue_cache import (
+    QueueCache,
+    QueueMutationStatus,
+    clear_issue_refresh,
+    record_issue_refreshes,
+)
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, SessionHistoryEntry
 from issue_orchestrator.infra.config import Config
 
@@ -98,6 +103,27 @@ def test_prune_refresh_timestamps_keeps_only_tracked_issue_numbers():
 
     assert state.issue_refresh_timestamps == {1: 100.0}
     assert state.issue_last_refreshed_at == {1: 100.0}
+
+
+def test_record_issue_refreshes_updates_both_freshness_maps():
+    state = OrchestratorState()
+
+    record_issue_refreshes(state, {4057, 4058}, 1234.5)
+
+    assert state.issue_refresh_timestamps == {4057: 1234.5, 4058: 1234.5}
+    assert state.issue_last_refreshed_at == {4057: 1234.5, 4058: 1234.5}
+
+
+def test_clear_issue_refresh_removes_both_freshness_maps():
+    state = OrchestratorState(
+        issue_refresh_timestamps={4057: 1234.5},
+        issue_last_refreshed_at={4057: 1234.5},
+    )
+
+    clear_issue_refresh(state, 4057)
+
+    assert state.issue_refresh_timestamps == {}
+    assert state.issue_last_refreshed_at == {}
 
 
 def test_prune_refresh_timestamps_keeps_recently_visible_issue_numbers(monkeypatch):

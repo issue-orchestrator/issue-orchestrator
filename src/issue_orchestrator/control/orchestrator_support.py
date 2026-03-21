@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 from ..events import EventName, EventContext
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .actions import AddLabelAction
-from .queue_cache import QueueCache
+from .queue_cache import QueueCache, record_issue_refreshes
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .transition_log import log_transition
 from ..domain.models import (
@@ -916,11 +916,7 @@ def _record_issue_refreshes(
     refreshed_numbers: set[int],
     refreshed_at: float,
 ) -> None:
-    if not refreshed_numbers:
-        return
-    for issue_number in refreshed_numbers:
-        state.issue_refresh_timestamps[issue_number] = refreshed_at
-        state.issue_last_refreshed_at[issue_number] = refreshed_at
+    record_issue_refreshes(state, refreshed_numbers, refreshed_at)
 
 
 def _get_visible_issue_numbers(state: "OrchestratorState") -> list[int]:

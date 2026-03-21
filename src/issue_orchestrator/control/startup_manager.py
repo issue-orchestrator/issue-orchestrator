@@ -46,7 +46,7 @@ from ..domain.models import (
 )
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
-from .queue_cache import QueueCache, QueueMutationStatus
+from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
@@ -342,6 +342,7 @@ class StartupManager:
             return
 
         tracked_history = {entry.issue_number for entry in state.session_history}
+        queue_cache = QueueCache(self.config, state)
         local_pr_pending = sorted(
             issue_number
             for issue_number, labels in self._label_store.load_all().items()
@@ -363,7 +364,7 @@ class StartupManager:
                 )
                 continue
 
-            queue_status = QueueCache(self.config, state).evaluate_issue(issue)
+            queue_status = queue_cache.evaluate_issue(issue)
             if queue_status == QueueMutationStatus.REJECTED_OUT_OF_SCOPE:
                 logger.info(
                     "[startup] Skipping pr-pending dashboard recovery for out-of-scope issue=%d",
@@ -397,6 +398,7 @@ class StartupManager:
                     completed_at=datetime.now(timezone.utc),
                 )
             )
+            record_issue_refreshes(state, {issue.number}, time.time())
             tracked_history.add(issue_number)
             recovered += 1
 
