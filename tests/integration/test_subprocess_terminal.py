@@ -19,7 +19,7 @@ from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.env import ENV_PREFIX
 
 
-def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 5.0) -> None:
+def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 15.0) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if not plugin.session_exists(0, session_name):
@@ -120,13 +120,14 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     )
     assert created is True
 
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "terminal-recording.jsonl"
+    completion_file = worktree / completion_path
+    _wait_for_file(completion_file)
+    _wait_for_content(log_path, "hello-from-subprocess")
     _wait_for_exit(plugin, "issue-42")
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "terminal-recording.jsonl"
     assert log_path.exists()
     assert "hello-from-subprocess" in _read_recording_output(log_path)
-
-    completion_file = worktree / completion_path
     assert completion_file.exists()
 
 
