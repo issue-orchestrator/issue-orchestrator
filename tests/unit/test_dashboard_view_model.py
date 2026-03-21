@@ -726,6 +726,95 @@ def test_view_model_api_endpoint():
         set_orchestrator(original)
 
 
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
+    open_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=now_utc + timedelta(minutes=5),
+        consecutive_outages=3,
+        last_error_summary="rate limited",
+        updated_at=now_utc,
+    )
+    closed_state = ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary="transient error",
+        updated_at=now_utc - timedelta(minutes=10),
+    )
+    store.save(open_state)
+    store.save(closed_state)
+
+    @dataclass
+    class _DepsStub:
+        provider_resilience: ProviderResilienceManager
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: object
+        deps: _DepsStub
+        shutdown_requested: bool = False
+
+    resilience_config = ProviderResilienceConfig()
+    from unittest.mock import MagicMock
+    mock_events = MagicMock()
+    resilience = ProviderResilienceManager(
+        config=resilience_config, store=store, events=mock_events,
+    )
+    deps = _DepsStub(provider_resilience=resilience)
+    orchestrator = _OrchestratorWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 2
+    by_provider = {cb["provider"]: cb for cb in view_model.provider_circuit_breakers}
+    assert by_provider["anthropic"]["is_open"] is True
+    assert by_provider["anthropic"]["consecutive_outages"] == 3
+    assert by_provider["anthropic"]["last_error_summary"] == "rate limited"
+    assert by_provider["openai"]["is_open"] is False
+    assert by_provider["openai"]["consecutive_outages"] == 1
+
+    # Verify it appears in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert len(dashboard_data["providerCircuitBreakers"]) == 2
+
+
+def test_view_model_empty_circuit_breakers_without_deps():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
 def test_view_model_matches_public_contract():
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
