@@ -268,7 +268,7 @@ def _start_pty_session(
     agent: AgentConfig,
     worktree_path: Path,
     run_dir: Path,
-    exchange_dir: Path,
+    phase_dir: Path,
     issue_number: int,
     issue_title: str,
     session_name: str,
@@ -300,11 +300,12 @@ def _start_pty_session(
     shell = env.get("SHELL") or os.environ.get("SHELL") or "/bin/sh"
     shell_command = shlex.join(command)
 
-    log_path = exchange_dir / f"{role}-pty.log"
-    recording_path = run_dir / "terminal-recording.jsonl"
+    log_path = phase_dir / "agent-output.log"
+    recording_path = phase_dir / "terminal-recording.jsonl"
     cols, rows = shutil.get_terminal_size(fallback=(_DEFAULT_PTY_COLS, _DEFAULT_PTY_ROWS))
     log_file = MirroredTerminalRecordingWriter(
         recording_path,
+        additional_recording_paths=[run_dir / "terminal-recording.jsonl"],
         mirror_path=log_path,
         initial_rows=rows,
         initial_cols=cols,
@@ -741,6 +742,7 @@ def run_local_loop_exchange(  # noqa: PLR0913
 
 def _run_phase(
     *,
+    round_index: int,
     role: str,
     agent: AgentConfig,
     worktree_path: Path,
@@ -762,6 +764,8 @@ def _run_phase(
     Returns (session, completion_data).  The caller must terminate the
     session when done.
     """
+    phase_dir = exchange_dir / f"round-{round_index:03d}" / role
+    phase_dir.mkdir(parents=True, exist_ok=True)
     initial_prompt = (
         f"You are the {role} in a review exchange for issue "
         f"#{issue_number}: {issue_title}. "
@@ -782,7 +786,7 @@ def _run_phase(
         agent=agent,
         worktree_path=worktree_path,
         run_dir=run_dir,
-        exchange_dir=exchange_dir,
+        phase_dir=phase_dir,
         issue_number=issue_number,
         issue_title=issue_title,
         session_name=session_name,
@@ -858,6 +862,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
         _kill_existing_claude_sessions(worktree_path)
 
         reviewer_session, reviewer_data = _run_phase(
+            round_index=round_index,
             role="reviewer",
             agent=reviewer_agent,
             worktree_path=worktree_path,
@@ -1018,6 +1023,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
         _kill_existing_claude_sessions(worktree_path)
 
         coder_session, coder_data = _run_phase(
+            round_index=round_index,
             role="coder",
             agent=coder_agent,
             worktree_path=worktree_path,

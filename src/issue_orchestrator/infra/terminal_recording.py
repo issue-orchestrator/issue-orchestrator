@@ -12,7 +12,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 
 TERMINAL_RECORDING_FILENAME = "terminal-recording.jsonl"
@@ -109,15 +109,23 @@ class MirroredTerminalRecordingWriter:
         self,
         recording_path: Path,
         *,
+        additional_recording_paths: Sequence[Path] | None = None,
         mirror_path: Path | None = None,
         initial_rows: int | None = None,
         initial_cols: int | None = None,
     ) -> None:
-        self._recording = TerminalRecordingWriter(
-            recording_path,
-            initial_rows=initial_rows,
-            initial_cols=initial_cols,
-        )
+        recording_paths = [recording_path]
+        for extra_path in additional_recording_paths or ():
+            if extra_path not in recording_paths:
+                recording_paths.append(extra_path)
+        self._recordings = [
+            TerminalRecordingWriter(
+                path,
+                initial_rows=initial_rows,
+                initial_cols=initial_cols,
+            )
+            for path in recording_paths
+        ]
         self._mirror = None
         if mirror_path is not None:
             mirror_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +133,7 @@ class MirroredTerminalRecordingWriter:
 
     @property
     def name(self) -> str:
-        return self._recording.name
+        return self._recordings[0].name
 
     def write(self, data: bytes | str) -> int:
         if isinstance(data, str):
@@ -134,19 +142,23 @@ class MirroredTerminalRecordingWriter:
         else:
             raw = data
             text = data.decode("utf-8", errors="ignore")
-        written = self._recording.write(raw)
+        written = 0
+        for recording in self._recordings:
+            written = recording.write(raw)
         if self._mirror is not None and text:
             self._mirror.write(text)
             self._mirror.flush()
         return written
 
     def flush(self) -> None:
-        self._recording.flush()
+        for recording in self._recordings:
+            recording.flush()
         if self._mirror is not None:
             self._mirror.flush()
 
     def close(self) -> None:
-        self._recording.close()
+        for recording in self._recordings:
+            recording.close()
         if self._mirror is not None:
             self._mirror.close()
 

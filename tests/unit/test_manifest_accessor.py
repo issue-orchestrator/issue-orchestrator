@@ -51,6 +51,26 @@ def test_get_terminal_recording_raises_when_empty(tmp_path: Path) -> None:
         accessor.get_terminal_recording()
 
 
+def test_get_review_exchange_phase_terminal_recording_returns_phase_scoped_recording(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    recording = run_dir / "review-exchange" / "round-002" / "reviewer" / "terminal-recording.jsonl"
+    recording.parent.mkdir(parents=True, exist_ok=True)
+    recording.write_text(
+        '{"event_type":"output","offset_ms":0,"data_b64":"aGVsbG8K","schema_version":1}\n',
+        encoding="utf-8",
+    )
+
+    artifact = accessor.get_review_exchange_phase_terminal_recording(round_index=2, role="reviewer")
+    assert artifact.path == recording
+
+
+def test_get_review_exchange_phase_terminal_recording_raises_when_missing(tmp_path: Path) -> None:
+    accessor, _worktree, _run_dir = _build_accessor(tmp_path)
+
+    with pytest.raises(ArtifactNotFoundError, match="review exchange phase recording not found"):
+        accessor.get_review_exchange_phase_terminal_recording(round_index=1, role="reviewer")
+
+
 def test_get_agent_log_uses_terminal_recording_even_when_claude_log_exists(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     recording = run_dir / "terminal-recording.jsonl"

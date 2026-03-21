@@ -116,6 +116,16 @@
         if (options.limit !== undefined) {
             params.set('limit', String(options.limit));
         }
+        const roundIndex = Number(options.round_index);
+        if (Number.isInteger(roundIndex) && roundIndex > 0) {
+            params.set('round_index', String(roundIndex));
+        }
+        const sessionRole = typeof options.session_role === 'string'
+            ? options.session_role.trim()
+            : '';
+        if (sessionRole) {
+            params.set('session_role', sessionRole);
+        }
         return {
             endpoint: `${ENDPOINTS.TERMINAL_RECORDING(normalized[0])}?${params.toString()}`,
             method: 'GET',

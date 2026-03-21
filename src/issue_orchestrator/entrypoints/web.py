@@ -1256,7 +1256,12 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
 
 @app.get("/api/session/terminal-recording/{issue_number}")
 async def get_terminal_recording(
-    issue_number: int, offset: int = 0, limit: int = 200, run_dir: str | None = None
+    issue_number: int,
+    offset: int = 0,
+    limit: int = 200,
+    run_dir: str | None = None,
+    round_index: int | None = None,
+    session_role: str | None = None,
 ) -> JSONResponse:
     """Return the canonical raw terminal recording for a run.
 
@@ -1275,7 +1280,23 @@ async def get_terminal_recording(
     run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
     accessor = ManifestAccessor(run_identity)
     try:
-        artifact = accessor.get_terminal_recording(allow_empty=True)
+        resolved_round_index = _positive_int(round_index)
+        resolved_session_role = str(session_role or "").strip().lower() or None
+        if resolved_round_index is not None or resolved_session_role is not None:
+            if resolved_round_index is None or not resolved_session_role:
+                return JSONResponse(
+                    {
+                        "error": "round_index and session_role are required together for phase-scoped recordings",
+                    },
+                    status_code=400,
+                )
+            artifact = accessor.get_review_exchange_phase_terminal_recording(
+                round_index=resolved_round_index,
+                role=resolved_session_role,
+                allow_empty=True,
+            )
+        else:
+            artifact = accessor.get_terminal_recording(allow_empty=True)
     except ArtifactNotFoundError as e:
         return JSONResponse({
             "error": "No terminal recording found",
@@ -2335,13 +2356,18 @@ def _validate_timeline_event_requirements(
 
 def _validated_run_scoped_artifact(
     *,
-    action_type: str,
+    action: dict[str, Any],
     issue_number: int,
     event_name: str,
     event_run_dir: str,
-    run_scoped_validated: set[str],
+    run_scoped_validated: set[tuple[str, int | None, str | None]],
 ) -> str | None:
-    if action_type in run_scoped_validated:
+    action_type = str(action.get("type") or "")
+    round_index = _positive_int(action.get("round_index"))
+    session_role_raw = action.get("session_role")
+    session_role = str(session_role_raw).strip() if isinstance(session_role_raw, str) else None
+    validation_key = (action_type, round_index, session_role)
+    if validation_key in run_scoped_validated:
         return None
     if not event_run_dir:
         raise RuntimeError(
@@ -2349,7 +2375,14 @@ def _validated_run_scoped_artifact(
         )
     accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
     if action_type == "open_agent_log":
-        artifact = accessor.get_agent_log(allow_empty=True)
+        if round_index is not None and session_role:
+            artifact = accessor.get_review_exchange_phase_terminal_recording(
+                round_index=round_index,
+                role=session_role,
+                allow_empty=True,
+            )
+        else:
+            artifact = accessor.get_agent_log(allow_empty=True)
         if not _agent_log_is_usable(artifact.path, event_name=event_name):
             raise RuntimeError(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
@@ -2366,7 +2399,7 @@ def _validated_run_scoped_artifact(
         raise RuntimeError(
             f"resolved artifact path missing: issue={issue_number} event={event_name} action={action_type} run_dir={event_run_dir}"
         )
-    run_scoped_validated.add(action_type)
+    run_scoped_validated.add(validation_key)
     return None
 
 
@@ -2398,7 +2431,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         "open_review_transcript",
         "view_claude_log",
     }
-    run_scoped_validated: set[str] = set()
+    run_scoped_validated: set[tuple[str, int | None, str | None]] = set()
 
     def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
         action_type = str(action.get("type") or "")
@@ -2409,7 +2442,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         if action_type in run_scoped_action_types:
             try:
                 _validated_run_scoped_artifact(
-                    action_type=action_type,
+                    action=action,
                     issue_number=issue_number,
                     event_name=event_name,
                     event_run_dir=event_run_dir,
@@ -2538,6 +2571,21 @@ def _review_transcript_context_for_event(event: dict[str, Any], event_name: str)
     return {}
 
 
+def _agent_log_context_for_event(event: dict[str, Any], event_name: str) -> dict[str, Any]:
+    """Return phase-specific session-recording context for a timeline event."""
+    round_index = _positive_int(event.get("round_index"))
+    rounds = _positive_int(event.get("rounds"))
+    if event_name in {"review_exchange.round_started", "review_exchange.round_completed"} and round_index:
+        return {"round_index": round_index, "session_role": "reviewer"}
+    if event_name in {"review.rework_started", "review.rework_completed"} and round_index:
+        return {"round_index": round_index, "session_role": "coder"}
+    if event_name in {"review.approved", "review.changes_requested"}:
+        final_round = round_index or rounds
+        if final_round:
+            return {"round_index": final_round, "session_role": "reviewer"}
+    return {}
+
+
 def _review_transcript_action_for_event(
     *,
     event: dict[str, Any],
@@ -2580,10 +2628,31 @@ def _preferred_run_scoped_session_action(
     run_dir = str(event.get("run_dir") or "").strip()
     if not run_dir:
         return None
-    return (
-        {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
-        f"agent:{issue_number}",
-    )
+    action: dict[str, Any] = {
+        "type": "open_agent_log",
+        "label": agent_log_label,
+        "issue_number": issue_number,
+    }
+    context = _agent_log_context_for_event(event, event_name)
+    if context:
+        accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(run_dir)))
+        try:
+            accessor.get_review_exchange_phase_terminal_recording(
+                round_index=int(context["round_index"]),
+                role=str(context["session_role"]),
+                allow_empty=True,
+            )
+        except ArtifactNotFoundError:
+            return None
+        action.update(context)
+    dedupe_parts = ["agent", str(issue_number)]
+    round_index = action.get("round_index")
+    session_role = action.get("session_role")
+    if isinstance(round_index, int):
+        dedupe_parts.append(str(round_index))
+    if isinstance(session_role, str) and session_role:
+        dedupe_parts.append(session_role)
+    return action, ":".join(dedupe_parts)
 
 
 def _timeline_event_requires_run_dir(event: dict[str, Any]) -> bool:
