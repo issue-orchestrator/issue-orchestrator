@@ -672,8 +672,7 @@ def _fetch_and_update_queue(
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
 
         if sync_plan.run_pr_scan:
-            github_workflow.scan_needs_code_review_prs(state)
-            github_workflow.scan_needs_rework_prs(state)
+            github_workflow.scan_pending_pr_work(state)
 
         if sync_plan.run_dependency_scan:
             _, dep_blocked = scheduler.get_available_issues(all_issues)

@@ -93,10 +93,15 @@ class PRScanner:
             label_manager = LabelManager(config)
         self._lm = label_manager
 
+    def load_issue_branches(self) -> dict[int, str]:
+        """Load the current issue->branch map for scan-time scoping."""
+        return self._issue_branches()
+
     def scan_for_reviews(
         self,
         already_queued: Sequence[PendingReview],
         active_sessions: Sequence[str],  # session names
+        issue_branches: dict[int, str] | None = None,
     ) -> list[PendingReview]:
         """Scan for PRs needing code review.
 
@@ -122,7 +127,7 @@ class PRScanner:
 
         queued_pr_numbers = {r.pr_number for r in already_queued}
         active_review_sessions = {s for s in active_sessions if s.startswith("review-")}
-        issue_branches = self._issue_branches()
+        issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
             # Skip if already queued
@@ -180,6 +185,7 @@ class PRScanner:
         self,
         already_queued: Sequence[PendingRework],
         active_sessions: Sequence[int],  # issue numbers being worked on
+        issue_branches: dict[int, str] | None = None,
     ) -> tuple[list[PendingRework], list[tuple[int, int, int]]]:
         """Scan for PRs needing rework.
 
@@ -210,7 +216,7 @@ class PRScanner:
 
         queued_issue_ids = self._collect_queued_issue_ids(already_queued)
         active_issue_numbers = set(active_sessions)
-        issue_branches = self._issue_branches()
+        issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
             decision = self._decide_rework_candidate(pr, queued_issue_ids, active_issue_numbers)
