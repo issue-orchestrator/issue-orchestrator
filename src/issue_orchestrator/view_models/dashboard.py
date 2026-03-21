@@ -1261,22 +1261,19 @@ def _get_circuit_states(orchestrator) -> list[dict[str, Any]]:
     provider_resilience = getattr(deps, "provider_resilience", None)
     if provider_resilience is None:
         return []
-    try:
-        now = datetime.now(timezone.utc)
-        states = provider_resilience.store.list_all()
-        result = []
-        for cs in states:
-            is_open = cs.open_until is not None and cs.open_until > now
-            result.append({
-                "provider": cs.provider,
-                "is_open": is_open,
-                "open_until": cs.open_until.isoformat() if cs.open_until else None,
-                "consecutive_outages": cs.consecutive_outages,
-                "last_error_summary": cs.last_error_summary,
-            })
-        return result
-    except Exception:
-        return []
+    now = datetime.now(timezone.utc)
+    states = provider_resilience.store.list_all()
+    result = []
+    for cs in states:
+        is_open = cs.open_until is not None and cs.open_until > now
+        result.append({
+            "provider": cs.provider,
+            "is_open": is_open,
+            "open_until": cs.open_until.isoformat() if cs.open_until else None,
+            "consecutive_outages": cs.consecutive_outages,
+            "last_error_summary": cs.last_error_summary,
+        })
+    return result
 
 
 def build_dashboard_view_model(

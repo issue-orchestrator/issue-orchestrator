@@ -94,6 +94,27 @@
             </div>
         </section>
 
+        {% if provider_circuits %}
+        <section class="circuit-breaker-panel" aria-label="Provider circuit breaker status">
+            {% for cb in provider_circuits %}
+            <div class="circuit-breaker-row">
+                <span class="circuit-provider">{{ cb.provider }}</span>
+                {% if cb.is_open %}
+                <span class="status-badge status-paused circuit-badge">Open</span>
+                {% else %}
+                <span class="status-badge status-running circuit-badge">Closed</span>
+                {% endif %}
+                {% if cb.consecutive_outages %}
+                <span class="circuit-outages">{{ cb.consecutive_outages }} outage{{ 'e' if cb.consecutive_outages != 1 else '' }}{{ 's' if cb.consecutive_outages != 1 else '' }}</span>
+                {% endif %}
+                {% if cb.open_until %}
+                <span class="circuit-open-until">open until {{ cb.open_until }}</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </section>
+        {% endif %}
+
         <nav class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
             <!-- Embedded-only: back button + repo info (shown when inside CC iframe) -->
             <button class="embedded-back" id="embeddedBack" aria-label="Back to repositories" style="display:none;">

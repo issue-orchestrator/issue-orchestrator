@@ -594,3 +594,13 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_circuit_breaker_panel_renders_provider_circuits() -> None:
+    """dashboard.html must render provider_circuits with status badges."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "provider_circuits" in html
+    assert "circuit-breaker-panel" in html
+    assert "circuit-badge" in html
+    assert "cb.provider" in html
+    assert "cb.is_open" in html
