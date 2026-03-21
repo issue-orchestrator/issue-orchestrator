@@ -56,6 +56,8 @@ def _find_issue_branches(
             if parts[0].isdigit() and int(parts[0]) == issue_number:
                 matches.append(branch)
     return matches
+
+
 @dataclass
 class ResetResult:
     """Result of an issue reset operation."""

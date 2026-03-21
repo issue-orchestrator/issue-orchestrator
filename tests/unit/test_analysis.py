@@ -295,6 +295,15 @@ class TestExtractIssueBranches:
         result = extract_issue_branches(branches)
         assert result == {123: "123-large-issue", 9999: "9999-huge-number"}
 
+    def test_extract_issue_branches_prefers_newest_scratch_branch(self):
+        branches = [
+            "origin/4057-old-branch",
+            "origin/4057-scratch-1774098188",
+            "origin/4057-scratch-1774101016-r1",
+        ]
+        result = extract_issue_branches(branches)
+        assert result == {4057: "4057-scratch-1774101016-r1"}
+
 
 class TestAnalyzeIssue:
     """Test the analyze_issue function."""
