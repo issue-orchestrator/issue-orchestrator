@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import base64
 import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -903,6 +904,83 @@ class TestInteractiveRound:
         # Should succeed despite non-zero exit code
         assert response.response_type == "ok"
         assert response.response_text == "approved"
+
+    def test_interactive_cleanup_timeout_still_succeeds_when_response_file_present(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Cleanup-timeout after a captured response should not fail the review."""
+        monkeypatch.setattr(
+            "issue_orchestrator.control.review_exchange_loop._is_interactive_provider",
+            lambda _config: True,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir()
+
+        response_file = run_dir / REVIEW_RESPONSE_FILENAME
+
+        class FakeProc:
+            pid = 12345
+            returncode = None
+
+            def __init__(self) -> None:
+                self._response_written = False
+                self._wait_calls = 0
+
+            def poll(self):
+                if not self._response_written:
+                    response_file.write_text(
+                        '{"response_type":"ok","response_text":"approved"}',
+                        encoding="utf-8",
+                    )
+                    self._response_written = True
+                return None
+
+            def wait(self, timeout=None):
+                self._wait_calls += 1
+                raise subprocess.TimeoutExpired(["claude"], timeout)
+
+        from issue_orchestrator.execution.interactive_round import run_interactive_round
+
+        monkeypatch.setattr(
+            "issue_orchestrator.execution.interactive_round.subprocess.Popen",
+            lambda *a, **kw: FakeProc(),
+        )
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.os.getpgid", lambda pid: pid)
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.os.killpg", lambda pgid, sig: None)
+
+        prompt_path = tmp_path / "prompt.md"
+        prompt_path.write_text("Prompt")
+        agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+        runner = MagicMock()
+        runner.run_interactive.side_effect = lambda s, rf: run_interactive_round(s, rf)
+
+        with caplog.at_level("WARNING"):
+            response = _run_agent_round(
+                session_output=FileSystemSessionOutput(),
+                runner=runner,
+                worktree_path=worktree,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                round_index=1,
+                issue_number=1,
+                issue_title="Test",
+                session_name="review-exchange-1",
+                agent=agent,
+                role="reviewer",
+                agent_label="agent:reviewer",
+                prompt_text="Review prompt",
+                web_port=None,
+            )
+
+        assert response.response_type == "ok"
+        assert response.response_text == "approved"
+        assert "preserving captured response" in caplog.text
 
 
 def test_review_exchange_retries_when_validation_failed(tmp_path: Path, monkeypatch) -> None:

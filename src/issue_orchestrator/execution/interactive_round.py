@@ -32,6 +32,7 @@ _POLL_INTERVAL = 0.2
 _DEFAULT_PTY_COLS = 120
 _DEFAULT_PTY_ROWS = 40
 _POST_RESPONSE_DRAIN_SECONDS = 0.1
+_PROCESS_GROUP_WAIT_SECONDS = 5
 
 
 @dataclass
@@ -172,7 +173,7 @@ def _terminate_process_group(proc: subprocess.Popen[bytes]) -> None:
         return
 
     try:
-        proc.wait(timeout=5)
+        proc.wait(timeout=_PROCESS_GROUP_WAIT_SECONDS)
         return
     except subprocess.TimeoutExpired:
         pass
@@ -181,7 +182,13 @@ def _terminate_process_group(proc: subprocess.Popen[bytes]) -> None:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):
         return
-    proc.wait(timeout=5)
+    try:
+        proc.wait(timeout=_PROCESS_GROUP_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Interactive agent did not exit after SIGKILL within %ss; preserving captured response",
+            _PROCESS_GROUP_WAIT_SECONDS,
+        )
 
 
 def _close_round_resources(resources: _RoundResources) -> None:
