@@ -6,7 +6,7 @@ import json
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.events import EventName
-from issue_orchestrator.execution.review_exchange_local_loop import _run_exchange_rounds
+from issue_orchestrator.execution.review_exchange_local_loop import _run_exchange_rounds, _run_phase
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -115,3 +115,46 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
     assert "round_started" in transcript_snapshots
     assert "role=reviewer section=prompt" in transcript_snapshots["round_started"]
     assert any(name == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED for name, _ in emitted)
+
+
+def test_run_phase_uses_round_scoped_phase_directory(monkeypatch, tmp_path: Path) -> None:
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir.mkdir(parents=True)
+    exchange_dir = run_dir / "review-exchange"
+    exchange_dir.mkdir()
+
+    captured: dict[str, object] = {}
+
+    def _fake_start_pty_session(**kwargs):
+        captured["phase_dir"] = kwargs["phase_dir"]
+        return _FakeSession("reviewer", run_dir / "completion-reviewer.json")
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.review_exchange_local_loop._start_pty_session",
+        _fake_start_pty_session,
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.review_exchange_local_loop._wait_for_completion",
+        lambda session, timeout_seconds: {"outcome": "approved"},
+    )
+
+    _run_phase(
+        round_index=2,
+        role="reviewer",
+        agent=AgentConfig(prompt_path=prompt_path, ai_system="claude-code"),
+        worktree_path=worktree,
+        run_dir=run_dir,
+        exchange_dir=exchange_dir,
+        issue_number=4057,
+        issue_title="Test",
+        session_name="review-exchange-1",
+        agent_label="agent:reviewer",
+        web_port=None,
+        prompt_file_path=prompt_path,
+    )
+
+    assert captured["phase_dir"] == exchange_dir / "round-002" / "reviewer"

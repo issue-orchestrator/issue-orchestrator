@@ -252,12 +252,17 @@ def test_open_log_file_uses_ui_action_contract() -> None:
 
 def test_session_replay_uses_terminal_recording_endpoint_and_emulator() -> None:
     js = _read(DASHBOARD_JS)
+    contract_js = _read(UI_ACTION_CONTRACT_JS)
     open_body = _function_body(js, "openAgentLog")
     refresh_body = _function_body(js, "refreshAgentLog")
     assert "uiActionContract.buildTerminalRecordingRequest" in open_body
     assert "uiActionContract.buildTerminalRecordingRequest" in refresh_body
     assert "/api/log/local/" not in open_body
     assert "/api/log/local/" not in refresh_body
+    assert "round_index" in open_body
+    assert "session_role" in open_body
+    assert "round_index" in contract_js
+    assert "session_role" in contract_js
 
 
 def test_review_transcript_uses_dedicated_endpoint_not_terminal_replay() -> None:

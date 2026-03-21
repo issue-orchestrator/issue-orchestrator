@@ -146,3 +146,21 @@ def test_mirrored_terminal_recording_writer_keeps_plain_text_mirror(tmp_path) ->
     )
     assert payload == "hello\nworld\n"
     assert mirror_path.read_text(encoding="utf-8") == "hello\nworld\n"
+
+
+def test_mirrored_terminal_recording_writer_can_mirror_to_additional_recordings(tmp_path) -> None:
+    recording_path = tmp_path / "terminal-recording.jsonl"
+    secondary_path = tmp_path / "secondary-terminal-recording.jsonl"
+
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        additional_recording_paths=[secondary_path],
+        initial_rows=24,
+        initial_cols=80,
+    )
+    writer.write("hello\n")
+    writer.close()
+
+    primary_events = list(iter_terminal_recording(recording_path))
+    secondary_events = list(iter_terminal_recording(secondary_path))
+    assert primary_events == secondary_events

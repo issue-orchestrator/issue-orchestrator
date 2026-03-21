@@ -42,6 +42,8 @@ class AgentSpec:
         timeout_seconds: Maximum time to wait for the agent to complete.
         log_path: Path for the canonical raw terminal recording.
                   Optional — SubprocessAgentRunner does not use it.
+        additional_recording_paths: Optional extra terminal recording paths that
+                         should receive the same raw PTY stream as ``log_path``.
         mirror_log_path: Optional plain-text mirror of the terminal stream for
                          secondary diagnostics or round-scoped artifacts.
         output_dir: Directory for artifacts (completion.json, etc.).
@@ -56,6 +58,7 @@ class AgentSpec:
     timeout_seconds: int
     output_dir: Path
     log_path: Path | None = None
+    additional_recording_paths: list[Path] = field(default_factory=list)
     mirror_log_path: Path | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     env_passthrough: list[str] = field(default_factory=list)

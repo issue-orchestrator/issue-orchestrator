@@ -560,6 +560,7 @@ let logPoller = null;
 let logFollow = true;
 let logIssue = null;
 let logRunDir = null;
+let logRecordingContext = null;
 let sessionReplayState = null;
 
 function clearDiagnosticsActionMessage() {
@@ -602,6 +603,12 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, effectiveRunDir, {
         offset: sessionReplayState ? sessionReplayState.events.length : 0,
         limit: 0,
+        round_index: sessionReplayState && sessionReplayState.recordingContext
+            ? sessionReplayState.recordingContext.round_index
+            : null,
+        session_role: sessionReplayState && sessionReplayState.recordingContext
+            ? sessionReplayState.recordingContext.session_role
+            : null,
     });
     const res = await fetch(request.endpoint, { method: request.method });
     const data = await res.json().catch(() => ({}));
@@ -631,7 +638,7 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     updateSessionReplayUi();
 }
 
-async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir = null, errorSurface = 'toast') {
+async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir = null, errorSurface = 'toast', context = null) {
     if (!runDir) {
         reportActionError('Session recording requires run context. Open from a timeline entry.', errorSurface);
         return;
@@ -640,7 +647,16 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
     clearDiagnosticsActionMessage();
     logIssue = issueNumber;
     logRunDir = runDir;
-    const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, runDir, { offset: 0, limit: 0 });
+    logRecordingContext = context && (context.round_index || context.session_role) ? {
+        round_index: Number.isInteger(Number(context.round_index)) ? Number(context.round_index) : null,
+        session_role: context.session_role ? String(context.session_role).trim() : null,
+    } : null;
+    const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, runDir, {
+        offset: 0,
+        limit: 0,
+        round_index: logRecordingContext ? logRecordingContext.round_index : null,
+        session_role: logRecordingContext ? logRecordingContext.session_role : null,
+    });
     const res = await fetch(request.endpoint, { method: request.method });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) {
@@ -738,8 +754,8 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
     }, 2000);
 }
 
-function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Session Recording', errorSurface = 'toast') {
-    return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
+function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Session Recording', errorSurface = 'toast', context = null) {
+    return openAgentLog(issueNumber, logLabel, runDir, errorSurface, context);
 }
 
 async function openReviewTranscript(issueNumber, runDir = null, context = null, errorSurface = 'toast') {
@@ -840,6 +856,7 @@ function initializeSessionReplay(issueNumber, runDir, payload) {
         runDir,
         events,
         initialGeometry,
+        recordingContext: logRecordingContext,
         playbackIndex: 0,
         playing: false,
         playTimer: null,
@@ -943,6 +960,7 @@ function destroySessionReplay() {
         sessionReplayState.terminal.dispose();
     }
     sessionReplayState = null;
+    logRecordingContext = null;
 }
 
 function replaySessionToIndex(targetIndex) {
@@ -1387,7 +1405,11 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (action.type === 'open_agent_log') {
         if (!fallbackRunDir) return '';
         const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
-        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Session Recording', 'inline')">${label}</button>`;
+        const contextLiteral = JSON.stringify({
+            round_index: Number.isInteger(Number(action.round_index)) ? Number(action.round_index) : null,
+            session_role: action.session_role || null,
+        });
+        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Session Recording', 'inline', ${contextLiteral})">${label}</button>`;
     }
     if (action.type === 'open_review_transcript') {
         if (!fallbackRunDir) return '';
@@ -5101,7 +5123,7 @@ function runTimelineEventAction(action) {
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
         const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Session Recording';
-        openAgentLogAction(action.issue_number, action.run_dir || null, label);
+        openAgentLogAction(action.issue_number, action.run_dir || null, label, 'toast', action);
         return;
     }
     if (action.type === 'copy_agent_log' && action.issue_number) {

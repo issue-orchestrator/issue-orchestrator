@@ -3527,6 +3527,75 @@ class TestTimelineActionWiring:
         assert approved_action["round_index"] == 2
         assert approved_action["transcript_role"] == "reviewer"
 
+    def test_review_session_recording_actions_bind_round_and_role_context(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-recording-context"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=4057)
+        reviewer_recording = run.run_dir / "review-exchange" / "round-002" / "reviewer" / "terminal-recording.jsonl"
+        reviewer_recording.parent.mkdir(parents=True, exist_ok=True)
+        reviewer_recording.write_text(
+            '{"event_type":"output","offset_ms":0,"data_b64":"aGVsbG8K","schema_version":1}\n',
+            encoding="utf-8",
+        )
+        coder_recording = run.run_dir / "review-exchange" / "round-002" / "coder" / "terminal-recording.jsonl"
+        coder_recording.parent.mkdir(parents=True, exist_ok=True)
+        coder_recording.write_text(
+            '{"event_type":"output","offset_ms":0,"data_b64":"Y29kZXIK","schema_version":1}\n',
+            encoding="utf-8",
+        )
+
+        review_round_actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.round_completed",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        review_action = next(
+            action for action in review_round_actions if action.get("type") == "open_agent_log"
+        )
+        assert review_action["round_index"] == 2
+        assert review_action["session_role"] == "reviewer"
+
+        rework_actions = _timeline_event_actions(
+            {
+                "event": "review.rework_started",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        rework_action = next(
+            action for action in rework_actions if action.get("type") == "open_agent_log"
+        )
+        assert rework_action["round_index"] == 2
+        assert rework_action["session_role"] == "coder"
+
+        approved_actions = _timeline_event_actions(
+            {
+                "event": "review.approved",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "rounds": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        approved_action = next(
+            action for action in approved_actions if action.get("type") == "open_agent_log"
+        )
+        assert approved_action["round_index"] == 2
+        assert approved_action["session_role"] == "reviewer"
+
     def test_review_feedback_actions_bind_to_specific_timeline_entry(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -4637,6 +4706,40 @@ class TestIssueLogEndpointsUseLatestHistory:
             assert payload["initial_geometry"] == {"rows": 40, "cols": 120}
             assert payload["events"][0]["event_type"] == "output"
             assert payload["events"][1]["event_type"] == "resize"
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_can_resolve_review_exchange_phase_recording(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-phase-terminal-recording"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        phase_recording = (
+            run.run_dir / "review-exchange" / "round-002" / "reviewer" / "terminal-recording.jsonl"
+        )
+        phase_recording.parent.mkdir(parents=True, exist_ok=True)
+        phase_recording.write_text(
+            "\n".join([
+                '{"data_b64":"cmV2aWV3ZXI=","event_type":"output","offset_ms":0,"schema_version":1}',
+                '{"cols":100,"event_type":"resize","offset_ms":5,"rows":30,"schema_version":1}',
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}&round_index=2&session_role=reviewer"
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["recording_path"].endswith("/review-exchange/round-002/reviewer/terminal-recording.jsonl")
+            assert payload["total_events"] == 2
+            assert payload["initial_geometry"] == {"rows": 30, "cols": 100}
         finally:
             set_orchestrator(None)
 

@@ -793,6 +793,7 @@ class TestInteractiveRound:
 
         round_dir = tmp_path / "round"
         round_dir.mkdir()
+        aggregate_recording = tmp_path / "terminal-recording.jsonl"
         response_file = tmp_path / "review-response.json"
         command = [
             "python3",
@@ -812,6 +813,7 @@ class TestInteractiveRound:
             working_dir=tmp_path,
             timeout_seconds=10,
             log_path=round_dir / "terminal-recording.jsonl",
+            additional_recording_paths=[aggregate_recording],
             mirror_log_path=round_dir / "agent-output.log",
             output_dir=round_dir,
         )
@@ -832,6 +834,17 @@ class TestInteractiveRound:
         )
         assert "review-hi" in content
         assert "review-hi" in spec.mirror_log_path.read_text(encoding="utf-8")
+        aggregate_events = [
+            json.loads(line)
+            for line in aggregate_recording.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        aggregate_content = "".join(
+            base64.b64decode(event["data_b64"]).decode("utf-8", errors="ignore")
+            for event in aggregate_events
+            if event.get("event_type") == "output" and event.get("data_b64")
+        )
+        assert "review-hi" in aggregate_content
 
     def test_interactive_nonzero_exit_succeeds_when_response_file_present(
         self, tmp_path: Path, monkeypatch,

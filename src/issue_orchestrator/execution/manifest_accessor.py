@@ -79,6 +79,38 @@ class ManifestAccessor:
             raise ArtifactNotFoundError(f"terminal recording is empty: {path}")
         raise ArtifactNotFoundError(f"terminal recording not found in run-scoped path: {path}")
 
+    def get_review_exchange_phase_terminal_recording(
+        self,
+        *,
+        round_index: int,
+        role: str,
+        allow_empty: bool = False,
+    ) -> ArtifactStream:
+        """Return the raw terminal recording for one review-exchange phase."""
+        run_dir = self.run_identity.run_dir
+        self._require_run_dir_exists(run_dir)
+        normalized_role = str(role).strip().lower()
+        if round_index <= 0:
+            raise ArtifactNotFoundError(f"invalid review exchange round: {round_index}")
+        if normalized_role not in {"reviewer", "coder"}:
+            raise ArtifactNotFoundError(f"invalid review exchange role: {role}")
+        path = (
+            run_dir
+            / "review-exchange"
+            / f"round-{round_index:03d}"
+            / normalized_role
+            / "terminal-recording.jsonl"
+        )
+        if path.exists() and (allow_empty or path.stat().st_size > 0):
+            return self._artifact_stream(
+                "terminal_recording",
+                path,
+                content_type="application/x-ndjson",
+            )
+        if path.exists():
+            raise ArtifactNotFoundError(f"review exchange phase recording is empty: {path}")
+        raise ArtifactNotFoundError(f"review exchange phase recording not found: {path}")
+
     def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
         """Return the canonical run-scoped agent recording stream."""
         run_dir = self.run_identity.run_dir

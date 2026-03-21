@@ -105,6 +105,7 @@ def _prepare_round_resources(spec: AgentSpec) -> _RoundResources:
     log_writer = (
         MirroredTerminalRecordingWriter(
             log_path,
+            additional_recording_paths=spec.additional_recording_paths,
             mirror_path=spec.mirror_log_path,
             initial_rows=rows,
             initial_cols=cols,
