@@ -148,15 +148,15 @@ class GitHubWorkflow:
                     r.issue_key,
                 )
                 continue
-                state.discovered_reworks.append(
-                    DiscoveredRework(
-                        issue_number,
-                        r.pr_number or 0,
-                        "",
-                        r.agent_type,
-                        r.rework_cycle,
-                    )
+            state.discovered_reworks.append(
+                DiscoveredRework(
+                    issue_number,
+                    r.pr_number or 0,
+                    "",
+                    r.agent_type,
+                    r.rework_cycle,
                 )
+            )
 
     def scan_pending_pr_work(self, state: "OrchestratorState") -> None:
         """Scan review and rework queues using one issue-branch fetch per tick."""
