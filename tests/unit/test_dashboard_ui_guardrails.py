@@ -589,3 +589,31 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_element_exists_in_template() -> None:
+    """Template must include the provider outage banner element."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert "provider-outage-banner" in html
+
+
+def test_provider_outage_banner_css_defined() -> None:
+    """CSS must define the .provider-outage-banner class."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner" in css
+
+
+def test_provider_outage_sse_listeners_wired_in_js() -> None:
+    """dashboard.js must handle provider.outage_entered and provider.outage_exited SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+    assert "_updateProviderOutageBanner" in js
+
+
+def test_provider_outage_initialized_from_dashboard_data() -> None:
+    """dashboard.js must read providerCircuits from window.dashboardData on load."""
+    js = _read(DASHBOARD_JS)
+    assert "providerCircuits" in js
+    assert "_initProviderOutages" in js

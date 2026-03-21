@@ -82,6 +82,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_circuits: list[dict[str, Any]]
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +183,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1235,6 +1239,41 @@ def _build_e2e_view_model(
     }
 
 
+def _build_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
+    """Build list of provider circuit states for the dashboard.
+
+    Returns circuit state dicts for all known providers, including those whose
+    circuits are closed (not currently blocking), so the UI can show history.
+    Only open circuits (open_until > now) are surfaced as active outages.
+    """
+    if orchestrator is None:
+        return []
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return []
+    resilience = getattr(deps, "provider_resilience", None)
+    if resilience is None:
+        return []
+
+    now = datetime.now(timezone.utc)
+    circuits = []
+    for state in resilience.store.list_all():
+        is_open = state.open_until is not None and state.open_until > now
+        cooldown_remaining: float | None = None
+        if is_open and state.open_until is not None:
+            cooldown_remaining = (state.open_until - now).total_seconds()
+        circuits.append({
+            "provider": state.provider,
+            "is_open": is_open,
+            "open_until": state.open_until.isoformat() if state.open_until else None,
+            "cooldown_remaining_seconds": cooldown_remaining,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary,
+            "updated_at": state.updated_at.isoformat(),
+        })
+    return circuits
+
+
 def _normalize_tab(active_tab: str) -> str:
     # Map legacy tab names to new kanban-based tabs
     if active_tab in {"work", "active", "queue", "flow"}:
@@ -1336,6 +1375,8 @@ def build_dashboard_view_model(
         flow_columns = _build_flow_columns(
             queue_items, active_items, blocked_items, awaiting_merge_items, completed_items
         )
+
+    provider_circuits = _build_provider_circuits(orchestrator)
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
     e2e_status = e2e_status_provider(config)
@@ -1470,4 +1511,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits,
     )

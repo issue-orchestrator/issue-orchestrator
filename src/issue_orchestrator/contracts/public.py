@@ -18,6 +18,16 @@ class ContractBase(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ProviderCircuitContract(ContractBase):
+    provider: str
+    is_open: bool
+    open_until: Optional[str] = None
+    cooldown_remaining_seconds: Optional[float] = None
+    consecutive_outages: int
+    last_error_summary: Optional[str] = None
+    updated_at: str
+
+
 class DashboardDataContract(ContractBase):
     startupComplete: bool
     paused: bool
@@ -29,6 +39,7 @@ class DashboardDataContract(ContractBase):
     githubRepo: Optional[str]
     e2eLastRun: Optional[dict[str, Any]] = None
     agents: list[str]
+    providerCircuits: list[ProviderCircuitContract] = Field(default_factory=list)
 
 
 class DashboardViewModelContract(ContractBase):
@@ -124,6 +135,8 @@ class TimelineIssueContract(ContractBase):
 
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "dashboard.view_model": DashboardViewModelContract,
+    "dashboard.provider_circuit": ProviderCircuitContract,
+    "sse.provider.outage_entered": ProviderCircuitContract,
     "sse.session.started": SessionStartedPayload,
     "sse.session.completed": SessionCompletedPayload,
     "sse.orchestrator.paused": OrchestratorPausedPayload,

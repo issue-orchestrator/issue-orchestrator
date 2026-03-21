@@ -98,6 +98,17 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--danger, #cf222e);
+    background: color-mix(in srgb, var(--danger, #cf222e) 10%, transparent);
+    color: var(--danger, #cf222e);
+    font-size: 13px;
+    font-weight: 600;
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

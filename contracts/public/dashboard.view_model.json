@@ -53,6 +53,13 @@
           "title": "Paused",
           "type": "boolean"
         },
+        "providerCircuits": {
+          "items": {
+            "$ref": "#/$defs/ProviderCircuitContract"
+          },
+          "title": "Providercircuits",
+          "type": "array"
+        },
         "queueRefreshSeconds": {
           "title": "Queuerefreshseconds",
           "type": "integer"
@@ -96,6 +103,71 @@
         "agents"
       ],
       "title": "DashboardDataContract",
+      "type": "object"
+    },
+    "ProviderCircuitContract": {
+      "additionalProperties": true,
+      "properties": {
+        "consecutive_outages": {
+          "title": "Consecutive Outages",
+          "type": "integer"
+        },
+        "cooldown_remaining_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cooldown Remaining Seconds"
+        },
+        "is_open": {
+          "title": "Is Open",
+          "type": "boolean"
+        },
+        "last_error_summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Error Summary"
+        },
+        "open_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open Until"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "is_open",
+        "consecutive_outages",
+        "updated_at"
+      ],
+      "title": "ProviderCircuitContract",
       "type": "object"
     }
   },

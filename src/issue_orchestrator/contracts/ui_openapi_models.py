@@ -67,6 +67,7 @@ class DashboardViewModelPayload(BaseModel):
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
     paused: bool
+    provider_circuits: list[ProviderCircuitPayload]
     queue_count: int
     queue_items: list[IssueItemPayload]
     queue_page: int
@@ -159,6 +160,16 @@ class PhaseDialogPayload(BaseModel):
     phase: dict[str, Any] | None
     phases: list[dict[str, Any]]
     title: str
+
+class ProviderCircuitPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    consecutive_outages: int
+    cooldown_remaining_seconds: float | None = None
+    is_open: bool
+    last_error_summary: str | None = None
+    open_until: str | None = None
+    provider: str
+    updated_at: str
 
 class SessionDiagnosticsActionPayload(BaseModel):
     model_config = ConfigDict(extra="allow")

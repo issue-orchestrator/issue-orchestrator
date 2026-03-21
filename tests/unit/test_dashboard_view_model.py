@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -740,3 +741,127 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def _make_orchestrator_with_circuits(circuits):
+    """Make an orchestrator stub with a provider_resilience mock returning given circuits."""
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+    store = MagicMock()
+    store.list_all.return_value = [
+        ProviderCircuitState(
+            provider=c["provider"],
+            open_until=c.get("open_until"),
+            consecutive_outages=c.get("consecutive_outages", 1),
+            last_error_summary=c.get("last_error_summary"),
+            updated_at=c.get("updated_at", datetime.now(timezone.utc)),
+        )
+        for c in circuits
+    ]
+    resilience = MagicMock()
+    resilience.store = store
+
+    deps = MagicMock()
+    deps.provider_resilience = resilience
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    orchestrator.deps = deps  # type: ignore[attr-defined]
+    return orchestrator
+
+
+def test_provider_circuits_empty_when_no_deps():
+    """View model has empty provider_circuits when orchestrator has no deps."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []
+
+
+def test_provider_circuits_open_circuit_included():
+    """Open provider circuits appear in dashboard data with is_open=True."""
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    orchestrator = _make_orchestrator_with_circuits([
+        {
+            "provider": "anthropic",
+            "open_until": open_until,
+            "consecutive_outages": 2,
+            "last_error_summary": "Rate limit exceeded",
+            "updated_at": now,
+        }
+    ])
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    circuit = view_model.provider_circuits[0]
+    assert circuit["provider"] == "anthropic"
+    assert circuit["is_open"] is True
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "Rate limit exceeded"
+    assert circuit["cooldown_remaining_seconds"] is not None
+    assert circuit["cooldown_remaining_seconds"] > 0
+
+    # Verify it flows through to dashboard_data
+    data = view_model.dashboard_data()
+    assert len(data["providerCircuits"]) == 1
+    assert data["providerCircuits"][0]["provider"] == "anthropic"
+    assert data["providerCircuits"][0]["is_open"] is True
+
+
+def test_provider_circuits_closed_circuit_not_open():
+    """Closed provider circuits (open_until in the past) have is_open=False."""
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(minutes=10)
+    orchestrator = _make_orchestrator_with_circuits([
+        {
+            "provider": "openai",
+            "open_until": past,
+            "consecutive_outages": 1,
+            "updated_at": past,
+        }
+    ])
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    circuit = view_model.provider_circuits[0]
+    assert circuit["provider"] == "openai"
+    assert circuit["is_open"] is False
+    assert circuit["cooldown_remaining_seconds"] is None
+
+
+def test_provider_circuits_none_open_until_is_closed():
+    """Circuit with open_until=None is not open."""
+    now = datetime.now(timezone.utc)
+    orchestrator = _make_orchestrator_with_circuits([
+        {
+            "provider": "anthropic",
+            "open_until": None,
+            "consecutive_outages": 3,
+            "updated_at": now,
+        }
+    ])
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    assert view_model.provider_circuits[0]["is_open"] is False
