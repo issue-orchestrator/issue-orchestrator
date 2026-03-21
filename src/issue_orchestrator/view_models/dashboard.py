@@ -1241,7 +1241,7 @@ def _build_e2e_view_model(
 
 def _get_provider_circuit_breakers(orchestrator: Any) -> list[dict[str, Any]]:
     """Extract provider circuit breaker states from the orchestrator."""
-    if orchestrator is None or not hasattr(orchestrator, "deps"):
+    if orchestrator is None:
         return []
     states = orchestrator.deps.provider_resilience.store.list_all()
     now = datetime.now(timezone.utc)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -25,12 +25,30 @@ from issue_orchestrator.view_models.dashboard import (
     build_dashboard_view_model,
 )
 from issue_orchestrator.contracts.public import DashboardViewModelContract
+from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.infra.config import ProviderResilienceConfig
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: ProviderResilienceManager
+
+
+def _make_deps_stub() -> _DepsStub:
+    from unittest.mock import MagicMock
+    store = InMemoryProviderCircuitStore()
+    resilience = ProviderResilienceManager(
+        config=ProviderResilienceConfig(), store=store, events=MagicMock(),
+    )
+    return _DepsStub(provider_resilience=resilience)
 
 
 @dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
+    deps: _DepsStub = field(default_factory=_make_deps_stub)
     shutdown_requested: bool = False
 
 
@@ -798,7 +816,7 @@ def test_view_model_surfaces_provider_circuit_breaker_status():
     assert len(dashboard_data["providerCircuitBreakers"]) == 2
 
 
-def test_view_model_empty_circuit_breakers_without_deps():
+def test_view_model_empty_circuit_breakers_when_none_open():
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
     orchestrator = _OrchestratorStub(state=state, config=config)
