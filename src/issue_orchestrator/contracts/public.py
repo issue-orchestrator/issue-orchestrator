@@ -28,6 +28,13 @@ class ProviderCircuitContract(ContractBase):
     updated_at: str
 
 
+class ProviderOutageEnteredContract(ContractBase):
+    provider: str
+    open_until: Optional[str] = None
+    consecutive_outages: int
+    error_summary: Optional[str] = None
+
+
 class DashboardDataContract(ContractBase):
     startupComplete: bool
     paused: bool
@@ -136,7 +143,7 @@ class TimelineIssueContract(ContractBase):
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "dashboard.view_model": DashboardViewModelContract,
     "dashboard.provider_circuit": ProviderCircuitContract,
-    "sse.provider.outage_entered": ProviderCircuitContract,
+    "sse.provider.outage_entered": ProviderOutageEnteredContract,
     "sse.session.started": SessionStartedPayload,
     "sse.session.completed": SessionCompletedPayload,
     "sse.orchestrator.paused": OrchestratorPausedPayload,

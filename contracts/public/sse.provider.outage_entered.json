@@ -5,23 +5,7 @@
       "title": "Consecutive Outages",
       "type": "integer"
     },
-    "cooldown_remaining_seconds": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Cooldown Remaining Seconds"
-    },
-    "is_open": {
-      "title": "Is Open",
-      "type": "boolean"
-    },
-    "last_error_summary": {
+    "error_summary": {
       "anyOf": [
         {
           "type": "string"
@@ -31,7 +15,7 @@
         }
       ],
       "default": null,
-      "title": "Last Error Summary"
+      "title": "Error Summary"
     },
     "open_until": {
       "anyOf": [
@@ -48,18 +32,12 @@
     "provider": {
       "title": "Provider",
       "type": "string"
-    },
-    "updated_at": {
-      "title": "Updated At",
-      "type": "string"
     }
   },
   "required": [
     "provider",
-    "is_open",
-    "consecutive_outages",
-    "updated_at"
+    "consecutive_outages"
   ],
-  "title": "ProviderCircuitContract",
+  "title": "ProviderOutageEnteredContract",
   "type": "object"
 }
