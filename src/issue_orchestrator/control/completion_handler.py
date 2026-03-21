@@ -106,16 +106,42 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
     return None
 
 
-def _has_critical_errors(processing_errors: Optional[list[str]]) -> bool:
-    """Check if processing_errors contains critical publish/finalize failures."""
+def _critical_processing_errors(
+    processing_errors: Optional[list[str]],
+    *,
+    pr_url: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """Return (critical, downgraded) publish/finalize errors.
+
+    A create_pr error is only critical if completion reconciliation cannot find
+    a PR. GitHub can still surface a transient 422 even when the PR was
+    ultimately created or an equivalent open PR is discoverable.
+    """
     if not processing_errors:
-        return False
-    return any(
-        error.startswith(ERROR_PREFIX_PUSH)
-        or error.startswith(ERROR_PREFIX_CREATE_PR)
-        or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED)
-        for error in processing_errors
-    )
+        return [], []
+
+    critical: list[str] = []
+    downgraded: list[str] = []
+    for error in processing_errors:
+        if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED):
+            critical.append(error)
+            continue
+        if error.startswith(ERROR_PREFIX_CREATE_PR):
+            if pr_url:
+                downgraded.append(error)
+            else:
+                critical.append(error)
+    return critical, downgraded
+
+
+def _has_critical_errors(
+    processing_errors: Optional[list[str]],
+    *,
+    pr_url: str | None = None,
+) -> bool:
+    """Check if processing_errors contains critical publish/finalize failures."""
+    critical, _ = _critical_processing_errors(processing_errors, pr_url=pr_url)
+    return bool(critical)
 
 
 def _has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
@@ -395,7 +421,19 @@ class CompletionHandler:
         # use FAILED for history to show red dot in UI
         history_status = status
         history_status_reason: Optional[str] = None
-        if status == SessionStatus.COMPLETED and _has_critical_errors(processing_errors):
+        critical_errors, downgraded_errors = _critical_processing_errors(
+            processing_errors,
+            pr_url=pr_url,
+        )
+        if downgraded_errors:
+            logger.info(
+                "[COMPLETION] Downgrading create_pr processing errors because PR exists: issue=%d pr_url=%s errors=%s",
+                session.issue.number,
+                pr_url,
+                downgraded_errors,
+            )
+
+        if status == SessionStatus.COMPLETED and critical_errors:
             logger.info(
                 "[COMPLETION] Agent reported completed but push/PR failed - using FAILED for history: issue=%d",
                 session.issue.number,
@@ -447,6 +485,7 @@ class CompletionHandler:
             review_exchange_halted=review_exchange_halted,
             blocked_label=blocked_label,
             blocked_reason=blocked_reason,
+            pr_url=pr_url,
         ))
         if review_exchange_completed and pr_url:
             completion_actions.append(AddLabelAction(
@@ -1596,6 +1635,7 @@ class CompletionHandler:
         review_exchange_halted: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
+        pr_url: Optional[str] = None,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -1614,14 +1654,17 @@ class CompletionHandler:
         expected = build_expected_for_mutation()
 
         # Check for critical processing errors (push/PR creation failures)
-        critical_errors = [
-            error for error in (processing_errors or [])
-            if (
-                error.startswith(ERROR_PREFIX_PUSH)
-                or error.startswith(ERROR_PREFIX_CREATE_PR)
-                or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED)
+        critical_errors, downgraded_errors = _critical_processing_errors(
+            processing_errors,
+            pr_url=pr_url,
+        )
+        if downgraded_errors:
+            logger.info(
+                "[COMPLETION] Ignoring non-blocking create_pr processing errors during action generation: issue=%d pr_url=%s errors=%s",
+                session.issue.number,
+                pr_url,
+                downgraded_errors,
             )
-        ]
 
         # If agent said "completed" but critical processing failed, treat as blocked-failed
         if status == SessionStatus.COMPLETED and critical_errors:
