@@ -62,6 +62,7 @@ Thumbs.db
 .issue-orchestrator/diagnostics/
 .issue-orchestrator/safety-state.json
 .issue-orchestrator/ai-gate-state.json
+.issue-orchestrator/worktree-id
 .issue-orchestrator/backups/
 .issue-orchestrator/timeline.sqlite
 .agent-done-marker
