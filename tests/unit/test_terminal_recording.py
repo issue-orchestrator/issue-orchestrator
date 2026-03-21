@@ -164,3 +164,24 @@ def test_mirrored_terminal_recording_writer_can_mirror_to_additional_recordings(
     primary_events = list(iter_terminal_recording(recording_path))
     secondary_events = list(iter_terminal_recording(secondary_path))
     assert primary_events == secondary_events
+
+
+def test_mirrored_terminal_recording_writer_preserves_per_path_base_offsets(tmp_path) -> None:
+    recording_path = tmp_path / "terminal-recording.jsonl"
+    aggregate_path = tmp_path / "aggregate-terminal-recording.jsonl"
+    append_output_event(aggregate_path, "existing")
+
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        additional_recording_paths=[aggregate_path],
+        initial_rows=24,
+        initial_cols=80,
+    )
+    writer.write("hello\n")
+    writer.close()
+
+    primary_events = list(iter_terminal_recording(recording_path))
+    aggregate_events = list(iter_terminal_recording(aggregate_path))
+
+    assert [event["offset_ms"] for event in primary_events] == [0, 0]
+    assert [event["offset_ms"] for event in aggregate_events[-2:]] == [1, 1]

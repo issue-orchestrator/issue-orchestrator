@@ -48,12 +48,19 @@ class TerminalRecordingEvent:
 class TerminalRecordingWriter:
     """Append-only NDJSON writer for raw terminal events."""
 
-    def __init__(self, path: Path, *, initial_rows: int | None = None, initial_cols: int | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        initial_rows: int | None = None,
+        initial_cols: int | None = None,
+        started_at: float | None = None,
+    ) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._base_offset_ms = _next_recording_offset(path)
         self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
-        self._started = time.monotonic()
+        self._started = time.monotonic() if started_at is None else started_at
         if initial_rows is not None and initial_cols is not None:
             self.write_resize(rows=initial_rows, cols=initial_cols)
 
@@ -114,6 +121,7 @@ class MirroredTerminalRecordingWriter:
         initial_rows: int | None = None,
         initial_cols: int | None = None,
     ) -> None:
+        started_at = time.monotonic()
         recording_paths = [recording_path]
         for extra_path in additional_recording_paths or ():
             if extra_path not in recording_paths:
@@ -123,6 +131,7 @@ class MirroredTerminalRecordingWriter:
                 path,
                 initial_rows=initial_rows,
                 initial_cols=initial_cols,
+                started_at=started_at,
             )
             for path in recording_paths
         ]
