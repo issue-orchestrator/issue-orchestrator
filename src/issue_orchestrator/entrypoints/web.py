@@ -2135,6 +2135,14 @@ def _timeline_event_recommended_actions(
     if feedback_action is not None:
         action, dedupe = feedback_action
         add_action(action, dedupe)
+    transcript_action = _review_transcript_action_for_event(
+        event=event,
+        event_name=event_name,
+        issue_number=issue_number,
+    )
+    if transcript_action is not None:
+        action, dedupe = transcript_action
+        add_action(action, dedupe)
     if event_name in _TIMELINE_START_EVENTS:
         session_action = _preferred_run_scoped_session_action(
             event=event,
@@ -2500,8 +2508,8 @@ def _is_agent_scoped_event(event: dict[str, Any], event_name: str) -> bool:
     )
 
 
-def _event_prefers_review_transcript(event: dict[str, Any], event_name: str) -> bool:
-    """Return True when the truthful primary artifact is the review transcript."""
+def _event_supports_review_transcript(event: dict[str, Any], event_name: str) -> bool:
+    """Return True when a review event has structured exchange transcript context."""
     task = str(event.get("task") or "").strip().lower()
     intent = str(event.get("event_intent") or "")
     if intent == EventIntent.REVIEW.value:
@@ -2530,6 +2538,37 @@ def _review_transcript_context_for_event(event: dict[str, Any], event_name: str)
     return {}
 
 
+def _review_transcript_action_for_event(
+    *,
+    event: dict[str, Any],
+    event_name: str,
+    issue_number: int,
+) -> tuple[dict[str, Any], str] | None:
+    """Expose the structured exchange transcript as secondary review context."""
+    run_dir = str(event.get("run_dir") or "").strip()
+    if not run_dir or not _event_supports_review_transcript(event, event_name):
+        return None
+    accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(run_dir)))
+    try:
+        accessor.get_review_exchange_transcript(allow_empty=True)
+    except (ArtifactNotFoundError, FileNotFoundError):
+        return None
+    action: dict[str, Any] = {
+        "type": "open_review_transcript",
+        "label": "View Review Transcript",
+        "issue_number": issue_number,
+    }
+    action.update(_review_transcript_context_for_event(event, event_name))
+    dedupe_parts = ["review-transcript", str(issue_number), event_name]
+    round_index = action.get("round_index")
+    transcript_role = action.get("transcript_role")
+    if isinstance(round_index, int):
+        dedupe_parts.append(str(round_index))
+    if isinstance(transcript_role, str) and transcript_role:
+        dedupe_parts.append(transcript_role)
+    return action, ":".join(dedupe_parts)
+
+
 def _preferred_run_scoped_session_action(
     *,
     event: dict[str, Any],
@@ -2541,30 +2580,6 @@ def _preferred_run_scoped_session_action(
     run_dir = str(event.get("run_dir") or "").strip()
     if not run_dir:
         return None
-    if _event_prefers_review_transcript(event, event_name):
-        accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(run_dir)))
-        try:
-            accessor.get_review_exchange_transcript(allow_empty=True)
-        except ArtifactNotFoundError:
-            pass
-        else:
-            action: dict[str, Any] = {
-                "type": "open_review_transcript",
-                "label": "View Review Transcript",
-                "issue_number": issue_number,
-            }
-            action.update(_review_transcript_context_for_event(event, event_name))
-            dedupe_parts = ["review-transcript", str(issue_number), event_name]
-            round_index = action.get("round_index")
-            transcript_role = action.get("transcript_role")
-            if isinstance(round_index, int):
-                dedupe_parts.append(str(round_index))
-            if isinstance(transcript_role, str) and transcript_role:
-                dedupe_parts.append(transcript_role)
-            return (
-                action,
-                ":".join(dedupe_parts),
-            )
     return (
         {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
         f"agent:{issue_number}",

@@ -51,6 +51,7 @@ class TerminalRecordingWriter:
     def __init__(self, path: Path, *, initial_rows: int | None = None, initial_cols: int | None = None) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._base_offset_ms = _next_recording_offset(path)
         self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
         self._started = time.monotonic()
         if initial_rows is not None and initial_cols is not None:
@@ -93,11 +94,61 @@ class TerminalRecordingWriter:
         self._file.close()
 
     def _offset_ms(self) -> int:
-        return int((time.monotonic() - self._started) * 1000)
+        elapsed = int((time.monotonic() - self._started) * 1000)
+        return self._base_offset_ms + elapsed
 
     def _write_event(self, event: TerminalRecordingEvent) -> None:
         self._file.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
         self._file.flush()
+
+
+class MirroredTerminalRecordingWriter:
+    """Write canonical terminal replay events and optionally mirror plain text."""
+
+    def __init__(
+        self,
+        recording_path: Path,
+        *,
+        mirror_path: Path | None = None,
+        initial_rows: int | None = None,
+        initial_cols: int | None = None,
+    ) -> None:
+        self._recording = TerminalRecordingWriter(
+            recording_path,
+            initial_rows=initial_rows,
+            initial_cols=initial_cols,
+        )
+        self._mirror = None
+        if mirror_path is not None:
+            mirror_path.parent.mkdir(parents=True, exist_ok=True)
+            self._mirror = open(mirror_path, "a", encoding="utf-8")  # noqa: SIM115
+
+    @property
+    def name(self) -> str:
+        return self._recording.name
+
+    def write(self, data: bytes | str) -> int:
+        if isinstance(data, str):
+            text = data
+            raw = data.encode("utf-8")
+        else:
+            raw = data
+            text = data.decode("utf-8", errors="ignore")
+        written = self._recording.write(raw)
+        if self._mirror is not None and text:
+            self._mirror.write(text)
+            self._mirror.flush()
+        return written
+
+    def flush(self) -> None:
+        self._recording.flush()
+        if self._mirror is not None:
+            self._mirror.flush()
+
+    def close(self) -> None:
+        self._recording.close()
+        if self._mirror is not None:
+            self._mirror.close()
 
 def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
     """Iterate over a terminal recording NDJSON file for replay or inspection."""
