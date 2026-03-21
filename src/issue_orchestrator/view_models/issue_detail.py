@@ -110,12 +110,19 @@ _REVIEW_START_CLUSTER_EVENTS = frozenset({
     "review_exchange.round_started",
 })
 
+_REVIEW_TERMINAL_CLUSTER_EVENTS = frozenset({
+    "review_exchange.round_completed",
+    "review_exchange.completed",
+    "review.approved",
+    "review.changes_requested",
+})
+
 
 def _story_projection_events(events: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
     """Apply user-story-specific event collapsing without affecting ops/debug views."""
     if view != "user":
         return events
-    return _collapse_review_start_clusters(events)
+    return _collapse_review_terminal_clusters(_collapse_review_start_clusters(events))
 
 
 def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -173,6 +180,47 @@ def _preferred_review_start_story_event(cluster: list[dict[str, Any]]) -> dict[s
             if str(event.get("event") or "") == preferred_name:
                 return event
     return cluster[-1]
+
+
+def _collapse_review_terminal_clusters(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse redundant review-end mechanics into one terminal review row in Story."""
+    collapsed: list[dict[str, Any]] = []
+    idx = 0
+    while idx < len(events):
+        event = events[idx]
+        event_name = str(event.get("event") or "")
+        if event_name not in _REVIEW_TERMINAL_CLUSTER_EVENTS:
+            collapsed.append(event)
+            idx += 1
+            continue
+
+        cluster = [event]
+        next_idx = idx + 1
+        while next_idx < len(events):
+            candidate = events[next_idx]
+            candidate_name = str(candidate.get("event") or "")
+            if candidate_name not in _REVIEW_TERMINAL_CLUSTER_EVENTS:
+                break
+            cluster.append(candidate)
+            next_idx += 1
+
+        terminal = _preferred_review_terminal_story_event(cluster)
+        if terminal is None:
+            collapsed.extend(cluster)
+        else:
+            collapsed.append(terminal if len(cluster) == 1 else dict(terminal))
+        idx = next_idx
+
+    return collapsed
+
+
+def _preferred_review_terminal_story_event(cluster: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the single user-facing event for a terminal review cluster when possible."""
+    for preferred_name in ("review.approved", "review.changes_requested"):
+        for event in reversed(cluster):
+            if str(event.get("event") or "") == preferred_name:
+                return event
+    return None
 
 
 # ---------------------------------------------------------------------------

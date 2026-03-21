@@ -322,6 +322,7 @@ class TestViewModelViewFiltering:
         assert "review_exchange.round_started" in step_events
         assert "review.started" not in step_events
         assert "review_exchange.started" not in step_events
+        assert "review_exchange.round_completed" not in step_events
         assert "agent.coding_started" in step_events
         assert "review.approved" in step_events
         assert "pr.created" in step_events

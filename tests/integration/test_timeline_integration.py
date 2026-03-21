@@ -727,7 +727,7 @@ def test_issue_detail_local_loop_review_rounds_split_into_distinct_cycles(
         user_response = client.get(f"/api/issue-detail/{issue_number}?view=user")
         assert user_response.status_code == 200
         user_latest_run = _latest_run(user_response.json())
-        user_first_cycle = user_latest_run["cycles"][0]
+        user_first_cycle, user_second_cycle = user_latest_run["cycles"]
         assert _step_events(user_first_cycle) == [
             "agent.coding_started",
             "agent.completed",
@@ -735,6 +735,12 @@ def test_issue_detail_local_loop_review_rounds_split_into_distinct_cycles(
             "review_exchange.round_completed",
         ]
         assert user_first_cycle["steps"][2]["narrative"] == "Code review started (reviewer)"
+        assert _step_events(user_second_cycle) == [
+            "review.rework_started",
+            "review.rework_completed",
+            "review_exchange.round_started",
+            "review.approved",
+        ]
     finally:
         web.set_orchestrator(None)
 
