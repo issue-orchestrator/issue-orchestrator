@@ -1243,7 +1243,13 @@ def _get_provider_circuit_breakers(orchestrator: Any) -> list[dict[str, Any]]:
     """Extract provider circuit breaker states from the orchestrator."""
     if orchestrator is None:
         return []
-    states = orchestrator.deps.provider_resilience.store.list_all()
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return []
+    store = getattr(getattr(deps, "provider_resilience", None), "store", None)
+    if store is None:
+        return []
+    states = store.list_all()
     now = datetime.now(timezone.utc)
     result: list[dict[str, Any]] = []
     for s in states:
