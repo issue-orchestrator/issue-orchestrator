@@ -55,6 +55,7 @@ export interface DashboardViewModelPayload {
   github_repo: string;
   history_items: IssueItemPayload[];
   issues: IssueItemPayload[];
+  open_circuits?: ProviderCircuitPayload[];
   paused: boolean;
   queue_count: number;
   queue_items: IssueItemPayload[];
@@ -149,6 +150,15 @@ export interface PhaseDialogPayload {
   phase: Record<string, any> | null;
   phases: Record<string, any>[];
   title: string;
+}
+
+export interface ProviderCircuitPayload {
+  consecutive_outages: number;
+  cooldown_remaining_seconds: number;
+  last_error_summary: string;
+  open_until: string;
+  provider: string;
+  [key: string]: any;
 }
 
 export interface SessionDiagnosticsActionPayload {

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -18,6 +19,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -701,3 +703,162 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit breaker tests
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _MockProviderResilience:
+    store: Any
+
+
+@dataclass
+class _MockDeps:
+    provider_resilience: Any
+
+
+@dataclass
+class _OrchestratorWithDeps:
+    state: OrchestratorState
+    config: Config
+    deps: Any
+    shutdown_requested: bool = False
+
+
+def _make_orchestrator_with_circuits(circuits: list[ProviderCircuitState]) -> "_OrchestratorWithDeps":
+    store = InMemoryProviderCircuitStore()
+    for c in circuits:
+        store.save(c)
+    resilience = _MockProviderResilience(store=store)
+    deps = _MockDeps(provider_resilience=resilience)
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    return _OrchestratorWithDeps(state=state, config=config, deps=deps)
+
+
+def test_open_circuits_empty_when_no_deps():
+    """Orchestrator stub without deps returns empty open_circuits."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert vm.open_circuits == []
+    assert vm.dashboard_data()["openCircuits"] == []
+
+
+def test_open_circuits_populated_when_circuit_is_open():
+    """Circuit in open state appears in open_circuits with cooldown info."""
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(seconds=300)
+    circuit = ProviderCircuitState(
+        provider="claude",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="rate limit",
+        updated_at=now,
+    )
+    orchestrator = _make_orchestrator_with_circuits([circuit])
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(vm.open_circuits) == 1
+    c = vm.open_circuits[0]
+    assert c["provider"] == "claude"
+    assert c["cooldown_remaining_seconds"] > 0
+    assert c["last_error_summary"] == "rate limit"
+    assert c["consecutive_outages"] == 2
+    # Appears in dashboard_data too
+    assert len(vm.dashboard_data()["openCircuits"]) == 1
+
+
+def test_closed_circuit_not_in_open_circuits():
+    """Circuit whose open_until is in the past is not reported."""
+    past = datetime.now(timezone.utc) - timedelta(seconds=10)
+    circuit = ProviderCircuitState(
+        provider="claude",
+        open_until=past,
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=past,
+    )
+    orchestrator = _make_orchestrator_with_circuits([circuit])
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert vm.open_circuits == []
+
+
+def test_provider_blocked_flag_on_queue_item():
+    """Issue with provider-unavailable label gets provider_blocked=True in queue."""
+    # Note: blocked:provider-unavailable is recognized by LabelManager.is_blocking but
+    # NOT by the domain model's Issue.is_blocked (which uses _is_blocking_label). This
+    # means issues with this label stay in the queue column with provider_blocked=True,
+    # not in the blocked column.
+    config = _make_config()
+    provider_label = config.get_label_provider_unavailable()
+    issue = Issue(number=99, title="provider blocked issue", labels=["agent:web", provider_label])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Issue stays in queue (not blocked column) because Issue.is_blocked returns False
+    # for blocked:provider-unavailable. But provider_blocked flag is set.
+    queue_item = next((i for i in vm.queue_items if i["issue_number"] == 99), None)
+    assert queue_item is not None, "Issue with provider label should be in queue_items"
+    assert queue_item["provider_blocked"] is True
+    assert queue_item["blocked_summary"] is not None
+
+
+def test_provider_blocked_false_for_normal_queue_issue():
+    """Normal queue issue (no provider-unavailable label) has provider_blocked=False."""
+    config = _make_config()
+    issue = Issue(number=100, title="normal issue", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queue_item = next((i for i in vm.queue_items if i["issue_number"] == 100), None)
+    assert queue_item is not None
+    assert queue_item["provider_blocked"] is False

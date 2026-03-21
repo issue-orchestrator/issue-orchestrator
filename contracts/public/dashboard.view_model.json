@@ -49,6 +49,13 @@
           ],
           "title": "Githubrepo"
         },
+        "openCircuits": {
+          "items": {
+            "$ref": "#/$defs/ProviderCircuitContract"
+          },
+          "title": "Opencircuits",
+          "type": "array"
+        },
         "paused": {
           "title": "Paused",
           "type": "boolean"
@@ -96,6 +103,40 @@
         "agents"
       ],
       "title": "DashboardDataContract",
+      "type": "object"
+    },
+    "ProviderCircuitContract": {
+      "additionalProperties": true,
+      "properties": {
+        "consecutive_outages": {
+          "title": "Consecutive Outages",
+          "type": "integer"
+        },
+        "cooldown_remaining_seconds": {
+          "title": "Cooldown Remaining Seconds",
+          "type": "integer"
+        },
+        "last_error_summary": {
+          "title": "Last Error Summary",
+          "type": "string"
+        },
+        "open_until": {
+          "title": "Open Until",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "open_until",
+        "cooldown_remaining_seconds",
+        "consecutive_outages",
+        "last_error_summary"
+      ],
+      "title": "ProviderCircuitContract",
       "type": "object"
     }
   },

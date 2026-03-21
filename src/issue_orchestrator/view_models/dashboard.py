@@ -48,6 +48,7 @@ class DashboardViewModel:
     awaiting_merge_items: list[dict[str, Any]]
     flow_columns: list[dict[str, Any]]
     scope_summary: dict[str, Any]
+    open_circuits: list[dict[str, Any]]
 
     active_count: int
     queue_count: int
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "open_circuits": self.open_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "openCircuits": self.open_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +183,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "open_circuits": self.open_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -228,6 +232,30 @@ def flow_stage_label(steps: list[dict[str, str]], stage: str) -> str:
         if step["key"] == stage:
             return step["label"]
     return stage.replace("_", " ").title()
+
+
+def _open_circuit_summaries(orchestrator: Any) -> list[dict[str, Any]]:
+    """Return summary dicts for currently-open provider circuits."""
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return []
+    resilience = getattr(deps, "provider_resilience", None)
+    if resilience is None:
+        return []
+    now = datetime.now(timezone.utc)
+    result = []
+    for state in resilience.store.list_all():
+        if state.open_until is None or state.open_until <= now:
+            continue
+        remaining = max(0.0, (state.open_until - now).total_seconds())
+        result.append({
+            "provider": state.provider,
+            "open_until": state.open_until.isoformat(),
+            "cooldown_remaining_seconds": int(remaining),
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary or "",
+        })
+    return result
 
 
 def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str | None = None) -> str | None:
@@ -476,6 +504,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "provider_blocked": lm.is_provider_blocked(list(session.issue.labels)),
             "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
@@ -599,6 +628,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "queue_wait_reason": queue_reason,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
+            "provider_blocked": lm.is_provider_blocked(list(issue.labels)),
             "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         }
@@ -1432,6 +1462,8 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    open_circuits = _open_circuit_summaries(orchestrator)
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1443,6 +1475,7 @@ def build_dashboard_view_model(
         awaiting_merge_items=awaiting_merge_items,
         flow_columns=flow_columns,
         scope_summary=scope_summary,
+        open_circuits=open_circuits,
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),

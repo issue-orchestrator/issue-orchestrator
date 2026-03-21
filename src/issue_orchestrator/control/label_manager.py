@@ -283,6 +283,9 @@ class LabelManager:
     def is_pr_pending(self, labels: Sequence[str]) -> bool:
         return self.pr_pending in labels
 
+    def is_provider_blocked(self, labels: Sequence[str]) -> bool:
+        return self.provider_unavailable in labels
+
     def requires_human(self, label: str) -> bool:
         base = self._strip_prefix(label)
         return base == self._entries["blocked_needs_human"].base_name

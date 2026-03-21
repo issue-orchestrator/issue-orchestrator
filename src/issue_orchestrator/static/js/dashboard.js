@@ -385,6 +385,12 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         updateRefreshStatusFromViewModel(viewModel);
         applyNetworkSyncScheduler();
         renderGitHubUsage();
+        // Sync provider circuit state from refreshed view model
+        if (Array.isArray(viewModel.open_circuits)) {
+            openCircuits = {};
+            viewModel.open_circuits.forEach(c => { openCircuits[c.provider] = c; });
+            updateProviderOutageBanner();
+        }
 
         // Post status to parent CC when embedded
         if (isEmbedded && viewModel) {
@@ -468,6 +474,11 @@ document.addEventListener('DOMContentLoaded', () => {
     applyGitHubUsagePrefs();
     renderGitHubUsage();
     applyNetworkSyncScheduler();
+    // Seed provider circuit state from server-rendered data
+    (window.dashboardData?.openCircuits || []).forEach(c => {
+        openCircuits[c.provider] = c;
+    });
+    updateProviderOutageBanner();
     refreshViewModel({ reloadOnListChange: false });
     initVisibilityObserver();
     const nextRun = document.getElementById('e2eNextRun');
@@ -3306,6 +3317,32 @@ function loadDependencyProblems() {
         .catch(err => console.error('[deps] Failed to load dependency problems:', err));
 }
 
+// Provider circuit breaker tracking
+let openCircuits = {};  // provider -> circuit info from dashboardData or SSE
+
+function _formatCooldown(seconds) {
+    if (!seconds || seconds <= 0) return 'recovering';
+    if (seconds < 60) return `${seconds}s`;
+    return `${Math.ceil(seconds / 60)}m`;
+}
+
+function updateProviderOutageBanner() {
+    const banner = document.getElementById('providerOutageBanner');
+    const list = document.getElementById('providerOutageBannerList');
+    if (!banner || !list) return;
+    const circuits = Object.values(openCircuits);
+    if (circuits.length === 0) {
+        banner.style.display = 'none';
+        list.innerHTML = '';
+        return;
+    }
+    list.innerHTML = circuits.map(c => {
+        const err = c.last_error_summary ? ` — ${c.last_error_summary}` : '';
+        return `<li class="provider-outage-banner-item" data-provider="${escapeHtml(c.provider)}"><strong>${escapeHtml(c.provider)}</strong>: unavailable for ~${_formatCooldown(c.cooldown_remaining_seconds)}${escapeHtml(err)}</li>`;
+    }).join('');
+    banner.style.display = '';
+}
+
 // Stale in-progress tracking
 let staleIssues = {};  // issue_number -> stale info
 
@@ -3585,6 +3622,34 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                openCircuits[data.provider] = {
+                    provider: data.provider,
+                    open_until: data.open_until,
+                    cooldown_remaining_seconds: Math.max(0, Math.round((new Date(data.open_until) - Date.now()) / 1000)),
+                    consecutive_outages: data.consecutive_outages || 0,
+                    last_error_summary: data.error_summary || '',
+                };
+                updateProviderOutageBanner();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                delete openCircuits[data.provider];
+                updateProviderOutageBanner();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 

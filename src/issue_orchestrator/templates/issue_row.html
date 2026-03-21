@@ -47,7 +47,11 @@
                 </span>
                 {% endfor %}
                 {% if issue.blocked_summary %}
+                {% if issue.provider_blocked %}
+                <span class="provider-outage-badge" title="{{ issue.blocked_summary }}">Provider Unavailable</span>
+                {% else %}
                 <span class="blocked-badge" title="{{ issue.blocked_summary }}">Blocked</span>
+                {% endif %}
                 {% endif %}
             </span>
             {% elif issue.is_e2e %}

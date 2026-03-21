@@ -588,3 +588,36 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_exists_in_template() -> None:
+    """dashboard.html must have a providerOutageBanner element."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert 'provider-outage-banner' in html
+    assert 'id="providerOutageBannerList"' in html
+
+
+def test_provider_outage_badge_in_issue_row_template() -> None:
+    """issue_row.html must show provider-outage-badge when provider_blocked is set."""
+    issue_row = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
+    html = issue_row.read_text(encoding="utf-8")
+    assert "provider_blocked" in html
+    assert "provider-outage-badge" in html
+    assert "Provider Unavailable" in html
+
+
+def test_provider_outage_banner_css_defined() -> None:
+    """dashboard.css must define .provider-outage-banner styles."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner {" in css
+    assert ".provider-outage-badge {" in css
+
+
+def test_dashboard_js_handles_provider_outage_sse_events() -> None:
+    """dashboard.js must register listeners for provider.outage_entered/exited."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+    assert "updateProviderOutageBanner" in js
+    assert "openCircuits" in js
