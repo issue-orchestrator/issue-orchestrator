@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -32,6 +33,7 @@ class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: Any = field(default=None)
 
 
 def _make_config() -> Config:
@@ -740,3 +742,61 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_dashboard_data_surfaces_provider_circuit_breaker_status():
+    from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="claude-sonnet",
+        open_until=datetime.now(timezone.utc) + timedelta(seconds=300),
+        consecutive_outages=2,
+        last_error_summary="Connection timeout",
+        updated_at=datetime.now(timezone.utc),
+    ))
+
+    @dataclass
+    class _FakeResilience:
+        store: Any
+
+    @dataclass
+    class _FakeDeps:
+        provider_resilience: Any
+
+    orchestrator = _OrchestratorStub(
+        state=state,
+        config=config,
+        deps=_FakeDeps(provider_resilience=_FakeResilience(store=store)),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    circuits = view_model.dashboard_data()["providerCircuits"]
+    assert len(circuits) == 1
+    circuit = circuits[0]
+    assert circuit["provider"] == "claude-sonnet"
+    assert circuit["is_open"] is True
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "Connection timeout"
+    assert circuit["open_until"] is not None
+
+    # Verify no circuits when deps is absent (existing stubs without deps)
+    orchestrator_no_deps = _OrchestratorStub(state=state, config=config)
+    view_model_no_deps = build_dashboard_view_model(
+        orchestrator_no_deps,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    assert view_model_no_deps.dashboard_data()["providerCircuits"] == []
