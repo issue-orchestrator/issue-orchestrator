@@ -363,6 +363,7 @@ class FilteringConfig:
     milestones: list[str] = field(default_factory=list)  # Process issues in any of these milestones
     issue: Optional[int] = None  # Only process this specific issue number
     exclude_labels: list[str] = field(default_factory=list)  # Exclude issues with any of these labels
+    exclude_label_prefixes: list[str] = field(default_factory=list)  # Exclude issues with any labels matching these prefixes
     fetch_limit: int = 100  # Max issues to fetch per API call
     max_to_start: int = 0  # Stop after starting this many issues (0 = unlimited)
 
@@ -630,12 +631,20 @@ def _parse_filtering_config(data: dict) -> FilteringConfig:
         raise ValueError("filtering.exclude_labels must be a list or comma-separated string")
     exclude_labels = [str(lbl).strip() for lbl in raw_exclude if str(lbl).strip()]
 
+    raw_exclude_prefixes = data.get("exclude_label_prefixes") or []
+    if isinstance(raw_exclude_prefixes, str):
+        raw_exclude_prefixes = [prefix.strip() for prefix in raw_exclude_prefixes.split(",") if prefix.strip()]
+    if not isinstance(raw_exclude_prefixes, list):
+        raise ValueError("filtering.exclude_label_prefixes must be a list or comma-separated string")
+    exclude_label_prefixes = [str(prefix).strip() for prefix in raw_exclude_prefixes if str(prefix).strip()]
+
     return FilteringConfig(
         label=data.get("label"),
         milestone=data.get("milestone"),
         milestones=milestones,
         issue=data.get("issue"),
         exclude_labels=exclude_labels,
+        exclude_label_prefixes=exclude_label_prefixes,
         fetch_limit=data.get("fetch_limit", 100),
         max_to_start=data.get("max_to_start", 0),
     )
@@ -1400,10 +1409,13 @@ class Config:
         """Get the issue label filter configured for this config.
 
         Returns an IssueLabelFilter instance that can filter issues based on
-        exclude_labels configuration.
+        exact-label and label-prefix exclusion configuration.
         """
         from ..domain.issue_filter import IssueLabelFilter
-        return IssueLabelFilter.from_config(exclude_labels=self.filtering.exclude_labels)
+        return IssueLabelFilter.from_config(
+            exclude_labels=self.filtering.exclude_labels,
+            exclude_label_prefixes=self.filtering.exclude_label_prefixes,
+        )
 
     def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
         """Get the effective reviewer for an agent.
@@ -1641,6 +1653,7 @@ class Config:
                 "milestones": list(self.filtering.milestones),
                 "issue": self.filtering.issue,
                 "exclude_labels": list(self.filtering.exclude_labels),
+                "exclude_label_prefixes": list(self.filtering.exclude_label_prefixes),
                 "fetch_limit": self.filtering.fetch_limit,
                 "max_to_start": self.filtering.max_to_start,
             },
@@ -1892,6 +1905,8 @@ class Config:
             filtering_dict["milestone"] = self.filtering.milestone
         if self.filtering.exclude_labels:
             filtering_dict["exclude_labels"] = list(self.filtering.exclude_labels)
+        if self.filtering.exclude_label_prefixes:
+            filtering_dict["exclude_label_prefixes"] = list(self.filtering.exclude_label_prefixes)
         if self.filtering.fetch_limit != 100:
             filtering_dict["fetch_limit"] = self.filtering.fetch_limit
         if self.filtering.max_to_start != 0:

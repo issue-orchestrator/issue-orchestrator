@@ -93,6 +93,7 @@ validation:
 
 filtering:
   exclude_labels: ["io-e2e-test-data", "test-data"]
+  exclude_label_prefixes: ["io:e2e:"]
 
 triage:
   inherit_labels: ["io-e2e-test-data", "test-data"]

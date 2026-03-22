@@ -1321,6 +1321,25 @@ class TestIssueScopeFiltering:
         result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
         assert len(result) == 1
 
+    def test_review_skips_excluded_label_prefix_issue(self, scanner, mock_repository, mock_config):
+        """Review scan skips PRs linked to issues with excluded-label prefixes."""
+        mock_config.filtering.exclude_label_prefixes = ["io:e2e:"]
+
+        issue = (
+            IssueBuilder()
+            .with_number(42)
+            .with_title("Production parity e2e issue")
+            .with_labels("agent:developer", "io:e2e:isolated-4057")
+            .build()
+        )
+        mock_repository.issues.append(issue)
+
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert result == []
+
     def test_mixed_excluded_and_non_excluded(self, scanner, mock_repository, mock_config):
         """Only non-excluded issues pass through when both types are present."""
         mock_config.filtering.exclude_labels = ["test-data"]

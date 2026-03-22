@@ -435,6 +435,18 @@ class FilteringSettings(BaseModel):
             "ui_transform": "comma_separated_list",
         },
     )
+    exclude_label_prefixes: str = Field(
+        "",
+        title="Exclude Label Prefixes",
+        description="Label prefixes to exclude (comma-separated string or YAML list)",
+        json_schema_extra={
+            "doc_examples": ["io:e2e:", "[\"io:e2e:\", \"tmp:\"]", ""],
+            "doc_notes": "Exclude issues that have any label starting with one of these prefixes.",
+            "config_attr": "filtering.exclude_label_prefixes",
+            "yaml_path": "filtering.exclude_label_prefixes",
+            "ui_transform": "comma_separated_list",
+        },
+    )
     fetch_limit: int = Field(
         100,
         title="Fetch Limit",

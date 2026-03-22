@@ -48,6 +48,7 @@ _Auto-generated from settings schema._
 | `filtering.label` | string (optional) | `None` | Only process issues with this label (optional) | `bot-ready`, `needs-triage` | Use a single label to gate which issues are eligible. |
 | `filtering.milestones` | string | `` | Milestones to process (comma-separated string or YAML list) | `M1, M2`, `["M1", "M2"]` | Accepts a comma-separated string or a YAML list. Leave empty to allow all milestones. |
 | `filtering.exclude_labels` | string | `` | Labels to exclude (comma-separated string or YAML list) | `test-data, skip`, `["test-data", "skip"]` | Accepts a comma-separated string or a YAML list. |
+| `filtering.exclude_label_prefixes` | string | `` | Label prefixes to exclude (comma-separated string or YAML list) | `io:e2e:`, `["io:e2e:", "tmp:"]` | Exclude issues that have any label starting with one of these prefixes. |
 | `filtering.fetch_limit` | integer | `100` | Max issues to fetch per API call | `50`, `100`, `200` | Lower values reduce API load; higher values reduce pagination. |
 | `filtering.max_to_start` | integer | `0` | Stop after starting N issues (0 = unlimited) | `0`, `5`, `10` | Useful for dry runs or throttling initial ramp-up. |
 
@@ -124,5 +125,4 @@ _Auto-generated from settings schema._
 | `worktrees.seed_ref` | string (optional) | `None` | Optional local ref used to seed fresh issue worktrees before review/PR creation | `HEAD`, `main`, `fc42d4c` | Use for local iteration when fresh issue worktrees should inherit a specific local ref. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
 | `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic. |
-
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

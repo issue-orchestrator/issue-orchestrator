@@ -21,12 +21,21 @@ class TestIssueLabelFilterInit:
         """Default filter has no exclusions."""
         f = IssueLabelFilter()
         assert f.exclude_labels == frozenset()
+        assert f.exclude_label_prefixes == ()
         assert f.is_empty()
 
     def test_from_config_with_list(self):
         """Create filter from list of exclude labels."""
         f = IssueLabelFilter.from_config(exclude_labels=["test-data", "wip"])
         assert f.exclude_labels == frozenset(["test-data", "wip"])
+        assert f.exclude_label_prefixes == ()
+        assert not f.is_empty()
+
+    def test_from_config_with_prefixes(self):
+        """Create filter from label-prefix exclusions."""
+        f = IssueLabelFilter.from_config(exclude_label_prefixes=["io:e2e:", "tmp:"])
+        assert f.exclude_labels == frozenset()
+        assert f.exclude_label_prefixes == ("io:e2e:", "tmp:")
         assert not f.is_empty()
 
     def test_from_config_with_none(self):
@@ -72,6 +81,36 @@ class TestIssueLabelFilterApply:
 
         assert len(result) == 2
         assert [i.number for i in result] == [1, 3]
+
+    def test_excludes_matching_label_prefix(self):
+        """Filter excludes issues with labels matching an excluded prefix."""
+        f = IssueLabelFilter.from_config(exclude_label_prefixes=["io:e2e:"])
+        issues = [
+            _make_issue(1, ["agent:web"]),
+            _make_issue(2, ["agent:web", "io:e2e:isolated-4057"]),
+            _make_issue(3, ["bug", "io:e2e:reviewed-4057"]),
+        ]
+
+        result = f.apply(issues)
+
+        assert len(result) == 1
+        assert [i.number for i in result] == [1]
+
+    def test_exact_and_prefix_exclusions_work_together(self):
+        """Exact-label and prefix exclusions both remove matching issues."""
+        f = IssueLabelFilter.from_config(
+            exclude_labels=["test-data"],
+            exclude_label_prefixes=["io:e2e:"],
+        )
+        issues = [
+            _make_issue(1, ["agent:web"]),
+            _make_issue(2, ["agent:web", "test-data"]),
+            _make_issue(3, ["agent:web", "io:e2e:isolated-4057"]),
+        ]
+
+        result = f.apply(issues)
+
+        assert [i.number for i in result] == [1]
 
     def test_excludes_multiple_labels(self):
         """Filter excludes issues with any matching label."""
@@ -147,3 +186,8 @@ class TestIssueLabelFilterRepr:
         """Filter with labels shows sorted list."""
         f = IssueLabelFilter.from_config(exclude_labels=["wip", "test-data"])
         assert repr(f) == "IssueLabelFilter(exclude=['test-data', 'wip'])"
+
+    def test_with_prefixes_repr(self):
+        """Filter repr includes label-prefix exclusions."""
+        f = IssueLabelFilter.from_config(exclude_label_prefixes=["io:e2e:"])
+        assert repr(f) == "IssueLabelFilter(exclude_prefixes=['io:e2e:'])"

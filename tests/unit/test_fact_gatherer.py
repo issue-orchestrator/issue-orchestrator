@@ -576,3 +576,23 @@ class TestFactGathererFetchIssues:
 
         # All issues should pass through
         assert [issue.number for issue in results] == [1, 2]
+
+    def test_fetch_issues_applies_exclude_label_prefixes_filter(
+        self, mock_config, mock_repository_host
+    ):
+        """Issue fetch excludes issues carrying labels in excluded namespaces."""
+        mock_config.agents = {"agent:web": Mock()}
+        mock_config.filtering.milestones = []
+        mock_config.filtering.milestone = None
+        mock_config.filtering.fetch_limit = 50
+        mock_config.filtering.exclude_label_prefixes = ["io:e2e:"]
+
+        issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
+        issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web", "io:e2e:isolated-4057"])
+        issue_3 = Issue(number=3, title="Issue 3", labels=["agent:web", "bug"])
+        mock_repository_host.list_issues.return_value = [issue_1, issue_2, issue_3]
+
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host)
+        results = gatherer.fetch_issues(labels_for_agent=["test-label"])
+
+        assert [issue.number for issue in results] == [1, 3]
