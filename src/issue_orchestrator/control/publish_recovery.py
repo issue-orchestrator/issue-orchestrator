@@ -177,7 +177,7 @@ class PublishRecoveryService:
         if issue is None:
             return _RetryDecision(False, f"Issue #{issue_number} not found")
 
-        labels = tuple(self._current_labels(issue_number, issue))
+        labels = tuple(self._current_labels(issue_number))
         block_reason = self._retry_state_block_reason(issue_number, state, labels)
         if block_reason:
             return _RetryDecision(False, block_reason)
@@ -376,8 +376,7 @@ class PublishRecoveryService:
             )
         )
 
-    def _current_labels(self, issue_number: int, issue: Any | None = None) -> list[str]:
-        del issue
+    def _current_labels(self, issue_number: int) -> list[str]:
         return [str(label) for label in self._fresh_issue_reader.read_issue_labels(issue_number)]
 
     def _resolve_agent_label(self, issue: Any, metadata: dict[str, Any]) -> str | None:
