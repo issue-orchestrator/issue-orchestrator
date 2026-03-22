@@ -103,12 +103,11 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     )
 
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
-    completion_path = ".issue-orchestrator/sessions/issue-42/completion.json"
-    command = (
-        "echo 'hello-from-subprocess' && "
-        f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}' && "
-        "coding-done completed --implementation 'subprocess test' --problems 'none'"
-    )
+    # The completion-path env contract is covered in completion-command tests.
+    # This integration test only needs to prove that a subprocess-backed coding
+    # session emits terminal output and a completion record.
+    completion_path = ".issue-orchestrator/completion.json"
+    command = "echo 'hello-from-subprocess' && coding-done completed --implementation 'subprocess test' --problems 'none'"
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
