@@ -259,6 +259,24 @@ class TestStartup:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_startup_initializes_publish_executor(
+        self,
+        _mock_analyze,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Startup must initialize publish infrastructure before web/API access."""
+        mock_repository_host.issues = []
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.deps.publish_executor.start = MagicMock()
+
+        await orchestrator.startup()
+
+        orchestrator.deps.publish_executor.start.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_checks_in_progress_issues(
         self,
         mock_analyze,
