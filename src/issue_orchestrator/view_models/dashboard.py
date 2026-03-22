@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -182,6 +185,27 @@ class DashboardViewModel:
             "e2e_total": self.e2e_total,
             "dashboard_data": self.dashboard_data(),
         }
+
+
+def _get_open_provider_circuits(orchestrator) -> list[dict[str, Any]]:
+    """Return circuits that are currently open (cooldown active), for UI display."""
+    try:
+        states = orchestrator.deps.provider_resilience.store.list_all()
+    except AttributeError:
+        return []
+    now = datetime.now(timezone.utc)
+    result = []
+    for state in states:
+        if state.open_until and state.open_until > now:
+            seconds_remaining = int((state.open_until - now).total_seconds())
+            result.append({
+                "provider": state.provider,
+                "open_until": state.open_until.isoformat(),
+                "seconds_remaining": seconds_remaining,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+            })
+    return result
 
 
 def issue_url_for(config, issue_number: int) -> str:
@@ -1470,4 +1494,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=_get_open_provider_circuits(orchestrator),
     )

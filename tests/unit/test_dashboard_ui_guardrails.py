@@ -639,3 +639,33 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_element_in_template() -> None:
+    """Dashboard template must include the provider outage banner element."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert 'provider-outage-banner' in html
+
+
+def test_provider_outage_banner_css_defined() -> None:
+    """dashboard.css must define the provider-outage-banner class."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner" in css
+
+
+def test_provider_outage_sse_handlers_in_dashboard_js() -> None:
+    """dashboard.js must listen for provider outage SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+    assert "openCircuits" in js
+    assert "_renderProviderBanner" in js
+
+
+def test_provider_circuits_seeded_from_dashboard_data() -> None:
+    """dashboard.js must seed openCircuits from window.dashboardData.providerCircuits on load."""
+    js = _read(DASHBOARD_JS)
+    assert "providerCircuits" in js
+    # The seed loop must iterate over the initial server-rendered circuits
+    assert "window.dashboardData?.providerCircuits" in js or "dashboardData?.providerCircuits" in js

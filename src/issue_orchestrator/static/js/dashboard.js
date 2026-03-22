@@ -3520,7 +3520,32 @@ async function toggleExcluded() {
     let reconnectTimer = null;
     let healthPollTimer = null;
     const restartBanner = document.getElementById('engineRestartBanner');
+    const providerOutageBanner = document.getElementById('providerOutageBanner');
     const HEALTH_POLL_MS = 5000;
+
+    // Seed from server-rendered state so banner is correct before SSE connects
+    const openCircuits = {};
+    (window.dashboardData?.providerCircuits || []).forEach(c => {
+        openCircuits[c.provider] = c;
+    });
+
+    function _renderProviderBanner() {
+        if (!providerOutageBanner) return;
+        const open = Object.values(openCircuits);
+        if (open.length === 0) {
+            providerOutageBanner.style.display = 'none';
+            providerOutageBanner.textContent = '';
+            return;
+        }
+        const parts = open.map(c => {
+            let text = c.provider;
+            if (c.seconds_remaining != null) text += ` (cooldown ${c.seconds_remaining}s)`;
+            if (c.last_error_summary) text += ` \u2014 ${c.last_error_summary}`;
+            return text;
+        });
+        providerOutageBanner.textContent = '\u26a1 Provider outage: ' + parts.join(', ');
+        providerOutageBanner.style.display = '';
+    }
 
     function setRestartBanner(message) {
         if (!restartBanner) return;
@@ -3689,6 +3714,36 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                const now = Date.now() / 1000;
+                const openUntil = data.open_until ? new Date(data.open_until).getTime() / 1000 : null;
+                openCircuits[data.provider] = {
+                    provider: data.provider,
+                    open_until: data.open_until,
+                    seconds_remaining: openUntil ? Math.max(0, Math.round(openUntil - now)) : null,
+                    consecutive_outages: data.consecutive_outages,
+                    last_error_summary: data.error_summary || null,
+                };
+                _renderProviderBanner();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                delete openCircuits[data.provider];
+                _renderProviderBanner();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 

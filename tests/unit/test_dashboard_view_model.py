@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -740,3 +740,117 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit tests
+# ---------------------------------------------------------------------------
+
+from issue_orchestrator.ports.provider_resilience import (  # noqa: E402
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
+
+
+@dataclass
+class _MockProviderResilience:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _MockDeps:
+    provider_resilience: _MockProviderResilience
+
+
+@dataclass
+class _OrchestratorWithCircuits:
+    state: OrchestratorState
+    config: Config
+    shutdown_requested: bool = False
+    deps: _MockDeps = field(default_factory=lambda: _MockDeps(_MockProviderResilience(InMemoryProviderCircuitStore())))
+
+
+def test_provider_circuits_empty_when_no_deps():
+    """Stub without deps attribute returns empty provider_circuits."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []
+
+
+def test_provider_circuits_open_circuit_surfaced_in_view_model():
+    """Open provider circuit appears in view model and dashboard_data."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="claude-opus",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="rate limit exceeded",
+        updated_at=now,
+    ))
+
+    deps = _MockDeps(_MockProviderResilience(store))
+    orchestrator = _OrchestratorWithCircuits(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    circuit = view_model.provider_circuits[0]
+    assert circuit["provider"] == "claude-opus"
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "rate limit exceeded"
+    assert circuit["seconds_remaining"] > 0
+
+    # Also surfaced in dashboard_data for JS consumption
+    circuits_in_data = view_model.dashboard_data()["providerCircuits"]
+    assert len(circuits_in_data) == 1
+    assert circuits_in_data[0]["provider"] == "claude-opus"
+
+
+def test_provider_circuits_expired_circuit_excluded():
+    """Expired circuit (open_until in the past) is not shown."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="claude-haiku",
+        open_until=now - timedelta(minutes=1),  # already expired
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now,
+    ))
+
+    deps = _MockDeps(_MockProviderResilience(store))
+    orchestrator = _OrchestratorWithCircuits(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
