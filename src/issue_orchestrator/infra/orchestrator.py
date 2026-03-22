@@ -236,7 +236,9 @@ class Orchestrator:
             label_store=self.deps.label_store,
         )
 
-    async def startup(self) -> None: await self._startup_manager.run_startup(self.state)
+    async def startup(self) -> None:
+        self.start_publish_executor()
+        await self._startup_manager.run_startup(self.state)
 
     def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
