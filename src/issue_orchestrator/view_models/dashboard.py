@@ -1263,7 +1263,7 @@ def _build_provider_circuits(orchestrator) -> list[dict[str, Any]]:
         return []
     now = datetime.now(timezone.utc)
     circuits: list[dict[str, Any]] = []
-    for state in resilience.store.list_all():
+    for state in resilience.list_all():
         if state.open_until is None or state.open_until <= now:
             continue
         remaining = (state.open_until - now).total_seconds()

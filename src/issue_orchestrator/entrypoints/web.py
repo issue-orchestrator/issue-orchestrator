@@ -626,7 +626,7 @@ async def get_provider_circuits() -> JSONResponse:
     resilience = _orchestrator.deps.provider_resilience
     now = datetime.now(tz.utc)
     circuits = []
-    for state in resilience.store.list_all():
+    for state in resilience.list_all():
         is_open = state.open_until is not None and state.open_until > now
         remaining = (state.open_until - now).total_seconds() if (is_open and state.open_until is not None) else 0
         circuits.append({

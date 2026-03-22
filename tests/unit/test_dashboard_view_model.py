@@ -747,11 +747,9 @@ def test_view_model_matches_public_contract():
 
 def _make_provider_resilience_stub(circuits):
     """Create a mock provider_resilience that returns the given ProviderCircuitState list."""
-    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
-    store = MagicMock()
-    store.list_all.return_value = circuits
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState  # noqa: F401
     resilience = MagicMock()
-    resilience.store = store
+    resilience.list_all.return_value = circuits
     return resilience
 
 

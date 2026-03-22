@@ -3745,7 +3745,7 @@ async function toggleExcluded() {
                     provider: data.provider,
                     is_open: true,
                     open_until: data.open_until,
-                    cooldown_remaining_seconds: 0,
+                    cooldown_remaining_seconds: Math.max(0, Math.floor((new Date(data.open_until) - Date.now()) / 1000)),
                     consecutive_outages: data.consecutive_outages,
                     last_error_summary: data.error_summary || null,
                 };

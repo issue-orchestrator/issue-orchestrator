@@ -7023,7 +7023,7 @@ class TestProviderCircuitsEndpoint:
         )
 
         mock_orch = create_mock_orchestrator()
-        mock_orch.deps.provider_resilience.store.list_all.return_value = [open_state]
+        mock_orch.deps.provider_resilience.list_all.return_value = [open_state]
         set_orchestrator(mock_orch)
 
         try:
@@ -7045,7 +7045,7 @@ class TestProviderCircuitsEndpoint:
     def test_get_provider_circuits_empty_when_closed(self):
         """Returns empty list when no open circuits."""
         mock_orch = create_mock_orchestrator()
-        mock_orch.deps.provider_resilience.store.list_all.return_value = []
+        mock_orch.deps.provider_resilience.list_all.return_value = []
         set_orchestrator(mock_orch)
 
         try:
