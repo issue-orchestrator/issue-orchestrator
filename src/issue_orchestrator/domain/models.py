@@ -1074,6 +1074,7 @@ class PublishJob:
     run_validation: bool = False
     validation_retry_count: int = 0
     original_prompt: str | None = None
+    retry_publish: bool = False
 
     # Result (populated by worker)
     result_success: bool | None = None
@@ -1194,6 +1195,10 @@ class PublishJobResult:
     validation_error: str | None = None
     validation_error_file: str | None = None
     needs_validation_retry: bool = False
+    retry_publish: bool = False
+    issue_title: str = ""
+    agent_label: str | None = None
+    worktree_path: str | None = None
 
 
 @dataclass

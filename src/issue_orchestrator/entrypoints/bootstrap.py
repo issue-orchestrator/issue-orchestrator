@@ -639,6 +639,13 @@ def build_orchestrator(
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
+    from ..control.publish_recovery import PublishRecoveryService
+    publish_recovery = PublishRecoveryService(
+        repository_host=github,
+        publish_executor=publish_executor,
+        label_manager=label_manager,
+    )
+
     # Wire up worktree removal callback for async completion job tracking
     # When a worktree is removed, mark associated jobs as WORKTREE_GONE
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
@@ -695,6 +702,7 @@ def build_orchestrator(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
+        publish_recovery=publish_recovery,
         services=infra_services,
     )
 
@@ -914,6 +922,13 @@ def build_orchestrator_for_testing(
     # Wire up worktree removal callback for async completion job tracking
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
+    from ..control.publish_recovery import PublishRecoveryService
+    publish_recovery = PublishRecoveryService(
+        repository_host=github,
+        publish_executor=publish_executor,
+        label_manager=label_manager,
+    )
+
     # Queue cache store for testing (uses repo_root state dir)
     queue_cache_store = QueueCacheStore(
         state_dir(config.repo_root) / "queue_cache.sqlite"
@@ -969,6 +984,7 @@ def build_orchestrator_for_testing(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
+        publish_recovery=publish_recovery,
         services=infra_services,
     )
 

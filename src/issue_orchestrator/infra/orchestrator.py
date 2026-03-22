@@ -405,8 +405,25 @@ class Orchestrator:
             # Remove from pending
             self.state.pending_publish_jobs.pop(result.job_id, None)
 
+            if result.retry_publish and result.success:
+                self.deps.publish_recovery.reconcile_retry_publish_success(
+                    state=self.state,
+                    issue_number=result.issue_number,
+                    issue_title=result.issue_title,
+                    agent_label=result.agent_label,
+                    pr_url=result.pr_url,
+                    pr_number=result.pr_number,
+                    worktree_path=result.worktree_path,
+                )
+
             # Handle job result - queue review if successful and exchange not completed
-            if result.success and result.pr_url and result.pr_number and not result.review_exchange_completed:
+            if (
+                result.success
+                and result.pr_url
+                and result.pr_number
+                and not result.review_exchange_completed
+                and not result.retry_publish
+            ):
                 from ..domain.models import DiscoveredReview
                 # Queue for code review
                 # We need to look up the branch_name from the job or session
@@ -420,9 +437,9 @@ class Orchestrator:
                     agent_label=None,  # TODO: track agent label in job
                 ))
                 self.state.completed_today.append(result.issue_number)
-            elif result.success and result.pr_url and result.pr_number:
+            elif result.success and result.pr_url and result.pr_number and not result.retry_publish:
                 self.state.completed_today.append(result.issue_number)
-            elif not result.success:
+            elif not result.success and not result.retry_publish:
                 # Track failure
                 from ..domain.models import DiscoveredFailure
                 self.state.discovered_failures.append(DiscoveredFailure(

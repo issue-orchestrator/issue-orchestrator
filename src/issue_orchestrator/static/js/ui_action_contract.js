@@ -16,6 +16,7 @@
         HOST_OPEN_PATH: '/api/host/open-path',
         REVEAL_WORKTREE: (issueNumber) => `/api/host/reveal-worktree/${issueNumber}`,
         TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
+        RETRY_PUBLISH: (issueNumber) => `/api/issues/${issueNumber}/retry-publish`,
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -88,6 +89,18 @@
         };
     }
 
+    function buildRetryPublishRequest(issueNumber) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for retry-publish action: ${issueNumber}`);
+        }
+        return {
+            endpoint: ENDPOINTS.RETRY_PUBLISH(normalized[0]),
+            method: 'POST',
+            body: {},
+        };
+    }
+
     function buildRevealWorktreeRequest(issueNumber) {
         const normalized = normalizeIssueNumbers([issueNumber]);
         if (normalized.length !== 1) {
@@ -141,6 +154,7 @@
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,
         buildIssueRetryRequest,
+        buildRetryPublishRequest,
         buildHostOpenPathRequest,
         buildRevealWorktreeRequest,
         buildTerminalRecordingRequest,

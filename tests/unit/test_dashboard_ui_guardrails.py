@@ -74,6 +74,11 @@ def test_issue_detail_uses_timeline_label_not_journey() -> None:
     assert '<h3 class="issue-detail-section-title">Journey</h3>' not in html
 
 
+def test_issue_detail_template_includes_retry_publish_button() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="issueDetailRetryPublishBtn"' in html
+
+
 def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     idx_issue_row = html.find('/static/js/issue_row_state.js')
@@ -157,6 +162,20 @@ def test_unblock_handlers_use_ui_action_contract() -> None:
         body = _function_body(js, fn)
         assert "uiActionContract.buildUnblockRequest" in body
         assert "/api/unblock-retry" not in body
+
+
+def test_retry_publish_handler_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "retryPublishFromDrawer")
+    assert "uiActionContract.buildRetryPublishRequest" in body
+    assert "/api/issues/" not in body
+
+
+def test_render_issue_detail_toggles_retry_publish_button_from_actions() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderIssueDetail")
+    assert "issueDetailRetryPublishBtn" in body
+    assert "action.id === 'retry_publish'" in body
 
 
 def test_reset_handler_uses_ui_action_contract() -> None:
