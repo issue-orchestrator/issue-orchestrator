@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from ..events import EventName
 from ..ports import EventSink,  make_trace_event
@@ -112,6 +113,21 @@ class ProviderResilienceManager:
                 "at": now.isoformat(),
             },
         ))
+
+    def list_all_states(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Return all circuit breaker states with computed is_open flag."""
+        now = now or _now()
+        result: list[dict[str, Any]] = []
+        for s in self.store.list_all():
+            result.append({
+                "provider": s.provider,
+                "is_open": s.open_until is not None and s.open_until > now,
+                "open_until": s.open_until.isoformat() if s.open_until else None,
+                "consecutive_outages": s.consecutive_outages,
+                "last_error_summary": s.last_error_summary,
+                "updated_at": s.updated_at.isoformat(),
+            })
+        return result
 
     def close_expired(self, now: datetime | None = None) -> list[ProviderCircuitState]:
         now = now or _now()

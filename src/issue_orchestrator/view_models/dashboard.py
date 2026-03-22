@@ -191,22 +191,9 @@ class DashboardViewModel:
 def _read_provider_circuit_breakers(orchestrator: Any) -> list[dict[str, Any]]:
     """Read provider circuit breaker states from the orchestrator."""
     try:
-        states = orchestrator.deps.provider_resilience.store.list_all()
+        return orchestrator.deps.provider_resilience.list_all_states()
     except AttributeError:
         return []
-    now = datetime.now(timezone.utc)
-    result = []
-    for s in states:
-        is_open = s.open_until is not None and s.open_until > now
-        result.append({
-            "provider": s.provider,
-            "is_open": is_open,
-            "open_until": s.open_until.isoformat() if s.open_until else None,
-            "consecutive_outages": s.consecutive_outages,
-            "last_error_summary": s.last_error_summary,
-            "updated_at": s.updated_at.isoformat(),
-        })
-    return result
 
 
 def issue_url_for(config, issue_number: int) -> str:
