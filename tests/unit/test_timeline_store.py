@@ -596,6 +596,36 @@ def test_timeline_event_preserves_review_exchange_round_fields() -> None:
     assert "Coder response: ok" in event["detail"]
 
 
+def test_timeline_event_preserves_review_outcome_round_count() -> None:
+    from issue_orchestrator.timeline import TimelineStream
+
+    record = TimelineRecord(
+        event_id="approved-2",
+        timestamp="2026-03-22T13:50:04.655598+00:00",
+        event="review.approved",
+        source_event="review.approved",
+        data={
+            "issue_number": 4057,
+            "run_dir": "/tmp/review-run-4057",
+            "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            "logical_run": 2,
+            "logical_cycle": 2,
+            "logical_phase": "review",
+            "review_oriented": True,
+            "event_intent": "review",
+            "views": ["user", "ops", "debug"],
+            "rounds": 2,
+            "narrative": "Review approved after 2 rounds",
+            "summary": "Looks good now.",
+        },
+    )
+
+    payload = TimelineStream.from_records(4057, [record]).to_dict()
+    event = payload["events"][0]
+    assert event["rounds"] == 2
+    assert event["narrative"] == "Review approved after 2 rounds"
+
+
 class TestTrivialSummarySuppression:
     """Test that trivial summary values like 'completed' are suppressed in narratives."""
 

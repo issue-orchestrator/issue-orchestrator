@@ -3405,6 +3405,69 @@ class TestTimelineActionWiring:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_review_approved_uses_phase_scoped_reviewer_recording(self) -> None:
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.cached_queue_issues = [create_issue(4057, "Review Phase Recording")]
+
+        run_dir = Path(_ensure_test_run_dir(4057))
+        phase_recording = (
+            run_dir
+            / "review-exchange"
+            / "round-002"
+            / "reviewer"
+            / "terminal-recording.jsonl"
+        )
+        phase_recording.parent.mkdir(parents=True, exist_ok=True)
+        phase_recording.write_text(
+            '{"event_type":"resize","rows":40,"cols":120,"offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+
+        stream = TimelineStream(
+            issue_number=4057,
+            events=[
+                TimelineEvent(
+                    event_id="approved-1",
+                    timestamp="2026-03-22T13:50:04.655598+00:00",
+                    event="review.approved",
+                    issue_number=4057,
+                    phase="reviewing",
+                    step="approved",
+                    status="completed",
+                    level="phase",
+                    summary="Looks good now.",
+                    parent_key="issue:4057",
+                    artifacts=[],
+                    run_dir=str(run_dir),
+                    timeline_schema_version=TIMELINE_SCHEMA_VERSION,
+                    review_oriented=True,
+                    event_intent="review",
+                    logical_run=2,
+                    logical_cycle=2,
+                    logical_phase="review",
+                    narrative="Review approved after 2 rounds",
+                    rounds=2,
+                ),
+            ],
+        )
+        mock_orch.deps.timeline_reader.read.return_value = stream
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/4057")
+            assert response.status_code == 200
+            payload = response.json()
+            steps = payload["runs"][0]["cycles"][0]["steps"]
+            approved_step = next(step for step in steps if step["event"] == "review.approved")
+            review_action = next(
+                action for action in approved_step["actions"] if action["type"] == "open_agent_log"
+            )
+            assert review_action["round_index"] == 2
+            assert review_action["session_role"] == "reviewer"
+        finally:
+            set_orchestrator(None)
+
     def test_timeline_action_wiring_rejects_unsupported_event_versions(self) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
 
