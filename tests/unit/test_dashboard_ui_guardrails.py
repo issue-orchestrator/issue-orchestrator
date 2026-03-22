@@ -79,6 +79,12 @@ def test_issue_detail_template_includes_retry_publish_button() -> None:
     assert 'id="issueDetailRetryPublishBtn"' in html
 
 
+def test_issue_detail_template_includes_validation_failure_section() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="issueDetailValidation"' in html
+    assert 'id="issueDetailValidationBtn"' in html
+
+
 def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     idx_issue_row = html.find('/static/js/issue_row_state.js')
@@ -176,6 +182,26 @@ def test_render_issue_detail_toggles_retry_publish_button_from_actions() -> None
     body = _function_body(js, "renderIssueDetail")
     assert "issueDetailRetryPublishBtn" in body
     assert "action.id === 'retry_publish'" in body
+
+
+def test_render_issue_detail_renders_validation_failure_callout() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderIssueDetailValidation")
+    assert "summary.run_diagnostic" in body
+    assert "action.id === 'open_validation_failure'" in body
+    assert "openValidationFailure" in body
+
+
+def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openValidationFailure")
+    assert "/api/dialog/validation-failure/" in body
+
+
+def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimelineEventActions")
+    assert "'open_validation_failure'" in body
 
 
 def test_reset_handler_uses_ui_action_contract() -> None:

@@ -158,6 +158,29 @@
         }
       }
     },
+    "/api/dialog/validation-failure/{issue_number}": {
+      "get": {
+        "summary": "Get validation failure dialog",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Validation failure dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ValidationFailureDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/dialog/blocked-issues": {
       "get": {
         "summary": "Get blocked issues dialog",
@@ -531,6 +554,36 @@
           "evidence": {"type": ["string", "null"]},
           "suggested_labels": {"type": "array", "items": {"type": "string"}},
           "blocking": {"type": "boolean"}
+        }
+      },
+      "ValidationFailureDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "reason",
+          "suite",
+          "command",
+          "exit_code",
+          "started_at",
+          "ended_at",
+          "failed_tests",
+          "stdout_excerpt",
+          "stderr_excerpt",
+          "actions"
+        ],
+        "properties": {
+          "title": {"type": "string"},
+          "reason": {"type": "string"},
+          "suite": {"type": "string"},
+          "command": {"type": "string"},
+          "exit_code": {"type": "integer"},
+          "started_at": {"type": "string"},
+          "ended_at": {"type": "string"},
+          "failed_tests": {"type": "array", "items": {"type": "string"}},
+          "stdout_excerpt": {"type": "array", "items": {"type": "string"}},
+          "stderr_excerpt": {"type": "array", "items": {"type": "string"}},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
         }
       },
       "BlockedIssuePayload": {

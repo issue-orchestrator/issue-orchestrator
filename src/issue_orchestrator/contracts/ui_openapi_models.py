@@ -188,3 +188,17 @@ class SessionDiagnosticsFollowUpIssuePayload(BaseModel):
     reason: str
     suggested_labels: list[str] | None = None
     title: str
+
+class ValidationFailureDialogPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions: list[SessionDiagnosticsActionPayload]
+    command: str
+    ended_at: str
+    exit_code: int
+    failed_tests: list[str]
+    reason: str
+    started_at: str
+    stderr_excerpt: list[str]
+    stdout_excerpt: list[str]
+    suite: str
+    title: str

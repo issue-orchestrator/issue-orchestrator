@@ -180,3 +180,17 @@ export interface SessionDiagnosticsFollowUpIssuePayload {
   suggested_labels?: string[];
   title: string;
 }
+
+export interface ValidationFailureDialogPayload {
+  actions: SessionDiagnosticsActionPayload[];
+  command: string;
+  ended_at: string;
+  exit_code: number;
+  failed_tests: string[];
+  reason: string;
+  started_at: string;
+  stderr_excerpt: string[];
+  stdout_excerpt: string[];
+  suite: string;
+  title: string;
+}
