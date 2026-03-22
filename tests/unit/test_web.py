@@ -6883,3 +6883,106 @@ class TestIssueAuditEndpoint:
 
         assert response.status_code == 503
         assert response.json() == {"error": "Orchestrator not running"}
+
+
+class TestProviderCircuitsEndpoint:
+    """Test the GET /api/provider-circuits endpoint."""
+
+    def test_get_provider_circuits_empty(self):
+        """Returns empty list when no circuit states exist."""
+        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        mock_orch.deps.provider_resilience.store = store
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+
+            assert response.status_code == 200
+            assert response.json() == {"circuits": []}
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_open(self):
+        """Returns circuit info with is_open=True when circuit is within cooldown."""
+        from datetime import datetime, timezone, timedelta
+        from issue_orchestrator.ports.provider_resilience import (
+            InMemoryProviderCircuitStore,
+            ProviderCircuitState,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        open_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+        store.save(ProviderCircuitState(
+            provider="claude",
+            open_until=open_until,
+            consecutive_outages=2,
+            last_error_summary="503 Service Unavailable",
+            updated_at=datetime.now(timezone.utc),
+        ))
+        mock_orch.deps.provider_resilience.store = store
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["circuits"]) == 1
+            circuit = data["circuits"][0]
+            assert circuit["provider"] == "claude"
+            assert circuit["is_open"] is True
+            assert circuit["consecutive_outages"] == 2
+            assert circuit["last_error_summary"] == "503 Service Unavailable"
+            assert circuit["cooldown_remaining_seconds"] > 0
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_expired(self):
+        """Returns is_open=False when circuit's cooldown has elapsed."""
+        from datetime import datetime, timezone, timedelta
+        from issue_orchestrator.ports.provider_resilience import (
+            InMemoryProviderCircuitStore,
+            ProviderCircuitState,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        open_until = datetime.now(timezone.utc) - timedelta(minutes=1)  # already expired
+        store.save(ProviderCircuitState(
+            provider="claude",
+            open_until=open_until,
+            consecutive_outages=1,
+            last_error_summary=None,
+            updated_at=datetime.now(timezone.utc),
+        ))
+        mock_orch.deps.provider_resilience.store = store
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["circuits"]) == 1
+            circuit = data["circuits"][0]
+            assert circuit["is_open"] is False
+            assert circuit["cooldown_remaining_seconds"] == 0
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_requires_orchestrator(self):
+        """Returns 503 when orchestrator is not running."""
+        set_orchestrator(None)
+
+        client = TestClient(app)
+        response = client.get("/api/provider-circuits")
+
+        assert response.status_code == 503
+        assert "error" in response.json()
