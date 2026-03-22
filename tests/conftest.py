@@ -760,6 +760,8 @@ def build_test_orchestrator_deps(
         repository_host=repo_host,
         publish_executor=publish_executor,
         label_manager=label_manager,
+        fresh_issue_reader=fresh_reader,
+        action_applier=action_applier,
     )
 
     return OrchestratorDeps(

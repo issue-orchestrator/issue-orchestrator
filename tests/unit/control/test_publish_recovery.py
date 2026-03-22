@@ -4,7 +4,9 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.control.job_store import set_worktree_id, JobRecord
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.publish_recovery import PublishRecoveryService
@@ -35,6 +37,9 @@ class _Repo:
         if self.issue.number != issue_number:
             return []
         return list(self.labels)
+
+    def read_issue_labels(self, issue_number: int) -> list[str]:
+        return self.get_issue_labels(issue_number)
 
     def add_label(self, issue_number: int, label: str) -> None:
         if self.issue.number != issue_number:
@@ -74,6 +79,18 @@ class _Executor:
 
     def get_running_jobs(self) -> list[PublishJob]:
         return list(self.running)
+
+
+@dataclass
+class _ActionApplier:
+    repo: _Repo
+
+    def apply(self, action: AddLabelAction | RemoveLabelAction) -> SimpleNamespace:
+        if isinstance(action, AddLabelAction):
+            self.repo.add_label(action.issue_number, action.label)
+        else:
+            self.repo.remove_label(action.issue_number, action.label)
+        return SimpleNamespace(success=True, error=None)
 
 
 def _failed_job(tmp_path: Path, *, issue_number: int = 4057, branch: str = "4057-scratch-1") -> JobRecord:
@@ -117,7 +134,7 @@ def test_retry_publish_submits_manual_publish_job(tmp_path: Path) -> None:
     )
     repo = _Repo(issue=issue, labels=list(issue.labels))
     executor = _Executor(jobs=[_failed_job(tmp_path)])
-    service = PublishRecoveryService(repo, executor, lm)
+    service = PublishRecoveryService(repo, executor, lm, repo, _ActionApplier(repo))
     state = OrchestratorState()
 
     result = service.retry_publish(4057, state)
@@ -155,7 +172,7 @@ def test_retry_publish_recovers_existing_pr_and_clears_publish_failed_state(tmp_
         ],
     )
     executor = _Executor(jobs=[_failed_job(tmp_path)])
-    service = PublishRecoveryService(repo, executor, lm)
+    service = PublishRecoveryService(repo, executor, lm, repo, _ActionApplier(repo))
     state = OrchestratorState(
         session_history=[
             SessionHistoryEntry(

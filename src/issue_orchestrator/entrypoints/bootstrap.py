@@ -644,6 +644,8 @@ def build_orchestrator(
         repository_host=github,
         publish_executor=publish_executor,
         label_manager=label_manager,
+        fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier,
     )
 
     # Wire up worktree removal callback for async completion job tracking
@@ -927,6 +929,8 @@ def build_orchestrator_for_testing(
         repository_host=github,
         publish_executor=publish_executor,
         label_manager=label_manager,
+        fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier,
     )
 
     # Queue cache store for testing (uses repo_root state dir)

@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..control.job_store import JobRecord, get_worktree_id
+from ..control.actions import AddLabelAction, RemoveLabelAction
 from ..domain.models import OrchestratorState, PublishJob, SessionHistoryEntry
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
+from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.pull_request_tracker import PRInfo
 
 if TYPE_CHECKING:
@@ -24,9 +26,6 @@ logger = logging.getLogger(__name__)
 
 class _RepositoryHost(Protocol):
     def get_issue(self, issue_number: int) -> Any: ...
-    def get_issue_labels(self, issue_number: int) -> list[str]: ...
-    def add_label(self, issue_number: int, label: str) -> None: ...
-    def remove_label(self, issue_number: int, label: str) -> None: ...
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]: ...
 
 
@@ -34,6 +33,10 @@ class _PublishExecutor(Protocol):
     def submit(self, job: PublishJob) -> bool: ...
     def get_job_history(self, issue_number: int | None = None, limit: int = 100) -> list[JobRecord]: ...
     def get_running_jobs(self) -> list[PublishJob]: ...
+
+
+class _ActionApplier(Protocol):
+    def apply(self, action: AddLabelAction | RemoveLabelAction) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -64,10 +67,14 @@ class PublishRecoveryService:
         repository_host: _RepositoryHost,
         publish_executor: _PublishExecutor,
         label_manager: "LabelManager",
+        fresh_issue_reader: FreshIssueReader,
+        action_applier: _ActionApplier,
     ) -> None:
         self._repository_host = repository_host
         self._publish_executor = publish_executor
         self._lm = label_manager
+        self._fresh_issue_reader = fresh_issue_reader
+        self._action_applier = action_applier
 
     def can_retry_publish(self, issue_number: int, state: OrchestratorState) -> bool:
         """Return whether retry-publish is currently available for an issue."""
@@ -316,13 +323,33 @@ class PublishRecoveryService:
         history_reason: str,
     ) -> None:
         labels = tuple(self._current_labels(issue_number))
+        label_actions: list[AddLabelAction | RemoveLabelAction] = []
         if self._lm.publish_failed in labels:
-            self._repository_host.remove_label(issue_number, self._lm.publish_failed)
+            label_actions.append(
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=self._lm.publish_failed,
+                    reason="retry publish succeeded",
+                )
+            )
         if pr_url and self._lm.pr_pending not in labels:
-            self._repository_host.add_label(issue_number, self._lm.pr_pending)
+            label_actions.append(
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=self._lm.pr_pending,
+                    reason="publish retry recovered or succeeded",
+                )
+            )
         for label in labels:
             if self._lm.extract_publish_fail_count([label]) > 0:
-                self._repository_host.remove_label(issue_number, label)
+                label_actions.append(
+                    RemoveLabelAction(
+                        issue_number=issue_number,
+                        label=label,
+                        reason="publish retry succeeded",
+                    )
+                )
+        self._apply_label_actions(label_actions)
 
         state.failed_this_cycle.discard(issue_number)
         state.discovered_failures = [
@@ -350,17 +377,8 @@ class PublishRecoveryService:
         )
 
     def _current_labels(self, issue_number: int, issue: Any | None = None) -> list[str]:
-        if hasattr(self._repository_host, "get_issue_labels"):
-            try:
-                labels = self._repository_host.get_issue_labels(issue_number)
-            except Exception:
-                labels = None
-            if isinstance(labels, list):
-                return [str(label) for label in labels]
-        if issue is None:
-            issue = self._repository_host.get_issue(issue_number)
-        raw_labels = getattr(issue, "labels", ()) or ()
-        return [str(label) for label in raw_labels]
+        del issue
+        return [str(label) for label in self._fresh_issue_reader.read_issue_labels(issue_number)]
 
     def _resolve_agent_label(self, issue: Any, metadata: dict[str, Any]) -> str | None:
         for label in getattr(issue, "labels", ()) or ():
@@ -370,6 +388,13 @@ class PublishRecoveryService:
         if isinstance(agent_label, str) and agent_label.strip():
             return agent_label
         return None
+
+    def _apply_label_actions(self, actions: list[AddLabelAction | RemoveLabelAction]) -> None:
+        for action in actions:
+            result = self._action_applier.apply(action)
+            if result.success:
+                continue
+            raise RuntimeError(result.error or f"Label action failed for issue {action.issue_number}")
 
     @staticmethod
     def _is_publish_failure_history(entry: SessionHistoryEntry, issue_number: int) -> bool:
