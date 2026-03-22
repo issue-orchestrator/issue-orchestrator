@@ -832,3 +832,44 @@ def test_view_model_empty_circuit_breakers_without_deps():
 
     assert view_model.provider_circuit_breakers == []
     assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
+def test_view_model_circuit_breakers_propagates_real_errors():
+    """Real errors from store.list_all() propagate instead of being swallowed."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    class _BrokenStore:
+        def list_all(self):
+            raise RuntimeError("database connection lost")
+
+    @dataclass
+    class _ResilienceStub:
+        store: _BrokenStore
+
+    @dataclass
+    class _DepsStub:
+        provider_resilience: _ResilienceStub
+
+    @dataclass
+    class _OrchestratorWithBrokenDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _DepsStub = None
+
+    orchestrator = _OrchestratorWithBrokenDeps(
+        state=state,
+        config=config,
+        deps=_DepsStub(provider_resilience=_ResilienceStub(store=_BrokenStore())),
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError, match="database connection lost"):
+        build_dashboard_view_model(
+            orchestrator,
+            queue_page=1,
+            active_tab="flow",
+            e2e_page=1,
+            e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        )

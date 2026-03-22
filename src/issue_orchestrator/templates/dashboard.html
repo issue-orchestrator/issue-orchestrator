@@ -92,6 +92,23 @@
                     </span>
                 </span>
             </div>
+            {% if provider_circuit_breakers %}
+            <div class="scope-line" id="circuitBreakerStatus">
+                <span class="scope-label">Providers</span>
+                <span class="scope-value">
+                    {% for cb in provider_circuit_breakers %}
+                    <span class="circuit-breaker-indicator {{ 'cb-open' if cb.status == 'open' else 'cb-closed' }}" title="{{ cb.provider }}: {{ cb.status }}{% if cb.last_error_summary %} — {{ cb.last_error_summary }}{% endif %}">
+                        <span class="cb-dot" aria-hidden="true">{{ '&#x1F534;' if cb.status == 'open' else '&#x1F7E2;' }}</span>
+                        <span class="cb-name">{{ cb.provider }}</span>
+                        {% if cb.status == 'open' %}
+                        <span class="cb-detail">(open, {{ cb.consecutive_outages }} failures)</span>
+                        {% endif %}
+                    </span>
+                    {% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </span>
+            </div>
+            {% endif %}
         </section>
 
         <nav class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">

@@ -299,3 +299,77 @@ def test_e2e_tab_and_panels_render(jinja_env):
     assert soup.select_one("#panel-e2e") is not None
     assert soup.select_one("#e2eHeaderBadge") is not None
     assert soup.select_one("#e2eControls") is not None
+
+
+def test_dashboard_renders_circuit_breaker_status(jinja_env):
+    from dataclasses import dataclass as _dataclass
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=3,
+        last_error_summary="rate limited",
+        updated_at=now,
+    ))
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=0,
+        last_error_summary="ok",
+        updated_at=now,
+    ))
+
+    @_dataclass
+    class _ResilienceStub:
+        store: InMemoryProviderCircuitStore
+
+    @_dataclass
+    class _DepsStub:
+        provider_resilience: _ResilienceStub
+
+    @_dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _DepsStub = None
+
+    orch = _OrchestratorWithDeps(
+        state=state, config=config,
+        deps=_DepsStub(provider_resilience=_ResilienceStub(store=store)),
+    )
+    vm = build_dashboard_view_model(
+        orch, active_tab="kanban", e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+
+    cb_section = soup.select_one("#circuitBreakerStatus")
+    assert cb_section is not None
+    text = cb_section.get_text()
+    assert "anthropic" in text
+    assert "openai" in text
+    assert "open" in text.lower()
+    assert "3 failures" in text
+
+
+def test_dashboard_hides_circuit_breaker_section_when_empty(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+
+    assert soup.select_one("#circuitBreakerStatus") is None

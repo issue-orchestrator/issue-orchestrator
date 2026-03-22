@@ -378,7 +378,7 @@
           "e2e_total_pages": {"type": "integer"},
           "e2e_total": {"type": "integer"},
           "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"},
-          "provider_circuit_breakers": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+          "provider_circuit_breakers": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderCircuitBreakerPayload"}}
         }
       },
       "IssueRowPayload": {
@@ -610,6 +610,19 @@
           "issue_number": {"type": "integer"},
           "phase": {"type": ["object", "null"], "additionalProperties": true},
           "phases": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+        }
+      },
+      "ProviderCircuitBreakerPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "status", "consecutive_outages", "last_error_summary", "updated_at"],
+        "properties": {
+          "provider": {"type": "string"},
+          "status": {"type": "string", "enum": ["open", "closed"]},
+          "open_until": {"type": ["string", "null"]},
+          "consecutive_outages": {"type": "integer"},
+          "last_error_summary": {"type": "string"},
+          "updated_at": {"type": "string"}
         }
       }
     }
