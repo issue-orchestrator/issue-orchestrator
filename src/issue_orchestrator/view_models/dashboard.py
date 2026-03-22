@@ -191,8 +191,11 @@ class DashboardViewModel:
 def _read_provider_circuit_breakers(orchestrator: Any) -> list[dict[str, Any]]:
     """Read provider circuit breaker states from the orchestrator."""
     try:
-        return orchestrator.deps.provider_resilience.list_all_states()
-    except AttributeError:
+        result = orchestrator.deps.provider_resilience.list_all_states()
+        if not isinstance(result, list):
+            return []
+        return result
+    except (AttributeError, TypeError):
         return []
 
 
