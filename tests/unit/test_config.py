@@ -2658,6 +2658,36 @@ filtering:
         assert "wip" in config.filtering.exclude_labels
         assert "draft" in config.filtering.exclude_labels
 
+    def test_parses_exclude_label_prefixes_from_string(self, tmp_path):
+        """filtering.exclude_label_prefixes accepts comma-separated strings."""
+        config_content = """
+filtering:
+  exclude_label_prefixes: "io:e2e:, tmp:"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.filtering.exclude_label_prefixes == ["io:e2e:", "tmp:"]
+
+    def test_expands_env_var_in_exclude_label_prefixes(self, tmp_path, monkeypatch):
+        """${VAR} works in filtering.exclude_label_prefixes list items."""
+        monkeypatch.setenv("EXCLUDE_PREFIX", "io:e2e:")
+
+        config_content = """
+filtering:
+  exclude_label_prefixes:
+    - "${EXCLUDE_PREFIX}"
+    - "tmp:"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.filtering.exclude_label_prefixes == ["io:e2e:", "tmp:"]
+
     def test_error_on_missing_env_var(self, tmp_path):
         """Missing env var raises ConfigEnvVarError with clear message."""
         from issue_orchestrator.infra.config import ConfigEnvVarError

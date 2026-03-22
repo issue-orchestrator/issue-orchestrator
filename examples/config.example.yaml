@@ -266,6 +266,7 @@ filtering:
   # milestones: ["M1", "M2"]
   # issue: 123
   # exclude_labels: ["io-e2e-test-data", "test-data"]
+  # exclude_label_prefixes: ["io:e2e:"]
   fetch_limit: 100
   max_to_start: 0
 
