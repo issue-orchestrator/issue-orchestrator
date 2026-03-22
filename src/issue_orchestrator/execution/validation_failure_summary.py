@@ -116,7 +116,7 @@ def _resolve_run_artifact(
     if local_path.exists():
         return local_path
     if not manifest_path:
-        return local_path if local_path.exists() else None
+        return None
     candidate = Path(manifest_path)
     if candidate.is_absolute():
         return candidate if candidate.exists() else None
