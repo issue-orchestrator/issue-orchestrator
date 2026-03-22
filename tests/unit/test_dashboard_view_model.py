@@ -746,20 +746,22 @@ def test_view_model_matches_public_contract():
 # Provider circuit tests
 # ---------------------------------------------------------------------------
 
+from issue_orchestrator.control.provider_resilience import ProviderResilienceManager  # noqa: E402
+from issue_orchestrator.infra.config import ProviderResilienceConfig  # noqa: E402
+from issue_orchestrator.ports import NullEventSink  # noqa: E402
 from issue_orchestrator.ports.provider_resilience import (  # noqa: E402
     InMemoryProviderCircuitStore,
     ProviderCircuitState,
 )
 
 
-@dataclass
-class _MockProviderResilience:
-    store: InMemoryProviderCircuitStore
+def _make_resilience_manager(store: InMemoryProviderCircuitStore) -> ProviderResilienceManager:
+    return ProviderResilienceManager(ProviderResilienceConfig(), store=store, events=NullEventSink())
 
 
 @dataclass
 class _MockDeps:
-    provider_resilience: _MockProviderResilience
+    provider_resilience: ProviderResilienceManager
 
 
 @dataclass
@@ -767,7 +769,9 @@ class _OrchestratorWithCircuits:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
-    deps: _MockDeps = field(default_factory=lambda: _MockDeps(_MockProviderResilience(InMemoryProviderCircuitStore())))
+    deps: _MockDeps = field(
+        default_factory=lambda: _MockDeps(_make_resilience_manager(InMemoryProviderCircuitStore()))
+    )
 
 
 def test_provider_circuits_empty_when_no_deps():
@@ -803,7 +807,7 @@ def test_provider_circuits_open_circuit_surfaced_in_view_model():
         updated_at=now,
     ))
 
-    deps = _MockDeps(_MockProviderResilience(store))
+    deps = _MockDeps(_make_resilience_manager(store))
     orchestrator = _OrchestratorWithCircuits(state=state, config=config, deps=deps)
 
     view_model = build_dashboard_view_model(
@@ -842,7 +846,7 @@ def test_provider_circuits_expired_circuit_excluded():
         updated_at=now,
     ))
 
-    deps = _MockDeps(_MockProviderResilience(store))
+    deps = _MockDeps(_make_resilience_manager(store))
     orchestrator = _OrchestratorWithCircuits(state=state, config=config, deps=deps)
 
     view_model = build_dashboard_view_model(

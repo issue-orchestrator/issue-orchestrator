@@ -41,3 +41,23 @@ def test_record_success_resets_state():
 
     mgr.record_success("claude-code", now=now + timedelta(seconds=10))
     assert mgr.get_state("claude-code") is None
+
+
+def test_list_open_circuits_returns_only_open():
+    store = InMemoryProviderCircuitStore()
+    mgr = ProviderResilienceManager(ProviderResilienceConfig(), store=store, events=NullEventSink())
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    mgr.record_transient_failure("claude-code", error_summary="503", attempts=1, now=now)
+    mgr.record_transient_failure("codex", error_summary="timeout", attempts=1, now=now)
+
+    # Before cooldown expires: both circuits are open
+    open_circuits = mgr.list_open_circuits(now=now)
+    assert {s.provider for s in open_circuits} == {"claude-code", "codex"}
+
+    # After claude-code's cooldown expires: only codex remains
+    state = mgr.get_state("claude-code")
+    assert state is not None and state.open_until is not None
+    after_expiry = state.open_until + timedelta(seconds=1)
+    open_circuits = mgr.list_open_circuits(now=after_expiry)
+    assert all(s.provider != "claude-code" for s in open_circuits)

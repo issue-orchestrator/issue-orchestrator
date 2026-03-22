@@ -113,6 +113,11 @@ class ProviderResilienceManager:
             },
         ))
 
+    def list_open_circuits(self, now: datetime | None = None) -> list[ProviderCircuitState]:
+        """Return circuits that are currently open (cooldown active)."""
+        now = now or _now()
+        return [s for s in self.store.list_all() if s.open_until and s.open_until > now]
+
     def close_expired(self, now: datetime | None = None) -> list[ProviderCircuitState]:
         now = now or _now()
         closed: list[ProviderCircuitState] = []

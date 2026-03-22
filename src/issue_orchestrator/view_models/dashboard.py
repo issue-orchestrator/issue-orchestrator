@@ -190,21 +190,20 @@ class DashboardViewModel:
 def _get_open_provider_circuits(orchestrator) -> list[dict[str, Any]]:
     """Return circuits that are currently open (cooldown active), for UI display."""
     try:
-        states = orchestrator.deps.provider_resilience.store.list_all()
+        states = orchestrator.deps.provider_resilience.list_open_circuits()
     except AttributeError:
         return []
     now = datetime.now(timezone.utc)
     result = []
     for state in states:
-        if state.open_until and state.open_until > now:
-            seconds_remaining = int((state.open_until - now).total_seconds())
-            result.append({
-                "provider": state.provider,
-                "open_until": state.open_until.isoformat(),
-                "seconds_remaining": seconds_remaining,
-                "consecutive_outages": state.consecutive_outages,
-                "last_error_summary": state.last_error_summary,
-            })
+        seconds_remaining = int((state.open_until - now).total_seconds())
+        result.append({
+            "provider": state.provider,
+            "open_until": state.open_until.isoformat(),
+            "seconds_remaining": seconds_remaining,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary,
+        })
     return result
 
 
