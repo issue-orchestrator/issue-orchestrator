@@ -3199,9 +3199,8 @@ async def get_provider_circuits() -> JSONResponse:
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    store = _orchestrator.deps.provider_resilience.store
     circuits = []
-    for state in store.list_all():
+    for state in _orchestrator.deps.provider_resilience.list_circuits():
         is_open = state.open_until is not None and state.open_until > now
         cooldown_remaining = (
             max(0, int((state.open_until - now).total_seconds()))

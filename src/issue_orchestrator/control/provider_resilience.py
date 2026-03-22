@@ -113,6 +113,9 @@ class ProviderResilienceManager:
             },
         ))
 
+    def list_circuits(self) -> list[ProviderCircuitState]:
+        return self.store.list_all()
+
     def close_expired(self, now: datetime | None = None) -> list[ProviderCircuitState]:
         now = now or _now()
         closed: list[ProviderCircuitState] = []
