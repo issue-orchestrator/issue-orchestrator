@@ -96,9 +96,12 @@ def test_session_exists_returns_false_when_session_not_alive(tmp_path, monkeypat
     )
     plugin._registry.upsert(record)  # noqa: SLF001
 
-    # session_exists should report False because the PID doesn't exist
-    # (falls through to kill(pid, 0) which raises OSError for nonexistent PID)
+    # Force the dead-session path deterministically instead of depending on the
+    # host PID table, which can legitimately contain the chosen test PID on CI.
+    monkeypatch.setattr(plugin, "_process_alive", lambda pid, session_name=None: False)  # noqa: ARG005, SLF001
+
     assert plugin.session_exists(1, "issue-1") is False
+    assert "issue-1" not in plugin._registry.load()  # noqa: SLF001
 
 
 def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path, monkeypatch):
