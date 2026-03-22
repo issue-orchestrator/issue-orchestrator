@@ -307,6 +307,7 @@ class JobStore:
             "requested_actions": list(job.requested_actions),
             "completion_path": job.completion_path,
             "agent_label": job.agent_label,
+            "retry_publish": job.retry_publish,
         }
 
         # Get or create worktree identity

@@ -4277,6 +4277,16 @@ async function openIssueDetail(issueNumber, triggerEl = null) {
     if (prevCycles) prevCycles.style.display = 'none';
     const rawEvents = document.getElementById('issueDetailRawEvents');
     if (rawEvents) rawEvents.removeAttribute('open');
+    const unblockBtn = document.getElementById('issueDetailUnblockBtn');
+    if (unblockBtn) {
+        unblockBtn.style.display = 'none';
+        unblockBtn.disabled = true;
+    }
+    const retryPublishBtn = document.getElementById('issueDetailRetryPublishBtn');
+    if (retryPublishBtn) {
+        retryPublishBtn.style.display = 'none';
+        retryPublishBtn.disabled = true;
+    }
     const closeBtn = document.getElementById('issueDetailCloseBtn');
     if (closeBtn) closeBtn.focus();
 
@@ -4811,6 +4821,39 @@ async function openReviewFeedback(issueNumber, context = null) {
     }
 }
 
+async function retryPublishFromDrawer() {
+    if (!issueDetailData) return;
+    const n = issueDetailData.issue_number;
+    const btn = document.getElementById('issueDetailRetryPublishBtn');
+    const confirmMsg = `Retry publish for issue #${n}?\n\nThis reuses the latest failed publish attempt. If a matching open PR already exists, the issue will recover to Awaiting Merge immediately. Otherwise the orchestrator will rerun push/PR creation in the background.`;
+    if (!await showConfirm(confirmMsg, btn)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const req = uiActionContract.buildRetryPublishRequest(n);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+            const message = data.status === 'recovered_existing_pr'
+                ? `Recovered PR for #${n}`
+                : `Queued publish retry for #${n}`;
+            showToast(message);
+            await refreshViewModel();
+            await openIssueDetail(n, btn);
+        } else {
+            showToast(data.error || `Retry publish failed (${resp.status})`, true);
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        console.error('Retry publish from drawer failed:', e);
+        showToast('Retry publish failed: network error', true);
+        if (btn) btn.disabled = false;
+    }
+}
+
 function renderIssueDetail() {
     if (!issueDetailData) return;
     const d = issueDetailData;
@@ -4827,6 +4870,17 @@ function renderIssueDetail() {
     if (unblockBtn) {
         unblockBtn.style.display = isBlocked ? '' : 'none';
         unblockBtn.disabled = false;
+    }
+    const retryPublishBtn = document.getElementById('issueDetailRetryPublishBtn');
+    const actions = Array.isArray(d.actions) ? d.actions : [];
+    const retryPublishAction = actions.find((action) => action && action.id === 'retry_publish');
+    if (retryPublishBtn) {
+        retryPublishBtn.style.display = retryPublishAction ? '' : 'none';
+        retryPublishBtn.disabled = false;
+        retryPublishBtn.textContent = retryPublishAction && retryPublishAction.label
+            ? String(retryPublishAction.label)
+            : 'Retry Publish';
+        retryPublishBtn.onclick = () => retryPublishFromDrawer();
     }
 
     // Status explanation with color-coded border

@@ -38,6 +38,13 @@ test('buildIssueRetryRequest returns issue-specific endpoint', () => {
     assert.deepEqual(req.body, {});
 });
 
+test('buildRetryPublishRequest returns issue-specific endpoint', () => {
+    const req = uiActionContract.buildRetryPublishRequest('4057');
+    assert.equal(req.endpoint, '/api/issues/4057/retry-publish');
+    assert.equal(req.method, 'POST');
+    assert.deepEqual(req.body, {});
+});
+
 test('buildTerminalRecordingRequest returns canonical endpoint and query params', () => {
     const req = uiActionContract.buildTerminalRecordingRequest(4057, '/tmp/run', { offset: 10, limit: 0 });
     assert.equal(

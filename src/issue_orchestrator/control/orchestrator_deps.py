@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor
     from .completion_observer import CompletionObserver
     from .publish_executor import PublishJobExecutor
+    from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController
     from .health_gate import HealthGate
     from .claim_gate import ClaimGate
@@ -110,6 +111,7 @@ class OrchestratorDeps:
     # Async completion processing
     completion_observer: "CompletionObserver"
     publish_executor: "PublishJobExecutor"
+    publish_recovery: "PublishRecoveryService"
 
     # Cross-cutting infrastructure services (label mgmt, persistence, etc.)
     services: "InfraServices"

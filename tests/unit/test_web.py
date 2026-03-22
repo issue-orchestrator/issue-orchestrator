@@ -2,6 +2,7 @@
 
 import base64
 import json
+from types import SimpleNamespace
 import pytest
 from pathlib import Path
 import tempfile
@@ -188,6 +189,8 @@ def create_mock_orchestrator():
 
     mock_deps = MagicMock()
     mock_deps.publish_executor = mock_executor
+    mock_deps.publish_recovery = MagicMock()
+    mock_deps.publish_recovery.can_retry_publish.return_value = False
     mock_deps.timeline_reader = MagicMock()
     mock_orch.deps = mock_deps
     mock_orch.scheduler = MagicMock()
@@ -307,10 +310,12 @@ def fetch_issue_detail_payload(
     *,
     issue_number: int = 123,
     title: str = "Detail Issue",
+    can_retry_publish: bool = False,
 ) -> dict[str, Any]:
     """Call /api/issue-detail with a mocked timeline and return JSON payload."""
     mock_orch = create_mock_orchestrator()
     mock_orch.state.cached_queue_issues = [create_issue(issue_number, title)]
+    mock_orch.deps.publish_recovery.can_retry_publish.return_value = can_retry_publish
     mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
         issue_number=issue_number,
         events=events,
@@ -1268,6 +1273,50 @@ class TestHistoryEndpoints:
         assert "not queue-eligible" in payload["failed"][0]["error"]
         assert mock_orch.state.priority_queue == []
 
+    def test_retry_publish_endpoint_submits_manual_publish_retry(self):
+        mock_orch = create_mock_orchestrator()
+        mock_orch.deps.publish_recovery.retry_publish.return_value = SimpleNamespace(
+            status="submitted",
+            message="Publish retry queued",
+            job_id="job-123",
+            pr_url=None,
+            pr_number=None,
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/4057/retry-publish")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["status"] == "submitted"
+            assert payload["job_id"] == "job-123"
+            mock_orch.deps.publish_recovery.retry_publish.assert_called_once_with(
+                4057,
+                mock_orch.state,
+            )
+        finally:
+            set_orchestrator(None)
+
+    def test_retry_publish_endpoint_returns_conflict_when_not_allowed(self):
+        mock_orch = create_mock_orchestrator()
+        mock_orch.deps.publish_recovery.retry_publish.return_value = SimpleNamespace(
+            status="rejected",
+            message="Issue is not blocked by a publish failure",
+            job_id=None,
+            pr_url=None,
+            pr_number=None,
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/4057/retry-publish")
+            assert response.status_code == 409
+            assert response.json()["error"] == "Issue is not blocked by a publish failure"
+        finally:
+            set_orchestrator(None)
+
     def test_get_history_dedupes_to_latest_per_issue(self):
         """History endpoint returns only the latest entry for each issue."""
         mock_orch = create_mock_orchestrator()
@@ -2098,6 +2147,13 @@ class TestApiTimelineEndpoint:
         assert "events" in payload
         assert "cycles" in payload
         assert "actions" in payload
+
+    def test_issue_detail_includes_retry_publish_action_when_available(self):
+        payload = fetch_issue_detail_payload(
+            [build_timeline_event("session.started", summary="started")],
+            can_retry_publish=True,
+        )
+        assert any(action.get("id") == "retry_publish" for action in payload["actions"])
 
     def test_issue_detail_starts_new_lifecycle_after_completion_without_review(self):
         """Signal path: a new coding session after completion becomes a new lifecycle."""

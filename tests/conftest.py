@@ -733,6 +733,7 @@ def build_test_orchestrator_deps(
 
     from issue_orchestrator.control.label_manager import LabelManager
     from issue_orchestrator.control.infra_services import InfraServices
+    from issue_orchestrator.control.publish_recovery import PublishRecoveryService
     from issue_orchestrator.execution.label_store import LabelStore
 
     label_manager = LabelManager(config)
@@ -753,6 +754,14 @@ def build_test_orchestrator_deps(
         timeline_store=NullTimelineStore(),
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+    )
+
+    publish_recovery = PublishRecoveryService(
+        repository_host=repo_host,
+        publish_executor=publish_executor,
+        label_manager=label_manager,
+        fresh_issue_reader=fresh_reader,
+        action_applier=action_applier,
     )
 
     return OrchestratorDeps(
@@ -783,6 +792,7 @@ def build_test_orchestrator_deps(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
+        publish_recovery=publish_recovery,
         services=infra_services,
     )
 

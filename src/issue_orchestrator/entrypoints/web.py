@@ -1501,6 +1501,61 @@ def _current_run_validation_diagnostic(issue_number: int) -> dict[str, Any] | No
     }
 
 
+def _finalize_issue_detail_payload(
+    *,
+    issue_number: int,
+    payload: dict[str, Any],
+    raw_events: list[dict[str, Any]],
+    filtered_events: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    dropped_missing_semantics: int,
+) -> dict[str, Any]:
+    run_diagnostic = _current_run_validation_diagnostic(issue_number)
+    if _orchestrator and _orchestrator.deps.publish_recovery.can_retry_publish(issue_number, _orchestrator.state):
+        actions = payload.get("actions")
+        if isinstance(actions, list):
+            actions.insert(0, {"id": "retry_publish", "label": "Retry Publish"})
+    if run_diagnostic:
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            summary["run_diagnostic"] = run_diagnostic
+        payload["status_explanation"] = (
+            f"Current run failed validation: {run_diagnostic.get('reason', 'validation failed')}"
+        )
+    if is_timeline_trace_enabled():
+        runs = payload.get("runs")
+        run_count = len(runs) if isinstance(runs, list) else 0
+        cycle_count = sum(
+            len(run.get("cycles", []))
+            for run in runs
+            if isinstance(run, dict) and isinstance(run.get("cycles"), list)
+        ) if isinstance(runs, list) else 0
+        logger.info(
+            "[TIMELINE] api.issue_detail issue=%s raw=%s filtered=%s semantic=%s dropped_missing_semantics=%s runs=%s cycles=%s",
+            issue_number,
+            len(raw_events),
+            len(filtered_events),
+            len(events),
+            dropped_missing_semantics,
+            run_count,
+            cycle_count,
+        )
+    diagnostic = _timeline_missing_diagnostic(
+        issue_number,
+        events,
+        dropped_missing_semantics=dropped_missing_semantics,
+    )
+    if diagnostic:
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            summary["timeline_diagnostic"] = diagnostic
+        if run_diagnostic is None:
+            payload["status_explanation"] = (
+                f"Timeline data missing ({', '.join(diagnostic.get('signals', []))})"
+            )
+    return payload
+
+
 @app.get("/api/session/manifest/{issue_number}")
 async def get_session_manifest(
     issue_number: int,
@@ -1708,45 +1763,14 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
         context=context,
         view=view,
     )
-    run_diagnostic = _current_run_validation_diagnostic(issue_number)
-    if run_diagnostic:
-        summary = payload.get("summary")
-        if isinstance(summary, dict):
-            summary["run_diagnostic"] = run_diagnostic
-        payload["status_explanation"] = (
-            f"Current run failed validation: {run_diagnostic.get('reason', 'validation failed')}"
-        )
-    if is_timeline_trace_enabled():
-        runs = payload.get("runs")
-        run_count = len(runs) if isinstance(runs, list) else 0
-        cycle_count = sum(
-            len(run.get("cycles", []))
-            for run in runs
-            if isinstance(run, dict) and isinstance(run.get("cycles"), list)
-        ) if isinstance(runs, list) else 0
-        logger.info(
-            "[TIMELINE] api.issue_detail issue=%s raw=%s filtered=%s semantic=%s dropped_missing_semantics=%s runs=%s cycles=%s",
-            issue_number,
-            len(raw_events),
-            len(filtered_events),
-            len(events),
-            dropped_missing_semantics,
-            run_count,
-            cycle_count,
-        )
-    diagnostic = _timeline_missing_diagnostic(
-        issue_number,
-        events,
+    payload = _finalize_issue_detail_payload(
+        issue_number=issue_number,
+        payload=payload,
+        raw_events=raw_events,
+        filtered_events=filtered_events,
+        events=events,
         dropped_missing_semantics=dropped_missing_semantics,
     )
-    if diagnostic:
-        summary = payload.get("summary")
-        if isinstance(summary, dict):
-            summary["timeline_diagnostic"] = diagnostic
-        if run_diagnostic is None:
-            payload["status_explanation"] = (
-                f"Timeline data missing ({', '.join(diagnostic.get('signals', []))})"
-            )
     return IssueDetailPayload.model_validate(payload)
 
 
@@ -3359,6 +3383,26 @@ async def retry_issue(issue_number: int) -> JSONResponse:
     if issue_number in state.completed_today:
         state.completed_today.remove(issue_number)
     return JSONResponse({"retrying": issue_number, "message": "Issue will be picked up on next cycle"})
+
+
+@app.post("/api/issues/{issue_number}/retry-publish")
+async def retry_publish_issue(issue_number: int) -> JSONResponse:
+    """Retry publish for a publish-failed issue using the latest failed publish job."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    result = _orchestrator.deps.publish_recovery.retry_publish(issue_number, _orchestrator.state)
+    if result.status == "rejected":
+        return JSONResponse({"error": result.message}, status_code=409)
+
+    return JSONResponse({
+        "status": result.status,
+        "message": result.message,
+        "issue_number": issue_number,
+        "job_id": result.job_id,
+        "pr_url": result.pr_url,
+        "pr_number": result.pr_number,
+    })
 
 
 @app.post("/api/bulk-retry")
