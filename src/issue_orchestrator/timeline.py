@@ -70,6 +70,7 @@ class TimelineEvent:
     views: list[str] | None = None
     narrative: str | None = None
     round_index: int | None = None
+    rounds: int | None = None
     reviewer_response_type: str | None = None
     reviewer_response_text: str | None = None
     coder_response_type: str | None = None
@@ -111,6 +112,7 @@ class TimelineEvent:
             ("views", self.views),
             ("narrative", self.narrative),
             ("round_index", self.round_index),
+            ("rounds", self.rounds),
             ("reviewer_response_type", self.reviewer_response_type),
             ("reviewer_response_text", self.reviewer_response_text),
             ("coder_response_type", self.coder_response_type),
@@ -179,6 +181,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     logical_cycle = data.get("logical_cycle") if isinstance(data.get("logical_cycle"), int) else None
     logical_phase = data.get("logical_phase") if isinstance(data.get("logical_phase"), str) else None
     round_index = data.get("round_index") if isinstance(data.get("round_index"), int) else None
+    rounds = data.get("rounds") if isinstance(data.get("rounds"), int) else None
     reviewer_response_type = data.get("reviewer_response_type") if isinstance(data.get("reviewer_response_type"), str) else None
     reviewer_response_text = data.get("reviewer_response_text") if isinstance(data.get("reviewer_response_text"), str) else None
     coder_response_type = data.get("coder_response_type") if isinstance(data.get("coder_response_type"), str) else None
@@ -235,6 +238,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         views=data.get("views") if isinstance(data.get("views"), list) else None,
         narrative=data.get("narrative") if isinstance(data.get("narrative"), str) else None,
         round_index=round_index,
+        rounds=rounds,
         reviewer_response_type=reviewer_response_type,
         reviewer_response_text=reviewer_response_text,
         coder_response_type=coder_response_type,

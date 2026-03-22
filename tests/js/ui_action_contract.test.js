@@ -53,3 +53,17 @@ test('buildTerminalRecordingRequest returns canonical endpoint and query params'
     );
     assert.equal(req.method, 'GET');
 });
+
+test('buildTerminalRecordingRequest includes review phase scoping params', () => {
+    const req = uiActionContract.buildTerminalRecordingRequest(4057, '/tmp/run', {
+        offset: 0,
+        limit: 0,
+        round_index: 2,
+        session_role: 'reviewer',
+    });
+    assert.equal(
+        req.endpoint,
+        '/api/session/terminal-recording/4057?run_dir=%2Ftmp%2Frun&offset=0&limit=0&round_index=2&session_role=reviewer',
+    );
+    assert.equal(req.method, 'GET');
+});
