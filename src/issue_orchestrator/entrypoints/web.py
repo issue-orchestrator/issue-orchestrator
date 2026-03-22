@@ -41,6 +41,7 @@ from ..view_models.dialogs import (
     build_info_dialog,
     build_phase_dialog,
     build_session_diagnostics_dialog,
+    build_validation_failure_dialog,
 )
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
 from ..contracts.ui_openapi_models import (
@@ -53,6 +54,7 @@ from ..contracts.ui_openapi_models import (
     IssueRowsPayload,
     PhaseDialogPayload,
     SessionDiagnosticsDialogPayload,
+    ValidationFailureDialogPayload,
     IssueDetailPayload,
     IssueRowPayload,
 )
@@ -68,6 +70,7 @@ from ..execution.review_exchange_transcript import (
     parse_review_exchange_transcript,
     render_review_exchange_transcript,
 )
+from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -495,6 +498,22 @@ async def get_session_diagnostics_dialog(
         return response
     payload = _response_json(response)
     return SessionDiagnosticsDialogPayload.model_validate(build_session_diagnostics_dialog(issue_number, payload))
+
+
+@app.get("/api/dialog/validation-failure/{issue_number}", response_model=ValidationFailureDialogPayload)
+async def get_validation_failure_dialog(
+    issue_number: int,
+    run_dir: str | None = None,
+) -> ValidationFailureDialogPayload | JSONResponse:
+    """Get a focused dialog for a failed validation run."""
+    response = await get_session_manifest(issue_number, run_dir=run_dir)
+    if response.status_code != 200:
+        return response
+    payload = _response_json(response)
+    validation = payload.get("validation_failure")
+    if not isinstance(validation, dict):
+        return JSONResponse({"error": "No validation failure details found"}, status_code=404)
+    return ValidationFailureDialogPayload.model_validate(build_validation_failure_dialog(issue_number, payload))
 
 
 @app.get("/api/dialog/blocked-issues", response_model=BlockedIssuesDialogPayload)
@@ -1466,6 +1485,10 @@ def _manifest_response(
             "suggestions": list(analysis.suggestions),
         }
 
+    validation_failure = load_validation_failure_summary(run_dir)
+    if validation_failure is not None:
+        result["validation_failure"] = validation_failure.to_dict()
+
     return JSONResponse(result)
 
 
@@ -1475,30 +1498,56 @@ def _current_run_validation_diagnostic(issue_number: int) -> dict[str, Any] | No
     run_dir = context.run_dir
     if run_dir is None:
         return None
-
-    # Keep this local to avoid pulling manifest-loading dependencies into module import.
-    from ..domain.run_manifest import RunManifest
-
-    try:
-        manifest = RunManifest.load(run_dir)
-    except FileNotFoundError:
+    summary = load_validation_failure_summary(run_dir)
+    if summary is None:
         return None
-    except Exception:
-        logger.debug("Failed to load run manifest for validation diagnostic: %s", run_dir, exc_info=True)
-        return None
-
-    if manifest.validation_status != "failed":
-        return None
-
     return {
         "state": "validation_failed",
         "run_dir": str(run_dir),
         "session_name": context.session_name,
-        "reason": manifest.validation_reason or "Validation failed",
-        "validation_record_path": manifest.validation_record_path,
-        "validation_stderr": manifest.validation_stderr,
-        "validation_stdout": manifest.validation_stdout,
+        "reason": summary.reason,
+        "suite": summary.suite,
+        "command": summary.command,
+        "exit_code": summary.exit_code,
+        "failed_tests": list(summary.failed_tests),
+        "failed_tests_preview": list(summary.failed_tests[:3]),
+        "validation_record_path": summary.validation_record_path,
+        "validation_stderr": summary.validation_stderr_path,
+        "validation_stdout": summary.validation_stdout_path,
     }
+
+
+def _apply_issue_detail_actions(issue_number: int, payload: dict[str, Any]) -> None:
+    if _orchestrator and _orchestrator.deps.publish_recovery.can_retry_publish(issue_number, _orchestrator.state):
+        actions = payload.get("actions")
+        if isinstance(actions, list):
+            actions.insert(0, {"id": "retry_publish", "label": "Retry Publish"})
+
+
+def _apply_issue_detail_run_diagnostic(payload: dict[str, Any], run_diagnostic: dict[str, Any]) -> None:
+    actions = payload.get("actions")
+    if isinstance(actions, list):
+        actions.insert(
+            0,
+            {
+                "id": "open_validation_failure",
+                "label": "Validation Details",
+                "run_dir": run_diagnostic.get("run_dir"),
+            },
+        )
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        summary["run_diagnostic"] = run_diagnostic
+    failed_tests = run_diagnostic.get("failed_tests")
+    if isinstance(failed_tests, list) and failed_tests:
+        payload["status_explanation"] = (
+            f"Current run failed validation: {len(failed_tests)} failing test(s) in "
+            f"{run_diagnostic.get('command') or 'validation'}"
+        )
+        return
+    payload["status_explanation"] = (
+        f"Current run failed validation: {run_diagnostic.get('reason', 'validation failed')}"
+    )
 
 
 def _finalize_issue_detail_payload(
@@ -1511,17 +1560,9 @@ def _finalize_issue_detail_payload(
     dropped_missing_semantics: int,
 ) -> dict[str, Any]:
     run_diagnostic = _current_run_validation_diagnostic(issue_number)
-    if _orchestrator and _orchestrator.deps.publish_recovery.can_retry_publish(issue_number, _orchestrator.state):
-        actions = payload.get("actions")
-        if isinstance(actions, list):
-            actions.insert(0, {"id": "retry_publish", "label": "Retry Publish"})
+    _apply_issue_detail_actions(issue_number, payload)
     if run_diagnostic:
-        summary = payload.get("summary")
-        if isinstance(summary, dict):
-            summary["run_diagnostic"] = run_diagnostic
-        payload["status_explanation"] = (
-            f"Current run failed validation: {run_diagnostic.get('reason', 'validation failed')}"
-        )
+        _apply_issue_detail_run_diagnostic(payload, run_diagnostic)
     if is_timeline_trace_enabled():
         runs = payload.get("runs")
         run_count = len(runs) if isinstance(runs, list) else 0
@@ -2204,6 +2245,14 @@ def _timeline_event_recommended_actions(
         )
     if event_name.startswith("validation."):
         add_action(
+            {
+                "type": "open_validation_failure",
+                "label": "Validation Details",
+                "issue_number": issue_number,
+            },
+            f"validation-details:{issue_number}",
+        )
+        add_action(
             {"type": "open_orchestrator_log", "label": "Open Orchestrator Log for This Issue ↗", "issue_number": issue_number},
             f"orchestrator:{issue_number}",
         )
@@ -2433,6 +2482,7 @@ def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir
     if str(action.get("type") or "") in {
         "open_agent_log",
         "open_review_transcript",
+        "open_validation_failure",
         "view_claude_log",
         "open_orchestrator_log",
         "open_session_diagnostics",

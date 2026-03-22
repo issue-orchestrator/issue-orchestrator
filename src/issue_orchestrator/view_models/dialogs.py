@@ -418,6 +418,50 @@ def build_session_diagnostics_dialog(
     }
 
 
+def build_validation_failure_dialog(
+    issue_number: int,
+    manifest_payload: dict[str, Any],
+) -> dict[str, Any]:
+    ctx = SessionDiagnosticsContext.from_payload(issue_number, manifest_payload)
+    validation = manifest_payload.get("validation_failure") or {}
+    failed_tests = [
+        str(item)
+        for item in validation.get("failed_tests", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    stdout_excerpt = [
+        str(item)
+        for item in validation.get("stdout_excerpt", [])
+        if isinstance(item, str)
+    ]
+    stderr_excerpt = [
+        str(item)
+        for item in validation.get("stderr_excerpt", [])
+        if isinstance(item, str)
+    ]
+    actions = _build_session_diagnostics_actions(ctx)
+    _append_run_scoped_action(
+        actions,
+        ctx,
+        action_type="open_session_diagnostics",
+        label="Full Diagnostics",
+    )
+
+    return {
+        "title": f"Validation Failure #{issue_number}",
+        "reason": str(validation.get("reason") or ctx.validation_reason or "Validation failed"),
+        "suite": str(validation.get("suite") or ""),
+        "command": str(validation.get("command") or ""),
+        "exit_code": int(validation.get("exit_code") or 0),
+        "started_at": str(validation.get("started_at") or ""),
+        "ended_at": str(validation.get("ended_at") or ""),
+        "failed_tests": failed_tests,
+        "stdout_excerpt": stdout_excerpt,
+        "stderr_excerpt": stderr_excerpt,
+        "actions": actions,
+    }
+
+
 def build_blocked_issues_dialog(blocked_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": "Blocked Issues",

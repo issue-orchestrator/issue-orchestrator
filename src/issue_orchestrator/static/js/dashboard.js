@@ -1298,6 +1298,82 @@ async function openSessionManifest(issueNumber, runDir = null) {
     openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
 }
 
+async function openValidationFailure(issueNumber, runDir = null, mode = 'modal') {
+    const params = new URLSearchParams();
+    if (runDir) params.set('run_dir', runDir);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+        const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
+        if (mode === 'inline') {
+            showToast(message, 'error');
+            return;
+        }
+        openModal(`Validation Failure #${issueNumber}`, `<div class="diag-action-message" style="display:block;">${escapeHtml(message)}</div>`);
+        return;
+    }
+
+    const actions = Array.isArray(data.actions) ? data.actions : [];
+    currentDiagnosticsRunDir = runDir || ((actions.find(action => action && action.run_dir) || {}).run_dir || null);
+    const failedTests = Array.isArray(data.failed_tests) ? data.failed_tests : [];
+    const stdoutExcerpt = Array.isArray(data.stdout_excerpt) ? data.stdout_excerpt : [];
+    const stderrExcerpt = Array.isArray(data.stderr_excerpt) ? data.stderr_excerpt : [];
+    const summaryRows = [
+        { label: 'Reason', value: String(data.reason || 'Validation failed') },
+        { label: 'Suite', value: String(data.suite || '-') },
+        { label: 'Command', value: String(data.command || '-') },
+        { label: 'Exit Code', value: String(data.exit_code ?? '-') },
+        { label: 'Started', value: String(data.started_at || '-') },
+        { label: 'Ended', value: String(data.ended_at || '-') },
+    ];
+
+    let html = '<div class="diag-modal">';
+    html += '<section class="diag-section diag-validation-summary">';
+    html += '<div class="diag-section-title">Validation Summary</div>';
+    html += renderDialogRows(summaryRows, { monospace: true });
+    html += '</section>';
+
+    html += '<section class="diag-section">';
+    html += '<div class="diag-section-title">Failed Tests</div>';
+    if (failedTests.length > 0) {
+        html += '<ul class="diag-validation-tests">';
+        for (const testName of failedTests) {
+            html += `<li><code>${escapeHtml(String(testName))}</code></li>`;
+        }
+        html += '</ul>';
+    } else {
+        html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
+    }
+    html += '</section>';
+
+    html += '<section class="diag-section">';
+    html += '<div class="diag-section-title">Validation Output Excerpt</div>';
+    if (stdoutExcerpt.length > 0) {
+        html += `<pre class="diag-validation-pre">${escapeHtml(stdoutExcerpt.join('\n'))}</pre>`;
+    } else {
+        html += '<div class="diag-empty">No stdout excerpt captured.</div>';
+    }
+    html += '</section>';
+
+    if (stderrExcerpt.length > 0) {
+        html += '<section class="diag-section">';
+        html += '<div class="diag-section-title">Validation Error Output</div>';
+        html += `<pre class="diag-validation-pre">${escapeHtml(stderrExcerpt.join('\n'))}</pre>`;
+        html += '</section>';
+    }
+
+    if (actions.length > 0) {
+        html += '<div class="diag-actions">';
+        html += renderGroupedDialogActions(actions);
+        html += '</div>';
+    }
+    html += '<div class="diag-footnote">Validation details come from the run-scoped validation record and log artifacts.</div>';
+    html += '</div>';
+
+    openModal(data.title || `Validation Failure #${issueNumber}`, html);
+}
+
 function renderDialogRows(rows, options = {}) {
     const useMonospace = !!options.monospace;
     if (!rows || rows.length === 0) {
@@ -1333,6 +1409,7 @@ function renderGroupedDialogActions(actions) {
     if (items.length === 0) return '';
 
     const primaryTypes = [
+        'open_validation_failure',
         'open_agent_log',
         'open_review_feedback',
         'open_review_transcript',
@@ -1372,11 +1449,12 @@ function _dialogActionShortLabel(action) {
     const label = String(action.label || '');
     if (type === 'open_agent_log') return 'Session Recording';
     if (type === 'open_review_transcript') return 'Review Transcript';
+    if (type === 'open_validation_failure') return 'Validation Details';
     if (type === 'copy_agent_log') return 'Copy Session Recording';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
-    if (type === 'open_session_diagnostics') return 'Diagnostics';
+    if (type === 'open_session_diagnostics') return label || 'Diagnostics';
     if (type === 'open_path') {
         const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
         if (/^completion$/i.test(normalized)) return 'Completion Record';
@@ -1401,6 +1479,10 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
     const fallbackRunDir = action.run_dir || currentDiagnosticsRunDir || null;
     if (action.type === 'open_path') {
         return `<button class="${cssClass}" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
+    }
+    if (action.type === 'open_validation_failure') {
+        if (!fallbackRunDir) return '';
+        return `<button class="${cssClass}" onclick="openValidationFailure(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
     }
     if (action.type === 'open_agent_log') {
         if (!fallbackRunDir) return '';
@@ -4287,6 +4369,7 @@ async function openIssueDetail(issueNumber, triggerEl = null) {
         retryPublishBtn.style.display = 'none';
         retryPublishBtn.disabled = true;
     }
+    resetIssueDetailValidation();
     const closeBtn = document.getElementById('issueDetailCloseBtn');
     if (closeBtn) closeBtn.focus();
 
@@ -4854,6 +4937,67 @@ async function retryPublishFromDrawer() {
     }
 }
 
+function resetIssueDetailValidation() {
+    const validationEl = document.getElementById('issueDetailValidation');
+    const validationBtn = document.getElementById('issueDetailValidationBtn');
+    const reasonEl = document.getElementById('issueDetailValidationReason');
+    const testsEl = document.getElementById('issueDetailValidationTests');
+    if (validationEl) validationEl.style.display = 'none';
+    if (validationBtn) {
+        validationBtn.style.display = 'none';
+        validationBtn.disabled = false;
+        validationBtn.onclick = null;
+    }
+    if (reasonEl) reasonEl.textContent = '';
+    if (testsEl) testsEl.innerHTML = '';
+}
+
+function renderIssueDetailValidation(detail) {
+    const validationEl = document.getElementById('issueDetailValidation');
+    const validationBtn = document.getElementById('issueDetailValidationBtn');
+    const reasonEl = document.getElementById('issueDetailValidationReason');
+    const testsEl = document.getElementById('issueDetailValidationTests');
+    const summary = detail && typeof detail.summary === 'object' ? detail.summary : {};
+    const diagnostic = summary && typeof summary.run_diagnostic === 'object' ? summary.run_diagnostic : null;
+    const actions = Array.isArray(detail.actions) ? detail.actions : [];
+    const validationAction = actions.find((action) => action && action.id === 'open_validation_failure');
+
+    if (!validationEl || !reasonEl || !testsEl || !diagnostic) {
+        resetIssueDetailValidation();
+        return;
+    }
+
+    validationEl.style.display = '';
+    const reason = diagnostic.reason || 'Validation failed';
+    const command = diagnostic.command ? `Command: ${diagnostic.command}` : '';
+    reasonEl.textContent = command ? `${reason} • ${command}` : reason;
+
+    const preview = Array.isArray(diagnostic.failed_tests_preview)
+        ? diagnostic.failed_tests_preview
+        : [];
+    const totalFailed = Array.isArray(diagnostic.failed_tests)
+        ? diagnostic.failed_tests.length
+        : preview.length;
+    if (preview.length > 0) {
+        const extraCount = Math.max(0, totalFailed - preview.length);
+        const items = preview.map((nodeid) => `<li><code>${escapeHtml(String(nodeid))}</code></li>`);
+        if (extraCount > 0) {
+            items.push(`<li>${extraCount} more failing test${extraCount === 1 ? '' : 's'}…</li>`);
+        }
+        testsEl.innerHTML = items.join('');
+    } else {
+        testsEl.innerHTML = '<li>No failed test names extracted from validation output.</li>';
+    }
+
+    if (validationBtn && validationAction && validationAction.run_dir) {
+        validationBtn.style.display = '';
+        validationBtn.textContent = validationAction.label || 'Validation Details';
+        validationBtn.onclick = () => openValidationFailure(detail.issue_number, validationAction.run_dir, 'inline');
+    } else if (validationBtn) {
+        validationBtn.style.display = 'none';
+    }
+}
+
 function renderIssueDetail() {
     if (!issueDetailData) return;
     const d = issueDetailData;
@@ -4892,6 +5036,8 @@ function renderIssueDetail() {
     else if ((summary.status || '').toLowerCase().includes('done') || (summary.status || '').toLowerCase().includes('completed')) statusEl.classList.add('status-done');
     else if ((summary.status || '').toLowerCase().includes('running') || (summary.status || '').toLowerCase().includes('in_progress')) statusEl.classList.add('status-running');
     else statusEl.classList.add('status-queued');
+
+    renderIssueDetailValidation(d);
 
     // Journey timeline with "Last run / All" filter
     const journeyEl = document.getElementById('issueDetailJourney');
@@ -5095,6 +5241,7 @@ function renderTimelineEventActions(actions) {
         label: _timelineActionShortLabel(action),
     }));
     const primaryTypes = [
+        'open_validation_failure',
         'open_agent_log',
         'open_review_feedback',
         'open_review_transcript',
@@ -5132,10 +5279,11 @@ function _timelineActionShortLabel(action) {
     const label = String(action.label || '').trim();
     if (type === 'open_agent_log') return 'Session Recording';
     if (type === 'open_review_transcript') return 'Review Transcript';
+    if (type === 'open_validation_failure') return 'Validation Details';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
-    if (type === 'open_session_diagnostics') return 'Diagnostics';
+    if (type === 'open_session_diagnostics') return label || 'Diagnostics';
     if (type === 'show_actions_error') return 'What is missing?';
     if (type === 'open_path') {
         const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
@@ -5169,6 +5317,10 @@ function runTimelineEventAction(action) {
     }
     if (action.type === 'open_review_feedback' && action.issue_number) {
         openReviewFeedback(action.issue_number, action);
+        return;
+    }
+    if (action.type === 'open_validation_failure' && action.issue_number) {
+        openValidationFailure(action.issue_number, action.run_dir || null, 'inline');
         return;
     }
     if (action.type === 'open_review_transcript' && action.issue_number) {

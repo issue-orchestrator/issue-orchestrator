@@ -1023,6 +1023,44 @@ body.column-focus-mode .column-expanded {
 .issue-detail-status.status-done { border-left-color: var(--success, #5a5); }
 .issue-detail-status.status-queued { border-left-color: var(--text-muted, #888); }
 
+.issue-detail-validation {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-panel-soft) 74%, transparent);
+    border-left: 3px solid var(--danger, #e55);
+}
+.issue-detail-validation-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.issue-detail-validation-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+}
+.issue-detail-validation-reason {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+.issue-detail-validation-tests {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 4px;
+    color: var(--text);
+    font-size: 12px;
+}
+.issue-detail-validation-tests li {
+    line-height: 1.4;
+    word-break: break-word;
+}
+
 .issue-detail-section-title {
     font-size: 11px;
     font-weight: 600;
@@ -1786,6 +1824,31 @@ body.column-focus-mode .column-expanded {
     color: var(--text-muted);
     font-size: 12px;
     line-height: 1.5;
+}
+.diag-validation-summary {
+    display: grid;
+    gap: 10px;
+}
+.diag-validation-tests {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.diag-validation-pre {
+    margin: 0;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg) 82%, var(--bg-panel-soft));
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 260px;
+    overflow: auto;
 }
 .diag-followup-evidence,
 .diag-followup-labels,

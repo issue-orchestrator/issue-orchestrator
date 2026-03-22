@@ -6,6 +6,7 @@ from issue_orchestrator.view_models.dialogs import (
     build_info_dialog,
     build_phase_dialog,
     build_session_diagnostics_dialog,
+    build_validation_failure_dialog,
 )
 
 
@@ -293,6 +294,41 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_output_path(
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/wt/.issue-orchestrator/sessions/r1/validation-output.log" in paths
+
+
+def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
+    dialog = build_validation_failure_dialog(
+        12,
+        {
+            "manifest": {
+                "session_name": "sess-validate",
+                "worktree": "/wt",
+                "validation_record_path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+                "validation_stdout": "/wt/.issue-orchestrator/sessions/r1/validation-stdout.log",
+                "validation_stderr": "/wt/.issue-orchestrator/sessions/r1/validation-stderr.log",
+            },
+            "run_dir": "/run/r1",
+            "validation_failure": {
+                "reason": "Validation failed for deadbeef (exit_code=2)",
+                "suite": "publish_gate",
+                "command": "make validate",
+                "exit_code": 2,
+                "started_at": "2026-03-22T04:53:14Z",
+                "ended_at": "2026-03-22T04:53:58Z",
+                "failed_tests": ["tests/unit/test_web.py::test_one"],
+                "stdout_excerpt": ["FAILED tests/unit/test_web.py::test_one"],
+                "stderr_excerpt": ["make: *** [validate] Error 2"],
+            },
+        },
+    )
+
+    assert dialog["reason"] == "Validation failed for deadbeef (exit_code=2)"
+    assert dialog["failed_tests"] == ["tests/unit/test_web.py::test_one"]
+    assert dialog["stdout_excerpt"] == ["FAILED tests/unit/test_web.py::test_one"]
+    assert dialog["stderr_excerpt"] == ["make: *** [validate] Error 2"]
+    action_types = [action["type"] for action in dialog["actions"]]
+    assert "open_path" in action_types
+    assert "open_session_diagnostics" in action_types
 
 
 def test_build_session_diagnostics_dialog_drops_malformed_analysis():

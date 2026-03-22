@@ -1317,6 +1317,70 @@ class TestHistoryEndpoints:
         finally:
             set_orchestrator(None)
 
+    def test_validation_failure_dialog_endpoint_returns_failed_tests(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-validation-dialog"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=4057)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "failed",
+                "validation_reason": "Validation failed for deadbeef (exit_code=2)",
+                "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
+                "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
+                "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
+            },
+        )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "publish_gate",
+                    "head_sha": "deadbeef",
+                    "passed": False,
+                    "exit_code": 2,
+                    "command": "make validate",
+                    "started_at": "2026-03-22T04:53:14Z",
+                    "ended_at": "2026-03-22T04:53:58Z",
+                    "timed_out": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stdout.log").write_text(
+            "FAILED tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open\n",
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stderr.log").write_text("make: *** [validate] Error 2\n", encoding="utf-8")
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Issue 4057",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/dialog/validation-failure/4057?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["reason"] == "Validation failed for deadbeef (exit_code=2)"
+            assert payload["failed_tests"] == [
+                "tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open"
+            ]
+            assert any(action.get("type") == "open_session_diagnostics" for action in payload["actions"])
+        finally:
+            set_orchestrator(None)
+
     def test_get_history_dedupes_to_latest_per_issue(self):
         """History endpoint returns only the latest entry for each issue."""
         mock_orch = create_mock_orchestrator()
@@ -2542,9 +2606,31 @@ class TestApiTimelineEndpoint:
                 "validation_status": "failed",
                 "validation_reason": ".venv/bin/python missing",
                 "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
+                "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
                 "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
             },
         )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "publish_gate",
+                    "head_sha": "deadbeef",
+                    "passed": False,
+                    "exit_code": 2,
+                    "command": "make validate",
+                    "started_at": "2026-03-22T04:53:14Z",
+                    "ended_at": "2026-03-22T04:53:58Z",
+                    "timed_out": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stdout.log").write_text(
+            "FAILED tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open\n",
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stderr.log").write_text("make: *** [validate] Error 2\n", encoding="utf-8")
         mock_orch.state.session_history = [
             SessionHistoryEntry(
                 issue_number=123,
@@ -2578,6 +2664,10 @@ class TestApiTimelineEndpoint:
             assert diagnostic is not None
             assert diagnostic["state"] == "validation_failed"
             assert diagnostic["reason"] == ".venv/bin/python missing"
+            assert diagnostic["failed_tests_preview"] == [
+                "tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open"
+            ]
+            assert any(action.get("id") == "open_validation_failure" for action in payload["actions"])
             assert "Current run failed validation" in payload["status_explanation"]
         finally:
             set_orchestrator(None)
@@ -3151,6 +3241,7 @@ class TestTimelineActionWiring:
         "open_path": "/api/host/open-path",
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
+        "open_validation_failure": "/api/dialog/validation-failure/{issue_number}",
         "open_agent_log": "/api/session/terminal-recording/{issue_number}",
         "open_review_transcript": "/api/session/review-transcript/{issue_number}",
         "copy_agent_log": None,  # client-side fetch+clipboard from existing local log endpoint
@@ -3159,6 +3250,7 @@ class TestTimelineActionWiring:
         "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
     }
     _REQUIRED_FIELDS_BY_ACTION: dict[str, tuple[str, ...]] = {
+        "open_validation_failure": ("issue_number", "run_dir"),
         "open_agent_log": ("issue_number", "run_dir"),
         "open_review_transcript": ("issue_number", "run_dir"),
         "copy_agent_log": ("issue_number", "run_dir"),
@@ -3520,6 +3612,31 @@ class TestTimelineActionWiring:
         action_types = {action.get("type") for action in actions}
         assert "open_review_transcript" not in action_types
         assert "open_agent_log" in action_types
+
+    def test_validation_failed_events_offer_validation_details(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-validation-actions"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=1)
+
+        actions = _timeline_event_actions(
+            {
+                "event": "validation.failed",
+                "issue_number": 1,
+                "run_dir": str(run.run_dir),
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+
+        validation_action = next(
+            action for action in actions if action.get("type") == "open_validation_failure"
+        )
+        assert validation_action["label"] == "Validation Details"
+        assert validation_action["run_dir"] == str(run.run_dir)
 
     def test_review_transcript_actions_bind_round_and_role_context(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
