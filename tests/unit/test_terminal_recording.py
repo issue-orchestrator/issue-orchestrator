@@ -151,12 +151,14 @@ def test_mirrored_terminal_recording_writer_keeps_plain_text_mirror(tmp_path) ->
 def test_mirrored_terminal_recording_writer_can_mirror_to_additional_recordings(tmp_path) -> None:
     recording_path = tmp_path / "terminal-recording.jsonl"
     secondary_path = tmp_path / "secondary-terminal-recording.jsonl"
+    clock = IncrementingClock(now=100.0, step_seconds=0.001)
 
     writer = MirroredTerminalRecordingWriter(
         recording_path,
         additional_recording_paths=[secondary_path],
         initial_rows=24,
         initial_cols=80,
+        clock=clock,
     )
     writer.write("hello\n")
     writer.close()
@@ -175,6 +177,20 @@ class ManualClock:
 
     def advance(self, seconds: float) -> None:
         self._now += seconds
+
+
+class IncrementingClock:
+    def __init__(self, *, now: float, step_seconds: float) -> None:
+        self._now = now
+        self._step_seconds = step_seconds
+        self._first = True
+
+    def __call__(self) -> float:
+        if self._first:
+            self._first = False
+            return self._now
+        self._now += self._step_seconds
+        return self._now
 
 
 def test_mirrored_terminal_recording_writer_preserves_per_path_base_offsets(
