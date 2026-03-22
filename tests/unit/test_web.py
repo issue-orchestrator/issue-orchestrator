@@ -6924,7 +6924,7 @@ class TestProviderCircuitsEndpoint:
             last_error_summary="503 Service Unavailable",
             updated_at=datetime.now(timezone.utc),
         ))
-        mock_orch.deps.provider_resilience.store = store
+        mock_orch.deps.provider_resilience.list_circuits.return_value = store.list_all()
         set_orchestrator(mock_orch)
 
         try:
@@ -6961,7 +6961,7 @@ class TestProviderCircuitsEndpoint:
             last_error_summary=None,
             updated_at=datetime.now(timezone.utc),
         ))
-        mock_orch.deps.provider_resilience.store = store
+        mock_orch.deps.provider_resilience.list_circuits.return_value = store.list_all()
         set_orchestrator(mock_orch)
 
         try:
