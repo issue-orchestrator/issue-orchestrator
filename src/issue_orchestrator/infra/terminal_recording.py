@@ -78,20 +78,26 @@ class TerminalRecordingWriter:
         self.write_output(data)
         return len(data)
 
-    def write_output(self, data: bytes) -> None:
+    def write_output(self, data: bytes, *, elapsed_ms: int | None = None) -> None:
         if not data:
             return
         event = TerminalRecordingEvent(
             event_type="output",
-            offset_ms=self._offset_ms(),
+            offset_ms=self._offset_ms(elapsed_ms=elapsed_ms),
             data_b64=base64.b64encode(data).decode("ascii"),
         )
         self._write_event(event)
 
-    def write_resize(self, *, rows: int, cols: int) -> None:
+    def write_resize(
+        self,
+        *,
+        rows: int,
+        cols: int,
+        elapsed_ms: int | None = None,
+    ) -> None:
         event = TerminalRecordingEvent(
             event_type="resize",
-            offset_ms=self._offset_ms(),
+            offset_ms=self._offset_ms(elapsed_ms=elapsed_ms),
             rows=rows,
             cols=cols,
         )
@@ -103,9 +109,12 @@ class TerminalRecordingWriter:
     def close(self) -> None:
         self._file.close()
 
-    def _offset_ms(self) -> int:
-        elapsed = int((self._clock() - self._started) * 1000)
+    def _offset_ms(self, *, elapsed_ms: int | None = None) -> int:
+        elapsed = self._elapsed_ms() if elapsed_ms is None else elapsed_ms
         return self._base_offset_ms + elapsed
+
+    def _elapsed_ms(self) -> int:
+        return int((self._clock() - self._started) * 1000)
 
     def _write_event(self, event: TerminalRecordingEvent) -> None:
         self._file.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
@@ -126,7 +135,8 @@ class MirroredTerminalRecordingWriter:
         clock: Callable[[], float] | None = None,
     ) -> None:
         effective_clock = time.monotonic if clock is None else clock
-        started_at = effective_clock()
+        self._clock = effective_clock
+        self._started = effective_clock()
         recording_paths = [recording_path]
         for extra_path in additional_recording_paths or ():
             if extra_path not in recording_paths:
@@ -134,13 +144,13 @@ class MirroredTerminalRecordingWriter:
         self._recordings = [
             TerminalRecordingWriter(
                 path,
-                initial_rows=initial_rows,
-                initial_cols=initial_cols,
-                started_at=started_at,
+                started_at=self._started,
                 clock=effective_clock,
             )
             for path in recording_paths
         ]
+        if initial_rows is not None and initial_cols is not None:
+            self._write_resize(rows=initial_rows, cols=initial_cols, elapsed_ms=0)
         self._mirror = None
         if mirror_path is not None:
             mirror_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,9 +167,10 @@ class MirroredTerminalRecordingWriter:
         else:
             raw = data
             text = data.decode("utf-8", errors="ignore")
-        written = 0
+        elapsed_ms = self._elapsed_ms()
+        written = len(raw)
         for recording in self._recordings:
-            written = recording.write(raw)
+            recording.write_output(raw, elapsed_ms=elapsed_ms)
         if self._mirror is not None and text:
             self._mirror.write(text)
             self._mirror.flush()
@@ -176,6 +187,13 @@ class MirroredTerminalRecordingWriter:
             recording.close()
         if self._mirror is not None:
             self._mirror.close()
+
+    def _elapsed_ms(self) -> int:
+        return int((self._clock() - self._started) * 1000)
+
+    def _write_resize(self, *, rows: int, cols: int, elapsed_ms: int) -> None:
+        for recording in self._recordings:
+            recording.write_resize(rows=rows, cols=cols, elapsed_ms=elapsed_ms)
 
 def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
     """Iterate over a terminal recording NDJSON file for replay or inspection."""
