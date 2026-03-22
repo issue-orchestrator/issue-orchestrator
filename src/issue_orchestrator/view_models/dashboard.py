@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuit_breakers: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitBreakers": self.provider_circuit_breakers,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,8 +183,30 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
+
+
+def _read_provider_circuit_breakers(orchestrator: Any) -> list[dict[str, Any]]:
+    """Read provider circuit breaker states from the orchestrator."""
+    try:
+        states = orchestrator.deps.provider_resilience.store.list_all()
+    except AttributeError:
+        return []
+    now = datetime.now(timezone.utc)
+    result = []
+    for s in states:
+        is_open = s.open_until is not None and s.open_until > now
+        result.append({
+            "provider": s.provider,
+            "is_open": is_open,
+            "open_until": s.open_until.isoformat() if s.open_until else None,
+            "consecutive_outages": s.consecutive_outages,
+            "last_error_summary": s.last_error_summary,
+            "updated_at": s.updated_at.isoformat(),
+        })
+    return result
 
 
 def issue_url_for(config, issue_number: int) -> str:
@@ -1470,4 +1495,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_breakers=_read_provider_circuit_breakers(orchestrator) if orchestrator else [],
     )
