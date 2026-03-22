@@ -192,6 +192,9 @@ def create_mock_orchestrator():
     mock_deps.publish_recovery = MagicMock()
     mock_deps.publish_recovery.can_retry_publish.return_value = False
     mock_deps.timeline_reader = MagicMock()
+    mock_provider_store = MagicMock()
+    mock_provider_store.list_all.return_value = []
+    mock_deps.provider_resilience.store = mock_provider_store
     mock_orch.deps = mock_deps
     mock_orch.scheduler = MagicMock()
     mock_orch.scheduler.sort_by_priority.side_effect = lambda issues: issues
@@ -6997,6 +7000,68 @@ class TestIssueAuditEndpoint:
 
         client = TestClient(app)
         response = client.post("/api/issues/4057/audit")
+
+        assert response.status_code == 503
+        assert response.json() == {"error": "Orchestrator not running"}
+
+
+class TestProviderCircuitsEndpoint:
+    """Tests for /api/provider-circuits endpoint."""
+
+    def test_get_provider_circuits_open(self):
+        """Returns open circuits when a provider outage is active."""
+        from datetime import datetime, timedelta, timezone
+        from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+        now = datetime.now(timezone.utc)
+        open_state = ProviderCircuitState(
+            provider="anthropic",
+            open_until=now + timedelta(minutes=3),
+            consecutive_outages=1,
+            last_error_summary="connection timeout",
+            updated_at=now,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.deps.provider_resilience.store.list_all.return_value = [open_state]
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+            assert response.status_code == 200
+            data = response.json()
+            assert "circuits" in data
+            assert len(data["circuits"]) == 1
+            circuit = data["circuits"][0]
+            assert circuit["provider"] == "anthropic"
+            assert circuit["is_open"] is True
+            assert circuit["cooldown_remaining_seconds"] > 0
+            assert circuit["last_error_summary"] == "connection timeout"
+            assert circuit["consecutive_outages"] == 1
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_empty_when_closed(self):
+        """Returns empty list when no open circuits."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.deps.provider_resilience.store.list_all.return_value = []
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+            assert response.status_code == 200
+            assert response.json() == {"circuits": []}
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_requires_orchestrator(self):
+        """Returns 503 when orchestrator is not running."""
+        set_orchestrator(None)
+
+        client = TestClient(app)
+        response = client.get("/api/provider-circuits")
 
         assert response.status_code == 503
         assert response.json() == {"error": "Orchestrator not running"}

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -740,3 +741,127 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit tests ---
+
+def _make_provider_resilience_stub(circuits):
+    """Create a mock provider_resilience that returns the given ProviderCircuitState list."""
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+    store = MagicMock()
+    store.list_all.return_value = circuits
+    resilience = MagicMock()
+    resilience.store = store
+    return resilience
+
+
+@dataclass
+class _OrchestratorStubWithDeps:
+    """Orchestrator stub with deps.provider_resilience support."""
+    state: OrchestratorState
+    config: Config
+    deps: object
+    shutdown_requested: bool = False
+
+
+def test_provider_circuits_empty_without_deps():
+    """View model has empty provider_circuits when orchestrator has no deps."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert vm.provider_circuits == []
+    assert vm.dashboard_data()["providerCircuits"] == []
+
+
+def test_provider_circuits_empty_when_no_open_circuits():
+    """View model has empty provider_circuits when all circuits are closed."""
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+    now = datetime.now(timezone.utc)
+    closed_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=None,  # No open_until means circuit is closed
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now,
+    )
+
+    deps = MagicMock()
+    deps.provider_resilience = _make_provider_resilience_stub([closed_state])
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStubWithDeps(state=state, config=config, deps=deps)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert vm.provider_circuits == []
+
+
+def test_provider_circuits_shows_open_circuit():
+    """View model includes provider_circuits when a circuit is open (outage in progress)."""
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    open_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="rate_limit exceeded",
+        updated_at=now,
+    )
+
+    deps = MagicMock()
+    deps.provider_resilience = _make_provider_resilience_stub([open_state])
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStubWithDeps(state=state, config=config, deps=deps)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(vm.provider_circuits) == 1
+    circuit = vm.provider_circuits[0]
+    assert circuit["provider"] == "anthropic"
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "rate_limit exceeded"
+    assert circuit["cooldown_remaining_seconds"] > 0
+    assert "anthropic" in str(vm.dashboard_data()["providerCircuits"])
+
+
+def test_is_provider_unavailable_set_on_queue_item():
+    """Queue items with the provider_unavailable label have is_provider_unavailable=True."""
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+    from issue_orchestrator.control.label_manager import LabelManager
+    lm = LabelManager(config)
+
+    provider_label = lm.provider_unavailable
+    issue = Issue(number=42, title="Provider blocked issue", labels=["agent:web", provider_label])
+    state = OrchestratorState(startup_status="complete", cached_queue_issues=[issue])
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        active_tab="kanban",
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Issue with provider_unavailable label: stays in queue (not blocked column)
+    # because issue.is_blocked=False for this label, but has a blocked_summary
+    all_items = vm.queue_items + vm.blocked_items
+    matching = [i for i in all_items if i["issue_number"] == 42]
+    assert len(matching) == 1
+    assert matching[0]["is_provider_unavailable"] is True
+    assert matching[0]["blocked_summary"] is not None  # Has a blocked summary tooltip

@@ -13,6 +13,17 @@
     <a href="#mainContent" class="skip-link">Skip to main content</a>
     <div class="container">
         <div id="engineRestartBanner" class="engine-restart-banner" style="display:none;" role="status" aria-live="polite"></div>
+        <div id="providerOutageBanner" class="provider-outage-banner" {% if not provider_circuits %}style="display:none;"{% endif %} role="alert" aria-live="polite">
+            {% if provider_circuits %}
+            <span class="provider-outage-icon" aria-hidden="true">⚠</span>
+            <span class="provider-outage-text">Provider outage:
+                {% for circuit in provider_circuits %}
+                <strong>{{ circuit.provider }}</strong> (retry in {{ circuit.cooldown_remaining_label }}{% if circuit.last_error_summary %} &mdash; {{ circuit.last_error_summary }}{% endif %}){% if not loop.last %}, {% endif %}
+                {% endfor %}
+                &mdash; Affected issues show <em>Provider Unavailable</em>.
+            </span>
+            {% endif %}
+        </div>
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>

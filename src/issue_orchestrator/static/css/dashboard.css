@@ -98,6 +98,32 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--danger, #e55);
+    background: color-mix(in srgb, var(--danger, #e55) 10%, transparent);
+    color: var(--text, #fff);
+    font-size: 13px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.provider-outage-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+}
+.provider-unavailable-badge {
+    background: color-mix(in srgb, var(--danger, #e55) 20%, transparent);
+    color: var(--danger, #e55);
+    border: 1px solid var(--danger, #e55);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

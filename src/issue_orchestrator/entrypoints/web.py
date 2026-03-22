@@ -612,6 +612,35 @@ async def get_status() -> JSONResponse:
     })
 
 
+@app.get("/api/provider-circuits")
+async def get_provider_circuits() -> JSONResponse:
+    """Get current provider circuit breaker states.
+
+    Returns a list of provider circuits, including those currently open (outage in progress)
+    and those that have been closed (recovered). Only open circuits have a non-null open_until.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from datetime import datetime, timezone as tz
+    resilience = _orchestrator.deps.provider_resilience
+    now = datetime.now(tz.utc)
+    circuits = []
+    for state in resilience.store.list_all():
+        is_open = state.open_until is not None and state.open_until > now
+        remaining = (state.open_until - now).total_seconds() if (is_open and state.open_until is not None) else 0
+        circuits.append({
+            "provider": state.provider,
+            "is_open": is_open,
+            "open_until": state.open_until.isoformat() if state.open_until else None,
+            "cooldown_remaining_seconds": int(remaining) if is_open else 0,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary,
+            "updated_at": state.updated_at.isoformat(),
+        })
+    return JSONResponse({"circuits": circuits})
+
+
 @app.get("/api/publish-jobs")
 async def get_publish_jobs(issue_number: int | None = None) -> JSONResponse:
     """Get publish job history.
