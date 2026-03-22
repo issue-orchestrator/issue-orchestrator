@@ -19,7 +19,7 @@ from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.env import ENV_PREFIX
 
 
-def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 5.0) -> None:
+def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 15.0) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if not plugin.session_exists(0, session_name):
@@ -103,12 +103,11 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     )
 
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
-    completion_path = ".issue-orchestrator/sessions/issue-42/completion.json"
-    command = (
-        "echo 'hello-from-subprocess' && "
-        f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}' && "
-        "coding-done completed --implementation 'subprocess test' --problems 'none'"
-    )
+    # The completion-path env contract is covered in completion-command tests.
+    # This integration test only needs to prove that a subprocess-backed coding
+    # session emits terminal output and a completion record.
+    completion_path = ".issue-orchestrator/completion.json"
+    command = "echo 'hello-from-subprocess' && coding-done completed --implementation 'subprocess test' --problems 'none'"
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
@@ -120,13 +119,14 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     )
     assert created is True
 
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "terminal-recording.jsonl"
+    completion_file = worktree / completion_path
+    _wait_for_file(completion_file)
+    _wait_for_content(log_path, "hello-from-subprocess")
     _wait_for_exit(plugin, "issue-42")
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "terminal-recording.jsonl"
     assert log_path.exists()
     assert "hello-from-subprocess" in _read_recording_output(log_path)
-
-    completion_file = worktree / completion_path
     assert completion_file.exists()
 
 

@@ -20,6 +20,7 @@ from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.branch_naming import extract_issue_number_from_branch
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
+from .review_validity import evaluate_review_validity
 from ..ports import EventSink,  make_trace_event
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
@@ -158,6 +159,25 @@ class PRScanner:
                     issue_number,
                     pr.branch,
                     scoped.expected_branch,
+                )
+                continue
+
+            issue = self.repository.get_issue(issue_number)
+            validity = evaluate_review_validity(
+                config=self.config,
+                label_manager=self._lm,
+                issue=issue,
+                pr=pr,
+                review_label_confirmed=True,
+            )
+            if not validity.valid:
+                logger.info(
+                    "[SCANNER] Skipping stale review PR: pr=%d issue=%d reason=%s issue_labels=%s pr_labels=%s",
+                    pr.number,
+                    issue_number,
+                    validity.reason,
+                    ",".join(validity.issue_labels) or "(missing)",
+                    ",".join(validity.pr_labels) or "(none)",
                 )
                 continue
 

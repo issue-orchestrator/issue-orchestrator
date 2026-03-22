@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -48,12 +49,21 @@ class TerminalRecordingEvent:
 class TerminalRecordingWriter:
     """Append-only NDJSON writer for raw terminal events."""
 
-    def __init__(self, path: Path, *, initial_rows: int | None = None, initial_cols: int | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        initial_rows: int | None = None,
+        initial_cols: int | None = None,
+        started_at: float | None = None,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._base_offset_ms = _next_recording_offset(path)
         self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
-        self._started = time.monotonic()
+        self._clock = time.monotonic if clock is None else clock
+        self._started = self._clock() if started_at is None else started_at
         if initial_rows is not None and initial_cols is not None:
             self.write_resize(rows=initial_rows, cols=initial_cols)
 
@@ -94,7 +104,7 @@ class TerminalRecordingWriter:
         self._file.close()
 
     def _offset_ms(self) -> int:
-        elapsed = int((time.monotonic() - self._started) * 1000)
+        elapsed = int((self._clock() - self._started) * 1000)
         return self._base_offset_ms + elapsed
 
     def _write_event(self, event: TerminalRecordingEvent) -> None:
@@ -113,7 +123,10 @@ class MirroredTerminalRecordingWriter:
         mirror_path: Path | None = None,
         initial_rows: int | None = None,
         initial_cols: int | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        effective_clock = time.monotonic if clock is None else clock
+        started_at = effective_clock()
         recording_paths = [recording_path]
         for extra_path in additional_recording_paths or ():
             if extra_path not in recording_paths:
@@ -123,6 +136,8 @@ class MirroredTerminalRecordingWriter:
                 path,
                 initial_rows=initial_rows,
                 initial_cols=initial_cols,
+                started_at=started_at,
+                clock=effective_clock,
             )
             for path in recording_paths
         ]

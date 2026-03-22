@@ -48,6 +48,7 @@ from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
+from .review_validity import evaluate_review_validity
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
@@ -481,9 +482,12 @@ class StartupManager:
             if ORCHESTRATOR_PR_MARKER not in pr_body:
                 logger.debug(f"PR #{pr_number}: Not created by orchestrator (no marker)")
 
+            issue = self.repository_host.get_issue(issue_number)
+            if not isinstance(issue, Issue):
+                issue = None
+
             # Skip PRs whose linked issue doesn't match the filter label
             if self.config.filtering.label:
-                issue = self.repository_host.get_issue(issue_number)
                 if issue is None or self.config.filtering.label not in issue.labels:
                     logger.debug(
                         "PR #%d linked to issue #%d without filter label '%s', skipping",
@@ -503,6 +507,24 @@ class StartupManager:
                     issue_number,
                     pr.branch,
                     scoped.expected_branch,
+                )
+                continue
+
+            validity = evaluate_review_validity(
+                config=self.config,
+                label_manager=self._lm,
+                issue=issue,
+                pr=pr,
+                review_label_confirmed=True,
+            )
+            if not validity.valid:
+                logger.info(
+                    "[startup] Dropping stale pending review recovery: pr=%d issue=%d reason=%s issue_labels=%s pr_labels=%s",
+                    pr_number,
+                    issue_number,
+                    validity.reason,
+                    ",".join(validity.issue_labels) or "(missing)",
+                    ",".join(validity.pr_labels) or "(none)",
                 )
                 continue
 

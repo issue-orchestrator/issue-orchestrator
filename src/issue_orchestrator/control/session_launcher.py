@@ -67,9 +67,11 @@ from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, Work
 from ..ports.session_log import detect_ai_system_from_command
 from ..ports.provider_resilience import ProviderErrorType
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
+from ..ports.pull_request_tracker import PRInfo
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .review_validity import evaluate_review_validity
 from .session_manager import SessionManager
 from .transition_log import log_transition
 
@@ -1028,6 +1030,35 @@ class SessionLauncher:
 
         # Check for conflicts
         session_name = f"review-{review.pr_number}"
+        validity = self._review_launch_validity(review)
+        if not validity.valid:
+            log_transition(
+                "review",
+                review.pr_number,
+                "QUEUED",
+                "SKIP",
+                f"stale pending review: {validity.reason}",
+            )
+            logger.info(
+                "[launch] Dropping stale pending review: pr=%s issue=%s reason=%s issue_labels=%s pr_labels=%s",
+                review.pr_number,
+                review.issue_number,
+                validity.reason,
+                ",".join(validity.issue_labels) or "(missing)",
+                ",".join(validity.pr_labels) or "(none)",
+            )
+            self.events.publish(
+                make_trace_event(
+                    EventName.REVIEW_SKIPPED,
+                    {
+                        "pr_number": review.pr_number,
+                        "issue_number": review.issue_number,
+                        "reason": f"stale_pending_review:{validity.reason}",
+                    },
+                )
+            )
+            return LaunchResult(None, False, f"Stale pending review: {validity.reason}")
+
         if any(s.terminal_id == session_name for s in active_sessions):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
             return LaunchResult(None, False, "Already in active sessions")
@@ -1299,6 +1330,21 @@ class SessionLauncher:
         if existing_work:
             return f"{existing_work}\n\n{keep_current_note}"
         return keep_current_note
+
+    def _review_launch_validity(self, review: PendingReview):
+        """Load current review facts and decide whether launch is still valid."""
+        current_issue = self.repository_host.get_issue(review.issue_number)
+        if not isinstance(current_issue, IssueProtocol):
+            current_issue = None
+        current_pr = self.repository_host.get_pr(review.pr_number)
+        if not isinstance(current_pr, PRInfo):
+            current_pr = None
+        return evaluate_review_validity(
+            config=self.config,
+            label_manager=self._lm,
+            issue=current_issue,
+            pr=current_pr,
+        )
 
     def launch_rework_session(
         self,

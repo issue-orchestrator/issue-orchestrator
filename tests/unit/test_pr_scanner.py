@@ -341,6 +341,32 @@ class TestScanForReviewsFiltering:
 
         assert result == []
 
+    def test_skips_review_pr_when_linked_issue_is_blocked(
+        self,
+        scanner,
+        mock_repository,
+        caplog,
+    ):
+        """Blocked issues should not rediscover stale review work."""
+        mock_repository.issues.append(
+            IssueBuilder()
+            .with_number(42)
+            .with_title("Blocked issue")
+            .with_labels("agent:developer", "blocked-failed", "needs-rework")
+            .build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        with caplog.at_level("INFO"):
+            result = scanner.scan_for_reviews(
+                already_queued=[],
+                active_sessions=[],
+            )
+
+        assert result == []
+        assert "Skipping stale review PR: pr=100 issue=42 reason=issue_blocked" in caplog.text
+
 
 class TestScanForReviewsEvents:
     """Tests for event emission in review scanning."""

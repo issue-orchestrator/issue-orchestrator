@@ -98,6 +98,7 @@ class MockRepositoryHost:
 
     def __init__(self):
         self.labels: dict[int, set[str]] = {}
+        self.issues: dict[int, Issue] = {}
         self.prs: dict[int, list[PRInfo]] = {}  # issue_number -> PRs
         self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
         self.add_label_calls: list[tuple[int, str]] = []
@@ -115,7 +116,25 @@ class MockRepositoryHost:
         return self.prs.get(issue_number, [])
 
     def get_pr(self, pr_number: int) -> PRInfo | None:
+        for prs in self.prs.values():
+            for pr in prs:
+                if pr.number == pr_number:
+                    return pr
         return None
+
+    def get_issue(self, issue_number: int) -> Issue | None:
+        issue = self.issues.get(issue_number)
+        if issue is not None:
+            return issue
+        labels = sorted(self.labels.get(issue_number, set()))
+        if not any(label.startswith("agent:") for label in labels):
+            labels.append("agent:web")
+        return Issue(
+            number=issue_number,
+            title=f"Issue {issue_number}",
+            labels=labels,
+            repo="test/repo",
+        )
 
     def get_pr_reviews(self, pr_number: int) -> list[dict]:
         return self.pr_reviews.get(pr_number, [])
@@ -974,6 +993,35 @@ class TestLaunchReviewSession:
         )
         review_machine = launcher_bundle.review_machines[456]
         assert review_machine.state == ReviewState.IN_REVIEW.value
+
+    def test_drops_stale_pending_review_for_blocked_issue(
+        self,
+        launcher_bundle,
+        mock_repo_host,
+        caplog,
+    ):
+        """Blocked issues should invalidate queued review launches."""
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+        mock_repo_host.issues[123] = Issue(
+            number=123,
+            title="Blocked issue",
+            labels=["agent:web", "blocked-failed", "needs-rework"],
+            repo="test/repo",
+        )
+
+        with caplog.at_level("INFO"):
+            result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is False
+        assert result.reason == "Stale pending review: issue_blocked"
+        assert launcher_bundle.create_session_calls == []
+        assert "Dropping stale pending review: pr=456 issue=123 reason=issue_blocked" in caplog.text
 
     def test_review_existing_work_includes_keep_current_note(
         self, launcher_bundle, mock_repo_host
