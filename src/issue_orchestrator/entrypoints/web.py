@@ -280,22 +280,19 @@ def _response_json(response: JSONResponse) -> dict:
 
 def _get_open_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
     """Return open provider circuit breaker states for the dashboard."""
-    try:
-        states = orchestrator.deps.provider_resilience.store.list_all()
-    except Exception:
+    if not orchestrator.deps.provider_resilience:
         return []
     now = datetime.now(timezone.utc)
     result = []
-    for state in states:
-        if state.open_until and state.open_until > now:
-            remaining = max(0, int((state.open_until - now).total_seconds()))
-            result.append({
-                "provider": state.provider,
-                "open_until": state.open_until.isoformat(),
-                "cooldown_remaining_seconds": remaining,
-                "consecutive_outages": state.consecutive_outages,
-                "last_error_summary": state.last_error_summary,
-            })
+    for state in orchestrator.deps.provider_resilience.get_open_states(now=now):
+        remaining = max(0, int((state.open_until - now).total_seconds()))
+        result.append({
+            "provider": state.provider,
+            "open_until": state.open_until.isoformat(),
+            "cooldown_remaining_seconds": remaining,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary,
+        })
     return result
 
 

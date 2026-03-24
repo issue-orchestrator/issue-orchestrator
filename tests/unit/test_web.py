@@ -7077,7 +7077,7 @@ class TestProviderCircuitsEndpoint:
 
     def test_get_provider_circuits_empty(self):
         mock_orch = create_mock_orchestrator()
-        mock_orch.deps.provider_resilience.store.list_all.return_value = []
+        mock_orch.deps.provider_resilience.get_open_states.return_value = []
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
@@ -7101,7 +7101,7 @@ class TestProviderCircuitsEndpoint:
             last_error_summary="rate limit exceeded",
             updated_at=now,
         )
-        mock_orch.deps.provider_resilience.store.list_all.return_value = [state]
+        mock_orch.deps.provider_resilience.get_open_states.return_value = [state]
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
@@ -7118,20 +7118,9 @@ class TestProviderCircuitsEndpoint:
             set_orchestrator(None)
 
     def test_get_provider_circuits_expired_not_returned(self):
-        from datetime import datetime, timedelta, timezone
-        from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
-
         mock_orch = create_mock_orchestrator()
-        now = datetime.now(timezone.utc)
-        # expired: open_until in the past
-        expired = ProviderCircuitState(
-            provider="claude-haiku",
-            open_until=now - timedelta(minutes=1),
-            consecutive_outages=1,
-            last_error_summary="transient error",
-            updated_at=now,
-        )
-        mock_orch.deps.provider_resilience.store.list_all.return_value = [expired]
+        # get_open_states already filters expired states; returning [] simulates that
+        mock_orch.deps.provider_resilience.get_open_states.return_value = []
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)

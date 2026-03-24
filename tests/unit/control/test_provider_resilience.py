@@ -41,3 +41,30 @@ def test_record_success_resets_state():
 
     mgr.record_success("claude-code", now=now + timedelta(seconds=10))
     assert mgr.get_state("claude-code") is None
+
+
+def test_get_open_states_returns_only_open_circuits():
+    store = InMemoryProviderCircuitStore()
+    mgr = ProviderResilienceManager(ProviderResilienceConfig(), store=store, events=NullEventSink())
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    mgr.record_transient_failure("claude-code", error_summary="503", attempts=1, now=now)
+    # Simulate an expired circuit by recording a failure far in the past
+    mgr.record_transient_failure("codex", error_summary="timeout", attempts=1, now=now - timedelta(hours=24))
+
+    # At `now`, claude-code is open; codex's open_until is in the distant past
+    open_states = mgr.get_open_states(now=now)
+
+    assert len(open_states) == 1
+    assert open_states[0].provider == "claude-code"
+
+
+def test_get_open_states_empty_when_all_expired():
+    store = InMemoryProviderCircuitStore()
+    mgr = ProviderResilienceManager(ProviderResilienceConfig(), store=store, events=NullEventSink())
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    mgr.record_transient_failure("claude-code", error_summary="503", attempts=1, now=now)
+
+    # Check far in the future — circuit has expired
+    far_future = now + timedelta(hours=24)
+    assert mgr.get_open_states(now=far_future) == []
