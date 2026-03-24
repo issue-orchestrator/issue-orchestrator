@@ -12,7 +12,7 @@ The core insight: AI agents are untrusted workers. They'll take shortcuts, skip 
 
 - **Hexagonal architecture** — Core logic has no knowledge of GitHub, terminals, or storage. ~26 Protocol interfaces define the boundary. Adapters are swappable; the domain is pure.
 - **Crash-safe state** — GitHub labels are the source of truth. If the orchestrator dies mid-operation, it recovers state from labels on restart. No orphaned worktrees, no stuck issues.
-- **Mechanical enforcement over documentation** — Layered defense (AI hooks, git hooks, orchestrator policy, CI) makes it progressively harder for agents to bypass validation or push unreviewed code. No single layer is unbreakable; the combination is. See [Guardrails](docs/design/guardrails.md).
+- **Mechanical enforcement over documentation** — AI hooks block unsafe commands before execution, git hooks validate before push, the orchestrator requires a passing validation record before advancing state, and CI re-validates in a clean environment. Agents cannot get unvalidated code merged. See [Guardrails](docs/design/guardrails.md).
 - **Observe-Plan-Apply loop** — Each tick gathers facts (observation), decides actions (planning), then executes (application). Clean separation means decisions are testable without I/O.
 - **Fail-fast by default** — No silent fallbacks. If something is wrong, the system crashes loudly rather than hiding the bug behind a default value.
 
@@ -68,7 +68,7 @@ Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)
 
 ## Guardrails
 
-Agents cannot merge PRs — only humans merge. Validation (tests, linting, architecture checks) runs automatically before any code is pushed. [Multi-layer hooks](docs/architecture/hooks.md) enforce these rules at the AI agent level, git level, orchestrator level, and CI — defense-in-depth so that no single bypass defeats the system. See [Guardrails & Safety Model](docs/design/guardrails.md) for details, including what the system does *not* claim.
+Agents cannot merge PRs — only humans merge. Validation (tests, linting, architecture checks) runs automatically before any code is pushed. [Multi-layer hooks](docs/architecture/hooks.md) enforce these rules at the AI agent level, git level, orchestrator level, and CI — agents cannot bypass them. See [Guardrails & Safety Model](docs/design/guardrails.md) for details.
 
 ## Quickstart
 
