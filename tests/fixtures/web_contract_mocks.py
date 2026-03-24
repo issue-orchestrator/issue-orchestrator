@@ -7,6 +7,12 @@ from issue_orchestrator.events import EventHub
 from issue_orchestrator.infra.config import Config
 
 
+class _MockDeps:
+    """Minimal deps stub for web mock orchestrators."""
+
+    provider_resilience = None
+
+
 class MockOrchestratorForWeb:
     """Minimal orchestrator mock that satisfies the web contract protocol."""
 
@@ -24,6 +30,7 @@ class MockOrchestratorForWeb:
             dependency_problems={},
         )
         self.config = self._create_mock_config()
+        self.deps = _MockDeps()
         self._shutdown_requested = False
         self._event_hub = EventHub()
 

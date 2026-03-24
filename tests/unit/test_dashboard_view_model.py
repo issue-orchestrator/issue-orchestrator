@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,10 +28,16 @@ from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
 @dataclass
+class _DepStub:
+    provider_resilience: object = None
+
+
+@dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _DepStub = field(default_factory=_DepStub)
 
 
 def _make_config() -> Config:

@@ -1882,6 +1882,7 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                self.deps = SimpleNamespace(provider_resilience=None)
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
@@ -1912,6 +1913,7 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                self.deps = SimpleNamespace(provider_resilience=None)
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
