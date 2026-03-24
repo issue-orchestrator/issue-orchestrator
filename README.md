@@ -10,7 +10,7 @@ AI agents are excellent at executing bounded tasks, but they optimize for comple
 
 The core insight: AI agents are untrusted workers. They'll take shortcuts, skip tests, and push broken code if you let them. Issue-Orchestrator treats agent output the way a good CI pipeline treats developer commits — verify everything mechanically, never trust intent. For the full narrative, see [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
 
-- **Hexagonal architecture** — Core logic has no knowledge of GitHub, terminals, or storage. ~26 Protocol interfaces define the boundary. Adapters are swappable; the domain is pure.
+- **Hexagonal architecture** — Core logic has no knowledge of GitHub, terminals, or storage. ~31 Protocol interfaces define the boundary. Adapters are swappable; the domain is pure.
 - **Crash-safe state** — GitHub labels are the source of truth. If the orchestrator dies mid-operation, it recovers state from labels on restart. No orphaned worktrees, no stuck issues.
 - **Mechanical enforcement over documentation** — AI hooks block unsafe commands before execution, git hooks validate before push, the orchestrator requires a passing validation record before advancing state, and CI re-validates in a clean environment. Agents cannot get unvalidated code merged. See [Guardrails](docs/design/guardrails.md).
 - **Observe-Plan-Apply loop** — Each tick gathers facts (observation), decides actions (planning), then executes (application). Clean separation means decisions are testable without I/O.

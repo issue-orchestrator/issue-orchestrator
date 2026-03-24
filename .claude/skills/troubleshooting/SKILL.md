@@ -1,6 +1,6 @@
 ---
 name: troubleshooting
-description: General orchestrator diagnostics, hook problems, performance issues, and infrastructure debugging. Use for "orchestrator behaving unexpectedly", hook hangs, iTerm2 slowness, or lock/state issues. For failed issues, use session-debugging skill instead.
+description: General orchestrator diagnostics, hook problems, performance issues, and infrastructure debugging. Use for "orchestrator behaving unexpectedly", hook hangs, or lock/state issues. For failed issues, use session-debugging skill instead.
 ---
 
 # Troubleshooting
@@ -11,7 +11,7 @@ General diagnostics for orchestrator infrastructure issues.
 
 - Orchestrator behaving unexpectedly
 - Hooks hanging or failing
-- iTerm2/terminal performance issues
+- Terminal/subprocess performance issues
 - Lock or state problems
 - General "something's wrong" scenarios
 
@@ -28,7 +28,7 @@ All session artifacts are centralized in a run directory per session:
 <worktree>/.issue-orchestrator/sessions/
 ├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
 │   ├── manifest.json             # Session metadata
-│   ├── session.log               # Terminal output
+│   ├── terminal-recording.jsonl  # Terminal output (NDJSON with base64 PTY events)
 │   ├── validation-*.{json,log}   # Validation artifacts
 │   ├── orchestrator-tail.log     # Filtered orch log for this session
 │   └── claude-session.jsonl      # Symlink to Claude log
@@ -70,8 +70,8 @@ grep -E "\[EVENT\]|\[STATE_MACHINE\]|Launched|Queued|review" "$LOG" | tail -100
 # Check for errors
 grep -i -E "error|exception|traceback" "$LOG" | tail -30
 
-# List tmux sessions
-tmux list-windows -t orchestrator
+# List running subprocess sessions
+ps aux | grep -E "claude|issue-orchestrator" | grep -v grep
 
 # Check web API (if running with --web-ui)
 curl -s http://localhost:8080/api/status | jq
@@ -88,8 +88,8 @@ RUN_DIR=$(ls -td $WORKTREE/.issue-orchestrator/sessions/*__* 2>/dev/null | head 
 # Check manifest for session metadata
 cat $RUN_DIR/manifest.json | jq '{session_name, started_at, ended_at, outcome}'
 
-# Check session log
-tail -100 $RUN_DIR/session.log
+# Check terminal recording (NDJSON format — use orchestrator replay, not cat)
+ls -lh $RUN_DIR/terminal-recording.jsonl
 
 # Check orchestrator-filtered log for this session
 cat $RUN_DIR/orchestrator-tail.log | tail -50
@@ -102,11 +102,9 @@ cat $RUN_DIR/orchestrator-tail.log | tail -50
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Pre-push hook hangs | Infinite recursion in worktree | Check hook chain, use `GIT_TERMINAL_PROMPT=0` |
-| iTerm2 very slow | Too many idle tabs | Run cleanup or restart orchestrator |
 | Labels not applied | Wrong label_target (issue vs PR) | Check completion_processor logs |
 | Sessions cycling/retry loop | `blocked-failed` label not added | Check `failed_this_cycle` mechanism |
-| iTerm tabs exit immediately | Sandbox check failing | Check `_iterm2.py` sandbox_check |
-| Orchestrator won't start | Lock file exists | Check `.issue-orchestrator/state/orchestrator.lock` |
+| Orchestrator won't start | Lock file exists | Check `.issue-orchestrator/locks/` |
 | GitHub API errors | Rate limiting | Check `gh api rate_limit` |
 | Session artifacts missing | Run dir not created | Check manifest.json exists in run dir |
 
@@ -210,16 +208,13 @@ ls -la $WORKTREE/.issue-orchestrator/sessions/<session_name>
 
 ## Performance Issues
 
-### iTerm2 Slowness
+### Too Many Concurrent Sessions
 
-Too many terminal tabs/windows degrade iTerm2 performance.
+Too many subprocess sessions can exhaust system resources.
 
 ```bash
-# Count orchestrator windows
-tmux list-windows -t orchestrator | wc -l
-
-# Kill all orchestrator tmux sessions
-tmux kill-session -t orchestrator
+# Count running agent processes
+ps aux | grep -E "claude|coding-done|reviewer-done" | grep -v grep | wc -l
 ```
 
 **Prevention:** Configure `max_concurrent_sessions` in config to limit parallel sessions.
@@ -233,14 +228,14 @@ tmux kill-session -t orchestrator
 If orchestrator won't start due to lock:
 
 ```bash
-# Check lock file
-cat .issue-orchestrator/state/orchestrator.lock
+# Check lock files
+ls -la .issue-orchestrator/locks/
 
 # Check if process is actually running
 ps aux | grep issue-orchestrator
 
-# If not running, remove stale lock
-rm .issue-orchestrator/state/orchestrator.lock
+# If not running, remove stale locks
+rm .issue-orchestrator/locks/*.json
 ```
 
 ### State Corruption
@@ -251,8 +246,8 @@ If state seems wrong:
 # View current state
 cat .issue-orchestrator/state/sessions.json | jq
 
-# Check for orphaned sessions
-tmux list-windows -t orchestrator -F "#{window_name}"
+# Check for orphaned subprocess sessions
+ps aux | grep -E "claude|issue-orchestrator" | grep -v grep
 ```
 
 ---
@@ -262,9 +257,6 @@ tmux list-windows -t orchestrator -F "#{window_name}"
 ```bash
 # Kill stuck orchestrators
 pkill -f "issue-orchestrator.*start"
-
-# Clean up stale tmux sessions
-tmux kill-session -t orchestrator 2>/dev/null
 
 # Kill specific e2e worker
 pkill -f "e2e_worker"
@@ -304,12 +296,12 @@ cat $RUN_DIR/manifest.json | jq -r '.claude_log_path'
 |------|---------|
 | `.issue-orchestrator/state/orchestrator.log` | Main orchestrator log |
 | `.issue-orchestrator/state/sessions.json` | Current session state |
-| `.issue-orchestrator/state/orchestrator.lock` | Lock file |
+| `.issue-orchestrator/locks/` | Lock files (per instance) |
 | `.issue-orchestrator/config/*.yaml` | Configuration files |
 | `.issue-orchestrator/sessions/latest.json` | Pointer to most recent session run |
 | `.issue-orchestrator/sessions/index.json` | List of all session runs |
 | `.issue-orchestrator/sessions/<run>/manifest.json` | Session metadata |
-| `.issue-orchestrator/sessions/<run>/session.log` | Terminal output |
+| `.issue-orchestrator/sessions/<run>/terminal-recording.jsonl` | Terminal output |
 | `.issue-orchestrator/sessions/<run>/orchestrator-tail.log` | Filtered orch log |
-| `adapters/terminal/_iterm2.py` | iTerm2 adapter (sandbox check) |
+| `execution/terminal_subprocess.py` | Subprocess-based terminal session management |
 | `control/session_launcher.py` | Session launch/completion handling |

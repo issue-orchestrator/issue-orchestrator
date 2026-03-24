@@ -89,7 +89,7 @@ Session FAILED/BLOCKED/TIMEOUT
        │
 [Failure Investigation] (if triage_review_on_failure: true)
   - Triage agent reviews what went wrong
-  - Uses _queue_triage_failure_review()
+  - Uses _plan_discovered_failures()
   - Helps identify patterns in failures
 ```
 
@@ -100,7 +100,7 @@ Session FAILED/BLOCKED/TIMEOUT
 | `launch_review_session()` | Launch review agent |
 | `scan_needs_rework_prs()` | Find PRs needing rework |
 | `launch_rework_session()` | Re-launch work agent |
-| `_queue_triage_failure_review()` | Queue triage to investigate failures |
+| `_plan_discovered_failures()` | Queue triage to investigate failures |
 | `control/github_workflow.py` | Review/rework discovery and queueing logic |
 | `control/session_launcher.py` | Review and rework session launch paths |
 | `infra/orchestrator.py` | Runtime facade that delegates to the review workflow helpers |
@@ -109,7 +109,7 @@ Session FAILED/BLOCKED/TIMEOUT
 
 ```yaml
 review:
-  code_review_agent: "agent:reviewer"
+  default: "agent:reviewer"
   code_review_label: "needs-code-review"
   max_rework_cycles: 2
 

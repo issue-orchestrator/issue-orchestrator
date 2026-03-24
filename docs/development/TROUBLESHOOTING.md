@@ -61,7 +61,7 @@ All session artifacts are centralized in a run directory per session:
 <worktree>/.issue-orchestrator/sessions/
 ├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
 │   ├── manifest.json             # Session metadata (start time, paths, outcome)
-│   ├── session.log               # Terminal output from the session
+│   ├── terminal-recording.jsonl  # Terminal output (NDJSON with base64 PTY events)
 │   ├── validation-record.json    # Validation pass/fail result
 │   ├── validation-stdout.log     # Validation command stdout
 │   ├── validation-stderr.log     # Validation command stderr
@@ -83,8 +83,8 @@ RUN_DIR=$(ls -td $WORKTREE/.issue-orchestrator/sessions/*__* 2>/dev/null | head 
 # Check manifest for session metadata
 cat $RUN_DIR/manifest.json | jq
 
-# Check session log
-tail -100 $RUN_DIR/session.log
+# Check terminal recording (NDJSON format — use orchestrator replay, not cat)
+ls -lh $RUN_DIR/terminal-recording.jsonl
 
 # Check validation errors
 cat $RUN_DIR/validation-errors.txt
@@ -187,11 +187,11 @@ gh label create "failed" -R owner/repo --description "Agent session failed" --co
 
 ### Lock Cleanup
 
-Locks stored in `/tmp/issue-orchestrator/locks/`. Cleanup runs at startup.
+Locks stored in `.issue-orchestrator/locks/` (per-instance JSON files). Cleanup runs at startup.
 
 Manual cleanup:
 ```bash
-rm -rf /tmp/issue-orchestrator/locks/*
+rm .issue-orchestrator/locks/*.json
 ```
 
 ## Claude Session Logs
