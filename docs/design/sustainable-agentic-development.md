@@ -38,9 +38,9 @@ In Python, that meant:
 - custom AST checks for constraints linters can't express
 - validation gates that run on demand, pre-push, and in CI
 
-These gates cannot be bypassed. Agents cannot use `--no-verify`. If a change violates a boundary, it doesn't move forward.
+These gates are layered so that no single bypass defeats the system. AI-level hooks block `--no-verify` before it executes. Git hooks run validation pre-push. The orchestrator independently enforces a passing validation record before advancing state. CI re-validates in a clean environment. If any one layer is circumvented, the next catches it.
 
-One of the most important lessons I learned was this: agents will always find reasons to skip validation unless it is technically impossible to do so. The only durable solution is to make skipping impossible.
+One of the most important lessons I learned was this: agents will always find reasons to skip validation unless the system makes it structurally difficult. The durable solution is defense-in-depth, not any single unbreakable gate.
 
 ---
 
