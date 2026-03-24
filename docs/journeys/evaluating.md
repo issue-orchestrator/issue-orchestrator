@@ -4,9 +4,11 @@ You're assessing Issue Orchestrator's design — whether the architecture is sou
 
 ## Start here
 
+**[Making Agentic Development Sustainable](../design/sustainable-agentic-development.md)** — The design essay. Why the system exists, the three tracks (enforceable architecture, deterministic workflow, externalized management), and lessons learned. 10 minute read.
+
 **[README](../../README.md)** — The pitch and how-it-works diagram. Takes 2 minutes. Notice the agent-reviewer loop with cycle limits — that's the core quality enforcement mechanism.
 
-**[Project Status](../../README.md#project-status)** — Start here for the current maturity statement. It is the maintained summary of what is stable versus still evolving.
+**[Project Status](../../README.md#project-status)** — Current maturity statement. What is stable versus still evolving.
 
 ## Architecture
 

@@ -4,6 +4,18 @@ Issue-Orchestrator takes GitHub issues, runs AI agents on them with guardrails, 
 
 AI agents are excellent at executing bounded tasks, but they optimize for completion, not long-term system health. Issue-Orchestrator provides the structure: enforced validation, automated code review, architecture boundary checks, and isolated worktrees — so agents can work in parallel while you stay in control.
 
+> **Evaluating the engineering?** Read [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md) for the design thinking, then [Evaluating the System](docs/journeys/evaluating.md) for architecture decisions and where to read code.
+
+## Design philosophy
+
+The core insight: AI agents are untrusted workers. They'll take shortcuts, skip tests, and push broken code if you let them. Issue-Orchestrator treats agent output the way a good CI pipeline treats developer commits — verify everything mechanically, never trust intent. For the full narrative, see [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
+
+- **Hexagonal architecture** — Core logic has no knowledge of GitHub, terminals, or storage. ~26 Protocol interfaces define the boundary. Adapters are swappable; the domain is pure.
+- **Crash-safe state** — GitHub labels are the source of truth. If the orchestrator dies mid-operation, it recovers state from labels on restart. No orphaned worktrees, no stuck issues.
+- **Mechanical enforcement over documentation** — Three defense layers (AI hooks, git hooks, server-side) ensure agents can't bypass validation, push directly, or merge PRs. See [Guardrails](docs/design/guardrails.md).
+- **Observe-Plan-Apply loop** — Each tick gathers facts (observation), decides actions (planning), then executes (application). Clean separation means decisions are testable without I/O.
+- **Fail-fast by default** — No silent fallbacks. If something is wrong, the system crashes loudly rather than hiding the bug behind a default value.
+
 ## How it works
 
 The orchestrator picks up GitHub issues, assigns them to AI agents, and manages the full lifecycle through to a merge-ready PR.
@@ -40,17 +52,19 @@ stateDiagram-v2
 
 ## Dashboard
 
-<!-- TODO: Add dashboard screenshot -->
-*Screenshot placeholder — the web dashboard shows a kanban board with issues flowing through Queued, Running, Blocked, and Done columns.*
+![Issue-Orchestrator dashboard with issue timeline](docs/images/dashboard-plus-timeline.png)
 
-The dashboard gives you a live view of what the orchestrator is doing:
+The dashboard gives you a live view of what the orchestrator is doing: issues flow through Queued, Running, Blocked, and Awaiting Merge columns. Click any issue to see its full timeline — review cycles, rework rounds, session recordings, and failure diagnostics.
 
-- **Queued** — issues waiting for an available agent slot
-- **Running** — active agent sessions with live status
-- **Blocked** — failed sessions, validation errors, or issues needing human input
-- **Done** — completed PRs waiting for your review and merge
+![Issue timeline detail](docs/images/timeline.png)
 
-The dashboard also provides session timelines, failure analysis (why did this agent fail?), and E2E test results. Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)), or AI agents via the REST API.
+Each issue's timeline shows the complete history: when code review started, what the reviewer found, how many rework cycles it took, and links to session recordings and transcripts.
+
+![Session replay](docs/images/ui-session.png)
+
+Session recordings let you see exactly what an agent did — the terminal output, rendered in an emulator replay. Useful for debugging failures and understanding agent behavior.
+
+Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)), or AI agents via the REST API.
 
 ## Guardrails
 
@@ -79,12 +93,13 @@ See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/q
 - Solo builders and small teams using coding agents on real repos
 - People who want strong safety and guardrails (humans merge, verification, reconciliation)
 
-## Project Status
+## Project status
 
-This project is under **active development**. Core orchestration, guardrails, and workflow enforcement are stable. APIs and internals may change as the system is refined.
+**Beta** — Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner and Goal Pilot are newer and still maturing. APIs may change.
 
-The repository is public to support discussion, review, and hiring conversations.
-For guidance on what is stable and where to read next, see [Evaluating the System](docs/journeys/evaluating.md).
+~100K lines of Python, 4500+ automated tests, 24 architecture decision records.
+
+For guidance on what is stable and where to read code, see [Evaluating the System](docs/journeys/evaluating.md).
 
 ## Documentation
 
