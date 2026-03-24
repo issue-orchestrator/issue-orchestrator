@@ -280,7 +280,7 @@ def _response_json(response: JSONResponse) -> dict:
 
 def _get_open_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
     """Return open provider circuit breaker states for the dashboard."""
-    if not orchestrator.deps.provider_resilience:
+    if orchestrator is None or not orchestrator.deps.provider_resilience:
         return []
     now = datetime.now(timezone.utc)
     result = []
