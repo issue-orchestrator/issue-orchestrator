@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -94,6 +95,7 @@ class DashboardViewModel:
             "awaiting_merge_items": self.awaiting_merge_items,
             "flow_columns": self.flow_columns,
             "scope_summary": self.scope_summary,
+            "provider_circuits": self.provider_circuits,
             "active_count": self.active_count,
             "queue_count": self.queue_count,
             "blocked_count": self.blocked_count,
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,6 +158,7 @@ class DashboardViewModel:
             "awaiting_merge_items": self.awaiting_merge_items,
             "flow_columns": self.flow_columns,
             "scope_summary": self.scope_summary,
+            "provider_circuits": self.provider_circuits,
             "active_count": self.active_count,
             "queue_count": self.queue_count,
             "blocked_count": self.blocked_count,
@@ -1254,6 +1258,7 @@ def build_dashboard_view_model(
     active_tab: str = "kanban",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
+    provider_circuits: list[dict[str, Any]] | None = None,
 ) -> DashboardViewModel:
     """Build dashboard view model for templates and APIs."""
     active_tab = _normalize_tab(active_tab)
@@ -1470,4 +1475,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits if provider_circuits is not None else [],
     )

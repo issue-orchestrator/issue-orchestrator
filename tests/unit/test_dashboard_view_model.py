@@ -740,3 +740,50 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuits_in_view_model():
+    """Provider circuits are surfaced in the view model and dashboard_data."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    open_circuit = {
+        "provider": "claude-sonnet",
+        "open_until": "2026-03-24T12:00:00+00:00",
+        "cooldown_remaining_seconds": 300,
+        "consecutive_outages": 2,
+        "last_error_summary": "rate limit exceeded",
+    }
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuits=[open_circuit],
+    )
+
+    assert view_model.provider_circuits == [open_circuit]
+    ctx = view_model.template_context()
+    assert ctx["provider_circuits"] == [open_circuit]
+    dd = view_model.dashboard_data()
+    assert dd["providerCircuits"] == [open_circuit]
+
+
+def test_provider_circuits_defaults_to_empty():
+    """provider_circuits defaults to [] when not provided."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []

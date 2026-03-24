@@ -13,7 +13,7 @@ import subprocess
 import time
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -278,12 +278,35 @@ def _response_json(response: JSONResponse) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
+def _get_open_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
+    """Return open provider circuit breaker states for the dashboard."""
+    try:
+        states = orchestrator.deps.provider_resilience.store.list_all()
+    except Exception:
+        return []
+    now = datetime.now(timezone.utc)
+    result = []
+    for state in states:
+        if state.open_until and state.open_until > now:
+            remaining = max(0, int((state.open_until - now).total_seconds()))
+            result.append({
+                "provider": state.provider,
+                "open_until": state.open_until.isoformat(),
+                "cooldown_remaining_seconds": remaining,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+            })
+    return result
+
+
 def _build_dashboard_vm_sync(orchestrator: Any, queue_page: int, active_tab: str, e2e_page: int):
+    provider_circuits = _get_open_provider_circuits(orchestrator)
     return build_dashboard_view_model(
         orchestrator,
         queue_page=queue_page,
         active_tab=active_tab,
         e2e_page=e2e_page,
+        provider_circuits=provider_circuits,
     )
 
 
@@ -610,6 +633,15 @@ async def get_status() -> JSONResponse:
         "publish_jobs": publish_jobs,
         "publish_job_stats": publish_job_stats,
     })
+
+
+@app.get("/api/provider-circuits")
+async def get_provider_circuits(orchestrator=Depends(get_orchestrator)) -> JSONResponse:
+    """Get current provider circuit breaker states (open circuits only)."""
+    if not orchestrator:
+        return JSONResponse({"circuits": []})
+    circuits = await asyncio.to_thread(_get_open_provider_circuits, orchestrator)
+    return JSONResponse({"circuits": circuits})
 
 
 @app.get("/api/publish-jobs")

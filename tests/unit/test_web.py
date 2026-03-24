@@ -7063,3 +7063,80 @@ class TestIssueAuditEndpoint:
 
         assert response.status_code == 503
         assert response.json() == {"error": "Orchestrator not running"}
+
+
+class TestProviderCircuitsEndpoint:
+    """Tests for /api/provider-circuits endpoint."""
+
+    def test_get_provider_circuits_no_orchestrator(self):
+        set_orchestrator(None)
+        client = TestClient(app)
+        response = client.get("/api/provider-circuits")
+        assert response.status_code == 200
+        assert response.json() == {"circuits": []}
+
+    def test_get_provider_circuits_empty(self):
+        mock_orch = create_mock_orchestrator()
+        mock_orch.deps.provider_resilience.store.list_all.return_value = []
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+            assert response.status_code == 200
+            assert response.json() == {"circuits": []}
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_open(self):
+        from datetime import datetime, timedelta, timezone
+        from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+        mock_orch = create_mock_orchestrator()
+        now = datetime.now(timezone.utc)
+        open_until = now + timedelta(minutes=5)
+        state = ProviderCircuitState(
+            provider="claude-sonnet",
+            open_until=open_until,
+            consecutive_outages=2,
+            last_error_summary="rate limit exceeded",
+            updated_at=now,
+        )
+        mock_orch.deps.provider_resilience.store.list_all.return_value = [state]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["circuits"]) == 1
+            circuit = data["circuits"][0]
+            assert circuit["provider"] == "claude-sonnet"
+            assert circuit["consecutive_outages"] == 2
+            assert circuit["last_error_summary"] == "rate limit exceeded"
+            assert circuit["cooldown_remaining_seconds"] > 0
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_expired_not_returned(self):
+        from datetime import datetime, timedelta, timezone
+        from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+        mock_orch = create_mock_orchestrator()
+        now = datetime.now(timezone.utc)
+        # expired: open_until in the past
+        expired = ProviderCircuitState(
+            provider="claude-haiku",
+            open_until=now - timedelta(minutes=1),
+            consecutive_outages=1,
+            last_error_summary="transient error",
+            updated_at=now,
+        )
+        mock_orch.deps.provider_resilience.store.list_all.return_value = [expired]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+            assert response.status_code == 200
+            assert response.json() == {"circuits": []}
+        finally:
+            set_orchestrator(None)

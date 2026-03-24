@@ -98,6 +98,30 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(229, 120, 120, 0.5);
+    background: rgba(229, 120, 120, 0.12);
+    color: var(--danger, #e57878);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+[data-theme="light"] .provider-outage-banner {
+    border-color: rgba(179, 38, 30, 0.4);
+    background: rgba(179, 38, 30, 0.08);
+    color: var(--danger, #b3261e);
+}
+.provider-outage-icon {
+    flex-shrink: 0;
+}
+.provider-outage-text {
+    flex: 1;
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;
