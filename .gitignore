@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.hypothesis/
 *.py[cod]
 *$py.class
 *.so
@@ -47,6 +48,7 @@ Thumbs.db
 
 # Project specific - local state files
 .issue-orchestrator/validation/
+.issue-orchestrator/worktree-id
 .issue-orchestrator/completion.json
 .issue-orchestrator/completion-*.json
 .issue-orchestrator/state_machines.json
