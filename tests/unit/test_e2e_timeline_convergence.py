@@ -433,3 +433,142 @@ class TestNestOrchestratorEvents:
         # The test_started event dict should have the orchestrator event as a child
         assert len(events[0].get("children", [])) == 1
         assert events[0]["children"][0]["event"] == "session.completed"
+
+
+class TestE2ERunDetailEndpoint:
+    """Endpoint-level tests for GET /api/e2e-run-detail/{run_id}."""
+
+    def _setup_orchestrator_with_timeline(self, store_key, records):
+        """Set up a mock orchestrator whose timeline_reader returns the given records."""
+        from unittest.mock import MagicMock
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from fastapi.testclient import TestClient
+        from pathlib import Path
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = Path("/tmp/nonexistent")
+
+        stream = TimelineStream.from_records(store_key, records)
+        mock_orch.deps.timeline_reader.read.return_value = stream
+
+        return mock_orch, TestClient(app)
+
+    def test_returns_404_when_no_events(self):
+        """Endpoint returns 404 for runs with no shared timeline events."""
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from pathlib import Path
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = Path("/tmp/nonexistent")
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=-99, events=[],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/e2e-run-detail/99")
+            assert response.status_code == 404
+            assert response.json()["error"] == "not_found"
+        finally:
+            set_orchestrator(None)
+
+    def test_returns_200_with_e2e_events(self):
+        """Endpoint returns 200 with events from the shared timeline store."""
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(42).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.run_started", data={"branch": "main"},
+                source_event="e2e.run_started",
+            ),
+            TimelineRecord(
+                event_id="e2", timestamp="2026-01-01T00:01:00Z",
+                event="e2e.run_finished", data={"status": "passed", "duration_seconds": 60.0},
+                source_event="e2e.run_finished",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/42")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["title"] == "E2E Run #42"
+            events = payload.get("events", [])
+            assert len(events) >= 2
+            phases = {e["phase"] for e in events}
+            assert "setup" in phases
+            assert "teardown" in phases
+        finally:
+            set_orchestrator(None)
+
+    def test_returns_503_when_orchestrator_not_running(self):
+        """Endpoint returns 503 when orchestrator is not set."""
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from fastapi.testclient import TestClient
+
+        set_orchestrator(None)
+        client = TestClient(app)
+        response = client.get("/api/e2e-run-detail/1")
+        assert response.status_code == 503
+
+
+class TestCheckE2ECompletion:
+    """Tests for _check_e2e_completion SSE broadcasting on worker exit."""
+
+    def _run_check(self, tmp_path, finished_ids, run_status="passed"):
+        """Set up mocks and call _check_e2e_completion."""
+        from unittest.mock import MagicMock, patch
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = tmp_path
+
+        mock_runner = MagicMock()
+        mock_runner.cleanup_finished.return_value = finished_ids
+
+        if finished_ids:
+            # Create a real E2E DB with a finished run
+            db_dir = tmp_path / ".issue-orchestrator"
+            db_dir.mkdir(parents=True)
+            db = E2EDB(db_dir / "e2e.db")
+            orch_id = finished_ids[0]
+            run_id = db.start_run(
+                repo_root=str(tmp_path),
+                orchestrator_id=orch_id,
+                pytest_args=["tests/e2e"],
+            )
+            db.finish_run(run_id=run_id, status=run_status, duration_seconds=10.0)
+
+        with patch("issue_orchestrator.infra.orchestrator.get_e2e_runner_manager", return_value=mock_runner):
+            from issue_orchestrator.infra.orchestrator import Orchestrator
+            Orchestrator._check_e2e_completion(mock_orch)
+
+        return mock_orch
+
+    def test_publishes_completed_event_on_passed_run(self, tmp_path):
+        """When E2E worker finishes with passed status, E2E_COMPLETED is published."""
+        from issue_orchestrator.events.catalog import EventName
+
+        mock_orch = self._run_check(tmp_path, ["test-orch"], run_status="passed")
+        mock_orch.deps.events.publish.assert_called_once()
+        call_args = mock_orch.deps.events.publish.call_args[0][0]
+        assert call_args.name == EventName.E2E_COMPLETED
+
+    def test_publishes_failed_event_on_failed_run(self, tmp_path):
+        """When E2E worker finishes with failed status, E2E_FAILED is published."""
+        from issue_orchestrator.events.catalog import EventName
+
+        mock_orch = self._run_check(tmp_path, ["test-orch"], run_status="failed")
+        mock_orch.deps.events.publish.assert_called_once()
+        call_args = mock_orch.deps.events.publish.call_args[0][0]
+        assert call_args.name == EventName.E2E_FAILED
+
+    def test_no_publish_when_no_workers_finished(self, tmp_path):
+        """When no E2E workers have finished, nothing is published."""
+        mock_orch = self._run_check(tmp_path, [])
+        mock_orch.deps.events.publish.assert_not_called()
