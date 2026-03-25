@@ -25,7 +25,7 @@ All session artifacts are now centralized in a single run directory per session:
 <worktree>/.issue-orchestrator/sessions/
 ├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
 │   ├── manifest.json             # Session metadata (start time, paths, outcome)
-│   ├── session.log               # Terminal output from the session
+│   ├── terminal-recording.jsonl  # Terminal output (NDJSON with base64 PTY events)
 │   ├── validation-record.json    # Validation pass/fail result
 │   ├── validation-stdout.log     # Validation command stdout
 │   ├── validation-stderr.log     # Validation command stderr
@@ -64,7 +64,7 @@ issue-orchestrator trace <ISSUE_NUMBER>
 Example output:
 ```
 2026-01-12 11:44:30 [SESSION] status=FAILED outcome=none reason=no_completion_record
-2026-01-12 11:44:30 [ERROR] errors=["Push failed: session.log is 156MB"]
+2026-01-12 11:44:30 [ERROR] errors=["Push failed: terminal-recording.jsonl is 156MB"]
 ```
 
 **What to look for:**
@@ -208,7 +208,7 @@ Git push to remote failed.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `file exceeds 100MB` | Large file (often session.log) | Add to .gitignore |
+| `file exceeds 100MB` | Large file (often terminal-recording.jsonl) | Add to .gitignore |
 | `stale info` | Branch diverged from remote | Rebase needed |
 | `permission denied` | Auth issue | Check git credentials |
 | `protected branch` | Can't push to main | Should be on feature branch |
@@ -219,11 +219,11 @@ Git push to remote failed.
 # Find large files in worktree
 find $WORKTREE -type f -size +10M -exec ls -lh {} \;
 
-# Check session log size specifically
-ls -lh $RUN_DIR/session.log
+# Check terminal recording size
+ls -lh $RUN_DIR/terminal-recording.jsonl
 
 # Check .gitignore
-cat $WORKTREE/.gitignore | grep -E "session\.log|\.log"
+cat $WORKTREE/.gitignore | grep -E "terminal-recording|\.jsonl|\.log"
 ```
 
 ---
@@ -274,7 +274,7 @@ cat $WORKTREE/.issue-orchestrator/completion*.json | jq '.blocked_reason'
 | File | Purpose |
 |------|---------|
 | `manifest.json` | Session metadata: times, paths, outcome, validation status |
-| `session.log` | Terminal output from the agent session |
+| `terminal-recording.jsonl` | Terminal output (NDJSON with base64 PTY events) |
 | `validation-record.json` | Structured validation result (passed, exit_code, command) |
 | `validation-stdout.log` | Raw stdout from validation command |
 | `validation-stderr.log` | Raw stderr from validation command |

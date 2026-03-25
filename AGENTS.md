@@ -66,7 +66,7 @@ For UI-facing changes, follow `.claude/skills/frontend-design/SKILL.md`; task is
 | `IssueTracker` | GitHub issue operations | `GitHubAdapter` |
 | `SessionStore` | Persist session state | `JsonSessionStore` |
 
-These are the foundational ports. See `ports/` for the full set (~26 protocols including `WorkingCopy`, `WorktreeManager`, `RepositoryHost`, `CommandRunner`, and others).
+These are the foundational ports. See `ports/` for the full set (~31 protocols including `WorkingCopy`, `WorktreeManager`, `RepositoryHost`, `CommandRunner`, and others).
 
 ## Composition Root
 

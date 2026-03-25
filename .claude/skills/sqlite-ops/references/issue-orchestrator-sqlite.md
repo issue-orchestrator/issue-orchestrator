@@ -2,21 +2,37 @@
 
 ## Databases and paths
 
-- Publish job store: `.issue-orchestrator/state/publish_jobs.db`
+Canonical source: `src/issue_orchestrator/infra/sqlite_registry.py`
+
+- **Publish Jobs**: `.issue-orchestrator/state/publish_jobs.db`
   - Code: `src/issue_orchestrator/control/job_store.py`
-  - Path helper: `get_default_db_path()` in `src/issue_orchestrator/control/job_store.py`
 
-- E2E results: `.issue-orchestrator/e2e.db`
-  - Code: `src/issue_orchestrator/infra/e2e_db.py`
-  - Used by: `src/issue_orchestrator/infra/e2e_runner.py`, `src/issue_orchestrator/entrypoints/e2e_worker.py`, `src/issue_orchestrator/entrypoints/web.py`, `src/issue_orchestrator/entrypoints/control_api.py`
-
-- Session registry: `.issue-orchestrator/state/session_registry.sqlite`
+- **Session Registry**: `.issue-orchestrator/state/session_registry.sqlite`
   - Code: `src/issue_orchestrator/execution/terminal_subprocess.py`
+
+- **Goal Pilot**: `.issue-orchestrator/state/goal_pilot.sqlite`
+  - Code: `src/issue_orchestrator/execution/goal_pilot_store.py`
+
+- **E2E Results**: `.issue-orchestrator/e2e.db`
+  - Code: `src/issue_orchestrator/infra/e2e_db.py`
+  - Used by: e2e_runner, e2e_worker, web, control_api
+
+- **Provider Circuit**: `.issue-orchestrator/state/provider_circuit.sqlite`
+  - Code: `src/issue_orchestrator/execution/provider_circuit_store.py`
+
+- **Queue Cache**: `.issue-orchestrator/state/queue_cache.sqlite`
+  - Code: `src/issue_orchestrator/execution/queue_cache_store.py`
+
+- **Label Store**: `.issue-orchestrator/state/label_store.sqlite`
+  - Code: `src/issue_orchestrator/execution/label_store.py`
+
+- **Timeline**: `.issue-orchestrator/state/timeline.sqlite`
+  - Code: `src/issue_orchestrator/execution/timeline_writer.py`, `src/issue_orchestrator/execution/timeline_reader.py`
 
 ## Registry and maintenance
 
 - Registry: `src/issue_orchestrator/infra/sqlite_registry.py`
-  - Data-driven list of SQLite databases (name, path, enabled, backup/pragmas).
+  - Data-driven list of SQLite databases (key, label, path, enabled, backup/pragmas).
 - Maintenance/backup utilities: `src/issue_orchestrator/infra/sqlite_maintenance.py`
   - Applies WAL + FULL pragmas on startup
   - Runs `PRAGMA quick_check` for doctor

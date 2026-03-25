@@ -24,8 +24,8 @@ For the validation gate design, see [Validation System](../architecture/validati
 
 ## What the system does not claim
 
-- Local agent execution on macOS is best-effort isolated, not a hardened sandbox.
-- Absolute-path execution (e.g. `/usr/bin/*`) cannot be fully prevented locally.
-- For strong isolation, container or CI-based execution is a future option.
+- **Local process isolation**: Agent execution on macOS is not sandboxed. Agents can run arbitrary shell commands on the host. The guardrails prevent unvalidated code from being merged, not arbitrary local execution.
+- **Absolute-path execution** (e.g. `/usr/bin/*`) cannot be fully prevented locally.
+- For strong process isolation, container or CI-based execution is a future option.
 
-This is an intentional trade-off in favor of developer ergonomics and transparency. The system assumes agents *will* make mistakes and is designed so that mistakes cannot bypass safety.
+This is an intentional trade-off. The system guarantees that agents cannot bypass validation or merge unreviewed code, but it does not claim to sandbox the agent's local environment.

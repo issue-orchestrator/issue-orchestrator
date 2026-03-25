@@ -4,9 +4,11 @@ You're assessing Issue Orchestrator's design — whether the architecture is sou
 
 ## Start here
 
+**[Making Agentic Development Sustainable](../design/sustainable-agentic-development.md)** — The design essay. Why the system exists, the three tracks (enforceable architecture, deterministic workflow, externalized management), and lessons learned. 10 minute read.
+
 **[README](../../README.md)** — The pitch and how-it-works diagram. Takes 2 minutes. Notice the agent-reviewer loop with cycle limits — that's the core quality enforcement mechanism.
 
-**[Project Status](../../README.md#project-status)** — Start here for the current maturity statement. It is the maintained summary of what is stable versus still evolving.
+**[Project Status](../../README.md#project-status)** — Current maturity statement. What is stable versus still evolving.
 
 ## Architecture
 
@@ -40,7 +42,7 @@ There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core 
 |------|-------------|------------------|
 | Orchestrator core | `src/issue_orchestrator/infra/orchestrator.py` | Main facade, delegates to control/services |
 | Decision logic | `src/issue_orchestrator/control/` | Scheduler, planner, action applier — all pure logic, no I/O |
-| Port interfaces | `src/issue_orchestrator/ports/` | ~26 Protocol definitions — the abstraction layer |
+| Port interfaces | `src/issue_orchestrator/ports/` | ~31 Protocol definitions — the abstraction layer |
 | State machines | `src/issue_orchestrator/domain/state_machines/` | Issue and review lifecycle |
 | Composition root | `src/issue_orchestrator/entrypoints/bootstrap.py` | Where dependencies are wired |
 
