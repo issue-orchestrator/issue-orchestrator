@@ -3692,9 +3692,25 @@ async function toggleExcluded() {
             }
         });
 
-        // NOTE: E2E progress is currently polled via updateE2EProgress().
-        // When the backend emits E2E SSE events (e2e.started, e2e.progress, etc.),
-        // add listeners here to reduce polling frequency.
+        // E2E lifecycle events — trigger immediate status refresh instead of
+        // waiting for the next poll cycle.
+        source.addEventListener('e2e.completed', function(event) {
+            console.log('[SSE] E2E run completed');
+            updateE2EProgress();
+        });
+        source.addEventListener('e2e.failed', function(event) {
+            console.log('[SSE] E2E run failed');
+            updateE2EProgress();
+        });
+        source.addEventListener('e2e.started', function(event) {
+            console.log('[SSE] E2E run started');
+            updateE2EProgress();
+        });
+        source.addEventListener('e2e.stopped', function(event) {
+            console.log('[SSE] E2E run stopped');
+            updateE2EProgress();
+        });
+
         source.onerror = function() {
             console.log('[SSE] Connection error, scheduling reconnect');
             closeEventStream();
@@ -8151,13 +8167,29 @@ async function showUnifiedRunView(runId) {
     modal.classList.add('visible');
 
     try {
-        // Fetch run details and timeline in parallel
-        const [detailsRes, timelineRes] = await Promise.all([
+        // Fetch run details, shared timeline detail, and legacy timeline in parallel.
+        // The shared endpoint (/api/e2e-run-detail/) returns phase_toc and cycles for
+        // richer rendering; the legacy endpoint is the fallback for older runs.
+        const [detailsRes, sharedTimelineRes, legacyTimelineRes] = await Promise.all([
             fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}&enhanced=true`),
+            fetch(`/api/e2e-run-detail/${runId}`),
             fetch(`/control/e2e/run/${runId}/timeline?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`),
         ]);
         const data = await detailsRes.json();
-        const timelineData = timelineRes.ok ? await timelineRes.json() : null;
+
+        // Prefer shared timeline (has phase_toc, cycles) over legacy
+        let timelineData = null;
+        if (sharedTimelineRes.ok) {
+            const shared = await sharedTimelineRes.json();
+            timelineData = {
+                events: shared.events || [],
+                phase_toc: shared.phase_toc || [],
+                cycles: shared.cycles || [],
+            };
+        } else if (legacyTimelineRes.ok) {
+            const legacy = await legacyTimelineRes.json();
+            timelineData = { events: legacy.events || [], phase_toc: [], cycles: [] };
+        }
 
         if (!detailsRes.ok) {
             content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load run details')}</div>`;
@@ -8186,7 +8218,8 @@ function renderUnifiedRunView(data, runId) {
     const runDate = run.started_at ? new Date(run.started_at).toLocaleString() : 'Unknown';
     modalTitle.textContent = `Run #${run.id} - ${runDate}`;
 
-    const hasTimeline = data._timeline && data._timeline.events && data._timeline.events.length > 0;
+    const tl = data._timeline || {};
+    const hasTimeline = tl.events && tl.events.length > 0;
 
     // Build header with run info, summary, and tab switcher
     let html = `
@@ -8273,10 +8306,11 @@ function renderUnifiedRunView(data, runId) {
 
     content.innerHTML = html;
 
-    // Pre-render timeline if available
+    // Pre-render timeline if available — pass phase_toc and cycles from
+    // the shared endpoint for richer rendering (phase grouping, cycle cards)
     if (hasTimeline) {
         const timelineContainer = document.getElementById('e2eRunTimelineTab');
-        renderTimeline(timelineContainer, data._timeline.events);
+        renderTimeline(timelineContainer, tl.events, tl.phase_toc || [], tl.cycles || []);
     }
 }
 

@@ -479,7 +479,7 @@ def e2e_run_timeline(
         return {"events": pytest_dicts}
 
     # Build timestamp windows for test events (test_started → test_completed pairs)
-    _nest_orchestrator_events(pytest_dicts, orchestrator_events)
+    nest_orchestrator_events(pytest_dicts, orchestrator_events)
 
     return {"events": pytest_dicts}
 
@@ -517,7 +517,7 @@ def _find_nearest_preceding(pytest_events: list[dict], ts: str) -> dict | None:
     return best
 
 
-def _nest_orchestrator_events(
+def nest_orchestrator_events(
     pytest_events: list[dict],
     orch_events: list[dict],
 ) -> None:

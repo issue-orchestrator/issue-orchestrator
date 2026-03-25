@@ -1819,16 +1819,17 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
 async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     """Get E2E run detail using the shared issue-detail timeline pipeline.
 
-    Reads E2E run events from timeline.sqlite via TimelineKey, then processes
-    them through the filtering/decoration/cycles pipeline.  The semantic
-    retention filter (_retain_semantic_timeline_events) is skipped because
-    it requires issue-lifecycle fields (logical_run, logical_cycle, etc.)
-    that E2E events do not carry.
+    Reads E2E run events from timeline.sqlite via TimelineKey, then nests
+    orchestrator events (agent sessions, reviews, rework) from the same
+    instance and time window as children under each test event.  This
+    produces the same hierarchical structure as the legacy endpoint but
+    through the shared pipeline.
 
     Returns 404 for runs that have no events in the shared timeline store
     (older runs that predate the convergence).
     """
     from ..domain.timeline_key import TimelineKey
+    from ..infra.e2e_db import nest_orchestrator_events
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -1853,11 +1854,18 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
 
     timeline = stream.to_dict()
     raw_events = timeline.get("events", [])
-    # Skip _retain_semantic_timeline_events: that filter requires issue-lifecycle
-    # fields (timeline_schema_version, logical_run/cycle/phase) which E2E events
-    # don't carry.  _filter_timeline_events handles basic display filtering.
     events = _filter_timeline_events(raw_events)
-    events = _decorate_timeline_events(events, store_key)
+
+    # Nest orchestrator events (agent sessions, reviews, rework) under
+    # the test events they occurred during, using timestamp windows.
+    orchestrator_events = _load_orchestrator_events_for_run(run_id)
+    if orchestrator_events:
+        nest_orchestrator_events(events, orchestrator_events)
+
+    # Skip _decorate_timeline_events: E2E events have no session artifacts
+    # (no run_dir, no terminal recordings). Nested orchestrator children are
+    # already decorated by the TimelineStream conversion in
+    # _read_orchestrator_timeline_for_window.
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
 
@@ -1876,6 +1884,41 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
         view=view,
     )
     return JSONResponse(payload)
+
+
+def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
+    """Read orchestrator events from timeline.sqlite for an E2E run's time window.
+
+    Uses the run's started_at/finished_at and orchestrator_instance_id
+    from e2e.db to scope the query to the correct events.
+    """
+    if not _orchestrator:
+        return []
+
+    from .control_api import _read_orchestrator_timeline_for_window
+
+    repo_root = _orchestrator.config.repo_root
+    db_path = repo_root / ".issue-orchestrator" / "e2e.db"
+    timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+
+    if not db_path.exists() or not timeline_db_path.exists():
+        return []
+
+    try:
+        from ..infra.e2e_db import E2EDB
+        db = E2EDB(db_path)
+        run = db.get_run(run_id)
+        if not run:
+            return []
+        return _read_orchestrator_timeline_for_window(
+            timeline_db_path,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            orchestrator_instance_id=run.orchestrator_instance_id,
+        )
+    except Exception:
+        logger.debug("Could not load orchestrator events for E2E run %d", run_id, exc_info=True)
+        return []
 
 
 def _build_issue_story_context(issue_number: int) -> IssueStoryContext | None:  # noqa: C901, PLR0912 — assembles story from multiple state sources

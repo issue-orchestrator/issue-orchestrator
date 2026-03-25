@@ -262,6 +262,7 @@ class Orchestrator:
             )
         # Check if we should auto-trigger E2E tests
         self._maybe_trigger_e2e()
+        self._check_e2e_completion()
         self._maybe_run_sqlite_backups()
         return cont
 
@@ -288,6 +289,40 @@ class Orchestrator:
             self.deps.events.publish(TraceEvent(
                 EventName.E2E_AUTO_TRIGGERED,
                 self._event_context.enrich({}),
+            ))
+
+    def _check_e2e_completion(self) -> None:
+        """Detect E2E worker completion and broadcast via SSE.
+
+        Called each tick. When the runner reports finished workers,
+        publish E2E_COMPLETED or E2E_FAILED so the web dashboard
+        updates immediately instead of waiting for the next poll.
+        """
+        runner = get_e2e_runner_manager()
+        finished = runner.cleanup_finished()
+        if not finished:
+            return
+        for orch_id in finished:
+            # Determine outcome from last run in DB
+            try:
+                from .e2e_db import E2EDB
+                db_path = self.config.repo_root / ".issue-orchestrator" / "e2e.db"
+                if db_path.exists():
+                    db = E2EDB(db_path)
+                    last_run = db.latest_run(orch_id)
+                    status = last_run.status if last_run else "unknown"
+                else:
+                    status = "unknown"
+            except Exception:
+                status = "unknown"
+
+            event_name = EventName.E2E_COMPLETED if status == "passed" else EventName.E2E_FAILED
+            self.deps.events.publish(TraceEvent(
+                event_name,
+                self._event_context.enrich({
+                    "orchestrator_id": orch_id,
+                    "status": status,
+                }),
             ))
 
     def _maybe_run_sqlite_backups(self) -> None:
