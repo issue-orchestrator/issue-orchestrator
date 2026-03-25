@@ -42,7 +42,7 @@ There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core 
 |------|-------------|------------------|
 | Orchestrator core | `src/issue_orchestrator/infra/orchestrator.py` | Main facade, delegates to control/services |
 | Decision logic | `src/issue_orchestrator/control/` | Scheduler, planner, action applier — all pure logic, no I/O |
-| Port interfaces | `src/issue_orchestrator/ports/` | ~26 Protocol definitions — the abstraction layer |
+| Port interfaces | `src/issue_orchestrator/ports/` | ~31 Protocol definitions — the abstraction layer |
 | State machines | `src/issue_orchestrator/domain/state_machines/` | Issue and review lifecycle |
 | Composition root | `src/issue_orchestrator/entrypoints/bootstrap.py` | Where dependencies are wired |
 

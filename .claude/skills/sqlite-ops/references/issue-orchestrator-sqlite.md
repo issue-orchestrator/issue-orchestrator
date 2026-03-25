@@ -18,16 +18,16 @@ Canonical source: `src/issue_orchestrator/infra/sqlite_registry.py`
   - Used by: e2e_runner, e2e_worker, web, control_api
 
 - **Provider Circuit**: `.issue-orchestrator/state/provider_circuit.sqlite`
-  - Code: `src/issue_orchestrator/execution/provider_circuit.py`
+  - Code: `src/issue_orchestrator/execution/provider_circuit_store.py`
 
 - **Queue Cache**: `.issue-orchestrator/state/queue_cache.sqlite`
   - Code: `src/issue_orchestrator/execution/queue_cache_store.py`
 
 - **Label Store**: `.issue-orchestrator/state/label_store.sqlite`
-  - Code: `src/issue_orchestrator/adapters/github/label_store.py`
+  - Code: `src/issue_orchestrator/execution/label_store.py`
 
 - **Timeline**: `.issue-orchestrator/state/timeline.sqlite`
-  - Code: `src/issue_orchestrator/timeline_writer.py`, `src/issue_orchestrator/timeline_reader.py`
+  - Code: `src/issue_orchestrator/execution/timeline_writer.py`, `src/issue_orchestrator/execution/timeline_reader.py`
 
 ## Registry and maintenance
 

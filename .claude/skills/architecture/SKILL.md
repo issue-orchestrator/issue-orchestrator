@@ -42,6 +42,6 @@ Read these files for context:
 | `EventSink` | Fire-and-forget trace events | `PluggyEventSink` (in `execution/`) |
 | `SessionRunner` | Terminal session management | `PluggySessionRunner` (in `execution/`) |
 | `IssueTracker` | GitHub issue operations | `GitHubAdapter` (in `adapters/`) |
-| `SessionStore` | Persist session state | `JsonSessionStore` (in `adapters/`) |
+| `SessionStore` | Persist session state | `JsonSessionStore` (in `execution/`) |
 
 These are the foundational ports. See `ports/` for the full set (~31 protocols).
