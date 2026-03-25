@@ -1862,7 +1862,10 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     if orchestrator_events:
         nest_orchestrator_events(events, orchestrator_events)
 
-    events = _decorate_timeline_events(events, store_key)
+    # Skip _decorate_timeline_events: E2E events have no session artifacts
+    # (no run_dir, no terminal recordings). Nested orchestrator children are
+    # already decorated by the TimelineStream conversion in
+    # _read_orchestrator_timeline_for_window.
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
 
