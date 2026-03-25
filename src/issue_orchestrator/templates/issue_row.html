@@ -140,8 +140,8 @@
                 {% endif %}
             </span>
             {% endif %}
-            {% if issue.is_e2e and issue.e2e_run_id %}
-            {# E2E runs get a timeline button that opens the shared timeline view #}
+            {% if issue.is_e2e and issue.e2e_run_id and active_tab != 'e2e' %}
+            {# E2E runs on non-E2E tabs get a timeline button (E2E tab has the View button) #}
             <button class="issue-timeline-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Timeline">
                 🧭
             </button>

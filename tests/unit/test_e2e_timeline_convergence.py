@@ -3,6 +3,7 @@
 import pytest
 
 from issue_orchestrator.domain.timeline_key import TimelineKey
+from issue_orchestrator.infra.e2e_db import nest_orchestrator_events
 from issue_orchestrator.ports.timeline_store import TimelineRecord
 from issue_orchestrator.timeline import (
     TimelineStream,
@@ -330,3 +331,105 @@ class TestE2ETimelineStoreIntegration:
         timeline_dict = stream.to_dict()
         assert len(timeline_dict["events"]) == 2
         assert timeline_dict["events"][0]["phase"] == "setup"
+
+
+class TestNestOrchestratorEvents:
+    """Orchestrator events are nested as children under E2E test time windows."""
+
+    def test_orch_event_nested_under_matching_test_window(self):
+        """An orchestrator event within a test window becomes a child of that test."""
+        pytest_events = [
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:00:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:00:30Z", "nodeid": "test_a",
+             "status": "completed"},
+        ]
+        orch_events = [
+            {"event": "session.started", "timestamp": "2026-01-01T00:00:10Z",
+             "step": "started", "status": "active", "summary": "Agent launched"},
+        ]
+        nest_orchestrator_events(pytest_events, orch_events)
+
+        # The test_started event gets the child (it's the window opener)
+        assert len(pytest_events[0]["children"]) == 1
+        assert pytest_events[0]["children"][0]["event"] == "session.started"
+
+    def test_orch_events_outside_window_attach_to_nearest(self):
+        """Orchestrator events outside test windows attach to nearest preceding event."""
+        pytest_events = [
+            {"event": "e2e.run_started", "timestamp": "2026-01-01T00:00:00Z"},
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:01:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:02:00Z", "nodeid": "test_a"},
+        ]
+        orch_events = [
+            {"event": "tick.started", "timestamp": "2026-01-01T00:00:30Z",
+             "step": "tick_started", "status": "active"},
+        ]
+        nest_orchestrator_events(pytest_events, orch_events)
+
+        # Event at :30 is before the test window (:01:00-:02:00), so attaches to run_started
+        assert len(pytest_events[0]["children"]) == 1
+        assert pytest_events[0]["children"][0]["event"] == "tick.started"
+
+    def test_no_orch_events_means_no_children(self):
+        """When there are no orchestrator events, no children are added."""
+        pytest_events = [
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:00:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:00:30Z", "nodeid": "test_a"},
+        ]
+        nest_orchestrator_events(pytest_events, [])
+        # children lists are initialized but empty
+        assert pytest_events[0].get("children", []) == []
+
+    def test_multiple_tests_get_correct_children(self):
+        """Each test window gets its own orchestrator events."""
+        pytest_events = [
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:00:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:01:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:02:00Z", "nodeid": "test_b"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:03:00Z", "nodeid": "test_b"},
+        ]
+        orch_events = [
+            {"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+             "step": "started", "status": "active", "summary": "Agent A"},
+            {"event": "review.approved", "timestamp": "2026-01-01T00:02:30Z",
+             "step": "approved", "status": "completed", "summary": "Review OK"},
+        ]
+        nest_orchestrator_events(pytest_events, orch_events)
+
+        # test_a's window gets session.started
+        assert len(pytest_events[0]["children"]) == 1
+        assert pytest_events[0]["children"][0]["event"] == "session.started"
+        # test_b's window gets review.approved
+        assert len(pytest_events[2]["children"]) == 1
+        assert pytest_events[2]["children"][0]["event"] == "review.approved"
+
+    def test_shared_pipeline_events_nest_correctly(self):
+        """Events from TimelineStream.to_dict() can be nested with orchestrator events."""
+        # Simulate what the shared endpoint does: read E2E events from store,
+        # convert to dicts, then nest orchestrator events
+        records = [
+            TimelineRecord(
+                event_id="e1", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started", data={"nodeid": "test_a"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="e2", timestamp="2026-01-01T00:01:00Z",
+                event="e2e.test_completed",
+                data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 55.0},
+                source_event="e2e.test_completed",
+            ),
+        ]
+        stream = TimelineStream.from_records(-1, records)
+        events = [evt.to_dict() for evt in stream.events]
+
+        # Orchestrator events that happened during the test
+        orch_events = [
+            {"event": "session.completed", "timestamp": "2026-01-01T00:00:45Z",
+             "step": "completed", "status": "completed", "summary": "Code written"},
+        ]
+        nest_orchestrator_events(events, orch_events)
+
+        # The test_started event dict should have the orchestrator event as a child
+        assert len(events[0].get("children", [])) == 1
+        assert events[0]["children"][0]["event"] == "session.completed"
