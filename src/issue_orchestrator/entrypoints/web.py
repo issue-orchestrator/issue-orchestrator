@@ -1815,6 +1815,69 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
     return IssueDetailPayload.model_validate(payload)
 
 
+@app.get("/api/e2e-run-detail/{run_id}")
+async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
+    """Get E2E run detail using the shared issue-detail timeline pipeline.
+
+    Reads E2E run events from timeline.sqlite via TimelineKey, then processes
+    them through the filtering/decoration/cycles pipeline.  The semantic
+    retention filter (_retain_semantic_timeline_events) is skipped because
+    it requires issue-lifecycle fields (logical_run, logical_cycle, etc.)
+    that E2E events do not carry.
+
+    Returns 404 for runs that have no events in the shared timeline store
+    (older runs that predate the convergence).
+    """
+    from ..domain.timeline_key import TimelineKey
+
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    reader = _orchestrator.deps.timeline_reader
+    store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
+
+    try:
+        stream = reader.read(store_key, limit=5000)
+    except RuntimeError as e:
+        logger.error("Timeline read failed for E2E run %d: %s", run_id, e)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "timeline_unavailable", "detail": str(e)},
+        )
+
+    if not stream.events:
+        return JSONResponse(
+            {"error": "not_found", "detail": f"No timeline events for E2E run {run_id}"},
+            status_code=404,
+        )
+
+    timeline = stream.to_dict()
+    raw_events = timeline.get("events", [])
+    # Skip _retain_semantic_timeline_events: that filter requires issue-lifecycle
+    # fields (timeline_schema_version, logical_run/cycle/phase) which E2E events
+    # don't carry.  _filter_timeline_events handles basic display filtering.
+    events = _filter_timeline_events(raw_events)
+    events = _decorate_timeline_events(events, store_key)
+    phase_toc = _build_phase_toc(events)
+    cycles = _build_timeline_cycles(events)
+
+    valid_views = {"user", "ops", "debug"}
+    if view not in valid_views:
+        view = "user"
+
+    payload = build_issue_detail_view_model(
+        issue_number=store_key,
+        title=f"E2E Run #{run_id}",
+        issue_url="",
+        events=events,
+        phase_toc=phase_toc,
+        cycles=cycles,
+        context=None,
+        view=view,
+    )
+    return JSONResponse(payload)
+
+
 def _build_issue_story_context(issue_number: int) -> IssueStoryContext | None:  # noqa: C901, PLR0912 — assembles story from multiple state sources
     """Assemble story context from orchestrator state for one issue."""
     if not _orchestrator:

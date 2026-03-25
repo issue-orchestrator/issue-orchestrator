@@ -4491,6 +4491,11 @@ async def e2e_run_timeline_endpoint(
     Returns events in the same shape as the main issue timeline,
     enabling shared timeline rendering between E2E and issue views.
 
+    This endpoint always reads from the e2e_run_events table and nests
+    orchestrator events under pytest time windows via e2e_run_timeline().
+    The shared timeline.sqlite store is consumed by the separate
+    /api/e2e-run-detail/{run_id} endpoint which uses the issue-detail pipeline.
+
     Path params:
         run_id: int - Run ID
 

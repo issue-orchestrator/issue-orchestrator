@@ -22,6 +22,7 @@ from .session_key import (
     TaskKind,
     SessionKey,
 )
+from .timeline_key import TimelineKey
 from .process_state import (
     ProcessState,
     ProcessExitInfo,
@@ -53,6 +54,8 @@ __all__ = [
     # Session identity
     "TaskKind",
     "SessionKey",
+    # Timeline identity
+    "TimelineKey",
     # Process observation
     "ProcessState",
     "ProcessExitInfo",
