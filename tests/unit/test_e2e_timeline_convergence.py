@@ -165,6 +165,74 @@ class TestE2ETimelineStreamRoundtrip:
         assert "Something went wrong" in (event.summary or "")
 
 
+class TestSourceEventSemantics:
+    """Verify completion events derive from their own name, not the paired started event.
+
+    In the legacy e2e_run_events table, source_event is a *pairing* concept:
+    e2e.test_completed stores source_event=e2e.test_started.  In timeline.sqlite,
+    source_event is the *canonical name* used for derivation.  If we wrote the
+    pairing value, completions would render as started events (bug).
+    """
+
+    def test_test_completed_with_pairing_source_event_renders_wrong(self):
+        """Demonstrates the bug: pairing source_event causes wrong derivation."""
+        record = TimelineRecord(
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_completed",
+            data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 1.0},
+            source_event="e2e.test_started",  # Pairing value — wrong for timeline
+        )
+        stream = TimelineStream.from_records(-1, [record])
+        event = stream.events[0]
+        # With pairing source_event, derivation uses "e2e.test_started" -> wrong
+        assert event.step == "test_started"  # Bug: should be "test_completed"
+        assert event.status == "active"  # Bug: should be "completed"
+
+    def test_test_completed_with_correct_source_event(self):
+        """With source_event=event_name, derivation is correct."""
+        record = TimelineRecord(
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_completed",
+            data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 1.0},
+            source_event="e2e.test_completed",  # Own name — correct for timeline
+        )
+        stream = TimelineStream.from_records(-1, [record])
+        event = stream.events[0]
+        assert event.step == "test_completed"
+        assert event.status == "completed"
+
+    def test_run_finished_with_pairing_source_event_renders_wrong(self):
+        """Demonstrates the bug: pairing source_event on run_finished."""
+        record = TimelineRecord(
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event="e2e.run_finished",
+            data={"status": "passed", "duration_seconds": 60.0},
+            source_event="e2e.run_started",  # Pairing value — wrong
+        )
+        stream = TimelineStream.from_records(-1, [record])
+        event = stream.events[0]
+        assert event.step == "run_started"  # Bug
+        assert event.status == "active"  # Bug
+
+    def test_run_finished_with_correct_source_event(self):
+        """With source_event=event_name, run_finished derives correctly."""
+        record = TimelineRecord(
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event="e2e.run_finished",
+            data={"status": "passed", "duration_seconds": 60.0},
+            source_event="e2e.run_finished",
+        )
+        stream = TimelineStream.from_records(-1, [record])
+        event = stream.events[0]
+        assert event.step == "run_finished"
+        assert event.status == "completed"
+        assert event.phase == "teardown"
+
+
 class TestE2ETimelineStoreIntegration:
     """E2E events can be written to and read from SqliteTimelineStore."""
 

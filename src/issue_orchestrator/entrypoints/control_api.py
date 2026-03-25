@@ -4491,9 +4491,10 @@ async def e2e_run_timeline_endpoint(
     Returns events in the same shape as the main issue timeline,
     enabling shared timeline rendering between E2E and issue views.
 
-    Reads from the shared timeline.sqlite store (via TimelineKey) when
-    events are available there. Falls back to the legacy e2e_run_events
-    table for runs that predate the shared timeline integration.
+    This endpoint always reads from the e2e_run_events table and nests
+    orchestrator events under pytest time windows via e2e_run_timeline().
+    The shared timeline.sqlite store is consumed by the separate
+    /api/e2e-run-detail/{run_id} endpoint which uses the issue-detail pipeline.
 
     Path params:
         run_id: int - Run ID
@@ -4501,7 +4502,6 @@ async def e2e_run_timeline_endpoint(
     Query params:
         repo_root: str - Repository root path
     """
-    from ..domain.timeline_key import TimelineKey
     from ..infra.e2e_db import E2EDB, e2e_run_timeline
 
     validated_root = _validate_repo_root(repo_root)
@@ -4519,16 +4519,6 @@ async def e2e_run_timeline_endpoint(
         )
 
     try:
-        # Try the shared timeline store first (new path)
-        if _orchestrator is not None:
-            reader = _orchestrator.deps.timeline_reader
-            store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
-            stream = reader.read(store_key, limit=5000)
-            if stream.events:
-                timeline = stream.to_dict()
-                return JSONResponse({"events": timeline.get("events", [])})
-
-        # Fall back to legacy e2e_run_events table
         db = E2EDB(db_path)
         events = db.get_run_events(run_id)
 

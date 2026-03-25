@@ -1820,8 +1820,13 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     """Get E2E run detail using the shared issue-detail timeline pipeline.
 
     Reads E2E run events from timeline.sqlite via TimelineKey, then processes
-    them through the same filtering/decoration/cycles pipeline as issues.
-    Falls back to legacy e2e_run_events table for older runs.
+    them through the filtering/decoration/cycles pipeline.  The semantic
+    retention filter (_retain_semantic_timeline_events) is skipped because
+    it requires issue-lifecycle fields (logical_run, logical_cycle, etc.)
+    that E2E events do not carry.
+
+    Returns 404 for runs that have no events in the shared timeline store
+    (older runs that predate the convergence).
     """
     from ..domain.timeline_key import TimelineKey
 
@@ -1848,8 +1853,10 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
 
     timeline = stream.to_dict()
     raw_events = timeline.get("events", [])
-    filtered_events = _filter_timeline_events(raw_events)
-    events, _dropped = _retain_semantic_timeline_events(filtered_events)
+    # Skip _retain_semantic_timeline_events: that filter requires issue-lifecycle
+    # fields (timeline_schema_version, logical_run/cycle/phase) which E2E events
+    # don't carry.  _filter_timeline_events handles basic display filtering.
+    events = _filter_timeline_events(raw_events)
     events = _decorate_timeline_events(events, store_key)
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)

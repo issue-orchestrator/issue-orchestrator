@@ -82,6 +82,10 @@ def _emit_run_event(
     )
 
     # Shared timeline path — write to timeline.sqlite
+    # Note: source_event in the legacy e2e_run_events table is a *pairing* concept
+    # (e.g. test_completed links back to test_started). In the shared timeline store,
+    # source_event is the *canonical event name* used for phase/step/status derivation.
+    # E2E events use their own name — no fan-out renaming to undo.
     if timeline_store is not None:
         from ..domain.timeline_key import TimelineKey
         from ..ports.timeline_store import TimelineRecord
@@ -92,7 +96,7 @@ def _emit_run_event(
             timestamp=ts,
             event=event_name,
             data={**data, "e2e_run_id": run_id},
-            source_event=source_event,
+            source_event=event_name,
         )
         try:
             timeline_store.append(store_key, record)
