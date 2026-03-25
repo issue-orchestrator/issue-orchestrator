@@ -281,11 +281,12 @@ def _phase_for_event(event_name: str) -> str:
         return "reviewing"
     if is_rework_event_name(event_name):
         return "rework"
-    if is_issue_event_name(event_name):
-        return "in_progress"
-    if is_session_event_name(event_name):
-        return "in_progress"
-    if is_completion_event_name(event_name) or is_observation_event_name(event_name):
+    if (
+        is_issue_event_name(event_name)
+        or is_session_event_name(event_name)
+        or is_completion_event_name(event_name)
+        or is_observation_event_name(event_name)
+    ):
         return "in_progress"
     return "system"
 
