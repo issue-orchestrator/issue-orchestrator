@@ -140,7 +140,12 @@
                 {% endif %}
             </span>
             {% endif %}
-            {% if not (issue.is_e2e or issue.e2e_sub_issues or issue.e2e_failed_tests) %}
+            {% if issue.is_e2e and issue.e2e_run_id %}
+            {# E2E runs get a timeline button that opens the shared timeline view #}
+            <button class="issue-timeline-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Timeline">
+                🧭
+            </button>
+            {% elif not (issue.is_e2e or issue.e2e_sub_issues or issue.e2e_failed_tests) %}
             <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
                 🧾
             </button>
