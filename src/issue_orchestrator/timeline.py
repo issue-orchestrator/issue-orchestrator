@@ -9,6 +9,7 @@ from .domain.event_taxonomy import (
     EventIntent,
     infer_event_intent,
     is_completion_event_name,
+    is_e2e_event_name,
     is_issue_event_name,
     is_observation_event_name,
     is_review_event_name,
@@ -162,9 +163,9 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     canonical_name = record.source_event or event_name
     phase = _phase_for_event(canonical_name)
     step = _step_for_event(canonical_name)
-    status = _status_for_event(canonical_name)
+    status = _status_for_event(canonical_name, data)
     level = _level_for_event(canonical_name)
-    summary = _summary_from_data(data)
+    summary = _summary_from_data(data, event_name=canonical_name)
     detail = _detail_from_data(canonical_name, data, summary)
     parent_key = _parent_key(issue_number, data)
     run_id = _run_id_from_data(data)
@@ -261,6 +262,8 @@ def _timeline_schema_version_from_data(data: dict[str, Any]) -> int | None:
 
 
 def _phase_for_event(event_name: str) -> str:
+    if is_e2e_event_name(event_name):
+        return _e2e_phase(event_name)
     if is_validation_event_name(event_name) or event_name in {
         "session.validation_failed",
         "session.validation_retry_needed",
@@ -287,7 +290,19 @@ def _phase_for_event(event_name: str) -> str:
     return "system"
 
 
+def _e2e_phase(event_name: str) -> str:
+    if event_name in ("e2e.run_started", "e2e.tests_collected"):
+        return "setup"
+    if event_name.startswith("e2e.test_"):
+        return "execution"
+    if event_name == "e2e.retry_started":
+        return "retry"
+    return "teardown"
+
+
 def _step_for_event(event_name: str) -> str:
+    if is_e2e_event_name(event_name):
+        return event_name.replace("e2e.", "")
     if is_session_event_name(event_name):
         return event_name.replace("session.", "")
     if is_issue_event_name(event_name):
@@ -305,7 +320,9 @@ def _step_for_event(event_name: str) -> str:
     return event_name
 
 
-def _status_for_event(event_name: str) -> str:
+def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> str:
+    if is_e2e_event_name(event_name):
+        return _e2e_status(event_name, data)
     failure_events = {
         "session.failed",
         "session.timeout",
@@ -371,12 +388,43 @@ def _status_for_event(event_name: str) -> str:
 
 
 def _level_for_event(event_name: str) -> str:
+    if is_e2e_event_name(event_name):
+        return _e2e_level(event_name)
     if is_issue_event_name(event_name) or is_review_event_name(event_name):
         return "phase"
     return "detail"
 
 
+def _e2e_status(event_name: str, data: dict[str, Any] | None = None) -> str:
+    if event_name in ("e2e.run_error", "e2e.run_canceled"):
+        return "error"
+    if event_name == "e2e.test_completed" and data:
+        outcome = data.get("outcome", "")
+        if outcome in ("failed", "error"):
+            return "error"
+        if outcome == "skipped":
+            return "skipped"
+        return "completed"
+    if event_name == "e2e.test_completed":
+        return "completed"
+    if event_name == "e2e.run_finished":
+        return "completed"
+    return "active"
+
+
+def _e2e_level(event_name: str) -> str:
+    if event_name == "e2e.run_error":
+        return "error"
+    if event_name == "e2e.run_canceled":
+        return "warning"
+    if "test_completed" in event_name:
+        return "detail"
+    return "info"
+
+
 def _parent_key(issue_number: int, data: dict[str, Any]) -> str:
+    if issue_number < 0:
+        return f"e2e-run-{-issue_number}"
     if isinstance(data.get("session_id"), str):
         return f"session:{data['session_id']}"
     if isinstance(data.get("pr_number"), int):
@@ -384,12 +432,39 @@ def _parent_key(issue_number: int, data: dict[str, Any]) -> str:
     return f"issue:{issue_number}"
 
 
-def _summary_from_data(data: dict[str, Any]) -> str | None:
+def _summary_from_data(data: dict[str, Any], event_name: str = "") -> str | None:
+    if is_e2e_event_name(event_name):
+        return _e2e_summary(event_name, data)
     for key in ("reason", "summary", "error", "status", "outcome"):
         value = data.get(key)
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _e2e_summary(event_name: str, data: dict[str, Any]) -> str:
+    if event_name == "e2e.run_started":
+        branch = data.get("branch", "unknown")
+        return f"E2E run started on {branch}"
+    if event_name == "e2e.tests_collected":
+        return f"Collected {data.get('total', '?')} tests"
+    if event_name == "e2e.test_started":
+        return data.get("nodeid", "")
+    if event_name == "e2e.test_completed":
+        outcome = data.get("outcome", "?")
+        nodeid = data.get("nodeid", "")
+        dur = data.get("duration_seconds")
+        dur_str = f" ({dur:.1f}s)" if dur else ""
+        return f"{nodeid}: {outcome}{dur_str}"
+    if event_name == "e2e.retry_started":
+        return f"Retrying {data.get('failed_count', '?')} failed tests"
+    if event_name == "e2e.run_finished":
+        return f"Run {data.get('status', '?')} in {data.get('duration_seconds', '?')}s"
+    if event_name == "e2e.run_canceled":
+        return "Run canceled"
+    if event_name == "e2e.run_error":
+        return f"Run error: {str(data.get('error', 'unknown'))[:100]}"
+    return event_name
 
 
 _MAX_DETAIL = 200

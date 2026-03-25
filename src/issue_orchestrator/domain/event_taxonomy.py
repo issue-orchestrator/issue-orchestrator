@@ -119,6 +119,10 @@ def is_observation_event_name(event_name: str) -> bool:
     return event_name.startswith("observation.")
 
 
+def is_e2e_event_name(event_name: str) -> bool:
+    return event_name.startswith("e2e.")
+
+
 def infer_event_intent(*, event_name: str, task: str | None = None) -> EventIntent:
     """Classify event into a typed semantic intent."""
     normalized_task = (task or "").strip().lower()

@@ -166,6 +166,10 @@ class E2ERunnerManager:
         if orchestrator_instance_id:
             cmd.extend(["--orchestrator-instance-id", orchestrator_instance_id])
 
+        # Pass timeline DB path so E2E events flow through the shared timeline store
+        timeline_db = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        cmd.extend(["--timeline-db-path", str(timeline_db)])
+
         logger.info(
             "Starting E2E worker for %s: %s",
             orchestrator_id,
@@ -344,6 +348,10 @@ class E2ERunnerManager:
             cmd.append("--allow-retry-once")
         if auto_quarantine:
             cmd.append("--auto-quarantine")
+
+        # Pass timeline DB path so E2E events flow through the shared timeline store
+        timeline_db = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        cmd.extend(["--timeline-db-path", str(timeline_db)])
 
         logger.info(
             "Resuming E2E run %d for %s (skipping %d passed tests)",
