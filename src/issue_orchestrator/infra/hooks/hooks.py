@@ -121,9 +121,16 @@ class AiAgentAdapter(ABC):
 
 
 def _test_ai_gate_env(project_root: Path) -> dict[str, str]:
-    """Build environment variables for AI gate tests."""
+    """Build environment variables for AI gate tests.
+
+    Strips CLAUDECODE and CLAUDE_CODE_ENTRYPOINT so nested claude -p
+    calls work correctly.  These env vars are set by Claude Code itself
+    and cause nested invocations to suppress output.
+    """
     env = os.environ.copy()
     env["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(project_root / "src")
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
     return env
 
 
@@ -149,22 +156,17 @@ def _init_test_ai_gate_repo(tmppath: Path) -> Path:
     return work_repo
 
 
-def _copy_hook_dir(project_root: Path, work_repo: Path, hook_dir: str) -> None:
-    """Copy a hook configuration directory into the AI gate test repo.
-
-    Excludes settings.json because Claude Code's internal hook settings
-    (PreToolUse, Stop) interfere with --print mode, causing empty output.
-    The gate test only needs the hook scripts themselves, not the harness config.
-    """
+def _copy_hook_dir(
+    project_root: Path,
+    work_repo: Path,
+    hook_dir: str,
+) -> None:
+    """Copy a hook configuration directory into the AI gate test repo."""
     src_dir = project_root / hook_dir
     if not src_dir.exists():
         raise FileNotFoundError(f"No {hook_dir} directory found in project root")
     dst_dir = work_repo / hook_dir
-
-    def _ignore_settings(directory: str, files: list[str]) -> list[str]:
-        return [f for f in files if f == "settings.json" or f == "settings.local.json"]
-
-    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True, ignore=_ignore_settings)
+    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
 
 
 def _detect_blocked_from_output(output: str) -> bool:

@@ -5,7 +5,7 @@ import logging
 from ..types import Check
 from ...config import Config
 from ...hooks.hooks import get_adapter
-from ...ai_gate_state import load_ai_gate_state, save_ai_gate_state
+from ...ai_gate_state import AiGateState, load_ai_gate_state, save_ai_gate_state
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,15 @@ def _run_ai_gate_tests(
     return results, failures
 
 
+def _gate_trigger_reason(state: AiGateState) -> str:
+    if state.last_check is None:
+        return "first run"
+    failed = [k for k, v in state.last_results.items() if not v.success]
+    if failed:
+        return f"cached failure retry ({', '.join(failed)})"
+    return "interval exceeded"
+
+
 def _check_ai_gate_report(
     config: Config,
     unique_types: set,
@@ -211,7 +220,7 @@ def _check_ai_gate_report(
 
     # Run AI gate tests
     expandable["ran"] = True
-    expandable["triggered_by"] = "first run" if state.last_check is None else "interval exceeded"
+    expandable["triggered_by"] = _gate_trigger_reason(state)
 
     results, failures = _run_ai_gate_tests(unique_types, unsupported_types, config.repo_root, expandable)
 
