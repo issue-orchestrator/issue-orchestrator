@@ -55,53 +55,28 @@ def _get_git_info(repo_root: Path) -> tuple[Optional[str], Optional[str]]:
 
 
 def _emit_run_event(
-    db: "E2EDB",
     run_id: int,
     event_name: str,
     data: dict,
     *,
-    source_event: str = "",
-    timeline_store: "SqliteTimelineStore | None" = None,
+    timeline_store: "SqliteTimelineStore",
 ) -> None:
     """Emit a timeline event for this E2E run.
 
-    Writes to both the legacy e2e_run_events table (for backward compat)
-    and to the shared timeline.sqlite store when available.
+    Writes to the shared timeline.sqlite store via TimelineKey.
     """
-    event_id = uuid.uuid4().hex[:12]
-    ts = datetime.now(timezone.utc).isoformat()
+    from ..domain.timeline_key import TimelineKey
+    from ..ports.timeline_store import TimelineRecord
 
-    # Legacy path — still write to e2e.db for existing consumers
-    db.append_run_event(
-        run_id=run_id,
-        event_id=event_id,
-        timestamp=ts,
-        event_name=event_name,
-        data=data,
-        source_event=source_event,
+    store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
+    record = TimelineRecord(
+        event_id=uuid.uuid4().hex[:12],
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event=event_name,
+        data={**data, "e2e_run_id": run_id},
+        source_event=event_name,
     )
-
-    # Shared timeline path — write to timeline.sqlite
-    # Note: source_event in the legacy e2e_run_events table is a *pairing* concept
-    # (e.g. test_completed links back to test_started). In the shared timeline store,
-    # source_event is the *canonical event name* used for phase/step/status derivation.
-    # E2E events use their own name — no fan-out renaming to undo.
-    if timeline_store is not None:
-        from ..domain.timeline_key import TimelineKey
-        from ..ports.timeline_store import TimelineRecord
-
-        store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
-        record = TimelineRecord(
-            event_id=event_id,
-            timestamp=ts,
-            event=event_name,
-            data={**data, "e2e_run_id": run_id},
-            source_event=event_name,
-        )
-        try:
-            timeline_store.append(store_key, record)
-        except Exception:
-            logger.warning("Failed to write E2E event to timeline store", exc_info=True)
+    timeline_store.append(store_key, record)
 
 
 class ResultPlugin:
@@ -112,7 +87,7 @@ class ResultPlugin:
         db: "E2EDB",
         run_id: int,
         quarantine: set[str],
-        timeline_store: "SqliteTimelineStore | None" = None,
+        timeline_store: "SqliteTimelineStore",
     ):
         self.db = db
         self.run_id = run_id
@@ -125,7 +100,7 @@ class ResultPlugin:
         total = len(session.items)
         logger.info("Collected %d tests", total)
         self.db.update_progress(self.run_id, total_tests=total)
-        _emit_run_event(self.db, self.run_id, "e2e.tests_collected", {
+        _emit_run_event(self.run_id, "e2e.tests_collected", {
             "total": total,
             "nodeids": [item.nodeid for item in session.items],
         }, timeline_store=self.timeline_store)
@@ -133,7 +108,7 @@ class ResultPlugin:
     def pytest_runtest_logstart(self, nodeid: str, location) -> None:
         """Called when a test starts - update current test."""
         self.db.update_progress(self.run_id, current_test=nodeid)
-        _emit_run_event(self.db, self.run_id, "e2e.test_started", {
+        _emit_run_event(self.run_id, "e2e.test_started", {
             "nodeid": nodeid,
         }, timeline_store=self.timeline_store)
 
@@ -167,12 +142,12 @@ class ResultPlugin:
         # Clear current_test after completion
         self.db.update_progress(self.run_id, current_test=None)
 
-        _emit_run_event(self.db, self.run_id, "e2e.test_completed", {
+        _emit_run_event(self.run_id, "e2e.test_completed", {
             "nodeid": nodeid,
             "outcome": outcome,
             "duration_seconds": duration,
             "is_quarantined": is_quarantined,
-        }, source_event="e2e.test_started", timeline_store=self.timeline_store)
+        }, timeline_store=self.timeline_store)
 
         # Track non-quarantined failures for potential retry
         if outcome == "failed" and not is_quarantined:
@@ -185,7 +160,7 @@ def _run_pytest(
     db: "E2EDB",
     run_id: int,
     quarantine: set[str],
-    timeline_store: "SqliteTimelineStore | None" = None,
+    timeline_store: "SqliteTimelineStore",
 ) -> tuple[int, list[str]]:
     """Run pytest with result plugin.
 
@@ -342,16 +317,17 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     # Initialize databases
     db = E2EDB(db_path)
 
-    # Initialize shared timeline store if path provided
-    timeline_store: SqliteTimelineStore | None = None
-    if args.timeline_db_path:
-        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+    # Initialize shared timeline store (required)
+    if not args.timeline_db_path:
+        logger.error("--timeline-db-path is required")
+        return 1
+    from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
 
-        timeline_store = SqliteTimelineStore(
-            db_path=Path(args.timeline_db_path),
-            instance_id=args.orchestrator_instance_id,
-        )
-        logger.info("Timeline store initialized: %s", args.timeline_db_path)
+    timeline_store = SqliteTimelineStore(
+        db_path=Path(args.timeline_db_path),
+        instance_id=args.orchestrator_instance_id,
+    )
+    logger.info("Timeline store initialized: %s", args.timeline_db_path)
 
     # Handle resume vs new run
     if args.resume_run_id:
@@ -383,7 +359,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     # Determine log path for DB record
     log_path_for_db = args.log_file
 
-    _emit_run_event(db, run_id, "e2e.run_started", {
+    _emit_run_event(run_id, "e2e.run_started", {
         "pytest_args": pytest_args,
         "commit_sha": commit_sha,
         "branch": branch,
@@ -398,7 +374,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
         # Retry logic
         if args.allow_retry_once and failed_tests:
-            _emit_run_event(db, run_id, "e2e.retry_started", {
+            _emit_run_event(run_id, "e2e.retry_started", {
                 "failed_count": len(failed_tests),
                 "nodeids": failed_tests,
             }, timeline_store=timeline_store)
@@ -453,11 +429,11 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 else:
                     logger.info("Auto-quarantine: no new tests added")
 
-        _emit_run_event(db, run_id, "e2e.run_finished", {
+        _emit_run_event(run_id, "e2e.run_finished", {
             "status": status,
             "exit_code": exit_code,
             "duration_seconds": round(duration, 1),
-        }, source_event="e2e.run_started", timeline_store=timeline_store)
+        }, timeline_store=timeline_store)
 
         logger.info(
             "Finished run %d: status=%s, exit_code=%d, duration=%.1fs",
@@ -471,10 +447,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     except KeyboardInterrupt:
         logger.warning("Interrupted, canceling run")
-        _emit_run_event(db, run_id, "e2e.run_canceled", {
+        _emit_run_event(run_id, "e2e.run_canceled", {
             "reason": "interrupted",
             "duration_seconds": round(time.time() - start_time, 1),
-        }, source_event="e2e.run_started", timeline_store=timeline_store)
+        }, timeline_store=timeline_store)
         db.finish_run(
             run_id=run_id,
             status="canceled",
@@ -485,10 +461,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     except Exception as e:
         logger.exception("Error running tests: %s", e)
-        _emit_run_event(db, run_id, "e2e.run_error", {
+        _emit_run_event(run_id, "e2e.run_error", {
             "error": str(e)[:500],
             "duration_seconds": round(time.time() - start_time, 1),
-        }, source_event="e2e.run_started", timeline_store=timeline_store)
+        }, timeline_store=timeline_store)
         db.finish_run(
             run_id=run_id,
             status="error",
