@@ -427,14 +427,22 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                 if was_blocked:
                     return True, f"AI gate test passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}"
                 else:
-                    return False, f"AI gate test FAILED: Claude was NOT blocked\nOutput: {output[:500]}"
+                    diag = (
+                        f"AI gate test FAILED: Claude was NOT blocked\n"
+                        f"Exit code: {result.returncode}\n"
+                        f"Work repo: {work_repo}\n"
+                        f"Hooks dir exists: {(work_repo / '.claude' / 'hooks').exists()}\n"
+                        f"Stdout ({len(result.stdout)} chars): {result.stdout[:500]}\n"
+                        f"Stderr ({len(result.stderr)} chars): {result.stderr[:500]}"
+                    )
+                    return False, diag
 
             except subprocess.TimeoutExpired:
-                return False, f"AI gate test timed out after {timeout}s"
+                return False, f"AI gate test timed out after {timeout}s (cwd={work_repo})"
             except FileNotFoundError:
                 return False, "Claude CLI not found - is it installed?"
             except Exception as e:
-                return False, f"AI gate test error: {e}"
+                return False, f"AI gate test error: {e} (cwd={work_repo})"
 
 
 class CursorAdapter(AiAgentAdapter):
