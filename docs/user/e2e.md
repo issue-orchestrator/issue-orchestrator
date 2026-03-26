@@ -58,6 +58,17 @@ The E2E panel shows:
 | `auto_create_issues` | bool | `true` | Auto-create GitHub issues for failed tests |
 | `issue_agent_label` | string | `"agent:backend"` | Agent label assigned to failure issues |
 | `survive_restart` | bool | `true` | Let E2E worker continue if orchestrator restarts |
+| `run_retention_count` | int | `50` | Max runs to keep; older runs are pruned automatically after each completion |
+
+### Resetting E2E History
+
+To clear all E2E run history (runs, test results, log files, timeline events):
+
+```bash
+issue-orchestrator e2e-reset --config path/to/config.yaml
+```
+
+This is useful when starting fresh or after major changes to the test suite.
 
 ## Features
 
