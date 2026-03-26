@@ -87,3 +87,6 @@ class MockOrchestratorForWeb:
             "warnings": [],
             "suggestions": [],
         }
+
+    def list_provider_circuits(self) -> list[dict]:
+        return []

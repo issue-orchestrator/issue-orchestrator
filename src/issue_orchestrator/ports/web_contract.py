@@ -51,3 +51,11 @@ class OrchestratorForWeb(Protocol):
         ready for JSON serialization.
         """
         ...
+
+    def list_provider_circuits(self) -> list[dict[str, Any]]:
+        """Return current provider circuit states for the web UI.
+
+        Each dict has keys: provider, is_open, open_until, cooldown_remaining_seconds,
+        consecutive_outages, last_error_summary.
+        """
+        ...

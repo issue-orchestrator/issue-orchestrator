@@ -199,6 +199,7 @@ def create_mock_orchestrator():
     mock_orch.repository_host = MagicMock()
     mock_orch.repository_host.get_issue.return_value = None
     mock_orch.repository_host.update_label_cache = MagicMock()
+    mock_orch.list_provider_circuits = MagicMock(return_value=[])
 
     return mock_orch
 
@@ -1883,6 +1884,9 @@ class TestIssueRowsEndpoint:
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
 
+            def list_provider_circuits(self):
+                return []
+
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
         try:
@@ -1912,6 +1916,9 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+
+            def list_provider_circuits(self):
+                return []
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
@@ -7063,3 +7070,80 @@ class TestIssueAuditEndpoint:
 
         assert response.status_code == 503
         assert response.json() == {"error": "Orchestrator not running"}
+
+
+class TestProviderCircuitsEndpoint:
+    """Tests for the /api/provider/circuits endpoint."""
+
+    def test_get_provider_circuits_empty(self):
+        """Returns empty list when no circuits are open."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.list_provider_circuits.return_value = []
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.get("/api/provider/circuits")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data == {"circuits": []}
+
+    def test_get_provider_circuits_open(self):
+        """Returns open circuit with is_open=True and cooldown info."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.list_provider_circuits.return_value = [
+            {
+                "provider": "claude",
+                "is_open": True,
+                "open_until": "2099-01-01T00:00:00+00:00",
+                "cooldown_remaining_seconds": 120,
+                "consecutive_outages": 2,
+                "last_error_summary": "Rate limited",
+            }
+        ]
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.get("/api/provider/circuits")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["circuits"]) == 1
+        circuit = data["circuits"][0]
+        assert circuit["provider"] == "claude"
+        assert circuit["is_open"] is True
+        assert circuit["cooldown_remaining_seconds"] == 120
+        assert circuit["consecutive_outages"] == 2
+
+    def test_get_provider_circuits_no_orchestrator(self):
+        """Returns 503 when orchestrator is not running."""
+        set_orchestrator(None)
+
+        client = TestClient(app)
+        response = client.get("/api/provider/circuits")
+
+        assert response.status_code == 503
+        assert response.json() == {"error": "Orchestrator not running"}
+
+    def test_get_provider_circuits_expired(self):
+        """Returns circuit with is_open=False when circuit has expired."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.list_provider_circuits.return_value = [
+            {
+                "provider": "claude",
+                "is_open": False,
+                "open_until": None,
+                "cooldown_remaining_seconds": None,
+                "consecutive_outages": 1,
+                "last_error_summary": None,
+            }
+        ]
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.get("/api/provider/circuits")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["circuits"]) == 1
+        assert data["circuits"][0]["is_open"] is False

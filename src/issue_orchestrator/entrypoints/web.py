@@ -708,6 +708,15 @@ async def get_excluded_issues() -> JSONResponse:
     return JSONResponse({"excluded": excluded})
 
 
+@app.get("/api/provider/circuits")
+async def get_provider_circuits(orchestrator=Depends(get_orchestrator)) -> JSONResponse:
+    """Get current provider circuit breaker states."""
+    if not orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    circuits = orchestrator.list_provider_circuits()
+    return JSONResponse({"circuits": circuits})
+
+
 @app.post("/api/pause")
 async def pause() -> JSONResponse:
     """Pause the orchestrator."""

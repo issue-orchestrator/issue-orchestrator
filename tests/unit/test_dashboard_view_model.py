@@ -32,6 +32,10 @@ class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    _provider_circuits: list = None  # type: ignore[assignment]
+
+    def list_provider_circuits(self) -> list:
+        return self._provider_circuits or []
 
 
 def _make_config() -> Config:
@@ -740,3 +744,54 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_dashboard_data_includes_provider_circuits_empty():
+    """dashboard_data() includes providerCircuits key (empty when no circuits)."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    data = view_model.dashboard_data()
+    assert "providerCircuits" in data
+    assert data["providerCircuits"] == []
+
+
+def test_dashboard_data_includes_open_provider_circuits():
+    """dashboard_data() includes open circuit states from orchestrator."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    open_circuit = {
+        "provider": "claude",
+        "is_open": True,
+        "open_until": "2099-01-01T00:00:00+00:00",
+        "cooldown_remaining_seconds": 60,
+        "consecutive_outages": 1,
+        "last_error_summary": "Rate limited",
+    }
+    orchestrator = _OrchestratorStub(
+        state=state,
+        config=config,
+        _provider_circuits=[open_circuit],
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    data = view_model.dashboard_data()
+    assert len(data["providerCircuits"]) == 1
+    assert data["providerCircuits"][0]["provider"] == "claude"
+    assert data["providerCircuits"][0]["is_open"] is True

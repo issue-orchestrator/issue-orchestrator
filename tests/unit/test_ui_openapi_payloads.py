@@ -44,6 +44,9 @@ class _OrchestratorStub:
     config: Config
     shutdown_requested: bool = False
 
+    def list_provider_circuits(self) -> list:
+        return []
+
 
 def _make_config() -> Config:
     config = Config()

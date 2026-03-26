@@ -743,6 +743,31 @@ class Orchestrator:
         )
         return diagnosis.to_dict()
 
+    def list_provider_circuits(self) -> list[dict]:
+        """Return current provider circuit states for the web UI.
+
+        Each dict has: provider, is_open, open_until, cooldown_remaining_seconds,
+        consecutive_outages, last_error_summary.
+        """
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        result = []
+        for state in self.deps.provider_resilience.store.list_all():
+            is_open = state.open_until is not None and state.open_until > now
+            cooldown_remaining = None
+            if is_open and state.open_until:
+                delta = state.open_until - now
+                cooldown_remaining = max(0, int(delta.total_seconds()))
+            result.append({
+                "provider": state.provider,
+                "is_open": is_open,
+                "open_until": state.open_until.isoformat() if state.open_until else None,
+                "cooldown_remaining_seconds": cooldown_remaining,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+            })
+        return result
+
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
     def _apply_plan(self, plan: "Plan") -> None: self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)
