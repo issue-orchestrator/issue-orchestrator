@@ -273,6 +273,12 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         default="",
         help="Path to timeline.sqlite for shared timeline writes",
     )
+    parser.add_argument(
+        "--run-retention-count",
+        type=int,
+        default=50,
+        help="Max runs to keep; older runs are pruned after completion (default: 50)",
+    )
 
     args = parser.parse_args()
 
@@ -442,6 +448,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             exit_code,
             duration,
         )
+
+        # Prune old runs beyond retention count
+        if args.run_retention_count > 0:
+            db.prune_old_runs(args.run_retention_count, timeline_store=timeline_store)
 
         return exit_code
 

@@ -11,7 +11,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
+
+if TYPE_CHECKING:
+    from ..ports.timeline_store import TimelineStore
 
 from .sqlite_connection import open_sqlite
 
@@ -617,27 +620,10 @@ class E2EDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
-            # One-time migration: drop legacy e2e_run_events table and wipe
-            # pre-convergence run history.  E2E timeline events now live in
-            # timeline.sqlite; old run data references the removed table.
-            legacy_tables = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )}
-            if "e2e_run_events" in legacy_tables:
-                conn.execute("DROP TABLE e2e_run_events")
-                conn.execute("DELETE FROM e2e_runs")
-                conn.execute("DELETE FROM e2e_test_results")
-                conn.execute("DELETE FROM e2e_failure_issues")
-                conn.execute("DELETE FROM e2e_run_issues")
-                conn.execute("DELETE FROM e2e_flake_history")
-                conn.commit()
-                # Clean up legacy log files
-                log_dir = self.db_path.parent / "logs" / "e2e"
-                if log_dir.is_dir():
-                    import shutil
-                    shutil.rmtree(log_dir, ignore_errors=True)
-                    log_dir.mkdir(parents=True, exist_ok=True)
-                logger.info("Migrated E2E database: dropped legacy e2e_run_events and cleared history")
+            # Drop legacy e2e_run_events table (timeline events now live
+            # in timeline.sqlite).  Other tables are preserved — they still
+            # power run history, stability analysis, and triage features.
+            conn.execute("DROP TABLE IF EXISTS e2e_run_events")
             # Migrate: add orchestrator_instance_id if missing (pre-existing DBs)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(e2e_runs)")}
             if "orchestrator_instance_id" not in columns:
@@ -906,6 +892,108 @@ class E2EDB:
                 ),
             )
             logger.info("Finished E2E run %d with status=%s", run_id, status)
+
+    def prune_old_runs(
+        self,
+        retention_count: int,
+        timeline_store: "TimelineStore | None" = None,
+    ) -> int:
+        """Delete runs beyond the retention count, oldest first.
+
+        Removes the run row, its test results, failure issues, run issues,
+        flake history, log file on disk, and timeline events (if store provided).
+
+        Returns the number of runs pruned.
+        """
+        with self._connect() as conn:
+            # Find run IDs to prune (all runs except the newest N)
+            rows = conn.execute(
+                """
+                SELECT id, log_path FROM e2e_runs
+                WHERE id NOT IN (
+                    SELECT id FROM e2e_runs
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                )
+                ORDER BY started_at ASC
+                """,
+                (retention_count,),
+            ).fetchall()
+
+            if not rows:
+                return 0
+
+            pruned = 0
+            for row in rows:
+                run_id = row["id"]
+                log_path = row["log_path"]
+
+                # Delete related rows
+                conn.execute("DELETE FROM e2e_test_results WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM e2e_failure_issues WHERE first_failing_run_id = ?", (run_id,))
+                conn.execute("DELETE FROM e2e_run_issues WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM e2e_flake_history WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM e2e_runs WHERE id = ?", (run_id,))
+
+                # Delete log file
+                if log_path:
+                    try:
+                        Path(log_path).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+                # Delete timeline events
+                if timeline_store is not None:
+                    try:
+                        from ..domain.timeline_key import TimelineKey
+                        store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
+                        timeline_store.delete(store_key)
+                    except Exception:
+                        logger.debug("Could not delete timeline for E2E run %d", run_id)
+
+                pruned += 1
+
+            if pruned:
+                logger.info("Pruned %d old E2E run(s) (retention=%d)", pruned, retention_count)
+            return pruned
+
+    def reset_all_history(
+        self,
+        timeline_store: "TimelineStore | None" = None,
+    ) -> dict[str, int]:
+        """Delete all E2E run history. Returns counts of deleted items."""
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            # Collect run IDs and log paths before deletion
+            runs = conn.execute("SELECT id, log_path FROM e2e_runs").fetchall()
+
+            for table in ("e2e_test_results", "e2e_failure_issues", "e2e_run_issues", "e2e_flake_history", "e2e_runs"):
+                cursor = conn.execute(f"DELETE FROM {table}")  # noqa: S608 — table names are hardcoded literals
+                counts[table] = cursor.rowcount
+
+            # Delete log files
+            log_count = 0
+            for row in runs:
+                if row["log_path"]:
+                    try:
+                        Path(row["log_path"]).unlink(missing_ok=True)
+                        log_count += 1
+                    except OSError:
+                        pass
+
+                # Delete timeline events
+                if timeline_store is not None:
+                    try:
+                        from ..domain.timeline_key import TimelineKey
+                        store_key = TimelineKey.for_e2e_run(row["id"]).to_store_key()
+                        timeline_store.delete(store_key)
+                    except Exception:
+                        pass
+
+            counts["log_files"] = log_count
+
+        logger.info("Reset E2E history: %s", counts)
+        return counts
 
     def cancel_running(self, orchestrator_id: str) -> Optional[int]:
         """Cancel any running run for an orchestrator.

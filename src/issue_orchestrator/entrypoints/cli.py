@@ -986,6 +986,44 @@ def cmd_test_reset(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_e2e_reset(args: argparse.Namespace) -> int:
+    """Reset E2E run history: delete all runs, test results, and artifacts."""
+    from ..infra.e2e_db import E2EDB
+
+    config = _load_config(args)
+    repo_root = config.repo_root
+    db_path = repo_root / ".issue-orchestrator" / "e2e.db"
+
+    if not db_path.exists():
+        console.print("[yellow]No E2E database found — nothing to reset.[/yellow]")
+        return 0
+
+    # Load timeline store for timeline event cleanup
+    timeline_store = None
+    timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+    if timeline_db_path.exists():
+        from ..execution.timeline_store import SqliteTimelineStore
+        timeline_store = SqliteTimelineStore(db_path=timeline_db_path)
+
+    db = E2EDB(db_path)
+    counts = db.reset_all_history(timeline_store=timeline_store)
+
+    console.print("[bold]E2E history reset complete:[/bold]")
+    for table, count in counts.items():
+        console.print(f"  {table}: {count} deleted")
+
+    # Also clean up log directory
+    log_dir = repo_root / ".issue-orchestrator" / "logs" / "e2e"
+    if log_dir.is_dir():
+        import shutil
+        shutil.rmtree(log_dir, ignore_errors=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        console.print("  log files: directory cleared")
+
+    console.print("\n[green]Done. E2E history is now empty.[/green]")
+    return 0
+
+
 def _load_config(args: argparse.Namespace) -> "Config":
     """Load config from explicit path or search for it.
 
@@ -2203,6 +2241,15 @@ def main() -> int:
         "test-reset", help="Reset test environment (teardown + setup)"
     )
     reset_parser.set_defaults(func=cmd_test_reset)
+
+    # e2e-reset command
+    e2e_reset_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "e2e-reset", help="Clear all E2E run history (runs, results, logs, timeline events)"
+    )
+    e2e_reset_parser.add_argument(
+        "--config", type=Path, help="Path to config file (default: auto-detect)"
+    )
+    e2e_reset_parser.set_defaults(func=cmd_e2e_reset)
 
     # audit command
     audit_parser: argparse.ArgumentParser = subparsers.add_parser(

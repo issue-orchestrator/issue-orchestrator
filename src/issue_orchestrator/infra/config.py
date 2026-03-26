@@ -441,6 +441,7 @@ class E2EConfig:
     issue_agent_label: str = "agent:backend"  # Agent label for failure issues
     flake_threshold: int = 20  # Flip rate percentage (0-100) to flag test as flaky
     flake_window_runs: int = 10  # Number of recent runs to check for flakiness
+    run_retention_count: int = 50  # Max runs to keep; older runs are pruned on completion
 
 
 @dataclass
@@ -523,6 +524,7 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         issue_agent_label=data.get("issue_agent_label", "agent:backend"),
         flake_threshold=data.get("flake_threshold", 20),
         flake_window_runs=data.get("flake_window_runs", 10),
+        run_retention_count=data.get("run_retention_count", 50),
     )
 
 

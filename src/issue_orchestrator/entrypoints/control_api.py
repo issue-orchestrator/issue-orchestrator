@@ -4109,6 +4109,7 @@ async def e2e_start(request: Request) -> JSONResponse:
             quarantine_file=config.e2e.quarantine_file,
             auto_quarantine=config.e2e.auto_quarantine,
             orchestrator_instance_id=instance_id,
+            run_retention_count=config.e2e.run_retention_count,
         )
 
         # Broadcast E2E started event for SSE subscribers

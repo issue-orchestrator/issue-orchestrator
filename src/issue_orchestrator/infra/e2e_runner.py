@@ -95,6 +95,7 @@ class E2ERunnerManager:
         stop_on_first_failure: bool = False,
         auto_quarantine: bool = False,
         orchestrator_instance_id: str = "",
+        run_retention_count: int = 50,
     ) -> dict:
         """Start an E2E worker subprocess.
 
@@ -169,6 +170,7 @@ class E2ERunnerManager:
         # Pass timeline DB path so E2E events flow through the shared timeline store
         timeline_db = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
         cmd.extend(["--timeline-db-path", str(timeline_db)])
+        cmd.extend(["--run-retention-count", str(run_retention_count)])
 
         logger.info(
             "Starting E2E worker for %s: %s",
@@ -216,6 +218,7 @@ class E2ERunnerManager:
         stop_on_first_failure: bool = False,
         auto_quarantine: bool = False,
         orchestrator_instance_id: str = "",
+        run_retention_count: int = 50,
     ) -> dict:
         """Start a new E2E run, or resume an interrupted one.
 
@@ -284,6 +287,7 @@ class E2ERunnerManager:
             stop_on_first_failure=stop_on_first_failure,
             auto_quarantine=auto_quarantine,
             orchestrator_instance_id=orchestrator_instance_id,
+            run_retention_count=run_retention_count,
         )
         result["resumed"] = False
         result["run_id"] = None
@@ -604,6 +608,7 @@ def maybe_trigger_e2e(
             stop_on_first_failure=config.e2e.stop_on_first_failure,
             auto_quarantine=config.e2e.auto_quarantine,
             orchestrator_instance_id=orchestrator_instance_id,
+            run_retention_count=config.e2e.run_retention_count,
         )
         if result.get("resumed"):
             logger.info(
