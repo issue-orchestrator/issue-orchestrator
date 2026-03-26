@@ -167,6 +167,8 @@ def run_worker(
 
     db_path = repo_root / ".issue-orchestrator" / "e2e.db"
     log_path = repo_root / ".issue-orchestrator" / "e2e.log"
+    timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+    timeline_db_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         sys.executable,
@@ -184,6 +186,8 @@ def run_worker(
         quarantine_file,
         "--log-file",
         str(log_path),
+        "--timeline-db-path",
+        str(timeline_db_path),
     ]
 
     if allow_retry_once:
