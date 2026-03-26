@@ -2590,6 +2590,9 @@ function renderCompactCards(container, items) {
         return;
     }
 
+    // Remove "No items" placeholder and skeleton cards when real items exist
+    container.querySelectorAll('.column-empty, .skeleton-card').forEach(el => el.remove());
+
     const nextIds = new Set(items.map((card) => String(card.card_id || `issue-${card.issue_number}`)));
     const existingCards = Array.from(container.querySelectorAll('.issue-card[data-card-id], .issue-card[data-issue]'));
     const existingById = new Map(existingCards.map((card) => [String(card.dataset.cardId || `issue-${card.dataset.issue || ''}`), card]));
