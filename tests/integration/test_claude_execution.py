@@ -818,18 +818,30 @@ class TestAgentDoneInvocation:
 def test_ai_gate_production_path_works():
     """The production AI gate path must produce a pass/fail result.
 
-    Calls ClaudeCodeAdapter.test_ai_gate() — the exact same code path
-    that runs at orchestrator startup.  If any environment, settings,
-    or CLI change breaks the gate, this test catches it.
+    Runs in a subprocess with CLAUDECODE stripped from the environment,
+    because claude -p returns empty output when nested inside a running
+    Claude Code session.  This matches production behavior where the
+    orchestrator starts outside Claude Code.
     """
-    from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
+    import sys
 
     project_root = Path(__file__).parent.parent.parent
-    adapter = ClaudeCodeAdapter()
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
-    # The gate test should either pass (hooks block) or fail with a
-    # meaningful message — but never return empty/silent output.
-    success, message = adapter.test_ai_gate(project_root, timeout=120)
-
-    assert success, f"AI gate production path failed: {message}"
+    result = subprocess.run(
+        [
+            sys.executable, "-c",
+            "from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter; "
+            f"import pathlib; s, m = ClaudeCodeAdapter().test_ai_gate(pathlib.Path('{project_root}'), timeout=120); "
+            "print(f'{s}|{m}')",
+        ],
+        capture_output=True, text=True, env=env, timeout=180,
+    )
+    assert result.returncode == 0, f"Gate subprocess failed: {result.stderr}"
+    output = result.stdout.strip()
+    assert "|" in output, f"Unexpected gate output: {output}"
+    success_str, message = output.split("|", 1)
+    assert success_str == "True", f"AI gate production path failed: {message}"
     assert "blocked" in message.lower(), f"Unexpected gate message: {message}"
