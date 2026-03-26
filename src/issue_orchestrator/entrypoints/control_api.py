@@ -4402,14 +4402,15 @@ def _read_orchestrator_timeline_for_window(
 ) -> list[dict]:
     """Read orchestrator timeline events scoped to an E2E run.
 
-    Opens timeline.sqlite read-only.  When ``orchestrator_instance_id`` is
-    provided, filters directly by that value — no guessing required.
-
-    Falls back to timestamp-only filtering when instance_id is not
-    available (older runs or pre-v4 timeline databases).
+    Filters by instance_id and timestamp window.  Only returns issue-keyed
+    events (issue_number > 0), excluding E2E run events (negative keys)
+    which are the top-level events, not the orchestrator children to nest.
     """
     import json as _json
     import sqlite3 as _sqlite3
+
+    if not orchestrator_instance_id:
+        return []
 
     try:
         uri = f"file:{timeline_db_path}?mode=ro"
@@ -4418,34 +4419,17 @@ def _read_orchestrator_timeline_for_window(
 
         end_ts = finished_at or "9999-12-31T23:59:59Z"
 
-        # Check if instance_id column exists (schema v4+)
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(timeline_events)")}
-        has_instance_id = "instance_id" in columns
-
-        if has_instance_id and orchestrator_instance_id:
-            # Best path: filter by the exact instance_id stored in e2e_runs
-            rows = conn.execute(
-                """
-                SELECT event_id, source_event, timestamp, event, data_json
-                FROM timeline_events
-                WHERE instance_id = ?
-                  AND timestamp >= ? AND timestamp <= ?
-                ORDER BY sequence ASC
-                """,
-                (orchestrator_instance_id, started_at, end_ts),
-            ).fetchall()
-        else:
-            # Fallback for older runs without stored instance_id
-            # or pre-v4 timeline schemas: timestamp-only filtering
-            rows = conn.execute(
-                """
-                SELECT event_id, source_event, timestamp, event, data_json
-                FROM timeline_events
-                WHERE timestamp >= ? AND timestamp <= ?
-                ORDER BY sequence ASC
-                """,
-                (started_at, end_ts),
-            ).fetchall()
+        rows = conn.execute(
+            """
+            SELECT event_id, source_event, timestamp, event, data_json
+            FROM timeline_events
+            WHERE instance_id = ?
+              AND issue_number > 0
+              AND timestamp >= ? AND timestamp <= ?
+            ORDER BY sequence ASC
+            """,
+            (orchestrator_instance_id, started_at, end_ts),
+        ).fetchall()
 
         conn.close()
     except Exception:

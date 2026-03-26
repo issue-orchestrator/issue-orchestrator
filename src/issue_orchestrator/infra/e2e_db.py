@@ -617,6 +617,27 @@ class E2EDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # One-time migration: drop legacy e2e_run_events table and wipe
+            # pre-convergence run history.  E2E timeline events now live in
+            # timeline.sqlite; old run data references the removed table.
+            legacy_tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            if "e2e_run_events" in legacy_tables:
+                conn.execute("DROP TABLE e2e_run_events")
+                conn.execute("DELETE FROM e2e_runs")
+                conn.execute("DELETE FROM e2e_test_results")
+                conn.execute("DELETE FROM e2e_failure_issues")
+                conn.execute("DELETE FROM e2e_run_issues")
+                conn.execute("DELETE FROM e2e_flake_history")
+                conn.commit()
+                # Clean up legacy log files
+                log_dir = self.db_path.parent / "logs" / "e2e"
+                if log_dir.is_dir():
+                    import shutil
+                    shutil.rmtree(log_dir, ignore_errors=True)
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("Migrated E2E database: dropped legacy e2e_run_events and cleared history")
             # Migrate: add orchestrator_instance_id if missing (pre-existing DBs)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(e2e_runs)")}
             if "orchestrator_instance_id" not in columns:

@@ -435,6 +435,57 @@ class TestNestOrchestratorEvents:
         assert events[0]["children"][0]["event"] == "session.completed"
 
 
+class TestOrchestratorWindowExcludesE2EEvents:
+    """_read_orchestrator_timeline_for_window must not return E2E run events."""
+
+    def test_excludes_negative_key_events(self, tmp_path):
+        """E2E events (negative issue_number) are excluded from orchestrator results."""
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import _read_orchestrator_timeline_for_window
+
+        store = SqliteTimelineStore(
+            db_path=tmp_path / "timeline.sqlite",
+            instance_id="inst-1",
+        )
+
+        # Write an E2E event (negative key) and an orchestrator event (positive key)
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+        issue_key = TimelineKey.for_issue(42).to_store_key()
+
+        store.append(e2e_key, TimelineRecord(
+            event_id="e2e-evt", timestamp="2026-01-01T00:00:10Z",
+            event="e2e.test_started", data={"nodeid": "test_a"},
+            source_event="e2e.test_started",
+        ))
+        store.append(issue_key, TimelineRecord(
+            event_id="orch-evt", timestamp="2026-01-01T00:00:15Z",
+            event="session.started", data={"run_dir": "/tmp/fake"},
+            source_event="session.started",
+        ))
+
+        results = _read_orchestrator_timeline_for_window(
+            tmp_path / "timeline.sqlite",
+            started_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:01:00Z",
+            orchestrator_instance_id="inst-1",
+        )
+
+        # Only the orchestrator event should be returned, not the E2E event
+        assert len(results) == 1
+        assert results[0].get("event") == "session.started"
+
+    def test_returns_empty_without_instance_id(self, tmp_path):
+        """Returns empty list when no instance_id is provided."""
+        from issue_orchestrator.entrypoints.control_api import _read_orchestrator_timeline_for_window
+
+        results = _read_orchestrator_timeline_for_window(
+            tmp_path / "timeline.sqlite",
+            started_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:01:00Z",
+        )
+        assert results == []
+
+
 class TestE2ERunDetailEndpoint:
     """Endpoint-level tests for GET /api/e2e-run-detail/{run_id}."""
 
