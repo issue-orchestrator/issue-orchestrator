@@ -812,3 +812,45 @@ class TestAgentDoneInvocation:
         assert not worktree_completion.exists(), (
             "BUG TEST: Should NOT be in worktree when no cd"
         )
+
+
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+def test_claude_print_works_from_gate_test_repo(tmp_path):
+    """claude -p must produce non-empty output from an AI gate-style temp repo.
+
+    The AI gate test copies .claude/hooks into a temp repo and runs
+    claude --print to verify hooks block dangerous commands.  If any
+    file in .claude (settings.json, new config files, etc.) interferes
+    with --print mode, the gate test silently fails and blocks startup.
+
+    This test catches that drift by running claude -p from an identical
+    temp repo and asserting the output is non-empty.
+    """
+    from issue_orchestrator.infra.hooks.hooks import (
+        _init_test_ai_gate_repo,
+        _copy_hook_dir,
+        _test_ai_gate_env,
+    )
+
+    project_root = Path(__file__).parent.parent.parent
+    work_repo = _init_test_ai_gate_repo(tmp_path)
+    _copy_hook_dir(project_root, work_repo, ".claude")
+    env = _test_ai_gate_env(project_root)
+
+    result = subprocess.run(
+        ["claude", "-p", "what is 2+2"],
+        cwd=work_repo,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+
+    output = (result.stdout + result.stderr).strip()
+    assert output, (
+        f"claude -p produced empty output from gate test repo. "
+        f"exit={result.returncode}, "
+        f"settings.json exists={(work_repo / '.claude' / 'settings.json').exists()}, "
+        f"hooks dir={(work_repo / '.claude' / 'hooks').exists()}"
+    )
