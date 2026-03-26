@@ -740,3 +740,195 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_provider_circuit_breakers_empty_without_deps():
+    """When orchestrator has no deps (stub/test), circuit breakers list is empty."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
+def test_view_model_provider_circuit_breakers_surfaces_open_breaker():
+    """When a provider circuit breaker is open, it appears in the dashboard."""
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    future = now + timedelta(minutes=5)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=future,
+        consecutive_outages=3,
+        last_error_summary="rate limited",
+        updated_at=now,
+    ))
+
+    @dataclass
+    class _FakeDeps:
+        provider_resilience: object
+
+    @dataclass
+    class _FakeResilience:
+        store: InMemoryProviderCircuitStore
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _FakeDeps = None  # type: ignore[assignment]
+
+    resilience = _FakeResilience(store=store)
+    orchestrator = _OrchestratorWithDeps(
+        state=state, config=config, deps=_FakeDeps(provider_resilience=resilience)
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    cb = view_model.provider_circuit_breakers[0]
+    assert cb["provider"] == "anthropic"
+    assert cb["is_open"] is True
+    assert cb["consecutive_outages"] == 3
+    assert cb["last_error_summary"] == "rate limited"
+    assert cb["open_until"] is not None
+    assert cb["updated_at"] is not None
+
+    # Also present in dashboard_data
+    dd_cbs = view_model.dashboard_data()["providerCircuitBreakers"]
+    assert len(dd_cbs) == 1
+    assert dd_cbs[0]["provider"] == "anthropic"
+
+
+def test_view_model_provider_circuit_breakers_expired_shows_closed():
+    """An expired circuit breaker shows is_open=False."""
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(minutes=5)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=past,
+        consecutive_outages=1,
+        last_error_summary="timeout",
+        updated_at=past,
+    ))
+
+    @dataclass
+    class _FakeDeps:
+        provider_resilience: object
+
+    @dataclass
+    class _FakeResilience:
+        store: InMemoryProviderCircuitStore
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _FakeDeps = None  # type: ignore[assignment]
+
+    resilience = _FakeResilience(store=store)
+    orchestrator = _OrchestratorWithDeps(
+        state=state, config=config, deps=_FakeDeps(provider_resilience=resilience)
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    cb = view_model.provider_circuit_breakers[0]
+    assert cb["provider"] == "openai"
+    assert cb["is_open"] is False
+
+
+def test_view_model_provider_circuit_breakers_in_public_contract():
+    """Provider circuit breakers pass public contract validation."""
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="overloaded",
+        updated_at=now,
+    ))
+
+    @dataclass
+    class _FakeDeps:
+        provider_resilience: object
+
+    @dataclass
+    class _FakeResilience:
+        store: InMemoryProviderCircuitStore
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _FakeDeps = None  # type: ignore[assignment]
+
+    resilience = _FakeResilience(store=store)
+    orchestrator = _OrchestratorWithDeps(
+        state=state, config=config, deps=_FakeDeps(provider_resilience=resilience)
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Should validate against public contract without errors
+    DashboardViewModelContract.model_validate(view_model.to_dict())
