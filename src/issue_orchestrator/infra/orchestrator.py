@@ -752,7 +752,7 @@ class Orchestrator:
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
         result = []
-        for state in self.deps.provider_resilience.store.list_all():
+        for state in self.deps.provider_resilience.list_all_states():
             is_open = state.open_until is not None and state.open_until > now
             cooldown_remaining = None
             if is_open and state.open_until:
