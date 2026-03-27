@@ -73,8 +73,8 @@ pytest tests/e2e/ -v               # E2E tests (requires gh auth)
 
 ## Submitting changes
 
-1. Run `make validate` before pushing for the fast local gate
-2. CI runs `make validate` plus the agent-backed simulated and integration slices as the required full PR gate
+1. Run `make validate-pr` before pushing for the required local publish gate
+2. CI mirrors `make validate-pr` by splitting the fast validate job and the agent-backed simulated/integration slices across separate required jobs
 3. Tests must pass. If tests fail, fix them — don't defer.
 4. [CONTRIBUTING.md](../../CONTRIBUTING.md) covers running tests from forks
 

@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full verify-hooks-all _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-pr validate-quick validate-full verify-hooks-all _validate-impl _validate-pr-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -42,8 +42,9 @@ help:
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
 	@echo "  validate            Fast local validation: typecheck + lint + unit + simulated-core + integration-core + web-ui smoke"
+	@echo "  validate-pr         Required PR gate: validate + simulated-agent + integration-agent"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
-	@echo "  validate-full       Full validation: validate + simulated-agent + integration-agent + e2e tests"
+	@echo "  validate-full       Full validation: validate-pr + e2e tests"
 	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
@@ -449,6 +450,11 @@ validate-quick: typecheck test-unit
 validate:
 	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-raw"
 
+# Required PR validation - fast gate plus the agent-backed simulated/integration slices.
+# This is the coverage pre-push enforces locally, and CI mirrors it across separate jobs.
+validate-pr:
+	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-pr-raw"
+
 # Raw validation - direct execution without output capture wrapper
 # Use this as a fallback if the Python wrapper fails
 VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
@@ -458,8 +464,16 @@ validate-raw:
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed!"
 
+validate-pr-raw:
+	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL)"
+	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-pr-impl
+	@$(GMAKE) --output-sync=target test-vscode
+	@echo "✓ Required PR validations passed!"
+
 # Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
 _validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated-core test-integration-core test-web
+
+_validate-pr-impl: _validate-impl test-simulated-agent test-integration-agent
 
 # Full validation including e2e tests
 validate-full:
@@ -467,7 +481,7 @@ validate-full:
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed (including e2e)!"
 
-_validate-full-impl: _validate-impl test-simulated-agent test-integration-agent test-e2e
+_validate-full-impl: _validate-pr-impl test-e2e
 
 verify-hooks-all:
 	@.venv/bin/issue-orchestrator setup-hooks --config .issue-orchestrator/config/hooks-validate.yaml
