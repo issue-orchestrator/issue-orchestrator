@@ -5,7 +5,7 @@ import logging
 from ..types import Check
 from ...config import Config
 from ...hooks.hooks import get_adapter
-from ...ai_gate_state import AiGateState, load_ai_gate_state, save_ai_gate_state
+from ...ai_gate_state import load_ai_gate_state, save_ai_gate_state
 
 logger = logging.getLogger(__name__)
 
@@ -165,15 +165,6 @@ def _run_ai_gate_tests(
     return results, failures
 
 
-def _gate_trigger_reason(state: AiGateState) -> str:
-    if state.last_check is None:
-        return "first run"
-    failed = [k for k, v in state.last_results.items() if not v.success]
-    if failed:
-        return f"cached failure retry ({', '.join(failed)})"
-    return "interval exceeded"
-
-
 def _check_ai_gate_report(
     config: Config,
     unique_types: set,
@@ -201,6 +192,7 @@ def _check_ai_gate_report(
     if not hooks_ok:
         return Check(name="AI Gate", status="info", detail="Skipped - hooks not installed", expandable=expandable)
 
+    trigger_reason = "first run" if state.last_check is None else "interval exceeded"
     if not state.is_stale(interval_days):
         # Use cached results — but only trust cached *successes*.
         # Cached failures always re-run: a transient issue (environment,
@@ -217,10 +209,11 @@ def _check_ai_gate_report(
         if not cached_failures:
             return Check(name="AI Gate", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
         # Fall through to re-run — don't trust cached failures
+        trigger_reason = f"cached failure retry ({', '.join(cached_failures)})"
 
     # Run AI gate tests
     expandable["ran"] = True
-    expandable["triggered_by"] = _gate_trigger_reason(state)
+    expandable["triggered_by"] = trigger_reason
 
     results, failures = _run_ai_gate_tests(unique_types, unsupported_types, config.repo_root, expandable)
 

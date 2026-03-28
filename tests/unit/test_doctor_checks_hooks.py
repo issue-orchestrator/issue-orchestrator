@@ -212,6 +212,53 @@ class TestAiGate:
         assert result.expandable["triggered_by"] == "interval exceeded"
         assert len(saved_states) == 1  # State was saved
 
+    def test_ai_gate_stale_failed_cache_reports_interval_exceeded(self, tmp_path, monkeypatch):
+        """Stale failed results should report staleness, not cached-failure retry."""
+        from issue_orchestrator.infra.hooks.hooks import AiAgentType
+
+        config = Config(repo_root=tmp_path)
+        config.hooks.ai_gate.interval_days = 7
+
+        old_state = AiGateState(
+            last_check=datetime.now(timezone.utc) - timedelta(days=10),
+            last_results={
+                "claude-code": AiGateResult(
+                    success=False,
+                    message="Did not block",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=10),
+                ),
+            },
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.load_ai_gate_state",
+            lambda _: old_state,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.save_ai_gate_state",
+            lambda *a, **kw: None,
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
+        mock_adapter.test_ai_gate.return_value = (True, "Blocked git push --no-verify")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
+            lambda _: mock_adapter,
+        )
+
+        result = hook_checks._check_ai_gate_report(
+            config=config,
+            unique_types={AiAgentType.CLAUDE_CODE},
+            unsupported_types=set(),
+            hooks_ok=True,
+        )
+
+        assert result is not None
+        assert result.status == "ok"
+        assert result.expandable is not None
+        assert result.expandable["ran"] is True
+        assert result.expandable["triggered_by"] == "interval exceeded"
+
     def test_ai_gate_failure_blocks_by_default(self, tmp_path, monkeypatch):
         """Test that AI gate test failure blocks when not allowed."""
         from issue_orchestrator.infra.hooks.hooks import AiAgentType
