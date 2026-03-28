@@ -203,8 +203,8 @@ hooks:
         assert ai_gate.expandable is not None
         assert ai_gate.expandable["ran"] is False  # Used cached results
 
-    def test_doctor_shows_cached_failure_as_error(self, repo_with_config, monkeypatch):
-        """Test that doctor shows cached failure as error status."""
+    def test_doctor_retries_cached_failure(self, repo_with_config, monkeypatch):
+        """Cached failures trigger a re-run instead of blocking with stale error."""
         from unittest.mock import MagicMock
 
         from issue_orchestrator.infra.ai_gate_state import (
@@ -219,7 +219,7 @@ hooks:
 
         repo_path, config_file = repo_with_config
 
-        # Mock adapter to make hooks appear installed
+        # Mock adapter: hooks installed, gate test passes on re-run
         mock_adapter = MagicMock()
         mock_adapter.is_installed.return_value = True
         mock_adapter.verify_hooks.return_value = VerificationResult(
@@ -228,6 +228,7 @@ hooks:
             checks_passed=["hook_script"],
             checks_failed=[],
         )
+        mock_adapter.test_ai_gate.return_value = (True, "AI gate test passed")
         monkeypatch.setattr(hook_checks, "get_adapter", lambda _: mock_adapter)
 
         # Pre-populate AI gate state with a recent FAILED check
@@ -249,5 +250,7 @@ hooks:
         ai_gate = next((c for c in checks if c.name == "AI Gate"), None)
 
         assert ai_gate is not None
-        assert ai_gate.status == "error"
-        assert "Failed" in ai_gate.detail
+        # Cached failure triggered re-run; re-run passed → ok
+        assert ai_gate.status == "ok"
+        assert ai_gate.expandable["ran"] is True
+        assert ai_gate.expandable["triggered_by"] == "cached failure retry (claude-code)"

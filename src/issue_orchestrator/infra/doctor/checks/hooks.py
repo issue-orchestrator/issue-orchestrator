@@ -192,8 +192,12 @@ def _check_ai_gate_report(
     if not hooks_ok:
         return Check(name="AI Gate", status="info", detail="Skipped - hooks not installed", expandable=expandable)
 
+    trigger_reason = "first run" if state.last_check is None else "interval exceeded"
     if not state.is_stale(interval_days):
-        # Use cached results - derive status from whether there were failures
+        # Use cached results — but only trust cached *successes*.
+        # Cached failures always re-run: a transient issue (environment,
+        # timing) shouldn't block every subsequent startup until someone
+        # manually deletes the state file.
         cached_failures = []
         for agent_type, result in state.last_results.items():
             expandable["results"][agent_type] = {"success": result.success, "message": result.message}
@@ -202,15 +206,14 @@ def _check_ai_gate_report(
         from datetime import datetime, timezone
         days_ago = (datetime.now(timezone.utc).date() - state.last_check.date()).days if state.last_check else 0
 
-        if cached_failures:
-            if config.hooks.ai_gate.dangerous_allow_failure:
-                return Check(name="AI Gate", status="warning", detail=f"Failed ({len(cached_failures)} agent(s), {days_ago}d ago) - allowed by config", expandable=expandable)
-            return Check(name="AI Gate", status="error", detail=f"Failed ({len(cached_failures)} agent(s), {days_ago}d ago)", expandable=expandable)
-        return Check(name="AI Gate", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
+        if not cached_failures:
+            return Check(name="AI Gate", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
+        # Fall through to re-run — don't trust cached failures
+        trigger_reason = f"cached failure retry ({', '.join(cached_failures)})"
 
     # Run AI gate tests
     expandable["ran"] = True
-    expandable["triggered_by"] = "first run" if state.last_check is None else "interval exceeded"
+    expandable["triggered_by"] = trigger_reason
 
     results, failures = _run_ai_gate_tests(unique_types, unsupported_types, config.repo_root, expandable)
 

@@ -121,9 +121,16 @@ class AiAgentAdapter(ABC):
 
 
 def _test_ai_gate_env(project_root: Path) -> dict[str, str]:
-    """Build environment variables for AI gate tests."""
+    """Build environment variables for AI gate tests.
+
+    Strips CLAUDECODE and CLAUDE_CODE_ENTRYPOINT so nested claude -p
+    calls work correctly.  These env vars are set by Claude Code itself
+    and cause nested invocations to suppress output.
+    """
     env = os.environ.copy()
     env["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(project_root / "src")
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
     return env
 
 
@@ -149,7 +156,11 @@ def _init_test_ai_gate_repo(tmppath: Path) -> Path:
     return work_repo
 
 
-def _copy_hook_dir(project_root: Path, work_repo: Path, hook_dir: str) -> None:
+def _copy_hook_dir(
+    project_root: Path,
+    work_repo: Path,
+    hook_dir: str,
+) -> None:
     """Copy a hook configuration directory into the AI gate test repo."""
     src_dir = project_root / hook_dir
     if not src_dir.exists():
@@ -427,14 +438,22 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                 if was_blocked:
                     return True, f"AI gate test passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}"
                 else:
-                    return False, f"AI gate test FAILED: Claude was NOT blocked\nOutput: {output[:500]}"
+                    diag = (
+                        f"AI gate test FAILED: Claude was NOT blocked\n"
+                        f"Exit code: {result.returncode}\n"
+                        f"Work repo: {work_repo}\n"
+                        f"Hooks dir exists: {(work_repo / '.claude' / 'hooks').exists()}\n"
+                        f"Stdout ({len(result.stdout)} chars): {result.stdout[:500]}\n"
+                        f"Stderr ({len(result.stderr)} chars): {result.stderr[:500]}"
+                    )
+                    return False, diag
 
             except subprocess.TimeoutExpired:
-                return False, f"AI gate test timed out after {timeout}s"
+                return False, f"AI gate test timed out after {timeout}s (cwd={work_repo})"
             except FileNotFoundError:
                 return False, "Claude CLI not found - is it installed?"
             except Exception as e:
-                return False, f"AI gate test error: {e}"
+                return False, f"AI gate test error: {e} (cwd={work_repo})"
 
 
 class CursorAdapter(AiAgentAdapter):

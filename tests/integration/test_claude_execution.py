@@ -812,3 +812,36 @@ class TestAgentDoneInvocation:
         assert not worktree_completion.exists(), (
             "BUG TEST: Should NOT be in worktree when no cd"
         )
+
+
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+def test_ai_gate_production_path_works():
+    """The production AI gate path must produce a pass/fail result.
+
+    Runs in a subprocess with CLAUDECODE stripped from the environment,
+    because claude -p returns empty output when nested inside a running
+    Claude Code session.  This matches production behavior where the
+    orchestrator starts outside Claude Code.
+    """
+    import sys
+
+    project_root = Path(__file__).parent.parent.parent
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable, "-c",
+            "from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter; "
+            f"import pathlib; s, m = ClaudeCodeAdapter().test_ai_gate(pathlib.Path('{project_root}'), timeout=120); "
+            "print(f'{s}|{m}')",
+        ],
+        capture_output=True, text=True, env=env, timeout=180,
+    )
+    assert result.returncode == 0, f"Gate subprocess failed: {result.stderr}"
+    output = result.stdout.strip()
+    assert "|" in output, f"Unexpected gate output: {output}"
+    success_str, message = output.split("|", 1)
+    assert success_str == "True", f"AI gate production path failed: {message}"
+    assert "blocked" in message.lower(), f"Unexpected gate message: {message}"

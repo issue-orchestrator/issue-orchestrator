@@ -90,8 +90,8 @@ class TestAiGate:
         assert result.expandable is not None
         assert result.expandable["ran"] is False
 
-    def test_ai_gate_cached_failure_shows_error(self, tmp_path, monkeypatch):
-        """Test that cached results with failures show error status, not ok."""
+    def test_ai_gate_cached_failure_retries(self, tmp_path, monkeypatch):
+        """Cached failures are not trusted — the gate re-runs instead of blocking."""
         config = Config(repo_root=tmp_path)
         config.hooks.ai_gate.interval_days = 7
         config.hooks.ai_gate.dangerous_allow_failure = False
@@ -111,6 +111,10 @@ class TestAiGate:
             "issue_orchestrator.infra.doctor.checks.hooks.load_ai_gate_state",
             lambda _: recent_state,
         )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.save_ai_gate_state",
+            lambda *a, **kw: None,
+        )
 
         result = hook_checks._check_ai_gate_report(
             config=config,
@@ -120,18 +124,16 @@ class TestAiGate:
         )
 
         assert result is not None
-        assert result.status == "error"
-        assert "Failed" in result.detail
-        assert "2d ago" in result.detail
-        assert result.expandable["ran"] is False
+        # With no agent types to test, re-run produces ok (0 failures)
+        assert result.status == "ok"
+        assert result.expandable["ran"] is True
 
-    def test_ai_gate_cached_failure_warns_when_allowed(self, tmp_path, monkeypatch):
-        """Test that cached failures show warning when dangerous_allow_failure=True."""
+    def test_ai_gate_cached_failure_retries_even_when_allowed(self, tmp_path, monkeypatch):
+        """Cached failures always re-run, even with dangerous_allow_failure=True."""
         config = Config(repo_root=tmp_path)
         config.hooks.ai_gate.interval_days = 7
         config.hooks.ai_gate.dangerous_allow_failure = True
 
-        # Mock load_ai_gate_state to return recent check with failure
         recent_state = AiGateState(
             last_check=datetime.now(timezone.utc) - timedelta(days=2),
             last_results={
@@ -146,6 +148,10 @@ class TestAiGate:
             "issue_orchestrator.infra.doctor.checks.hooks.load_ai_gate_state",
             lambda _: recent_state,
         )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.save_ai_gate_state",
+            lambda *a, **kw: None,
+        )
 
         result = hook_checks._check_ai_gate_report(
             config=config,
@@ -155,9 +161,9 @@ class TestAiGate:
         )
 
         assert result is not None
-        assert result.status == "warning"
-        assert "allowed by config" in result.detail
-        assert result.expandable["ran"] is False
+        # Re-ran with no agent types → ok
+        assert result.status == "ok"
+        assert result.expandable["ran"] is True
 
     def test_ai_gate_stale_runs_test_ai_gate(self, tmp_path, monkeypatch):
         """Test that stale AI gate test runs AI gate test."""
@@ -205,6 +211,53 @@ class TestAiGate:
         assert result.expandable["ran"] is True
         assert result.expandable["triggered_by"] == "interval exceeded"
         assert len(saved_states) == 1  # State was saved
+
+    def test_ai_gate_stale_failed_cache_reports_interval_exceeded(self, tmp_path, monkeypatch):
+        """Stale failed results should report staleness, not cached-failure retry."""
+        from issue_orchestrator.infra.hooks.hooks import AiAgentType
+
+        config = Config(repo_root=tmp_path)
+        config.hooks.ai_gate.interval_days = 7
+
+        old_state = AiGateState(
+            last_check=datetime.now(timezone.utc) - timedelta(days=10),
+            last_results={
+                "claude-code": AiGateResult(
+                    success=False,
+                    message="Did not block",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=10),
+                ),
+            },
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.load_ai_gate_state",
+            lambda _: old_state,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.save_ai_gate_state",
+            lambda *a, **kw: None,
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
+        mock_adapter.test_ai_gate.return_value = (True, "Blocked git push --no-verify")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
+            lambda _: mock_adapter,
+        )
+
+        result = hook_checks._check_ai_gate_report(
+            config=config,
+            unique_types={AiAgentType.CLAUDE_CODE},
+            unsupported_types=set(),
+            hooks_ok=True,
+        )
+
+        assert result is not None
+        assert result.status == "ok"
+        assert result.expandable is not None
+        assert result.expandable["ran"] is True
+        assert result.expandable["triggered_by"] == "interval exceeded"
 
     def test_ai_gate_failure_blocks_by_default(self, tmp_path, monkeypatch):
         """Test that AI gate test failure blocks when not allowed."""
