@@ -21,7 +21,9 @@ execution:
     mode: "standard"   # or "hardened"
 ```
 
-`make validate` is the fast local publish gate. CI layers additional required coverage on top of it by running the agent-backed simulated and integration slices separately.
+`make validate` is the fast local publish gate.
+
+`make validate-pr` is the required pre-push and PR gate. It includes `make validate` plus the agent-backed simulated and integration slices. CI mirrors that same coverage by running the fast and agent-backed portions in separate required jobs.
 
 ## Record Format
 

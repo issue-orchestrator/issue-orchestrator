@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Canonical fast local gate.
-# CI layers the slower agent-backed integration slice on top.
+# Canonical local publish gate.
+# Mirrors the required PR coverage: fast validate + the agent-backed slices.
 
 # Enforce dirty-tree policy from YAML before expensive validation.
 if [ -x ".venv/bin/python" ]; then
@@ -14,4 +14,4 @@ else
   exit 1
 fi
 
-make validate
+make validate-pr
