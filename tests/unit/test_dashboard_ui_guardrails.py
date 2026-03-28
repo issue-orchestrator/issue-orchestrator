@@ -639,3 +639,13 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_render_compact_cards_removes_empty_placeholder_when_items_exist() -> None:
+    """renderCompactCards must remove .column-empty and .skeleton-card when items arrive."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderCompactCards")
+    # The function must remove placeholders before inserting real cards
+    assert ".column-empty" in body
+    assert ".skeleton-card" in body
+    assert "remove()" in body

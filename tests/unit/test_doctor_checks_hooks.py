@@ -407,3 +407,101 @@ class TestAiGate:
         assert "claude-code" in result.expandable["agents_tested"]
         assert result.expandable["results"]["claude-code"]["success"] is True
         assert "Blocked" in result.expandable["results"]["claude-code"]["message"]
+
+    def test_cached_failure_retry_clears_stale_results(self, tmp_path, monkeypatch):
+        """Retry path must clear old cached results so expandable only shows fresh data."""
+        from issue_orchestrator.infra.hooks.hooks import AiAgentType
+
+        config = Config(repo_root=tmp_path)
+        config.hooks.ai_gate.interval_days = 7
+
+        # Cached state: gemini failed, claude passed
+        recent_state = AiGateState(
+            last_check=datetime.now(timezone.utc) - timedelta(days=2),
+            last_results={
+                "claude-code": AiGateResult(
+                    success=True,
+                    message="Blocked",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=2),
+                ),
+                "gemini-cli": AiGateResult(
+                    success=False,
+                    message="Did not block",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=2),
+                ),
+            },
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.load_ai_gate_state",
+            lambda _: recent_state,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.save_ai_gate_state",
+            lambda *a, **kw: None,
+        )
+
+        # Re-run with only claude-code → gemini stale result must not appear
+        mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
+        mock_adapter.test_ai_gate.return_value = (True, "Blocked")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
+            lambda _: mock_adapter,
+        )
+
+        result = hook_checks._check_ai_gate_report(
+            config=config,
+            unique_types={AiAgentType.CLAUDE_CODE},
+            unsupported_types=set(),
+            hooks_ok=True,
+        )
+
+        assert result.expandable["ran"] is True
+        assert "gemini-cli" not in result.expandable["results"]
+        assert "claude-code" in result.expandable["results"]
+        assert result.expandable["results"]["claude-code"]["success"] is True
+
+    def test_cached_failure_retry_reports_correct_trigger(self, tmp_path, monkeypatch):
+        """Retry due to cached failure must say so, not 'interval exceeded'."""
+        from issue_orchestrator.infra.hooks.hooks import AiAgentType
+
+        config = Config(repo_root=tmp_path)
+        config.hooks.ai_gate.interval_days = 7
+
+        recent_state = AiGateState(
+            last_check=datetime.now(timezone.utc) - timedelta(days=1),
+            last_results={
+                "claude-code": AiGateResult(
+                    success=False,
+                    message="Did not block",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=1),
+                ),
+            },
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.load_ai_gate_state",
+            lambda _: recent_state,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.save_ai_gate_state",
+            lambda *a, **kw: None,
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
+        mock_adapter.test_ai_gate.return_value = (True, "Blocked")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
+            lambda _: mock_adapter,
+        )
+
+        result = hook_checks._check_ai_gate_report(
+            config=config,
+            unique_types={AiAgentType.CLAUDE_CODE},
+            unsupported_types=set(),
+            hooks_ok=True,
+        )
+
+        assert result.expandable["ran"] is True
+        assert "cached failure" in result.expandable["triggered_by"]
+        assert "claude-code" in result.expandable["triggered_by"]
