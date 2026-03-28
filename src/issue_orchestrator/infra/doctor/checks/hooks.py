@@ -211,7 +211,8 @@ def _check_ai_gate_report(
         # Fall through to re-run — don't trust cached failures
         trigger_reason = f"cached failure retry ({', '.join(cached_failures)})"
 
-    # Run AI gate tests
+    # Run AI gate tests — clear stale cached results before populating fresh ones
+    expandable["results"] = {}
     expandable["ran"] = True
     expandable["triggered_by"] = trigger_reason
 
