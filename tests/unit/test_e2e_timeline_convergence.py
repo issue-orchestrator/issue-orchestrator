@@ -607,6 +607,71 @@ class TestE2ETimelineControlEndpoint:
         assert "setup" in toc_phases
         assert "teardown" in toc_phases
 
+    def test_snapshotted_agent_events_nest_without_worktree(self, tmp_path):
+        """Agent events snapshotted into base repo timeline nest correctly
+        even when the E2E worktree timeline no longer exists."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+
+        # Pytest events (e2e.* prefix)
+        store.append(e2e_key, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_started", data={"nodeid": "test_a"},
+            source_event="e2e.test_started",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="e2", timestamp="2026-01-01T00:01:00Z",
+            event="e2e.test_completed",
+            data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 55},
+            source_event="e2e.test_completed",
+        ))
+
+        # Snapshotted agent events (non-e2e.* prefix, same key)
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+            event="session.started",
+            data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                  "issue_number": 42, "phase": "in_progress", "step": "started",
+                  "status": "started", "summary": "Agent launched"},
+            source_event="e2e.agent_snapshot",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-s2", timestamp="2026-01-01T00:00:50Z",
+            event="session.completed",
+            data={"event": "session.completed", "timestamp": "2026-01-01T00:00:50Z",
+                  "issue_number": 42, "phase": "in_progress", "step": "completed",
+                  "status": "completed", "summary": "Code written"},
+            source_event="e2e.agent_snapshot",
+        ))
+
+        # No E2E worktree exists — snapshots are the only source
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+
+        # Should have 2 parent events (e2e.test_started, e2e.test_completed)
+        events = payload["events"]
+        assert len(events) == 2
+        assert events[0]["event"] == "e2e.test_started"
+
+        # The test_started event should have the agent events nested as children
+        children = events[0].get("children", [])
+        assert len(children) == 2, f"Expected 2 children, got {len(children)}: {[c.get('event') for c in children]}"
+        child_events = {c["event"] for c in children}
+        assert "session.started" in child_events
+        assert "session.completed" in child_events
+
     def test_returns_empty_events_when_no_timeline(self, tmp_path):
         """Returns empty events list when no timeline DB exists."""
         from fastapi.testclient import TestClient

@@ -365,12 +365,15 @@ class Orchestrator:
             store_key = TimelineKey.for_e2e_run(run.id).to_store_key()
 
             for evt in agent_events:
+                # Use "e2e.agent_snapshot" as source_event to avoid the
+                # run-scoped CHECK constraint (session.started etc. require
+                # run_dir, which snapshots don't have).
                 record = TimelineRecord(
                     event_id=f"snap-{evt.get('event_id', '')}",
                     timestamp=evt.get("timestamp", ""),
                     event=evt.get("event", ""),
                     data=evt,
-                    source_event=evt.get("source_event", evt.get("event", "")),
+                    source_event="e2e.agent_snapshot",
                 )
                 store.append(store_key, record)
 
