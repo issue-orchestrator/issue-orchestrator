@@ -1853,19 +1853,25 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
         )
 
     timeline = stream.to_dict()
-    raw_events = timeline.get("events", [])
-    events = _filter_timeline_events(raw_events)
+    all_events = timeline.get("events", [])
+    all_events = _filter_timeline_events(all_events)
 
-    # Nest orchestrator events (agent sessions, reviews, rework) under
-    # the test events they occurred during, using timestamp windows.
-    orchestrator_events = _load_orchestrator_events_for_run(run_id)
-    if orchestrator_events:
-        nest_orchestrator_events(events, orchestrator_events)
+    # Split into E2E pytest events and snapshotted agent events.
+    # Snapshots have non-e2e event names (session.*, review.*, etc.)
+    e2e_events = [e for e in all_events if e.get("event", "").startswith("e2e.")]
+    agent_events = [e for e in all_events if not e.get("event", "").startswith("e2e.")]
+
+    if not agent_events:
+        # No snapshots — try live worktree timeline
+        agent_events = _load_orchestrator_events_for_run(run_id)
+
+    events = e2e_events
+    if agent_events:
+        nest_orchestrator_events(events, agent_events)
 
     # Skip _decorate_timeline_events: E2E events have no session artifacts
     # (no run_dir, no terminal recordings). Nested orchestrator children are
-    # already decorated by the TimelineStream conversion in
-    # _read_orchestrator_timeline_for_window.
+    # already decorated by the TimelineStream conversion.
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
 
@@ -1895,13 +1901,14 @@ def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
     if not _orchestrator:
         return []
 
-    from .control_api import _read_orchestrator_timeline_for_window
+    from ..infra.e2e_timeline import read_orchestrator_events_by_window
+    from ..infra.e2e_worktree import get_e2e_worktree_path
 
     repo_root = _orchestrator.config.repo_root
     db_path = repo_root / ".issue-orchestrator" / "e2e.db"
-    timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+    e2e_wt_timeline = get_e2e_worktree_path(repo_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
 
-    if not db_path.exists() or not timeline_db_path.exists():
+    if not db_path.exists() or not e2e_wt_timeline.exists():
         return []
 
     try:
@@ -1910,11 +1917,10 @@ def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
         run = db.get_run(run_id)
         if not run:
             return []
-        return _read_orchestrator_timeline_for_window(
-            timeline_db_path,
+        return read_orchestrator_events_by_window(
+            e2e_wt_timeline,
             started_at=run.started_at,
             finished_at=run.finished_at,
-            orchestrator_instance_id=run.orchestrator_instance_id,
         )
     except Exception:
         logger.debug("Could not load orchestrator events for E2E run %d", run_id, exc_info=True)
