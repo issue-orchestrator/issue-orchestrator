@@ -42,46 +42,65 @@ filtering:
 **Q7: What are the guardrails, and which ones do I need to set up?**
 A: The guardrails are the repo's safety hooks that prevent unsafe operations (for example, bypassing validation or pushing without completing). Set up the worktree hooks once per machine, then keep `security.enforce_hooks` enabled. For details, see [Guardrails & Safety Model](../../docs/design/guardrails.md) and [Hook Enforcement](../architecture/hooks.md).
 
-**Q8: Do I need the `[M1-010]` prefix in issue titles?**
+**Q8: What GitHub token does `issue-orchestrator` use, and what permissions does it need?**
+A: `issue-orchestrator` resolves GitHub auth in this order: `repo.github.token`, `repo.github.token_env`, `ISSUE_ORCH_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the optional OS keychain entry created by `issue-orchestrator auth store`. If you launch the Control Center with `./scripts/start_control_center.sh`, it inherits your current shell environment, so the common setup is:
+
+```bash
+export ISSUE_ORCH_GITHUB_TOKEN="github_pat_..."
+./scripts/start_control_center.sh
+```
+
+For a fine-grained PAT, grant repository access only to the target repo and set these permissions:
+
+| Permission | Access |
+|---|---|
+| Metadata | Read |
+| Contents | Read and write |
+| Issues | Read and write |
+| Pull requests | Read and write |
+
+No user permissions are required. `Actions`, `Administration`, `Projects`, `Packages`, `Deployments`, `Secrets`, and similar extra permissions are not needed for normal orchestrator operation.
+
+**Q9: Do I need the `[M1-010]` prefix in issue titles?**
 A: No. The `[M?-nnn]` prefix (e.g., `[M1-010]`) gives an issue a stable, human-readable identity key used in session tracking, dependency resolution, and logs. If your title has no prefix, the orchestrator automatically falls back to the GitHub issue number (e.g., `42`) as the identity. Everything works either way — sessions, the dashboard, dependencies, and filtering all function normally. Use the prefix when you want milestone-scoped naming or cross-references like `Depends-on: M1-010`; skip it if you're referencing dependencies by issue number (`Depends-on: #42`) or just getting started. See the [Creating Issues for Agents](tutorial.md#issue-identity-keys) section for details.
 
 ## Everyday Configuration
 
-**Q9: How do I cap concurrency or change timeouts?**
+**Q10: How do I cap concurrency or change timeouts?**
 A: Use `execution.concurrency.max_concurrent_sessions` and `execution.concurrency.session_timeout_minutes`.
 
-**Q10: How do I enable code review and set a default reviewer?**
+**Q11: How do I enable code review and set a default reviewer?**
 A: Set `review.enabled: true`, then `review.default` to the reviewer agent label (for example, `agent:reviewer`). Make sure that agent is defined under `agents`.
 
-**Q11: Can I reference environment variables in config?**
+**Q12: Can I reference environment variables in config?**
 A: Yes. Any string can use `${VAR}` substitution. If the variable is missing, config loading fails with a clear error pointing to the field.
 
-**Q12: Why does validation fail because the worktree is "dirty," and can I relax it?**
+**Q13: Why does validation fail because the worktree is "dirty," and can I relax it?**
 A: The guard prevents a mismatch between what you validated and what you push. Adjust `validation.pre_push_dirty_check` to `unstaged` or `off` if you intentionally want to allow that risk.
 
 ## Using the System
 
-**Q13: Can I access this from VS Code (or derivatives like Cursor)?**
+**Q14: Can I access this from VS Code (or derivatives like Cursor)?**
 A: Yes. See [VS Code Integration](vscode.md). VS Code derivatives that support extensions generally work the same way, as long as they can run the extension and have the `issue-orchestrator-mcp` entrypoint on your PATH.
 
-**Q14: An issue failed. Now what?**
+**Q15: An issue failed. Now what?**
 A: Start with the Control Center: open the issue, check the last agent message, and look for the `blocked`/`validation-failed`/`needs-human` labels. Use the Doctor panel to validate config and environment. If the failure is due to validation, re-run the validation command in the worktree, fix the errors, and re-run `coding-done`. For deeper troubleshooting, see [Troubleshooting](../development/TROUBLESHOOTING.md).
 
-**Q15: My issue ran but was blocked. Now what?**
+**Q16: My issue ran but was blocked. Now what?**
 A: Read the agent's last comment and the `blocked` label reason. Provide the missing input, then re-queue the issue by removing the `blocked` label and re-applying the agent label.
 
-**Q16: Why isn't my issue showing up?**
+**Q17: Why isn't my issue showing up?**
 A: Check the Control Center's **Excluded** tab first. Issues can be excluded by filters (`filtering.label`, `filtering.milestone(s)`, `filtering.issue`, `filtering.exclude_labels`), missing agent labels, or missing milestones. If it's excluded, the UI explains why.
 
 ## Advanced / Later-Stage Usage
 
-**Q17: How do I control triage issue labels and priority?**
+**Q18: How do I control triage issue labels and priority?**
 A: Use `triage.explicit_labels` to always apply labels, `triage.inherit_labels` to copy labels from linked issues/PRs, and `triage.priority` to add a specific priority label (for example, `priority:high`).
 
-**Q18: How is the triage milestone chosen, and can I override it?**
+**Q19: How is the triage milestone chosen, and can I override it?**
 A: `triage.milestone_strategy.inherit_from_issues` pulls from linked issues by default. Set `triage.milestone_strategy.explicit` to force a specific milestone.
 
-**Q19: I run multiple orchestrators. How do I avoid collisions?**
+**Q20: I run multiple orchestrators. How do I avoid collisions?**
 A: Think in three cases:
 
 **Case A: Two repos, two orchestrators (same machine).**
@@ -93,10 +112,10 @@ Only do this with the claims system enabled. Each machine must set a unique `cla
 **Case C: Multiple orchestrators for the same repo on one machine (advanced).**
 This is mainly for development/testing. Use `ui.instances` with `claims.enabled: true` so each instance has a unique claimant ID. Don't do it without claims.
 
-**Q20: How do I tune the review + rework loop?**
+**Q21: How do I tune the review + rework loop?**
 A: Use `review.max_rework_cycles` to cap rework (default: 10). When review is enabled, a coder agent produces changes, then a reviewer agent evaluates them. If the reviewer requests changes, the orchestrator opens a rework cycle. This repeats until the reviewer approves or the max is reached, at which point the issue is escalated.
 
-**Q21: How do I manage issue dependencies, and what restrictions apply?**
+**Q22: How do I manage issue dependencies, and what restrictions apply?**
 A: Put dependency lines in the issue body using `Depends-on:`. An issue is runnable only when **all** dependencies are closed.
 
 There are two ways to reference a dependency:
@@ -120,7 +139,7 @@ Depends-on: M2-010                  # Issue with [M2-010] in its title
 
 If a dependency violates the milestone rule, the issue is marked blocked with a dependency reason in the UI.
 
-**Q22: What are common dependency syntax mistakes?**
+**Q23: What are common dependency syntax mistakes?**
 A: Watch out for these:
 
 | What you wrote | What happens | Fix |
