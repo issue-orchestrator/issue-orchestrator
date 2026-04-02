@@ -1260,23 +1260,20 @@ def _build_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
     resilience = getattr(deps, "provider_resilience", None)
     if resilience is None:
         return []
-    try:
-        now = datetime.now(timezone.utc)
-        states = resilience.store.list_all()
-        result: list[dict[str, Any]] = []
-        for s in states:
-            is_open = s.open_until is not None and s.open_until > now
-            result.append({
-                "provider": s.provider,
-                "is_open": is_open,
-                "open_until": s.open_until.isoformat() if s.open_until else None,
-                "consecutive_outages": s.consecutive_outages,
-                "last_error_summary": s.last_error_summary,
-                "updated_at": s.updated_at.isoformat(),
-            })
-        return result
-    except Exception:
-        return []
+    now = datetime.now(timezone.utc)
+    states = resilience.list_all()
+    result: list[dict[str, Any]] = []
+    for s in states:
+        is_open = s.open_until is not None and s.open_until > now
+        result.append({
+            "provider": s.provider,
+            "is_open": is_open,
+            "open_until": s.open_until.isoformat() if s.open_until else None,
+            "consecutive_outages": s.consecutive_outages,
+            "last_error_summary": s.last_error_summary,
+            "updated_at": s.updated_at.isoformat(),
+        })
+    return result
 
 
 def build_dashboard_view_model(
