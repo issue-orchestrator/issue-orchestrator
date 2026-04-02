@@ -4442,16 +4442,15 @@ async def e2e_run_timeline_endpoint(
         if not records:
             return JSONResponse({"events": []})
 
-        stream = TimelineStream.from_records(store_key, records)
-        all_events = [evt.to_dict() for evt in stream.events]
+        # Separate E2E run records from agent snapshots.
+        # Snapshots have event="e2e.agent_snapshot" and their data blob
+        # contains the pre-rendered event dict — use it directly.
+        e2e_records = [r for r in records if r.event != "e2e.agent_snapshot"]
+        snapshot_records = [r for r in records if r.event == "e2e.agent_snapshot"]
 
-        # Split into E2E pytest events (parents) and snapshotted agent
-        # events (children).  Snapshots are written at run completion by
-        # _snapshot_e2e_agent_events and have snap- prefixed event_ids.
-        # If no snapshots exist yet (in-progress run), fall back to
-        # reading from the E2E worktree's timeline.
-        e2e_events = [e for e in all_events if e.get("event", "").startswith("e2e.")]
-        agent_events = [e for e in all_events if not e.get("event", "").startswith("e2e.")]
+        stream = TimelineStream.from_records(store_key, e2e_records)
+        e2e_events = [evt.to_dict() for evt in stream.events]
+        agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
         if not agent_events:
             # No snapshots — try live worktree timeline (in-progress or pre-snapshot)

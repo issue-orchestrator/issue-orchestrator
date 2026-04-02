@@ -1830,15 +1830,16 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     """
     from ..domain.timeline_key import TimelineKey
     from ..infra.e2e_db import nest_orchestrator_events
+    from ..timeline import TimelineStream
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    reader = _orchestrator.deps.timeline_reader
+    store = _orchestrator.deps.timeline_store
     store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
 
     try:
-        stream = reader.read(store_key, limit=5000)
+        records = store.read(store_key, limit=5000)
     except RuntimeError as e:
         logger.error("Timeline read failed for E2E run %d: %s", run_id, e)
         return JSONResponse(
@@ -1846,23 +1847,21 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
             content={"error": "timeline_unavailable", "detail": str(e)},
         )
 
-    if not stream.events:
+    if not records:
         return JSONResponse(
             {"error": "not_found", "detail": f"No timeline events for E2E run {run_id}"},
             status_code=404,
         )
 
-    timeline = stream.to_dict()
-    all_events = timeline.get("events", [])
-    all_events = _filter_timeline_events(all_events)
+    # Separate E2E run records from agent snapshots.
+    e2e_records = [r for r in records if r.event != "e2e.agent_snapshot"]
+    snapshot_records = [r for r in records if r.event == "e2e.agent_snapshot"]
 
-    # Split into E2E pytest events and snapshotted agent events.
-    # Snapshots have non-e2e event names (session.*, review.*, etc.)
-    e2e_events = [e for e in all_events if e.get("event", "").startswith("e2e.")]
-    agent_events = [e for e in all_events if not e.get("event", "").startswith("e2e.")]
+    stream = TimelineStream.from_records(store_key, e2e_records)
+    e2e_events = _filter_timeline_events([evt.to_dict() for evt in stream.events])
+    agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
     if not agent_events:
-        # No snapshots — try live worktree timeline
         agent_events = _load_orchestrator_events_for_run(run_id)
 
     events = e2e_events

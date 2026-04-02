@@ -493,8 +493,7 @@ class TestE2ERunDetailEndpoint:
         mock_orch = MagicMock()
         mock_orch.config.repo_root = Path("/tmp/nonexistent")
 
-        stream = TimelineStream.from_records(store_key, records)
-        mock_orch.deps.timeline_reader.read.return_value = stream
+        mock_orch.deps.timeline_store.read.return_value = records
 
         return mock_orch, TestClient(app)
 
@@ -507,9 +506,7 @@ class TestE2ERunDetailEndpoint:
 
         mock_orch = MagicMock()
         mock_orch.config.repo_root = Path("/tmp/nonexistent")
-        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
-            issue_number=-99, events=[],
-        )
+        mock_orch.deps.timeline_store.read.return_value = []
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
@@ -633,10 +630,10 @@ class TestE2ETimelineControlEndpoint:
             source_event="e2e.test_completed",
         ))
 
-        # Snapshotted agent events (non-e2e.* prefix, same key)
+        # Snapshotted agent events (event="e2e.agent_snapshot", data has original)
         store.append(e2e_key, TimelineRecord(
             event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
-            event="session.started",
+            event="e2e.agent_snapshot",
             data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
                   "issue_number": 42, "phase": "in_progress", "step": "started",
                   "status": "started", "summary": "Agent launched"},
@@ -644,7 +641,7 @@ class TestE2ETimelineControlEndpoint:
         ))
         store.append(e2e_key, TimelineRecord(
             event_id="snap-s2", timestamp="2026-01-01T00:00:50Z",
-            event="session.completed",
+            event="e2e.agent_snapshot",
             data={"event": "session.completed", "timestamp": "2026-01-01T00:00:50Z",
                   "issue_number": 42, "phase": "in_progress", "step": "completed",
                   "status": "completed", "summary": "Code written"},
