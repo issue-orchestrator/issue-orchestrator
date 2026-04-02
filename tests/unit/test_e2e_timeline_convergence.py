@@ -548,6 +548,52 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_snapshot_children_preserve_semantics(self):
+        """Snapshotted agent events nest with correct original semantics."""
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started", data={"nodeid": "test_a"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="e2", timestamp="2026-01-01T00:01:00Z",
+                event="e2e.test_completed",
+                data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 55},
+                source_event="e2e.test_completed",
+            ),
+            TimelineRecord(
+                event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+                event="e2e.agent_snapshot",
+                data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                      "issue_number": 42, "phase": "in_progress", "step": "started",
+                      "status": "started", "summary": "Agent launched"},
+                source_event="e2e.agent_snapshot",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 200
+            payload = response.json()
+            events = payload.get("events", [])
+            test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
+            assert test_started is not None
+            children = test_started.get("children", [])
+            assert len(children) == 1
+            child = children[0]
+            assert child["event"] == "session.started"
+            assert child["phase"] == "in_progress"
+            assert child["step"] == "started"
+            assert child["status"] == "started"
+            assert child["summary"] == "Agent launched"
+        finally:
+            set_orchestrator(None)
+
     def test_returns_503_when_orchestrator_not_running(self):
         """Endpoint returns 503 when orchestrator is not set."""
         from issue_orchestrator.entrypoints.web import app, set_orchestrator
