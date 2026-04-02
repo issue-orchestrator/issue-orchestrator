@@ -1830,15 +1830,16 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     """
     from ..domain.timeline_key import TimelineKey
     from ..infra.e2e_db import nest_orchestrator_events
+    from ..timeline import TimelineStream
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    reader = _orchestrator.deps.timeline_reader
+    store = _orchestrator.deps.timeline_store
     store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
 
     try:
-        stream = reader.read(store_key, limit=5000)
+        records = store.read(store_key, limit=5000)
     except RuntimeError as e:
         logger.error("Timeline read failed for E2E run %d: %s", run_id, e)
         return JSONResponse(
@@ -1846,26 +1847,30 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
             content={"error": "timeline_unavailable", "detail": str(e)},
         )
 
-    if not stream.events:
+    if not records:
         return JSONResponse(
             {"error": "not_found", "detail": f"No timeline events for E2E run {run_id}"},
             status_code=404,
         )
 
-    timeline = stream.to_dict()
-    raw_events = timeline.get("events", [])
-    events = _filter_timeline_events(raw_events)
+    # Separate E2E run records from agent snapshots.
+    e2e_records = [r for r in records if r.event != "e2e.agent_snapshot"]
+    snapshot_records = [r for r in records if r.event == "e2e.agent_snapshot"]
 
-    # Nest orchestrator events (agent sessions, reviews, rework) under
-    # the test events they occurred during, using timestamp windows.
-    orchestrator_events = _load_orchestrator_events_for_run(run_id)
-    if orchestrator_events:
-        nest_orchestrator_events(events, orchestrator_events)
+    stream = TimelineStream.from_records(store_key, e2e_records)
+    e2e_events = _filter_timeline_events([evt.to_dict() for evt in stream.events])
+    agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
+
+    if not agent_events:
+        agent_events = _load_orchestrator_events_for_run(run_id)
+
+    events = e2e_events
+    if agent_events:
+        nest_orchestrator_events(events, agent_events)
 
     # Skip _decorate_timeline_events: E2E events have no session artifacts
     # (no run_dir, no terminal recordings). Nested orchestrator children are
-    # already decorated by the TimelineStream conversion in
-    # _read_orchestrator_timeline_for_window.
+    # already decorated by the TimelineStream conversion.
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
 
@@ -1895,13 +1900,14 @@ def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
     if not _orchestrator:
         return []
 
-    from .control_api import _read_orchestrator_timeline_for_window
+    from ..infra.e2e_timeline import read_orchestrator_events_by_window
+    from ..infra.e2e_worktree import get_e2e_worktree_path
 
     repo_root = _orchestrator.config.repo_root
     db_path = repo_root / ".issue-orchestrator" / "e2e.db"
-    timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+    e2e_wt_timeline = get_e2e_worktree_path(repo_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
 
-    if not db_path.exists() or not timeline_db_path.exists():
+    if not db_path.exists() or not e2e_wt_timeline.exists():
         return []
 
     try:
@@ -1910,11 +1916,10 @@ def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
         run = db.get_run(run_id)
         if not run:
             return []
-        return _read_orchestrator_timeline_for_window(
-            timeline_db_path,
+        return read_orchestrator_events_by_window(
+            e2e_wt_timeline,
             started_at=run.started_at,
             finished_at=run.finished_at,
-            orchestrator_instance_id=run.orchestrator_instance_id,
         )
     except Exception:
         logger.debug("Could not load orchestrator events for E2E run %d", run_id, exc_info=True)

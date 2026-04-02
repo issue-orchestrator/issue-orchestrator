@@ -436,19 +436,15 @@ class TestNestOrchestratorEvents:
 
 
 class TestOrchestratorWindowExcludesE2EEvents:
-    """_read_orchestrator_timeline_for_window must not return E2E run events."""
+    """read_orchestrator_events_by_window must not return E2E run events."""
 
     def test_excludes_negative_key_events(self, tmp_path):
         """E2E events (negative issue_number) are excluded from orchestrator results."""
         from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
-        from issue_orchestrator.entrypoints.control_api import _read_orchestrator_timeline_for_window
+        from issue_orchestrator.infra.e2e_timeline import read_orchestrator_events_by_window
 
-        store = SqliteTimelineStore(
-            db_path=tmp_path / "timeline.sqlite",
-            instance_id="inst-1",
-        )
+        store = SqliteTimelineStore(db_path=tmp_path / "timeline.sqlite")
 
-        # Write an E2E event (negative key) and an orchestrator event (positive key)
         e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
         issue_key = TimelineKey.for_issue(42).to_store_key()
 
@@ -463,23 +459,21 @@ class TestOrchestratorWindowExcludesE2EEvents:
             source_event="session.started",
         ))
 
-        results = _read_orchestrator_timeline_for_window(
+        results = read_orchestrator_events_by_window(
             tmp_path / "timeline.sqlite",
             started_at="2026-01-01T00:00:00Z",
             finished_at="2026-01-01T00:01:00Z",
-            orchestrator_instance_id="inst-1",
         )
 
-        # Only the orchestrator event should be returned, not the E2E event
         assert len(results) == 1
         assert results[0].get("event") == "session.started"
 
-    def test_returns_empty_without_instance_id(self, tmp_path):
-        """Returns empty list when no instance_id is provided."""
-        from issue_orchestrator.entrypoints.control_api import _read_orchestrator_timeline_for_window
+    def test_returns_empty_for_nonexistent_db(self, tmp_path):
+        """Returns empty list when the timeline DB does not exist."""
+        from issue_orchestrator.infra.e2e_timeline import read_orchestrator_events_by_window
 
-        results = _read_orchestrator_timeline_for_window(
-            tmp_path / "timeline.sqlite",
+        results = read_orchestrator_events_by_window(
+            tmp_path / "nonexistent.sqlite",
             started_at="2026-01-01T00:00:00Z",
             finished_at="2026-01-01T00:01:00Z",
         )
@@ -499,8 +493,7 @@ class TestE2ERunDetailEndpoint:
         mock_orch = MagicMock()
         mock_orch.config.repo_root = Path("/tmp/nonexistent")
 
-        stream = TimelineStream.from_records(store_key, records)
-        mock_orch.deps.timeline_reader.read.return_value = stream
+        mock_orch.deps.timeline_store.read.return_value = records
 
         return mock_orch, TestClient(app)
 
@@ -513,9 +506,7 @@ class TestE2ERunDetailEndpoint:
 
         mock_orch = MagicMock()
         mock_orch.config.repo_root = Path("/tmp/nonexistent")
-        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
-            issue_number=-99, events=[],
-        )
+        mock_orch.deps.timeline_store.read.return_value = []
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
@@ -557,6 +548,52 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_snapshot_children_preserve_semantics(self):
+        """Snapshotted agent events nest with correct original semantics."""
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started", data={"nodeid": "test_a"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="e2", timestamp="2026-01-01T00:01:00Z",
+                event="e2e.test_completed",
+                data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 55},
+                source_event="e2e.test_completed",
+            ),
+            TimelineRecord(
+                event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+                event="e2e.agent_snapshot",
+                data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                      "issue_number": 42, "phase": "in_progress", "step": "started",
+                      "status": "started", "summary": "Agent launched"},
+                source_event="e2e.agent_snapshot",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 200
+            payload = response.json()
+            events = payload.get("events", [])
+            test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
+            assert test_started is not None
+            children = test_started.get("children", [])
+            assert len(children) == 1
+            child = children[0]
+            assert child["event"] == "session.started"
+            assert child["phase"] == "in_progress"
+            assert child["step"] == "started"
+            assert child["status"] == "started"
+            assert child["summary"] == "Agent launched"
+        finally:
+            set_orchestrator(None)
+
     def test_returns_503_when_orchestrator_not_running(self):
         """Endpoint returns 503 when orchestrator is not set."""
         from issue_orchestrator.entrypoints.web import app, set_orchestrator
@@ -566,6 +603,136 @@ class TestE2ERunDetailEndpoint:
         client = TestClient(app)
         response = client.get("/api/e2e-run-detail/1")
         assert response.status_code == 503
+
+
+class TestE2ETimelineControlEndpoint:
+    """Test /control/e2e/run/{run_id}/timeline returns phase_toc and cycles."""
+
+    def test_returns_phase_toc_and_cycles(self, tmp_path):
+        """Timeline endpoint includes phase_toc and cycles alongside events."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        # Write E2E events to timeline store
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite", instance_id="inst-1")
+
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+        store.append(e2e_key, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="e2e.run_started", data={"branch": "main"},
+            source_event="e2e.run_started",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="e2", timestamp="2026-01-01T00:01:00Z",
+            event="e2e.run_finished", data={"status": "passed", "duration_seconds": 60},
+            source_event="e2e.run_finished",
+        ))
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+
+        assert "events" in payload
+        assert len(payload["events"]) == 2
+        assert "phase_toc" in payload
+        assert "cycles" in payload
+        assert isinstance(payload["phase_toc"], list)
+        assert isinstance(payload["cycles"], list)
+        # phase_toc should have setup and teardown phases
+        toc_phases = {item.get("phase") for item in payload["phase_toc"]}
+        assert "setup" in toc_phases
+        assert "teardown" in toc_phases
+
+    def test_snapshotted_agent_events_nest_without_worktree(self, tmp_path):
+        """Agent events snapshotted into base repo timeline nest correctly
+        even when the E2E worktree timeline no longer exists."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+
+        # Pytest events (e2e.* prefix)
+        store.append(e2e_key, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_started", data={"nodeid": "test_a"},
+            source_event="e2e.test_started",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="e2", timestamp="2026-01-01T00:01:00Z",
+            event="e2e.test_completed",
+            data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 55},
+            source_event="e2e.test_completed",
+        ))
+
+        # Snapshotted agent events (event="e2e.agent_snapshot", data has original)
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+            event="e2e.agent_snapshot",
+            data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                  "issue_number": 42, "phase": "in_progress", "step": "started",
+                  "status": "started", "summary": "Agent launched"},
+            source_event="e2e.agent_snapshot",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-s2", timestamp="2026-01-01T00:00:50Z",
+            event="e2e.agent_snapshot",
+            data={"event": "session.completed", "timestamp": "2026-01-01T00:00:50Z",
+                  "issue_number": 42, "phase": "in_progress", "step": "completed",
+                  "status": "completed", "summary": "Code written"},
+            source_event="e2e.agent_snapshot",
+        ))
+
+        # No E2E worktree exists — snapshots are the only source
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+
+        # Should have 2 parent events (e2e.test_started, e2e.test_completed)
+        events = payload["events"]
+        assert len(events) == 2
+        assert events[0]["event"] == "e2e.test_started"
+
+        # The test_started event should have the agent events nested as children
+        children = events[0].get("children", [])
+        assert len(children) == 2, f"Expected 2 children, got {len(children)}: {[c.get('event') for c in children]}"
+        child_events = {c["event"] for c in children}
+        assert "session.started" in child_events
+        assert "session.completed" in child_events
+
+    def test_returns_empty_events_when_no_timeline(self, tmp_path):
+        """Returns empty events list when no timeline DB exists."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        # Create empty timeline DB
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/999/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        assert response.json()["events"] == []
 
 
 class TestCheckE2ECompletion:

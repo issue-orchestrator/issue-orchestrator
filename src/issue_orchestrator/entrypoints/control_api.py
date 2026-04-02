@@ -4395,77 +4395,6 @@ async def e2e_run_details(
         )
 
 
-def _read_orchestrator_timeline_for_window(
-    timeline_db_path: Path,
-    started_at: str,
-    finished_at: str | None,
-    orchestrator_instance_id: str = "",
-) -> list[dict]:
-    """Read orchestrator timeline events scoped to an E2E run.
-
-    Filters by instance_id and timestamp window.  Only returns issue-keyed
-    events (issue_number > 0), excluding E2E run events (negative keys)
-    which are the top-level events, not the orchestrator children to nest.
-    """
-    import json as _json
-    import sqlite3 as _sqlite3
-
-    if not orchestrator_instance_id:
-        return []
-
-    try:
-        uri = f"file:{timeline_db_path}?mode=ro"
-        conn = _sqlite3.connect(uri, uri=True)
-        conn.row_factory = _sqlite3.Row
-
-        end_ts = finished_at or "9999-12-31T23:59:59Z"
-
-        rows = conn.execute(
-            """
-            SELECT event_id, source_event, timestamp, event, data_json
-            FROM timeline_events
-            WHERE instance_id = ?
-              AND issue_number > 0
-              AND timestamp >= ? AND timestamp <= ?
-            ORDER BY sequence ASC
-            """,
-            (orchestrator_instance_id, started_at, end_ts),
-        ).fetchall()
-
-        conn.close()
-    except Exception:
-        logger.debug("Could not read orchestrator timeline from %s", timeline_db_path, exc_info=True)
-        return []
-
-    from ..ports.timeline_store import TimelineRecord
-    from ..timeline import TimelineStream as _TimelineStream
-
-    records = []
-    for row in rows:
-        data_json = row["data_json"] or "{}"
-        try:
-            data = _json.loads(data_json)
-        except (ValueError, TypeError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        records.append(
-            TimelineRecord(
-                event_id=str(row["event_id"]),
-                timestamp=str(row["timestamp"]),
-                event=str(row["event"]),
-                data=data,
-                source_event=str(row["source_event"] or ""),
-            )
-        )
-
-    if not records:
-        return []
-
-    stream = _TimelineStream.from_records(issue_number=0, records=records)
-    return [evt.to_dict() for evt in stream.events]
-
-
 @control_app.get("/control/e2e/run/{run_id}/timeline")
 async def e2e_run_timeline_endpoint(
     run_id: int,
@@ -4513,25 +4442,46 @@ async def e2e_run_timeline_endpoint(
         if not records:
             return JSONResponse({"events": []})
 
-        stream = TimelineStream.from_records(store_key, records)
-        events = [evt.to_dict() for evt in stream.events]
+        # Separate E2E run records from agent snapshots.
+        # Snapshots have event="e2e.agent_snapshot" and their data blob
+        # contains the pre-rendered event dict — use it directly.
+        e2e_records = [r for r in records if r.event != "e2e.agent_snapshot"]
+        snapshot_records = [r for r in records if r.event == "e2e.agent_snapshot"]
 
-        # Nest orchestrator events under test time windows
-        db_path = validated_root / ".issue-orchestrator" / "e2e.db"
-        if db_path.exists():
-            db = E2EDB(db_path)
-            run = db.get_run(run_id)
-            if run and timeline_db_path.exists():
-                orchestrator_events = _read_orchestrator_timeline_for_window(
-                    timeline_db_path,
-                    started_at=run.started_at,
-                    finished_at=run.finished_at,
-                    orchestrator_instance_id=run.orchestrator_instance_id,
-                )
-                if orchestrator_events:
-                    nest_orchestrator_events(events, orchestrator_events)
+        stream = TimelineStream.from_records(store_key, e2e_records)
+        e2e_events = [evt.to_dict() for evt in stream.events]
+        agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
-        return JSONResponse({"events": events})
+        if not agent_events:
+            # No snapshots — try live worktree timeline (in-progress or pre-snapshot)
+            from ..infra.e2e_worktree import get_e2e_worktree_path
+            from ..infra.e2e_timeline import read_orchestrator_events_by_window
+            db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+            e2e_wt_timeline = get_e2e_worktree_path(validated_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
+            if db_path.exists():
+                db = E2EDB(db_path)
+                run = db.get_run(run_id)
+                if run and e2e_wt_timeline.exists():
+                    agent_events = read_orchestrator_events_by_window(
+                        e2e_wt_timeline,
+                        started_at=run.started_at,
+                        finished_at=run.finished_at,
+                    )
+
+        events = e2e_events
+        if agent_events:
+            nest_orchestrator_events(events, agent_events)
+
+        # Build phase_toc and cycles for richer rendering (same pipeline as issues)
+        from ..entrypoints.web import _build_phase_toc, _build_timeline_cycles
+        phase_toc = _build_phase_toc(events)
+        cycles = _build_timeline_cycles(events)
+
+        return JSONResponse({
+            "events": events,
+            "phase_toc": phase_toc,
+            "cycles": cycles,
+        })
     except Exception as e:
         logger.exception("Failed to get E2E run timeline: %s", e)
         return JSONResponse(

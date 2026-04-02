@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from ..control.planner import Plan
     from ..control.session_manager import SessionRef, SessionType
     from ..ports.session_runner import DiscoveredSession
+    from .e2e_db import E2ERun
 
 from ..events import EventName, EventContext, EventHub
 from ..control.orchestrator_support import (
@@ -304,6 +305,7 @@ class Orchestrator:
             return
         for orch_id in finished:
             # Determine outcome from last run in DB
+            last_run = None
             try:
                 from .e2e_db import E2EDB
                 db_path = self.config.repo_root / ".issue-orchestrator" / "e2e.db"
@@ -316,6 +318,11 @@ class Orchestrator:
             except Exception:
                 status = "unknown"
 
+            # Snapshot agent events from the E2E worktree timeline into the
+            # base repo timeline so they persist across worktree refreshes.
+            if last_run is not None:
+                self._snapshot_e2e_agent_events(last_run)
+
             event_name = EventName.E2E_COMPLETED if status == "passed" else EventName.E2E_FAILED
             self.deps.events.publish(TraceEvent(
                 event_name,
@@ -324,6 +331,59 @@ class Orchestrator:
                     "status": status,
                 }),
             ))
+
+    def _snapshot_e2e_agent_events(self, run: "E2ERun") -> None:
+        """Copy agent timeline events from the E2E worktree to the base repo.
+
+        Agent sessions run in the E2E worktree, so their timeline events
+        are in that worktree's timeline.sqlite which gets wiped on refresh.
+        We snapshot them into the base repo's timeline under the same E2E
+        run key (negative int) so the nesting endpoints can split them
+        from the pytest events by event name prefix (e2e.* vs session.*/etc).
+        """
+        try:
+            from .e2e_worktree import get_e2e_worktree_path
+            from ..domain.timeline_key import TimelineKey
+            from .e2e_timeline import read_orchestrator_events_by_window
+
+            wt_timeline = get_e2e_worktree_path(self.config.repo_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
+            if not wt_timeline.exists():
+                return
+
+            agent_events = read_orchestrator_events_by_window(
+                wt_timeline,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+            )
+            if not agent_events:
+                return
+
+            # Write agent events to the base repo's timeline under the E2E run's key.
+            # Use a distinct event name prefix so they're identifiable as snapshots.
+            from ..ports.timeline_store import TimelineRecord
+            store = self.deps.timeline_store
+            store_key = TimelineKey.for_e2e_run(run.id).to_store_key()
+
+            for evt in agent_events:
+                # Store as e2e.agent_snapshot to avoid the run-scoped
+                # CHECK constraint.  The data blob contains the complete
+                # pre-rendered event dict; the read path returns it directly
+                # rather than re-deriving through TimelineStream.
+                record = TimelineRecord(
+                    event_id=f"snap-{evt.get('event_id', '')}",
+                    timestamp=evt.get("timestamp", ""),
+                    event="e2e.agent_snapshot",
+                    data=evt,
+                    source_event="e2e.agent_snapshot",
+                )
+                store.append(store_key, record)
+
+            logger.info(
+                "Snapshot %d agent events for E2E run %d",
+                len(agent_events), run.id,
+            )
+        except Exception:
+            logger.debug("Could not snapshot E2E agent events for run %d", run.id, exc_info=True)
 
     def _maybe_run_sqlite_backups(self) -> None:
         if not self.config.sqlite_backup.enabled:

@@ -8170,28 +8170,21 @@ async function showUnifiedRunView(runId) {
     modal.classList.add('visible');
 
     try {
-        // Fetch run details, shared timeline detail, and legacy timeline in parallel.
-        // The shared endpoint (/api/e2e-run-detail/) returns phase_toc and cycles for
-        // richer rendering; the legacy endpoint is the fallback for older runs.
-        const [detailsRes, sharedTimelineRes, legacyTimelineRes] = await Promise.all([
+        // Fetch run details and timeline in parallel
+        const [detailsRes, timelineRes] = await Promise.all([
             fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}&enhanced=true`),
-            fetch(`/api/e2e-run-detail/${runId}`),
             fetch(`/control/e2e/run/${runId}/timeline?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`),
         ]);
         const data = await detailsRes.json();
 
-        // Prefer shared timeline (has phase_toc, cycles) over legacy
         let timelineData = null;
-        if (sharedTimelineRes.ok) {
-            const shared = await sharedTimelineRes.json();
+        if (timelineRes.ok) {
+            const tl = await timelineRes.json();
             timelineData = {
-                events: shared.events || [],
-                phase_toc: shared.phase_toc || [],
-                cycles: shared.cycles || [],
+                events: tl.events || [],
+                phase_toc: tl.phase_toc || [],
+                cycles: tl.cycles || [],
             };
-        } else if (legacyTimelineRes.ok) {
-            const legacy = await legacyTimelineRes.json();
-            timelineData = { events: legacy.events || [], phase_toc: [], cycles: [] };
         }
 
         if (!detailsRes.ok) {
