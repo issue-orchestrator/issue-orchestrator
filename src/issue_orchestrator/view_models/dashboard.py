@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuit_breakers: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitBreakers": self.provider_circuit_breakers,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +183,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1248,6 +1252,33 @@ def _normalize_tab(active_tab: str) -> str:
     return "kanban"
 
 
+def _build_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
+    """Extract serialized provider circuit breaker states from the orchestrator."""
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return []
+    resilience = getattr(deps, "provider_resilience", None)
+    if resilience is None:
+        return []
+    try:
+        now = datetime.now(timezone.utc)
+        states = resilience.store.list_all()
+        result: list[dict[str, Any]] = []
+        for s in states:
+            is_open = s.open_until is not None and s.open_until > now
+            result.append({
+                "provider": s.provider,
+                "is_open": is_open,
+                "open_until": s.open_until.isoformat() if s.open_until else None,
+                "consecutive_outages": s.consecutive_outages,
+                "last_error_summary": s.last_error_summary,
+                "updated_at": s.updated_at.isoformat(),
+            })
+        return result
+    except Exception:
+        return []
+
+
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
@@ -1353,6 +1384,8 @@ def build_dashboard_view_model(
         e2e_total_pages,
         list((config.agents if config else {}).keys()),
     )
+    provider_circuit_breakers = _build_provider_circuit_breakers(orchestrator)
+
     issues = _select_issues_for_tab(
         active_tab, active_items, queue_items, blocked_items,
         e2e_items_paginated, awaiting_merge_items, completed_items,
@@ -1470,4 +1503,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_breakers=provider_circuit_breakers,
     )

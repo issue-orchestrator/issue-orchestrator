@@ -740,3 +740,160 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_breakers_empty_when_no_deps():
+    """Circuit breakers default to empty list when orchestrator has no deps."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+    assert view_model.to_dict()["provider_circuit_breakers"] == []
+
+
+def test_provider_circuit_breakers_surfaces_open_breaker():
+    """An open circuit breaker is surfaced with is_open=True."""
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=3,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    ))
+
+    class _MockEvents:
+        def publish(self, event):
+            pass
+
+    resilience = ProviderResilienceManager(
+        config=ProviderResilienceConfig(),
+        store=store,
+        events=_MockEvents(),
+    )
+
+    @dataclass
+    class _DepsStub:
+        provider_resilience: ProviderResilienceManager
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        deps: _DepsStub
+        shutdown_requested: bool = False
+
+    orchestrator = _OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=_DepsStub(provider_resilience=resilience),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    breaker = view_model.provider_circuit_breakers[0]
+    assert breaker["provider"] == "anthropic"
+    assert breaker["is_open"] is True
+    assert breaker["consecutive_outages"] == 3
+    assert breaker["last_error_summary"] == "Rate limit exceeded"
+    assert breaker["open_until"] is not None
+
+    # Also present in dashboard_data
+    dd_breakers = view_model.dashboard_data()["providerCircuitBreakers"]
+    assert len(dd_breakers) == 1
+    assert dd_breakers[0]["provider"] == "anthropic"
+
+
+def test_provider_circuit_breakers_closed_breaker_shows_not_open():
+    """A circuit breaker with expired open_until shows is_open=False."""
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    expired = now - timedelta(minutes=5)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=expired,
+        consecutive_outages=1,
+        last_error_summary="Transient error",
+        updated_at=now - timedelta(minutes=10),
+    ))
+
+    class _MockEvents:
+        def publish(self, event):
+            pass
+
+    resilience = ProviderResilienceManager(
+        config=ProviderResilienceConfig(),
+        store=store,
+        events=_MockEvents(),
+    )
+
+    @dataclass
+    class _DepsStub:
+        provider_resilience: ProviderResilienceManager
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        deps: _DepsStub
+        shutdown_requested: bool = False
+
+    orchestrator = _OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=_DepsStub(provider_resilience=resilience),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    breaker = view_model.provider_circuit_breakers[0]
+    assert breaker["provider"] == "openai"
+    assert breaker["is_open"] is False
