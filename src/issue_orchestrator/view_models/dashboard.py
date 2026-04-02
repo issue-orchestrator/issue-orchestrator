@@ -1261,9 +1261,8 @@ def _build_provider_circuits(orchestrator) -> list[dict[str, Any]]:
         return []
     now = datetime.now(timezone.utc)
     circuits: list[dict[str, Any]] = []
-    for cs in pr_mgr.store.list_all():
-        if cs.open_until is None or cs.open_until <= now:
-            continue
+    for cs in pr_mgr.list_open_circuits(now):
+        assert cs.open_until is not None  # guaranteed by list_open_circuits filter
         remaining_seconds = int((cs.open_until - now).total_seconds())
         circuits.append({
             "provider": cs.provider,
