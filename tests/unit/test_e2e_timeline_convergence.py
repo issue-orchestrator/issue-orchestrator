@@ -735,6 +735,91 @@ class TestE2ETimelineControlEndpoint:
         assert response.json()["events"] == []
 
 
+class TestPruneWorktreeArtifacts:
+    """prune_old_runs with e2e_worktree_path cleans worktree-local data."""
+
+    def test_prunes_old_worktree_sessions_and_timeline(self, tmp_path):
+        """Old session dirs and timeline events are removed when runs are pruned."""
+        import time
+        from issue_orchestrator.infra.e2e_db import E2EDB
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+
+        # Set up E2E DB with 3 runs
+        db = E2EDB(tmp_path / "e2e.db")
+        for i in range(3):
+            run_id = db.start_run(
+                repo_root=str(tmp_path),
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+            )
+            db.finish_run(run_id=run_id, status="passed", duration_seconds=10.0)
+            time.sleep(0.05)  # Ensure distinct timestamps
+
+        # Set up worktree with sessions and timeline
+        wt = tmp_path / "e2e-worktree"
+        wt_state = wt / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+        wt_sessions = wt / ".issue-orchestrator" / "sessions"
+
+        # Create 3 session dirs with distinct mtimes
+        for i in range(3):
+            session_dir = wt_sessions / f"session-{i}"
+            session_dir.mkdir(parents=True)
+            (session_dir / "terminal-recording.jsonl").write_text("data")
+
+        # Backdate old session dirs
+        import os
+        old_time = time.time() - 86400  # 1 day ago
+        for i in range(2):
+            session_dir = wt_sessions / f"session-{i}"
+            os.utime(session_dir, (old_time + i, old_time + i))
+
+        # Write timeline events
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(1, TimelineRecord(
+            event_id="old", timestamp="2025-01-01T00:00:00Z",
+            event="session.started", data={"run_dir": "/fake"},
+            source_event="session.started",
+        ))
+        wt_store.append(2, TimelineRecord(
+            event_id="new", timestamp="2099-01-01T00:00:00Z",
+            event="session.started", data={"run_dir": "/fake"},
+            source_event="session.started",
+        ))
+
+        # Prune to keep only 1 run
+        db.prune_old_runs(1, e2e_worktree_path=wt)
+
+        # Old session dirs should be gone, newest kept
+        remaining_sessions = list(wt_sessions.iterdir())
+        assert len(remaining_sessions) == 1
+        assert remaining_sessions[0].name == "session-2"
+
+        # Old timeline events should be pruned
+        import sqlite3
+        conn = sqlite3.connect(wt_state / "timeline.sqlite")
+        rows = conn.execute("SELECT event_id FROM timeline_events").fetchall()
+        conn.close()
+        event_ids = {r[0] for r in rows}
+        assert "old" not in event_ids
+        assert "new" in event_ids
+
+    def test_no_error_when_worktree_missing(self, tmp_path):
+        """Pruning works without error when worktree path doesn't exist."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db = E2EDB(tmp_path / "e2e.db")
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_id, status="passed", duration_seconds=10.0)
+
+        # Should not raise
+        db.prune_old_runs(0, e2e_worktree_path=tmp_path / "nonexistent")
+
+
 class TestCheckE2ECompletion:
     """Tests for _check_e2e_completion SSE broadcasting on worker exit."""
 
