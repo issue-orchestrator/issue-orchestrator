@@ -29,6 +29,7 @@ class DashboardDataContract(ContractBase):
     githubRepo: Optional[str]
     e2eLastRun: Optional[dict[str, Any]] = None
     agents: list[str]
+    providerCircuits: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DashboardViewModelContract(ContractBase):

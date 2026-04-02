@@ -388,11 +388,19 @@ def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> st
     return "completed"
 
 
+_PROVIDER_INFO_EVENTS = frozenset({
+    "provider.outage_entered",
+    "provider.outage_exited",
+})
+
+
 def _level_for_event(event_name: str) -> str:
     if is_e2e_event_name(event_name):
         return _e2e_level(event_name)
     if is_issue_event_name(event_name) or is_review_event_name(event_name):
         return "phase"
+    if event_name in _PROVIDER_INFO_EVENTS:
+        return "info"
     return "detail"
 
 
@@ -436,6 +444,25 @@ def _parent_key(issue_number: int, data: dict[str, Any]) -> str:
 def _summary_from_data(data: dict[str, Any], event_name: str = "") -> str | None:
     if is_e2e_event_name(event_name):
         return _e2e_summary(event_name, data)
+    if event_name == "provider.outage_entered":
+        provider = data.get("provider") or "unknown"
+        return f"Provider outage: {provider}"
+    if event_name == "provider.outage_exited":
+        provider = data.get("provider") or "unknown"
+        return f"Provider recovered: {provider}"
+    if event_name == "provider.retry_scheduled":
+        provider = data.get("provider") or "unknown"
+        cooldown = data.get("cooldown_seconds")
+        if cooldown:
+            mins = int(cooldown) // 60
+            return f"Retry scheduled for {provider} in {mins}m"
+        return f"Retry scheduled: {provider}"
+    if event_name == "provider.retry_attempted":
+        provider = data.get("provider") or "unknown"
+        return f"Retry attempted: {provider}"
+    if event_name == "provider.transient_error":
+        provider = data.get("provider") or "unknown"
+        return f"Transient error: {provider}"
     for key in ("reason", "summary", "error", "status", "outcome"):
         value = data.get(key)
         if isinstance(value, str) and value:

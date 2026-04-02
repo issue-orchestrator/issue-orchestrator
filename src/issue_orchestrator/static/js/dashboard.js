@@ -197,6 +197,22 @@ function cssEscape(value) {
     return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
+function updateProviderOutageBanner(circuits) {
+    const banner = document.getElementById('providerOutageBanner');
+    if (!banner) return;
+    if (!circuits || circuits.length === 0) {
+        banner.style.display = 'none';
+        return;
+    }
+    const items = circuits.map(c => {
+        const mins = c.cooldown_remaining_minutes || Math.ceil((c.cooldown_remaining_seconds || 0) / 60) || 1;
+        const extra = c.consecutive_outages > 1 ? `, ${c.consecutive_outages} outages` : '';
+        return `<span class="provider-outage-entry"><strong>${c.provider}</strong> (~${mins}m cooldown${extra})</span>`;
+    }).join(', ');
+    banner.innerHTML = `<span class="provider-outage-icon" aria-hidden="true">&#x26A1;</span><span class="provider-outage-text">Provider outage: ${items}</span>`;
+    banner.style.display = '';
+}
+
 function updateStatusBadgeFromViewModel(vm) {
     if (!vm) return;
 
@@ -385,6 +401,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         updateRefreshStatusFromViewModel(viewModel);
         applyNetworkSyncScheduler();
         renderGitHubUsage();
+        updateProviderOutageBanner(window.dashboardData?.providerCircuits || []);
 
         // Post status to parent CC when embedded
         if (isEmbedded && viewModel) {
@@ -3712,6 +3729,26 @@ async function toggleExcluded() {
         source.addEventListener('e2e.stopped', function(event) {
             console.log('[SSE] E2E run stopped');
             updateE2EProgress();
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
+            }
         });
 
         source.onerror = function() {

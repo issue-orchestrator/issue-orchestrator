@@ -649,3 +649,50 @@ def test_render_compact_cards_removes_empty_placeholder_when_items_exist() -> No
     assert ".column-empty" in body
     assert ".skeleton-card" in body
     assert "remove()" in body
+
+
+def test_provider_outage_banner_element_in_template() -> None:
+    """Dashboard template must include the provider outage banner element."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert 'provider-outage-banner' in html
+
+
+def test_provider_outage_banner_css_in_dashboard() -> None:
+    """Dashboard CSS must include provider outage banner styles."""
+    css = _read(DASHBOARD_CSS)
+    assert '.provider-outage-banner' in css
+    assert '.badge-provider-unavailable' in css
+
+
+def test_provider_unavailable_badge_in_template() -> None:
+    """Dashboard template must include provider-unavailable badge logic."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'provider_unavailable' in html
+    assert 'badge-provider-unavailable' in html
+    assert 'Provider Unavailable' in html
+
+
+def test_provider_outage_banner_update_function_in_js() -> None:
+    """dashboard.js must contain updateProviderOutageBanner function."""
+    js = _read(DASHBOARD_JS)
+    assert 'function updateProviderOutageBanner' in js
+
+
+def test_provider_outage_sse_listeners_in_js() -> None:
+    """dashboard.js must listen for provider outage SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+
+
+def test_provider_outage_banner_update_called_on_refresh() -> None:
+    """refreshViewModel must call updateProviderOutageBanner after updating dashboardData."""
+    js = _read(DASHBOARD_JS)
+    vm_update_idx = js.find('window.dashboardData = viewModel.dashboard_data || window.dashboardData')
+    assert vm_update_idx != -1
+    # The banner update should be called shortly after the dashboardData update
+    banner_call_idx = js.find('updateProviderOutageBanner(window.dashboardData', vm_update_idx)
+    assert banner_call_idx != -1, "updateProviderOutageBanner must be called after dashboardData update"
+    # Should be within a reasonable distance (500 chars) to be in the same function
+    assert banner_call_idx - vm_update_idx < 500

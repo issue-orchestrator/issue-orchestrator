@@ -147,3 +147,41 @@ class TestTruncation:
         detail = _detail_from_data("review.comment_added", data, "Posted review comment")
         assert detail is not None
         assert detail == comment
+
+
+class TestProviderEventSummary:
+    """Provider events have descriptive summaries and are shown at info level."""
+
+    def test_outage_entered_summary(self) -> None:
+        from issue_orchestrator.timeline import _summary_from_data
+        data = {"provider": "claude-sonnet"}
+        summary = _summary_from_data(data, "provider.outage_entered")
+        assert summary == "Provider outage: claude-sonnet"
+
+    def test_outage_exited_summary(self) -> None:
+        from issue_orchestrator.timeline import _summary_from_data
+        data = {"provider": "claude-opus"}
+        summary = _summary_from_data(data, "provider.outage_exited")
+        assert summary == "Provider recovered: claude-opus"
+
+    def test_retry_scheduled_summary_with_cooldown(self) -> None:
+        from issue_orchestrator.timeline import _summary_from_data
+        data = {"provider": "claude-sonnet", "cooldown_seconds": 1800}
+        summary = _summary_from_data(data, "provider.retry_scheduled")
+        assert summary == "Retry scheduled for claude-sonnet in 30m"
+
+    def test_outage_entered_level_is_info(self) -> None:
+        from issue_orchestrator.timeline import _level_for_event
+        assert _level_for_event("provider.outage_entered") == "info"
+
+    def test_outage_exited_level_is_info(self) -> None:
+        from issue_orchestrator.timeline import _level_for_event
+        assert _level_for_event("provider.outage_exited") == "info"
+
+    def test_transient_error_level_is_detail(self) -> None:
+        from issue_orchestrator.timeline import _level_for_event
+        assert _level_for_event("provider.transient_error") == "detail"
+
+    def test_retry_scheduled_level_is_detail(self) -> None:
+        from issue_orchestrator.timeline import _level_for_event
+        assert _level_for_event("provider.retry_scheduled") == "detail"

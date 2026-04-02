@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -740,3 +741,140 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit banner tests
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ProviderResilienceStub
+
+
+@dataclass
+class _OrchestratorWithDepsStub:
+    state: OrchestratorState
+    config: Config
+    deps: _DepsStub
+    shutdown_requested: bool = False
+
+
+def _make_orchestrator_with_circuit(open_circuit: bool) -> _OrchestratorWithDepsStub:
+    store = InMemoryProviderCircuitStore()
+    if open_circuit:
+        now = datetime.now(timezone.utc)
+        store.save(ProviderCircuitState(
+            provider="claude-sonnet",
+            open_until=now + timedelta(minutes=30),
+            consecutive_outages=2,
+            last_error_summary="Rate limit exceeded",
+            updated_at=now,
+        ))
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    return _OrchestratorWithDepsStub(
+        state=state,
+        config=config,
+        deps=_DepsStub(provider_resilience=_ProviderResilienceStub(store=store)),
+    )
+
+
+def test_provider_circuits_included_when_circuit_open():
+    orchestrator = _make_orchestrator_with_circuit(open_circuit=True)
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    circuit = view_model.provider_circuits[0]
+    assert circuit["provider"] == "claude-sonnet"
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["cooldown_remaining_seconds"] > 0
+    assert circuit["cooldown_remaining_minutes"] >= 1
+
+
+def test_provider_circuits_empty_when_no_open_circuit():
+    orchestrator = _make_orchestrator_with_circuit(open_circuit=False)
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+
+
+def test_provider_circuits_in_dashboard_data():
+    orchestrator = _make_orchestrator_with_circuit(open_circuit=True)
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    data = view_model.dashboard_data()
+    assert "providerCircuits" in data
+    assert len(data["providerCircuits"]) == 1
+    assert data["providerCircuits"][0]["provider"] == "claude-sonnet"
+
+
+def test_provider_circuits_empty_without_deps():
+    """Stubs without deps attribute return empty provider circuits."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+
+
+def test_provider_circuits_excludes_expired_circuits():
+    """Circuits with open_until in the past are excluded."""
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    # Save an expired circuit (open_until in the past)
+    store.save(ProviderCircuitState(
+        provider="claude-sonnet",
+        open_until=now - timedelta(minutes=5),
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now - timedelta(minutes=10),
+    ))
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorWithDepsStub(
+        state=state,
+        config=config,
+        deps=_DepsStub(provider_resilience=_ProviderResilienceStub(store=store)),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []

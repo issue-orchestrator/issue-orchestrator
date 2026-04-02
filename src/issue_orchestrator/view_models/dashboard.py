@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +183,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -599,6 +603,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "queue_wait_reason": queue_reason,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
+            "provider_unavailable": lm.provider_unavailable in list(issue.labels),
             "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         }
@@ -1248,6 +1253,29 @@ def _normalize_tab(active_tab: str) -> str:
     return "kanban"
 
 
+def _build_provider_circuits(orchestrator) -> list[dict[str, Any]]:
+    """Return open provider circuits for display in the UI."""
+    deps = getattr(orchestrator, "deps", None) if orchestrator else None
+    pr_mgr = getattr(deps, "provider_resilience", None) if deps else None
+    if pr_mgr is None:
+        return []
+    now = datetime.now(timezone.utc)
+    circuits: list[dict[str, Any]] = []
+    for cs in pr_mgr.store.list_all():
+        if cs.open_until is None or cs.open_until <= now:
+            continue
+        remaining_seconds = int((cs.open_until - now).total_seconds())
+        circuits.append({
+            "provider": cs.provider,
+            "open_until": cs.open_until.isoformat(),
+            "cooldown_remaining_seconds": remaining_seconds,
+            "cooldown_remaining_minutes": max(1, remaining_seconds // 60),
+            "consecutive_outages": cs.consecutive_outages,
+            "last_error_summary": cs.last_error_summary,
+        })
+    return circuits
+
+
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
@@ -1274,6 +1302,7 @@ def build_dashboard_view_model(
     flow_columns: list[dict[str, Any]] = []
     scope_summary: dict[str, Any] = {}
     seen_issues: set[int] = set()
+    provider_circuits: list[dict[str, Any]] = _build_provider_circuits(orchestrator)
 
     queue_total = 0
 
@@ -1470,4 +1499,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits,
     )
