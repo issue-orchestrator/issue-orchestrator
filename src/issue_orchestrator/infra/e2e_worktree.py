@@ -60,12 +60,25 @@ def _create_worktree(repo_root: Path, worktree_path: Path) -> None:
 
 
 def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
-    """Reset an existing worktree to the orchestrator's current commit, preserving .venv."""
+    """Reset an existing worktree to the orchestrator's current commit.
+
+    Preserves:
+    - .venv (Python dependencies, expensive to recreate)
+    - .issue-orchestrator/state/timeline.sqlite* (agent timeline events
+      for E2E run nesting — snapshot reads from here at completion)
+    - .issue-orchestrator/sessions (session artifacts: terminal recordings,
+      validation records, review feedback — needed for rich timeline rendering)
+    """
     ref = _resolve_e2e_ref(repo_root)
     logger.info("Updating E2E worktree at %s (ref=%s)", worktree_path, ref[:12])
     _run_git(["checkout", "--detach", ref], cwd=worktree_path)
     _run_git(
-        ["clean", "-fdx", "--exclude=.venv"],
+        [
+            "clean", "-fdx",
+            "--exclude=.venv",
+            "--exclude=.issue-orchestrator/state/timeline.sqlite*",
+            "--exclude=.issue-orchestrator/sessions",
+        ],
         cwd=worktree_path,
     )
 

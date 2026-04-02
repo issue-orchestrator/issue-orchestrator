@@ -897,11 +897,14 @@ class E2EDB:
         self,
         retention_count: int,
         timeline_store: "TimelineStore | None" = None,
+        e2e_worktree_path: "Path | None" = None,
     ) -> int:
         """Delete runs beyond the retention count, oldest first.
 
         Removes the run row, its test results, failure issues, run issues,
-        flake history, log file on disk, and timeline events (if store provided).
+        flake history, log file on disk, timeline events (if store provided),
+        and worktree-local artifacts (sessions and timeline) if worktree path
+        is provided.
 
         Returns the number of runs pruned.
         """
@@ -953,9 +956,69 @@ class E2EDB:
 
                 pruned += 1
 
+            # Clean worktree-local artifacts for pruned runs
+            if pruned and e2e_worktree_path is not None:
+                self._prune_worktree_artifacts(e2e_worktree_path, retention_count)
+
             if pruned:
                 logger.info("Pruned %d old E2E run(s) (retention=%d)", pruned, retention_count)
             return pruned
+
+    def _prune_worktree_artifacts(self, worktree_path: Path, retention_count: int) -> None:
+        """Clean old session dirs and timeline events from the E2E worktree.
+
+        Finds the oldest retained run's start time and removes worktree
+        artifacts older than that cutoff.
+        """
+        import shutil
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT started_at FROM e2e_runs
+                ORDER BY started_at DESC
+                LIMIT 1 OFFSET ?
+                """,
+                (max(0, retention_count - 1),),
+            ).fetchone()
+
+        if not row:
+            return
+        cutoff = row["started_at"]
+
+        # Prune worktree timeline events older than cutoff
+        wt_timeline = worktree_path / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        if wt_timeline.exists():
+            try:
+                import sqlite3
+                uri = f"file:{wt_timeline}"
+                conn = sqlite3.connect(uri)
+                conn.execute(
+                    "DELETE FROM timeline_events WHERE timestamp < ?",
+                    (cutoff,),
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                logger.debug("Could not prune worktree timeline", exc_info=True)
+
+        # Prune old session directories by modification time
+        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+        if sessions_dir.is_dir():
+            from datetime import datetime
+            try:
+                cutoff_dt = datetime.fromisoformat(cutoff)
+                cutoff_ts = cutoff_dt.timestamp()
+            except (ValueError, TypeError):
+                return
+
+            for entry in sessions_dir.iterdir():
+                if entry.is_dir():
+                    try:
+                        if entry.stat().st_mtime < cutoff_ts:
+                            shutil.rmtree(entry, ignore_errors=True)
+                    except OSError:
+                        pass
 
     def reset_all_history(
         self,
