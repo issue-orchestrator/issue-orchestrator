@@ -576,6 +576,25 @@ def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
     assert "closeTimelineEventMenus();" in body
 
 
+def test_timeline_children_render_with_full_treatment() -> None:
+    """renderTimelineChildren renders phase groups, actions, artifacts, and detail."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimelineChildren")
+    # Phase grouping (same as main timeline)
+    assert "formatPhaseLabel" in body
+    assert "timeline-group-header" in body
+    assert "timeline-group-body" in body
+    # Full event rendering (not flat list)
+    assert "timeline-event-header" in body
+    assert "renderTimelineArtifacts" in body
+    assert "renderTimelineEventActions" in body
+    assert "timeline-summary" in body
+    assert "timeline-detail" in body
+    # Collapsible wrapper
+    assert "timeline-children" in body
+    assert "orchestrator event" in body
+
+
 def test_review_feedback_modal_can_filter_to_specific_timeline_entry() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openReviewFeedback")

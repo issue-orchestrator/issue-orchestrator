@@ -5228,23 +5228,54 @@ function renderTimelineArtifacts(artifacts) {
 
 function renderTimelineChildren(children) {
     if (!children || children.length === 0) return '';
-    const items = children.map(child => {
-        const stepLabel = formatStepLabel(child.step);
-        const summary = child.summary ? `<span class="timeline-child-summary">${escapeHtml(child.summary)}</span>` : '';
-        const time = child.timestamp ? `<span class="timeline-child-time">${formatTimestamp(child.timestamp)}</span>` : '';
+
+    // Group children by phase for visual separation (same as main timeline)
+    const groups = [];
+    for (const child of children) {
+        const phase = child.phase || 'system';
+        let group = groups[groups.length - 1];
+        if (!group || group.phase !== phase) {
+            group = { phase, events: [] };
+            groups.push(group);
+        }
+        group.events.push(child);
+    }
+
+    const groupsHtml = groups.map(group => {
+        const phaseLabel = formatPhaseLabel(group.phase);
+        const items = group.events.map(evt => {
+            const stepLabel = formatStepLabel(evt.step);
+            const summary = evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : '';
+            const detail = evt.detail ? `<div class="timeline-detail">${escapeHtml(evt.detail)}</div>` : '';
+            const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
+            const artifacts = renderTimelineArtifacts(evt.artifacts || []);
+            const actions = renderTimelineEventActions(evt.actions || []);
+            return `
+                <div class="timeline-event ${evt.status || ''}">
+                    <div class="timeline-event-header">
+                        <span class="timeline-step">${escapeHtml(stepLabel)}</span>
+                        <span class="timeline-status">${formatStatus(evt.status)}</span>
+                    </div>
+                    ${actions}
+                    ${time}
+                    ${summary}
+                    ${detail}
+                    ${artifacts}
+                </div>
+            `;
+        }).join('');
         return `
-            <div class="timeline-child-event ${child.status || ''}">
-                <span class="timeline-child-step">${escapeHtml(stepLabel)}</span>
-                <span class="timeline-child-status">${formatStatus(child.status)}</span>
-                ${time}
-                ${summary}
+            <div class="timeline-group">
+                <div class="timeline-group-header">${escapeHtml(phaseLabel)}</div>
+                <div class="timeline-group-body">${items}</div>
             </div>
         `;
     }).join('');
+
     return `
         <details class="timeline-children">
             <summary class="timeline-children-toggle">${children.length} orchestrator event${children.length !== 1 ? 's' : ''}</summary>
-            <div class="timeline-children-list">${items}</div>
+            <div class="timeline-children-list"><div class="timeline-continuum">${groupsHtml}</div></div>
         </details>
     `;
 }

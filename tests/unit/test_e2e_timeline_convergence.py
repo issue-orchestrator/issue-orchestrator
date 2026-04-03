@@ -605,6 +605,71 @@ class TestE2ERunDetailEndpoint:
         assert response.status_code == 503
 
 
+class TestDecorateE2EAgentEvents:
+    """_decorate_e2e_agent_events passes each event's own issue_number."""
+
+    def test_actions_carry_child_issue_number(self):
+        """Decorated actions use the event's issue_number, not a synthetic 0."""
+        from issue_orchestrator.entrypoints.web import _decorate_e2e_agent_events
+
+        agent_events = [
+            {
+                "event_id": "e1",
+                "event": "issue.claimed",
+                "timestamp": "2026-01-01T00:00:10Z",
+                "issue_number": 42,
+                "phase": "in_progress",
+                "step": "claimed",
+                "status": "started",
+                "summary": "Claimed issue #42",
+                "run_dir": None,
+                "artifacts": [],
+                "unsupported_schema": True,
+                "review_oriented": False,
+                "event_intent": "orchestrator",
+            },
+        ]
+        decorated = _decorate_e2e_agent_events(agent_events)
+        assert len(decorated) == 1
+        evt = decorated[0]
+        # Actions should reference issue 42, not 0
+        for action in evt.get("actions", []):
+            if "issue_number" in action:
+                assert action["issue_number"] == 42, (
+                    f"Action {action.get('type')} has issue_number={action['issue_number']}, expected 42"
+                )
+
+    def test_events_from_multiple_issues_decorated_separately(self):
+        """Events from different issues each get their own issue_number in actions."""
+        from issue_orchestrator.entrypoints.web import _decorate_e2e_agent_events
+
+        agent_events = [
+            {
+                "event_id": "e1", "event": "issue.claimed",
+                "timestamp": "2026-01-01T00:00:10Z",
+                "issue_number": 42, "phase": "in_progress",
+                "step": "claimed", "status": "started",
+                "summary": "Claimed #42", "run_dir": None,
+                "artifacts": [], "unsupported_schema": True,
+                "review_oriented": False, "event_intent": "orchestrator",
+            },
+            {
+                "event_id": "e2", "event": "issue.claimed",
+                "timestamp": "2026-01-01T00:00:20Z",
+                "issue_number": 99, "phase": "in_progress",
+                "step": "claimed", "status": "started",
+                "summary": "Claimed #99", "run_dir": None,
+                "artifacts": [], "unsupported_schema": True,
+                "review_oriented": False, "event_intent": "orchestrator",
+            },
+        ]
+        decorated = _decorate_e2e_agent_events(agent_events)
+        assert len(decorated) == 2
+        # Chronological order preserved
+        assert decorated[0]["issue_number"] == 42
+        assert decorated[1]["issue_number"] == 99
+
+
 class TestE2ETimelineControlEndpoint:
     """Test /control/e2e/run/{run_id}/timeline returns phase_toc and cycles."""
 
