@@ -740,3 +740,74 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    breakers = [
+        {
+            "provider": "anthropic",
+            "is_open": True,
+            "open_until": "2026-04-03T12:00:00+00:00",
+            "consecutive_outages": 3,
+            "last_error_summary": "rate limited",
+            "updated_at": "2026-04-03T11:55:00+00:00",
+        },
+        {
+            "provider": "openai",
+            "is_open": False,
+            "open_until": None,
+            "consecutive_outages": 1,
+            "last_error_summary": "transient error",
+            "updated_at": "2026-04-03T11:50:00+00:00",
+        },
+    ]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_breaker_provider=lambda _: breakers,
+    )
+
+    assert view_model.provider_circuit_breakers == breakers
+    assert len(view_model.provider_circuit_breakers) == 2
+
+    # Verify open breaker
+    open_breaker = next(b for b in view_model.provider_circuit_breakers if b["provider"] == "anthropic")
+    assert open_breaker["is_open"] is True
+    assert open_breaker["consecutive_outages"] == 3
+
+    # Verify closed breaker
+    closed_breaker = next(b for b in view_model.provider_circuit_breakers if b["provider"] == "openai")
+    assert closed_breaker["is_open"] is False
+
+    # Verify it appears in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitBreakers"] == breakers
+
+    # Verify it appears in to_dict
+    d = view_model.to_dict()
+    assert d["provider_circuit_breakers"] == breakers
+
+
+def test_view_model_empty_circuit_breakers_by_default():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
