@@ -38,6 +38,29 @@ class _OrchestratorStub:
     shutdown_requested: bool = False
 
 
+@dataclass
+class _ResilienceStub:
+    """Minimal stub exposing list_all_states() for circuit breaker tests."""
+
+    store: InMemoryProviderCircuitStore
+
+    def list_all_states(self) -> list[ProviderCircuitState]:
+        return self.store.list_all()
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ResilienceStub
+
+
+@dataclass
+class _OrchestratorWithDeps:
+    state: OrchestratorState
+    config: Config
+    shutdown_requested: bool = False
+    deps: _DepsStub | None = None
+
+
 def _make_config() -> Config:
     config = Config()
     config.repo = "test/repo"
@@ -778,21 +801,6 @@ def test_view_model_surfaces_open_provider_circuit_breaker():
         updated_at=now,
     ))
 
-    @dataclass
-    class _ResilienceStub:
-        store: InMemoryProviderCircuitStore
-
-    @dataclass
-    class _DepsStub:
-        provider_resilience: _ResilienceStub
-
-    @dataclass
-    class _OrchestratorWithDeps:
-        state: OrchestratorState
-        config: Config
-        shutdown_requested: bool = False
-        deps: _DepsStub = None  # type: ignore[assignment]
-
     orchestrator = _OrchestratorWithDeps(
         state=state,
         config=config,
@@ -833,21 +841,6 @@ def test_view_model_surfaces_closed_provider_circuit_breaker():
         last_error_summary="timeout",
         updated_at=now - timedelta(minutes=2),
     ))
-
-    @dataclass
-    class _ResilienceStub:
-        store: InMemoryProviderCircuitStore
-
-    @dataclass
-    class _DepsStub:
-        provider_resilience: _ResilienceStub
-
-    @dataclass
-    class _OrchestratorWithDeps:
-        state: OrchestratorState
-        config: Config
-        shutdown_requested: bool = False
-        deps: _DepsStub = None  # type: ignore[assignment]
 
     orchestrator = _OrchestratorWithDeps(
         state=state,

@@ -16,6 +16,7 @@ from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from ..infra import gh_audit
+from ..ports.provider_resilience import ProviderCircuitState
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
@@ -188,20 +189,21 @@ class DashboardViewModel:
         }
 
 
-def _build_circuit_breaker_items(orchestrator) -> list[dict[str, Any]]:
-    """Extract provider circuit breaker states from the orchestrator."""
+def _resolve_circuit_breaker_states(orchestrator) -> list[ProviderCircuitState]:
+    """Resolve circuit breaker states from the orchestrator's deps."""
     deps = getattr(orchestrator, "deps", None)
     if deps is None:
         return []
-    resilience = getattr(deps, "provider_resilience", None)
-    if resilience is None:
-        return []
-    store = getattr(resilience, "store", None)
-    if store is None:
-        return []
+    return deps.provider_resilience.list_all_states()
+
+
+def _build_circuit_breaker_items(
+    states: list[ProviderCircuitState],
+) -> list[dict[str, Any]]:
+    """Convert provider circuit breaker states to serialisable dicts."""
     now = datetime.now(timezone.utc)
     items: list[dict[str, Any]] = []
-    for state in store.list_all():
+    for state in states:
         is_open = state.open_until is not None and state.open_until > now
         items.append({
             "provider": state.provider,
@@ -1500,5 +1502,7 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
-        provider_circuit_breakers=_build_circuit_breaker_items(orchestrator),
+        provider_circuit_breakers=_build_circuit_breaker_items(
+            _resolve_circuit_breaker_states(orchestrator),
+        ),
     )
