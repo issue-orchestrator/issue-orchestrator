@@ -4468,12 +4468,16 @@ async def e2e_run_timeline_endpoint(
                         finished_at=run.finished_at,
                     )
 
+        # Decorate agent events with actions (view session log, replay, etc.)
+        # before nesting. Each event is decorated with its own issue_number
+        # so action payloads carry the correct identity.
+        from ..entrypoints.web import _decorate_e2e_agent_events, _build_phase_toc, _build_timeline_cycles
+        if agent_events:
+            agent_events = _decorate_e2e_agent_events(agent_events)
+
         events = e2e_events
         if agent_events:
             nest_orchestrator_events(events, agent_events)
-
-        # Build phase_toc and cycles for richer rendering (same pipeline as issues)
-        from ..entrypoints.web import _build_phase_toc, _build_timeline_cycles
         phase_toc = _build_phase_toc(events)
         cycles = _build_timeline_cycles(events)
 

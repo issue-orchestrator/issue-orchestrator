@@ -1864,13 +1864,15 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     if not agent_events:
         agent_events = _load_orchestrator_events_for_run(run_id)
 
+    # Decorate agent events with actions (view session log, replay, etc.)
+    # before nesting. Each event is decorated with its own issue_number.
+    if agent_events:
+        agent_events = _decorate_e2e_agent_events(agent_events)
+
     events = e2e_events
     if agent_events:
         nest_orchestrator_events(events, agent_events)
 
-    # Skip _decorate_timeline_events: E2E events have no session artifacts
-    # (no run_dir, no terminal recordings). Nested orchestrator children are
-    # already decorated by the TimelineStream conversion.
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
 
@@ -1889,6 +1891,34 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
         view=view,
     )
     return JSONResponse(payload)
+
+
+def _decorate_e2e_agent_events(agent_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Decorate agent events using each event's own issue_number.
+
+    Agent events come from different issues processed during the E2E run.
+    Each event must be decorated with its own issue_number so action
+    payloads (session log, claude log, diagnostics) carry the correct
+    identity for the JS click handlers.
+    """
+    from collections import defaultdict
+
+    # Group by issue_number for batch decoration
+    by_issue: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for evt in agent_events:
+        issue_num = evt.get("issue_number", 0)
+        if isinstance(issue_num, int) and issue_num > 0:
+            by_issue[issue_num].append(evt)
+        else:
+            by_issue[0].append(evt)
+
+    decorated: list[dict[str, Any]] = []
+    for issue_num, events in by_issue.items():
+        decorated.extend(_decorate_timeline_events(events, issue_num))
+
+    # Restore original chronological order
+    decorated.sort(key=lambda e: e.get("timestamp", ""))
+    return decorated
 
 
 def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
