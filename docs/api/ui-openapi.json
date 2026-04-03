@@ -338,7 +338,8 @@
           "e2e_page",
           "e2e_total_pages",
           "e2e_total",
-          "dashboard_data"
+          "dashboard_data",
+          "provider_circuit_breakers"
         ],
         "properties": {
           "issues": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
@@ -376,7 +377,8 @@
           "e2e_page": {"type": "integer"},
           "e2e_total_pages": {"type": "integer"},
           "e2e_total": {"type": "integer"},
-          "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"}
+          "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"},
+          "provider_circuit_breakers": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
         }
       },
       "IssueRowPayload": {
