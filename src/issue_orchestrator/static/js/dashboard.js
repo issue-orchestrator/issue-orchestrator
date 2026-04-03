@@ -8325,7 +8325,14 @@ function renderUnifiedRunView(data, runId) {
 
     // Timeline tab panel (hidden by default, populated on tab switch)
     if (hasTimeline) {
-        html += '<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="display: none;"></div>';
+        html += `<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="display: none;">
+            <div class="e2e-timeline-view-switcher">
+                <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this)" data-view="user">Story</button>
+                <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this)" data-view="ops">Ops</button>
+                <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this)" data-view="debug">Debug</button>
+            </div>
+            <div id="e2eTimelineContent"></div>
+        </div>`;
     }
 
     // Close the unified-run-view wrapper
@@ -8333,10 +8340,9 @@ function renderUnifiedRunView(data, runId) {
 
     content.innerHTML = html;
 
-    // Pre-render timeline if available — pass phase_toc and cycles from
-    // the shared endpoint for richer rendering (phase grouping, cycle cards)
+    // Pre-render timeline if available
     if (hasTimeline) {
-        const timelineContainer = document.getElementById('e2eRunTimelineTab');
+        const timelineContainer = document.getElementById('e2eTimelineContent');
         renderTimeline(timelineContainer, tl.events, tl.phase_toc || [], tl.cycles || []);
     }
 }
@@ -8485,6 +8491,36 @@ function switchE2ERunTab(tabName, btn) {
     const timelinePanel = document.getElementById('e2eRunTimelineTab');
     if (testsPanel) testsPanel.style.display = tabName === 'tests' ? '' : 'none';
     if (timelinePanel) timelinePanel.style.display = tabName === 'timeline' ? '' : 'none';
+}
+
+/**
+ * Switch timeline view (Story/Ops/Debug) and re-fetch with the selected filter.
+ */
+async function switchE2ETimelineView(view, btn) {
+    // Update view buttons
+    const btns = document.querySelectorAll('.e2e-view-btn');
+    btns.forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+
+    // Re-fetch timeline with the selected view
+    const runId = unifiedRunData && unifiedRunData.run ? unifiedRunData.run.id : null;
+    if (!runId) return;
+
+    const container = document.getElementById('e2eTimelineContent');
+    if (!container) return;
+    container.innerHTML = '<div class="loading-spinner">Loading...</div>';
+
+    try {
+        const res = await fetch(`/control/e2e/run/${runId}/timeline?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}&view=${encodeURIComponent(view)}`);
+        if (!res.ok) {
+            container.innerHTML = '<div style="color: var(--danger);">Failed to load timeline</div>';
+            return;
+        }
+        const tl = await res.json();
+        renderTimeline(container, tl.events || [], tl.phase_toc || [], tl.cycles || []);
+    } catch (err) {
+        container.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(err.message)}</div>`;
+    }
 }
 
 function toggleCategorySection(categoryKey) {

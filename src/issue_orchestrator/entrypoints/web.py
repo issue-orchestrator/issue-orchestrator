@@ -1864,14 +1864,20 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     if not agent_events:
         agent_events = _load_orchestrator_events_for_run(run_id)
 
-    # Decorate agent events with actions (view session log, replay, etc.)
-    # before nesting. Each event is decorated with its own issue_number.
+    # Filter, decorate, nest, then apply story projection per window.
+    from ..view_models.issue_detail import _filter_events_by_view, _story_projection_events
     if agent_events:
+        agent_events = _filter_events_by_view(agent_events, view)
         agent_events = _decorate_e2e_agent_events(agent_events)
 
     events = e2e_events
     if agent_events:
         nest_orchestrator_events(events, agent_events)
+        # Apply story projection per test window to avoid cross-window collapsing
+        for evt in events:
+            children = evt.get("children")
+            if children:
+                evt["children"] = _story_projection_events(children, view)
 
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)

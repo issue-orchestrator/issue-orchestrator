@@ -576,6 +576,25 @@ def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
     assert "closeTimelineEventMenus();" in body
 
 
+def test_e2e_timeline_has_view_switcher() -> None:
+    """E2E run timeline tab has Story/Ops/Debug view buttons."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderUnifiedRunView")
+    assert "e2e-timeline-view-switcher" in body
+    assert "switchE2ETimelineView" in body
+    assert "'user'" in body
+    assert "'ops'" in body
+    assert "'debug'" in body
+
+
+def test_e2e_timeline_view_switcher_refetches() -> None:
+    """View switcher re-fetches timeline with view param."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "switchE2ETimelineView")
+    assert "view=" in body
+    assert "renderTimeline" in body
+
+
 def test_timeline_children_render_with_full_treatment() -> None:
     """renderTimelineChildren renders phase groups, actions, artifacts, and detail."""
     js = _read(DASHBOARD_JS)

@@ -4395,10 +4395,54 @@ async def e2e_run_details(
         )
 
 
+def _load_worktree_agent_events(repo_root: Path, run_id: int) -> list[dict]:
+    """Load agent events from the E2E worktree timeline for a run."""
+    from ..infra.e2e_worktree import get_e2e_worktree_path
+    from ..infra.e2e_timeline import read_orchestrator_events_by_window
+    from ..infra.e2e_db import E2EDB
+
+    db_path = repo_root / ".issue-orchestrator" / "e2e.db"
+    wt_timeline = get_e2e_worktree_path(repo_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
+    if not db_path.exists():
+        return []
+    db = E2EDB(db_path)
+    run = db.get_run(run_id)
+    if not run or not wt_timeline.exists():
+        return []
+    return read_orchestrator_events_by_window(
+        wt_timeline, started_at=run.started_at, finished_at=run.finished_at,
+    )
+
+
+def _filter_nest_and_project_agent_events(
+    e2e_events: list[dict],
+    agent_events: list[dict],
+    view: str,
+) -> list[dict]:
+    """Filter, decorate, nest, and apply per-window story projection."""
+    from ..entrypoints.web import _decorate_e2e_agent_events
+    from ..infra.e2e_db import nest_orchestrator_events
+    from ..view_models.issue_detail import _filter_events_by_view, _story_projection_events
+
+    if agent_events:
+        agent_events = _filter_events_by_view(agent_events, view)
+        agent_events = _decorate_e2e_agent_events(agent_events)
+
+    events = e2e_events
+    if agent_events:
+        nest_orchestrator_events(events, agent_events)
+        for evt in events:
+            children = evt.get("children")
+            if children:
+                evt["children"] = _story_projection_events(children, view)
+    return events
+
+
 @control_app.get("/control/e2e/run/{run_id}/timeline")
 async def e2e_run_timeline_endpoint(
     run_id: int,
     repo_root: str = Query(...),
+    view: str = Query("user", description="Timeline view: user (story), ops, or debug"),
 ) -> JSONResponse:
     """Get timeline events for a specific E2E run.
 
@@ -4415,7 +4459,6 @@ async def e2e_run_timeline_endpoint(
         repo_root: str - Repository root path
     """
     from ..domain.timeline_key import TimelineKey
-    from ..infra.e2e_db import E2EDB, nest_orchestrator_events
     from ..timeline import TimelineStream
 
     validated_root = _validate_repo_root(repo_root)
@@ -4453,31 +4496,13 @@ async def e2e_run_timeline_endpoint(
         agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
         if not agent_events:
-            # No snapshots — try live worktree timeline (in-progress or pre-snapshot)
-            from ..infra.e2e_worktree import get_e2e_worktree_path
-            from ..infra.e2e_timeline import read_orchestrator_events_by_window
-            db_path = validated_root / ".issue-orchestrator" / "e2e.db"
-            e2e_wt_timeline = get_e2e_worktree_path(validated_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
-            if db_path.exists():
-                db = E2EDB(db_path)
-                run = db.get_run(run_id)
-                if run and e2e_wt_timeline.exists():
-                    agent_events = read_orchestrator_events_by_window(
-                        e2e_wt_timeline,
-                        started_at=run.started_at,
-                        finished_at=run.finished_at,
-                    )
+            agent_events = _load_worktree_agent_events(validated_root, run_id)
 
-        # Decorate agent events with actions (view session log, replay, etc.)
-        # before nesting. Each event is decorated with its own issue_number
-        # so action payloads carry the correct identity.
-        from ..entrypoints.web import _decorate_e2e_agent_events, _build_phase_toc, _build_timeline_cycles
-        if agent_events:
-            agent_events = _decorate_e2e_agent_events(agent_events)
-
-        events = e2e_events
-        if agent_events:
-            nest_orchestrator_events(events, agent_events)
+        from ..entrypoints.web import _build_phase_toc, _build_timeline_cycles
+        valid_views = {"user", "ops", "debug"}
+        if view not in valid_views:
+            view = "user"
+        events = _filter_nest_and_project_agent_events(e2e_events, agent_events, view)
         phase_toc = _build_phase_toc(events)
         cycles = _build_timeline_cycles(events)
 
