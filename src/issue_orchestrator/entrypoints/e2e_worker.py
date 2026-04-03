@@ -451,7 +451,13 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
         # Prune old runs beyond retention count
         if args.run_retention_count > 0:
-            db.prune_old_runs(args.run_retention_count, timeline_store=timeline_store)
+            from issue_orchestrator.infra.e2e_worktree import get_e2e_worktree_path
+            wt_path = get_e2e_worktree_path(repo_root)
+            db.prune_old_runs(
+                args.run_retention_count,
+                timeline_store=timeline_store,
+                e2e_worktree_path=wt_path if wt_path.exists() else None,
+            )
 
         return exit_code
 
