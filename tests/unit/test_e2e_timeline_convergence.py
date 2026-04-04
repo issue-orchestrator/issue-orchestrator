@@ -605,6 +605,78 @@ class TestE2ERunDetailEndpoint:
         assert response.status_code == 503
 
 
+class TestE2EAgentEventFiltering:
+    """Agent events are filtered to story view before nesting."""
+
+    def test_debug_only_events_filtered_out(self):
+        """Events with views=['debug'] are excluded from user view."""
+        from issue_orchestrator.view_models.issue_detail import _filter_events_by_view
+
+        agent_events = [
+            {"event": "claim.acquired", "views": ["debug"], "timestamp": "2026-01-01T00:00:10Z"},
+            {"event": "session.started", "views": ["user", "ops", "debug"], "timestamp": "2026-01-01T00:00:20Z"},
+            {"event": "apply.step_applied", "views": ["ops", "debug"], "timestamp": "2026-01-01T00:00:30Z"},
+            {"event": "session.completed", "views": ["user", "ops", "debug"], "timestamp": "2026-01-01T00:00:40Z"},
+        ]
+        filtered = _filter_events_by_view(agent_events, "user")
+
+        events = [e["event"] for e in filtered]
+        assert "claim.acquired" not in events
+        assert "apply.step_applied" not in events
+        assert "session.started" in events
+        assert "session.completed" in events
+
+    def test_legacy_events_without_views_pass_through(self):
+        """Events without views tag are included in all views."""
+        from issue_orchestrator.view_models.issue_detail import _filter_events_by_view
+
+        agent_events = [
+            {"event": "session.started", "timestamp": "2026-01-01T00:00:10Z"},
+            {"event": "review.approved", "timestamp": "2026-01-01T00:00:20Z"},
+        ]
+        filtered = _filter_events_by_view(agent_events, "user")
+        assert len(filtered) == 2
+
+
+    def test_story_projection_per_window_preserves_both_reviews(self):
+        """Story projection runs per test window, not globally.
+
+        Two tests each have a review.started event. If projection ran
+        globally, consecutive review.started events could be collapsed
+        across windows, dropping one test's review activity.
+        """
+        from issue_orchestrator.infra.e2e_db import nest_orchestrator_events
+        from issue_orchestrator.view_models.issue_detail import _story_projection_events
+
+        pytest_events = [
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:00:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:01:00Z", "nodeid": "test_a"},
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:02:00Z", "nodeid": "test_b"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:03:00Z", "nodeid": "test_b"},
+        ]
+        agent_events = [
+            {"event": "review.started", "timestamp": "2026-01-01T00:00:30Z",
+             "phase": "reviewing", "step": "started", "status": "started"},
+            {"event": "review.started", "timestamp": "2026-01-01T00:02:30Z",
+             "phase": "reviewing", "step": "started", "status": "started"},
+        ]
+        nest_orchestrator_events(pytest_events, agent_events)
+
+        # Apply story projection per window (not globally)
+        for evt in pytest_events:
+            children = evt.get("children")
+            if children:
+                evt["children"] = _story_projection_events(children, "user")
+
+        # Both test windows should retain their review.started child
+        test_a_children = pytest_events[0].get("children", [])
+        test_b_children = pytest_events[2].get("children", [])
+        assert len(test_a_children) == 1, f"test_a lost its review child: {test_a_children}"
+        assert len(test_b_children) == 1, f"test_b lost its review child: {test_b_children}"
+        assert test_a_children[0]["event"] == "review.started"
+        assert test_b_children[0]["event"] == "review.started"
+
+
 class TestDecorateE2EAgentEvents:
     """_decorate_e2e_agent_events passes each event's own issue_number."""
 
