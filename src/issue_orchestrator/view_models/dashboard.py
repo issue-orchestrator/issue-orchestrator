@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import copy
 import json
+import logging
 import threading
 import time
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
@@ -1261,16 +1264,15 @@ def _build_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
     if resilience is None:
         return []
     try:
-        states = resilience.store.list_all()
+        states = resilience.list_all()
     except Exception:
+        logger.warning("Failed to read circuit breaker state", exc_info=True)
         return []
-    now = datetime.now(timezone.utc)
     result: list[dict[str, Any]] = []
     for s in states:
-        is_open = s.open_until is not None and s.open_until > now
         result.append({
             "provider": s.provider,
-            "is_open": is_open,
+            "is_open": resilience.is_open(s.provider),
             "open_until": s.open_until.isoformat() if s.open_until else None,
             "consecutive_outages": s.consecutive_outages,
             "last_error_summary": s.last_error_summary,

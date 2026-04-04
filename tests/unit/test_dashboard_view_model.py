@@ -752,6 +752,9 @@ def test_view_model_surfaces_provider_circuit_breaker_status():
         InMemoryProviderCircuitStore,
         ProviderCircuitState,
     )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+    from unittest.mock import MagicMock
 
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
@@ -773,16 +776,18 @@ def test_view_model_surfaces_provider_circuit_breaker_status():
         updated_at=now - timedelta(minutes=10),
     ))
 
+    resilience = ProviderResilienceManager(
+        config=ProviderResilienceConfig(),
+        store=store,
+        events=MagicMock(),
+    )
+
     @dataclass
     class _DepsStub:
         provider_resilience: object
 
-    @dataclass
-    class _ResilienceStub:
-        store: object
-
     orchestrator = _OrchestratorStub(state=state, config=config)
-    orchestrator.deps = _DepsStub(provider_resilience=_ResilienceStub(store=store))  # type: ignore[attr-defined]
+    orchestrator.deps = _DepsStub(provider_resilience=resilience)  # type: ignore[attr-defined]
 
     view_model = build_dashboard_view_model(
         orchestrator,
