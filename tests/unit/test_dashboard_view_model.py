@@ -740,3 +740,94 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit breaker tests ---
+
+
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    """Circuit breaker state from provider resilience is surfaced in the view model."""
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=3,
+        last_error_summary="rate limited",
+        updated_at=now,
+    ))
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary="transient error",
+        updated_at=now - timedelta(minutes=10),
+    ))
+
+    @dataclass
+    class _DepsStub:
+        provider_resilience: object
+
+    @dataclass
+    class _ResilienceStub:
+        store: object
+
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    orchestrator.deps = _DepsStub(provider_resilience=_ResilienceStub(store=store))  # type: ignore[attr-defined]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    breakers = view_model.provider_circuit_breakers
+    assert len(breakers) == 2
+
+    anthropic_cb = next(b for b in breakers if b["provider"] == "anthropic")
+    assert anthropic_cb["is_open"] is True
+    assert anthropic_cb["consecutive_outages"] == 3
+    assert anthropic_cb["last_error_summary"] == "rate limited"
+    assert anthropic_cb["open_until"] is not None
+
+    openai_cb = next(b for b in breakers if b["provider"] == "openai")
+    assert openai_cb["is_open"] is False
+    assert openai_cb["consecutive_outages"] == 1
+    assert openai_cb["open_until"] is None
+
+    # Also present in dashboard_data
+    dd = view_model.dashboard_data()
+    assert dd["providerCircuitBreakers"] == breakers
+
+    # Also present in to_dict
+    d = view_model.to_dict()
+    assert d["provider_circuit_breakers"] == breakers
+
+
+def test_view_model_circuit_breakers_empty_when_no_deps():
+    """Without deps (e.g. test stubs), circuit breakers default to empty list."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []

@@ -56,6 +56,7 @@ export interface DashboardViewModelPayload {
   history_items: IssueItemPayload[];
   issues: IssueItemPayload[];
   paused: boolean;
+  provider_circuit_breakers: Record<string, any>[];
   queue_count: number;
   queue_items: IssueItemPayload[];
   queue_page: number;
