@@ -5165,6 +5165,13 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
             const actions = renderTimelineEventActions(evt.actions || []);
+            // E2E test events carry issue_numbers — render as clickable links
+            // that open the full dashboard issue detail view
+            const issueLinks = (Array.isArray(evt.issue_numbers) && evt.issue_numbers.length > 0)
+                ? `<div class="timeline-issue-links">Issues: ${evt.issue_numbers.map(n =>
+                    `<a href="#" onclick="event.preventDefault(); openIssueDetail(${n})">#${n}</a>`
+                  ).join(' ')}</div>`
+                : '';
             const children = (evt.children && evt.children.length > 0)
                 ? renderTimelineChildren(evt.children)
                 : '';
@@ -5177,6 +5184,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
                     ${actions}
                     ${time}
                     ${summary}
+                    ${issueLinks}
                     ${artifacts}
                     ${children}
                 </div>

@@ -548,8 +548,14 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_snapshot_children_preserve_semantics(self):
-        """Snapshotted agent events nest with correct original semantics."""
+    def test_test_events_carry_issue_numbers_for_navigation(self):
+        """Test events expose issue_numbers for the frontend to render as links.
+
+        New architecture: instead of nesting agent events as children,
+        each test event carries the issue numbers it operated on. The
+        frontend renders these as clickable links to the full dashboard
+        issue detail view.
+        """
         from issue_orchestrator.entrypoints.web import set_orchestrator
 
         store_key = TimelineKey.for_e2e_run(10).to_store_key()
@@ -570,7 +576,8 @@ class TestE2ERunDetailEndpoint:
                 event="e2e.agent_snapshot",
                 data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
                       "issue_number": 42, "phase": "in_progress", "step": "started",
-                      "status": "started", "summary": "Agent launched"},
+                      "status": "started", "summary": "Agent launched",
+                      "views": ["user", "ops", "debug"]},
                 source_event="e2e.agent_snapshot",
             ),
         ]
@@ -583,14 +590,55 @@ class TestE2ERunDetailEndpoint:
             events = payload.get("events", [])
             test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
             assert test_started is not None
-            children = test_started.get("children", [])
-            assert len(children) == 1
-            child = children[0]
-            assert child["event"] == "session.started"
-            assert child["phase"] == "in_progress"
-            assert child["step"] == "started"
-            assert child["status"] == "started"
-            assert child["summary"] == "Agent launched"
+            assert test_started.get("issue_numbers") == [42]
+            test_completed = next((e for e in events if e.get("event") == "e2e.test_completed"), None)
+            assert test_completed is not None
+            assert test_completed.get("issue_numbers") == [42]
+        finally:
+            set_orchestrator(None)
+
+    def test_in_progress_test_window_attaches_issue_numbers(self):
+        """Active e2e.test_started (no test_completed yet) must still attach
+        issue_numbers from agent activity during the live window.
+
+        Regression: the window-builder previously only emitted windows for
+        completed test pairs, so clicking through to the issue detail or
+        session log from the E2E timeline was impossible while a run was
+        still in progress.
+        """
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started", data={"nodeid": "test_live"},
+                source_event="e2e.test_started",
+            ),
+            # No e2e.test_completed — test is still running.
+            TimelineRecord(
+                event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+                event="e2e.agent_snapshot",
+                data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                      "issue_number": 42, "phase": "in_progress", "step": "started",
+                      "status": "started", "summary": "Agent launched",
+                      "views": ["user", "ops", "debug"]},
+                source_event="e2e.agent_snapshot",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 200
+            payload = response.json()
+            events = payload.get("events", [])
+            test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
+            assert test_started is not None
+            assert test_started.get("issue_numbers") == [42], (
+                "In-progress test window must carry live issue_numbers so "
+                "the timeline can navigate to issue detail before completion."
+            )
         finally:
             set_orchestrator(None)
 
@@ -677,71 +725,6 @@ class TestE2EAgentEventFiltering:
         assert test_b_children[0]["event"] == "review.started"
 
 
-class TestDecorateE2EAgentEvents:
-    """_decorate_e2e_agent_events passes each event's own issue_number."""
-
-    def test_actions_carry_child_issue_number(self):
-        """Decorated actions use the event's issue_number, not a synthetic 0."""
-        from issue_orchestrator.entrypoints.web import _decorate_e2e_agent_events
-
-        agent_events = [
-            {
-                "event_id": "e1",
-                "event": "issue.claimed",
-                "timestamp": "2026-01-01T00:00:10Z",
-                "issue_number": 42,
-                "phase": "in_progress",
-                "step": "claimed",
-                "status": "started",
-                "summary": "Claimed issue #42",
-                "run_dir": None,
-                "artifacts": [],
-                "unsupported_schema": True,
-                "review_oriented": False,
-                "event_intent": "orchestrator",
-            },
-        ]
-        decorated = _decorate_e2e_agent_events(agent_events)
-        assert len(decorated) == 1
-        evt = decorated[0]
-        # Actions should reference issue 42, not 0
-        for action in evt.get("actions", []):
-            if "issue_number" in action:
-                assert action["issue_number"] == 42, (
-                    f"Action {action.get('type')} has issue_number={action['issue_number']}, expected 42"
-                )
-
-    def test_events_from_multiple_issues_decorated_separately(self):
-        """Events from different issues each get their own issue_number in actions."""
-        from issue_orchestrator.entrypoints.web import _decorate_e2e_agent_events
-
-        agent_events = [
-            {
-                "event_id": "e1", "event": "issue.claimed",
-                "timestamp": "2026-01-01T00:00:10Z",
-                "issue_number": 42, "phase": "in_progress",
-                "step": "claimed", "status": "started",
-                "summary": "Claimed #42", "run_dir": None,
-                "artifacts": [], "unsupported_schema": True,
-                "review_oriented": False, "event_intent": "orchestrator",
-            },
-            {
-                "event_id": "e2", "event": "issue.claimed",
-                "timestamp": "2026-01-01T00:00:20Z",
-                "issue_number": 99, "phase": "in_progress",
-                "step": "claimed", "status": "started",
-                "summary": "Claimed #99", "run_dir": None,
-                "artifacts": [], "unsupported_schema": True,
-                "review_oriented": False, "event_intent": "orchestrator",
-            },
-        ]
-        decorated = _decorate_e2e_agent_events(agent_events)
-        assert len(decorated) == 2
-        # Chronological order preserved
-        assert decorated[0]["issue_number"] == 42
-        assert decorated[1]["issue_number"] == 99
-
-
 class TestE2ETimelineControlEndpoint:
     """Test /control/e2e/run/{run_id}/timeline returns phase_toc and cycles."""
 
@@ -787,9 +770,9 @@ class TestE2ETimelineControlEndpoint:
         assert "setup" in toc_phases
         assert "teardown" in toc_phases
 
-    def test_snapshotted_agent_events_nest_without_worktree(self, tmp_path):
-        """Agent events snapshotted into base repo timeline nest correctly
-        even when the E2E worktree timeline no longer exists."""
+    def test_snapshotted_agent_events_attach_issue_numbers(self, tmp_path):
+        """Snapshotted agent events annotate test events with issue_numbers
+        for the navigation-based architecture (not nested as children)."""
         from fastapi.testclient import TestClient
         from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
         from issue_orchestrator.entrypoints.control_api import control_app
@@ -800,7 +783,7 @@ class TestE2ETimelineControlEndpoint:
 
         e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
 
-        # Pytest events (e2e.* prefix)
+        # Pytest events
         store.append(e2e_key, TimelineRecord(
             event_id="e1", timestamp="2026-01-01T00:00:00Z",
             event="e2e.test_started", data={"nodeid": "test_a"},
@@ -813,13 +796,14 @@ class TestE2ETimelineControlEndpoint:
             source_event="e2e.test_completed",
         ))
 
-        # Snapshotted agent events (event="e2e.agent_snapshot", data has original)
+        # Snapshotted agent events for issue 42 (within the test window)
         store.append(e2e_key, TimelineRecord(
             event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
             event="e2e.agent_snapshot",
             data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
                   "issue_number": 42, "phase": "in_progress", "step": "started",
-                  "status": "started", "summary": "Agent launched"},
+                  "status": "started", "summary": "Agent launched",
+                  "views": ["user", "ops", "debug"]},
             source_event="e2e.agent_snapshot",
         ))
         store.append(e2e_key, TimelineRecord(
@@ -827,11 +811,11 @@ class TestE2ETimelineControlEndpoint:
             event="e2e.agent_snapshot",
             data={"event": "session.completed", "timestamp": "2026-01-01T00:00:50Z",
                   "issue_number": 42, "phase": "in_progress", "step": "completed",
-                  "status": "completed", "summary": "Code written"},
+                  "status": "completed", "summary": "Code written",
+                  "views": ["user", "ops", "debug"]},
             source_event="e2e.agent_snapshot",
         ))
 
-        # No E2E worktree exists — snapshots are the only source
         client = TestClient(control_app)
         response = client.get(
             "/control/e2e/run/1/timeline",
@@ -840,17 +824,62 @@ class TestE2ETimelineControlEndpoint:
         assert response.status_code == 200
         payload = response.json()
 
-        # Should have 2 parent events (e2e.test_started, e2e.test_completed)
         events = payload["events"]
         assert len(events) == 2
-        assert events[0]["event"] == "e2e.test_started"
+        test_started = events[0]
+        assert test_started["event"] == "e2e.test_started"
+        # Test event has issue_numbers annotation, not nested children
+        assert test_started.get("issue_numbers") == [42]
+        # No nested children — frontend opens issue detail via openIssueDetail
+        assert test_started.get("children", []) == []
 
-        # The test_started event should have the agent events nested as children
-        children = events[0].get("children", [])
-        assert len(children) == 2, f"Expected 2 children, got {len(children)}: {[c.get('event') for c in children]}"
-        child_events = {c["event"] for c in children}
-        assert "session.started" in child_events
-        assert "session.completed" in child_events
+    def test_in_progress_test_window_attaches_issue_numbers(self, tmp_path):
+        """Control endpoint also pins live in-progress issue_numbers.
+
+        Mirrors the web-endpoint regression: while a test is still running
+        (e2e.test_started without a matching e2e.test_completed), agent
+        activity during that live window must still annotate the started
+        event so the control-center timeline can navigate to issue detail.
+        """
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+        store.append(e2e_key, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_started", data={"nodeid": "test_live"},
+            source_event="e2e.test_started",
+        ))
+        # No e2e.test_completed — test is still in progress.
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+            event="e2e.agent_snapshot",
+            data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                  "issue_number": 42, "phase": "in_progress", "step": "started",
+                  "status": "started", "summary": "Agent launched",
+                  "views": ["user", "ops", "debug"]},
+            source_event="e2e.agent_snapshot",
+        ))
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        events = response.json()["events"]
+
+        test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
+        assert test_started is not None
+        assert test_started.get("issue_numbers") == [42], (
+            "Control endpoint must attach issue_numbers to in-progress test "
+            "windows so live runs remain navigable."
+        )
 
     def test_returns_empty_events_when_no_timeline(self, tmp_path):
         """Returns empty events list when no timeline DB exists."""
@@ -870,6 +899,88 @@ class TestE2ETimelineControlEndpoint:
         )
         assert response.status_code == 200
         assert response.json()["events"] == []
+
+
+class TestControlIssueDetailEndpoint:
+    """Control center serves issue detail from base repo or E2E worktree timeline."""
+
+    def test_serves_issue_detail_from_base_repo(self, tmp_path):
+        """Control endpoint reads from base repo timeline.sqlite."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        # Issue 42 has session events
+        store.append(42, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="session.started",
+            data={"run_dir": "/tmp/fake-run", "logical_run": 1, "logical_cycle": 1,
+                  "logical_phase": "coding", "timeline_schema_version": 4,
+                  "views": ["user", "ops", "debug"]},
+            source_event="session.started",
+        ))
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/api/issue-detail/42",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["issue_number"] == 42
+        assert "events" in payload
+        assert "runs" in payload  # Same shape as dashboard issue detail
+
+    def test_falls_back_to_e2e_worktree_timeline(self, tmp_path):
+        """When base repo has no events, control endpoint reads from E2E worktree."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+        from issue_orchestrator.infra.e2e_worktree import get_e2e_worktree_path
+
+        # Empty base repo timeline
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        # E2E worktree timeline has the issue events
+        wt_path = get_e2e_worktree_path(tmp_path)
+        wt_state = wt_path / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(99, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="session.completed",
+            data={"logical_run": 1, "logical_cycle": 1, "logical_phase": "coding",
+                  "timeline_schema_version": 4, "views": ["user", "ops", "debug"]},
+            source_event="session.completed",
+        ))
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/api/issue-detail/99",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["issue_number"] == 99
+        assert len(payload.get("events", [])) > 0
+
+    def test_returns_404_when_no_events(self, tmp_path):
+        """Control endpoint returns 404 when no events anywhere."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/api/issue-detail/999",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 404
 
 
 class TestPruneWorktreeArtifacts:
