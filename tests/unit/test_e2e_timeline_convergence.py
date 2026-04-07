@@ -479,6 +479,129 @@ class TestOrchestratorWindowExcludesE2EEvents:
         )
         assert results == []
 
+    def test_events_carry_real_issue_number_per_record(self, tmp_path):
+        """Each returned event must carry the issue_number it was stored under.
+
+        Regression: the reader previously passed a single placeholder
+        ``issue_number=0`` to ``TimelineStream.from_records`` for every row,
+        so all returned events lost their identity. Downstream window
+        matching against test events then matched zero issues, leaving
+        the E2E timeline with no navigation affordances.
+        """
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_timeline import read_orchestrator_events_by_window
+
+        store = SqliteTimelineStore(db_path=tmp_path / "timeline.sqlite")
+
+        # Three different issues each emit one orchestrator event in the window.
+        for issue_num, ts in [
+            (5677, "2026-01-01T00:00:10Z"),
+            (5678, "2026-01-01T00:00:20Z"),
+            (5679, "2026-01-01T00:00:30Z"),
+        ]:
+            store.append(
+                TimelineKey.for_issue(issue_num).to_store_key(),
+                TimelineRecord(
+                    event_id=f"evt-{issue_num}", timestamp=ts,
+                    event="session.started",
+                    data={"run_dir": f"/tmp/run-{issue_num}"},
+                    source_event="session.started",
+                ),
+            )
+
+        results = read_orchestrator_events_by_window(
+            tmp_path / "timeline.sqlite",
+            started_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:01:00Z",
+        )
+
+        # Each event must report its real issue_number — never 0.
+        assert len(results) == 3
+        returned_issues = sorted(evt.get("issue_number") for evt in results)
+        assert returned_issues == [5677, 5678, 5679], (
+            f"Reader collapsed identity to {returned_issues}; expected real issue numbers."
+        )
+        # And events must remain in chronological order across issues.
+        timestamps = [evt.get("timestamp") for evt in results]
+        assert timestamps == sorted(timestamps)
+
+    def test_full_pipeline_matches_issue_numbers_to_test_windows(self, tmp_path):
+        """End-to-end check: reader output feeds the matcher correctly.
+
+        Combines ``read_orchestrator_events_by_window`` with
+        ``_attach_issue_numbers_to_test_windows`` to pin the full path
+        used by the live ``/api/e2e-run-detail/{id}`` and
+        ``/control/e2e/run/{id}/timeline`` endpoints when no
+        ``e2e.agent_snapshot`` rows are available (the common case for
+        runs whose snapshot has not been written yet).
+        """
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_timeline import read_orchestrator_events_by_window
+        from issue_orchestrator.entrypoints.control_api import (
+            _attach_issue_numbers_to_test_windows,
+        )
+
+        store = SqliteTimelineStore(db_path=tmp_path / "timeline.sqlite")
+
+        # Two ephemeral issues active during the test window.
+        store.append(
+            TimelineKey.for_issue(5677).to_store_key(),
+            TimelineRecord(
+                event_id="s1", timestamp="2026-01-01T00:00:10Z",
+                event="session.started", data={"run_dir": "/tmp/r1"},
+                source_event="session.started",
+            ),
+        )
+        store.append(
+            TimelineKey.for_issue(5678).to_store_key(),
+            TimelineRecord(
+                event_id="s2", timestamp="2026-01-01T00:00:20Z",
+                event="session.started", data={"run_dir": "/tmp/r2"},
+                source_event="session.started",
+            ),
+        )
+        # An event for an issue OUTSIDE the test window must not attach.
+        store.append(
+            TimelineKey.for_issue(5679).to_store_key(),
+            TimelineRecord(
+                event_id="s3", timestamp="2026-01-01T00:02:00Z",
+                event="session.started", data={"run_dir": "/tmp/r3"},
+                source_event="session.started",
+            ),
+        )
+
+        agent_events = read_orchestrator_events_by_window(
+            tmp_path / "timeline.sqlite",
+            started_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:03:00Z",
+        )
+        assert len(agent_events) == 3, "Reader must surface all in-window events"
+
+        # Build pytest test events the way the production endpoints do.
+        e2e_events = [
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:00:05Z",
+             "nodeid": "tests/e2e/test_one.py::test_a"},
+            {"event": "e2e.test_completed", "timestamp": "2026-01-01T00:00:30Z",
+             "nodeid": "tests/e2e/test_one.py::test_a"},
+            {"event": "e2e.test_started", "timestamp": "2026-01-01T00:01:00Z",
+             "nodeid": "tests/e2e/test_two.py::test_b"},
+            # test_b is still in progress (no completed event yet) but
+            # still must accumulate issue numbers from agents that started
+            # during its window.
+        ]
+
+        result = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+
+        test_a_started = result[0]
+        test_a_completed = result[1]
+        test_b_started = result[2]
+        # test_a window covers issues 5677 and 5678 — both started during it.
+        assert sorted(test_a_started["issue_numbers"]) == [5677, 5678]
+        assert sorted(test_a_completed["issue_numbers"]) == [5677, 5678]
+        # test_b window is open-ended; the out-of-window 5679 (00:02:00)
+        # falls inside test_b's start (00:01:00) so it attaches to test_b.
+        assert test_b_started["issue_numbers"] == [5679]
+
 
 class TestE2ERunDetailEndpoint:
     """Endpoint-level tests for GET /api/e2e-run-detail/{run_id}."""
