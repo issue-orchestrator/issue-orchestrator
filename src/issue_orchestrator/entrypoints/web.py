@@ -1273,23 +1273,19 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
 
 
-@app.get("/api/session/terminal-recording/{issue_number}")
-async def get_terminal_recording(
+def serve_terminal_recording(
     issue_number: int,
+    run_dir: str | None,
     offset: int = 0,
     limit: int = 200,
-    run_dir: str | None = None,
     round_index: int | None = None,
     session_role: str | None = None,
 ) -> JSONResponse:
-    """Return the canonical raw terminal recording for a run.
+    """Shared implementation for terminal recording endpoints.
 
-    This is intended for replay tooling that feeds raw PTY output through a
-    terminal emulator instead of relying on the derived ui-session.log text.
+    Used by both the web dashboard and the control center so the contract
+    (validation, payload shape, geometry format) stays identical.
     """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
     if not run_dir:
         return JSONResponse({
             "error": "run_dir is required",
@@ -1350,6 +1346,27 @@ async def get_terminal_recording(
         })
     except Exception as e:
         return JSONResponse({"error": f"Failed to read terminal recording: {e}"}, status_code=500)
+
+
+@app.get("/api/session/terminal-recording/{issue_number}")
+async def get_terminal_recording(
+    issue_number: int,
+    offset: int = 0,
+    limit: int = 200,
+    run_dir: str | None = None,
+    round_index: int | None = None,
+    session_role: str | None = None,
+) -> JSONResponse:
+    """Return the canonical raw terminal recording for a run.
+
+    This is intended for replay tooling that feeds raw PTY output through a
+    terminal emulator instead of relying on the derived ui-session.log text.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    return serve_terminal_recording(
+        issue_number, run_dir, offset, limit, round_index, session_role,
+    )
 
 
 def _build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path | None) -> dict[str, Any]:
