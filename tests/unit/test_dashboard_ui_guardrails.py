@@ -576,6 +576,15 @@ def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
     assert "closeTimelineEventMenus();" in body
 
 
+def test_timeline_renders_issue_links_for_navigation() -> None:
+    """E2E test events with issue_numbers render as clickable links to issue detail."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimeline")
+    assert "issue_numbers" in body
+    assert "openIssueDetail" in body
+    assert "timeline-issue-links" in body
+
+
 def test_e2e_timeline_has_view_switcher() -> None:
     """E2E run timeline tab has Story/Ops/Debug view buttons."""
     js = _read(DASHBOARD_JS)

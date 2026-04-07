@@ -2118,6 +2118,20 @@ body.column-focus-mode .column-expanded {
     color: var(--bg);
     border-color: var(--accent);
 }
+.timeline-issue-links {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.timeline-issue-links a {
+    margin-left: 6px;
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+}
+.timeline-issue-links a:hover {
+    text-decoration: underline;
+}
 
 @media (max-width: 700px) {
     .container { padding: 12px; }

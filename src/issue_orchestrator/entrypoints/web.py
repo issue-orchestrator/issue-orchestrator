@@ -1829,7 +1829,6 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     (older runs that predate the convergence).
     """
     from ..domain.timeline_key import TimelineKey
-    from ..infra.e2e_db import nest_orchestrator_events
     from ..timeline import TimelineStream
 
     if not _orchestrator:
@@ -1858,26 +1857,27 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     snapshot_records = [r for r in records if r.event == "e2e.agent_snapshot"]
 
     stream = TimelineStream.from_records(store_key, e2e_records)
-    e2e_events = _filter_timeline_events([evt.to_dict() for evt in stream.events])
+    raw_events = [evt.to_dict() for evt in stream.events]
+    # Promote nodeid from data blob for test event window matching
+    for evt, rec in zip(raw_events, e2e_records):
+        nodeid = rec.data.get("nodeid") if isinstance(rec.data, dict) else None
+        if isinstance(nodeid, str) and nodeid:
+            evt["nodeid"] = nodeid
+    e2e_events = _filter_timeline_events(raw_events)
     agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
     if not agent_events:
         agent_events = _load_orchestrator_events_for_run(run_id)
 
-    # Filter, decorate, nest, then apply story projection per window.
-    from ..view_models.issue_detail import _filter_events_by_view, _story_projection_events
+    # Annotate test events with issue numbers from agent activity windows.
+    # The frontend renders these as clickable links to the full dashboard
+    # issue detail view — no nesting, full convergence with the dashboard.
+    from ..view_models.issue_detail import _filter_events_by_view
+    from .control_api import _attach_issue_numbers_to_test_windows
+
     if agent_events:
         agent_events = _filter_events_by_view(agent_events, view)
-        agent_events = _decorate_e2e_agent_events(agent_events)
-
-    events = e2e_events
-    if agent_events:
-        nest_orchestrator_events(events, agent_events)
-        # Apply story projection per test window to avoid cross-window collapsing
-        for evt in events:
-            children = evt.get("children")
-            if children:
-                evt["children"] = _story_projection_events(children, view)
+    events = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
 
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
@@ -1897,34 +1897,6 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
         view=view,
     )
     return JSONResponse(payload)
-
-
-def _decorate_e2e_agent_events(agent_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Decorate agent events using each event's own issue_number.
-
-    Agent events come from different issues processed during the E2E run.
-    Each event must be decorated with its own issue_number so action
-    payloads (session log, claude log, diagnostics) carry the correct
-    identity for the JS click handlers.
-    """
-    from collections import defaultdict
-
-    # Group by issue_number for batch decoration
-    by_issue: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for evt in agent_events:
-        issue_num = evt.get("issue_number", 0)
-        if isinstance(issue_num, int) and issue_num > 0:
-            by_issue[issue_num].append(evt)
-        else:
-            by_issue[0].append(evt)
-
-    decorated: list[dict[str, Any]] = []
-    for issue_num, events in by_issue.items():
-        decorated.extend(_decorate_timeline_events(events, issue_num))
-
-    # Restore original chronological order
-    decorated.sort(key=lambda e: e.get("timestamp", ""))
-    return decorated
 
 
 def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:

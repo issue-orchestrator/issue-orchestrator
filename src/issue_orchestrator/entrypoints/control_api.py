@@ -4414,28 +4414,69 @@ def _load_worktree_agent_events(repo_root: Path, run_id: int) -> list[dict]:
     )
 
 
+def _attach_issue_numbers_to_test_windows(
+    e2e_events: list[dict],
+    agent_events: list[dict],
+) -> list[dict]:
+    """Attach issue numbers to E2E test events based on time-window matching.
+
+    For each test_started/test_completed pair, find which issues had agent
+    activity during that window. The frontend renders these as clickable
+    links that open the full dashboard issue detail view — no nesting,
+    no special rendering, full convergence.
+    """
+    if not agent_events:
+        return e2e_events
+
+    # Build test windows: (start_ts, end_ts, parent_event)
+    # nodeid is promoted to top-level by TimelineEvent.to_dict() for e2e events
+    windows: list[tuple[str, str, dict]] = []
+    started_map: dict[str, tuple[str, dict]] = {}
+    for evt in e2e_events:
+        name = evt.get("event", "")
+        nodeid = (evt.get("nodeid") or "").strip()
+        if name == "e2e.test_started":
+            if nodeid:
+                started_map[nodeid] = (evt["timestamp"], evt)
+                evt.setdefault("issue_numbers", [])
+        elif name == "e2e.test_completed":
+            if nodeid and nodeid in started_map:
+                start_ts, started_dict = started_map.pop(nodeid)
+                windows.append((start_ts, evt["timestamp"], started_dict))
+                evt.setdefault("issue_numbers", started_dict["issue_numbers"])
+
+    # Assign each agent event's issue_number to the matching test window
+    for agent_evt in agent_events:
+        ts = agent_evt.get("timestamp", "")
+        issue_num = agent_evt.get("issue_number")
+        if not isinstance(issue_num, int) or issue_num <= 0:
+            continue
+        for start_ts, end_ts, parent_evt in windows:
+            if start_ts <= ts <= end_ts:
+                if issue_num not in parent_evt["issue_numbers"]:
+                    parent_evt["issue_numbers"].append(issue_num)
+                break
+
+    return e2e_events
+
+
 def _filter_nest_and_project_agent_events(
     e2e_events: list[dict],
     agent_events: list[dict],
     view: str,
 ) -> list[dict]:
-    """Filter, decorate, nest, and apply per-window story projection."""
-    from ..entrypoints.web import _decorate_e2e_agent_events
-    from ..infra.e2e_db import nest_orchestrator_events
-    from ..view_models.issue_detail import _filter_events_by_view, _story_projection_events
+    """Annotate test events with issue numbers from agent activity windows.
+
+    Replaces the old nesting approach. Each test event now carries
+    ``issue_numbers`` which the frontend renders as clickable links to
+    the full dashboard issue detail view.
+    """
+    from ..view_models.issue_detail import _filter_events_by_view
 
     if agent_events:
         agent_events = _filter_events_by_view(agent_events, view)
-        agent_events = _decorate_e2e_agent_events(agent_events)
 
-    events = e2e_events
-    if agent_events:
-        nest_orchestrator_events(events, agent_events)
-        for evt in events:
-            children = evt.get("children")
-            if children:
-                evt["children"] = _story_projection_events(children, view)
-    return events
+    return _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
 
 
 @control_app.get("/control/e2e/run/{run_id}/timeline")
@@ -4493,6 +4534,11 @@ async def e2e_run_timeline_endpoint(
 
         stream = TimelineStream.from_records(store_key, e2e_records)
         e2e_events = [evt.to_dict() for evt in stream.events]
+        # Promote nodeid from data blob for test event window matching
+        for evt, rec in zip(e2e_events, e2e_records):
+            nodeid = rec.data.get("nodeid") if isinstance(rec.data, dict) else None
+            if isinstance(nodeid, str) and nodeid:
+                evt["nodeid"] = nodeid
         agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
         if not agent_events:
@@ -5743,6 +5789,98 @@ async def e2e_sync_issues(
     except Exception as e:
         logger.exception("Failed to sync E2E issues: %s", e)
         return JSONResponse({"error": "sync_error", "detail": str(e)}, status_code=500)
+
+
+@control_app.get("/api/session/terminal-recording/{issue_number}")
+async def control_terminal_recording(
+    issue_number: int,
+    offset: int = 0,
+    limit: int = 200,
+    run_dir: str | None = None,
+    round_index: int | None = None,
+    session_role: str | None = None,
+) -> JSONResponse:
+    """Terminal recording endpoint on control center — delegates to shared implementation."""
+    from ..entrypoints.web import serve_terminal_recording
+    return serve_terminal_recording(
+        issue_number, run_dir, offset, limit, round_index, session_role,
+    )
+
+
+@control_app.get("/api/issue-detail/{issue_number}")
+async def control_issue_detail(
+    issue_number: int,
+    repo_root: str = Query(...),
+    view: str = Query("user"),
+) -> JSONResponse:
+    """Issue detail endpoint on control center.
+
+    Reads timeline events from the E2E worktree's timeline.sqlite for E2E
+    test issues, then runs them through the same view model pipeline as
+    the dashboard's issue-detail endpoint. Returns the same payload shape
+    so the existing renderJourneyTimeline JS works without changes.
+    """
+    from ..execution.timeline_store import SqliteTimelineStore
+    from ..infra.e2e_worktree import get_e2e_worktree_path
+    from ..timeline import TimelineStream
+    from ..view_models.issue_detail import build_issue_detail_view_model
+    from ..entrypoints.web import (
+        _filter_timeline_events,
+        _decorate_timeline_events,
+        _build_phase_toc,
+        _build_timeline_cycles,
+    )
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    valid_views = {"user", "ops", "debug"}
+    if view not in valid_views:
+        view = "user"
+
+    # Try base repo timeline first, then E2E worktree timeline
+    candidates = [
+        validated_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+        get_e2e_worktree_path(validated_root) / ".issue-orchestrator" / "state" / "timeline.sqlite",
+    ]
+    records: list = []
+    for db_path in candidates:
+        if not db_path.exists():
+            continue
+        try:
+            store = SqliteTimelineStore(db_path=db_path)
+            found = store.read(issue_number, limit=5000)
+            if found:
+                records = found
+                break
+        except Exception:
+            logger.debug("Could not read timeline from %s", db_path, exc_info=True)
+
+    if not records:
+        return JSONResponse(
+            {"error": "not_found", "detail": f"No timeline events for issue {issue_number}"},
+            status_code=404,
+        )
+
+    stream = TimelineStream.from_records(issue_number, records)
+    raw_events = [evt.to_dict() for evt in stream.events]
+    filtered_events = _filter_timeline_events(raw_events)
+    decorated = _decorate_timeline_events(filtered_events, issue_number)
+    phase_toc = _build_phase_toc(decorated)
+    cycles = _build_timeline_cycles(decorated)
+
+    payload = build_issue_detail_view_model(
+        issue_number=issue_number,
+        title=f"Issue #{issue_number}",
+        issue_url="",
+        events=decorated,
+        phase_toc=phase_toc,
+        cycles=cycles,
+        context=None,
+        view=view,
+    )
+    return JSONResponse(payload)
 
 
 class ControlAPIServer:
