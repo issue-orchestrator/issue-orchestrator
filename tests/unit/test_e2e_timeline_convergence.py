@@ -1023,6 +1023,121 @@ class TestE2ETimelineControlEndpoint:
         assert response.status_code == 200
         assert response.json()["events"] == []
 
+    def test_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
+        """Full endpoint repro through the worktree-fallback agent-events route.
+
+        Pins the route exercised in production when no e2e.agent_snapshot rows
+        have been written yet (the common case for live runs):
+
+            /control/e2e/run/{id}/timeline
+              -> _load_worktree_agent_events
+              -> read_orchestrator_events_by_window  (worktree timeline)
+              -> _attach_issue_numbers_to_test_windows
+              -> JSON response.events[*].issue_numbers
+
+        Without the per-issue identity restoration in the reader, this path
+        returns issue_numbers=[] for every test row even when the worktree
+        timeline contains real agent activity for many issues.
+        """
+        import sqlite3
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        # Layout:
+        #   tmp_path/repo/.issue-orchestrator/state/timeline.sqlite (E2E run events)
+        #   tmp_path/repo/.issue-orchestrator/e2e.db                (run record)
+        #   tmp_path/repo-e2e-worktree/.issue-orchestrator/state/timeline.sqlite (agent events)
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator" / "state").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+
+        # E2E run record with a controlled time window.
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_id, status="failed", duration_seconds=120.0)
+        # Override timestamps so we can place agent events deterministically.
+        run_started = "2026-01-01T00:00:00Z"
+        run_finished = "2026-01-01T00:05:00Z"
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                (run_started, run_finished, run_id),
+            )
+
+        # E2E run events live in the base-repo timeline under the negative key.
+        base_store = SqliteTimelineStore(
+            db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+        )
+        run_key = TimelineKey.for_e2e_run(run_id).to_store_key()
+        base_store.append(run_key, TimelineRecord(
+            event_id="rs", timestamp=run_started,
+            event="e2e.run_started", data={},
+            source_event="e2e.run_started",
+        ))
+        base_store.append(run_key, TimelineRecord(
+            event_id="ts1", timestamp="2026-01-01T00:00:30Z",
+            event="e2e.test_started", data={"nodeid": "tests/e2e/test_a.py::test_one"},
+            source_event="e2e.test_started",
+        ))
+        base_store.append(run_key, TimelineRecord(
+            event_id="tc1", timestamp="2026-01-01T00:02:00Z",
+            event="e2e.test_completed",
+            data={"nodeid": "tests/e2e/test_a.py::test_one", "outcome": "failed"},
+            source_event="e2e.test_completed",
+        ))
+        base_store.append(run_key, TimelineRecord(
+            event_id="rf", timestamp=run_finished,
+            event="e2e.run_finished", data={"status": "failed"},
+            source_event="e2e.run_finished",
+        ))
+
+        # Agent activity for two ephemeral issues — written into the
+        # WORKTREE timeline (the "no snapshot" fallback path).
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(5677).to_store_key(),
+            TimelineRecord(
+                event_id="a1", timestamp="2026-01-01T00:00:45Z",
+                event="session.started", data={"run_dir": "/tmp/r1"},
+                source_event="session.started",
+            ),
+        )
+        wt_store.append(
+            TimelineKey.for_issue(5678).to_store_key(),
+            TimelineRecord(
+                event_id="a2", timestamp="2026-01-01T00:01:30Z",
+                event="session.started", data={"run_dir": "/tmp/r2"},
+                source_event="session.started",
+            ),
+        )
+
+        # Hit the live endpoint.
+        client = TestClient(control_app)
+        response = client.get(
+            f"/control/e2e/run/{run_id}/timeline",
+            params={"repo_root": str(repo_root)},
+        )
+        assert response.status_code == 200
+        events = response.json()["events"]
+
+        # Both the test_started and test_completed events must carry both
+        # issue numbers — the regression manifests as issue_numbers=[] here.
+        test_started = next(e for e in events if e.get("event") == "e2e.test_started")
+        test_completed = next(e for e in events if e.get("event") == "e2e.test_completed")
+        assert sorted(test_started.get("issue_numbers", [])) == [5677, 5678], (
+            f"test_started lost identity: {test_started.get('issue_numbers')}"
+        )
+        assert sorted(test_completed.get("issue_numbers", [])) == [5677, 5678], (
+            f"test_completed lost identity: {test_completed.get('issue_numbers')}"
+        )
+
 
 class TestControlIssueDetailEndpoint:
     """Control center serves issue detail from base repo or E2E worktree timeline."""
