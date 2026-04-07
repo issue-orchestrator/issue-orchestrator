@@ -597,6 +597,51 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_in_progress_test_window_attaches_issue_numbers(self):
+        """Active e2e.test_started (no test_completed yet) must still attach
+        issue_numbers from agent activity during the live window.
+
+        Regression: the window-builder previously only emitted windows for
+        completed test pairs, so clicking through to the issue detail or
+        session log from the E2E timeline was impossible while a run was
+        still in progress.
+        """
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started", data={"nodeid": "test_live"},
+                source_event="e2e.test_started",
+            ),
+            # No e2e.test_completed — test is still running.
+            TimelineRecord(
+                event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+                event="e2e.agent_snapshot",
+                data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                      "issue_number": 42, "phase": "in_progress", "step": "started",
+                      "status": "started", "summary": "Agent launched",
+                      "views": ["user", "ops", "debug"]},
+                source_event="e2e.agent_snapshot",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 200
+            payload = response.json()
+            events = payload.get("events", [])
+            test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
+            assert test_started is not None
+            assert test_started.get("issue_numbers") == [42], (
+                "In-progress test window must carry live issue_numbers so "
+                "the timeline can navigate to issue detail before completion."
+            )
+        finally:
+            set_orchestrator(None)
+
     def test_returns_503_when_orchestrator_not_running(self):
         """Endpoint returns 503 when orchestrator is not set."""
         from issue_orchestrator.entrypoints.web import app, set_orchestrator
@@ -787,6 +832,54 @@ class TestE2ETimelineControlEndpoint:
         assert test_started.get("issue_numbers") == [42]
         # No nested children — frontend opens issue detail via openIssueDetail
         assert test_started.get("children", []) == []
+
+    def test_in_progress_test_window_attaches_issue_numbers(self, tmp_path):
+        """Control endpoint also pins live in-progress issue_numbers.
+
+        Mirrors the web-endpoint regression: while a test is still running
+        (e2e.test_started without a matching e2e.test_completed), agent
+        activity during that live window must still annotate the started
+        event so the control-center timeline can navigate to issue detail.
+        """
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+        store.append(e2e_key, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_started", data={"nodeid": "test_live"},
+            source_event="e2e.test_started",
+        ))
+        # No e2e.test_completed — test is still in progress.
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-s1", timestamp="2026-01-01T00:00:30Z",
+            event="e2e.agent_snapshot",
+            data={"event": "session.started", "timestamp": "2026-01-01T00:00:30Z",
+                  "issue_number": 42, "phase": "in_progress", "step": "started",
+                  "status": "started", "summary": "Agent launched",
+                  "views": ["user", "ops", "debug"]},
+            source_event="e2e.agent_snapshot",
+        ))
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        events = response.json()["events"]
+
+        test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
+        assert test_started is not None
+        assert test_started.get("issue_numbers") == [42], (
+            "Control endpoint must attach issue_numbers to in-progress test "
+            "windows so live runs remain navigable."
+        )
 
     def test_returns_empty_events_when_no_timeline(self, tmp_path):
         """Returns empty events list when no timeline DB exists."""

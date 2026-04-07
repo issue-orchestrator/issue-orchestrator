@@ -4416,13 +4416,15 @@ def _load_worktree_agent_events(repo_root: Path, run_id: int) -> list[dict]:
 
 def _build_test_windows(
     e2e_events: list[dict],
-) -> list[tuple[str, str, dict]]:
+) -> list[tuple[str, str | None, dict]]:
     """Pair test_started/test_completed events into time windows.
 
-    Returns ``(start_ts, end_ts, started_event_dict)`` tuples and ensures both
-    paired events have an ``issue_numbers`` list ready for population.
+    Returns ``(start_ts, end_ts, started_event_dict)`` tuples. ``end_ts`` is
+    ``None`` for still-in-progress tests (a ``test_started`` with no matching
+    ``test_completed`` yet) so that agent activity observed during a live run
+    can still be attached.
     """
-    windows: list[tuple[str, str, dict]] = []
+    windows: list[tuple[str, str | None, dict]] = []
     started_map: dict[str, tuple[str, dict]] = {}
     for evt in e2e_events:
         name = evt.get("event", "")
@@ -4436,20 +4438,31 @@ def _build_test_windows(
             start_ts, started_dict = started_map.pop(nodeid)
             windows.append((start_ts, evt["timestamp"], started_dict))
             evt.setdefault("issue_numbers", started_dict["issue_numbers"])
+    # Any test_started still sitting in started_map is in-progress: treat it
+    # as an open-ended window so active agent activity still attaches.
+    for start_ts, started_dict in started_map.values():
+        windows.append((start_ts, None, started_dict))
     return windows
 
 
 def _assign_issue_to_window(
-    windows: list[tuple[str, str, dict]],
+    windows: list[tuple[str, str | None, dict]],
     ts: str,
     issue_num: int,
 ) -> None:
-    """Append ``issue_num`` to the first window that contains ``ts``."""
+    """Append ``issue_num`` to the first window that contains ``ts``.
+
+    A window with ``end_ts is None`` is still in progress and matches any
+    timestamp at or after its ``start_ts``.
+    """
     for start_ts, end_ts, parent_evt in windows:
-        if start_ts <= ts <= end_ts:
-            if issue_num not in parent_evt["issue_numbers"]:
-                parent_evt["issue_numbers"].append(issue_num)
-            return
+        if ts < start_ts:
+            continue
+        if end_ts is not None and ts > end_ts:
+            continue
+        if issue_num not in parent_evt["issue_numbers"]:
+            parent_evt["issue_numbers"].append(issue_num)
+        return
 
 
 def _attach_issue_numbers_to_test_windows(
