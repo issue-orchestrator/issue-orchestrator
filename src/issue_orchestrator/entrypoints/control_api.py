@@ -4414,6 +4414,44 @@ def _load_worktree_agent_events(repo_root: Path, run_id: int) -> list[dict]:
     )
 
 
+def _build_test_windows(
+    e2e_events: list[dict],
+) -> list[tuple[str, str, dict]]:
+    """Pair test_started/test_completed events into time windows.
+
+    Returns ``(start_ts, end_ts, started_event_dict)`` tuples and ensures both
+    paired events have an ``issue_numbers`` list ready for population.
+    """
+    windows: list[tuple[str, str, dict]] = []
+    started_map: dict[str, tuple[str, dict]] = {}
+    for evt in e2e_events:
+        name = evt.get("event", "")
+        nodeid = (evt.get("nodeid") or "").strip()
+        if not nodeid:
+            continue
+        if name == "e2e.test_started":
+            started_map[nodeid] = (evt["timestamp"], evt)
+            evt.setdefault("issue_numbers", [])
+        elif name == "e2e.test_completed" and nodeid in started_map:
+            start_ts, started_dict = started_map.pop(nodeid)
+            windows.append((start_ts, evt["timestamp"], started_dict))
+            evt.setdefault("issue_numbers", started_dict["issue_numbers"])
+    return windows
+
+
+def _assign_issue_to_window(
+    windows: list[tuple[str, str, dict]],
+    ts: str,
+    issue_num: int,
+) -> None:
+    """Append ``issue_num`` to the first window that contains ``ts``."""
+    for start_ts, end_ts, parent_evt in windows:
+        if start_ts <= ts <= end_ts:
+            if issue_num not in parent_evt["issue_numbers"]:
+                parent_evt["issue_numbers"].append(issue_num)
+            return
+
+
 def _attach_issue_numbers_to_test_windows(
     e2e_events: list[dict],
     agent_events: list[dict],
@@ -4428,34 +4466,12 @@ def _attach_issue_numbers_to_test_windows(
     if not agent_events:
         return e2e_events
 
-    # Build test windows: (start_ts, end_ts, parent_event)
-    # nodeid is promoted to top-level by TimelineEvent.to_dict() for e2e events
-    windows: list[tuple[str, str, dict]] = []
-    started_map: dict[str, tuple[str, dict]] = {}
-    for evt in e2e_events:
-        name = evt.get("event", "")
-        nodeid = (evt.get("nodeid") or "").strip()
-        if name == "e2e.test_started":
-            if nodeid:
-                started_map[nodeid] = (evt["timestamp"], evt)
-                evt.setdefault("issue_numbers", [])
-        elif name == "e2e.test_completed":
-            if nodeid and nodeid in started_map:
-                start_ts, started_dict = started_map.pop(nodeid)
-                windows.append((start_ts, evt["timestamp"], started_dict))
-                evt.setdefault("issue_numbers", started_dict["issue_numbers"])
-
-    # Assign each agent event's issue_number to the matching test window
+    windows = _build_test_windows(e2e_events)
     for agent_evt in agent_events:
-        ts = agent_evt.get("timestamp", "")
         issue_num = agent_evt.get("issue_number")
         if not isinstance(issue_num, int) or issue_num <= 0:
             continue
-        for start_ts, end_ts, parent_evt in windows:
-            if start_ts <= ts <= end_ts:
-                if issue_num not in parent_evt["issue_numbers"]:
-                    parent_evt["issue_numbers"].append(issue_num)
-                break
+        _assign_issue_to_window(windows, agent_evt.get("timestamp", ""), issue_num)
 
     return e2e_events
 
