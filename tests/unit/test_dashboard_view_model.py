@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -22,6 +22,7 @@ from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
     _normalize_status_reason,
+    _serialize_circuit_state,
     build_dashboard_view_model,
 )
 from issue_orchestrator.contracts.public import DashboardViewModelContract
@@ -724,6 +725,105 @@ def test_view_model_api_endpoint():
         assert data["dashboard_data"]["queueRefreshSeconds"] == 600
     finally:
         set_orchestrator(original)
+
+
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    now_utc = datetime.now(tz=timezone.utc)
+    open_until = now_utc + timedelta(seconds=120)
+
+    @dataclass
+    class _FakeCircuitState:
+        provider: str
+        open_until: datetime | None
+        consecutive_outages: int
+        last_error_summary: str | None
+        updated_at: datetime
+
+    fake_states = [
+        _FakeCircuitState(
+            provider="anthropic",
+            open_until=open_until,
+            consecutive_outages=2,
+            last_error_summary="429 rate limited",
+            updated_at=now_utc,
+        ),
+        _FakeCircuitState(
+            provider="openai",
+            open_until=None,
+            consecutive_outages=0,
+            last_error_summary=None,
+            updated_at=now_utc,
+        ),
+    ]
+
+    def provider_circuit_provider(_orch):
+        providers = [_serialize_circuit_state(s) for s in fake_states]
+        providers.sort(key=lambda entry: entry["provider"])
+        open_count = sum(1 for entry in providers if entry["is_open"])
+        return {
+            "providers": providers,
+            "open_count": open_count,
+            "any_open": open_count > 0,
+        }
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_provider=provider_circuit_provider,
+    )
+
+    status = view_model.provider_circuit_status
+    assert status["any_open"] is True
+    assert status["open_count"] == 1
+    assert [p["provider"] for p in status["providers"]] == ["anthropic", "openai"]
+
+    anthropic_entry = next(p for p in status["providers"] if p["provider"] == "anthropic")
+    assert anthropic_entry["is_open"] is True
+    assert anthropic_entry["consecutive_outages"] == 2
+    assert anthropic_entry["last_error_summary"] == "429 rate limited"
+    assert anthropic_entry["seconds_until_retry"] is not None
+    assert anthropic_entry["seconds_until_retry"] > 0
+    assert anthropic_entry["open_until"] is not None
+
+    openai_entry = next(p for p in status["providers"] if p["provider"] == "openai")
+    assert openai_entry["is_open"] is False
+    assert openai_entry["seconds_until_retry"] is None
+    assert openai_entry["open_until"] is None
+
+    # The status is exposed to the JS layer through dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitStatus"] == status
+
+    # And surfaced via template_context for server-rendered templates
+    template_ctx = view_model.template_context()
+    assert template_ctx["provider_circuit_status"] == status
+
+
+def test_view_model_provider_circuit_status_defaults_to_empty_when_unavailable():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_status == {
+        "providers": [],
+        "open_count": 0,
+        "any_open": False,
+    }
 
 
 def test_view_model_matches_public_contract():
