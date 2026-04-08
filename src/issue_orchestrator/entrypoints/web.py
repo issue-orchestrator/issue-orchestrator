@@ -1889,11 +1889,13 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     # Annotate test events with issue numbers from agent activity windows.
     # The frontend renders these as clickable links to the full dashboard
     # issue detail view — no nesting, full convergence with the dashboard.
-    from ..view_models.issue_detail import _filter_events_by_view
+    #
+    # Pass the UNFILTERED agent_events to the matcher: it only uses
+    # (timestamp, issue_number) and never renders the events. Pre-filtering
+    # by view drops debug-tagged events that are often the only marker of
+    # an issue's presence in a window, silently losing issue links.
     from .control_api import _attach_issue_numbers_to_test_windows
 
-    if agent_events:
-        agent_events = _filter_events_by_view(agent_events, view)
     events = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
 
     phase_toc = _build_phase_toc(events)

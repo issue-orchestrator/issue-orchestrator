@@ -4475,6 +4475,13 @@ def _attach_issue_numbers_to_test_windows(
     activity during that window. The frontend renders these as clickable
     links that open the full dashboard issue detail view — no nesting,
     no special rendering, full convergence.
+
+    Important: the caller MUST pass the unfiltered agent events. View
+    filtering (``_filter_events_by_view``) drops debug-only events such as
+    ``claim.acquired``/``issue.labels_changed`` that are still required to
+    discover an issue's presence in a test window. Filtering before
+    matching silently loses issue links for any test whose only orchestrator
+    activity happens to be debug-tagged.
     """
     if not agent_events:
         return e2e_events
@@ -4499,12 +4506,14 @@ def _filter_nest_and_project_agent_events(
     Replaces the old nesting approach. Each test event now carries
     ``issue_numbers`` which the frontend renders as clickable links to
     the full dashboard issue detail view.
+
+    The ``view`` parameter is intentionally NOT applied to ``agent_events``
+    before matching: the matcher only uses ``(timestamp, issue_number)``
+    and never renders the underlying agent events. Pre-filtering by view
+    drops debug-tagged events that are often the only marker of an issue's
+    presence in a window, silently losing issue links.
     """
-    from ..view_models.issue_detail import _filter_events_by_view
-
-    if agent_events:
-        agent_events = _filter_events_by_view(agent_events, view)
-
+    del view  # noqa: ARG001 — see docstring; matcher must not be view-filtered
     return _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
 
 

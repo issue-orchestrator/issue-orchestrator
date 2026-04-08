@@ -720,6 +720,97 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_web_endpoint_attaches_issues_present_only_in_debug_only_events(self, tmp_path):
+        """Issues whose only in-window events are debug-tagged must still attach.
+
+        Regression: the endpoint pipeline used to apply
+        ``_filter_events_by_view("user", agent_events)`` BEFORE the matcher.
+        Real orchestrator activity for an issue often consists exclusively of
+        ops/debug-tagged events (claim.acquired, issue.labels_changed,
+        apply.step_applied). Pre-filtering by view dropped those events,
+        so the matcher saw zero activity for the issue and silently failed
+        to attach a navigation affordance.
+
+        This test stages an issue (5707) whose only in-window event has
+        ``views=["debug"]``. Without the fix the response carries
+        ``issue_numbers=[]``; with the fix it carries ``[5707]``.
+        """
+        import sqlite3
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_id, status="failed", duration_seconds=120.0)
+        run_started = "2026-01-01T00:00:00Z"
+        run_finished = "2026-01-01T00:05:00Z"
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                (run_started, run_finished, run_id),
+            )
+
+        run_key = TimelineKey.for_e2e_run(run_id).to_store_key()
+        e2e_records = [
+            TimelineRecord(
+                event_id="ts1", timestamp="2026-01-01T00:00:30Z",
+                event="e2e.test_started",
+                data={"nodeid": "tests/e2e/test_a.py::test_one"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="tc1", timestamp="2026-01-01T00:02:00Z",
+                event="e2e.test_completed",
+                data={"nodeid": "tests/e2e/test_a.py::test_one", "outcome": "failed"},
+                source_event="e2e.test_completed",
+            ),
+        ]
+
+        # Issue 5707's only event in the test window is debug-tagged.
+        # If the endpoint pre-filters by view, this event disappears and
+        # 5707 never attaches to the test row.
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(5707).to_store_key(),
+            TimelineRecord(
+                event_id="d1", timestamp="2026-01-01T00:01:00Z",
+                event="claim.acquired",
+                data={"run_dir": "/tmp/r1", "views": ["debug"]},
+                source_event="claim.acquired",
+            ),
+        )
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.deps.timeline_store.read.return_value = e2e_records
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/e2e-run-detail/{run_id}")
+            assert response.status_code == 200
+            events = response.json()["events"]
+
+            test_started = next(e for e in events if e.get("event") == "e2e.test_started")
+            assert test_started.get("issue_numbers") == [5707], (
+                "Debug-tagged event should still let issue 5707 attach to the "
+                f"test window — got {test_started.get('issue_numbers')}"
+            )
+        finally:
+            set_orchestrator(None)
+
     def test_web_endpoint_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
         """Full /api/e2e-run-detail/{id} repro through the worktree-fallback route.
 
