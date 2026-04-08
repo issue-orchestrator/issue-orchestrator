@@ -599,6 +599,13 @@ def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
     We scan the whole file rather than using ``_function_body`` because
     ``openIssueDetail`` has an ``opts = {}`` default parameter whose
     braces confuse the helper's naive body extractor.
+
+    Also pins the auto-close contract: when opened from an e2e run
+    drawer affordance, openIssueDetail must dismiss the
+    ``#e2eDiagnosisModal`` before rendering, otherwise the drawer
+    renders underneath the modal overlay (z-index conflict between
+    ``.modal-overlay`` at 30 and ``.issue-detail-drawer`` at 26) and
+    its content is unreachable.
     """
     js = _read(DASHBOARD_JS)
     # Isolate the block from "async function openIssueDetail" to the next
@@ -614,6 +621,10 @@ def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
     assert "/api/e2e-run/" in block
     assert "issue-detail/" in block
     assert "e2eRunId" in block
+    # Auto-close contract: opening from an e2e context must dismiss
+    # the e2e run modal so the drawer is not stuck behind it.
+    assert "e2eDiagnosisModal" in block
+    assert "closeE2EDiagnosisModal" in block
 
 
 def test_e2e_timeline_has_view_switcher() -> None:

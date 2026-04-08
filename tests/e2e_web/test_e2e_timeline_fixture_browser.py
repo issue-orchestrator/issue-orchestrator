@@ -454,14 +454,17 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     #   (c) the decoded events contain our synthetic recognizable text
     # so a future regression in the recording endpoint, the PTY event
     # decoding, or the replay initialization cannot silently pass.
-
-    # Close the still-open e2e run drawer first. Both drawers are
-    # mounted at once and the e2e modal overlay sits above the issue
-    # detail drawer in the test viewport, so the Session Recording
-    # button is not reachable via a normal click without dismissing
-    # the e2e modal.
-    page.evaluate("closeE2EDiagnosisModal && closeE2EDiagnosisModal()")
-    expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(0, timeout=5000)
+    #
+    # Note: the e2e run modal is expected to be auto-dismissed by
+    # ``openIssueDetail`` when invoked with an ``e2eRunId`` context.
+    # We assert this below — if it regresses, the drawer would be
+    # stuck behind the modal and the Session Recording button would
+    # be unreachable from the journey timeline. This pins the direct
+    # interaction path (click affordance → drawer usable → click
+    # session action) without any test-side workarounds.
+    expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(
+        0, timeout=5000,
+    )
 
     session_recording_btn = journey.locator(
         ".timeline-action-btn", has_text="Session Recording"

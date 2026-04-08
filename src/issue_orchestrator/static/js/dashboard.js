@@ -4367,6 +4367,23 @@ function getIssueDetailFocusableElements() {
 
 async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     if (!issueDetailDrawer) return;
+    // Dismiss the E2E run drawer (if open) when navigating into an
+    // issue detail from within it. Both use the same .modal-overlay
+    // stacking layer (z-index 30) above the side drawer (z-index 26),
+    // so without this the drawer would render underneath the run modal
+    // and its content would be unreachable. The navigation semantics
+    // are "leave the run-level view, go to this specific issue" — the
+    // user can return via the E2E tab.
+    if (opts && opts.e2eRunId) {
+        const e2eModal = document.getElementById('e2eDiagnosisModal');
+        if (e2eModal && e2eModal.classList.contains('visible')) {
+            if (typeof closeE2EDiagnosisModal === 'function') {
+                closeE2EDiagnosisModal();
+            } else {
+                e2eModal.classList.remove('visible');
+            }
+        }
+    }
     lastIssueDetailTrigger = triggerEl || document.activeElement;
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
