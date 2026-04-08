@@ -82,6 +82,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_circuits: list[dict[str, Any]]
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1235,6 +1238,45 @@ def _build_e2e_view_model(
     }
 
 
+def _build_provider_circuits(orchestrator) -> list[dict[str, Any]]:
+    """Build UI-facing snapshot of provider circuit breaker states.
+
+    Surfaces the status of each AI provider's resilience breaker so the
+    dashboard can show when a provider is cooling down after transient
+    errors. Safe to call even when the orchestrator does not expose a
+    provider resilience manager (e.g. lightweight test stubs) — returns
+    an empty list in that case.
+    """
+    deps = getattr(orchestrator, "deps", None)
+    resilience = getattr(deps, "provider_resilience", None) if deps is not None else None
+    store = getattr(resilience, "store", None) if resilience is not None else None
+    if store is None:
+        return []
+    try:
+        states = list(store.list_all())
+    except Exception:
+        return []
+
+    now = datetime.now(timezone.utc)
+    circuits: list[dict[str, Any]] = []
+    for state in states:
+        open_until = getattr(state, "open_until", None)
+        is_open = open_until is not None and open_until > now
+        open_until_iso = open_until.isoformat() if open_until is not None else None
+        updated_at = getattr(state, "updated_at", None)
+        updated_at_iso = updated_at.isoformat() if updated_at is not None else None
+        circuits.append({
+            "provider": getattr(state, "provider", ""),
+            "open": bool(is_open),
+            "open_until": open_until_iso,
+            "consecutive_outages": int(getattr(state, "consecutive_outages", 0) or 0),
+            "last_error_summary": getattr(state, "last_error_summary", None),
+            "updated_at": updated_at_iso,
+        })
+    circuits.sort(key=lambda item: item["provider"])
+    return circuits
+
+
 def _normalize_tab(active_tab: str) -> str:
     # Map legacy tab names to new kanban-based tabs
     if active_tab in {"work", "active", "queue", "flow"}:
@@ -1470,4 +1512,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=_build_provider_circuits(orchestrator),
     )

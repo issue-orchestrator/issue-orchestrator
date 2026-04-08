@@ -740,3 +740,96 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+@dataclass
+class _StubResilience:
+    store: object
+
+
+@dataclass
+class _StubDeps:
+    provider_resilience: _StubResilience
+
+
+def test_view_model_provider_circuits_empty_when_no_resilience_manager():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []
+
+
+def test_view_model_provider_circuits_surfaces_open_and_closed_states():
+    from datetime import timezone
+
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    # Anthropic: currently open (cooldown in the future)
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(seconds=120),
+        consecutive_outages=3,
+        last_error_summary="429 rate limit",
+        updated_at=now,
+    ))
+    # OpenAI: recently recovered (open_until cleared, counter still present)
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now,
+    ))
+
+    deps = _StubDeps(provider_resilience=_StubResilience(store=store))
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    # Attach deps after construction (dataclass frozen=False for the stub).
+    orchestrator.deps = deps  # type: ignore[attr-defined]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    circuits = view_model.provider_circuits
+    assert [c["provider"] for c in circuits] == ["anthropic", "openai"]
+
+    anthropic = circuits[0]
+    assert anthropic["open"] is True
+    assert anthropic["consecutive_outages"] == 3
+    assert anthropic["last_error_summary"] == "429 rate limit"
+    assert anthropic["open_until"] is not None
+    assert anthropic["updated_at"] is not None
+
+    openai = circuits[1]
+    assert openai["open"] is False
+    assert openai["open_until"] is None
+    assert openai["consecutive_outages"] == 1
+
+    # Exposed through the JSON dashboard_data payload as providerCircuits.
+    payload = view_model.dashboard_data()
+    assert payload["providerCircuits"] == circuits
+
+    # The strict UI payload still validates (extras allowed inside dashboard_data).
+    DashboardViewModelContract.model_validate(view_model.to_dict())
