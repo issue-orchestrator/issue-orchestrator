@@ -720,20 +720,31 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_web_endpoint_attaches_issues_present_only_in_debug_only_events(self, tmp_path):
-        """Issues whose only in-window events are debug-tagged must still attach.
+    def test_debug_only_issue_attaches_in_debug_view_not_user_view(self, tmp_path):
+        """View-aware affordance attachment.
 
-        Regression: the endpoint pipeline used to apply
-        ``_filter_events_by_view("user", agent_events)`` BEFORE the matcher.
-        Real orchestrator activity for an issue often consists exclusively of
-        ops/debug-tagged events (claim.acquired, issue.labels_changed,
-        apply.step_applied). Pre-filtering by view dropped those events,
-        so the matcher saw zero activity for the issue and silently failed
-        to attach a navigation affordance.
+        Pins the per-issue view filter contract: an issue gets an
+        affordance only when the requested view would actually show its
+        events. An issue whose only in-window events are ``views=["debug"]``
+        should:
 
-        This test stages an issue (5707) whose only in-window event has
-        ``views=["debug"]``. Without the fix the response carries
-        ``issue_numbers=[]``; with the fix it carries ``[5707]``.
+        - attach in ``view=debug`` (the user can see those events)
+        - NOT attach in ``view=user`` (clicking would open an empty drawer)
+
+        This avoids two pathologies that earlier iterations of the
+        pipeline both hit:
+
+        1. Per-event view filtering — drops events with debug-only tags
+           even when other events for the SAME issue are user-tagged,
+           silently losing window matches for legitimate issues.
+        2. No view filtering — attaches affordances for issues whose
+           only in-window event is debug-tagged, leaving the user with
+           a clickable link that opens an empty drawer in story view.
+
+        The current contract is per-issue: filter at the issue level so
+        full-run issues with mixed debug/user events still match all
+        windows, but pure-debug-touch issues do not pollute the user
+        view.
         """
         import sqlite3
         from unittest.mock import MagicMock
@@ -762,7 +773,6 @@ class TestE2ERunDetailEndpoint:
                 (run_started, run_finished, run_id),
             )
 
-        run_key = TimelineKey.for_e2e_run(run_id).to_store_key()
         e2e_records = [
             TimelineRecord(
                 event_id="ts1", timestamp="2026-01-01T00:00:30Z",
@@ -778,9 +788,8 @@ class TestE2ERunDetailEndpoint:
             ),
         ]
 
-        # Issue 5707's only event in the test window is debug-tagged.
-        # If the endpoint pre-filters by view, this event disappears and
-        # 5707 never attaches to the test row.
+        # Issue 5707's only in-window event is debug-tagged. Issue 5705
+        # has a fully-tagged event so it should attach in every view.
         wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
         wt_store.append(
             TimelineKey.for_issue(5707).to_store_key(),
@@ -791,6 +800,15 @@ class TestE2ERunDetailEndpoint:
                 source_event="claim.acquired",
             ),
         )
+        wt_store.append(
+            TimelineKey.for_issue(5705).to_store_key(),
+            TimelineRecord(
+                event_id="u1", timestamp="2026-01-01T00:01:30Z",
+                event="session.started",
+                data={"run_dir": "/tmp/r2", "views": ["debug", "ops", "user"]},
+                source_event="session.started",
+            ),
+        )
 
         mock_orch = MagicMock()
         mock_orch.config.repo_root = repo_root
@@ -799,14 +817,33 @@ class TestE2ERunDetailEndpoint:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get(f"/api/e2e-run-detail/{run_id}")
-            assert response.status_code == 200
-            events = response.json()["events"]
 
-            test_started = next(e for e in events if e.get("event") == "e2e.test_started")
-            assert test_started.get("issue_numbers") == [5707], (
-                "Debug-tagged event should still let issue 5707 attach to the "
-                f"test window — got {test_started.get('issue_numbers')}"
+            # User view: 5705 attaches (has user-tagged event), 5707 does not.
+            user_response = client.get(
+                f"/api/e2e-run-detail/{run_id}", params={"view": "user"},
+            )
+            assert user_response.status_code == 200
+            user_test_started = next(
+                e for e in user_response.json()["events"]
+                if e.get("event") == "e2e.test_started"
+            )
+            assert sorted(user_test_started.get("issue_numbers") or []) == [5705], (
+                "User view must show 5705 (user-tagged) and hide 5707 "
+                f"(debug-only) — got {user_test_started.get('issue_numbers')}"
+            )
+
+            # Debug view: BOTH issues attach.
+            debug_response = client.get(
+                f"/api/e2e-run-detail/{run_id}", params={"view": "debug"},
+            )
+            assert debug_response.status_code == 200
+            debug_test_started = next(
+                e for e in debug_response.json()["events"]
+                if e.get("event") == "e2e.test_started"
+            )
+            assert sorted(debug_test_started.get("issue_numbers") or []) == [5705, 5707], (
+                "Debug view must show both issues — got "
+                f"{debug_test_started.get('issue_numbers')}"
             )
         finally:
             set_orchestrator(None)

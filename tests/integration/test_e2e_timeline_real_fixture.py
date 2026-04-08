@@ -73,6 +73,31 @@ def _stage_fixture_layout(fixture: Path, tmp_path: Path) -> Path:
     return repo_root
 
 
+def _stage_fixture_with_real_timeline_reader(
+    fixture: Path, tmp_path: Path,
+):
+    """Stage a fixture and return (repo_root, mock_orchestrator).
+
+    The orchestrator gets a real ``timeline_reader`` over the staged base
+    timeline so the click-through path through ``get_issue_detail`` runs
+    against actual on-disk data.
+    """
+    from unittest.mock import MagicMock
+    from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
+    from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+
+    repo_root = _stage_fixture_layout(fixture, tmp_path)
+    base_store = SqliteTimelineStore(
+        db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+    )
+
+    mock_orch = MagicMock()
+    mock_orch.config.repo_root = repo_root
+    mock_orch.deps.timeline_store = base_store
+    mock_orch.deps.timeline_reader = DefaultTimelineReader(base_store)
+    return repo_root, mock_orch
+
+
 @pytest.mark.parametrize(
     "fixture",
     _discover_fixtures(),
@@ -96,18 +121,7 @@ def test_e2e_run_detail_matches_captured_fixture(fixture: Path, tmp_path: Path) 
     expected = json.loads((fixture / "expected.json").read_text())
     run_id = expected["run_id"]
 
-    repo_root = _stage_fixture_layout(fixture, tmp_path)
-
-    # Build a real SqliteTimelineStore over the staged base timeline so the
-    # endpoint reads E2E run records (negative issue_number) the same way
-    # production does.
-    base_store = SqliteTimelineStore(
-        db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
-    )
-
-    mock_orch = MagicMock()
-    mock_orch.config.repo_root = repo_root
-    mock_orch.deps.timeline_store = base_store
+    repo_root, mock_orch = _stage_fixture_with_real_timeline_reader(fixture, tmp_path)
 
     set_orchestrator(mock_orch)
     try:
@@ -168,4 +182,149 @@ def test_at_least_one_fixture_exists() -> None:
     assert fixtures, (
         "No E2E run fixtures found. Capture one with:\n"
         "  scripts/snapshot_e2e_run.py --run-id <id> --repo-root <path>"
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    _discover_fixtures(),
+    ids=lambda f: f.name,
+)
+def test_issue_affordance_click_through_returns_real_events(
+    fixture: Path, tmp_path: Path,
+) -> None:
+    """Sequenced HTTP commands: timeline → click → issue detail.
+
+    Pins the full navigation contract a user follows when they click
+    a ``#N`` issue affordance in the E2E run drawer:
+
+    1. GET /api/e2e-run-detail/{run_id}     → discover issue numbers
+    2. for each issue number with affordances, GET /api/issue-detail/{N}
+       → assert the click-through resolves to a payload with real events
+
+    Without the e2e-worktree fallback in get_issue_detail, step 2
+    returns ``events: []`` for ephemeral E2E issues whose orchestrator
+    activity lives only in the worktree timeline (the regression that
+    prompted this assertion). The drawer technically opens, but the
+    affordance is useless.
+
+    This is the "command pattern" alternative to the Playwright browser
+    test: it exercises the exact HTTP path the dashboard JS follows on
+    click, but without launching Chromium. Both layers should pass.
+    """
+    expected = json.loads((fixture / "expected.json").read_text())
+    run_id = expected["run_id"]
+
+    # Pick the first issue number that the matcher attached to any test row.
+    # Skip fixtures that have no agent activity (e.g. run_86 — pruned worktree).
+    click_through_targets: list[int] = []
+    for entry in expected["tests"]:
+        for n in entry.get("issue_numbers", []):
+            if n not in click_through_targets:
+                click_through_targets.append(n)
+    if not click_through_targets:
+        pytest.skip(f"Fixture {fixture.name} has no issue affordances to click")
+
+    repo_root, mock_orch = _stage_fixture_with_real_timeline_reader(fixture, tmp_path)
+
+    set_orchestrator(mock_orch)
+    try:
+        client = TestClient(app)
+
+        # Command 1: pull the run drawer payload (matches what
+        # showUnifiedRunView fetches in dashboard.js).
+        run_response = client.get(f"/api/e2e-run-detail/{run_id}")
+        assert run_response.status_code == 200
+        run_payload = run_response.json()
+
+        # Verify the run payload actually contains the affordances we
+        # plan to click — guards against the test silently passing if
+        # the matcher regresses.
+        rendered_issue_nums: set[int] = set()
+        for evt in run_payload.get("events", []):
+            for n in evt.get("issue_numbers") or []:
+                rendered_issue_nums.add(n)
+        for target in click_through_targets:
+            assert target in rendered_issue_nums, (
+                f"Run payload is missing issue {target}; the matcher dropped "
+                f"an affordance the click-through test was about to verify."
+            )
+
+        # Command 2: simulate clicking each affordance. The dashboard JS
+        # calls /api/issue-detail/{N}?view=user, which lands on the web
+        # app's get_issue_detail. That endpoint MUST surface real events
+        # for the issue — an empty payload means the drawer opens to a
+        # useless "no activity" view.
+        broken: list[str] = []
+        for issue_num in click_through_targets:
+            detail_response = client.get(
+                f"/api/issue-detail/{issue_num}", params={"view": "user"},
+            )
+            if detail_response.status_code != 200:
+                broken.append(
+                    f"  #{issue_num}: HTTP {detail_response.status_code}"
+                )
+                continue
+            detail = detail_response.json()
+            if detail.get("issue_number") != issue_num:
+                broken.append(
+                    f"  #{issue_num}: payload issue_number = "
+                    f"{detail.get('issue_number')!r}"
+                )
+                continue
+            events = detail.get("events") or []
+            if not events:
+                broken.append(
+                    f"  #{issue_num}: drawer opened but events=[]; "
+                    f"e2e-worktree fallback in get_issue_detail likely "
+                    f"missing. Click-through is useless for this issue."
+                )
+
+        assert not broken, (
+            f"Click-through navigation broken for {len(broken)} issue(s) in "
+            f"fixture {fixture.name}:\n" + "\n".join(broken)
+        )
+    finally:
+        set_orchestrator(None)
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    _discover_fixtures(),
+    ids=lambda f: f.name,
+)
+def test_fixture_contains_no_machine_specific_paths(fixture: Path) -> None:
+    """Standing guardrail: every committed fixture must be sanitized.
+
+    Walks the fixture's sqlite files and asserts none of them carry raw
+    ``/Users/<user>``, ``/private/tmp``, ``/private/var/folders``, or
+    ``e2e-<random-uuid>-worktrees`` patterns. The same check runs as a
+    hard guardrail at the end of ``scripts/snapshot_e2e_run.py``, but
+    pinning it here as well means a developer adding a fixture by hand
+    (or with a stale snapshot script) cannot bypass the contract.
+
+    If this fails, re-snapshot the fixture::
+
+        scripts/snapshot_e2e_run.py --run-id <id> --repo-root <path>
+
+    Or, if a new path family needs scrubbing, add a pattern to
+    ``_GENERIC_SANITIZATION_PATTERNS`` and ``_FORBIDDEN_FIXTURE_PATTERNS``
+    in ``scripts/snapshot_e2e_run.py`` and re-snapshot.
+    """
+    # Import lazily so this test does not require scripts/ to be on
+    # sys.path at collection time.
+    import importlib.util
+
+    script_path = (
+        Path(__file__).parent.parent.parent / "scripts" / "snapshot_e2e_run.py"
+    )
+    spec = importlib.util.spec_from_file_location("snapshot_e2e_run", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    problems = module.verify_fixture_clean(fixture)
+    assert not problems, (
+        f"Fixture {fixture.name} contains machine-specific data:\n"
+        + "\n".join(f"  - {p}" for p in problems)
     )

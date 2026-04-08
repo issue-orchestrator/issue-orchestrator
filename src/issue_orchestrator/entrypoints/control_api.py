@@ -4465,9 +4465,39 @@ def _assign_issue_to_window(
         return
 
 
+def _issues_visible_in_view(
+    agent_events: list[dict],
+    view: str,
+) -> set[int]:
+    """Return the set of issue numbers that have ≥1 event visible in ``view``.
+
+    An event is "visible" in a view if it has no ``views`` tag (legacy
+    events are visible everywhere) or its ``views`` tag contains the
+    requested view name.
+
+    Used by the matcher to skip attaching affordances for issues whose
+    only in-window activity would be filtered out by the issue-detail
+    drawer's view filter — clicking such an affordance opens an empty
+    drawer, which is broken UX. We render the affordance only when
+    clicking it would actually show something.
+    """
+    visible: set[int] = set()
+    for evt in agent_events:
+        issue_num = evt.get("issue_number")
+        if not isinstance(issue_num, int) or issue_num <= 0:
+            continue
+        if issue_num in visible:
+            continue
+        views = evt.get("views")
+        if views is None or (isinstance(views, list) and view in views):
+            visible.add(issue_num)
+    return visible
+
+
 def _attach_issue_numbers_to_test_windows(
     e2e_events: list[dict],
     agent_events: list[dict],
+    view: str = "user",
 ) -> list[dict]:
     """Attach issue numbers to E2E test events based on time-window matching.
 
@@ -4476,20 +4506,34 @@ def _attach_issue_numbers_to_test_windows(
     links that open the full dashboard issue detail view — no nesting,
     no special rendering, full convergence.
 
-    Important: the caller MUST pass the unfiltered agent events. View
-    filtering (``_filter_events_by_view``) drops debug-only events such as
-    ``claim.acquired``/``issue.labels_changed`` that are still required to
-    discover an issue's presence in a test window. Filtering before
-    matching silently loses issue links for any test whose only orchestrator
-    activity happens to be debug-tagged.
+    Two-stage filtering:
+
+    1. ``view`` is applied PER-ISSUE (not per-event) — an issue is
+       eligible for an affordance only if it has ≥1 event visible in
+       the requested view. This guarantees clicking the affordance opens
+       a non-empty drawer; without it, an issue whose only in-window
+       activity is debug-tagged would silently render an unclickable
+       (or worse, empty-on-click) affordance.
+
+    2. The PER-EVENT view filter is intentionally NOT applied to
+       ``agent_events`` before matching. ``_filter_events_by_view``
+       drops events such as ``claim.acquired``/``issue.labels_changed``
+       that are still required to discover an issue's presence in a
+       test window — pre-filtering them loses time-window coverage
+       for issues that DO have user-visible activity overall.
+
+    The caller MUST pass the unfiltered agent events.
     """
     if not agent_events:
         return e2e_events
 
+    visible_issues = _issues_visible_in_view(agent_events, view)
     windows = _build_test_windows(e2e_events)
     for agent_evt in agent_events:
         issue_num = agent_evt.get("issue_number")
         if not isinstance(issue_num, int) or issue_num <= 0:
+            continue
+        if issue_num not in visible_issues:
             continue
         _assign_issue_to_window(windows, agent_evt.get("timestamp", ""), issue_num)
 
@@ -4507,14 +4551,12 @@ def _filter_nest_and_project_agent_events(
     ``issue_numbers`` which the frontend renders as clickable links to
     the full dashboard issue detail view.
 
-    The ``view`` parameter is intentionally NOT applied to ``agent_events``
-    before matching: the matcher only uses ``(timestamp, issue_number)``
-    and never renders the underlying agent events. Pre-filtering by view
-    drops debug-tagged events that are often the only marker of an issue's
-    presence in a window, silently losing issue links.
+    The ``view`` parameter is forwarded to the matcher so that
+    affordances are only attached for issues that have ≥1 event visible
+    in the requested view — clicking such affordances always opens a
+    non-empty drawer.
     """
-    del view  # noqa: ARG001 — see docstring; matcher must not be view-filtered
-    return _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+    return _attach_issue_numbers_to_test_windows(e2e_events, agent_events, view=view)
 
 
 @control_app.get("/control/e2e/run/{run_id}/timeline")

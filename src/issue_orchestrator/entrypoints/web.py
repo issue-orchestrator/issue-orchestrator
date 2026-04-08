@@ -1783,15 +1783,59 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     return JSONResponse(payload)
 
 
+def _read_issue_timeline_with_e2e_fallback(
+    orchestrator: "Orchestrator", issue_number: int,
+):
+    """Read an issue's timeline, falling back to the e2e-worktree DB.
+
+    Issue affordances rendered in the E2E run drawer reference real GitHub
+    issue numbers (e.g. 5705) created by ephemeral test orchestrators that
+    write to ``<repo>/../<repo>-e2e-worktree/.../timeline.sqlite``. The
+    main orchestrator's ``timeline_reader`` only sees its own base repo
+    timeline, so without this fallback the issue-detail drawer opens to
+    an empty payload after the user clicks an E2E issue affordance.
+    """
+    from ..infra.e2e_worktree import get_e2e_worktree_path
+    from ..execution.timeline_store import SqliteTimelineStore
+    from ..timeline import TimelineStream
+
+    reader = orchestrator.deps.timeline_reader
+    stream = reader.read(issue_number, limit=2000)
+    if stream.events:
+        return stream
+
+    # Empty in the base repo — try the e2e-worktree timeline.
+    repo_root = orchestrator.config.repo_root
+    if repo_root is None:
+        return stream
+    wt_db = (
+        get_e2e_worktree_path(repo_root)
+        / ".issue-orchestrator" / "state" / "timeline.sqlite"
+    )
+    if not wt_db.exists():
+        return stream
+    try:
+        wt_store = SqliteTimelineStore(db_path=wt_db)
+        wt_records = wt_store.read(issue_number, limit=2000)
+    except Exception:
+        logger.debug(
+            "Could not read e2e-worktree timeline for issue %d from %s",
+            issue_number, wt_db, exc_info=True,
+        )
+        return stream
+    if not wt_records:
+        return stream
+    return TimelineStream.from_records(issue_number, wt_records)
+
+
 @app.get("/api/issue-detail/{issue_number}", response_model=IssueDetailPayload)
 async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetailPayload | JSONResponse:
     """Get an issue-detail payload for drawer rendering."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    reader = _orchestrator.deps.timeline_reader
     try:
-        stream = reader.read(issue_number, limit=2000)
+        stream = _read_issue_timeline_with_e2e_fallback(_orchestrator, issue_number)
     except RuntimeError as e:
         logger.error("Timeline read failed for issue %d: %s", issue_number, e)
         return JSONResponse(
@@ -1890,13 +1934,16 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     # The frontend renders these as clickable links to the full dashboard
     # issue detail view — no nesting, full convergence with the dashboard.
     #
-    # Pass the UNFILTERED agent_events to the matcher: it only uses
-    # (timestamp, issue_number) and never renders the events. Pre-filtering
-    # by view drops debug-tagged events that are often the only marker of
-    # an issue's presence in a window, silently losing issue links.
+    # Pass the UNFILTERED agent_events to the matcher; it applies view
+    # filtering PER-ISSUE (not per-event) so an issue gets an affordance
+    # only when clicking would actually open a non-empty drawer.
     from .control_api import _attach_issue_numbers_to_test_windows
 
-    events = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+    valid_views = {"user", "ops", "debug"}
+    matcher_view = view if view in valid_views else "user"
+    events = _attach_issue_numbers_to_test_windows(
+        e2e_events, agent_events, view=matcher_view,
+    )
 
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)

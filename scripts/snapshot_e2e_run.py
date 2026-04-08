@@ -16,11 +16,21 @@ Usage::
     .venv/bin/python scripts/snapshot_e2e_run.py --run-id 87 \
         --repo-root /path/to/checkout --output tests/fixtures/e2e_runs/run_87
 
-Sanitization: absolute filesystem paths in the captured rows are
-rewritten to ``<REPO_ROOT>`` placeholders, worker PIDs are zeroed, and
-log/artifact paths are dropped. Issue numbers, event names, timestamps
-and view tags are preserved verbatim — they are exactly what the
-integration test pins.
+Sanitization: every string nested inside captured ``data_json`` blobs
+goes through ``_sanitize_string`` which replaces:
+
+- the source repo_root            → ``<REPO_ROOT>``
+- the e2e-worktree sibling dir    → ``<E2E_WORKTREE>``
+- per-user home directories       → ``<HOME>``
+- macOS / Linux pytest tmp paths  → ``<TMP>``
+- random per-run UUID prefixes in e2e test worktree dirs → ``<UUID>``
+
+Issue numbers, event names, timestamps and view tags are preserved
+verbatim — they are exactly what the integration test pins. After
+capture, ``verify_fixture_clean`` walks the resulting sqlite files
+looking for any of the forbidden raw patterns and aborts if anything
+slipped through, so a malformed sanitizer cannot silently ship
+machine-specific data.
 """
 
 from __future__ import annotations
@@ -36,6 +46,41 @@ from typing import Any
 
 
 REPO_ROOT_PLACEHOLDER = "<REPO_ROOT>"
+E2E_WORKTREE_PLACEHOLDER = "<E2E_WORKTREE>"
+HOME_PLACEHOLDER = "<HOME>"
+TMP_PLACEHOLDER = "<TMP>"
+UUID_PLACEHOLDER = "<UUID>"
+
+
+# Regex patterns applied to every string value inside captured data_json blobs.
+# Order matters: most specific first so the more general patterns do not
+# clobber the specific replacements. The committed fixture must contain none
+# of the original (unscrubbed) forms — the cleanliness guardrail in
+# tests/integration/test_e2e_timeline_real_fixture.py enforces this.
+_GENERIC_SANITIZATION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # macOS pytest tmpdir: /private/var/folders/<a>/<b>/T  → <TMP>
+    (re.compile(r"/private/var/folders/[^/\s\"']+/[^/\s\"']+/T"), TMP_PLACEHOLDER),
+    # Linux pytest tmpdir: /var/folders/<a>/<b>/T          → <TMP>
+    (re.compile(r"/var/folders/[^/\s\"']+/[^/\s\"']+/T"), TMP_PLACEHOLDER),
+    # macOS /private/tmp                                    → <TMP>
+    (re.compile(r"/private/tmp"), TMP_PLACEHOLDER),
+    # Bare /tmp (only when not part of another word like /tmpfile)
+    (re.compile(r"(?<![A-Za-z0-9_])/tmp(?=[/\"'])"), TMP_PLACEHOLDER),
+    # Per-user home directories: /Users/<user>              → <HOME>
+    (re.compile(r"/Users/[^/\s\"']+"), HOME_PLACEHOLDER),
+    # /home/<user>                                          → <HOME>
+    (re.compile(r"/home/[^/\s\"']+"), HOME_PLACEHOLDER),
+    # Random UUID prefix in e2e test worktree dirs.
+    # Captures patterns like "e2e-d6c12492-worktrees" or
+    # "e2e-d6c12492abcdef01-worktrees" — ANY hex blob 6+ chars between
+    # "e2e-" and "-worktrees" is a per-run random id.
+    (re.compile(r"e2e-[0-9a-f]{6,}-worktrees"), f"e2e-{UUID_PLACEHOLDER}-worktrees"),
+    # Random session id segments: 20260408-035628Z__coding-1 is fine
+    # (timestamp + role) but completely opaque uuid-only segment names
+    # like /sessions/abc123def456.../ would be machine-specific. We do not
+    # currently scrub these because none have appeared in real captures;
+    # add a pattern here if one shows up.
+)
 
 
 def _default_repo_root() -> Path:
@@ -47,21 +92,75 @@ def _default_repo_root() -> Path:
     raise RuntimeError(f"Could not find repo root from {here}")
 
 
-def _sanitize_path(value: str | None, repo_root: Path) -> str | None:
-    """Replace absolute repo paths with the placeholder."""
-    if not value or not isinstance(value, str):
-        return value
-    return value.replace(str(repo_root), REPO_ROOT_PLACEHOLDER)
+def _sanitize_string(value: str, repo_root: Path) -> str:
+    """Replace machine-specific paths in a string with stable placeholders.
+
+    Specific paths (the source repo_root and its e2e-worktree sibling) are
+    replaced first so the generic regexes do not clobber them.
+    """
+    s = value
+    s = s.replace(str(repo_root), REPO_ROOT_PLACEHOLDER)
+    wt = repo_root.parent / f"{repo_root.name}-e2e-worktree"
+    s = s.replace(str(wt), E2E_WORKTREE_PLACEHOLDER)
+    for pattern, replacement in _GENERIC_SANITIZATION_PATTERNS:
+        s = pattern.sub(replacement, s)
+    return s
+
+
+def _walk_and_sanitize(obj: Any, repo_root: Path) -> Any:
+    """Recursively walk a parsed JSON value, sanitizing every string."""
+    if isinstance(obj, str):
+        return _sanitize_string(obj, repo_root)
+    if isinstance(obj, list):
+        return [_walk_and_sanitize(item, repo_root) for item in obj]
+    if isinstance(obj, dict):
+        return {key: _walk_and_sanitize(value, repo_root) for key, value in obj.items()}
+    return obj
 
 
 def _sanitize_data_blob(blob: str, repo_root: Path) -> str:
-    """Sanitize an opaque JSON data_json blob.
+    """Parse a data_json blob, scrub every nested string, and re-serialize.
 
-    We do not parse and round-trip the JSON because the integration test
-    cares about exact-match contracts. Instead we do a string substitution
-    of any embedded absolute paths.
+    We round-trip via json so embedded paths are scrubbed regardless of
+    how deeply they are nested. If the blob is not valid JSON we fall
+    back to a plain string substitution so we still strip something.
     """
-    return blob.replace(str(repo_root), REPO_ROOT_PLACEHOLDER)
+    try:
+        data = json.loads(blob)
+    except (ValueError, TypeError):
+        return _sanitize_string(blob, repo_root)
+    sanitized = _walk_and_sanitize(data, repo_root)
+    return json.dumps(sanitized, separators=(",", ":"))
+
+
+# Patterns that MUST NOT appear in any committed fixture. Used both by
+# verify_fixture_clean below and by the standing guardrail unit test.
+_FORBIDDEN_FIXTURE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"/Users/[A-Za-z0-9._-]+"), "/Users/<user>"),
+    (re.compile(r"/home/[A-Za-z0-9._-]+"), "/home/<user>"),
+    (re.compile(r"/private/tmp[/\"']"), "/private/tmp"),
+    (re.compile(r"/private/var/folders"), "/private/var/folders"),
+    (re.compile(r"e2e-[0-9a-f]{6,}-worktrees"), "e2e-<random-uuid>-worktrees"),
+)
+
+
+def verify_fixture_clean(fixture_dir: Path) -> list[str]:
+    """Walk every sqlite file in ``fixture_dir`` looking for raw machine paths.
+
+    Returns a list of human-readable problem descriptions; an empty list
+    means the fixture passes the cleanliness contract. Inspects both the
+    raw on-disk bytes (catches anything outside data_json) and each parsed
+    data_json blob (catches structured leaks).
+    """
+    problems: list[str] = []
+    for db_file in sorted(fixture_dir.glob("*.sqlite")):
+        raw = db_file.read_bytes()
+        for pattern, label in _FORBIDDEN_FIXTURE_PATTERNS:
+            if pattern.search(raw.decode("utf-8", errors="ignore")):
+                problems.append(
+                    f"{db_file.name}: contains machine-specific pattern matching '{label}'"
+                )
+    return problems
 
 
 def _copy_e2e_run_row(
@@ -170,12 +269,19 @@ def _copy_timeline_rows(
         col_names = [c[0] for c in src.execute("SELECT * FROM timeline_events LIMIT 0").description]
         col_names_no_seq = [c for c in col_names if c != "sequence"]
         placeholders = ", ".join("?" for _ in col_names_no_seq)
+        # Columns whose value is a free-form string that may carry an
+        # absolute filesystem path. We treat them as opaque strings and
+        # run them through _sanitize_string. data_json is special-cased
+        # because it is a JSON blob that needs structural walking.
+        path_carrying_columns = {"run_dir", "instance_id"}
         for r in rows:
             values = []
             for c in col_names_no_seq:
                 v = r[c]
                 if c == "data_json" and isinstance(v, str):
                     v = _sanitize_data_blob(v, repo_root)
+                elif c in path_carrying_columns and isinstance(v, str) and v:
+                    v = _sanitize_string(v, repo_root)
                 values.append(v)
             dst.execute(
                 f"INSERT INTO timeline_events ({', '.join(col_names_no_seq)}) VALUES ({placeholders})",
@@ -319,6 +425,20 @@ def snapshot_run(repo_root: Path, run_id: int, output_dir: Path) -> None:
     )
     matched_tests = sum(1 for t in expected["tests"] if t["issue_numbers"])
     print(f"  → {matched_tests}/{expected['test_count']} test rows have issue numbers")
+
+    # Hard guardrail: refuse to ship a fixture that still contains raw
+    # machine-specific paths, even if every other step succeeded.
+    problems = verify_fixture_clean(output_dir)
+    if problems:
+        print("ERROR: fixture failed cleanliness check:")
+        for p in problems:
+            print(f"  {p}")
+        raise SystemExit(
+            "Sanitization is incomplete. Add a pattern to "
+            "_GENERIC_SANITIZATION_PATTERNS / _FORBIDDEN_FIXTURE_PATTERNS "
+            "and re-run."
+        )
+    print("  cleanliness check: OK")
 
 
 def main() -> int:
