@@ -21,6 +21,7 @@ single ``snapshot_e2e_run.py`` capture covers both layers.
 
 from __future__ import annotations
 
+import json
 import shutil
 import socket
 import time
@@ -56,16 +57,127 @@ agents:
     prompt: "test.md"
 """
 
+# Recognizable text written into the synthetic terminal recording so the
+# Playwright test can prove the session-log endpoint returned real content.
+_SYNTHETIC_SESSION_OUTPUT = "PLAYWRIGHT-FIXTURE-SESSION-STARTED"
+_SYNTHETIC_SESSION_OUTPUT_FOLLOWUP = "PLAYWRIGHT-FIXTURE-AGENT-READY"
+
+
+def _materialize_synthetic_session_dir(session_dir: Path) -> None:
+    """Create a real run_dir with a non-empty terminal-recording.jsonl.
+
+    The session-log action decorator (``_preferred_run_scoped_session_action``
+    in web.py) refuses to emit an ``open_agent_log`` affordance unless the
+    event's ``run_dir`` actually exists on disk. The session-replay endpoint
+    additionally requires ``terminal-recording.jsonl`` to be non-empty. This
+    helper synthesizes the minimum layout that both checks accept.
+
+    The file contains:
+      - one ``resize`` event (provides initial_geometry)
+      - two ``output`` events whose base64 text is chosen to be searchable
+        from the Playwright test via ``sessionReplayState.events``.
+    """
+    import base64
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+    recording = session_dir / "terminal-recording.jsonl"
+    events = [
+        {
+            "event_type": "resize",
+            "offset_ms": 0,
+            "rows": 24,
+            "cols": 80,
+        },
+        {
+            "event_type": "output",
+            "offset_ms": 100,
+            "data_b64": base64.b64encode(
+                (_SYNTHETIC_SESSION_OUTPUT + "\r\n").encode("utf-8"),
+            ).decode("ascii"),
+        },
+        {
+            "event_type": "output",
+            "offset_ms": 250,
+            "data_b64": base64.b64encode(
+                (_SYNTHETIC_SESSION_OUTPUT_FOLLOWUP + "\r\n").encode("utf-8"),
+            ).decode("ascii"),
+        },
+    ]
+    recording.write_text(
+        "\n".join(json.dumps(e, sort_keys=True) for e in events) + "\n",
+    )
+
+
+def _wire_event_to_session_dir(
+    worktree_db: Path,
+    issue_number: int,
+    event_name: str,
+    session_dir: Path,
+) -> None:
+    """Point one worktree-timeline event at a real, on-disk run_dir.
+
+    Updates both the ``run_dir`` column and the ``data_json.run_dir`` field
+    of a single matching row so the action decorator's path-exists check
+    succeeds and a ``Session Recording`` button appears in the issue-detail
+    drawer for that event.
+
+    Raises if the target event is not found — silent misses would leave
+    the Playwright test asserting against an empty state.
+    """
+    import sqlite3
+
+    run_dir_str = str(session_dir)
+    with sqlite3.connect(str(worktree_db)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT sequence, data_json FROM timeline_events
+            WHERE issue_number = ? AND event = ? AND run_dir != ''
+            ORDER BY sequence ASC LIMIT 1
+            """,
+            (issue_number, event_name),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"Cannot wire session dir: no {event_name} event with a "
+                f"non-empty run_dir found for issue {issue_number}"
+            )
+        data = json.loads(row["data_json"]) if row["data_json"] else {}
+        if isinstance(data, dict):
+            data["run_dir"] = run_dir_str
+            for key in (
+                "worktree_path",
+                "session_prompt_path",
+                "completion_path_absolute",
+            ):
+                if key in data and isinstance(data[key], str):
+                    if key == "worktree_path":
+                        data[key] = str(session_dir.parent)
+                    else:
+                        data[key] = run_dir_str + "/" + Path(data[key]).name
+        conn.execute(
+            "UPDATE timeline_events SET run_dir = ?, data_json = ? WHERE sequence = ?",
+            (run_dir_str, json.dumps(data), row["sequence"]),
+        )
+        conn.commit()
+
 
 def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     """Mirror the integration-test fixture stager so the live endpoint
     code path runs unmodified against on-disk data.
 
+    In addition to the base fixture copy, this stager materializes ONE
+    real session run_dir at ``tmp_path/session1`` containing a
+    synthetic ``terminal-recording.jsonl``, and rewires a specific
+    issue-5705 event to reference it. This lets the Playwright test
+    verify the full click-through from timeline row → issue detail
+    drawer → session recording modal → terminal content. Without this
+    step the fixture has no session logs to view.
+
     Also writes a minimal default.yaml so the run-details endpoint
-    (which the dashboard fetches in parallel with the timeline endpoint
-    when opening the run drawer) can resolve a config without crashing.
-    The control endpoints we actually care about — the timeline + the
-    issue-detail drawer — do not depend on this config.
+    (which the dashboard fetches in parallel with the timeline
+    endpoint when opening the run drawer) can resolve a config without
+    crashing.
     """
     repo_root = tmp_path / "repo"
     state_dir = repo_root / ".issue-orchestrator" / "state"
@@ -79,6 +191,19 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     shutil.copy(fixture / "base_timeline.sqlite", state_dir / "timeline.sqlite")
     shutil.copy(fixture / "worktree_timeline.sqlite", wt_state / "timeline.sqlite")
     (config_dir / "default.yaml").write_text(_MINIMAL_CONFIG_YAML)
+
+    # Materialize a real session run_dir and wire issue 5705's
+    # agent.coding_started event to point at it. The run_dir must
+    # contain a non-empty terminal-recording.jsonl for both the action
+    # decorator and the session-replay endpoint to surface real data.
+    session_dir = tmp_path / "session1"
+    _materialize_synthetic_session_dir(session_dir)
+    _wire_event_to_session_dir(
+        wt_state / "timeline.sqlite",
+        issue_number=5705,
+        event_name="agent.coding_started",
+        session_dir=session_dir,
+    )
     return repo_root
 
 
@@ -311,6 +436,117 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     )
     assert "Failed to load" not in status_text, (
         f"drawer showing failure state: {status_text!r}"
+    )
+
+    # --- Session Recording click-through ---
+    # The fixture stager wired one agent.coding_started event for
+    # issue 5705 at a real tmp_path run_dir with a synthetic
+    # terminal-recording.jsonl. The action decorator therefore emits
+    # a "Session Recording" button on that event; click it and verify
+    # the session-replay modal opens AND loads real terminal content
+    # from the endpoint.
+    #
+    # Proving click-through is not enough: the modal title is set
+    # optimistically before the fetch completes, same as the issue
+    # detail drawer. We additionally assert
+    #   (a) #sessionReplayPath carries the expected run_dir
+    #   (b) sessionReplayState has > 0 events
+    #   (c) the decoded events contain our synthetic recognizable text
+    # so a future regression in the recording endpoint, the PTY event
+    # decoding, or the replay initialization cannot silently pass.
+
+    # Close the still-open e2e run drawer first. Both drawers are
+    # mounted at once and the e2e modal overlay sits above the issue
+    # detail drawer in the test viewport, so the Session Recording
+    # button is not reachable via a normal click without dismissing
+    # the e2e modal.
+    page.evaluate("closeE2EDiagnosisModal && closeE2EDiagnosisModal()")
+    expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(0, timeout=5000)
+
+    session_recording_btn = journey.locator(
+        ".timeline-action-btn", has_text="Session Recording"
+    ).first
+    expect(session_recording_btn).to_be_visible(timeout=5000)
+    session_recording_btn.scroll_into_view_if_needed()
+    session_recording_btn.click()
+
+    modal_overlay = page.locator("#modalOverlay.visible")
+    expect(modal_overlay).to_be_visible(timeout=5000)
+
+    session_replay_path = page.locator("#sessionReplayPath")
+    expect(session_replay_path).to_be_visible(timeout=5000)
+    session_path_text = session_replay_path.text_content() or ""
+    assert "session1" in session_path_text and "terminal-recording.jsonl" in session_path_text, (
+        f"session replay path does not reference the synthetic recording: "
+        f"{session_path_text!r}"
+    )
+
+    # The progress readout shows "N / M events" once replay has
+    # rendered the full stream. Poll until N > 0 so we're not racing
+    # the initial fetch.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        text = page.locator("#sessionReplayProgressText").text_content() or ""
+        if "/" in text and not text.startswith("0 /"):
+            break
+        page.wait_for_timeout(100)
+    progress_text = page.locator("#sessionReplayProgressText").text_content() or ""
+    assert "/" in progress_text, (
+        f"session replay progress text not populated: {progress_text!r}"
+    )
+    assert not progress_text.startswith("0 /"), (
+        f"session replay loaded zero events — endpoint returned empty "
+        f"content: {progress_text!r}"
+    )
+
+    # Decode the raw events from sessionReplayState and verify the
+    # synthetic output text round-tripped from the fixture through
+    # the endpoint and back to the browser. This is what "reasonable
+    # data" means for a session log in this test.
+    #
+    # ``sessionReplayState`` is declared with ``let`` at script scope
+    # so it is NOT a property of ``window``; accessing it bare inside
+    # the eval expression resolves the script-scoped binding.
+    decoded_output = page.evaluate(
+        """
+        (() => {
+            try {
+                if (typeof sessionReplayState === 'undefined' || !sessionReplayState) {
+                    return null;
+                }
+                const events = sessionReplayState.events || [];
+                const chunks = [];
+                for (const e of events) {
+                    if (e && e.event_type === 'output' && e.data_b64) {
+                        try {
+                            chunks.push(atob(e.data_b64));
+                        } catch (err) {
+                            chunks.push(`<decode-error: ${err.message}>`);
+                        }
+                    }
+                }
+                return { count: events.length, text: chunks.join('') };
+            } catch (err) {
+                return { error: String(err) };
+            }
+        })()
+        """
+    )
+    assert decoded_output is not None, (
+        "sessionReplayState is not initialized after clicking Session Recording"
+    )
+    assert decoded_output.get("count", 0) >= 2, (
+        f"session replay loaded fewer events than the fixture wrote "
+        f"(expected >= 2 from 1 resize + 2 output, got "
+        f"{decoded_output.get('count')})"
+    )
+    assert _SYNTHETIC_SESSION_OUTPUT in decoded_output.get("text", ""), (
+        f"synthetic session text {_SYNTHETIC_SESSION_OUTPUT!r} not found in "
+        f"decoded terminal output: {decoded_output.get('text')!r}"
+    )
+    assert _SYNTHETIC_SESSION_OUTPUT_FOLLOWUP in decoded_output.get("text", ""), (
+        f"follow-up synthetic text {_SYNTHETIC_SESSION_OUTPUT_FOLLOWUP!r} "
+        f"not found in decoded terminal output: {decoded_output.get('text')!r}"
     )
 
     assert errors == [], f"Unexpected page errors: {errors}"
