@@ -1983,7 +1983,7 @@ async def get_e2e_issue_detail(
 
     try:
         wt_store = SqliteTimelineStore(db_path=wt_timeline)
-        records = wt_store.read(issue_number, limit=2000)
+        all_records = wt_store.read(issue_number, limit=2000)
     except Exception as e:
         logger.exception(
             "Failed to read e2e-worktree timeline for run %d issue %d",
@@ -1994,13 +1994,30 @@ async def get_e2e_issue_detail(
             status_code=500,
         )
 
+    # Scope the records to this run's time window. The e2e-worktree
+    # timeline is intentionally preserved across runs for history
+    # (see issue_orchestrator.infra.e2e_worktree), so a reused issue
+    # number would otherwise leak events from later runs into an
+    # earlier run's drawer. The matcher that produced the affordance
+    # used the same window, so re-applying it here keeps the two
+    # owners in agreement about what "this run's issue detail" means.
+    window_start = run.started_at
+    # Fall back to a sentinel far-future timestamp for runs that are
+    # still in progress (finished_at is None) so live runs still show
+    # their most-recent activity.
+    window_end = run.finished_at or "9999-12-31T23:59:59Z"
+    records = [
+        r for r in all_records
+        if window_start <= r.timestamp <= window_end
+    ]
+
     if not records:
         return JSONResponse(
             {
                 "error": "not_found",
                 "detail": (
                     f"No events for issue {issue_number} in E2E run {run_id} "
-                    f"worktree timeline"
+                    f"worktree timeline (window {window_start} → {window_end})"
                 ),
             },
             status_code=404,

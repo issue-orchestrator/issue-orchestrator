@@ -865,6 +865,130 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_e2e_issue_detail_scopes_events_to_run_window(self, tmp_path):
+        """Cross-run leakage regression.
+
+        The e2e-worktree timeline is intentionally preserved across runs
+        for history. If the same issue number is used in two different
+        runs, the click-through drawer for run 1 must NOT show events
+        from run 2. The endpoint must scope ``wt_store.read(issue_number)``
+        output to the run's ``started_at`` / ``finished_at`` window.
+
+        Stages two e2e runs and writes two agent events for issue 42 —
+        one inside run 1's window, one inside run 2's window — then
+        asserts the click-through for each run returns only its own
+        events.
+        """
+        import sqlite3
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+
+        # Two runs with deterministic, non-overlapping windows.
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_1 = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_1, status="failed", duration_seconds=60.0)
+        run_2 = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch-2",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_2, status="failed", duration_seconds=60.0)
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                ("2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", run_1),
+            )
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                ("2026-01-01T01:00:00Z", "2026-01-01T01:05:00Z", run_2),
+            )
+
+        # Two events for issue 42, one in each run's window. Both have
+        # the semantic fields required by _retain_semantic_timeline_events.
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(42).to_store_key(),
+            TimelineRecord(
+                event_id="run1-evt", timestamp="2026-01-01T00:02:30Z",
+                event="session.started",
+                data={
+                    "run_dir": "/tmp/run1",
+                    "views": ["user", "ops", "debug"],
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "coding",
+                    "timeline_schema_version": 4,
+                    "narrative": "Run 1 session",
+                },
+                source_event="session.started",
+            ),
+        )
+        wt_store.append(
+            TimelineKey.for_issue(42).to_store_key(),
+            TimelineRecord(
+                event_id="run2-evt", timestamp="2026-01-01T01:02:30Z",
+                event="session.started",
+                data={
+                    "run_dir": "/tmp/run2",
+                    "views": ["user", "ops", "debug"],
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "coding",
+                    "timeline_schema_version": 4,
+                    "narrative": "Run 2 session",
+                },
+                source_event="session.started",
+            ),
+        )
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.deps.timeline_store = SqliteTimelineStore(
+            db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+
+            # Run 1 click-through must see ONLY run 1's event.
+            r1 = client.get(f"/api/e2e-run/{run_1}/issue-detail/42?view=debug")
+            assert r1.status_code == 200, r1.text
+            r1_ids = {e.get("event_id") for e in (r1.json().get("events") or [])}
+            assert "run1-evt" in r1_ids, (
+                f"run 1 event missing from run 1 drawer: ids={r1_ids}"
+            )
+            assert "run2-evt" not in r1_ids, (
+                f"run 1 drawer LEAKED run 2 event (cross-run contamination): "
+                f"ids={r1_ids}"
+            )
+
+            # Run 2 click-through must see ONLY run 2's event.
+            r2 = client.get(f"/api/e2e-run/{run_2}/issue-detail/42?view=debug")
+            assert r2.status_code == 200, r2.text
+            r2_ids = {e.get("event_id") for e in (r2.json().get("events") or [])}
+            assert "run2-evt" in r2_ids, (
+                f"run 2 event missing from run 2 drawer: ids={r2_ids}"
+            )
+            assert "run1-evt" not in r2_ids, (
+                f"run 2 drawer LEAKED run 1 event (cross-run contamination): "
+                f"ids={r2_ids}"
+            )
+        finally:
+            set_orchestrator(None)
+
     def test_web_endpoint_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
         """Full /api/e2e-run-detail/{id} repro through the worktree-fallback route.
 
