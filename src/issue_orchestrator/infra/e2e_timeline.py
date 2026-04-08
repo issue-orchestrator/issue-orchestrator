@@ -30,7 +30,7 @@ def read_orchestrator_events_by_window(
 
         rows = conn.execute(
             """
-            SELECT event_id, source_event, timestamp, event, data_json
+            SELECT issue_number, event_id, source_event, timestamp, event, data_json
             FROM timeline_events
             WHERE issue_number > 0
               AND timestamp >= ? AND timestamp <= ?
@@ -44,10 +44,15 @@ def read_orchestrator_events_by_window(
         logger.debug("Could not read timeline from %s", timeline_db_path, exc_info=True)
         return []
 
+    from collections import defaultdict
+
     from ..ports.timeline_store import TimelineRecord
     from ..timeline import TimelineStream
 
-    records = []
+    # Group records by issue_number so each event keeps its real identity.
+    # Passing a single placeholder issue_number to TimelineStream.from_records
+    # would lose per-issue identity and break downstream window matching.
+    by_issue: dict[int, list[TimelineRecord]] = defaultdict(list)
     for row in rows:
         data_json = row["data_json"] or "{}"
         try:
@@ -56,7 +61,8 @@ def read_orchestrator_events_by_window(
             data = {}
         if not isinstance(data, dict):
             data = {}
-        records.append(
+        issue_num = int(row["issue_number"])
+        by_issue[issue_num].append(
             TimelineRecord(
                 event_id=str(row["event_id"]),
                 timestamp=str(row["timestamp"]),
@@ -66,8 +72,14 @@ def read_orchestrator_events_by_window(
             )
         )
 
-    if not records:
+    if not by_issue:
         return []
 
-    stream = TimelineStream.from_records(issue_number=0, records=records)
-    return [evt.to_dict() for evt in stream.events]
+    all_events: list[dict] = []
+    for issue_num, records in by_issue.items():
+        stream = TimelineStream.from_records(issue_num, records)
+        all_events.extend(evt.to_dict() for evt in stream.events)
+
+    # Restore chronological order across issues
+    all_events.sort(key=lambda e: e.get("timestamp", ""))
+    return all_events
