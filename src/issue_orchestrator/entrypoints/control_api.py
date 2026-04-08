@@ -4433,11 +4433,11 @@ def _build_test_windows(
             continue
         if name == "e2e.test_started":
             started_map[nodeid] = (evt["timestamp"], evt)
-            evt.setdefault("issue_numbers", [])
+            evt.setdefault("issue_affordances", [])
         elif name == "e2e.test_completed" and nodeid in started_map:
             start_ts, started_dict = started_map.pop(nodeid)
             windows.append((start_ts, evt["timestamp"], started_dict))
-            evt.setdefault("issue_numbers", started_dict["issue_numbers"])
+            evt.setdefault("issue_affordances", started_dict["issue_affordances"])
     # Any test_started still sitting in started_map is in-progress: treat it
     # as an open-ended window so active agent activity still attaches.
     for start_ts, started_dict in started_map.values():
@@ -4449,8 +4449,13 @@ def _assign_issue_to_window(
     windows: list[tuple[str, str | None, dict]],
     ts: str,
     issue_num: int,
+    run_id: int,
 ) -> None:
-    """Append ``issue_num`` to the first window that contains ``ts``.
+    """Append an affordance for ``issue_num`` to the first window containing ``ts``.
+
+    Each affordance is a dict carrying the run_id so the frontend can
+    route the click to the explicit e2e issue-detail endpoint without
+    needing a base-repo fallback.
 
     A window with ``end_ts is None`` is still in progress and matches any
     timestamp at or after its ``start_ts``.
@@ -4460,8 +4465,9 @@ def _assign_issue_to_window(
             continue
         if end_ts is not None and ts > end_ts:
             continue
-        if issue_num not in parent_evt["issue_numbers"]:
-            parent_evt["issue_numbers"].append(issue_num)
+        affordances = parent_evt["issue_affordances"]
+        if not any(a["issue_number"] == issue_num for a in affordances):
+            affordances.append({"issue_number": issue_num, "run_id": run_id})
         return
 
 
@@ -4497,14 +4503,16 @@ def _issues_visible_in_view(
 def _attach_issue_numbers_to_test_windows(
     e2e_events: list[dict],
     agent_events: list[dict],
+    run_id: int,
     view: str = "user",
 ) -> list[dict]:
-    """Attach issue numbers to E2E test events based on time-window matching.
+    """Attach issue affordances to E2E test events based on time-window matching.
 
     For each test_started/test_completed pair, find which issues had agent
-    activity during that window. The frontend renders these as clickable
-    links that open the full dashboard issue detail view — no nesting,
-    no special rendering, full convergence.
+    activity during that window. Each attached affordance is a structured
+    dict ``{"issue_number": N, "run_id": run_id}`` so the frontend can
+    route the click directly to the explicit e2e issue-detail endpoint
+    without the server needing to guess which timeline to read from.
 
     Two-stage filtering:
 
@@ -4535,7 +4543,9 @@ def _attach_issue_numbers_to_test_windows(
             continue
         if issue_num not in visible_issues:
             continue
-        _assign_issue_to_window(windows, agent_evt.get("timestamp", ""), issue_num)
+        _assign_issue_to_window(
+            windows, agent_evt.get("timestamp", ""), issue_num, run_id,
+        )
 
     return e2e_events
 
@@ -4544,19 +4554,23 @@ def _filter_nest_and_project_agent_events(
     e2e_events: list[dict],
     agent_events: list[dict],
     view: str,
+    run_id: int,
 ) -> list[dict]:
-    """Annotate test events with issue numbers from agent activity windows.
+    """Annotate test events with issue affordances from agent activity windows.
 
     Replaces the old nesting approach. Each test event now carries
-    ``issue_numbers`` which the frontend renders as clickable links to
-    the full dashboard issue detail view.
+    ``issue_affordances``, a list of ``{"issue_number", "run_id"}`` dicts
+    which the frontend renders as clickable links routed to the explicit
+    e2e issue-detail endpoint.
 
     The ``view`` parameter is forwarded to the matcher so that
     affordances are only attached for issues that have ≥1 event visible
     in the requested view — clicking such affordances always opens a
     non-empty drawer.
     """
-    return _attach_issue_numbers_to_test_windows(e2e_events, agent_events, view=view)
+    return _attach_issue_numbers_to_test_windows(
+        e2e_events, agent_events, run_id=run_id, view=view,
+    )
 
 
 @control_app.get("/control/e2e/run/{run_id}/timeline")
@@ -4628,7 +4642,9 @@ async def e2e_run_timeline_endpoint(
         valid_views = {"user", "ops", "debug"}
         if view not in valid_views:
             view = "user"
-        events = _filter_nest_and_project_agent_events(e2e_events, agent_events, view)
+        events = _filter_nest_and_project_agent_events(
+            e2e_events, agent_events, view, run_id=run_id,
+        )
         phase_toc = _build_phase_toc(events)
         cycles = _build_timeline_cycles(events)
 

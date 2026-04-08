@@ -8,43 +8,43 @@
   "tests": [
     {
       "nodeid": "tests/e2e/test_claim_coordination.py::TestClaimCoordination::test_only_one_orchestrator_claims_issue",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_claim_coordination.py::TestClaimTakeover::test_second_orchestrator_claims_after_first_crashes",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_claim_coordination.py::TestNoDuplicateSessions::test_claim_prevents_duplicate_sessions",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_concurrent_issues_seen_in_snapshots",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_concurrent_sessions_start",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_pr_created_for_issue",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_review_outcome_for_issue",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_full_pipeline.py::TestEdgeCases::test_orchestrator_handles_no_matching_issues",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_inflight_refresh_discovers_issue.py::test_inflight_refresh_discovers_issue",
-      "issue_numbers": []
+      "issue_affordances": []
     },
     {
       "nodeid": "tests/e2e/test_issue_4057_production_flow.py::test_4057_production_real_agents_publish_gate_and_diagnostics",
-      "issue_numbers": []
+      "issue_affordances": []
     }
   ]
 }

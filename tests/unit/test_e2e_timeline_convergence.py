@@ -590,17 +590,26 @@ class TestOrchestratorWindowExcludesE2EEvents:
             # during its window.
         ]
 
-        result = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+        result = _attach_issue_numbers_to_test_windows(
+            e2e_events, agent_events, run_id=42,
+        )
+
+        def _nums(evt):
+            return sorted(a["issue_number"] for a in evt.get("issue_affordances") or [])
 
         test_a_started = result[0]
         test_a_completed = result[1]
         test_b_started = result[2]
         # test_a window covers issues 5677 and 5678 — both started during it.
-        assert sorted(test_a_started["issue_numbers"]) == [5677, 5678]
-        assert sorted(test_a_completed["issue_numbers"]) == [5677, 5678]
+        assert _nums(test_a_started) == [5677, 5678]
+        assert _nums(test_a_completed) == [5677, 5678]
         # test_b window is open-ended; the out-of-window 5679 (00:02:00)
         # falls inside test_b's start (00:01:00) so it attaches to test_b.
-        assert test_b_started["issue_numbers"] == [5679]
+        assert _nums(test_b_started) == [5679]
+        # Every affordance carries the run_id passed to the matcher.
+        for evt in result:
+            for a in evt.get("issue_affordances") or []:
+                assert a["run_id"] == 42
 
 
 class TestE2ERunDetailEndpoint:
@@ -671,13 +680,12 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_test_events_carry_issue_numbers_for_navigation(self):
-        """Test events expose issue_numbers for the frontend to render as links.
+    def test_test_events_carry_issue_affordances_for_navigation(self):
+        """Test events expose issue_affordances for the frontend to render as links.
 
-        New architecture: instead of nesting agent events as children,
-        each test event carries the issue numbers it operated on. The
-        frontend renders these as clickable links to the full dashboard
-        issue detail view.
+        Each affordance is a ``{"issue_number", "run_id"}`` dict; the
+        frontend uses the run_id to route the click directly to the
+        explicit e2e issue-detail endpoint.
         """
         from issue_orchestrator.entrypoints.web import set_orchestrator
 
@@ -713,10 +721,14 @@ class TestE2ERunDetailEndpoint:
             events = payload.get("events", [])
             test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
             assert test_started is not None
-            assert test_started.get("issue_numbers") == [42]
+            assert test_started.get("issue_affordances") == [
+                {"issue_number": 42, "run_id": 10},
+            ]
             test_completed = next((e for e in events if e.get("event") == "e2e.test_completed"), None)
             assert test_completed is not None
-            assert test_completed.get("issue_numbers") == [42]
+            assert test_completed.get("issue_affordances") == [
+                {"issue_number": 42, "run_id": 10},
+            ]
         finally:
             set_orchestrator(None)
 
@@ -818,6 +830,11 @@ class TestE2ERunDetailEndpoint:
         try:
             client = TestClient(app)
 
+            def _nums(evt):
+                return sorted(
+                    a["issue_number"] for a in evt.get("issue_affordances") or []
+                )
+
             # User view: 5705 attaches (has user-tagged event), 5707 does not.
             user_response = client.get(
                 f"/api/e2e-run-detail/{run_id}", params={"view": "user"},
@@ -827,9 +844,9 @@ class TestE2ERunDetailEndpoint:
                 e for e in user_response.json()["events"]
                 if e.get("event") == "e2e.test_started"
             )
-            assert sorted(user_test_started.get("issue_numbers") or []) == [5705], (
+            assert _nums(user_test_started) == [5705], (
                 "User view must show 5705 (user-tagged) and hide 5707 "
-                f"(debug-only) — got {user_test_started.get('issue_numbers')}"
+                f"(debug-only) — got {_nums(user_test_started)}"
             )
 
             # Debug view: BOTH issues attach.
@@ -841,9 +858,9 @@ class TestE2ERunDetailEndpoint:
                 e for e in debug_response.json()["events"]
                 if e.get("event") == "e2e.test_started"
             )
-            assert sorted(debug_test_started.get("issue_numbers") or []) == [5705, 5707], (
+            assert _nums(debug_test_started) == [5705, 5707], (
                 "Debug view must show both issues — got "
-                f"{debug_test_started.get('issue_numbers')}"
+                f"{_nums(debug_test_started)}"
             )
         finally:
             set_orchestrator(None)
@@ -960,22 +977,28 @@ class TestE2ERunDetailEndpoint:
             assert response.status_code == 200
             events = response.json()["events"]
 
+            def _nums(evt):
+                return sorted(
+                    a["issue_number"] for a in evt.get("issue_affordances") or []
+                )
+
             test_started = next(e for e in events if e.get("event") == "e2e.test_started")
             test_completed = next(e for e in events if e.get("event") == "e2e.test_completed")
-            assert sorted(test_started.get("issue_numbers", [])) == [5677, 5678], (
-                f"web endpoint test_started lost identity: "
-                f"{test_started.get('issue_numbers')}"
+            assert _nums(test_started) == [5677, 5678], (
+                f"web endpoint test_started lost identity: {_nums(test_started)}"
             )
-            assert sorted(test_completed.get("issue_numbers", [])) == [5677, 5678], (
-                f"web endpoint test_completed lost identity: "
-                f"{test_completed.get('issue_numbers')}"
+            assert _nums(test_completed) == [5677, 5678], (
+                f"web endpoint test_completed lost identity: {_nums(test_completed)}"
             )
+            # And the run_id stamp is correct for every affordance.
+            for a in (test_started.get("issue_affordances") or []):
+                assert a["run_id"] == run_id
         finally:
             set_orchestrator(None)
 
-    def test_in_progress_test_window_attaches_issue_numbers(self):
+    def test_in_progress_test_window_attaches_issue_affordances(self):
         """Active e2e.test_started (no test_completed yet) must still attach
-        issue_numbers from agent activity during the live window.
+        issue_affordances from agent activity during the live window.
 
         Regression: the window-builder previously only emitted windows for
         completed test pairs, so clicking through to the issue detail or
@@ -1011,8 +1034,10 @@ class TestE2ERunDetailEndpoint:
             events = payload.get("events", [])
             test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
             assert test_started is not None
-            assert test_started.get("issue_numbers") == [42], (
-                "In-progress test window must carry live issue_numbers so "
+            assert test_started.get("issue_affordances") == [
+                {"issue_number": 42, "run_id": 10},
+            ], (
+                "In-progress test window must carry live issue_affordances so "
                 "the timeline can navigate to issue detail before completion."
             )
         finally:
@@ -1146,8 +1171,8 @@ class TestE2ETimelineControlEndpoint:
         assert "setup" in toc_phases
         assert "teardown" in toc_phases
 
-    def test_snapshotted_agent_events_attach_issue_numbers(self, tmp_path):
-        """Snapshotted agent events annotate test events with issue_numbers
+    def test_snapshotted_agent_events_attach_issue_affordances(self, tmp_path):
+        """Snapshotted agent events annotate test events with issue_affordances
         for the navigation-based architecture (not nested as children)."""
         from fastapi.testclient import TestClient
         from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
@@ -1204,13 +1229,15 @@ class TestE2ETimelineControlEndpoint:
         assert len(events) == 2
         test_started = events[0]
         assert test_started["event"] == "e2e.test_started"
-        # Test event has issue_numbers annotation, not nested children
-        assert test_started.get("issue_numbers") == [42]
+        # Test event has issue_affordances annotation, not nested children
+        assert test_started.get("issue_affordances") == [
+            {"issue_number": 42, "run_id": 1},
+        ]
         # No nested children — frontend opens issue detail via openIssueDetail
         assert test_started.get("children", []) == []
 
-    def test_in_progress_test_window_attaches_issue_numbers(self, tmp_path):
-        """Control endpoint also pins live in-progress issue_numbers.
+    def test_in_progress_test_window_attaches_issue_affordances(self, tmp_path):
+        """Control endpoint also pins live in-progress issue_affordances.
 
         Mirrors the web-endpoint regression: while a test is still running
         (e2e.test_started without a matching e2e.test_completed), agent
@@ -1252,8 +1279,10 @@ class TestE2ETimelineControlEndpoint:
 
         test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
         assert test_started is not None
-        assert test_started.get("issue_numbers") == [42], (
-            "Control endpoint must attach issue_numbers to in-progress test "
+        assert test_started.get("issue_affordances") == [
+            {"issue_number": 42, "run_id": 1},
+        ], (
+            "Control endpoint must attach issue_affordances to in-progress test "
             "windows so live runs remain navigable."
         )
 
@@ -1380,16 +1409,24 @@ class TestE2ETimelineControlEndpoint:
         assert response.status_code == 200
         events = response.json()["events"]
 
+        def _nums(evt):
+            return sorted(a["issue_number"] for a in evt.get("issue_affordances") or [])
+
         # Both the test_started and test_completed events must carry both
-        # issue numbers — the regression manifests as issue_numbers=[] here.
+        # issue numbers — the regression manifests as issue_affordances=[] here.
         test_started = next(e for e in events if e.get("event") == "e2e.test_started")
         test_completed = next(e for e in events if e.get("event") == "e2e.test_completed")
-        assert sorted(test_started.get("issue_numbers", [])) == [5677, 5678], (
-            f"test_started lost identity: {test_started.get('issue_numbers')}"
+        assert _nums(test_started) == [5677, 5678], (
+            f"test_started lost identity: {_nums(test_started)}"
         )
-        assert sorted(test_completed.get("issue_numbers", [])) == [5677, 5678], (
-            f"test_completed lost identity: {test_completed.get('issue_numbers')}"
+        assert _nums(test_completed) == [5677, 5678], (
+            f"test_completed lost identity: {_nums(test_completed)}"
         )
+        # Every affordance must carry the run_id so the frontend can
+        # route the click to the explicit e2e issue-detail endpoint.
+        for evt in (test_started, test_completed):
+            for a in evt.get("issue_affordances") or []:
+                assert a["run_id"] == run_id
 
 
 class TestControlIssueDetailEndpoint:

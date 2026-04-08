@@ -151,18 +151,21 @@ def main() -> int:
         end_str = end_ts[11:23] if end_ts else "OPEN"
         print(f"  [{start_ts[11:23]} → {end_str}] {nodeid}")
 
-    result = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+    result = _attach_issue_numbers_to_test_windows(
+        e2e_events, agent_events, run_id=args.run_id,
+    )
 
     # ---- Per-test summary ----
-    print("\nPer-test issue_numbers AFTER matching:")
+    print("\nPer-test issue_affordances AFTER matching:")
     for evt in result:
         if evt.get("event") not in ("e2e.test_started", "e2e.test_completed"):
             continue
         nodeid = evt.get("nodeid", "?").split("::")[-1]
-        issues = evt.get("issue_numbers") or []
+        affordances = evt.get("issue_affordances") or []
+        issue_nums = sorted(a["issue_number"] for a in affordances)
         ts = evt["timestamp"][11:23]
-        marker = "OK   " if issues else "EMPTY"
-        print(f"  {marker} {ts} {evt['event']:20s} {nodeid:60s} issues={issues}")
+        marker = "OK   " if issue_nums else "EMPTY"
+        print(f"  {marker} {ts} {evt['event']:20s} {nodeid:60s} issues={issue_nums}")
 
     # ---- Diagnose unmatched events ----
     print("\nUnmatched agent events (didn't fall in any window):")

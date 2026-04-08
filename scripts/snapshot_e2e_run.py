@@ -300,7 +300,7 @@ def _build_expected(
     started_at: str,
     finished_at: str,
 ) -> dict[str, Any]:
-    """Compute the expected (nodeid -> issue_numbers) mapping by replaying
+    """Compute the expected (nodeid -> issue_affordances) mapping by replaying
     the production matcher against the captured DBs.
 
     Imports the orchestrator code so this naturally tracks code changes —
@@ -332,7 +332,9 @@ def _build_expected(
         worktree_db, started_at=started_at, finished_at=finished_at,
     )
 
-    matched = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+    matched = _attach_issue_numbers_to_test_windows(
+        e2e_events, agent_events, run_id=run_id,
+    )
 
     test_results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -343,10 +345,13 @@ def _build_expected(
         if not nodeid or nodeid in seen:
             continue
         seen.add(nodeid)
+        affordances = evt.get("issue_affordances") or []
         test_results.append(
             {
                 "nodeid": nodeid,
-                "issue_numbers": sorted(evt.get("issue_numbers", [])),
+                "issue_affordances": sorted(
+                    affordances, key=lambda a: a["issue_number"],
+                ),
             }
         )
 
@@ -423,8 +428,11 @@ def snapshot_run(repo_root: Path, run_id: int, output_dir: Path) -> None:
         f"  expected.json: {expected['test_count']} tests, "
         f"{len(expected['distinct_issues_in_window'])} distinct issues"
     )
-    matched_tests = sum(1 for t in expected["tests"] if t["issue_numbers"])
-    print(f"  → {matched_tests}/{expected['test_count']} test rows have issue numbers")
+    matched_tests = sum(1 for t in expected["tests"] if t["issue_affordances"])
+    print(
+        f"  → {matched_tests}/{expected['test_count']} test rows have "
+        f"issue affordances"
+    )
 
     # Hard guardrail: refuse to ship a fixture that still contains raw
     # machine-specific paths, even if every other step succeeded.
