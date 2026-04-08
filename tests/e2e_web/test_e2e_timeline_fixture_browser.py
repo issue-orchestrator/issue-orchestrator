@@ -139,14 +139,23 @@ def fixture_web_server(tmp_path: Path) -> dict[str, object]:
         repo_root / ".issue-orchestrator" / "config" / "default.yaml"
     )
 
-    # Make deps.timeline_store available too — required by the issue-detail
-    # endpoint that openIssueDetail() ends up calling on click.
-    class _Deps:
-        pass
+    # Build a realistic deps object: real timeline_store + reader for
+    # the endpoints that read them, and MagicMock for the optional
+    # accessories the issue-detail action-applier code touches
+    # (publish_recovery, etc.). Using MagicMock as the base lets any
+    # incidental attribute access return a sensible default instead
+    # of crashing with AttributeError.
+    from unittest.mock import MagicMock
+    from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 
-    deps = _Deps()
+    deps = MagicMock()
     deps.timeline_store = base_store
-    orchestrator.deps = deps  # type: ignore[attr-defined]
+    deps.timeline_reader = DefaultTimelineReader(base_store)
+    # publish_recovery.can_retry_publish is consulted by the issue-detail
+    # action applier — return False so the "retry publish" affordance
+    # stays hidden (it's orthogonal to this test's contract).
+    deps.publish_recovery.can_retry_publish.return_value = False
+    orchestrator.deps = deps
 
     port = _find_free_port()
     original = web_module.get_orchestrator()
@@ -165,21 +174,44 @@ def fixture_web_server(tmp_path: Path) -> dict[str, object]:
         web_module.set_orchestrator(original)
 
 
+_TEST_4057_NODEID = (
+    "tests/e2e/test_issue_4057_production_flow.py"
+    "::test_4057_production_real_agents_publish_gate_and_diagnostics"
+)
+_TEST_INFLIGHT_NODEID = (
+    "tests/e2e/test_inflight_refresh_discovers_issue.py"
+    "::test_inflight_refresh_discovers_issue"
+)
+
+
 def test_run_drawer_timeline_renders_clickable_issue_links(
     page: Page, fixture_web_server: dict[str, object]
 ) -> None:
-    """Open the run #87 drawer and verify the Timeline tab shows real issue links.
+    """Validate row-level affordance placement and click-through content.
 
-    The expected.json from the fixture confirms which test rows should
-    carry which issue affordances under the user-view-filter contract.
-    We assert that the canonical "test_4057" row (the failed test that
-    prompted this whole effort) renders both #5705 and #5706 as
-    clickable anchors in the Timeline tab.
+    Per the PR #5709 review, this test must prove:
 
-    Issues with only debug-tagged events (5700, 5701, 5702, 5704, 5707)
-    are intentionally NOT rendered in the user view because clicking
-    them would open an empty drawer; that contract is pinned by the
-    integration-level click-through test, not here.
+    1. The Timeline tab actually rendered real event data from the
+       endpoint payload — not just an empty skeleton. We look up the
+       canonical ``test_4057`` event by its summary text and assert it
+       exists before probing its issue-link content.
+    2. The ``test_4057`` row carries exactly ``#5705`` and ``#5706`` —
+       scoped to that specific ``.timeline-event`` card, not to any
+       global anchor anywhere in the modal. This catches misattached
+       links that "exist somewhere" but on the wrong row.
+    3. A neighboring row (``test_inflight_refresh_discovers_issue``)
+       carries ``#5705`` but NOT ``#5706`` — a negative assertion that
+       prevents false positives from cross-row contamination.
+    4. Clicking ``#5705`` causes the issue-detail drawer to render
+       journey content (``.journey-run``) — not just an optimistic
+       title that shows before the fetch completes. We also assert
+       the status line is no longer "Loading..." or "unavailable",
+       and no ``.timeline-empty`` placeholder is present.
+
+    Action-button assertions are intentionally out of scope: the staged
+    fixture uses sanitized run_dir paths that don't exist on disk, so
+    session-action decoration emits warnings that are orthogonal to the
+    row/affordance contract under test.
     """
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
@@ -204,31 +236,81 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(timeline_tab_btn).to_be_visible(timeout=5000)
     timeline_tab_btn.click()
 
-    # The Timeline tab panel must contain at least one issue affordance.
-    issue_links_container = page.locator(
-        "#e2eDiagnosisModal .timeline-issue-links"
-    ).first
-    expect(issue_links_container).to_be_visible(timeout=5000)
+    timeline_panel = page.locator("#e2eRunTimelineTab")
+    expect(timeline_panel).to_be_visible(timeout=5000)
 
-    # Both 5705 and 5706 belong to the failed test_4057 row (run_87).
-    # They're attached to a real agent run, so the user-view filter
-    # keeps them. We verify both render as clickable anchors.
-    issue_5705_link = page.locator(
-        "#e2eDiagnosisModal .timeline-issue-links a", has_text="#5705"
-    ).first
-    expect(issue_5705_link).to_be_visible(timeout=5000)
+    # --- Ask 4: prove the Timeline tab actually rendered real event data ---
+    # Find the specific test_4057 event card by its summary text. If the
+    # endpoint returned nothing, this fails fast — no amount of global
+    # anchor matching would save us.
+    test_4057_summary = timeline_panel.locator(
+        ".timeline-event",
+        has=page.locator(".timeline-summary", has_text=_TEST_4057_NODEID),
+    )
+    # Two summary rows (started + completed) share the nodeid in the
+    # rendered timeline, so we scope assertions to the first occurrence.
+    test_4057_event = test_4057_summary.first
+    expect(test_4057_event).to_be_visible(timeout=5000)
+    expect(test_4057_event.locator(".timeline-summary").first).to_contain_text(
+        _TEST_4057_NODEID,
+    )
 
-    issue_5706_link = page.locator(
-        "#e2eDiagnosisModal .timeline-issue-links a", has_text="#5706"
-    ).first
-    expect(issue_5706_link).to_be_visible(timeout=5000)
+    # --- Ask 1: scope link assertions to the test_4057 row ---
+    test_4057_links = test_4057_event.locator(".timeline-issue-links a")
+    expect(test_4057_links).to_have_count(2, timeout=5000)
+    link_texts = sorted(test_4057_links.all_text_contents())
+    assert link_texts == ["#5705", "#5706"], (
+        f"test_4057 row should carry exactly [#5705, #5706] but got "
+        f"{link_texts!r}"
+    )
 
-    # Click through #5705 and verify the issue detail drawer actually
-    # opens with content — guards against the click-through producing
-    # an empty drawer (the bug the integration test also pins).
-    issue_5705_link.click()
+    # --- Ask 2: negative assertion on a neighboring row ---
+    # test_inflight_refresh_discovers_issue carries ONLY #5705 per the
+    # fixture's expected.json. Catch misattached links (e.g. #5706
+    # leaking from test_4057) by asserting the link set.
+    test_inflight_event = timeline_panel.locator(
+        ".timeline-event",
+        has=page.locator(".timeline-summary", has_text=_TEST_INFLIGHT_NODEID),
+    ).first
+    expect(test_inflight_event).to_be_visible(timeout=5000)
+    inflight_links = test_inflight_event.locator(".timeline-issue-links a")
+    expect(inflight_links).to_have_count(1, timeout=5000)
+    inflight_texts = sorted(inflight_links.all_text_contents())
+    assert inflight_texts == ["#5705"], (
+        f"test_inflight_refresh row should carry exactly [#5705] but got "
+        f"{inflight_texts!r} — a link from another row has leaked in"
+    )
+
+    # --- Ask 3: click-through must prove the drawer loaded data ---
+    # Click the #5705 link scoped to the test_4057 row (not the
+    # matching one in the inflight row) so the click-through assertion
+    # is about the test_4057 affordance specifically.
+    test_4057_links.filter(has_text="#5705").first.click()
+
     detail_drawer = page.locator("#issueDetailDrawer.visible")
     expect(detail_drawer).to_be_visible(timeout=5000)
+    # Title alone is not sufficient — it's set before the fetch completes.
     expect(page.locator("#issueDetailTitle")).to_contain_text("Issue #5705")
+
+    # Wait for the journey to actually render. The endpoint returns
+    # events structured as runs/cycles, so on success #issueDetailJourney
+    # contains at least one .journey-run. No .timeline-empty placeholder
+    # should be present.
+    journey = page.locator("#issueDetailJourney")
+    expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
+    expect(journey.locator(".timeline-empty")).to_have_count(0)
+
+    # And the status line must no longer show the loading / unavailable text.
+    status_el = page.locator("#issueDetailStatus")
+    status_text = status_el.text_content() or ""
+    assert "Loading issue detail" not in status_text, (
+        f"drawer still showing loading state: {status_text!r}"
+    )
+    assert "Issue detail unavailable" not in status_text, (
+        f"drawer showing unavailable state: {status_text!r}"
+    )
+    assert "Failed to load" not in status_text, (
+        f"drawer showing failure state: {status_text!r}"
+    )
 
     assert errors == [], f"Unexpected page errors: {errors}"
