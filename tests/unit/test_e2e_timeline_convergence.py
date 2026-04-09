@@ -1248,11 +1248,19 @@ class TestE2ERunDetailEndpoint:
         response = client.get("/api/e2e-run-detail/1")
         assert response.status_code == 503
 
-    def test_failed_test_event_carries_longrepr_and_outcome(self):
-        """e2e.test_completed events with outcome=failed must surface
-        the pytest ``longrepr`` in the API payload so the UI can render
-        the failure reason inline on the run-drawer row. Without this,
-        the user sees "Error" but no indication of WHY the test failed.
+    def test_failed_test_event_carries_longrepr_only_on_completed_row(self):
+        """e2e.test_completed carries ``longrepr``; test_started does not.
+
+        Both rows share the same nodeid, so the e2e.db backfill would
+        naively attach the pytest ``longrepr`` to both — which causes
+        the run drawer to render the failure block twice (once under
+        "test started Active", once under "test completed Error").
+        The contract is that the failure is a property of the TERMINAL
+        row only, so we assert:
+
+        - ``test_completed`` carries ``longrepr`` and ``outcome``
+        - ``test_started`` does NOT carry either, even though it shares
+          the nodeid that the backfill keys on
         """
         from issue_orchestrator.entrypoints.web import set_orchestrator
 
@@ -1292,12 +1300,30 @@ class TestE2ERunDetailEndpoint:
                 (e for e in events if e.get("event") == "e2e.test_completed"),
                 None,
             )
+            started = next(
+                (e for e in events if e.get("event") == "e2e.test_started"),
+                None,
+            )
             assert completed is not None, "test_completed event missing"
+            assert started is not None, "test_started event missing"
+
+            # test_completed — failure metadata present.
             assert completed.get("longrepr") == failure_text, (
-                f"longrepr was not promoted from data_json onto the event; "
+                f"longrepr was not promoted onto test_completed; "
                 f"got {completed.get('longrepr')!r}"
             )
             assert completed.get("outcome") == "failed"
+
+            # test_started — failure metadata absent (would otherwise
+            # cause the run drawer to render the failure block twice).
+            assert started.get("longrepr") is None, (
+                f"longrepr leaked onto test_started — the failure block "
+                f"will render twice in the run drawer: "
+                f"{started.get('longrepr')!r}"
+            )
+            assert started.get("outcome") is None, (
+                f"outcome leaked onto test_started: {started.get('outcome')!r}"
+            )
         finally:
             set_orchestrator(None)
 

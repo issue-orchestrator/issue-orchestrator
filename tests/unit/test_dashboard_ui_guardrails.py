@@ -672,6 +672,11 @@ def test_timeline_surfaces_failure_longrepr_inline_on_failed_rows() -> None:
     leaving the run drawer. The renderer keys on ``evt.longrepr`` and
     ``evt.outcome === 'failed'`` / ``evt.status === 'error'`` to decide
     whether to emit the expandable detail block.
+
+    Also pins the "terminal row only" restriction: the failure block
+    must only render on ``e2e.test_completed`` events, not on the
+    matching ``e2e.test_started`` row (both share the same nodeid and
+    would otherwise display the same failure twice).
     """
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
@@ -686,6 +691,8 @@ def test_timeline_surfaces_failure_longrepr_inline_on_failed_rows() -> None:
     # expand; otherwise every event would show a failure block.
     assert "'failed'" in body or '"failed"' in body
     assert "'error'" in body or '"error"' in body
+    # Terminal-row gate — failure must NOT render on test_started rows.
+    assert "'e2e.test_completed'" in body
 
 
 def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:

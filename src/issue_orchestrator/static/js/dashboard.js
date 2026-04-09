@@ -5197,7 +5197,13 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             // so the <pre> is bounded. Expanded by default on
             // failed rows; collapsed for everything else to keep the
             // timeline scannable.
-            const failureDetail = (evt.longrepr && (evt.outcome === 'failed' || evt.status === 'error'))
+            // Render the inline failure block ONLY on the terminal row
+            // (e2e.test_completed). Both test_started and test_completed
+            // share the same nodeid, so if the backend ever broadens the
+            // backfill to attach longrepr to test_started rows too, this
+            // guard prevents the failure from being rendered twice.
+            const isTerminalTestEvent = evt.event === 'e2e.test_completed';
+            const failureDetail = (isTerminalTestEvent && evt.longrepr && (evt.outcome === 'failed' || evt.status === 'error'))
                 ? `<details class="timeline-failure-detail" open>
                         <summary class="timeline-failure-summary">Failure: ${escapeHtml((String(evt.longrepr).split('\\n').pop() || 'Test failed').trim())}</summary>
                         <pre class="timeline-failure-longrepr">${escapeHtml(String(evt.longrepr))}</pre>

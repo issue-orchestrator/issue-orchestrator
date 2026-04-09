@@ -1893,10 +1893,16 @@ def _promote_e2e_test_event_fields(
 
     The TimelineEvent schema is closed; fields not in its dataclass
     never make it into ``evt.to_dict()``. For e2e.test_* events we
-    need nodeid (for window matching) plus longrepr/outcome (for
-    inline failure surfacing). Prefers the event's data blob, then
-    falls back to the e2e.db backfill for historical runs whose worker
-    didn't emit longrepr in the original payload.
+    need nodeid (for window matching on every e2e.test_* event) plus
+    longrepr/outcome (for inline failure surfacing on *completed*
+    events only — attaching them to a ``test_started`` row would
+    render the failure block twice in the run drawer, since both
+    rows share the same nodeid and thus share the same backfilled
+    longrepr).
+
+    Prefers the event's data blob, then falls back to the e2e.db
+    backfill for historical runs whose worker didn't emit longrepr
+    in the original payload.
 
     Mutates ``raw_events`` in place.
     """
@@ -1908,6 +1914,12 @@ def _promote_e2e_test_event_fields(
         nodeid = data.get("nodeid")
         if isinstance(nodeid, str) and nodeid:
             evt["nodeid"] = nodeid
+        # longrepr/outcome are a "test result" shape that only makes
+        # sense on the terminal test row. Skip them for ``test_started``
+        # (and any other non-terminal event) so the failure surface
+        # renders exactly once per failed test.
+        if evt.get("event") != "e2e.test_completed":
+            continue
         longrepr = data.get("longrepr")
         if not (isinstance(longrepr, str) and longrepr) and isinstance(nodeid, str):
             longrepr = longrepr_by_nodeid.get(nodeid)
