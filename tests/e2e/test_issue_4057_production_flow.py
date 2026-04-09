@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 import httpx
 import pytest
 
+from issue_orchestrator.domain.event_taxonomy import (
+    REVIEW_START_CLUSTER_EVENT_NAMES,
+    REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
+)
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
@@ -527,37 +531,35 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
 
         detail_after_review = await _fetch_issue_detail(config.web_port, issue_number)
         steps_after_review = _steps_from_issue_detail(detail_after_review)
-        # Shape-agnostic review lifecycle check.
+        # Review lifecycle check against the collapsed Story view.
         #
-        # The orchestrator has two valid review shapes and we don't
-        # know a priori which one a given run will take:
+        # The backend always emits a deterministic cluster of
+        # review-start events (review.started -> review_exchange.started
+        # -> review_exchange.round_started) and a cluster of terminal
+        # events (review_exchange.round_completed ->
+        # review_exchange.completed -> review.approved /
+        # review.changes_requested). The /api/issue-detail endpoint runs
+        # in view=user by default and collapses each cluster to exactly
+        # one representative row.
         #
-        #   1. Direct approval:
-        #      review.started -> review.approved
-        #   2. Back-and-forth exchange:
-        #      review.started -> review_exchange.started -> ... -> review.approved
-        #
-        # The previous assertion hard-coded review_exchange.started,
-        # which made the test flake whenever the reviewer approved on
-        # the first round. If we want to force one specific shape in
-        # CI, that belongs in a synthetic test with a scripted
-        # reviewer — not a production-parity flow test like this one.
-        review_start_events = {
-            EventName.REVIEW_STARTED.value,
-            EventName.REVIEW_EXCHANGE_STARTED.value,
-        }
-        review_terminal_events = {
-            EventName.REVIEW_APPROVED.value,
-            EventName.REVIEW_CHANGES_REQUESTED.value,
-        }
+        # So the real contract the test should guard is: the collapsed
+        # timeline contains at least one row from each cluster. We reuse
+        # the exact frozensets the view-model collapser uses
+        # (domain.event_taxonomy), so this assertion cannot drift from
+        # the view's definition of the cluster.
         observed_events = [step.get("event") for step in steps_after_review]
-        review_started = any(e in review_start_events for e in observed_events)
-        review_terminated = any(e in review_terminal_events for e in observed_events)
+        review_started = any(
+            e in REVIEW_START_CLUSTER_EVENT_NAMES for e in observed_events
+        )
+        review_terminated = any(
+            e in REVIEW_TERMINAL_CLUSTER_EVENT_NAMES for e in observed_events
+        )
         assert review_started and review_terminated, (
-            "Expected the review phase to have both a start and a terminal "
-            "event in the issue detail timeline (any of "
-            f"{sorted(review_start_events)} followed by any of "
-            f"{sorted(review_terminal_events)}). "
+            "Expected the collapsed issue detail timeline to contain at "
+            "least one row from the review-start cluster "
+            f"({sorted(REVIEW_START_CLUSTER_EVENT_NAMES)}) and at least "
+            "one row from the review-terminal cluster "
+            f"({sorted(REVIEW_TERMINAL_CLUSTER_EVENT_NAMES)}). "
             f"Observed events: {observed_events}"
         )
 

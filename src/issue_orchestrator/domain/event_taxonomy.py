@@ -36,6 +36,37 @@ _REVIEW_EXCHANGE_EVENTS = frozenset({
     EventName.REVIEW_EXCHANGE_FAILED,
 })
 
+# ---------------------------------------------------------------------------
+# Review story clusters
+#
+# The backend emits a deterministic cluster of review-start events whenever a
+# review runs (review.started -> review_exchange.started -> review_exchange.
+# round_started) and a cluster of terminal events (review_exchange.
+# round_completed -> review_exchange.completed -> review.approved /
+# review.changes_requested).
+#
+# The Story view collapses each cluster to exactly one representative row
+# (see ``view_models.issue_detail._collapse_review_start_clusters`` and
+# ``_collapse_review_terminal_clusters``). These frozensets are the single
+# source of truth for what counts as a member of each cluster. View-model
+# collapsers and tests must import them from here rather than defining
+# parallel lists — otherwise the view's contract can drift from the
+# assertions that guard it.
+# ---------------------------------------------------------------------------
+
+REVIEW_START_CLUSTER_EVENT_NAMES: frozenset[str] = frozenset({
+    EventName.REVIEW_STARTED.value,
+    EventName.REVIEW_EXCHANGE_STARTED.value,
+    EventName.REVIEW_EXCHANGE_ROUND_STARTED.value,
+})
+
+REVIEW_TERMINAL_CLUSTER_EVENT_NAMES: frozenset[str] = frozenset({
+    EventName.REVIEW_EXCHANGE_ROUND_COMPLETED.value,
+    EventName.REVIEW_EXCHANGE_COMPLETED.value,
+    EventName.REVIEW_APPROVED.value,
+    EventName.REVIEW_CHANGES_REQUESTED.value,
+})
+
 
 class EventIntent(str, Enum):
     """Typed semantic intent carried with timeline events."""
