@@ -688,22 +688,42 @@ def test_timeline_surfaces_failure_longrepr_inline_on_failed_rows() -> None:
     assert "'error'" in body or '"error"' in body
 
 
-def test_shared_modal_overlay_elevates_above_drawer_when_drawer_visible() -> None:
-    """Session-replay / validation-failure / review-transcript modals,
-    which share ``#modalOverlay``, must elevate above the issue drawer
-    when the drawer is open — otherwise clicking a ``timeline-action-btn``
-    inside the drawer opens a modal that renders behind the drawer and
-    is unreachable.
+def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
+    """Every ``.modal-overlay`` opened from within the issue drawer
+    must render above it, and the E2E run modal must stay below.
 
-    Pinned as a CSS ``:has()`` rule so we don't need JS-side z-index
-    juggling for every modal opener.
+    The stacking policy has two halves:
+
+    1. DEFAULT: any ``.modal-overlay.visible`` sibling of a visible
+       ``#issueDetailDrawer`` elevates above the drawer. This covers
+       ``#modalOverlay`` (session replay, validation failure, review
+       transcript), ``#timelineModal`` (Focus button on the drawer),
+       and any future modal class member. Opening a drill-down
+       dialog from the drawer should NOT require remembering to
+       register it in a CSS enumeration.
+    2. EXCEPTION: ``#e2eDiagnosisModal`` is the drawer's launcher —
+       the user clicked an affordance inside it to open the drawer,
+       so closing the drawer should return them to the run modal.
+       It must stay BELOW the drawer.
+
+    Without the default rule, new modals silently render behind the
+    drawer (this was the reviewer-caught regression on the timeline
+    Focus flow). Without the exception, the run modal would pop
+    over the drawer it spawned.
     """
     css = _read(DASHBOARD_CSS)
-    assert ":has(#issueDetailDrawer.visible) #modalOverlay.visible" in css, (
-        "Missing CSS elevation rule for #modalOverlay when the issue "
-        "detail drawer is visible. Without it, modals opened from within "
-        "the drawer (session replay, validation failure, etc.) render "
-        "behind the drawer and become unreachable."
+    # Default: generic .modal-overlay elevates above the drawer.
+    assert ":has(#issueDetailDrawer.visible) .modal-overlay.visible" in css, (
+        "Missing DEFAULT elevation rule — generic .modal-overlay elements "
+        "opened from the issue drawer (timeline Focus, session replay, "
+        "validation failure, etc.) will render behind the drawer."
+    )
+    # Exception: e2e run modal stays below.
+    assert ":has(#issueDetailDrawer.visible) #e2eDiagnosisModal.visible" in css, (
+        "Missing e2e run modal stacking override. Without it, the "
+        "run modal competes with the drawer on the default elevated "
+        "z-index and the 'drawer opens on top of run modal' contract "
+        "breaks."
     )
 
 
