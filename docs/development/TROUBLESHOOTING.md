@@ -194,6 +194,68 @@ Manual cleanup:
 rm .issue-orchestrator/locks/*.json
 ```
 
+## E2E Timeline: Missing Issue Affordances on Test Rows
+
+**Symptom:** The dashboard's E2E run drawer shows test rows with no clickable
+`#N` issue affordances even though agents clearly ran for issues during the
+run window.
+
+**Root cause class:** The view-model pipeline that attaches `issue_numbers`
+to `e2e.test_started` / `e2e.test_completed` events is brittle. Bugs have
+included: a placeholder `issue_number=0` collapsing all events, view
+filtering dropping debug-only events before matching, narrow time-window
+boundaries missing in-progress tests.
+
+### Fast iteration loop (no PR/restart cycle)
+
+Use `scripts/debug_e2e_timeline.py` to replay the production matcher
+against your real DBs in-process. It loads `e2e.db` + the base-repo
+`timeline.sqlite` + the e2e-worktree `timeline.sqlite` from a checkout,
+runs the same code as the live endpoint, and prints which test windows
+have issue numbers attached and which agent events are unmatched:
+
+```bash
+.venv/bin/python scripts/debug_e2e_timeline.py --run-id 87
+```
+
+Edit code → re-run → see effect immediately. To cross-validate against
+the live endpoint (catches endpoint-vs-helper drift):
+
+```bash
+# Terminal 1
+issue-orchestrator start  # or restart your running instance
+
+# Terminal 2
+PORT=$(lsof -p $(pgrep -f run_orchestrator) | awk '/LISTEN/{sub(".*:","",$9); print $9; exit}')
+diff <(curl -s http://localhost:$PORT/api/e2e-run-detail/87 | python3 -c '...') \
+     <(.venv/bin/python scripts/debug_e2e_timeline.py --run-id 87)
+```
+
+A diff there means the live endpoint and the helper disagree — usually
+because something in the endpoint pipeline (filtering, projection,
+view-model) is mutating data the helper test bypasses.
+
+### Pin the regression with a captured fixture
+
+Once you've reproduced and fixed a bug, capture the run as a fixture so
+it can never regress silently again:
+
+```bash
+.venv/bin/python scripts/snapshot_e2e_run.py --run-id 87
+```
+
+This writes a sanitized, self-contained snapshot to
+`tests/fixtures/e2e_runs/run_87/` (e2e.db row, base timeline, worktree
+timeline, expected.json). The integration test
+`tests/integration/test_e2e_timeline_real_fixture.py` discovers every
+fixture under that directory and replays each through the live
+`/api/e2e-run-detail/{id}` endpoint, asserting per-test
+`issue_numbers` against the captured ground truth.
+
+If a fixture starts failing because the contract LEGITIMATELY changed
+(matcher logic, view-model shape), re-bless it by re-running the
+snapshot script against the same run.
+
 ## Claude Session Logs
 
 Each Claude Code session creates logs useful for debugging:

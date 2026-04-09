@@ -1,0 +1,126 @@
+{
+  "run_id": 87,
+  "started_at": "2026-04-08T03:53:58.606529+00:00",
+  "finished_at": "2026-04-08T04:11:57.847985+00:00",
+  "agent_event_count": 172,
+  "distinct_issues_in_window": [
+    5694,
+    5695,
+    5696,
+    5699,
+    5700,
+    5701,
+    5702,
+    5703,
+    5704,
+    5705,
+    5706,
+    5707
+  ],
+  "test_count": 10,
+  "tests": [
+    {
+      "nodeid": "tests/e2e/test_claim_coordination.py::TestClaimCoordination::test_only_one_orchestrator_claims_issue",
+      "issue_affordances": []
+    },
+    {
+      "nodeid": "tests/e2e/test_claim_coordination.py::TestClaimTakeover::test_second_orchestrator_claims_after_first_crashes",
+      "issue_affordances": []
+    },
+    {
+      "nodeid": "tests/e2e/test_claim_coordination.py::TestNoDuplicateSessions::test_claim_prevents_duplicate_sessions",
+      "issue_affordances": [
+        {
+          "issue_number": 5694,
+          "run_id": 87
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_concurrent_issues_seen_in_snapshots",
+      "issue_affordances": [
+        {
+          "issue_number": 5695,
+          "run_id": 87
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_concurrent_sessions_start",
+      "issue_affordances": [
+        {
+          "issue_number": 5695,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5696,
+          "run_id": 87
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_pr_created_for_issue",
+      "issue_affordances": [
+        {
+          "issue_number": 5695,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5696,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5699,
+          "run_id": 87
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_review_outcome_for_issue",
+      "issue_affordances": [
+        {
+          "issue_number": 5695,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5696,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5699,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5703,
+          "run_id": 87
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestEdgeCases::test_orchestrator_handles_no_matching_issues",
+      "issue_affordances": []
+    },
+    {
+      "nodeid": "tests/e2e/test_inflight_refresh_discovers_issue.py::test_inflight_refresh_discovers_issue",
+      "issue_affordances": [
+        {
+          "issue_number": 5705,
+          "run_id": 87
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_issue_4057_production_flow.py::test_4057_production_real_agents_publish_gate_and_diagnostics",
+      "issue_affordances": [
+        {
+          "issue_number": 5705,
+          "run_id": 87
+        },
+        {
+          "issue_number": 5706,
+          "run_id": 87
+        }
+      ]
+    }
+  ]
+}

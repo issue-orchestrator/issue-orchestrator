@@ -576,13 +576,55 @@ def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
     assert "closeTimelineEventMenus();" in body
 
 
-def test_timeline_renders_issue_links_for_navigation() -> None:
-    """E2E test events with issue_numbers render as clickable links to issue detail."""
+def test_timeline_renders_issue_affordances_for_navigation() -> None:
+    """E2E test events with issue_affordances render as clickable links to issue detail.
+
+    Each affordance is a ``{issue_number, run_id}`` object; the anchor
+    forwards both to ``openIssueDetail`` so the click is routed to the
+    explicit ``/api/e2e-run/{run_id}/issue-detail/{N}`` endpoint.
+    """
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
-    assert "issue_numbers" in body
+    assert "issue_affordances" in body
     assert "openIssueDetail" in body
     assert "timeline-issue-links" in body
+    # The anchor must pass run_id to openIssueDetail so the dashboard
+    # can route to the explicit e2e endpoint.
+    assert "e2eRunId" in body
+
+
+def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
+    """openIssueDetail(N, _, {e2eRunId}) hits the explicit e2e endpoint.
+
+    We scan the whole file rather than using ``_function_body`` because
+    ``openIssueDetail`` has an ``opts = {}`` default parameter whose
+    braces confuse the helper's naive body extractor.
+
+    Also pins the auto-close contract: when opened from an e2e run
+    drawer affordance, openIssueDetail must dismiss the
+    ``#e2eDiagnosisModal`` before rendering, otherwise the drawer
+    renders underneath the modal overlay (z-index conflict between
+    ``.modal-overlay`` at 30 and ``.issue-detail-drawer`` at 26) and
+    its content is unreachable.
+    """
+    js = _read(DASHBOARD_JS)
+    # Isolate the block from "async function openIssueDetail" to the next
+    # top-level "async function " declaration so our assertions are
+    # actually inside openIssueDetail.
+    start = js.find("async function openIssueDetail(")
+    assert start != -1, "openIssueDetail not found"
+    next_fn = js.find("\nasync function ", start + 1)
+    if next_fn == -1:
+        next_fn = js.find("\nfunction ", start + 1)
+    block = js[start:next_fn if next_fn != -1 else len(js)]
+
+    assert "/api/e2e-run/" in block
+    assert "issue-detail/" in block
+    assert "e2eRunId" in block
+    # Auto-close contract: opening from an e2e context must dismiss
+    # the e2e run modal so the drawer is not stuck behind it.
+    assert "e2eDiagnosisModal" in block
+    assert "closeE2EDiagnosisModal" in block
 
 
 def test_e2e_timeline_has_view_switcher() -> None:

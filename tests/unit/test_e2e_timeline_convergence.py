@@ -590,17 +590,26 @@ class TestOrchestratorWindowExcludesE2EEvents:
             # during its window.
         ]
 
-        result = _attach_issue_numbers_to_test_windows(e2e_events, agent_events)
+        result = _attach_issue_numbers_to_test_windows(
+            e2e_events, agent_events, run_id=42,
+        )
+
+        def _nums(evt):
+            return sorted(a["issue_number"] for a in evt.get("issue_affordances") or [])
 
         test_a_started = result[0]
         test_a_completed = result[1]
         test_b_started = result[2]
         # test_a window covers issues 5677 and 5678 — both started during it.
-        assert sorted(test_a_started["issue_numbers"]) == [5677, 5678]
-        assert sorted(test_a_completed["issue_numbers"]) == [5677, 5678]
+        assert _nums(test_a_started) == [5677, 5678]
+        assert _nums(test_a_completed) == [5677, 5678]
         # test_b window is open-ended; the out-of-window 5679 (00:02:00)
         # falls inside test_b's start (00:01:00) so it attaches to test_b.
-        assert test_b_started["issue_numbers"] == [5679]
+        assert _nums(test_b_started) == [5679]
+        # Every affordance carries the run_id passed to the matcher.
+        for evt in result:
+            for a in evt.get("issue_affordances") or []:
+                assert a["run_id"] == 42
 
 
 class TestE2ERunDetailEndpoint:
@@ -671,13 +680,12 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_test_events_carry_issue_numbers_for_navigation(self):
-        """Test events expose issue_numbers for the frontend to render as links.
+    def test_test_events_carry_issue_affordances_for_navigation(self):
+        """Test events expose issue_affordances for the frontend to render as links.
 
-        New architecture: instead of nesting agent events as children,
-        each test event carries the issue numbers it operated on. The
-        frontend renders these as clickable links to the full dashboard
-        issue detail view.
+        Each affordance is a ``{"issue_number", "run_id"}`` dict; the
+        frontend uses the run_id to route the click directly to the
+        explicit e2e issue-detail endpoint.
         """
         from issue_orchestrator.entrypoints.web import set_orchestrator
 
@@ -713,10 +721,271 @@ class TestE2ERunDetailEndpoint:
             events = payload.get("events", [])
             test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
             assert test_started is not None
-            assert test_started.get("issue_numbers") == [42]
+            assert test_started.get("issue_affordances") == [
+                {"issue_number": 42, "run_id": 10},
+            ]
             test_completed = next((e for e in events if e.get("event") == "e2e.test_completed"), None)
             assert test_completed is not None
-            assert test_completed.get("issue_numbers") == [42]
+            assert test_completed.get("issue_affordances") == [
+                {"issue_number": 42, "run_id": 10},
+            ]
+        finally:
+            set_orchestrator(None)
+
+    def test_debug_only_issue_attaches_in_debug_view_not_user_view(self, tmp_path):
+        """View-aware affordance attachment.
+
+        Pins the per-issue view filter contract: an issue gets an
+        affordance only when the requested view would actually show its
+        events. An issue whose only in-window events are ``views=["debug"]``
+        should:
+
+        - attach in ``view=debug`` (the user can see those events)
+        - NOT attach in ``view=user`` (clicking would open an empty drawer)
+
+        This avoids two pathologies that earlier iterations of the
+        pipeline both hit:
+
+        1. Per-event view filtering — drops events with debug-only tags
+           even when other events for the SAME issue are user-tagged,
+           silently losing window matches for legitimate issues.
+        2. No view filtering — attaches affordances for issues whose
+           only in-window event is debug-tagged, leaving the user with
+           a clickable link that opens an empty drawer in story view.
+
+        The current contract is per-issue: filter at the issue level so
+        full-run issues with mixed debug/user events still match all
+        windows, but pure-debug-touch issues do not pollute the user
+        view.
+        """
+        import sqlite3
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_id, status="failed", duration_seconds=120.0)
+        run_started = "2026-01-01T00:00:00Z"
+        run_finished = "2026-01-01T00:05:00Z"
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                (run_started, run_finished, run_id),
+            )
+
+        e2e_records = [
+            TimelineRecord(
+                event_id="ts1", timestamp="2026-01-01T00:00:30Z",
+                event="e2e.test_started",
+                data={"nodeid": "tests/e2e/test_a.py::test_one"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="tc1", timestamp="2026-01-01T00:02:00Z",
+                event="e2e.test_completed",
+                data={"nodeid": "tests/e2e/test_a.py::test_one", "outcome": "failed"},
+                source_event="e2e.test_completed",
+            ),
+        ]
+
+        # Issue 5707's only in-window event is debug-tagged. Issue 5705
+        # has a fully-tagged event so it should attach in every view.
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(5707).to_store_key(),
+            TimelineRecord(
+                event_id="d1", timestamp="2026-01-01T00:01:00Z",
+                event="claim.acquired",
+                data={"run_dir": "/tmp/r1", "views": ["debug"]},
+                source_event="claim.acquired",
+            ),
+        )
+        wt_store.append(
+            TimelineKey.for_issue(5705).to_store_key(),
+            TimelineRecord(
+                event_id="u1", timestamp="2026-01-01T00:01:30Z",
+                event="session.started",
+                data={"run_dir": "/tmp/r2", "views": ["debug", "ops", "user"]},
+                source_event="session.started",
+            ),
+        )
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.deps.timeline_store.read.return_value = e2e_records
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+
+            def _nums(evt):
+                return sorted(
+                    a["issue_number"] for a in evt.get("issue_affordances") or []
+                )
+
+            # User view: 5705 attaches (has user-tagged event), 5707 does not.
+            user_response = client.get(
+                f"/api/e2e-run-detail/{run_id}", params={"view": "user"},
+            )
+            assert user_response.status_code == 200
+            user_test_started = next(
+                e for e in user_response.json()["events"]
+                if e.get("event") == "e2e.test_started"
+            )
+            assert _nums(user_test_started) == [5705], (
+                "User view must show 5705 (user-tagged) and hide 5707 "
+                f"(debug-only) — got {_nums(user_test_started)}"
+            )
+
+            # Debug view: BOTH issues attach.
+            debug_response = client.get(
+                f"/api/e2e-run-detail/{run_id}", params={"view": "debug"},
+            )
+            assert debug_response.status_code == 200
+            debug_test_started = next(
+                e for e in debug_response.json()["events"]
+                if e.get("event") == "e2e.test_started"
+            )
+            assert _nums(debug_test_started) == [5705, 5707], (
+                "Debug view must show both issues — got "
+                f"{_nums(debug_test_started)}"
+            )
+        finally:
+            set_orchestrator(None)
+
+    def test_e2e_issue_detail_scopes_events_to_run_window(self, tmp_path):
+        """Cross-run leakage regression.
+
+        The e2e-worktree timeline is intentionally preserved across runs
+        for history. If the same issue number is used in two different
+        runs, the click-through drawer for run 1 must NOT show events
+        from run 2. The endpoint must scope ``wt_store.read(issue_number)``
+        output to the run's ``started_at`` / ``finished_at`` window.
+
+        Stages two e2e runs and writes two agent events for issue 42 —
+        one inside run 1's window, one inside run 2's window — then
+        asserts the click-through for each run returns only its own
+        events.
+        """
+        import sqlite3
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+
+        # Two runs with deterministic, non-overlapping windows.
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_1 = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_1, status="failed", duration_seconds=60.0)
+        run_2 = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch-2",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_2, status="failed", duration_seconds=60.0)
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                ("2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", run_1),
+            )
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                ("2026-01-01T01:00:00Z", "2026-01-01T01:05:00Z", run_2),
+            )
+
+        # Two events for issue 42, one in each run's window. Both have
+        # the semantic fields required by _retain_semantic_timeline_events.
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(42).to_store_key(),
+            TimelineRecord(
+                event_id="run1-evt", timestamp="2026-01-01T00:02:30Z",
+                event="session.started",
+                data={
+                    "run_dir": "/tmp/run1",
+                    "views": ["user", "ops", "debug"],
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "coding",
+                    "timeline_schema_version": 4,
+                    "narrative": "Run 1 session",
+                },
+                source_event="session.started",
+            ),
+        )
+        wt_store.append(
+            TimelineKey.for_issue(42).to_store_key(),
+            TimelineRecord(
+                event_id="run2-evt", timestamp="2026-01-01T01:02:30Z",
+                event="session.started",
+                data={
+                    "run_dir": "/tmp/run2",
+                    "views": ["user", "ops", "debug"],
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "coding",
+                    "timeline_schema_version": 4,
+                    "narrative": "Run 2 session",
+                },
+                source_event="session.started",
+            ),
+        )
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.deps.timeline_store = SqliteTimelineStore(
+            db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+
+            # Run 1 click-through must see ONLY run 1's event.
+            r1 = client.get(f"/api/e2e-run/{run_1}/issue-detail/42?view=debug")
+            assert r1.status_code == 200, r1.text
+            r1_ids = {e.get("event_id") for e in (r1.json().get("events") or [])}
+            assert "run1-evt" in r1_ids, (
+                f"run 1 event missing from run 1 drawer: ids={r1_ids}"
+            )
+            assert "run2-evt" not in r1_ids, (
+                f"run 1 drawer LEAKED run 2 event (cross-run contamination): "
+                f"ids={r1_ids}"
+            )
+
+            # Run 2 click-through must see ONLY run 2's event.
+            r2 = client.get(f"/api/e2e-run/{run_2}/issue-detail/42?view=debug")
+            assert r2.status_code == 200, r2.text
+            r2_ids = {e.get("event_id") for e in (r2.json().get("events") or [])}
+            assert "run2-evt" in r2_ids, (
+                f"run 2 event missing from run 2 drawer: ids={r2_ids}"
+            )
+            assert "run1-evt" not in r2_ids, (
+                f"run 2 drawer LEAKED run 1 event (cross-run contamination): "
+                f"ids={r2_ids}"
+            )
         finally:
             set_orchestrator(None)
 
@@ -832,22 +1101,28 @@ class TestE2ERunDetailEndpoint:
             assert response.status_code == 200
             events = response.json()["events"]
 
+            def _nums(evt):
+                return sorted(
+                    a["issue_number"] for a in evt.get("issue_affordances") or []
+                )
+
             test_started = next(e for e in events if e.get("event") == "e2e.test_started")
             test_completed = next(e for e in events if e.get("event") == "e2e.test_completed")
-            assert sorted(test_started.get("issue_numbers", [])) == [5677, 5678], (
-                f"web endpoint test_started lost identity: "
-                f"{test_started.get('issue_numbers')}"
+            assert _nums(test_started) == [5677, 5678], (
+                f"web endpoint test_started lost identity: {_nums(test_started)}"
             )
-            assert sorted(test_completed.get("issue_numbers", [])) == [5677, 5678], (
-                f"web endpoint test_completed lost identity: "
-                f"{test_completed.get('issue_numbers')}"
+            assert _nums(test_completed) == [5677, 5678], (
+                f"web endpoint test_completed lost identity: {_nums(test_completed)}"
             )
+            # And the run_id stamp is correct for every affordance.
+            for a in (test_started.get("issue_affordances") or []):
+                assert a["run_id"] == run_id
         finally:
             set_orchestrator(None)
 
-    def test_in_progress_test_window_attaches_issue_numbers(self):
+    def test_in_progress_test_window_attaches_issue_affordances(self):
         """Active e2e.test_started (no test_completed yet) must still attach
-        issue_numbers from agent activity during the live window.
+        issue_affordances from agent activity during the live window.
 
         Regression: the window-builder previously only emitted windows for
         completed test pairs, so clicking through to the issue detail or
@@ -883,8 +1158,10 @@ class TestE2ERunDetailEndpoint:
             events = payload.get("events", [])
             test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
             assert test_started is not None
-            assert test_started.get("issue_numbers") == [42], (
-                "In-progress test window must carry live issue_numbers so "
+            assert test_started.get("issue_affordances") == [
+                {"issue_number": 42, "run_id": 10},
+            ], (
+                "In-progress test window must carry live issue_affordances so "
                 "the timeline can navigate to issue detail before completion."
             )
         finally:
@@ -1018,8 +1295,8 @@ class TestE2ETimelineControlEndpoint:
         assert "setup" in toc_phases
         assert "teardown" in toc_phases
 
-    def test_snapshotted_agent_events_attach_issue_numbers(self, tmp_path):
-        """Snapshotted agent events annotate test events with issue_numbers
+    def test_snapshotted_agent_events_attach_issue_affordances(self, tmp_path):
+        """Snapshotted agent events annotate test events with issue_affordances
         for the navigation-based architecture (not nested as children)."""
         from fastapi.testclient import TestClient
         from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
@@ -1076,13 +1353,15 @@ class TestE2ETimelineControlEndpoint:
         assert len(events) == 2
         test_started = events[0]
         assert test_started["event"] == "e2e.test_started"
-        # Test event has issue_numbers annotation, not nested children
-        assert test_started.get("issue_numbers") == [42]
+        # Test event has issue_affordances annotation, not nested children
+        assert test_started.get("issue_affordances") == [
+            {"issue_number": 42, "run_id": 1},
+        ]
         # No nested children — frontend opens issue detail via openIssueDetail
         assert test_started.get("children", []) == []
 
-    def test_in_progress_test_window_attaches_issue_numbers(self, tmp_path):
-        """Control endpoint also pins live in-progress issue_numbers.
+    def test_in_progress_test_window_attaches_issue_affordances(self, tmp_path):
+        """Control endpoint also pins live in-progress issue_affordances.
 
         Mirrors the web-endpoint regression: while a test is still running
         (e2e.test_started without a matching e2e.test_completed), agent
@@ -1124,8 +1403,10 @@ class TestE2ETimelineControlEndpoint:
 
         test_started = next((e for e in events if e.get("event") == "e2e.test_started"), None)
         assert test_started is not None
-        assert test_started.get("issue_numbers") == [42], (
-            "Control endpoint must attach issue_numbers to in-progress test "
+        assert test_started.get("issue_affordances") == [
+            {"issue_number": 42, "run_id": 1},
+        ], (
+            "Control endpoint must attach issue_affordances to in-progress test "
             "windows so live runs remain navigable."
         )
 
@@ -1252,16 +1533,24 @@ class TestE2ETimelineControlEndpoint:
         assert response.status_code == 200
         events = response.json()["events"]
 
+        def _nums(evt):
+            return sorted(a["issue_number"] for a in evt.get("issue_affordances") or [])
+
         # Both the test_started and test_completed events must carry both
-        # issue numbers — the regression manifests as issue_numbers=[] here.
+        # issue numbers — the regression manifests as issue_affordances=[] here.
         test_started = next(e for e in events if e.get("event") == "e2e.test_started")
         test_completed = next(e for e in events if e.get("event") == "e2e.test_completed")
-        assert sorted(test_started.get("issue_numbers", [])) == [5677, 5678], (
-            f"test_started lost identity: {test_started.get('issue_numbers')}"
+        assert _nums(test_started) == [5677, 5678], (
+            f"test_started lost identity: {_nums(test_started)}"
         )
-        assert sorted(test_completed.get("issue_numbers", [])) == [5677, 5678], (
-            f"test_completed lost identity: {test_completed.get('issue_numbers')}"
+        assert _nums(test_completed) == [5677, 5678], (
+            f"test_completed lost identity: {_nums(test_completed)}"
         )
+        # Every affordance must carry the run_id so the frontend can
+        # route the click to the explicit e2e issue-detail endpoint.
+        for evt in (test_started, test_completed):
+            for a in evt.get("issue_affordances") or []:
+                assert a["run_id"] == run_id
 
 
 class TestControlIssueDetailEndpoint:

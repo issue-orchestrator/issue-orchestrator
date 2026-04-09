@@ -4365,8 +4365,25 @@ function getIssueDetailFocusableElements() {
     ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
 }
 
-async function openIssueDetail(issueNumber, triggerEl = null) {
+async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     if (!issueDetailDrawer) return;
+    // Dismiss the E2E run drawer (if open) when navigating into an
+    // issue detail from within it. Both use the same .modal-overlay
+    // stacking layer (z-index 30) above the side drawer (z-index 26),
+    // so without this the drawer would render underneath the run modal
+    // and its content would be unreachable. The navigation semantics
+    // are "leave the run-level view, go to this specific issue" — the
+    // user can return via the E2E tab.
+    if (opts && opts.e2eRunId) {
+        const e2eModal = document.getElementById('e2eDiagnosisModal');
+        if (e2eModal && e2eModal.classList.contains('visible')) {
+            if (typeof closeE2EDiagnosisModal === 'function') {
+                closeE2EDiagnosisModal();
+            } else {
+                e2eModal.classList.remove('visible');
+            }
+        }
+    }
     lastIssueDetailTrigger = triggerEl || document.activeElement;
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
@@ -4392,8 +4409,16 @@ async function openIssueDetail(issueNumber, triggerEl = null) {
     const closeBtn = document.getElementById('issueDetailCloseBtn');
     if (closeBtn) closeBtn.focus();
 
+    // Explicit routing: when this was launched from an E2E run drawer
+    // affordance, opts.e2eRunId tells us to fetch the issue's timeline
+    // directly from the e2e-worktree for that run. Otherwise fall
+    // through to the main orchestrator's issue-detail endpoint.
+    const url = (opts && opts.e2eRunId)
+        ? `/api/e2e-run/${opts.e2eRunId}/issue-detail/${issueNumber}?view=${timelineView}`
+        : `/api/issue-detail/${issueNumber}?view=${timelineView}`;
+
     try {
-        const res = await fetch(`/api/issue-detail/${issueNumber}?view=${timelineView}`);
+        const res = await fetch(url);
         if (!res.ok) {
             document.getElementById('issueDetailStatus').textContent = 'Issue detail unavailable.';
             return;
@@ -5165,11 +5190,13 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
             const actions = renderTimelineEventActions(evt.actions || []);
-            // E2E test events carry issue_numbers — render as clickable links
-            // that open the full dashboard issue detail view
-            const issueLinks = (Array.isArray(evt.issue_numbers) && evt.issue_numbers.length > 0)
-                ? `<div class="timeline-issue-links">Issues: ${evt.issue_numbers.map(n =>
-                    `<a href="#" onclick="event.preventDefault(); openIssueDetail(${n})">#${n}</a>`
+            // E2E test events carry issue_affordances — render as clickable links
+            // that open the issue detail drawer routed to the explicit
+            // /api/e2e-run/{run_id}/issue-detail/{N} endpoint (no base-repo
+            // fallback). Each affordance is {issue_number, run_id}.
+            const issueLinks = (Array.isArray(evt.issue_affordances) && evt.issue_affordances.length > 0)
+                ? `<div class="timeline-issue-links">Issues: ${evt.issue_affordances.map(a =>
+                    `<a href="#" onclick="event.preventDefault(); openIssueDetail(${a.issue_number}, null, {e2eRunId: ${a.run_id}})">#${a.issue_number}</a>`
                   ).join(' ')}</div>`
                 : '';
             const children = (evt.children && evt.children.length > 0)
