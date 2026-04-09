@@ -5176,11 +5176,20 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             // E2E test events carry issue_affordances — render as clickable links
             // that open the issue detail drawer routed to the explicit
             // /api/e2e-run/{run_id}/issue-detail/{N} endpoint (no base-repo
-            // fallback). Each affordance is {issue_number, run_id}.
+            // fallback). Each affordance is {issue_number, run_id, label?, branch_name?}.
+            // When a compact label is present we show "label (N)" and put
+            // the full branch name in the title attribute for hover;
+            // otherwise fall back to bare "#N".
             const issueLinks = (Array.isArray(evt.issue_affordances) && evt.issue_affordances.length > 0)
-                ? `<div class="timeline-issue-links">Issues: ${evt.issue_affordances.map(a =>
-                    `<a href="#" onclick="event.preventDefault(); openIssueDetail(${a.issue_number}, null, {e2eRunId: ${a.run_id}})">#${a.issue_number}</a>`
-                  ).join(' ')}</div>`
+                ? `<div class="timeline-issue-links">Issues: ${evt.issue_affordances.map(a => {
+                    const text = a.label
+                        ? `${escapeHtml(a.label)} (${a.issue_number})`
+                        : `#${a.issue_number}`;
+                    const title = a.branch_name
+                        ? ` title="${escapeAttr(a.branch_name)}"`
+                        : '';
+                    return `<a href="#"${title} onclick="event.preventDefault(); openIssueDetail(${a.issue_number}, null, {e2eRunId: ${a.run_id}})">${text}</a>`;
+                  }).join(' ')}</div>`
                 : '';
             // Surface pytest longrepr on failed/error e2e.test_completed
             // rows so users can see WHY a test failed without leaving

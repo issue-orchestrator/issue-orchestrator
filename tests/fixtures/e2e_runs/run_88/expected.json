@@ -1,0 +1,154 @@
+{
+  "run_id": 88,
+  "started_at": "2026-04-09T13:18:34.211215+00:00",
+  "finished_at": "2026-04-09T13:35:57.835557+00:00",
+  "agent_event_count": 175,
+  "distinct_issues_in_window": [
+    5712,
+    5713,
+    5714,
+    5717,
+    5718,
+    5719,
+    5720,
+    5721,
+    5722,
+    5723,
+    5724,
+    5725
+  ],
+  "test_count": 10,
+  "tests": [
+    {
+      "nodeid": "tests/e2e/test_claim_coordination.py::TestClaimCoordination::test_only_one_orchestrator_claims_issue",
+      "issue_affordances": []
+    },
+    {
+      "nodeid": "tests/e2e/test_claim_coordination.py::TestClaimTakeover::test_second_orchestrator_claims_after_first_crashes",
+      "issue_affordances": []
+    },
+    {
+      "nodeid": "tests/e2e/test_claim_coordination.py::TestNoDuplicateSessions::test_claim_prevents_duplicate_sessions",
+      "issue_affordances": [
+        {
+          "issue_number": 5712,
+          "run_id": 88,
+          "label": "claim-coordination",
+          "branch_name": "5712-e2e-claim-coordination-test-issue"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_concurrent_issues_seen_in_snapshots",
+      "issue_affordances": [
+        {
+          "issue_number": 5713,
+          "run_id": 88,
+          "label": "concurrent-1-pipeline",
+          "branch_name": "5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_concurrent_sessions_start",
+      "issue_affordances": [
+        {
+          "issue_number": 5713,
+          "run_id": 88,
+          "label": "concurrent-1-pipeline",
+          "branch_name": "5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test"
+        },
+        {
+          "issue_number": 5714,
+          "run_id": 88,
+          "label": "concurrent-2-pipeline",
+          "branch_name": "5714-m0-801-e2e-concurrent-2-concurrent-pipeline-test"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_pr_created_for_issue",
+      "issue_affordances": [
+        {
+          "issue_number": 5713,
+          "run_id": 88,
+          "label": "concurrent-1-pipeline",
+          "branch_name": "5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test"
+        },
+        {
+          "issue_number": 5714,
+          "run_id": 88,
+          "label": "concurrent-2-pipeline",
+          "branch_name": "5714-m0-801-e2e-concurrent-2-concurrent-pipeline-test"
+        },
+        {
+          "issue_number": 5717,
+          "run_id": 88,
+          "label": "pr-creation",
+          "branch_name": "5717-m0-851-e2e-pr-pr-creation-checkpoint"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestConcurrentPipelinePhases::test_review_outcome_for_issue",
+      "issue_affordances": [
+        {
+          "issue_number": 5713,
+          "run_id": 88,
+          "label": "concurrent-1-pipeline",
+          "branch_name": "5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test"
+        },
+        {
+          "issue_number": 5714,
+          "run_id": 88,
+          "label": "concurrent-2-pipeline",
+          "branch_name": "5714-m0-801-e2e-concurrent-2-concurrent-pipeline-test"
+        },
+        {
+          "issue_number": 5717,
+          "run_id": 88,
+          "label": "pr-creation",
+          "branch_name": "5717-m0-851-e2e-pr-pr-creation-checkpoint"
+        },
+        {
+          "issue_number": 5721,
+          "run_id": 88,
+          "label": "review-outcome",
+          "branch_name": "5721-m0-852-e2e-review-review-outcome-checkpoint"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_full_pipeline.py::TestEdgeCases::test_orchestrator_handles_no_matching_issues",
+      "issue_affordances": []
+    },
+    {
+      "nodeid": "tests/e2e/test_inflight_refresh_discovers_issue.py::test_inflight_refresh_discovers_issue",
+      "issue_affordances": [
+        {
+          "issue_number": 5723,
+          "run_id": 88,
+          "label": "inflight-discovery",
+          "branch_name": "5723-m0-067-inflight-discovery-test"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/e2e/test_issue_4057_production_flow.py::test_4057_production_real_agents_publish_gate_and_diagnostics",
+      "issue_affordances": [
+        {
+          "issue_number": 5723,
+          "run_id": 88,
+          "label": "inflight-discovery",
+          "branch_name": "5723-m0-067-inflight-discovery-test"
+        },
+        {
+          "issue_number": 5724,
+          "run_id": 88,
+          "label": "ui-surface-provider-cir\u2026",
+          "branch_name": "5724-m4-057-ui-surface-provider-circuit-breaker-status"
+        }
+      ]
+    }
+  ]
+}

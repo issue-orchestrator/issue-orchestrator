@@ -646,6 +646,26 @@ def test_issue_detail_drawer_stacks_above_modal_overlay() -> None:
     )
 
 
+def test_timeline_renders_affordance_label_with_hover_title() -> None:
+    """Affordances render as ``label (N)`` with full branch in hover title.
+
+    The matcher derives a compact label from the GitHub branch name
+    (strip milestone prefix, collapse duplicate tokens, cap at 24
+    chars). The renderer shows ``label (N)`` inline and puts the full
+    branch name in the anchor's ``title`` so users can reclaim the
+    untruncated detail on hover. Falls back to bare ``#N`` when no
+    label is present (e.g. non-e2e contexts).
+    """
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimeline")
+    # Must read the new structured fields.
+    assert "a.label" in body
+    assert "a.branch_name" in body
+    assert "title=" in body
+    # Fallback to bare "#N" when label is absent.
+    assert "`#${a.issue_number}`" in body
+
+
 def test_timeline_surfaces_failure_longrepr_inline_on_failed_rows() -> None:
     """e2e.test_completed events with a longrepr must render the
     failure message inline so users can see WHY a test failed without

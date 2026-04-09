@@ -78,7 +78,20 @@ def read_orchestrator_events_by_window(
     all_events: list[dict] = []
     for issue_num, records in by_issue.items():
         stream = TimelineStream.from_records(issue_num, records)
-        all_events.extend(evt.to_dict() for evt in stream.events)
+        events = [evt.to_dict() for evt in stream.events]
+        # Promote ``branch_name`` from the raw data blob onto the
+        # serialized event dict. TimelineEvent's dataclass doesn't
+        # carry it as a first-class field, so ``to_dict()`` would
+        # drop it — but the matcher needs it to build compact
+        # affordance labels ("concurrent-1-pipeline (5713)" instead
+        # of bare "#5713"). Matching is positional because
+        # TimelineStream.from_records preserves record order.
+        for evt, rec in zip(events, records):
+            data = rec.data if isinstance(rec.data, dict) else {}
+            branch = data.get("branch_name")
+            if isinstance(branch, str) and branch:
+                evt["branch_name"] = branch
+        all_events.extend(events)
 
     # Restore chronological order across issues
     all_events.sort(key=lambda e: e.get("timestamp", ""))
