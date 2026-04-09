@@ -1177,6 +1177,59 @@ class TestE2ERunDetailEndpoint:
         response = client.get("/api/e2e-run-detail/1")
         assert response.status_code == 503
 
+    def test_failed_test_event_carries_longrepr_and_outcome(self):
+        """e2e.test_completed events with outcome=failed must surface
+        the pytest ``longrepr`` in the API payload so the UI can render
+        the failure reason inline on the run-drawer row. Without this,
+        the user sees "Error" but no indication of WHY the test failed.
+        """
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        failure_text = (
+            "tests/e2e/test_example.py:42: in test_thing\n"
+            "    assert False, 'boom'\n"
+            "E   AssertionError: boom"
+        )
+        records = [
+            TimelineRecord(
+                event_id="s", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started",
+                data={"nodeid": "tests/e2e/test_example.py::test_thing"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="c", timestamp="2026-01-01T00:00:05Z",
+                event="e2e.test_completed",
+                data={
+                    "nodeid": "tests/e2e/test_example.py::test_thing",
+                    "outcome": "failed",
+                    "duration_seconds": 5.0,
+                    "is_quarantined": False,
+                    "longrepr": failure_text,
+                },
+                source_event="e2e.test_completed",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 200
+            events = response.json().get("events", [])
+            completed = next(
+                (e for e in events if e.get("event") == "e2e.test_completed"),
+                None,
+            )
+            assert completed is not None, "test_completed event missing"
+            assert completed.get("longrepr") == failure_text, (
+                f"longrepr was not promoted from data_json onto the event; "
+                f"got {completed.get('longrepr')!r}"
+            )
+            assert completed.get("outcome") == "failed"
+        finally:
+            set_orchestrator(None)
+
 
 class TestE2EAgentEventFiltering:
     """Agent events are filtered to story view before nesting."""

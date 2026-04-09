@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.staticfiles import StaticFiles
@@ -1839,6 +1839,87 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
     return IssueDetailPayload.model_validate(payload)
 
 
+def _load_test_result_backfill(
+    e2e_db_path: Optional[Path], run_id: int,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Read ``e2e_test_results`` for ``run_id`` and index longrepr/outcome by nodeid.
+
+    Historical e2e.test_completed timeline events may predate the
+    worker writing ``longrepr`` into the event payload. The e2e.db
+    ``e2e_test_results`` table is the authoritative source, so we
+    read it once per request and let callers merge the results onto
+    their timeline events.
+
+    Returns ``({}, {})`` if the database is missing, the run has no
+    results, or anything goes wrong — the caller falls back to whatever
+    is on the event itself.
+    """
+    longrepr_by_nodeid: dict[str, str] = {}
+    outcome_by_nodeid: dict[str, str] = {}
+    if e2e_db_path is None or not e2e_db_path.exists():
+        return longrepr_by_nodeid, outcome_by_nodeid
+    try:
+        from ..infra.e2e_db import E2EDB
+
+        details = E2EDB(e2e_db_path).run_details(run_id)
+    except Exception:
+        logger.debug(
+            "Could not load e2e_test_results for run %d", run_id, exc_info=True,
+        )
+        return longrepr_by_nodeid, outcome_by_nodeid
+    if not details:
+        return longrepr_by_nodeid, outcome_by_nodeid
+    for result in details.get("results") or []:
+        node = result.get("nodeid")
+        if not isinstance(node, str):
+            continue
+        lr = result.get("longrepr")
+        if isinstance(lr, str) and lr:
+            longrepr_by_nodeid[node] = lr
+        oc = result.get("outcome")
+        if isinstance(oc, str) and oc:
+            outcome_by_nodeid[node] = oc
+    return longrepr_by_nodeid, outcome_by_nodeid
+
+
+def _promote_e2e_test_event_fields(
+    raw_events: list[dict[str, Any]],
+    records: list[Any],
+    *,
+    run_id: int,
+    e2e_db_path: Optional[Path],
+) -> None:
+    """Promote ``nodeid``/``longrepr``/``outcome`` from data_json onto events.
+
+    The TimelineEvent schema is closed; fields not in its dataclass
+    never make it into ``evt.to_dict()``. For e2e.test_* events we
+    need nodeid (for window matching) plus longrepr/outcome (for
+    inline failure surfacing). Prefers the event's data blob, then
+    falls back to the e2e.db backfill for historical runs whose worker
+    didn't emit longrepr in the original payload.
+
+    Mutates ``raw_events`` in place.
+    """
+    longrepr_by_nodeid, outcome_by_nodeid = _load_test_result_backfill(
+        e2e_db_path, run_id,
+    )
+    for evt, rec in zip(raw_events, records):
+        data = rec.data if isinstance(rec.data, dict) else {}
+        nodeid = data.get("nodeid")
+        if isinstance(nodeid, str) and nodeid:
+            evt["nodeid"] = nodeid
+        longrepr = data.get("longrepr")
+        if not (isinstance(longrepr, str) and longrepr) and isinstance(nodeid, str):
+            longrepr = longrepr_by_nodeid.get(nodeid)
+        if isinstance(longrepr, str) and longrepr:
+            evt["longrepr"] = longrepr
+        outcome = data.get("outcome")
+        if not (isinstance(outcome, str) and outcome) and isinstance(nodeid, str):
+            outcome = outcome_by_nodeid.get(nodeid)
+        if isinstance(outcome, str) and outcome:
+            evt["outcome"] = outcome
+
+
 @app.get("/api/e2e-run-detail/{run_id}")
 async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     """Get E2E run detail using the shared issue-detail timeline pipeline.
@@ -1882,11 +1963,15 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
 
     stream = TimelineStream.from_records(store_key, e2e_records)
     raw_events = [evt.to_dict() for evt in stream.events]
-    # Promote nodeid from data blob for test event window matching
-    for evt, rec in zip(raw_events, e2e_records):
-        nodeid = rec.data.get("nodeid") if isinstance(rec.data, dict) else None
-        if isinstance(nodeid, str) and nodeid:
-            evt["nodeid"] = nodeid
+    _promote_e2e_test_event_fields(
+        raw_events,
+        e2e_records,
+        run_id=run_id,
+        e2e_db_path=(
+            _orchestrator.config.repo_root / ".issue-orchestrator" / "e2e.db"
+            if _orchestrator is not None else None
+        ),
+    )
     e2e_events = _filter_timeline_events(raw_events)
     agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 

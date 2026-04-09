@@ -4367,23 +4367,6 @@ function getIssueDetailFocusableElements() {
 
 async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     if (!issueDetailDrawer) return;
-    // Dismiss the E2E run drawer (if open) when navigating into an
-    // issue detail from within it. Both use the same .modal-overlay
-    // stacking layer (z-index 30) above the side drawer (z-index 26),
-    // so without this the drawer would render underneath the run modal
-    // and its content would be unreachable. The navigation semantics
-    // are "leave the run-level view, go to this specific issue" — the
-    // user can return via the E2E tab.
-    if (opts && opts.e2eRunId) {
-        const e2eModal = document.getElementById('e2eDiagnosisModal');
-        if (e2eModal && e2eModal.classList.contains('visible')) {
-            if (typeof closeE2EDiagnosisModal === 'function') {
-                closeE2EDiagnosisModal();
-            } else {
-                e2eModal.classList.remove('visible');
-            }
-        }
-    }
     lastIssueDetailTrigger = triggerEl || document.activeElement;
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
@@ -5199,6 +5182,18 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
                     `<a href="#" onclick="event.preventDefault(); openIssueDetail(${a.issue_number}, null, {e2eRunId: ${a.run_id}})">#${a.issue_number}</a>`
                   ).join(' ')}</div>`
                 : '';
+            // Surface pytest longrepr on failed/error e2e.test_completed
+            // rows so users can see WHY a test failed without leaving
+            // the run drawer. The e2e worker truncates at 4000 chars,
+            // so the <pre> is bounded. Expanded by default on
+            // failed rows; collapsed for everything else to keep the
+            // timeline scannable.
+            const failureDetail = (evt.longrepr && (evt.outcome === 'failed' || evt.status === 'error'))
+                ? `<details class="timeline-failure-detail" open>
+                        <summary class="timeline-failure-summary">Failure: ${escapeHtml((String(evt.longrepr).split('\\n').pop() || 'Test failed').trim())}</summary>
+                        <pre class="timeline-failure-longrepr">${escapeHtml(String(evt.longrepr))}</pre>
+                    </details>`
+                : '';
             const children = (evt.children && evt.children.length > 0)
                 ? renderTimelineChildren(evt.children)
                 : '';
@@ -5211,6 +5206,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
                     ${actions}
                     ${time}
                     ${summary}
+                    ${failureDetail}
                     ${issueLinks}
                     ${artifacts}
                     ${children}

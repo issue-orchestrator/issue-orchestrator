@@ -988,9 +988,56 @@ body.column-focus-mode .column-expanded {
     border-left: 1px solid var(--border);
     transform: translateX(100%);
     transition: transform 180ms ease;
-    z-index: 26;
+    /*
+     * Sits ABOVE .modal-overlay (z-index: 30) so that clicking an issue
+     * affordance from inside the E2E run drawer opens a usable drawer
+     * on top of the run modal. Closing the drawer returns the user to
+     * the run modal without reopening anything.
+     */
+    z-index: 35;
     display: flex;
     flex-direction: column;
+}
+
+/*
+ * Elevate the SHARED dialog modal (#modalOverlay — used by
+ * session-replay, validation-failure, review-transcript, etc.) above
+ * the issue-detail drawer when the drawer is currently visible, so
+ * clicking a timeline-action button inside the drawer produces a
+ * dialog that sits in front. Does NOT affect #e2eDiagnosisModal or
+ * other dedicated modal-overlay elements — they keep their base
+ * z-index: 30 and stay behind the drawer.
+ */
+:root:has(#issueDetailDrawer.visible) #modalOverlay.visible {
+    z-index: 45;
+}
+
+.timeline-failure-detail {
+    margin: 6px 0 4px;
+    padding: 6px 8px;
+    background: rgba(200, 60, 60, 0.08);
+    border-left: 3px solid var(--danger, #e57878);
+    border-radius: 3px;
+}
+.timeline-failure-summary {
+    cursor: pointer;
+    color: var(--danger, #e57878);
+    font-weight: 500;
+    font-size: 12px;
+}
+.timeline-failure-longrepr {
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--text-primary, #d7e2ef);
+    font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+    border-radius: 3px;
 }
 .issue-detail-drawer.visible {
     transform: translateX(0);

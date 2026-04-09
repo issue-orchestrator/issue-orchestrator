@@ -599,13 +599,6 @@ def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
     We scan the whole file rather than using ``_function_body`` because
     ``openIssueDetail`` has an ``opts = {}`` default parameter whose
     braces confuse the helper's naive body extractor.
-
-    Also pins the auto-close contract: when opened from an e2e run
-    drawer affordance, openIssueDetail must dismiss the
-    ``#e2eDiagnosisModal`` before rendering, otherwise the drawer
-    renders underneath the modal overlay (z-index conflict between
-    ``.modal-overlay`` at 30 and ``.issue-detail-drawer`` at 26) and
-    its content is unreachable.
     """
     js = _read(DASHBOARD_JS)
     # Isolate the block from "async function openIssueDetail" to the next
@@ -621,10 +614,77 @@ def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
     assert "/api/e2e-run/" in block
     assert "issue-detail/" in block
     assert "e2eRunId" in block
-    # Auto-close contract: opening from an e2e context must dismiss
-    # the e2e run modal so the drawer is not stuck behind it.
-    assert "e2eDiagnosisModal" in block
-    assert "closeE2EDiagnosisModal" in block
+
+
+def test_issue_detail_drawer_stacks_above_modal_overlay() -> None:
+    """Issue detail drawer must render ABOVE .modal-overlay (z-index 30).
+
+    Without this, clicking an issue affordance from inside the E2E
+    run drawer opens the issue drawer underneath the run modal — the
+    drawer is technically visible but its interactive region is
+    covered. We previously hacked around this by auto-dismissing the
+    run modal; the CSS fix lets both drawers coexist so closing the
+    issue drawer returns to the run drawer.
+    """
+    css = _read(DASHBOARD_CSS)
+    # Extract the .issue-detail-drawer rule block.
+    start = css.find(".issue-detail-drawer {")
+    assert start != -1, ".issue-detail-drawer rule not found"
+    end = css.find("}", start)
+    block = css[start:end]
+    # Strip block comments so the regex can't match a z-index that
+    # appears in documentation rather than the real declaration.
+    import re
+
+    block_no_comments = re.sub(r"/\*.*?\*/", "", block, flags=re.DOTALL)
+    match = re.search(r"z-index:\s*(\d+)", block_no_comments)
+    assert match, ".issue-detail-drawer has no z-index"
+    drawer_z = int(match.group(1))
+    assert drawer_z > 30, (
+        f".issue-detail-drawer z-index must be > 30 (modal-overlay) "
+        f"so it stacks above the e2e run modal; got {drawer_z}"
+    )
+
+
+def test_timeline_surfaces_failure_longrepr_inline_on_failed_rows() -> None:
+    """e2e.test_completed events with a longrepr must render the
+    failure message inline so users can see WHY a test failed without
+    leaving the run drawer. The renderer keys on ``evt.longrepr`` and
+    ``evt.outcome === 'failed'`` / ``evt.status === 'error'`` to decide
+    whether to emit the expandable detail block.
+    """
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimeline")
+    # The inline failure-detail block referenced by its dedicated class:
+    assert "timeline-failure-detail" in body
+    assert "timeline-failure-longrepr" in body
+    # Triggered by the longrepr field — if the worker stops emitting
+    # it or the endpoint stops promoting it, this assertion keeps the
+    # failure-surfacing contract intact.
+    assert "evt.longrepr" in body
+    # And the renderer must look at the outcome/status to know when to
+    # expand; otherwise every event would show a failure block.
+    assert "'failed'" in body or '"failed"' in body
+    assert "'error'" in body or '"error"' in body
+
+
+def test_shared_modal_overlay_elevates_above_drawer_when_drawer_visible() -> None:
+    """Session-replay / validation-failure / review-transcript modals,
+    which share ``#modalOverlay``, must elevate above the issue drawer
+    when the drawer is open — otherwise clicking a ``timeline-action-btn``
+    inside the drawer opens a modal that renders behind the drawer and
+    is unreachable.
+
+    Pinned as a CSS ``:has()`` rule so we don't need JS-side z-index
+    juggling for every modal opener.
+    """
+    css = _read(DASHBOARD_CSS)
+    assert ":has(#issueDetailDrawer.visible) #modalOverlay.visible" in css, (
+        "Missing CSS elevation rule for #modalOverlay when the issue "
+        "detail drawer is visible. Without it, modals opened from within "
+        "the drawer (session replay, validation failure, etc.) render "
+        "behind the drawer and become unreachable."
+    )
 
 
 def test_e2e_timeline_has_view_switcher() -> None:

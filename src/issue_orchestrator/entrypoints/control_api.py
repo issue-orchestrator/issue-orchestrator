@@ -4628,11 +4628,13 @@ async def e2e_run_timeline_endpoint(
 
         stream = TimelineStream.from_records(store_key, e2e_records)
         e2e_events = [evt.to_dict() for evt in stream.events]
-        # Promote nodeid from data blob for test event window matching
-        for evt, rec in zip(e2e_events, e2e_records):
-            nodeid = rec.data.get("nodeid") if isinstance(rec.data, dict) else None
-            if isinstance(nodeid, str) and nodeid:
-                evt["nodeid"] = nodeid
+        from ..entrypoints.web import _promote_e2e_test_event_fields
+        _promote_e2e_test_event_fields(
+            e2e_events,
+            e2e_records,
+            run_id=run_id,
+            e2e_db_path=validated_root / ".issue-orchestrator" / "e2e.db",
+        )
         agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
         if not agent_events:

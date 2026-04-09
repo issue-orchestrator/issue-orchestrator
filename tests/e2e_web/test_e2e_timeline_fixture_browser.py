@@ -455,15 +455,18 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # so a future regression in the recording endpoint, the PTY event
     # decoding, or the replay initialization cannot silently pass.
     #
-    # Note: the e2e run modal is expected to be auto-dismissed by
-    # ``openIssueDetail`` when invoked with an ``e2eRunId`` context.
-    # We assert this below — if it regresses, the drawer would be
-    # stuck behind the modal and the Session Recording button would
-    # be unreachable from the journey timeline. This pins the direct
-    # interaction path (click affordance → drawer usable → click
-    # session action) without any test-side workarounds.
+    # The E2E run drawer is expected to REMAIN visible behind the
+    # issue detail drawer — closing the issue drawer should return the
+    # user to the run drawer, not the dashboard. The stacking contract:
+    #
+    #   .modal-overlay (#e2eDiagnosisModal) .........  z-index 30
+    #   #issueDetailDrawer ..........................  z-index 35
+    #   #modalOverlay (session-replay, elevated) ....  z-index 45
+    #
+    # so every interaction layer above is reachable without dismissing
+    # the one beneath. We verify that invariant here.
     expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(
-        0, timeout=5000,
+        1, timeout=5000,
     )
 
     session_recording_btn = journey.locator(
