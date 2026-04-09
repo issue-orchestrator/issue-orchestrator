@@ -740,3 +740,133 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit breaker UI surfacing ---
+
+
+@dataclass
+class _ProviderCircuitStoreFake:
+    circuits: list
+
+    def list_all(self):
+        return list(self.circuits)
+
+
+@dataclass
+class _ProviderResilienceFake:
+    store: _ProviderCircuitStoreFake
+
+
+@dataclass
+class _DepsFake:
+    provider_resilience: _ProviderResilienceFake
+
+
+@dataclass
+class _OrchestratorWithDeps:
+    state: OrchestratorState
+    config: Config
+    deps: _DepsFake
+    shutdown_requested: bool = False
+
+
+def _make_open_circuit(provider: str, cooldown_seconds: int = 120):
+    from datetime import timezone
+
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+    now = datetime.now(timezone.utc)
+    return ProviderCircuitState(
+        provider=provider,
+        open_until=now + timedelta(seconds=cooldown_seconds),
+        consecutive_outages=2,
+        last_error_summary="rate limit",
+        updated_at=now,
+    )
+
+
+def test_open_provider_circuits_appear_in_view_model():
+    config = _make_config()
+    store = _ProviderCircuitStoreFake(circuits=[
+        _make_open_circuit("claude-code", cooldown_seconds=300),
+    ])
+    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(store=store))
+
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.open_provider_circuits) == 1
+    circuit = view_model.open_provider_circuits[0]
+    assert circuit["provider"] == "claude-code"
+    assert circuit["cooldown_remaining_seconds"] >= 1
+    assert circuit["cooldown_remaining_seconds"] <= 300
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "rate limit"
+    assert circuit["open_until"]  # ISO timestamp present
+
+    # dashboard_data exposes the same list for the API/UI payload
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["openProviderCircuits"] == view_model.open_provider_circuits
+
+
+def test_closed_or_expired_provider_circuits_are_excluded():
+    config = _make_config()
+    from datetime import timezone
+
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+
+    now = datetime.now(timezone.utc)
+    expired = ProviderCircuitState(
+        provider="expired",
+        open_until=now - timedelta(seconds=5),
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now,
+    )
+    closed = ProviderCircuitState(
+        provider="closed",
+        open_until=None,
+        consecutive_outages=0,
+        last_error_summary=None,
+        updated_at=now,
+    )
+    store = _ProviderCircuitStoreFake(circuits=[expired, closed])
+    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(store=store))
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.open_provider_circuits == []
+
+
+def test_no_deps_orchestrator_has_empty_provider_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.open_provider_circuits == []
+    assert view_model.dashboard_data()["openProviderCircuits"] == []
