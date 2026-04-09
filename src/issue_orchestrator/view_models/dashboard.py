@@ -82,6 +82,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_circuits: list[dict[str, Any]]
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -119,11 +121,13 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
     def dashboard_data(self) -> dict[str, Any]:
         github_usage = gh_audit.get_live_usage_snapshot()
+        open_breakers = [c for c in self.provider_circuits if c.get("is_open")]
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -141,6 +145,11 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": {
+                "items": self.provider_circuits,
+                "open_count": len(open_breakers),
+                "any_open": bool(open_breakers),
+            },
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1235,6 +1244,50 @@ def _build_e2e_view_model(
     }
 
 
+def _get_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
+    """Collect provider circuit breaker state from the orchestrator.
+
+    Returns an ordered list of circuit descriptors for UI consumption. Each
+    entry carries the provider name, whether the breaker is currently open,
+    cooldown window, consecutive outage count, and last error summary.
+    """
+    if orchestrator is None:
+        return []
+    deps = getattr(orchestrator, "deps", None)
+    manager = getattr(deps, "provider_resilience", None) if deps is not None else None
+    if manager is None:
+        # Allow tests to attach a resilience manager directly to the stub.
+        manager = getattr(orchestrator, "provider_resilience", None)
+    if manager is None:
+        return []
+    store = getattr(manager, "store", None)
+    if store is None:
+        return []
+    states = list(store.list_all())
+    now = datetime.now(timezone.utc)
+    circuits: list[dict[str, Any]] = []
+    for state in states:
+        open_until = state.open_until
+        is_open = open_until is not None and open_until > now
+        cooldown_remaining = (
+            max(0.0, (open_until - now).total_seconds()) if is_open and open_until else 0.0
+        )
+        circuits.append(
+            {
+                "provider": state.provider,
+                "is_open": is_open,
+                "status": "open" if is_open else "closed",
+                "open_until": open_until.isoformat() if open_until else None,
+                "cooldown_remaining_seconds": cooldown_remaining,
+                "consecutive_outages": int(state.consecutive_outages),
+                "last_error_summary": state.last_error_summary,
+                "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+            }
+        )
+    circuits.sort(key=lambda item: item["provider"])
+    return circuits
+
+
 def _normalize_tab(active_tab: str) -> str:
     # Map legacy tab names to new kanban-based tabs
     if active_tab in {"work", "active", "queue", "flow"}:
@@ -1254,6 +1307,7 @@ def build_dashboard_view_model(
     active_tab: str = "kanban",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
+    provider_circuits_provider: Callable[[Any], list[dict[str, Any]]] | None = None,
 ) -> DashboardViewModel:
     """Build dashboard view model for templates and APIs."""
     active_tab = _normalize_tab(active_tab)
@@ -1339,6 +1393,9 @@ def build_dashboard_view_model(
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
     e2e_status = e2e_status_provider(config)
+
+    provider_circuits_provider = provider_circuits_provider or _get_provider_circuits
+    provider_circuits = provider_circuits_provider(orchestrator)
 
     e2e_items = _build_e2e_items(config, e2e_status)
     e2e_total = len(e2e_items)
@@ -1470,4 +1527,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits,
     )

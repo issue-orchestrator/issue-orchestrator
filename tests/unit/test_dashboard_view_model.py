@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -18,6 +19,10 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -28,10 +33,16 @@ from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
 @dataclass
+class _ResilienceManagerStub:
+    store: Any
+
+
+@dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    provider_resilience: Any = None
 
 
 def _make_config() -> Config:
@@ -724,6 +735,119 @@ def test_view_model_api_endpoint():
         assert data["dashboard_data"]["queueRefreshSeconds"] == 600
     finally:
         set_orchestrator(original)
+
+
+def test_view_model_provider_circuits_empty_when_no_resilience_manager():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuits"]["items"] == []
+    assert dashboard_data["providerCircuits"]["open_count"] == 0
+    assert dashboard_data["providerCircuits"]["any_open"] is False
+
+
+def test_view_model_provider_circuits_surface_open_and_closed_states():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    now = datetime.now(timezone.utc)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(seconds=120),
+        consecutive_outages=3,
+        last_error_summary="overloaded",
+        updated_at=now,
+    ))
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=0,
+        last_error_summary=None,
+        updated_at=now,
+    ))
+    orchestrator = _OrchestratorStub(
+        state=state,
+        config=config,
+        provider_resilience=_ResilienceManagerStub(store=store),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    circuits = view_model.provider_circuits
+    assert [c["provider"] for c in circuits] == ["anthropic", "openai"]
+
+    anthropic = circuits[0]
+    assert anthropic["is_open"] is True
+    assert anthropic["status"] == "open"
+    assert anthropic["open_until"] is not None
+    assert anthropic["cooldown_remaining_seconds"] > 0
+    assert anthropic["consecutive_outages"] == 3
+    assert anthropic["last_error_summary"] == "overloaded"
+
+    openai = circuits[1]
+    assert openai["is_open"] is False
+    assert openai["status"] == "closed"
+    assert openai["open_until"] is None
+    assert openai["cooldown_remaining_seconds"] == 0.0
+    assert openai["consecutive_outages"] == 0
+
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuits"]["open_count"] == 1
+    assert dashboard_data["providerCircuits"]["any_open"] is True
+    assert len(dashboard_data["providerCircuits"]["items"]) == 2
+
+
+def test_view_model_provider_circuits_provider_override():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    injected = [
+        {
+            "provider": "claude",
+            "is_open": True,
+            "status": "open",
+            "open_until": "2099-01-01T00:00:00+00:00",
+            "cooldown_remaining_seconds": 45.0,
+            "consecutive_outages": 2,
+            "last_error_summary": "rate_limit",
+            "updated_at": "2099-01-01T00:00:00+00:00",
+        }
+    ]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuits_provider=lambda _: injected,
+    )
+
+    assert view_model.provider_circuits == injected
+    assert view_model.template_context()["provider_circuits"] == injected
+    # dashboard_data carries provider circuits for the JS client.
+    serialized = view_model.to_dict()["dashboard_data"]["providerCircuits"]
+    assert serialized["items"] == injected
+    assert serialized["any_open"] is True
+    assert serialized["open_count"] == 1
 
 
 def test_view_model_matches_public_contract():
