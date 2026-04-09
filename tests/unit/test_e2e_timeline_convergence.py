@@ -435,6 +435,77 @@ class TestNestOrchestratorEvents:
         assert events[0]["children"][0]["event"] == "session.completed"
 
 
+class TestCompactBranchLabel:
+    """Pin the derivation of compact affordance labels from branch names.
+
+    The matcher turns raw GitHub branch names like
+    ``5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test`` into
+    short human-readable labels like ``concurrent-1-pipeline`` that
+    fit on a single affordance row in the drawer. The extraction
+    applies several opinionated rules (strip number prefix, strip
+    milestone prefix, strip ``e2e-`` anywhere, strip trailing
+    decorative suffixes, dedupe tokens, cap at 24 chars). If any of
+    those rules regress, users lose readable labels silently and fall
+    back to bare ``#N`` — so we pin each rule explicitly.
+    """
+
+    def _extract(self, branch_name: str, issue_number: int):
+        from issue_orchestrator.entrypoints.control_api import (
+            _compact_branch_label,
+        )
+        return _compact_branch_label(branch_name, issue_number)
+
+    def test_strips_issue_number_prefix(self) -> None:
+        assert self._extract("5712-foo-bar", 5712) == "foo-bar"
+
+    def test_strips_leading_milestone_prefix(self) -> None:
+        assert self._extract("5723-m0-067-inflight-discovery-test", 5723) == (
+            "inflight-discovery"
+        )
+
+    def test_strips_e2e_token_at_start_and_middle(self) -> None:
+        assert self._extract("5712-e2e-claim-coordination-test-issue", 5712) == (
+            "claim-coordination"
+        )
+
+    def test_strips_trailing_decorative_suffixes(self) -> None:
+        assert self._extract("5717-m0-851-pr-creation-checkpoint", 5717) == (
+            "pr-creation"
+        )
+        assert self._extract("5500-foo-test", 5500) == "foo"
+        assert self._extract("5500-foo-test-issue", 5500) == "foo"
+        assert self._extract("5500-foo-test-data", 5500) == "foo"
+        assert self._extract("5500-foo-status", 5500) == "foo"
+
+    def test_dedupes_duplicate_tokens_non_adjacent(self) -> None:
+        """``concurrent-1-concurrent-pipeline`` → ``concurrent-1-pipeline``."""
+        assert self._extract(
+            "5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test", 5713,
+        ) == "concurrent-1-pipeline"
+
+    def test_dedupes_duplicate_tokens_adjacent(self) -> None:
+        """``pr-pr-creation`` → ``pr-creation``."""
+        assert self._extract(
+            "5717-m0-851-e2e-pr-pr-creation-checkpoint", 5717,
+        ) == "pr-creation"
+
+    def test_caps_at_24_chars_with_ellipsis(self) -> None:
+        label = self._extract(
+            "5724-m4-057-ui-surface-provider-circuit-breaker-status", 5724,
+        )
+        assert label is not None
+        assert len(label) <= 24
+        assert label.endswith("\u2026")
+        assert label.startswith("ui-surface-provider")
+
+    def test_returns_none_for_empty_or_missing(self) -> None:
+        assert self._extract("", 5000) is None
+        assert self._extract("   ", 5000) is None
+
+    def test_handles_branch_without_milestone_or_e2e_prefix(self) -> None:
+        assert self._extract("5400-feature-branch", 5400) == "feature-branch"
+
+
 class TestOrchestratorWindowExcludesE2EEvents:
     """read_orchestrator_events_by_window must not return E2E run events."""
 
@@ -1176,6 +1247,59 @@ class TestE2ERunDetailEndpoint:
         client = TestClient(app)
         response = client.get("/api/e2e-run-detail/1")
         assert response.status_code == 503
+
+    def test_failed_test_event_carries_longrepr_and_outcome(self):
+        """e2e.test_completed events with outcome=failed must surface
+        the pytest ``longrepr`` in the API payload so the UI can render
+        the failure reason inline on the run-drawer row. Without this,
+        the user sees "Error" but no indication of WHY the test failed.
+        """
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        failure_text = (
+            "tests/e2e/test_example.py:42: in test_thing\n"
+            "    assert False, 'boom'\n"
+            "E   AssertionError: boom"
+        )
+        records = [
+            TimelineRecord(
+                event_id="s", timestamp="2026-01-01T00:00:00Z",
+                event="e2e.test_started",
+                data={"nodeid": "tests/e2e/test_example.py::test_thing"},
+                source_event="e2e.test_started",
+            ),
+            TimelineRecord(
+                event_id="c", timestamp="2026-01-01T00:00:05Z",
+                event="e2e.test_completed",
+                data={
+                    "nodeid": "tests/e2e/test_example.py::test_thing",
+                    "outcome": "failed",
+                    "duration_seconds": 5.0,
+                    "is_quarantined": False,
+                    "longrepr": failure_text,
+                },
+                source_event="e2e.test_completed",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 200
+            events = response.json().get("events", [])
+            completed = next(
+                (e for e in events if e.get("event") == "e2e.test_completed"),
+                None,
+            )
+            assert completed is not None, "test_completed event missing"
+            assert completed.get("longrepr") == failure_text, (
+                f"longrepr was not promoted from data_json onto the event; "
+                f"got {completed.get('longrepr')!r}"
+            )
+            assert completed.get("outcome") == "failed"
+        finally:
+            set_orchestrator(None)
 
 
 class TestE2EAgentEventFiltering:

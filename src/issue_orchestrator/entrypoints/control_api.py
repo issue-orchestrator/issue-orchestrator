@@ -4445,17 +4445,118 @@ def _build_test_windows(
     return windows
 
 
+_BRANCH_LABEL_MAX_LEN = 24
+_BRANCH_LABEL_STRIP_SUFFIXES = (
+    "-test-issue",
+    "-test-data",
+    "-checkpoint",
+    "-status",
+    "-test",
+)
+
+
+def _compact_branch_label(branch_name: str, issue_number: int) -> str | None:
+    """Derive a short human-readable label from a GitHub branch name.
+
+    The e2e tests create issues with branch names like
+    ``5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test``. The
+    descriptive portion buried inside (``concurrent-1-pipeline``) is
+    what the user wants to see on the affordance — not the raw
+    branch or just the issue number.
+
+    Transformations applied in order:
+
+    1. Strip the leading ``<issue_number>-`` prefix.
+    2. Strip a leading ``m<digits>-<digits>-`` milestone prefix (the
+       milestone identifier is useful for grepping but noisy inline —
+       the full branch name is still available via a hover title).
+    3. Strip any ``e2e-`` token anywhere in the slug (it's implicit
+       in this context).
+    4. Strip trailing ``-test`` / ``-test-issue`` / ``-checkpoint`` /
+       ``-status`` / ``-test-data`` suffixes — these are template
+       tails that don't discriminate between issues in the same run.
+    5. Collapse duplicate tokens (any position, not just adjacent)
+       so ``pr-pr-creation`` becomes ``pr-creation`` and
+       ``concurrent-1-concurrent-pipeline`` becomes
+       ``concurrent-1-pipeline``.
+    6. Cap at ``_BRANCH_LABEL_MAX_LEN`` characters with an ellipsis;
+       the full original branch name goes in the affordance's
+       ``title`` so the user can hover to reclaim it.
+
+    Returns ``None`` if the cleaned label collapses to empty.
+    """
+    import re
+
+    if not isinstance(branch_name, str) or not branch_name.strip():
+        return None
+    s = branch_name.strip()
+    prefix = f"{issue_number}-"
+    if s.startswith(prefix):
+        s = s[len(prefix):]
+    # Milestone prefix: m<digits>-<digits>-
+    s = re.sub(r"^m\d+-\d+-", "", s)
+    # e2e- token anywhere (at start or after a dash)
+    s = re.sub(r"(^|-)e2e-", r"\1", s)
+    # Strip trailing decorative suffixes (longest first so "-test-issue"
+    # wins over "-test").
+    for suffix in _BRANCH_LABEL_STRIP_SUFFIXES:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+            break
+    # Dedupe tokens, keeping the FIRST occurrence of each. Catches both
+    # adjacent ("pr-pr-") and non-adjacent ("concurrent-1-concurrent-")
+    # duplication.
+    parts = [p for p in s.split("-") if p]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for part in parts:
+        if part in seen:
+            continue
+        seen.add(part)
+        unique.append(part)
+    s = "-".join(unique)
+    if not s:
+        return None
+    if len(s) > _BRANCH_LABEL_MAX_LEN:
+        s = s[: _BRANCH_LABEL_MAX_LEN - 1] + "\u2026"
+    return s
+
+
+def _collect_branch_names_by_issue(agent_events: list[dict]) -> dict[int, str]:
+    """Index the first non-empty ``branch_name`` seen per issue.
+
+    Only certain agent events carry ``branch_name`` (notably
+    ``session.started`` and ``agent.coding_started``). We just need
+    one per issue, so we stop as soon as we have it.
+    """
+    by_issue: dict[int, str] = {}
+    for evt in agent_events:
+        issue_num = evt.get("issue_number")
+        if not isinstance(issue_num, int) or issue_num <= 0:
+            continue
+        if issue_num in by_issue:
+            continue
+        branch = evt.get("branch_name")
+        if isinstance(branch, str) and branch.strip():
+            by_issue[issue_num] = branch.strip()
+    return by_issue
+
+
 def _assign_issue_to_window(
     windows: list[tuple[str, str | None, dict]],
     ts: str,
     issue_num: int,
     run_id: int,
+    label: str | None = None,
+    branch_name: str | None = None,
 ) -> None:
     """Append an affordance for ``issue_num`` to the first window containing ``ts``.
 
     Each affordance is a dict carrying the run_id so the frontend can
     route the click to the explicit e2e issue-detail endpoint without
-    needing a base-repo fallback.
+    needing a base-repo fallback. When a compact ``label`` is supplied
+    the frontend renders ``{label} (N)`` instead of bare ``#N``; the
+    full ``branch_name`` is carried separately for hover/title usage.
 
     A window with ``end_ts is None`` is still in progress and matches any
     timestamp at or after its ``start_ts``.
@@ -4467,7 +4568,12 @@ def _assign_issue_to_window(
             continue
         affordances = parent_evt["issue_affordances"]
         if not any(a["issue_number"] == issue_num for a in affordances):
-            affordances.append({"issue_number": issue_num, "run_id": run_id})
+            entry: dict[str, Any] = {"issue_number": issue_num, "run_id": run_id}
+            if label:
+                entry["label"] = label
+            if branch_name:
+                entry["branch_name"] = branch_name
+            affordances.append(entry)
         return
 
 
@@ -4536,6 +4642,7 @@ def _attach_issue_numbers_to_test_windows(
         return e2e_events
 
     visible_issues = _issues_visible_in_view(agent_events, view)
+    branch_by_issue = _collect_branch_names_by_issue(agent_events)
     windows = _build_test_windows(e2e_events)
     for agent_evt in agent_events:
         issue_num = agent_evt.get("issue_number")
@@ -4543,8 +4650,15 @@ def _attach_issue_numbers_to_test_windows(
             continue
         if issue_num not in visible_issues:
             continue
+        branch = branch_by_issue.get(issue_num)
+        label = _compact_branch_label(branch, issue_num) if branch else None
         _assign_issue_to_window(
-            windows, agent_evt.get("timestamp", ""), issue_num, run_id,
+            windows,
+            agent_evt.get("timestamp", ""),
+            issue_num,
+            run_id,
+            label=label,
+            branch_name=branch,
         )
 
     return e2e_events
@@ -4628,11 +4742,13 @@ async def e2e_run_timeline_endpoint(
 
         stream = TimelineStream.from_records(store_key, e2e_records)
         e2e_events = [evt.to_dict() for evt in stream.events]
-        # Promote nodeid from data blob for test event window matching
-        for evt, rec in zip(e2e_events, e2e_records):
-            nodeid = rec.data.get("nodeid") if isinstance(rec.data, dict) else None
-            if isinstance(nodeid, str) and nodeid:
-                evt["nodeid"] = nodeid
+        from ..entrypoints.web import _promote_e2e_test_event_fields
+        _promote_e2e_test_event_fields(
+            e2e_events,
+            e2e_records,
+            run_id=run_id,
+            e2e_db_path=validated_root / ".issue-orchestrator" / "e2e.db",
+        )
         agent_events = [r.data for r in snapshot_records if isinstance(r.data, dict)]
 
         if not agent_events:

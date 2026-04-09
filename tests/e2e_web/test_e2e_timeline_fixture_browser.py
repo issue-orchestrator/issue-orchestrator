@@ -39,7 +39,20 @@ from tests.fixtures.web_contract_mocks import MockOrchestratorForWeb
 
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "e2e_runs"
-RUN_87_FIXTURE = FIXTURE_DIR / "run_87"
+RUN_FIXTURE = FIXTURE_DIR / "run_88"
+RUN_FIXTURE_ID = 88
+
+# Issue used for the session-log click-through in run_88. This issue
+# appears in both test_inflight_refresh_discovers_issue and test_4057
+# rows (per expected.json), so whichever row the test clicks, the
+# synthetic session recording is reachable. Its compact branch label
+# renders as "inflight-discovery".
+TEST_CLICK_ISSUE_NUMBER = 5723
+TEST_CLICK_ISSUE_LABEL = "inflight-discovery"
+# Second issue on the test_4057 row — used to verify multi-affordance
+# row rendering with distinct labels.
+TEST_CLICK_ISSUE_NUMBER_2 = 5724
+TEST_CLICK_ISSUE_LABEL_2 = "ui-surface-provider-cir\u2026"
 
 
 def _find_free_port() -> int:
@@ -168,11 +181,11 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
 
     In addition to the base fixture copy, this stager materializes ONE
     real session run_dir at ``tmp_path/session1`` containing a
-    synthetic ``terminal-recording.jsonl``, and rewires a specific
-    issue-5705 event to reference it. This lets the Playwright test
-    verify the full click-through from timeline row → issue detail
-    drawer → session recording modal → terminal content. Without this
-    step the fixture has no session logs to view.
+    synthetic ``terminal-recording.jsonl``, and rewires the
+    ``TEST_CLICK_ISSUE_NUMBER`` event to reference it. This lets the
+    Playwright test verify the full click-through from timeline row →
+    issue detail drawer → session recording modal → terminal content.
+    Without this step the fixture has no session logs to view.
 
     Also writes a minimal default.yaml so the run-details endpoint
     (which the dashboard fetches in parallel with the timeline
@@ -192,7 +205,7 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     shutil.copy(fixture / "worktree_timeline.sqlite", wt_state / "timeline.sqlite")
     (config_dir / "default.yaml").write_text(_MINIMAL_CONFIG_YAML)
 
-    # Materialize a real session run_dir and wire issue 5705's
+    # Materialize a real session run_dir and wire the target issue's
     # agent.coding_started event to point at it. The run_dir must
     # contain a non-empty terminal-recording.jsonl for both the action
     # decorator and the session-replay endpoint to surface real data.
@@ -200,7 +213,7 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     _materialize_synthetic_session_dir(session_dir)
     _wire_event_to_session_dir(
         wt_state / "timeline.sqlite",
-        issue_number=5705,
+        issue_number=TEST_CLICK_ISSUE_NUMBER,
         event_name="agent.coding_started",
         session_dir=session_dir,
     )
@@ -243,13 +256,13 @@ def fixture_web_server(tmp_path: Path) -> dict[str, object]:
     pointing at the staged layout. ``deps.timeline_store`` is wired to a
     real SqliteTimelineStore for completeness.
     """
-    if not RUN_87_FIXTURE.exists():
+    if not RUN_FIXTURE.exists():
         pytest.skip(
-            f"run_87 fixture missing at {RUN_87_FIXTURE}. "
-            "Capture with: scripts/snapshot_e2e_run.py --run-id 87"
+            f"{RUN_FIXTURE.name} fixture missing at {RUN_FIXTURE}. "
+            f"Capture with: scripts/snapshot_e2e_run.py --run-id {RUN_FIXTURE_ID}"
         )
 
-    repo_root = _stage_fixture(RUN_87_FIXTURE, tmp_path)
+    repo_root = _stage_fixture(RUN_FIXTURE, tmp_path)
     base_store = SqliteTimelineStore(
         db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
     )
@@ -292,7 +305,7 @@ def fixture_web_server(tmp_path: Path) -> dict[str, object]:
         yield {
             "url": f"http://127.0.0.1:{port}",
             "repo_root": repo_root,
-            "run_id": 87,
+            "run_id": RUN_FIXTURE_ID,
         }
     finally:
         server.stop()
@@ -320,18 +333,21 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
        endpoint payload — not just an empty skeleton. We look up the
        canonical ``test_4057`` event by its summary text and assert it
        exists before probing its issue-link content.
-    2. The ``test_4057`` row carries exactly ``#5705`` and ``#5706`` —
-       scoped to that specific ``.timeline-event`` card, not to any
-       global anchor anywhere in the modal. This catches misattached
-       links that "exist somewhere" but on the wrong row.
+    2. The ``test_4057`` row carries exactly the two expected issue
+       affordances (for run_88: 5723 + 5724, rendered as compact
+       branch labels "inflight-discovery (5723)" and
+       "ui-surface-provider-cir… (5724)"), scoped to that specific
+       ``.timeline-event`` card so misattached links on the wrong row
+       are caught.
     3. A neighboring row (``test_inflight_refresh_discovers_issue``)
-       carries ``#5705`` but NOT ``#5706`` — a negative assertion that
-       prevents false positives from cross-row contamination.
-    4. Clicking ``#5705`` causes the issue-detail drawer to render
-       journey content (``.journey-run``) — not just an optimistic
-       title that shows before the fetch completes. We also assert
-       the status line is no longer "Loading..." or "unavailable",
-       and no ``.timeline-empty`` placeholder is present.
+       carries ONLY issue 5723 — a negative assertion that prevents
+       false positives from cross-row contamination.
+    4. Clicking the ``inflight-discovery (5723)`` link causes the
+       issue-detail drawer to render journey content
+       (``.journey-run``) — not just an optimistic title that shows
+       before the fetch completes. We also assert the status line is
+       no longer "Loading..." or "unavailable", and no
+       ``.timeline-empty`` placeholder is present.
 
     Action-button assertions are intentionally out of scope: the staged
     fixture uses sanitized run_dir paths that don't exist on disk, so
@@ -381,17 +397,36 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     )
 
     # --- Ask 1: scope link assertions to the test_4057 row ---
+    # Affordances now render as "label (N)" with a hover title carrying
+    # the full branch name. For run_88, test_4057 carries 5723 and 5724:
+    #
+    #   "inflight-discovery (5723)"        ← same issue as test_inflight
+    #   "ui-surface-provider-cir… (5724)"  ← truncated by 24-char cap
+    #
     test_4057_links = test_4057_event.locator(".timeline-issue-links a")
     expect(test_4057_links).to_have_count(2, timeout=5000)
     link_texts = sorted(test_4057_links.all_text_contents())
-    assert link_texts == ["#5705", "#5706"], (
-        f"test_4057 row should carry exactly [#5705, #5706] but got "
-        f"{link_texts!r}"
+    expected_texts = sorted([
+        f"{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})",
+        f"{TEST_CLICK_ISSUE_LABEL_2} ({TEST_CLICK_ISSUE_NUMBER_2})",
+    ])
+    assert link_texts == expected_texts, (
+        f"test_4057 row should carry {expected_texts!r} but got {link_texts!r}"
     )
+    # Hover titles must carry the full (untruncated) branch name so users
+    # can reclaim the detail hidden by the 24-char cap.
+    for link in test_4057_links.all():
+        title = link.get_attribute("title") or ""
+        assert title.startswith(f"{TEST_CLICK_ISSUE_NUMBER}-") or title.startswith(
+            f"{TEST_CLICK_ISSUE_NUMBER_2}-"
+        ), (
+            f"test_4057 affordance is missing its full branch_name title: "
+            f"got {title!r}"
+        )
 
     # --- Ask 2: negative assertion on a neighboring row ---
-    # test_inflight_refresh_discovers_issue carries ONLY #5705 per the
-    # fixture's expected.json. Catch misattached links (e.g. #5706
+    # test_inflight_refresh_discovers_issue carries ONLY issue 5723 per
+    # the fixture's expected.json. Catch misattached links (e.g. 5724
     # leaking from test_4057) by asserting the link set.
     test_inflight_event = timeline_panel.locator(
         ".timeline-event",
@@ -401,21 +436,28 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     inflight_links = test_inflight_event.locator(".timeline-issue-links a")
     expect(inflight_links).to_have_count(1, timeout=5000)
     inflight_texts = sorted(inflight_links.all_text_contents())
-    assert inflight_texts == ["#5705"], (
-        f"test_inflight_refresh row should carry exactly [#5705] but got "
-        f"{inflight_texts!r} — a link from another row has leaked in"
+    assert inflight_texts == [
+        f"{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})"
+    ], (
+        f"test_inflight_refresh row should carry only "
+        f"[{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})] "
+        f"but got {inflight_texts!r} — a link from another row has leaked in"
     )
 
     # --- Ask 3: click-through must prove the drawer loaded data ---
-    # Click the #5705 link scoped to the test_4057 row (not the
-    # matching one in the inflight row) so the click-through assertion
-    # is about the test_4057 affordance specifically.
-    test_4057_links.filter(has_text="#5705").first.click()
+    # Click the inflight-discovery link scoped to the test_4057 row
+    # (not the matching one in the inflight row) so the click-through
+    # assertion is about the test_4057 affordance specifically.
+    test_4057_links.filter(
+        has_text=f"{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})"
+    ).first.click()
 
     detail_drawer = page.locator("#issueDetailDrawer.visible")
     expect(detail_drawer).to_be_visible(timeout=5000)
     # Title alone is not sufficient — it's set before the fetch completes.
-    expect(page.locator("#issueDetailTitle")).to_contain_text("Issue #5705")
+    expect(page.locator("#issueDetailTitle")).to_contain_text(
+        f"Issue #{TEST_CLICK_ISSUE_NUMBER}"
+    )
 
     # Wait for the journey to actually render. The endpoint returns
     # events structured as runs/cycles, so on success #issueDetailJourney
@@ -438,6 +480,60 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         f"drawer showing failure state: {status_text!r}"
     )
 
+    # --- Focus button → #timelineModal stacks ABOVE the drawer ---
+    # The Focus button in the drawer header opens a separate
+    # #timelineModal (class .modal-overlay) via openTimelineModal.
+    # This is a DIFFERENT element from #modalOverlay, and a regression
+    # in the CSS stacking rule would leave it rendering behind the
+    # drawer. We assert the modal (a) becomes visible, (b) is
+    # hit-testable at its own center (nothing is covering it), and
+    # (c) can be dismissed without also dismissing the drawer.
+    focus_btn = page.locator("#issueDetailFocusBtn")
+    expect(focus_btn).to_be_visible(timeout=5000)
+    focus_btn.click()
+
+    timeline_modal = page.locator("#timelineModal.visible")
+    expect(timeline_modal).to_be_visible(timeout=5000)
+    expect(page.locator("#timelineModalTitle")).to_contain_text(
+        f"Timeline #{TEST_CLICK_ISSUE_NUMBER}"
+    )
+
+    # Hit-test: the element at the modal's geometric center must be
+    # inside #timelineModal, not inside #issueDetailDrawer. If the
+    # drawer stacks above the modal, document.elementFromPoint() at
+    # the modal center returns something inside the drawer.
+    hit_result = page.evaluate(
+        """
+        (() => {
+            const m = document.getElementById('timelineModal');
+            if (!m) return { error: 'no-modal' };
+            const r = m.getBoundingClientRect();
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            const el = document.elementFromPoint(cx, cy);
+            if (!el) return { error: 'no-element' };
+            const inModal = !!el.closest('#timelineModal');
+            const inDrawer = !!el.closest('#issueDetailDrawer');
+            return { tag: el.tagName, inModal, inDrawer };
+        })()
+        """
+    )
+    assert hit_result.get("inModal"), (
+        f"#timelineModal is not hit-testable at its center — the drawer "
+        f"or another element is covering it: {hit_result!r}"
+    )
+    assert not hit_result.get("inDrawer"), (
+        f"drawer is intercepting clicks meant for #timelineModal: "
+        f"{hit_result!r}"
+    )
+
+    # Dismiss the timeline modal via its close button and verify the
+    # drawer is still visible underneath (closing the modal must not
+    # close the drawer).
+    page.locator("#timelineModal .modal-close").first.click()
+    expect(page.locator("#timelineModal.visible")).to_have_count(0, timeout=5000)
+    expect(page.locator("#issueDetailDrawer.visible")).to_have_count(1)
+
     # --- Session Recording click-through ---
     # The fixture stager wired one agent.coding_started event for
     # issue 5705 at a real tmp_path run_dir with a synthetic
@@ -455,15 +551,18 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # so a future regression in the recording endpoint, the PTY event
     # decoding, or the replay initialization cannot silently pass.
     #
-    # Note: the e2e run modal is expected to be auto-dismissed by
-    # ``openIssueDetail`` when invoked with an ``e2eRunId`` context.
-    # We assert this below — if it regresses, the drawer would be
-    # stuck behind the modal and the Session Recording button would
-    # be unreachable from the journey timeline. This pins the direct
-    # interaction path (click affordance → drawer usable → click
-    # session action) without any test-side workarounds.
+    # The E2E run drawer is expected to REMAIN visible behind the
+    # issue detail drawer — closing the issue drawer should return the
+    # user to the run drawer, not the dashboard. The stacking contract:
+    #
+    #   .modal-overlay (#e2eDiagnosisModal) .........  z-index 30
+    #   #issueDetailDrawer ..........................  z-index 35
+    #   #modalOverlay (session-replay, elevated) ....  z-index 45
+    #
+    # so every interaction layer above is reachable without dismissing
+    # the one beneath. We verify that invariant here.
     expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(
-        0, timeout=5000,
+        1, timeout=5000,
     )
 
     session_recording_btn = journey.locator(

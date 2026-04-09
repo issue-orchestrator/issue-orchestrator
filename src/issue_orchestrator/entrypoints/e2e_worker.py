@@ -14,7 +14,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import Any, TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
@@ -142,12 +142,22 @@ class ResultPlugin:
         # Clear current_test after completion
         self.db.update_progress(self.run_id, current_test=None)
 
-        _emit_run_event(self.run_id, "e2e.test_completed", {
+        event_data: dict[str, Any] = {
             "nodeid": nodeid,
             "outcome": outcome,
             "duration_seconds": duration,
             "is_quarantined": is_quarantined,
-        }, timeline_store=self.timeline_store)
+        }
+        # Carry the pytest failure message into the timeline event so
+        # the run drawer can surface it inline without the user having
+        # to drill into a separate diagnosis view. We already truncate
+        # to 4000 chars when persisting to e2e.db; reuse the same bound.
+        if longrepr:
+            event_data["longrepr"] = longrepr
+        _emit_run_event(
+            self.run_id, "e2e.test_completed", event_data,
+            timeline_store=self.timeline_store,
+        )
 
         # Track non-quarantined failures for potential retry
         if outcome == "failed" and not is_quarantined:

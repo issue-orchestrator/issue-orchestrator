@@ -988,9 +988,65 @@ body.column-focus-mode .column-expanded {
     border-left: 1px solid var(--border);
     transform: translateX(100%);
     transition: transform 180ms ease;
-    z-index: 26;
+    /*
+     * Sits ABOVE .modal-overlay (z-index: 30) so that clicking an issue
+     * affordance from inside the E2E run drawer opens a usable drawer
+     * on top of the run modal. Closing the drawer returns the user to
+     * the run modal without reopening anything.
+     */
+    z-index: 35;
     display: flex;
     flex-direction: column;
+}
+
+/*
+ * When the issue-detail drawer is open, any modal dialog opened FROM
+ * within it (session-replay via #modalOverlay, timeline focus via
+ * #timelineModal, validation-failure, review-transcript, etc.) must
+ * render above the drawer so it is reachable. Default-elevate every
+ * .modal-overlay above the drawer and list the exceptions below.
+ *
+ * Exception: #e2eDiagnosisModal is the run drawer the user launched
+ * the issue drawer FROM — it must stay BELOW the issue drawer so the
+ * user returns to it when the drawer is closed. The ID selector
+ * outranks .modal-overlay in CSS specificity, so this override wins.
+ *
+ * If a new modal is added that ALSO serves as a drawer launcher
+ * rather than a drill-down dialog, add it to the exception list.
+ */
+:root:has(#issueDetailDrawer.visible) .modal-overlay.visible {
+    z-index: 45;
+}
+:root:has(#issueDetailDrawer.visible) #e2eDiagnosisModal.visible {
+    z-index: 30;
+}
+
+.timeline-failure-detail {
+    margin: 6px 0 4px;
+    padding: 6px 8px;
+    background: rgba(200, 60, 60, 0.08);
+    border-left: 3px solid var(--danger, #e57878);
+    border-radius: 3px;
+}
+.timeline-failure-summary {
+    cursor: pointer;
+    color: var(--danger, #e57878);
+    font-weight: 500;
+    font-size: 12px;
+}
+.timeline-failure-longrepr {
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--text-primary, #d7e2ef);
+    font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+    border-radius: 3px;
 }
 .issue-detail-drawer.visible {
     transform: translateX(0);
