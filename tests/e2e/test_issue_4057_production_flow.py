@@ -527,10 +527,39 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
 
         detail_after_review = await _fetch_issue_detail(config.web_port, issue_number)
         steps_after_review = _steps_from_issue_detail(detail_after_review)
-        has_review_step = any(
-            step.get("event") == EventName.REVIEW_EXCHANGE_STARTED.value for step in steps_after_review
+        # Shape-agnostic review lifecycle check.
+        #
+        # The orchestrator has two valid review shapes and we don't
+        # know a priori which one a given run will take:
+        #
+        #   1. Direct approval:
+        #      review.started -> review.approved
+        #   2. Back-and-forth exchange:
+        #      review.started -> review_exchange.started -> ... -> review.approved
+        #
+        # The previous assertion hard-coded review_exchange.started,
+        # which made the test flake whenever the reviewer approved on
+        # the first round. If we want to force one specific shape in
+        # CI, that belongs in a synthetic test with a scripted
+        # reviewer — not a production-parity flow test like this one.
+        review_start_events = {
+            EventName.REVIEW_STARTED.value,
+            EventName.REVIEW_EXCHANGE_STARTED.value,
+        }
+        review_terminal_events = {
+            EventName.REVIEW_APPROVED.value,
+            EventName.REVIEW_CHANGES_REQUESTED.value,
+        }
+        observed_events = [step.get("event") for step in steps_after_review]
+        review_started = any(e in review_start_events for e in observed_events)
+        review_terminated = any(e in review_terminal_events for e in observed_events)
+        assert review_started and review_terminated, (
+            "Expected the review phase to have both a start and a terminal "
+            "event in the issue detail timeline (any of "
+            f"{sorted(review_start_events)} followed by any of "
+            f"{sorted(review_terminal_events)}). "
+            f"Observed events: {observed_events}"
         )
-        assert has_review_step, "Expected review_exchange.started step in issue detail"
 
         has_diagnostics_action = any(
             any(
