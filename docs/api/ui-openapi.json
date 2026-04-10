@@ -338,6 +338,7 @@
           "e2e_page",
           "e2e_total_pages",
           "e2e_total",
+          "provider_circuit_breakers",
           "dashboard_data"
         ],
         "properties": {
@@ -376,7 +377,21 @@
           "e2e_page": {"type": "integer"},
           "e2e_total_pages": {"type": "integer"},
           "e2e_total": {"type": "integer"},
+          "provider_circuit_breakers": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderCircuitBreakerPayload"}},
           "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"}
+        }
+      },
+      "ProviderCircuitBreakerPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "is_open", "consecutive_outages", "updated_at"],
+        "properties": {
+          "provider": {"type": "string"},
+          "is_open": {"type": "boolean"},
+          "consecutive_outages": {"type": "integer"},
+          "open_until": {"type": ["string", "null"]},
+          "last_error_summary": {"type": ["string", "null"]},
+          "updated_at": {"type": "string"}
         }
       },
       "IssueRowPayload": {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,10 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -730,6 +734,155 @@ def test_view_model_matches_public_contract():
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
     orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit breaker tests ---
+
+
+@dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ProviderResilienceStub
+
+
+@dataclass
+class _OrchestratorWithDepsStub:
+    state: OrchestratorState
+    config: Config
+    deps: _DepsStub
+    shutdown_requested: bool = False
+
+
+def test_view_model_surfaces_provider_circuit_breakers():
+    """Circuit breaker states from the provider resilience store appear in the view model."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=3,
+        last_error_summary="rate limit exceeded",
+        updated_at=now,
+    )
+    closed_state = ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary="transient error",
+        updated_at=now - timedelta(minutes=10),
+    )
+    store.save(open_state)
+    store.save(closed_state)
+
+    deps = _DepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorWithDepsStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    breakers = view_model.provider_circuit_breakers
+    assert len(breakers) == 2
+
+    by_provider = {b["provider"]: b for b in breakers}
+    assert by_provider["anthropic"]["is_open"] is True
+    assert by_provider["anthropic"]["consecutive_outages"] == 3
+    assert by_provider["anthropic"]["last_error_summary"] == "rate limit exceeded"
+    assert by_provider["anthropic"]["open_until"] is not None
+
+    assert by_provider["openai"]["is_open"] is False
+    assert by_provider["openai"]["consecutive_outages"] == 1
+    assert by_provider["openai"]["open_until"] is None
+
+
+def test_view_model_circuit_breakers_in_dashboard_data():
+    """Circuit breaker data is included in dashboard_data for the UI."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="overloaded",
+        updated_at=now,
+    ))
+
+    deps = _DepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorWithDepsStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    dd = view_model.dashboard_data()
+    assert len(dd["providerCircuitBreakers"]) == 1
+    assert dd["providerCircuitBreakers"][0]["provider"] == "anthropic"
+    assert dd["providerCircuitBreakers"][0]["is_open"] is True
+
+
+def test_view_model_circuit_breakers_empty_when_no_deps():
+    """Gracefully returns empty list when orchestrator has no deps attribute."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
+def test_view_model_circuit_breakers_pass_contract_validation():
+    """Circuit breaker data validates against the public contract schema."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="overloaded",
+        updated_at=now,
+    ))
+
+    deps = _DepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorWithDepsStub(state=state, config=config, deps=deps)
 
     view_model = build_dashboard_view_model(
         orchestrator,
