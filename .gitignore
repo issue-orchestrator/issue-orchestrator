@@ -83,3 +83,4 @@ Thumbs.db
 
 # Worktrees for development
 worktrees/
+.hypothesis/
