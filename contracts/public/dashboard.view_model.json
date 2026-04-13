@@ -53,6 +53,13 @@
           "title": "Paused",
           "type": "boolean"
         },
+        "providerCircuitBreakers": {
+          "items": {
+            "$ref": "#/$defs/ProviderCircuitBreakerContract"
+          },
+          "title": "Providercircuitbreakers",
+          "type": "array"
+        },
         "queueRefreshSeconds": {
           "title": "Queuerefreshseconds",
           "type": "integer"
@@ -96,6 +103,59 @@
         "agents"
       ],
       "title": "DashboardDataContract",
+      "type": "object"
+    },
+    "ProviderCircuitBreakerContract": {
+      "additionalProperties": true,
+      "properties": {
+        "consecutiveOutages": {
+          "title": "Consecutiveoutages",
+          "type": "integer"
+        },
+        "lastErrorSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lasterrorsummary"
+        },
+        "openUntil": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Openuntil"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "status",
+        "consecutiveOutages",
+        "updatedAt"
+      ],
+      "title": "ProviderCircuitBreakerContract",
       "type": "object"
     }
   },

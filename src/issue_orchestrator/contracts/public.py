@@ -18,6 +18,15 @@ class ContractBase(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ProviderCircuitBreakerContract(ContractBase):
+    provider: str
+    status: str
+    openUntil: Optional[str] = None
+    consecutiveOutages: int
+    lastErrorSummary: Optional[str] = None
+    updatedAt: str
+
+
 class DashboardDataContract(ContractBase):
     startupComplete: bool
     paused: bool
@@ -29,6 +38,7 @@ class DashboardDataContract(ContractBase):
     githubRepo: Optional[str]
     e2eLastRun: Optional[dict[str, Any]] = None
     agents: list[str]
+    providerCircuitBreakers: list[ProviderCircuitBreakerContract] = Field(default_factory=list)
 
 
 class DashboardViewModelContract(ContractBase):

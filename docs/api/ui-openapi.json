@@ -338,6 +338,7 @@
           "e2e_page",
           "e2e_total_pages",
           "e2e_total",
+          "provider_circuit_breakers",
           "dashboard_data"
         ],
         "properties": {
@@ -376,6 +377,7 @@
           "e2e_page": {"type": "integer"},
           "e2e_total_pages": {"type": "integer"},
           "e2e_total": {"type": "integer"},
+          "provider_circuit_breakers": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderCircuitBreakerPayload"}},
           "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"}
         }
       },
@@ -584,6 +586,19 @@
           "stdout_excerpt": {"type": "array", "items": {"type": "string"}},
           "stderr_excerpt": {"type": "array", "items": {"type": "string"}},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+        }
+      },
+      "ProviderCircuitBreakerPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "status", "consecutiveOutages", "updatedAt"],
+        "properties": {
+          "provider": {"type": "string"},
+          "status": {"type": "string"},
+          "openUntil": {"type": ["string", "null"]},
+          "consecutiveOutages": {"type": "integer"},
+          "lastErrorSummary": {"type": ["string", "null"]},
+          "updatedAt": {"type": "string"}
         }
       },
       "BlockedIssuePayload": {
