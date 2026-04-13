@@ -23,6 +23,9 @@ class ProviderResilienceManager:
     store: ProviderCircuitStore
     events: EventSink
 
+    def list_states(self) -> list[ProviderCircuitState]:
+        return self.store.list_all()
+
     def get_state(self, provider: str) -> ProviderCircuitState | None:
         return self.store.get(provider)
 

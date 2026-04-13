@@ -1256,12 +1256,11 @@ def _build_circuit_breaker_items(orchestrator) -> list[dict[str, Any]]:
     """Extract provider circuit breaker states from orchestrator deps."""
     deps = getattr(orchestrator, "deps", None)
     resilience = getattr(deps, "provider_resilience", None) if deps else None
-    store = getattr(resilience, "store", None) if resilience else None
-    if store is None:
+    if resilience is None:
         return []
     now = datetime.now(timezone.utc)
     items: list[dict[str, Any]] = []
-    for state in store.list_all():
+    for state in resilience.list_states():
         is_open = state.open_until is not None and state.open_until > now
         items.append({
             "provider": state.provider,
