@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 from typing import Sequence
 
 from issue_orchestrator.testing.support.portfolio_benchmark import (
@@ -96,6 +97,7 @@ def run_portfolio_benchmark(
 
     report = PortfolioBenchmarkReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
+        repo_name=_resolve_repo_name(repo_root),
         repo_root=repo_root,
         output_dir=output_dir,
         command=command,
@@ -130,6 +132,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Portfolio benchmark {report.overall_status}: {report.counts}")
     print(f"Artifacts written to {report.output_dir}")
     return 0 if report.overall_status == "passed" else 1
+
+
+def _resolve_repo_name(repo_root: Path) -> str:
+    pyproject_path = repo_root / "pyproject.toml"
+    if pyproject_path.exists():
+        pyproject = tomllib.loads(pyproject_path.read_text())
+        project = pyproject.get("project")
+        if isinstance(project, dict):
+            name = project.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    return repo_root.name
 
 
 if __name__ == "__main__":

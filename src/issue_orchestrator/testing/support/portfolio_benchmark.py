@@ -47,6 +47,7 @@ class BenchmarkCaseResult:
 @dataclass(frozen=True)
 class PortfolioBenchmarkReport:
     generated_at: str
+    repo_name: str
     repo_root: Path
     output_dir: Path
     command: list[str]
@@ -75,9 +76,9 @@ class PortfolioBenchmarkReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "generated_at": self.generated_at,
-            "repo_root": str(self.repo_root),
-            "output_dir": str(self.output_dir),
-            "command": list(self.command),
+            "repo": self.repo_name,
+            "output_dir": _display_path(self.output_dir, self.repo_root),
+            "command": [_display_command_part(part, self.repo_root) for part in self.command],
             "pytest_exit_code": self.pytest_exit_code,
             "overall_status": self.overall_status,
             "total_cases": self.total_cases,
@@ -269,8 +270,8 @@ def render_markdown(report: PortfolioBenchmarkReport) -> str:
         "# Applied AI Portfolio Benchmark",
         "",
         f"- Generated: `{report.generated_at}`",
-        f"- Repo root: `{report.repo_root}`",
-        f"- Output dir: `{report.output_dir}`",
+        f"- Repo: `{report.repo_name}`",
+        f"- Output dir: `{_display_path(report.output_dir, report.repo_root)}`",
         f"- Overall status: `{report.overall_status}`",
         f"- Pytest exit code: `{report.pytest_exit_code}`",
         f"- Cases: `{report.total_cases}` ({count_summary})",
@@ -295,13 +296,22 @@ def render_markdown(report: PortfolioBenchmarkReport) -> str:
             )
             + " |"
         )
-        if result.detail:
-            lines.append(
-                f"| `{result.case.case_id}:detail` |  |  |  | {_table_escape(result.detail)} |"
+    detail_results = [result for result in report.results if result.detail]
+    if detail_results:
+        lines.extend(["", "## Details", ""])
+        for result in detail_results:
+            lines.extend(
+                [
+                    f"<details><summary><code>{_html_escape(result.case.case_id)}</code> detail</summary>",
+                    "",
+                    _html_escape(result.detail or ""),
+                    "",
+                    "</details>",
+                    "",
+                ]
             )
     lines.extend(
         [
-            "",
             "## Artifact Bundle",
             "",
             "- `summary.json` — machine-readable report suitable for dashboards, resume snippets, or portfolio automation.",
@@ -337,3 +347,25 @@ def _summarize_text(text: str | None, *, max_length: int = 200) -> str | None:
 def _table_escape(value: object) -> str:
     text = str(value)
     return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _display_path(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _display_command_part(part: str, repo_root: Path) -> str:
+    candidate = Path(part)
+    if not candidate.is_absolute():
+        return part
+    return _display_path(candidate, repo_root)
+
+
+def _html_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )

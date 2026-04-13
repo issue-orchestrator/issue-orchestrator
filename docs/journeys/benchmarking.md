@@ -28,7 +28,7 @@ If you want a dated output directory:
 
 ```bash
 make portfolio-benchmark \
-  ARGS="--output-dir .issue-orchestrator/portfolio-benchmark/2026-04-02"
+  ARGS="--output-dir .issue-orchestrator/portfolio-benchmark/YYYY-MM-DD"
 ```
 
 ## What the benchmark covers
