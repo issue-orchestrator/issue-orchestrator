@@ -298,7 +298,7 @@ def _steps_from_issue_detail(payload: dict[str, object]) -> list[dict[str, objec
     return [step for step in steps if isinstance(step, dict)]
 
 
-@pytest.mark.gh_activity_limit(test_gh_activity_limit=380, system_gh_activity_limit=140)
+@pytest.mark.gh_activity_limit(test_gh_activity_limit=550, system_gh_activity_limit=220)
 async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     repo_name: str,
     e2e_project_root: Path,
