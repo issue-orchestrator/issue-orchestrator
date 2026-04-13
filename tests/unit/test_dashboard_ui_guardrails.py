@@ -845,3 +845,23 @@ def test_render_compact_cards_removes_empty_placeholder_when_items_exist() -> No
     assert ".column-empty" in body
     assert ".skeleton-card" in body
     assert "remove()" in body
+
+
+def test_e2e_run_note_rendered_in_template() -> None:
+    """The e2e run list must surface run.note so fixture errors are visible."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "run.note" in html, (
+        "Dashboard template must render run.note for e2e runs so that "
+        "fixture errors (e.g. GH activity guard) are visible in the list"
+    )
+    assert "e2e-run-note" in html, (
+        "Dashboard template must use the e2e-run-note class for styling"
+    )
+
+
+def test_e2e_run_note_has_error_styling() -> None:
+    """The e2e-run-note class must have error-toned styling."""
+    css = _read(DASHBOARD_CSS)
+    assert ".e2e-run-note" in css, (
+        "Dashboard CSS must define .e2e-run-note for fixture error display"
+    )

@@ -412,8 +412,19 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                     len(failed_tests),
                 )
 
-        # Determine final status
-        if exit_code == 0:
+        # Determine final status and note.
+        #
+        # Fixture errors (setup/teardown failures) are independent of
+        # test-level retries.  A successful retry clears test failures
+        # but cannot clear fixture errors — they represent real
+        # infrastructure problems (e.g. GH activity guard) that the
+        # retry path does not address.  So if fixture_errors is
+        # non-empty the run stays failed regardless of exit_code.
+        note: str | None = None
+        if fixture_errors:
+            status = "failed"
+            note = "Fixture errors: " + "; ".join(fixture_errors[:5])
+        elif exit_code == 0:
             status = "passed"
         elif exit_code == 5:
             # pytest exit code 5 = no tests collected
@@ -423,16 +434,6 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             status = "failed"
 
         duration = time.time() - start_time
-
-        # When all tests passed but pytest exited non-zero, the cause
-        # is typically a setup/teardown error (e.g., GH activity guard).
-        # Surface that in the note so the dashboard can explain why the
-        # run is red despite all-green test results.
-        note: str | None = None
-        if status == "failed" and not failed_tests and fixture_errors:
-            note = "All tests passed but fixture errors occurred: " + "; ".join(
-                fixture_errors[:5]
-            )
 
         db.finish_run(
             run_id=run_id,
