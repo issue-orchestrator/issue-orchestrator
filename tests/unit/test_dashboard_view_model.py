@@ -700,7 +700,7 @@ def test_view_model_e2e_items_from_provider():
     assert any(item.get("e2e_running") for item in view_model.e2e_items)
     assert any(item.get("status") == "needs_attention" for item in view_model.e2e_items)
     e2e_vm = view_model.e2e_status.get("view_model", {})
-    assert e2e_vm.get("badge", {}).get("state") in {"failed", "running", "passed", "idle"}
+    assert e2e_vm.get("badge", {}).get("state") in {"failed", "running", "passed", "warning", "idle"}
     assert isinstance(e2e_vm.get("runs"), list)
 
 
@@ -791,3 +791,23 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
 
     assert len(items) == 1
     assert "note" not in items[0]
+
+
+def test_e2e_badge_state_maps_warning():
+    """The E2E view model must map last_run status='warning' to badge_state='warning'."""
+    from issue_orchestrator.view_models.dashboard import _build_e2e_view_model
+
+    vm = _build_e2e_view_model(
+        e2e_status={
+            "running": False,
+            "needs_attention": False,
+            "last_run": {"id": 1, "status": "warning"},
+        },
+        e2e_items=[],
+        e2e_total=1,
+        e2e_page=1,
+        e2e_total_pages=1,
+        agents=[],
+    )
+    assert vm["badge"]["state"] == "warning"
+    assert vm["badge"]["icon"] == "⚠"
