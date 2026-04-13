@@ -753,6 +753,16 @@ def test_view_model_matches_public_contract():
 class _ProviderResilienceStub:
     store: InMemoryProviderCircuitStore
 
+    def list_all_states(self) -> list:
+        return self.store.list_all()
+
+    def is_open(self, provider: str, now: datetime | None = None) -> bool:
+        state = self.store.get(provider)
+        if state is None or state.open_until is None:
+            return False
+        now = now or datetime.now(timezone.utc)
+        return state.open_until > now
+
 
 @dataclass
 class _DepsStub:

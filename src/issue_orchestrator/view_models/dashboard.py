@@ -1371,23 +1371,20 @@ def build_dashboard_view_model(
 
     provider_circuit_breakers: list[dict[str, Any]] = []
     if orchestrator and hasattr(orchestrator, "deps"):
-        try:
-            now = datetime.now(timezone.utc)
-            for cb_state in orchestrator.deps.provider_resilience.store.list_all():
-                provider_cb: dict[str, Any] = {
-                    "provider": cb_state.provider,
-                    "consecutive_outages": cb_state.consecutive_outages,
-                    "last_error_summary": cb_state.last_error_summary,
-                    "updated_at": cb_state.updated_at.isoformat(),
-                    "is_open": cb_state.open_until is not None and cb_state.open_until > now,
-                }
-                if cb_state.open_until is not None:
-                    provider_cb["open_until"] = cb_state.open_until.isoformat()
-                else:
-                    provider_cb["open_until"] = None
-                provider_circuit_breakers.append(provider_cb)
-        except Exception:
-            pass
+        resilience = orchestrator.deps.provider_resilience
+        for cb_state in resilience.list_all_states():
+            provider_cb: dict[str, Any] = {
+                "provider": cb_state.provider,
+                "consecutive_outages": cb_state.consecutive_outages,
+                "last_error_summary": cb_state.last_error_summary,
+                "updated_at": cb_state.updated_at.isoformat(),
+                "is_open": resilience.is_open(cb_state.provider),
+            }
+            if cb_state.open_until is not None:
+                provider_cb["open_until"] = cb_state.open_until.isoformat()
+            else:
+                provider_cb["open_until"] = None
+            provider_circuit_breakers.append(provider_cb)
 
     repo = config.repo if config else ""
     repo_root = str(config.repo_root) if config and config.repo_root else ""
