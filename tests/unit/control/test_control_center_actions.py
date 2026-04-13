@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from issue_orchestrator.execution.control_center_actions import (
+    InitializeLabelsCommand,
     ListStaleWorktreesCommand,
     PauseOrchestratorCommand,
     RefreshActionRequest,
@@ -147,3 +148,32 @@ async def test_stale_worktrees_fallback_without_config(monkeypatch: pytest.Monke
     assert result.payload["scope"] == "repo-parent-fallback"
     paths = [entry["path"] for entry in result.payload["stale_worktrees"]]
     assert str(stale) in paths
+
+
+@pytest.mark.asyncio
+async def test_initialize_labels_uses_loaded_config_for_repository_host() -> None:
+    config = Mock()
+    config.repo = "owner/repo"
+    config.agents = {"agent:backend": Mock()}
+
+    client = Mock()
+    client.list_labels.return_value = []
+
+    label_manager = Mock(
+        in_progress="in-progress",
+        blocked="blocked",
+        needs_human="needs-human",
+    )
+
+    with patch("issue_orchestrator.infra.config.Config.find_and_load", return_value=config):
+        with patch("issue_orchestrator.control.label_manager.LabelManager", return_value=label_manager):
+            with patch(
+                "issue_orchestrator.execution.providers.create_repository_host",
+                return_value=client,
+            ) as mock_create_host:
+                result = await InitializeLabelsCommand().execute(
+                    RepoActionRequest(repo_root=Path("/tmp/repo")),
+                )
+
+    assert result.status_code == 200
+    mock_create_host.assert_called_once_with("owner/repo", config=config)

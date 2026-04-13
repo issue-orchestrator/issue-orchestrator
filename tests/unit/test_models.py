@@ -338,6 +338,29 @@ class TestAgentConfig:
         tokens = shlex.split(cmd)
         assert "--verbose" in tokens
 
+    def test_get_command_codex_provider_args_reasoning_effort(self, tmp_path):
+        """Codex provider args expose reasoning effort through normal config."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="codex",
+            model="gpt-5.4",
+            provider_args={"reasoning_effort": "xhigh"},
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        import shlex
+        tokens = shlex.split(cmd)
+        assert tokens[:2] == ["codex", "exec"]
+        assert "--full-auto" in tokens
+        assert "gpt-5.4" in tokens
+        assert "-c" in tokens
+        assert 'model_reasoning_effort="xhigh"' in tokens
+
 
 class TestSession:
     """Test the Session data model."""

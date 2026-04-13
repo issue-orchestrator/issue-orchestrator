@@ -51,7 +51,7 @@ def _get_repository_host(config: "Config") -> "RepositoryHost | None":
     if not repo:
         console.print("[red]Error: repo must be set in config[/red]")
         return None
-    return create_repository_host(repo=repo)
+    return create_repository_host(repo=repo, config=config)
 
 
 def _build_action_applier(config: "Config", adapter: "RepositoryHost"):
@@ -215,7 +215,7 @@ def _run_dry_run(args: argparse.Namespace, config: "Config") -> int:
     console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
 
     scheduler = Scheduler(config)
-    github = create_repository_host(config.repo) if config.repo else None
+    github = create_repository_host(config.repo, config=config) if config.repo else None
     working_copy = GitWorkingCopy()
     all_issues = []
 
@@ -1071,7 +1071,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         return 1
 
     # Run audit (no state = fresh start, no session history)
-    issue_tracker = create_repository_host(config.repo)
+    issue_tracker = create_repository_host(config.repo, config=config)
     working_copy = GitWorkingCopy()
     issue_branches = extract_issue_branches(
         working_copy.list_remote_branches(config.repo_root)
