@@ -16,6 +16,7 @@ from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from ..infra import gh_audit
+from ..ports.provider_resilience import ProviderCircuitState
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
@@ -81,6 +82,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuit_breakers: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +121,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +144,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitBreakers": self.provider_circuit_breakers,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,8 +184,21 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
+
+
+def _serialize_circuit_state(state: ProviderCircuitState, now: datetime) -> dict[str, Any]:
+    """Convert a ProviderCircuitState to a JSON-safe dict for the UI."""
+    return {
+        "provider": state.provider,
+        "open_until": state.open_until.isoformat() if state.open_until else None,
+        "consecutive_outages": state.consecutive_outages,
+        "last_error_summary": state.last_error_summary,
+        "updated_at": state.updated_at.isoformat(),
+        "is_open": state.open_until is not None and state.open_until > now,
+    }
 
 
 def issue_url_for(config, issue_number: int) -> str:
@@ -1370,6 +1387,15 @@ def build_dashboard_view_model(
 
     agents = config.agents if config else {}
 
+    # Provider circuit breaker status
+    circuit_breakers: list[dict[str, Any]] = []
+    deps = getattr(orchestrator, "deps", None)
+    pr_mgr = getattr(deps, "provider_resilience", None) if deps else None
+    if pr_mgr is not None:
+        now = datetime.now(timezone.utc)
+        for cb_state in pr_mgr.store.list_all():
+            circuit_breakers.append(_serialize_circuit_state(cb_state, now))
+
     repo = config.repo if config else ""
     repo_root = str(config.repo_root) if config and config.repo_root else ""
     config_name = config.config_path.name if config and config.config_path else ""
@@ -1473,4 +1499,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_breakers=circuit_breakers,
     )

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -791,3 +791,143 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
 
     assert len(items) == 1
     assert "note" not in items[0]
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit breaker status
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeDeps:
+    """Minimal deps stub exposing provider_resilience."""
+
+    provider_resilience: object = None
+
+
+@dataclass
+class _OrchestratorStubWithDeps:
+    state: OrchestratorState
+    config: Config
+    shutdown_requested: bool = False
+    deps: _FakeDeps = field(default_factory=_FakeDeps)
+
+
+def test_provider_circuit_breakers_empty_when_no_deps():
+    """When orchestrator has no deps, provider_circuit_breakers is empty."""
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert vm.provider_circuit_breakers == []
+    assert vm.dashboard_data()["providerCircuitBreakers"] == []
+    assert vm.to_dict()["provider_circuit_breakers"] == []
+    assert vm.template_context()["provider_circuit_breakers"] == []
+
+
+def test_provider_circuit_breakers_surfaces_open_circuit():
+    """An open circuit breaker is surfaced with is_open=True."""
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=3,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    )
+    store.save(open_state)
+
+    # Minimal events stub
+    class _NoopEvents:
+        def publish(self, event):
+            pass
+
+    pr_mgr = ProviderResilienceManager(
+        config=ProviderResilienceConfig(),
+        store=store,
+        events=_NoopEvents(),
+    )
+    deps = _FakeDeps(provider_resilience=pr_mgr)
+    orchestrator = _OrchestratorStubWithDeps(state=state, config=config, deps=deps)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(vm.provider_circuit_breakers) == 1
+    cb = vm.provider_circuit_breakers[0]
+    assert cb["provider"] == "anthropic"
+    assert cb["is_open"] is True
+    assert cb["consecutive_outages"] == 3
+    assert cb["last_error_summary"] == "Rate limit exceeded"
+    assert cb["open_until"] is not None
+
+    # Also present in dashboard_data
+    assert len(vm.dashboard_data()["providerCircuitBreakers"]) == 1
+
+
+def test_provider_circuit_breakers_surfaces_closed_circuit():
+    """A circuit breaker with expired open_until shows is_open=False."""
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    closed_state = ProviderCircuitState(
+        provider="openai",
+        open_until=now - timedelta(minutes=1),  # expired
+        consecutive_outages=2,
+        last_error_summary="Temporary outage",
+        updated_at=now - timedelta(minutes=10),
+    )
+    store.save(closed_state)
+
+    class _NoopEvents:
+        def publish(self, event):
+            pass
+
+    pr_mgr = ProviderResilienceManager(
+        config=ProviderResilienceConfig(),
+        store=store,
+        events=_NoopEvents(),
+    )
+    deps = _FakeDeps(provider_resilience=pr_mgr)
+    orchestrator = _OrchestratorStubWithDeps(state=state, config=config, deps=deps)
+
+    vm = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(vm.provider_circuit_breakers) == 1
+    cb = vm.provider_circuit_breakers[0]
+    assert cb["provider"] == "openai"
+    assert cb["is_open"] is False
+    assert cb["consecutive_outages"] == 2
