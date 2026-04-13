@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuit_breakers: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -141,6 +142,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitBreakers": self.provider_circuit_breakers,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1367,6 +1369,26 @@ def build_dashboard_view_model(
 
     agents = config.agents if config else {}
 
+    provider_circuit_breakers: list[dict[str, Any]] = []
+    if orchestrator and hasattr(orchestrator, "deps"):
+        try:
+            now = datetime.now(timezone.utc)
+            for cb_state in orchestrator.deps.provider_resilience.store.list_all():
+                provider_cb: dict[str, Any] = {
+                    "provider": cb_state.provider,
+                    "consecutive_outages": cb_state.consecutive_outages,
+                    "last_error_summary": cb_state.last_error_summary,
+                    "updated_at": cb_state.updated_at.isoformat(),
+                    "is_open": cb_state.open_until is not None and cb_state.open_until > now,
+                }
+                if cb_state.open_until is not None:
+                    provider_cb["open_until"] = cb_state.open_until.isoformat()
+                else:
+                    provider_cb["open_until"] = None
+                provider_circuit_breakers.append(provider_cb)
+        except Exception:
+            pass
+
     repo = config.repo if config else ""
     repo_root = str(config.repo_root) if config and config.repo_root else ""
     config_name = config.config_path.name if config and config.config_path else ""
@@ -1470,4 +1492,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_breakers=provider_circuit_breakers,
     )
