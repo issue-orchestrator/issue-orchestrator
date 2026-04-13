@@ -6600,27 +6600,23 @@ async function updateE2EProgress() {
 
         // Update header badge class
         if (badge) {
-            badge.classList.remove('running', 'passed', 'failed');
+            badge.classList.remove('running', 'passed', 'failed', 'warning');
             if (data.running) {
                 badge.classList.add('running');
-            } else if (data.last_run?.status === 'passed') {
-                badge.classList.add('passed');
             } else if (data.last_run?.status === 'failed') {
                 badge.classList.add('failed');
+            } else if (data.last_run?.status === 'warning') {
+                badge.classList.add('warning');
+            } else if (data.last_run?.status === 'passed') {
+                badge.classList.add('passed');
             }
         }
 
         // Update status icon
+        const statusIcons = { running: '⟳', failed: '✗', warning: '⚠', passed: '✓' };
         if (statusIcon) {
-            if (data.running) {
-                statusIcon.textContent = '⟳';
-            } else if (data.last_run?.status === 'passed') {
-                statusIcon.textContent = '✓';
-            } else if (data.last_run?.status === 'failed') {
-                statusIcon.textContent = '✗';
-            } else {
-                statusIcon.textContent = '○';
-            }
+            const key = data.running ? 'running' : (data.last_run?.status || '');
+            statusIcon.textContent = statusIcons[key] || '○';
         }
 
         // Stop polling when not running
@@ -7505,7 +7501,7 @@ async function showE2ERunDetailsLegacy(runId) {
         const content = document.getElementById('e2eDiagnosisContent');
         const run = data.run;
         const results = data.results || [];
-        const statusClass = run.status === 'passed' ? 'passed' : run.status === 'failed' ? 'failed' : '';
+        const statusClass = {passed: 'passed', failed: 'failed', warning: 'warning'}[run.status] || '';
 
         // Categorize test results (respect retry_outcome for flaky tests)
         const passed = results.filter(r => r.outcome === 'passed');

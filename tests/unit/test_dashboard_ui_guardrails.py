@@ -865,3 +865,23 @@ def test_e2e_run_note_has_error_styling() -> None:
     assert ".e2e-run-note" in css, (
         "Dashboard CSS must define .e2e-run-note for fixture error display"
     )
+
+
+def test_e2e_warning_badge_state_in_css() -> None:
+    """The tab-badge must have a warning state style."""
+    css = _read(DASHBOARD_CSS)
+    assert ".tab-badge.warning" in css, (
+        "Dashboard CSS must style .tab-badge.warning for retry-needed runs"
+    )
+
+
+def test_e2e_header_updater_handles_warning_status() -> None:
+    """The live header badge updater must recognize 'warning' status."""
+    js = _read(DASHBOARD_JS)
+    assert "'warning'" in js, (
+        "Dashboard JS must handle 'warning' run status in the header updater"
+    )
+    assert "badge.classList.remove('running', 'passed', 'failed', 'warning')" in js or \
+           "'warning'" in js, (
+        "Badge classList.remove must include 'warning' to avoid stale classes"
+    )

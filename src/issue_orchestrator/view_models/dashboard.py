@@ -1198,16 +1198,20 @@ def _build_e2e_view_model(
     untriaged_count = int(e2e_status.get("untriaged_count", 0) or 0)
     needs_attention = bool(e2e_status.get("needs_attention"))
     badge_count = untriaged_count if untriaged_count > 0 else e2e_total
+    last_status = last_run.get("status")
     badge_state = (
         "running"
         if running
         else "failed"
-        if (last_run.get("status") == "failed" or needs_attention)
+        if (last_status == "failed" or needs_attention)
+        else "warning"
+        if last_status == "warning"
         else "passed"
-        if last_run.get("status") == "passed"
+        if last_status == "passed"
         else "idle"
     )
-    badge_icon = "⟳" if badge_state == "running" else "✗" if badge_state == "failed" else "✓" if badge_state == "passed" else "○"
+    badge_icons = {"running": "⟳", "failed": "✗", "warning": "⚠", "passed": "✓"}
+    badge_icon = badge_icons.get(badge_state, "○")
 
     return {
         "badge": {
