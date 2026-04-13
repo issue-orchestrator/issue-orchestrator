@@ -196,17 +196,17 @@ def _run_retry(
     failed_tests: list[str],
     db: "E2EDB",
     run_id: int,
-) -> int:
+) -> list[str]:
     """Retry failed tests and update their retry_outcome.
 
     Returns:
-        Number of tests that passed on retry
+        List of nodeids that passed on retry.
     """
     import pytest
 
     logger.info("Retrying %d failed tests...", len(failed_tests))
 
-    passed_on_retry = 0
+    passed_nodeids: list[str] = []
 
     for nodeid in failed_tests:
         # Run single test
@@ -214,13 +214,15 @@ def _run_retry(
 
         if exit_code == 0:
             retry_outcome = "passed"
-            passed_on_retry += 1
+            passed_nodeids.append(nodeid)
             logger.info("Test passed on retry: %s", nodeid)
         else:
             retry_outcome = "failed"
             logger.warning("Test still failing after retry: %s", nodeid)
 
         db.update_retry_outcome(run_id, nodeid, retry_outcome)
+
+    return passed_nodeids
 
     return passed_on_retry
 
@@ -394,21 +396,22 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         exit_code, failed_tests, fixture_errors = _run_pytest(pytest_args, db, run_id, quarantine, timeline_store=timeline_store)
 
         # Retry logic
+        retried_passed: list[str] = []  # Tests that failed then passed on retry
         if args.allow_retry_once and failed_tests:
             _emit_run_event(run_id, "e2e.retry_started", {
                 "failed_count": len(failed_tests),
                 "nodeids": failed_tests,
             }, timeline_store=timeline_store)
-            passed_on_retry = _run_retry(failed_tests, db, run_id)
+            retried_passed = _run_retry(failed_tests, db, run_id)
 
             # Update exit code if all retries passed
-            if passed_on_retry == len(failed_tests):
-                logger.info("All %d retried tests passed!", passed_on_retry)
+            if len(retried_passed) == len(failed_tests):
+                logger.info("All %d retried tests passed!", len(retried_passed))
                 exit_code = 0
             else:
                 logger.warning(
                     "%d/%d tests still failing after retry",
-                    len(failed_tests) - passed_on_retry,
+                    len(failed_tests) - len(retried_passed),
                     len(failed_tests),
                 )
 
@@ -420,10 +423,26 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         # infrastructure problems (e.g. GH activity guard) that the
         # retry path does not address.  So if fixture_errors is
         # non-empty the run stays failed regardless of exit_code.
-        note: str | None = None
+        #
+        # When tests pass only after retry, the run is "warning" — not
+        # silently "passed".  This ensures retries are visible so the
+        # user can investigate flakiness.
+        notes: list[str] = []
+        if fixture_errors:
+            notes.append("Fixture errors: " + "; ".join(fixture_errors[:5]))
+        if retried_passed:
+            short = [n.split("::")[-1] for n in retried_passed]
+            notes.append(
+                f"{len(retried_passed)} test(s) required retry: "
+                + ", ".join(short)
+            )
+
         if fixture_errors:
             status = "failed"
-            note = "Fixture errors: " + "; ".join(fixture_errors[:5])
+        elif retried_passed and exit_code == 0:
+            # All tests eventually passed, but retries were needed —
+            # surface as "warning" so the run isn't silently green.
+            status = "warning"
         elif exit_code == 0:
             status = "passed"
         elif exit_code == 5:
@@ -432,6 +451,8 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             logger.warning("No tests collected (exit code 5), marking as passed")
         else:
             status = "failed"
+
+        note = "; ".join(notes) if notes else None
 
         duration = time.time() - start_time
 
