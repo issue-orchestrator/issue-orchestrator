@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -153,6 +154,13 @@ tests/e2e/test_quarantined.py::test_known_flaky
     return repo
 
 
+# Resolve the source tree for the current checkout so the subprocess
+# imports the code under test, not whatever is installed in the base
+# venv.  Without this, a review worktree's tests would exercise the
+# base repo's worker logic instead of the branch-under-review.
+_WORKTREE_SRC = str(Path(__file__).resolve().parents[2] / "src")
+
+
 def run_worker(
     repo_root: Path,
     orchestrator_id: str = "test-orch",
@@ -193,12 +201,21 @@ def run_worker(
     if allow_retry_once:
         cmd.append("--allow-retry-once")
 
+    # Prepend the current worktree's src/ to PYTHONPATH so the
+    # subprocess imports the code under test rather than whatever
+    # package is installed in the base venv.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _WORKTREE_SRC + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+
     return subprocess.run(
         cmd,
         cwd=repo_root,
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
     )
 
 
