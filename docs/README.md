@@ -15,6 +15,14 @@ Getting started with Issue Orchestrator:
 - [VS Code Integration](user/vscode.md) - IDE integration via MCP
 - [FAQ](user/faq.md)
 
+## For Evaluators
+
+If you're assessing the project as applied AI or using it as a portfolio artifact:
+
+- [Applied AI Evaluation](journeys/applied-ai.md)
+- [Portfolio Benchmarking](journeys/benchmarking.md)
+- [Evaluating the System](journeys/evaluating.md)
+
 ## For Developers
 
 Contributing to or extending Issue Orchestrator:

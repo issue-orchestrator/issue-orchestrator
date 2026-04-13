@@ -5,6 +5,8 @@ Issue-Orchestrator takes GitHub issues, runs AI agents on them with guardrails, 
 AI agents are excellent at executing bounded tasks, but they optimize for completion, not long-term system health. Issue-Orchestrator provides the structure: enforced validation, automated code review, architecture boundary checks, and isolated worktrees — so agents can work in parallel while you stay in control.
 
 > **Evaluating the engineering?** Read [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md) for the design thinking, then [Evaluating the System](docs/journeys/evaluating.md) for architecture decisions and where to read code.
+>
+> **Evaluating it as applied AI?** Start with [Applied AI Evaluation](docs/journeys/applied-ai.md), then run the [Portfolio Benchmark](docs/journeys/benchmarking.md) for a shareable proof bundle.
 
 ## Design philosophy
 
@@ -70,6 +72,14 @@ Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)
 
 Agents cannot merge PRs — only humans merge. Validation (tests, linting, architecture checks) runs automatically before any code is pushed. [Multi-layer hooks](docs/architecture/hooks.md) enforce these rules at the AI agent level, git level, orchestrator level, and CI — agents cannot bypass them. See [Guardrails & Safety Model](docs/design/guardrails.md) for details.
 
+## Proof for evaluators
+
+If you're looking at this repo as an applied-AI system rather than a general-purpose developer tool, the strongest evidence lives in three places:
+
+- **[Applied AI Evaluation](docs/journeys/applied-ai.md)** — How to frame the project, what claims are worth making, and how to demo it well.
+- **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** — A deterministic benchmark path built on simulated scenarios, with markdown and JSON artifact output.
+- **[Async E2E Runner](docs/user/e2e.md)** — Live system proof with persistent run history, signal scoring, quarantine support, and dashboard visibility.
+
 ## Quickstart
 
 ```bash
@@ -106,6 +116,8 @@ For guidance on what is stable and where to read code, see [Evaluating the Syste
 Pick the path that fits:
 
 - **[Getting Started](docs/journeys/getting-started.md)** — Install, configure, run your first issue
+- **[Applied AI Evaluation](docs/journeys/applied-ai.md)** — How to present and evaluate the system as serious applied-AI engineering
+- **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** — Generate a benchmark artifact bundle from deterministic scenario coverage
 - **[Evaluating the System](docs/journeys/evaluating.md)** — Architecture, guardrails, quality signals, where to read code
 - **[Developing](docs/journeys/developing.md)** — Dev setup, conventions, testing, how to make changes
 
