@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..domain.event_taxonomy import (
+    REVIEW_START_CLUSTER_EVENT_NAMES,
+    REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
     EventIntent,
     infer_event_intent,
 )
@@ -104,18 +106,10 @@ def _filter_events_by_view(events: list[dict[str, Any]], view: str) -> list[dict
     return result
 
 
-_REVIEW_START_CLUSTER_EVENTS = frozenset({
-    "review.started",
-    "review_exchange.started",
-    "review_exchange.round_started",
-})
-
-_REVIEW_TERMINAL_CLUSTER_EVENTS = frozenset({
-    "review_exchange.round_completed",
-    "review_exchange.completed",
-    "review.approved",
-    "review.changes_requested",
-})
+# Cluster definitions live in domain/event_taxonomy.py as the single source
+# of truth so tests and view-model collapsers stay in lockstep.
+_REVIEW_START_CLUSTER_EVENTS = REVIEW_START_CLUSTER_EVENT_NAMES
+_REVIEW_TERMINAL_CLUSTER_EVENTS = REVIEW_TERMINAL_CLUSTER_EVENT_NAMES
 
 
 def _story_projection_events(events: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
