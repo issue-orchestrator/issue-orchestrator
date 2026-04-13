@@ -16,6 +16,7 @@ from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from ..infra import gh_audit
+from ..control.provider_resilience import ProviderResilienceManager
 from ..ports.provider_resilience import ProviderCircuitState
 
 QUEUE_PAGE_SIZE = 20
@@ -189,7 +190,9 @@ class DashboardViewModel:
         }
 
 
-def _serialize_circuit_state(state: ProviderCircuitState, now: datetime) -> dict[str, Any]:
+def _serialize_circuit_state(
+    state: ProviderCircuitState, now: datetime, pr_mgr: ProviderResilienceManager,
+) -> dict[str, Any]:
     """Convert a ProviderCircuitState to a JSON-safe dict for the UI."""
     return {
         "provider": state.provider,
@@ -197,7 +200,7 @@ def _serialize_circuit_state(state: ProviderCircuitState, now: datetime) -> dict
         "consecutive_outages": state.consecutive_outages,
         "last_error_summary": state.last_error_summary,
         "updated_at": state.updated_at.isoformat(),
-        "is_open": state.open_until is not None and state.open_until > now,
+        "is_open": pr_mgr.is_open(state.provider, now),
     }
 
 
@@ -1393,8 +1396,8 @@ def build_dashboard_view_model(
     pr_mgr = getattr(deps, "provider_resilience", None) if deps else None
     if pr_mgr is not None:
         now = datetime.now(timezone.utc)
-        for cb_state in pr_mgr.store.list_all():
-            circuit_breakers.append(_serialize_circuit_state(cb_state, now))
+        for cb_state in pr_mgr.list_all():
+            circuit_breakers.append(_serialize_circuit_state(cb_state, now, pr_mgr))
 
     repo = config.repo if config else ""
     repo_root = str(config.repo_root) if config and config.repo_root else ""
