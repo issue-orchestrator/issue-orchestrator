@@ -94,6 +94,7 @@ class ResultPlugin:
         self.quarantine = quarantine
         self.timeline_store = timeline_store
         self.failed_tests: list[str] = []  # Non-quarantined failures for retry
+        self.errors: list[str] = []  # Setup/teardown errors (not test failures)
 
     def pytest_collection_finish(self, session) -> None:
         """Called after test collection - record total test count."""
@@ -114,8 +115,12 @@ class ResultPlugin:
 
     def pytest_runtest_logreport(self, report) -> None:
         """Called for each test phase (setup, call, teardown)."""
-        # Only record the "call" phase (actual test execution)
+        # Capture setup/teardown errors so we can explain "all tests
+        # passed but run failed" to the user.
         if report.when != "call":
+            if report.failed:
+                summary = str(report.longrepr)[:500] if report.longrepr else "unknown error"
+                self.errors.append(f"{report.nodeid} ({report.when}): {summary}")
             return
 
         nodeid = report.nodeid
@@ -171,11 +176,11 @@ def _run_pytest(
     run_id: int,
     quarantine: set[str],
     timeline_store: "SqliteTimelineStore",
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], list[str]]:
     """Run pytest with result plugin.
 
     Returns:
-        Tuple of (exit_code, list of failed non-quarantined tests)
+        Tuple of (exit_code, failed non-quarantined tests, setup/teardown errors)
     """
     import pytest
 
@@ -184,7 +189,7 @@ def _run_pytest(
     # Run pytest in-process with our plugin
     exit_code = pytest.main(pytest_args, plugins=[plugin])
 
-    return exit_code, plugin.failed_tests
+    return exit_code, plugin.failed_tests, plugin.errors
 
 
 def _run_retry(
@@ -386,7 +391,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     try:
         # Run pytest
         logger.info("Running pytest with args: %s", pytest_args)
-        exit_code, failed_tests = _run_pytest(pytest_args, db, run_id, quarantine, timeline_store=timeline_store)
+        exit_code, failed_tests, fixture_errors = _run_pytest(pytest_args, db, run_id, quarantine, timeline_store=timeline_store)
 
         # Retry logic
         if args.allow_retry_once and failed_tests:
@@ -407,8 +412,19 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                     len(failed_tests),
                 )
 
-        # Determine final status
-        if exit_code == 0:
+        # Determine final status and note.
+        #
+        # Fixture errors (setup/teardown failures) are independent of
+        # test-level retries.  A successful retry clears test failures
+        # but cannot clear fixture errors — they represent real
+        # infrastructure problems (e.g. GH activity guard) that the
+        # retry path does not address.  So if fixture_errors is
+        # non-empty the run stays failed regardless of exit_code.
+        note: str | None = None
+        if fixture_errors:
+            status = "failed"
+            note = "Fixture errors: " + "; ".join(fixture_errors[:5])
+        elif exit_code == 0:
             status = "passed"
         elif exit_code == 5:
             # pytest exit code 5 = no tests collected
@@ -425,6 +441,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             exit_code=exit_code,
             duration_seconds=duration,
             log_path=log_path_for_db,
+            note=note,
         )
 
         if args.auto_quarantine and status == "failed":

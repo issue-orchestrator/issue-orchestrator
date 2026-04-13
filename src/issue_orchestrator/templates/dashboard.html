@@ -305,6 +305,7 @@
                                 <span class="card-focus">{{ run.title }}</span>
                                 {% endif %}
                                 <div class="card-line card-muted">{{ run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
+                                {% if run.note %}<div class="card-line card-muted e2e-run-note">{{ run.note }}</div>{% endif %}
                                 <div class="attention-actions">
                                     {% if run.e2e_run_id %}
                                     <button class="issue-action-btn" onclick="showUnifiedRunView({{ run.e2e_run_id }});event.stopPropagation();">Open run</button>

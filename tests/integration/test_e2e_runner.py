@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -153,6 +154,13 @@ tests/e2e/test_quarantined.py::test_known_flaky
     return repo
 
 
+# Resolve the source tree for the current checkout so the subprocess
+# imports the code under test, not whatever is installed in the base
+# venv.  Without this, a review worktree's tests would exercise the
+# base repo's worker logic instead of the branch-under-review.
+_WORKTREE_SRC = str(Path(__file__).resolve().parents[2] / "src")
+
+
 def run_worker(
     repo_root: Path,
     orchestrator_id: str = "test-orch",
@@ -193,12 +201,21 @@ def run_worker(
     if allow_retry_once:
         cmd.append("--allow-retry-once")
 
+    # Prepend the current worktree's src/ to PYTHONPATH so the
+    # subprocess imports the code under test rather than whatever
+    # package is installed in the base venv.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _WORKTREE_SRC + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+
     return subprocess.run(
         cmd,
         cwd=repo_root,
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
     )
 
 
@@ -570,3 +587,119 @@ def test_progress_with_failures(test_repo: Path):
     assert progress["passed"] == 2  # test_passing and test_another_passing
     assert progress["failed"] == 1  # test_failing
     assert progress["percent"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Test: Fixture error surfacing
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def test_repo_with_teardown_error(tmp_path: Path) -> Path:
+    """Create a test repo where all tests pass but teardown raises an error."""
+    repo = tmp_path / "test_repo_teardown"
+    repo.mkdir()
+
+    tests_dir = repo / "tests" / "e2e"
+    tests_dir.mkdir(parents=True)
+
+    (tests_dir / "conftest.py").write_text(
+        """\
+import pytest
+
+@pytest.fixture(autouse=True)
+def activity_guard():
+    yield
+    pytest.fail("GH activity exceeded limit: 100 > 50")
+"""
+    )
+
+    (tests_dir / "test_basic.py").write_text(
+        """\
+def test_passing():
+    assert True
+"""
+    )
+
+    (repo / ".issue-orchestrator").mkdir()
+    return repo
+
+
+def test_fixture_error_surfaces_in_run_note(test_repo_with_teardown_error: Path):
+    """When all tests pass but a teardown fixture fails, the run must be
+    failed with a note explaining the fixture error."""
+    result = run_worker(test_repo_with_teardown_error)
+
+    assert result.returncode in (0, 1), f"Worker crashed: {result.stderr}"
+
+    db = E2EDB(test_repo_with_teardown_error / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    assert run.status == "failed", (
+        f"Run with fixture errors must be failed, got {run.status}"
+    )
+    assert run.note is not None, "Run note must explain the fixture error"
+    assert "Fixture errors:" in run.note
+    assert "GH activity exceeded limit" in run.note
+
+
+@pytest.fixture
+def test_repo_with_retry_and_teardown_error(tmp_path: Path) -> Path:
+    """Create a test repo where a test fails then passes on retry, but
+    a teardown fixture also errors."""
+    repo = tmp_path / "test_repo_retry_teardown"
+    repo.mkdir()
+
+    tests_dir = repo / "tests" / "e2e"
+    tests_dir.mkdir(parents=True)
+
+    marker_file = tmp_path / "retry_marker.txt"
+
+    (tests_dir / "conftest.py").write_text(
+        """\
+import pytest
+
+@pytest.fixture(autouse=True)
+def activity_guard():
+    yield
+    pytest.fail("GH activity exceeded limit: 100 > 50")
+"""
+    )
+
+    (tests_dir / "test_retry.py").write_text(
+        f"""\
+from pathlib import Path
+
+MARKER = Path("{marker_file}")
+
+def test_flaky():
+    if not MARKER.exists():
+        MARKER.write_text("ran once")
+        assert False, "First attempt fails"
+    else:
+        assert True
+"""
+    )
+
+    (repo / ".issue-orchestrator").mkdir()
+    return repo
+
+
+def test_fixture_error_not_masked_by_retry(test_repo_with_retry_and_teardown_error: Path):
+    """A successful retry must not mask fixture errors — the run must
+    still be failed with a note."""
+    result = run_worker(test_repo_with_retry_and_teardown_error, allow_retry_once=True)
+
+    assert result.returncode in (0, 1), f"Worker crashed: {result.stderr}"
+
+    db = E2EDB(test_repo_with_retry_and_teardown_error / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    assert run.status == "failed", (
+        "Fixture errors must keep run failed even when retried tests pass, "
+        f"got status={run.status}"
+    )
+    assert run.note is not None, "Run note must explain the fixture error"
+    assert "Fixture errors:" in run.note

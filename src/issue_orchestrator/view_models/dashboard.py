@@ -795,7 +795,7 @@ def _build_e2e_recent_run_items(db, config, e2e_status: dict[str, Any]) -> list[
             continue
 
         relative_time = _relative_time(run.started_at) if run.started_at else ""
-        items.append({
+        item: dict[str, Any] = {
             "issue_number": f"E2E-{run.id}",
             "title": run.commit_sha[:7] if run.commit_sha else "no commit",
             "status": run.status,
@@ -807,7 +807,10 @@ def _build_e2e_recent_run_items(db, config, e2e_status: dict[str, Any]) -> list[
             "relative_time": relative_time,
             "time": relative_time,
             "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
-        })
+        }
+        if run.note:
+            item["note"] = run.note
+        items.append(item)
     return items
 
 

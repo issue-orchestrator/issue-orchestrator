@@ -977,6 +977,14 @@ body.column-focus-mode .column-expanded {
     padding: 8px;
     background: var(--bg-panel-soft);
 }
+.e2e-run-note {
+    font-size: 0.8em;
+    color: var(--error, #e06c75);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
 
 .issue-detail-drawer {
     position: fixed;
