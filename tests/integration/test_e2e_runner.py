@@ -274,8 +274,10 @@ def test_worker_retry_logic(test_repo_with_retry: Path):
     run = db.latest_run("test-orch")
 
     assert run is not None
-    # Should pass because flaky test passes on retry
-    assert run.status == "passed", f"Expected passed but got {run.status}"
+    # Status should be "warning" — the test passed, but only after retry
+    assert run.status == "warning", f"Expected warning but got {run.status}"
+    assert run.note is not None
+    assert "required retry" in run.note
 
     # Check the flaky test has retry_outcome
     details = db.run_details(run.id)
