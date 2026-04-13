@@ -6,6 +6,10 @@ You're assessing Issue Orchestrator's design — whether the architecture is sou
 
 **[Making Agentic Development Sustainable](../design/sustainable-agentic-development.md)** — The design essay. Why the system exists, the three tracks (enforceable architecture, deterministic workflow, externalized management), and lessons learned. 10 minute read.
 
+**[Applied AI Evaluation](applied-ai.md)** — How to frame the repo for hiring conversations, what evidence matters most, and how to demo it without overselling autonomy.
+
+**[Portfolio Benchmarking](benchmarking.md)** — Deterministic scenario-based benchmark path that emits a shareable markdown and JSON artifact bundle.
+
 **[README](../../README.md)** — The pitch and how-it-works diagram. Takes 2 minutes. Notice the agent-reviewer loop with cycle limits — that's the core quality enforcement mechanism.
 
 **[Project Status](../../README.md#project-status)** — Current maturity statement. What is stable versus still evolving.
