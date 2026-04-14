@@ -9,9 +9,13 @@ import json
 import pytest
 
 from issue_orchestrator.adapters.github.http_client import (
+    GitHubAuthError,
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
+    describe_github_token_sources,
+    resolve_github_token,
+    validate_github_token,
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import gh_audit
@@ -24,6 +28,69 @@ def _client_with_transport(transport: httpx.BaseTransport) -> GitHubHttpClient:
     # noqa: SLF001 - Injecting mock transport for HTTP testing
     client._client = httpx.Client(transport=transport, base_url="https://api.github.com")  # noqa: SLF001
     return client
+
+
+def test_resolve_github_token_repo_scoped_env_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TIXMEUP_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("ISSUE_ORCH_GITHUB_TOKEN", "generic-token")
+
+    with pytest.raises(GitHubAuthError, match="repo-specific auth"):
+        resolve_github_token(
+            configured_token=None,
+            configured_env="TIXMEUP_GITHUB_TOKEN",
+        )
+
+
+def test_resolve_github_token_repo_scoped_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ISSUE_ORCH_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.http_client._read_keyring_token",
+        lambda *, service=..., username=...: "repo-keyring-token"
+        if service == "tixmeup-github" and username == "bruce"
+        else None,
+    )
+
+    token = resolve_github_token(
+        configured_token=None,
+        configured_keyring_service="tixmeup-github",
+        configured_keyring_username="bruce",
+    )
+
+    assert token == "repo-keyring-token"
+
+
+def test_describe_github_token_sources_repo_scoped_ignores_generic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ISSUE_ORCH_GITHUB_TOKEN", "generic-token")
+    monkeypatch.delenv("TIXMEUP_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.http_client._read_keyring_token",
+        lambda *, service=..., username=...: None,
+    )
+
+    sources = describe_github_token_sources(
+        configured_env="TIXMEUP_GITHUB_TOKEN",
+    )
+
+    assert sources == []
+
+
+def test_validate_github_token_checks_repo_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        assert headers["Authorization"] == "token repo-token"
+        assert timeout == 10.0
+        if url == "https://api.github.com/user":
+            return httpx.Response(200, json={"login": "octocat"})
+        if url == "https://api.github.com/repos/BruceBGordon/tixmeup":
+            return httpx.Response(404, json={"message": "Not Found"})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("issue_orchestrator.adapters.github.http_client.httpx.get", _mock_get)
+
+    result = validate_github_token(token="repo-token", repo="BruceBGordon/tixmeup")
+
+    assert result.valid is False
+    assert result.username == "octocat"
+    assert result.error == "Token cannot access repo BruceBGordon/tixmeup (HTTP 404)"
 
 
 def test_get_issue_uses_etag_cache() -> None:

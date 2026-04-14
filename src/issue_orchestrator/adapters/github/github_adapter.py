@@ -85,6 +85,8 @@ class GitHubAdapter:
         token = resolve_github_token(
             configured_token=getattr(config, "github_token", None) if config else None,
             configured_env=getattr(config, "github_token_env", None) if config else None,
+            configured_keyring_service=getattr(config, "github_keyring_service", None) if config else None,
+            configured_keyring_username=getattr(config, "github_keyring_username", None) if config else None,
         )
         if http_client is not None:
             self._client = http_client

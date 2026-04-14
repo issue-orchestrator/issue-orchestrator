@@ -67,6 +67,27 @@ agents:
     model: "sonnet"
 ```
 
+**Declare repo-scoped GitHub auth**
+```yaml
+repo:
+  name: "BruceBGordon/tixmeup"
+  github:
+    token_env: "TIXMEUP_GITHUB_TOKEN"
+    keyring_service: "tixmeup-github"
+    keyring_username: "bruce"
+```
+
+Use `token_env` when the repo should read a specific environment variable.
+Use `keyring_service` and `keyring_username` when the repo should read a
+specific OS keyring entry. You can declare one or both.
+
+When a repo declares `repo.github.token_env` or `repo.github.keyring_*`,
+those sources become authoritative:
+- `doctor` validates the configured source instead of a random global token
+- Control Center start checks validate access to `repo.name`, not just `/user`
+- startup fails clearly if the repo-scoped source is missing, instead of
+  silently falling back to another token that may not have repo access
+
 ---
 
 ## What To Read Next

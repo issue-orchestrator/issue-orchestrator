@@ -41,11 +41,10 @@ def run_doctor(
     """
     result = DoctorResult()
 
-    result.checks.extend(github.check_github_auth())
-    result.checks.extend(ai.check_ai_provider_clis())
-
     config, config_checks_list, should_stop = config_checks.load_config_with_checks(config, config_path)
     result.checks.extend(config_checks_list)
+    result.checks.extend(github.check_github_auth(config))
+    result.checks.extend(ai.check_ai_provider_clis())
     if should_stop or config is None:
         return result
 

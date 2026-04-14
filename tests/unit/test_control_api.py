@@ -1700,6 +1700,35 @@ class TestDiscoverReposEndpoint:
         assert any(item["name"] == "trustlist" and item["status"] == "ready" for item in discovered)
 
 
+class TestSetupPrereqsGitHubAuth:
+    def test_build_github_auth_check_uses_repo_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from issue_orchestrator.adapters.github.http_client import TokenValidationResult
+        from issue_orchestrator.entrypoints import control_api
+
+        cfg = Config()
+        cfg.repo = "BruceBGordon/tixmeup"
+        cfg.github_token_env = "TIXMEUP_GITHUB_TOKEN"
+        cfg.github_keyring_service = "tixmeup-github"
+        cfg.github_keyring_username = "bruce"
+
+        seen: dict[str, object] = {}
+
+        def _validate(**kwargs: object) -> TokenValidationResult:
+            seen.update(kwargs)
+            return TokenValidationResult(valid=False, error="missing repo auth")
+
+        monkeypatch.setattr("issue_orchestrator.adapters.github.http_client.validate_github_token", _validate)
+
+        build_check = getattr(control_api, "_build_github_auth_check")
+        check = build_check(cfg)
+
+        assert check == {"ok": False, "detail": "missing repo auth"}
+        assert seen["configured_env"] == "TIXMEUP_GITHUB_TOKEN"
+        assert seen["configured_keyring_service"] == "tixmeup-github"
+        assert seen["configured_keyring_username"] == "bruce"
+        assert seen["repo"] == "BruceBGordon/tixmeup"
+
+
 class TestSupervisorLastFailure:
     """Tests for GET /control/orchestrator/last_failure endpoint."""
 

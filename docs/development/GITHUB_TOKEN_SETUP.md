@@ -2,64 +2,58 @@
 
 How the orchestrator resolves GitHub tokens at runtime. For creating a token and required scopes, see [GitHub Permissions (User Guide)](../user/github-permissions.md).
 
-The system does not use the GitHub CLI for token discovery. Two supported options:
+The system does not use the GitHub CLI for token discovery. There are two supported patterns:
 
-1) Environment variable (recommended for simplicity)
-2) macOS keychain + `hosts.yml` (recommended for safer storage)
+1) Global auth sources
+2) Repo-scoped auth sources declared in config
 
-## Option 1: Environment Variable
+## Global Auth Sources
 
-Set a token in your shell. The resolution order is `ISSUE_ORCH_GITHUB_TOKEN` > `GITHUB_TOKEN` > `GH_TOKEN`.
+Set a token in your shell. The global fallback order is:
+
+`ISSUE_ORCH_GITHUB_TOKEN` > `GITHUB_TOKEN` > `GH_TOKEN` > the default keyring entry created by `issue-orchestrator auth store`
 
 ```bash
 export ISSUE_ORCH_GITHUB_TOKEN="ghp_..."
 ```
 
-Optional config:
+You can also store the global fallback token in the default keyring entry:
+
+```bash
+issue-orchestrator auth store
+```
+
+## Repo-Scoped Auth Sources
+
+When a repo declares its own GitHub auth source in config, that source becomes authoritative.
+The orchestrator does not silently fall back to a different global token.
+
+Example:
 
 ```yaml
 repo:
+  name: "BruceBGordon/tixmeup"
   github:
-    token_env: GITHUB_TOKEN
+    token_env: TIXMEUP_GITHUB_TOKEN
+    keyring_service: tixmeup-github
+    keyring_username: bruce
 ```
 
 Notes:
-- This keeps tokens out of repo files.
-- Use your shell profile if you want it to persist.
+- `token_env` lets a repo demand a specific env var.
+- `keyring_service` and `keyring_username` let a repo demand a specific keyring entry.
+- You can declare one or both. Resolution order within repo-scoped mode is:
+  `repo.github.token` > `repo.github.token_env` > `repo.github.keyring_service` / `keyring_username`
 
-## Option 2: macOS Keychain + hosts.yml
-
-This uses a keychain entry plus a lightweight `hosts.yml` file for the GitHub username.
-No `gh` CLI is required.
-
-1) Create `hosts.yml` with your GitHub username:
-
-```yaml
-github.com:
-  user: <your-github-username>
-```
-
-Save it at one of:
-- `~/.config/gh/hosts.yml`
-- `~/Library/Application Support/gh/hosts.yml`
-
-2) Add the token to the macOS keychain:
+On macOS you can create a matching generic password entry like this:
 
 ```bash
 security add-generic-password \
-  -s gh:github.com \
-  -a <your-github-username> \
+  -s tixmeup-github \
+  -a bruce \
   -w "ghp_..."
 ```
 
-3) (Optional) Remove the token from shell envs to avoid duplication:
-
-```bash
-unset GITHUB_TOKEN
-unset GH_TOKEN
-```
-
 Notes:
-- The system reads the username from `hosts.yml` and the token from keychain.
-- If `hosts.yml` contains an `oauth_token` or `token` entry, it will use that too,
-  but the keychain path is preferred for safety.
+- `doctor` validates access to the configured `repo.name`, not just a generic GitHub `/user` check.
+- Control Center prereqs/start use the same repo-scoped auth logic as the runtime adapter.

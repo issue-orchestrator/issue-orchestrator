@@ -95,10 +95,10 @@ def run_doctor(
     """
     result = DoctorResult()
 
-    # Run modular check sections
-    _check_github_auth(result)
-    _check_ai_providers(result)
     config = _check_config(result, config, config_path)
+    # Run modular check sections
+    _check_github_auth(result, config)
+    _check_ai_providers(result)
 
     if config is None:
         return result
@@ -118,55 +118,11 @@ def run_doctor(
     return result
 
 
-def _check_github_auth(result: DoctorResult) -> None:
+def _check_github_auth(result: DoctorResult, config: Optional[Config]) -> None:
     """Check GitHub authentication status."""
-    from ..adapters.github.http_client import (
-        _read_keyring_token,
-        validate_github_token,
-        KEYRING_SERVICE,
-        KEYRING_USERNAME,
-    )
+    from .doctor.checks.github import check_github_auth
 
-    env_vars = ["ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]
-    token_sources = []
-    for var in env_vars:
-        value = os.environ.get(var)
-        if value:
-            masked = value[:4] + "..." + value[-4:] if len(value) > 12 else "***"
-            token_sources.append(f"{var}: {masked}")
-
-    keyring_token = _read_keyring_token()
-    if keyring_token:
-        masked = keyring_token[:4] + "..." + keyring_token[-4:] if len(keyring_token) > 12 else "***"
-        token_sources.append(f"Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): {masked}")
-
-    if token_sources:
-        result.checks.append(Check(
-            name="Token Sources",
-            status="ok",
-            detail=", ".join(token_sources),
-        ))
-    else:
-        result.checks.append(Check(
-            name="Token Sources",
-            status="error",
-            detail="No GitHub token found",
-        ))
-
-    # Validate token with GitHub
-    token_result = validate_github_token()
-    if token_result.valid:
-        result.checks.append(Check(
-            name="GitHub Auth",
-            status="ok",
-            detail=f"Authenticated as: {token_result.username}",
-        ))
-    else:
-        result.checks.append(Check(
-            name="GitHub Auth",
-            status="error",
-            detail=token_result.error or "Unknown error",
-        ))
+    result.checks.extend(check_github_auth(config))
 
 
 def _check_ai_providers(result: DoctorResult) -> None:

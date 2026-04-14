@@ -2640,6 +2640,22 @@ repo:
 
         assert config.github_token_env == "MY_GITHUB_TOKEN"
 
+    def test_parses_repo_github_keyring_fields(self, tmp_path):
+        """repo.github keyring fields load into config."""
+        config_content = """
+repo:
+  github:
+    keyring_service: "tixmeup-github"
+    keyring_username: "bruce"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.github_keyring_service == "tixmeup-github"
+        assert config.github_keyring_username == "bruce"
+
     def test_expands_env_var_in_list(self, tmp_path, monkeypatch):
         """${VAR} works in list items."""
         monkeypatch.setenv("EXCLUDE_LABEL", "wip")
