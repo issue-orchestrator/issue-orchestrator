@@ -811,3 +811,149 @@ def test_e2e_badge_state_maps_warning():
     )
     assert vm["badge"]["state"] == "warning"
     assert vm["badge"]["icon"] == "⚠"
+
+
+# --- Provider circuit breaker status tests ---
+
+
+def test_provider_circuit_breakers_empty_by_default():
+    """Dashboard should return an empty list when no circuit breakers are tripped."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
+def test_provider_circuit_breakers_surfaces_open_breaker():
+    """Dashboard should surface an open circuit breaker with correct fields."""
+    from datetime import timezone
+
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=3,
+        last_error_summary="rate limit exceeded",
+        updated_at=now,
+    ))
+
+    @dataclass
+    class _FakeResilience:
+        store: InMemoryProviderCircuitStore
+
+    @dataclass
+    class _FakeDeps:
+        provider_resilience: _FakeResilience
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _FakeDeps | None = None
+
+    orchestrator = _OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=_FakeDeps(provider_resilience=_FakeResilience(store=store)),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    breaker = view_model.provider_circuit_breakers[0]
+    assert breaker["provider"] == "anthropic"
+    assert breaker["is_open"] is True
+    assert breaker["consecutive_outages"] == 3
+    assert breaker["last_error_summary"] == "rate limit exceeded"
+    assert breaker["open_until"] == open_until.isoformat()
+    assert breaker["updated_at"] == now.isoformat()
+
+    # Also present in dashboard_data
+    dd_breakers = view_model.dashboard_data()["providerCircuitBreakers"]
+    assert len(dd_breakers) == 1
+    assert dd_breakers[0]["provider"] == "anthropic"
+
+
+def test_provider_circuit_breakers_surfaces_closed_breaker():
+    """A breaker with open_until in the past should show is_open=False."""
+    from datetime import timezone
+
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    now = datetime.now(timezone.utc)
+    open_until = now - timedelta(minutes=1)  # expired
+    store = InMemoryProviderCircuitStore()
+    store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=open_until,
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now - timedelta(minutes=2),
+    ))
+
+    @dataclass
+    class _FakeResilience:
+        store: InMemoryProviderCircuitStore
+
+    @dataclass
+    class _FakeDeps:
+        provider_resilience: _FakeResilience
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+        deps: _FakeDeps | None = None
+
+    orchestrator = _OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=_FakeDeps(provider_resilience=_FakeResilience(store=store)),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    breaker = view_model.provider_circuit_breakers[0]
+    assert breaker["provider"] == "openai"
+    assert breaker["is_open"] is False
