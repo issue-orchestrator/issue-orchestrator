@@ -358,8 +358,8 @@ class TestAgentConfig:
         assert tokens[:2] == ["codex", "exec"]
         assert "--full-auto" in tokens
         assert "gpt-5.4" in tokens
-        assert "-c" in tokens
-        assert 'model_reasoning_effort="xhigh"' in tokens
+        config_idx = tokens.index("-c")
+        assert tokens[config_idx + 1] == 'model_reasoning_effort="xhigh"'
 
 
 class TestSession:

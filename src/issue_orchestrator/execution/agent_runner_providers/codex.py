@@ -42,6 +42,7 @@ class CodexProvider(CLIProvider):
                 - approval_mode: "full-auto" (default), "yolo", or "default"
                 - sandbox: Sandbox policy (read-only, workspace-write, danger-full-access)
                 - reasoning_effort: Codex reasoning effort (low, medium, high, xhigh)
+                - model_reasoning_effort: Alias for reasoning_effort
                 - json_output: Whether to emit JSON events (default: True)
         """
         # Use exec subcommand for non-interactive execution
@@ -60,7 +61,9 @@ class CodexProvider(CLIProvider):
             cmd.extend(["--model", model])
 
         # Reasoning effort is configured through Codex config overrides.
-        reasoning_effort = kwargs.get("reasoning_effort") or kwargs.get("model_reasoning_effort")
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if reasoning_effort is None:
+            reasoning_effort = kwargs.get("model_reasoning_effort")
         if reasoning_effort:
             cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
 
