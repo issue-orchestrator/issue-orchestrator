@@ -1423,6 +1423,15 @@ class Config:
             exclude_label_prefixes=self.filtering.exclude_label_prefixes,
         )
 
+    def github_auth_kwargs(self) -> dict[str, str | None]:
+        """Return repo-scoped GitHub auth settings keyed for auth helpers."""
+        return {
+            "configured_token": self.github_token,
+            "configured_env": self.github_token_env,
+            "configured_keyring_service": self.github_keyring_service,
+            "configured_keyring_username": self.github_keyring_username,
+        }
+
     def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
         """Get the effective reviewer for an agent.
 

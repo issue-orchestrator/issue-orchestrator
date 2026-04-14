@@ -17,10 +17,11 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
     )
 
     checks: list[Check] = []
+    auth_kwargs = config.github_auth_kwargs() if config else {}
     token_sources = describe_github_token_sources(
-        configured_env=getattr(config, "github_token_env", None) if config else None,
-        configured_keyring_service=getattr(config, "github_keyring_service", None) if config else None,
-        configured_keyring_username=getattr(config, "github_keyring_username", None) if config else None,
+        configured_env=auth_kwargs.get("configured_env"),
+        configured_keyring_service=auth_kwargs.get("configured_keyring_service"),
+        configured_keyring_username=auth_kwargs.get("configured_keyring_username"),
     )
 
     if token_sources:
@@ -53,10 +54,7 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
         ))
 
     token_result = validate_github_token(
-        configured_token=getattr(config, "github_token", None) if config else None,
-        configured_env=getattr(config, "github_token_env", None) if config else None,
-        configured_keyring_service=getattr(config, "github_keyring_service", None) if config else None,
-        configured_keyring_username=getattr(config, "github_keyring_username", None) if config else None,
+        **auth_kwargs,
         repo=getattr(config, "repo", None) if config else None,
         api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
     )

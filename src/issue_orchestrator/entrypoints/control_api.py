@@ -3492,11 +3492,9 @@ def _build_agent_checks(config: Optional["Config"]) -> list[dict[str, Any]]:
 def _build_github_auth_check(config: Optional["Config"]) -> dict[str, Any]:
     from ..execution.providers import validate_github_token
 
+    auth_kwargs = config.github_auth_kwargs() if config else {}
     token_result = validate_github_token(
-        configured_token=getattr(config, "github_token", None) if config else None,
-        configured_env=getattr(config, "github_token_env", None) if config else None,
-        configured_keyring_service=getattr(config, "github_keyring_service", None) if config else None,
-        configured_keyring_username=getattr(config, "github_keyring_username", None) if config else None,
+        **auth_kwargs,
         repo=getattr(config, "repo", None) if config else None,
         api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
     )

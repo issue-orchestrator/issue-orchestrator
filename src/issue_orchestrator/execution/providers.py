@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..adapters.github.http_client import TokenValidationResult
     from ..infra.config import Config
     from ..ports import RepositoryHost
 
@@ -90,7 +91,7 @@ def validate_github_token(
     configured_keyring_username: str | None = None,
     repo: str | None = None,
     api_url: str = "https://api.github.com",
-):
+) -> "TokenValidationResult":
     """Validate GitHub auth for standalone entrypoints.
 
     Args:

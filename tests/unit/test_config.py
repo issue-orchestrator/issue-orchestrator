@@ -23,6 +23,22 @@ class TestConfig:
         assert config.web_port == 0
         assert config.control_api_port == 0
 
+    def test_github_auth_kwargs(self):
+        """GitHub auth helper exposes the repo-scoped auth settings."""
+        config = Config(
+            github_token="tok",
+            github_token_env="TIXMEUP_GITHUB_TOKEN",
+            github_keyring_service="tixmeup-github",
+            github_keyring_username="bruce",
+        )
+
+        assert config.github_auth_kwargs() == {
+            "configured_token": "tok",
+            "configured_env": "TIXMEUP_GITHUB_TOKEN",
+            "configured_keyring_service": "tixmeup-github",
+            "configured_keyring_username": "bruce",
+        }
+
     def test_config_load_ui_ports_default_to_auto_assign(self, tmp_path):
         """Missing ui port config should preserve 0=auto-assign defaults."""
         prompt = tmp_path / "prompt.md"
