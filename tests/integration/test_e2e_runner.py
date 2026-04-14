@@ -24,6 +24,16 @@ import pytest
 
 from issue_orchestrator.infra.e2e_db import E2EDB
 
+pytestmark = pytest.mark.xdist_group("e2e_worker")
+
+
+# These tests spawn nested pytest subprocesses. Under full pre-push load that
+# startup path can take materially longer than it does when the module is run
+# in isolation, so keep the budgets generous enough to avoid false flakes.
+_WORKER_SUBPROCESS_TIMEOUT_S = 60
+_RUN_CREATION_TIMEOUT_S = 20.0
+_RUN_CREATION_POLL_INTERVAL_S = 0.1
+
 
 # Note: These tests don't use the @pytest.mark.e2e marker because they don't
 # require GitHub activity. They're still run as part of `make test-e2e` since
@@ -167,7 +177,7 @@ def run_worker(
     pytest_args: list[str] | None = None,
     allow_retry_once: bool = False,
     quarantine_file: str = "tests/e2e/quarantine.txt",
-    timeout: int = 30,
+    timeout: int = _WORKER_SUBPROCESS_TIMEOUT_S,
 ) -> subprocess.CompletedProcess:
     """Run the e2e_worker subprocess."""
     if pytest_args is None:
@@ -217,6 +227,21 @@ def run_worker(
         timeout=timeout,
         env=env,
     )
+
+
+def _wait_for_run(
+    db: E2EDB,
+    orchestrator_id: str,
+    timeout_s: float = _RUN_CREATION_TIMEOUT_S,
+):
+    """Wait for a worker to persist its run row."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        run = db.latest_run(orchestrator_id)
+        if run is not None:
+            return run
+        time.sleep(_RUN_CREATION_POLL_INTERVAL_S)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -489,12 +514,7 @@ def test_progress_tracking(test_repo_with_slow_tests: Path):
 
     # Wait for worker to create its run (happens early in worker startup)
     db = E2EDB(repo / ".issue-orchestrator" / "e2e.db")
-    run = None
-    for _ in range(50):  # Wait up to 5 seconds
-        run = db.latest_run(orchestrator_id)
-        if run:
-            break
-        time.sleep(0.1)
+    run = _wait_for_run(db, orchestrator_id)
     assert run is not None, "Worker did not create run in time"
 
     # Wait for completion
@@ -575,12 +595,7 @@ def test_progress_with_failures(test_repo: Path):
     db = E2EDB(test_repo / ".issue-orchestrator" / "e2e.db")
 
     # Wait for worker to have created its run (in case of fast exit)
-    run = None
-    for _ in range(20):  # Wait up to 2 seconds
-        run = db.latest_run(orchestrator_id)
-        if run:
-            break
-        time.sleep(0.1)
+    run = _wait_for_run(db, orchestrator_id)
     assert run is not None, "Worker did not create run"
 
     progress = db.get_progress(run.id)

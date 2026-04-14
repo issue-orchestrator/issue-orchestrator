@@ -711,6 +711,8 @@ def _load_repo_section(config: "Config", repo_section: dict, github_section: dic
     config.repo = repo_section.get("name")
     config.github_token = github_section.get("token")
     config.github_token_env = github_section.get("token_env")
+    config.github_keyring_service = github_section.get("keyring_service")
+    config.github_keyring_username = github_section.get("keyring_username")
     config.github_api_url = github_section.get("api_url", "https://api.github.com")
     config.github_http_timeout_seconds = github_section.get("http_timeout_seconds", 20.0)
     config.github_cache_ttl_seconds = github_section.get("cache_ttl_seconds", 300)
@@ -1161,6 +1163,8 @@ class Config:
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
     github_token: Optional[str] = None  # Explicit GitHub token (prefer env)
     github_token_env: Optional[str] = None  # Env var name for token (overrides defaults)
+    github_keyring_service: Optional[str] = None  # Optional repo-specific keyring service name
+    github_keyring_username: Optional[str] = None  # Optional repo-specific keyring username/account
     github_api_url: str = "https://api.github.com"
     github_http_timeout_seconds: float = 20.0
     github_cache_ttl_seconds: int = 300  # Cache TTL for GitHub adapter responses
@@ -1419,6 +1423,15 @@ class Config:
             exclude_label_prefixes=self.filtering.exclude_label_prefixes,
         )
 
+    def github_auth_kwargs(self) -> dict[str, str | None]:
+        """Return repo-scoped GitHub auth settings keyed for auth helpers."""
+        return {
+            "configured_token": self.github_token,
+            "configured_env": self.github_token_env,
+            "configured_keyring_service": self.github_keyring_service,
+            "configured_keyring_username": self.github_keyring_username,
+        }
+
     def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
         """Get the effective reviewer for an agent.
 
@@ -1487,6 +1500,8 @@ class Config:
                 "root": str(self.repo_root),
                 "github": {
                     "token_env": self.github_token_env,
+                    "keyring_service": self.github_keyring_service,
+                    "keyring_username": self.github_keyring_username,
                     "api_url": self.github_api_url,
                     "http_timeout_seconds": self.github_http_timeout_seconds,
                     "cache_ttl_seconds": self.github_cache_ttl_seconds,

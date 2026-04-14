@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..adapters.github.http_client import TokenValidationResult
     from ..infra.config import Config
     from ..ports import RepositoryHost
 
@@ -49,6 +50,8 @@ def create_repository_host(repo: str, config: "Config | None" = None) -> "Reposi
 def resolve_github_token(
     configured_token: str | None = None,
     configured_env: str | None = None,
+    configured_keyring_service: str | None = None,
+    configured_keyring_username: str | None = None,
 ) -> str:
     """Resolve GitHub token from various sources.
 
@@ -61,6 +64,8 @@ def resolve_github_token(
     Args:
         configured_token: Explicitly provided token
         configured_env: Environment variable name to check
+        configured_keyring_service: Keyring service name to check
+        configured_keyring_username: Keyring username/account to check
 
     Returns:
         GitHub token string
@@ -70,7 +75,46 @@ def resolve_github_token(
     """
     from ..adapters.github.http_client import resolve_github_token as _resolve
 
-    return _resolve(configured_token=configured_token, configured_env=configured_env)
+    return _resolve(
+        configured_token=configured_token,
+        configured_env=configured_env,
+        configured_keyring_service=configured_keyring_service,
+        configured_keyring_username=configured_keyring_username,
+    )
+
+
+def validate_github_token(
+    *,
+    configured_token: str | None = None,
+    configured_env: str | None = None,
+    configured_keyring_service: str | None = None,
+    configured_keyring_username: str | None = None,
+    repo: str | None = None,
+    api_url: str = "https://api.github.com",
+) -> "TokenValidationResult":
+    """Validate GitHub auth for standalone entrypoints.
+
+    Args:
+        configured_token: Explicitly provided token
+        configured_env: Environment variable name to check
+        configured_keyring_service: Keyring service name to check
+        configured_keyring_username: Keyring username/account to check
+        repo: Optional repository to validate access against
+        api_url: GitHub API base URL
+
+    Returns:
+        Token validation result from the GitHub adapter layer
+    """
+    from ..adapters.github.http_client import validate_github_token as _validate
+
+    return _validate(
+        configured_token=configured_token,
+        configured_env=configured_env,
+        configured_keyring_service=configured_keyring_service,
+        configured_keyring_username=configured_keyring_username,
+        repo=repo,
+        api_url=api_url,
+    )
 
 
 def store_keyring_token(token: str) -> None:

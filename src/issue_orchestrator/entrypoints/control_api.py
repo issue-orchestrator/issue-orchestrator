@@ -3489,6 +3489,23 @@ def _build_agent_checks(config: Optional["Config"]) -> list[dict[str, Any]]:
     return checks
 
 
+def _build_github_auth_check(config: Optional["Config"]) -> dict[str, Any]:
+    from ..execution.providers import validate_github_token
+
+    auth_kwargs = config.github_auth_kwargs() if config else {}
+    token_result = validate_github_token(
+        **auth_kwargs,
+        repo=getattr(config, "repo", None) if config else None,
+        api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+    )
+    if token_result.valid:
+        detail = f"Authenticated as {token_result.username}"
+        if config and getattr(config, "repo", None):
+            detail += f" with access to {config.repo}"
+        return {"ok": True, "detail": detail}
+    return {"ok": False, "detail": token_result.error or "Unknown error"}
+
+
 @control_app.get("/control/setup/prereqs")
 async def setup_prereqs(repo_root: str | None = Query(default=None)) -> JSONResponse:
     """Check prerequisites for setting up a repository.
@@ -3513,14 +3530,8 @@ async def setup_prereqs(repo_root: str | None = Query(default=None)) -> JSONResp
         "detail": claude_path or "Not found on PATH",
     }
 
-    try:
-        from ..execution.providers import resolve_github_token
-        resolve_github_token(configured_token=None, configured_env=None)
-        checks["github_auth"] = {"ok": True, "detail": "Token found"}
-    except Exception as e:
-        checks["github_auth"] = {"ok": False, "detail": str(e)}
-
     config = _load_config_for_repo(repo_root)
+    checks["github_auth"] = _build_github_auth_check(config)
     agent_checks = _build_agent_checks(config)
 
     all_ok = all(c.get("ok", False) for c in checks.values()) and all(c.get("ok", False) for c in agent_checks)

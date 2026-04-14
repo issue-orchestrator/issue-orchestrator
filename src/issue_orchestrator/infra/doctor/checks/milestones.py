@@ -53,6 +53,8 @@ def check_milestone_order(config: Config) -> list[Check]:
         token = resolve_github_token(
             configured_token=config.github_token,
             configured_env=config.github_token_env,
+            configured_keyring_service=config.github_keyring_service,
+            configured_keyring_username=config.github_keyring_username,
         )
     except GitHubAuthError as exc:
         return [Check(

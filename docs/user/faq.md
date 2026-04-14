@@ -43,12 +43,32 @@ filtering:
 A: The guardrails are the repo's safety hooks that prevent unsafe operations (for example, bypassing validation or pushing without completing). Set up the worktree hooks once per machine, then keep `security.enforce_hooks` enabled. For details, see [Guardrails & Safety Model](../../docs/design/guardrails.md) and [Hook Enforcement](../architecture/hooks.md).
 
 **Q8: What GitHub token does `issue-orchestrator` use, and what permissions does it need?**
-A: `issue-orchestrator` resolves GitHub auth in this order: `repo.github.token`, `repo.github.token_env`, `ISSUE_ORCH_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the optional OS keychain entry created by `issue-orchestrator auth store`. If you launch the Control Center with `./scripts/start_control_center.sh`, it inherits your current shell environment, so the common setup is:
+A: `issue-orchestrator` resolves GitHub auth in two modes:
+
+- If a repo config declares `repo.github.token_env` or `repo.github.keyring_service` / `repo.github.keyring_username`, those repo-scoped sources are authoritative.
+- If a repo does not declare its own source, the global fallback order is `ISSUE_ORCH_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the optional OS keychain entry created by `issue-orchestrator auth store`.
+
+The common global setup is:
 
 ```bash
 export ISSUE_ORCH_GITHUB_TOKEN="github_pat_..."
 ./scripts/start_control_center.sh
 ```
+
+For a repo-specific setup, declare the source in config:
+
+```yaml
+repo:
+  name: "BruceBGordon/tixmeup"
+  github:
+    token_env: "TIXMEUP_GITHUB_TOKEN"
+    keyring_service: "tixmeup-github"
+    keyring_username: "bruce"
+```
+
+`doctor` and Control Center prereq/start checks validate access to `repo.name`,
+not just `/user`. If the repo-scoped source is missing, startup fails with a
+clear auth error instead of silently falling back to a different token.
 
 For a fine-grained PAT, grant repository access only to the target repo and set these permissions:
 

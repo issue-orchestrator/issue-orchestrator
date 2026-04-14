@@ -23,6 +23,22 @@ class TestConfig:
         assert config.web_port == 0
         assert config.control_api_port == 0
 
+    def test_github_auth_kwargs(self):
+        """GitHub auth helper exposes the repo-scoped auth settings."""
+        config = Config(
+            github_token="tok",
+            github_token_env="TIXMEUP_GITHUB_TOKEN",
+            github_keyring_service="tixmeup-github",
+            github_keyring_username="bruce",
+        )
+
+        assert config.github_auth_kwargs() == {
+            "configured_token": "tok",
+            "configured_env": "TIXMEUP_GITHUB_TOKEN",
+            "configured_keyring_service": "tixmeup-github",
+            "configured_keyring_username": "bruce",
+        }
+
     def test_config_load_ui_ports_default_to_auto_assign(self, tmp_path):
         """Missing ui port config should preserve 0=auto-assign defaults."""
         prompt = tmp_path / "prompt.md"
@@ -2639,6 +2655,22 @@ repo:
         config = Config.load(config_file)
 
         assert config.github_token_env == "MY_GITHUB_TOKEN"
+
+    def test_parses_repo_github_keyring_fields(self, tmp_path):
+        """repo.github keyring fields load into config."""
+        config_content = """
+repo:
+  github:
+    keyring_service: "tixmeup-github"
+    keyring_username: "bruce"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.github_keyring_service == "tixmeup-github"
+        assert config.github_keyring_username == "bruce"
 
     def test_expands_env_var_in_list(self, tmp_path, monkeypatch):
         """${VAR} works in list items."""
