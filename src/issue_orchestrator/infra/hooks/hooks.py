@@ -1350,6 +1350,9 @@ class CodexAdapter(AiAgentAdapter):
         data = json.loads(result.stdout)
         decision = data.get("decision") or data.get("strictest_decision")
         if decision is None:
+            matched_rules = data.get("matchedRules")
+            if isinstance(matched_rules, list) and not matched_rules:
+                return True
             # Fallback: search any decision-like field
             serialized = json.dumps(data).lower()
             if "forbidden" in serialized:
@@ -1462,6 +1465,17 @@ def detect_agents_from_config(config) -> dict[str, AiAgentType]:
                 continue
             except ValueError:
                 logger.warning("Unknown AI agent override for %s: %s", label, meta_agent)
+        for attr_name in ("provider", "ai_system"):
+            configured_value = getattr(agent_config, attr_name, None)
+            if not configured_value:
+                continue
+            try:
+                result[label] = AiAgentType(str(configured_value))
+                break
+            except ValueError:
+                logger.warning("Unknown %s for %s: %s", attr_name, label, configured_value)
+        if label in result:
+            continue
         command = getattr(agent_config, "command", None) or ""
         result[label] = detect_ai_agent(command)
     return result

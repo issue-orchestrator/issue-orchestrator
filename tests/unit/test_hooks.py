@@ -928,6 +928,25 @@ class TestCodexAdapter:
         assert not result.success
         assert any("execpolicy_cli_available" in check for check in result.checks_failed)
 
+    def test_execpolicy_allows_when_no_rules_match(self, adapter, temp_project, monkeypatch):
+        rules_file = temp_project / "orchestrator.rules"
+        rules_file.write_text("# test\n")
+
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=args[0],
+                returncode=0,
+                stdout='{"matchedRules":[]}',
+                stderr="",
+            ),
+        )
+
+        result = adapter._execpolicy_allows(rules_file, ["git", "push", "origin", "main"])
+
+        assert result is True
+
 
 class TestUnsupportedAdapter:
     """Tests for UnsupportedAdapter."""
@@ -963,6 +982,9 @@ class TestDetectAgentsFromConfig:
         mock_config = Mock()
         mock_agent = Mock()
         mock_agent.command = "claude --dangerously-skip-permissions"
+        mock_agent.meta_agent = None
+        mock_agent.provider = None
+        mock_agent.ai_system = None
         mock_config.agents = {"agent:backend": mock_agent}
 
         result = detect_agents_from_config(mock_config)
@@ -974,9 +996,15 @@ class TestDetectAgentsFromConfig:
 
         agent1 = Mock()
         agent1.command = "claude -p prompt.md"
+        agent1.meta_agent = None
+        agent1.provider = None
+        agent1.ai_system = None
 
         agent2 = Mock()
         agent2.command = "aider --yes"
+        agent2.meta_agent = None
+        agent2.provider = None
+        agent2.ai_system = None
 
         mock_config.agents = {
             "agent:backend": agent1,
@@ -992,11 +1020,39 @@ class TestDetectAgentsFromConfig:
         mock_config = Mock()
         mock_agent = Mock()
         mock_agent.command = None
+        mock_agent.provider = None
+        mock_agent.ai_system = None
         mock_config.agents = {"agent:test": mock_agent}
 
         result = detect_agents_from_config(mock_config)
 
         assert result["agent:test"] == AiAgentType.UNKNOWN
+
+    def test_prefers_provider_over_legacy_command(self):
+        mock_config = Mock()
+        mock_agent = Mock()
+        mock_agent.provider = "codex"
+        mock_agent.ai_system = None
+        mock_agent.command = "claude -p prompt.md"
+        mock_agent.meta_agent = None
+        mock_config.agents = {"agent:reviewer": mock_agent}
+
+        result = detect_agents_from_config(mock_config)
+
+        assert result["agent:reviewer"] == AiAgentType.CODEX
+
+    def test_falls_back_to_ai_system_when_provider_missing(self):
+        mock_config = Mock()
+        mock_agent = Mock()
+        mock_agent.provider = None
+        mock_agent.ai_system = "gemini"
+        mock_agent.command = "claude -p prompt.md"
+        mock_agent.meta_agent = None
+        mock_config.agents = {"agent:frontend": mock_agent}
+
+        result = detect_agents_from_config(mock_config)
+
+        assert result["agent:frontend"] == AiAgentType.GEMINI
 
 
 class TestParseHookInput:

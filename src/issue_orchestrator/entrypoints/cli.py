@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -1172,10 +1173,24 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
     # 5. Check agent commands
     console.print("\n[bold]5. Agent Commands[/bold]")
     for agent_name, agent_config in config.agents.items():
-        cmd = agent_config.command
-        if cmd:
-            # Get first word of command (the executable)
-            executable = cmd.split()[0]
+        executable = None
+        provider_name = getattr(agent_config, "provider", None)
+
+        if provider_name:
+            try:
+                from ..agent_runner import get_provider
+
+                executable = get_provider(provider_name).executable
+            except Exception:
+                warnings.append(f"Agent '{agent_name}' provider '{provider_name}' could not be resolved")
+
+        if executable is None:
+            cmd = agent_config.command
+            if cmd:
+                # Get first word of command (the executable)
+                executable = shlex.split(cmd)[0]
+
+        if executable:
             if shutil.which(executable):
                 console.print(f"  [green]✓[/green] {agent_name}: {executable} found")
             else:
