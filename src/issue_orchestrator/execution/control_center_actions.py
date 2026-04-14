@@ -176,7 +176,7 @@ class AuditIssuesCommand:
             return ActionResult({"error": "No repository configured"}, status_code=400)
 
         try:
-            issue_tracker = create_repository_host(config.repo)
+            issue_tracker = create_repository_host(config.repo, config=config)
             working_copy = GitWorkingCopy()
             issue_branches = extract_issue_branches(
                 working_copy.list_remote_branches(config.repo_root),
@@ -320,7 +320,7 @@ class InitializeLabelsCommand:
         try:
             from ..control.label_manager import LabelManager
             _lm = LabelManager(config)
-            client = create_repository_host(config.repo)
+            client = create_repository_host(config.repo, config=config)
             labels = [
                 _lm.in_progress,
                 _lm.blocked,

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..infra.config import Config
     from ..ports import RepositoryHost
 
 
@@ -29,18 +30,20 @@ if TYPE_CHECKING:
 # =============================================================================
 
 
-def create_repository_host(repo: str) -> "RepositoryHost":
+def create_repository_host(repo: str, config: "Config | None" = None) -> "RepositoryHost":
     """Create a RepositoryHost for the given repository.
 
     Args:
         repo: Repository in 'owner/repo' format
+        config: Optional loaded config so repo-specific auth and API settings
+            flow into the GitHub adapter.
 
     Returns:
         A RepositoryHost implementation (GitHubAdapter)
     """
     from ..adapters.github import GitHubAdapter
 
-    return GitHubAdapter(repo=repo)
+    return GitHubAdapter(repo=repo, config=config)
 
 
 def resolve_github_token(

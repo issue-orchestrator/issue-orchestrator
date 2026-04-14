@@ -167,6 +167,7 @@ class TestCmdStart:
                                     result = cmd_start(args)
 
                                     assert result == 0
+                                    mock_create_host.assert_called_once_with('test/repo', config=mock_config)
                                     # Orchestrator should NOT be instantiated for dry-run
                                     mock_build.assert_not_called()
 
@@ -1248,6 +1249,7 @@ class TestGetRepositoryHost:
 
             result = _get_repository_host(config)
             assert result == mock_host
+            mock_create.assert_called_once_with(repo='owner/repo', config=config)
 
     def test_get_repository_host_repo_resolution_fails(self):
         """Verify _get_repository_host returns None when repo can't be resolved."""
