@@ -8,7 +8,11 @@ from pathlib import Path
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra.repo_hardening import harden_repo, inspect_repo_hardening
+from issue_orchestrator.infra.repo_hardening import (
+    _render_repo_pre_push_hook,
+    harden_repo,
+    inspect_repo_hardening,
+)
 
 
 def _init_repo(repo: Path) -> None:
@@ -106,3 +110,12 @@ def test_harden_repo_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
     assert preserved in result.preserved_files
     assert preserved.read_text() == "#!/usr/bin/env bash\necho original-hook\n"
     assert "scripts/verify-pr.sh" in result.pre_push_hook.read_text()
+
+
+def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
+    repo_root = Path("/tmp/example-repo")
+    verify_script = repo_root / "scripts" / "gates" / "verify-pr.sh"
+
+    rendered = _render_repo_pre_push_hook(verify_script, repo_root)
+
+    assert 'VERIFY_SCRIPT="$REPO_ROOT/scripts/gates/verify-pr.sh"' in rendered

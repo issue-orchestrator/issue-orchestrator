@@ -103,6 +103,8 @@ def harden_repo(
 ) -> RepoHardeningInstallResult:
     """Install repo-level guardrails and agent hooks for a target repository."""
     repo_root = (target_root or config.repo_root).resolve()
+    git = _new_git_cli()
+    local_hooks_path = _get_local_hooks_path(repo_root, git)
     resolved_validation_cmd = (validation_cmd or config.validation.cmd or "").strip()
     if not resolved_validation_cmd:
         raise RepoHardeningError(
@@ -110,10 +112,12 @@ def harden_repo(
         )
 
     hooks_path_value, hooks_dir = _resolve_repo_hooks_dir(
-        repo_root, requested=hooks_path
+        repo_root,
+        requested=hooks_path,
+        local_hooks_path=local_hooks_path,
     )
-    if _get_local_hooks_path(repo_root) != hooks_path_value:
-        _set_local_hooks_path(repo_root, hooks_path_value)
+    if local_hooks_path != hooks_path_value:
+        _set_local_hooks_path(repo_root, hooks_path_value, git)
 
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,10 +143,12 @@ def harden_repo(
 
 
 def _resolve_repo_hooks_dir(
-    repo_root: Path, requested: str | None = None
+    repo_root: Path,
+    requested: str | None = None,
+    local_hooks_path: str | None = None,
 ) -> tuple[str, Path]:
     hooks_path_value = (
-        requested or _get_local_hooks_path(repo_root) or DEFAULT_HOOKS_PATH
+        requested or local_hooks_path or DEFAULT_HOOKS_PATH
     ).strip()
     if not hooks_path_value:
         hooks_path_value = DEFAULT_HOOKS_PATH
@@ -173,8 +179,13 @@ def _resolve_active_hooks_dir(repo_root: Path, hooks_path_config: str | None) ->
     return (repo_root / ".git" / "hooks").resolve()
 
 
-def _get_local_hooks_path(repo_root: Path) -> str | None:
-    git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+def _new_git_cli() -> GitCLI:
+    return GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+
+
+def _get_local_hooks_path(repo_root: Path, git: GitCLI | None = None) -> str | None:
+    if git is None:
+        git = _new_git_cli()
     result = git.run(
         repo_root,
         ["config", "--local", "--get", "core.hooksPath"],
@@ -186,8 +197,13 @@ def _get_local_hooks_path(repo_root: Path) -> str | None:
     return value or None
 
 
-def _set_local_hooks_path(repo_root: Path, hooks_path: str) -> None:
-    git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+def _set_local_hooks_path(
+    repo_root: Path,
+    hooks_path: str,
+    git: GitCLI | None = None,
+) -> None:
+    if git is None:
+        git = _new_git_cli()
     result = git.run(
         repo_root,
         ["config", "--local", "core.hooksPath", hooks_path],
@@ -235,7 +251,7 @@ def _install_repo_pre_push_hook(
             project_hook.chmod(0o755)
             result.preserved_files.append(project_hook)
 
-    rendered = _render_repo_pre_push_hook(verify_script)
+    rendered = _render_repo_pre_push_hook(verify_script, result.repo_root)
     _write_executable_file(pre_push_hook, rendered, result)
 
 
@@ -262,8 +278,8 @@ bash -lc "$validation_cmd"
 """
 
 
-def _render_repo_pre_push_hook(verify_script: Path) -> str:
-    verify_rel = verify_script.relative_to(verify_script.parents[1])
+def _render_repo_pre_push_hook(verify_script: Path, repo_root: Path) -> str:
+    verify_rel = verify_script.relative_to(repo_root)
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
