@@ -23,6 +23,10 @@ class ProviderResilienceManager:
     store: ProviderCircuitStore
     events: EventSink
 
+    def list_all(self) -> list[ProviderCircuitState]:
+        """Return all tracked circuit breaker states."""
+        return self.store.list_all()
+
     def get_state(self, provider: str) -> ProviderCircuitState | None:
         return self.store.get(provider)
 

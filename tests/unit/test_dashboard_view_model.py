@@ -857,9 +857,12 @@ def test_provider_circuit_breakers_surfaces_open_breaker():
         updated_at=now,
     ))
 
-    @dataclass
     class _FakeResilience:
-        store: InMemoryProviderCircuitStore
+        def __init__(self, store: InMemoryProviderCircuitStore) -> None:
+            self._store = store
+
+        def list_all(self) -> list[ProviderCircuitState]:
+            return self._store.list_all()
 
     @dataclass
     class _FakeDeps:
@@ -875,7 +878,7 @@ def test_provider_circuit_breakers_surfaces_open_breaker():
     orchestrator = _OrchestratorWithDeps(
         state=state,
         config=config,
-        deps=_FakeDeps(provider_resilience=_FakeResilience(store=store)),
+        deps=_FakeDeps(provider_resilience=_FakeResilience(store)),
     )
 
     view_model = build_dashboard_view_model(
@@ -924,9 +927,12 @@ def test_provider_circuit_breakers_surfaces_closed_breaker():
         updated_at=now - timedelta(minutes=2),
     ))
 
-    @dataclass
     class _FakeResilience:
-        store: InMemoryProviderCircuitStore
+        def __init__(self, store: InMemoryProviderCircuitStore) -> None:
+            self._store = store
+
+        def list_all(self) -> list[ProviderCircuitState]:
+            return self._store.list_all()
 
     @dataclass
     class _FakeDeps:
@@ -942,7 +948,7 @@ def test_provider_circuit_breakers_surfaces_closed_breaker():
     orchestrator = _OrchestratorWithDeps(
         state=state,
         config=config,
-        deps=_FakeDeps(provider_resilience=_FakeResilience(store=store)),
+        deps=_FakeDeps(provider_resilience=_FakeResilience(store)),
     )
 
     view_model = build_dashboard_view_model(

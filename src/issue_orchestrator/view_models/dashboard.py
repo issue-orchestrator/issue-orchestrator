@@ -198,7 +198,7 @@ def _build_circuit_breaker_items(orchestrator) -> list[dict[str, Any]]:
         return []
     now = datetime.now(timezone.utc)
     items: list[dict[str, Any]] = []
-    for state in resilience.store.list_all():
+    for state in resilience.list_all():
         is_open = state.open_until is not None and state.open_until > now
         items.append({
             "provider": state.provider,
