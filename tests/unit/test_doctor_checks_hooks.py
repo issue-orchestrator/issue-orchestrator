@@ -1,11 +1,13 @@
 """Unit tests for doctor hook checks."""
 
 from datetime import datetime, timedelta, timezone
+import subprocess
 from unittest.mock import MagicMock
 
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
 from issue_orchestrator.infra.ai_gate_state import AiGateState, AiGateResult
+from issue_orchestrator.infra.repo_hardening import harden_repo
 
 
 def test_check_hook_verification_no_agents_reports_ai_agent_check():
@@ -18,6 +20,38 @@ def test_check_hook_verification_no_agents_reports_ai_agent_check():
         c.name == "AI Agent Hooks (Installation)" and c.status == "warning"
         for c in checks
     )
+
+
+def test_check_repo_hardening_warns_when_not_installed(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+    config.validation.cmd = "make validate-pr"
+
+    checks = hook_checks.check_repo_hardening(config)
+
+    assert checks == [
+        hook_checks.Check(
+            name="Repo Guardrails",
+            status="warning",
+            detail="Not installed. Run 'issue-orchestrator harden-repo'.",
+        )
+    ]
+
+
+def test_check_repo_hardening_reports_ok_after_install(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+    config.validation.cmd = "make validate-pr"
+    config.agents = {}
+
+    harden_repo(config)
+
+    checks = hook_checks.check_repo_hardening(config)
+
+    assert len(checks) == 1
+    assert checks[0].name == "Repo Guardrails"
+    assert checks[0].status == "ok"
+    assert "scripts/verify-pr.sh" in checks[0].detail
 
 
 class TestAiGate:
@@ -128,7 +162,9 @@ class TestAiGate:
         assert result.status == "ok"
         assert result.expandable["ran"] is True
 
-    def test_ai_gate_cached_failure_retries_even_when_allowed(self, tmp_path, monkeypatch):
+    def test_ai_gate_cached_failure_retries_even_when_allowed(
+        self, tmp_path, monkeypatch
+    ):
         """Cached failures always re-run, even with dangerous_allow_failure=True."""
         config = Config(repo_root=tmp_path)
         config.hooks.ai_gate.interval_days = 7
@@ -212,7 +248,9 @@ class TestAiGate:
         assert result.expandable["triggered_by"] == "interval exceeded"
         assert len(saved_states) == 1  # State was saved
 
-    def test_ai_gate_stale_failed_cache_reports_interval_exceeded(self, tmp_path, monkeypatch):
+    def test_ai_gate_stale_failed_cache_reports_interval_exceeded(
+        self, tmp_path, monkeypatch
+    ):
         """Stale failed results should report staleness, not cached-failure retry."""
         from issue_orchestrator.infra.hooks.hooks import AiAgentType
 
@@ -280,7 +318,10 @@ class TestAiGate:
         # Mock adapter that fails AI gate test
         mock_adapter = MagicMock()
         mock_adapter.supports_ai_gate.return_value = True
-        mock_adapter.test_ai_gate.return_value = (False, "Did not block dangerous command")
+        mock_adapter.test_ai_gate.return_value = (
+            False,
+            "Did not block dangerous command",
+        )
         monkeypatch.setattr(
             "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
             lambda _: mock_adapter,

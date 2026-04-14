@@ -56,7 +56,9 @@ def run_hook_test(
             return blocked, result.stderr
         return blocked
     except subprocess.TimeoutExpired:
-        raise AssertionError("Hook script timed out (120s) — likely system overload under xdist")
+        raise AssertionError(
+            "Hook script timed out (120s) — likely system overload under xdist"
+        )
     except Exception:
         return (True, "") if return_stderr else True
 
@@ -96,7 +98,9 @@ def run_cursor_hook_test(
             return blocked, result.stdout
         return blocked
     except subprocess.TimeoutExpired:
-        raise AssertionError("Hook script timed out (120s) — likely system overload under xdist")
+        raise AssertionError(
+            "Hook script timed out (120s) — likely system overload under xdist"
+        )
     except Exception:
         return (True, "") if return_output else True
 
@@ -114,10 +118,9 @@ def run_copilot_hook_test(
     Returns True if blocked (JSON permissionDecision=deny), False if allowed.
     """
     # Copilot sends toolArgs as a JSON string
-    test_input = json.dumps({
-        "toolName": "bash",
-        "toolArgs": json.dumps({"command": command})
-    })
+    test_input = json.dumps(
+        {"toolName": "bash", "toolArgs": json.dumps({"command": command})}
+    )
     project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
     try:
         result = subprocess.run(
@@ -140,7 +143,9 @@ def run_copilot_hook_test(
             return blocked, result.stdout
         return blocked
     except subprocess.TimeoutExpired:
-        raise AssertionError("Hook script timed out (120s) — likely system overload under xdist")
+        raise AssertionError(
+            "Hook script timed out (120s) — likely system overload under xdist"
+        )
     except Exception:
         return (True, "") if return_output else True
 
@@ -174,12 +179,22 @@ from issue_orchestrator.infra.hooks.block_no_verify import (
 def _fast_verify_hook_cases(monkeypatch):
     """Speed up verify_hooks by skipping full subprocess-based test matrix."""
 
-    def _fast_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+    def _fast_cases(
+        self, hook_script: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         checks_passed.append("blocks:git push --no-verify")
         checks_passed.append("allows:git push origin main")
 
-    for adapter_cls in (ClaudeCodeAdapter, CursorAdapter, GeminiAdapter, CopilotAdapter, CodexAdapter):
-        monkeypatch.setattr(adapter_cls, "_run_hook_test_cases", _fast_cases, raising=False)
+    for adapter_cls in (
+        ClaudeCodeAdapter,
+        CursorAdapter,
+        GeminiAdapter,
+        CopilotAdapter,
+        CodexAdapter,
+    ):
+        monkeypatch.setattr(
+            adapter_cls, "_run_hook_test_cases", _fast_cases, raising=False
+        )
 
 
 class TestAiAgentType:
@@ -200,7 +215,10 @@ class TestDetectAiAgent:
     """Tests for detect_ai_agent function."""
 
     def test_detect_claude_code(self):
-        assert detect_ai_agent("claude --dangerously-skip-permissions") == AiAgentType.CLAUDE_CODE
+        assert (
+            detect_ai_agent("claude --dangerously-skip-permissions")
+            == AiAgentType.CLAUDE_CODE
+        )
 
     def test_detect_claude_uppercase(self):
         assert detect_ai_agent("Claude -p prompt.md") == AiAgentType.CLAUDE_CODE
@@ -218,7 +236,9 @@ class TestDetectAiAgent:
         assert detect_ai_agent("") == AiAgentType.UNKNOWN
 
     def test_detect_full_path(self):
-        assert detect_ai_agent("/usr/local/bin/claude --args") == AiAgentType.CLAUDE_CODE
+        assert (
+            detect_ai_agent("/usr/local/bin/claude --args") == AiAgentType.CLAUDE_CODE
+        )
 
     def test_detect_gh_copilot(self):
         """Test that 'gh copilot' invocation is detected as COPILOT."""
@@ -366,12 +386,14 @@ class TestClaudeCodeAdapter:
         claude_dir = temp_project / ".claude"
         claude_dir.mkdir()
         settings_path = claude_dir / "settings.json"
-        settings_path.write_text(json.dumps({
-            "someOtherSetting": True,
-            "hooks": {
-                "SomeOtherHook": [{"matcher": "Test"}]
-            }
-        }))
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "someOtherSetting": True,
+                    "hooks": {"SomeOtherHook": [{"matcher": "Test"}]},
+                }
+            )
+        )
 
         adapter.install_hooks(temp_project)
 
@@ -445,7 +467,9 @@ class TestClaudeCodeAdapter:
         assert "python3" in stderr.lower()
         assert "no-verify" in stderr.lower()
 
-    def test_hook_fallback_blocks_other_guardrails_on_python_error(self, adapter, temp_project):
+    def test_hook_fallback_blocks_other_guardrails_on_python_error(
+        self, adapter, temp_project
+    ):
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
@@ -508,6 +532,11 @@ class TestClaudeCodeAdapter:
     def test_hook_blocks_hooks_path_disable(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         decision = evaluate_command("git -c core.hooksPath=/dev/null push")
+        assert not decision.allowed
+
+    def test_hook_blocks_hooks_path_config_disable(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("git config --local core.hooksPath /dev/null")
         assert not decision.allowed
 
     def test_hook_blocks_gh_pr_merge(self, adapter, temp_project):
@@ -581,8 +610,7 @@ class TestCursorAdapter:
         assert "beforeShellExecution" in config
         hooks = config["beforeShellExecution"]
         assert any(
-            h.get("command") == ".cursor/hooks/block-no-verify.sh"
-            for h in hooks
+            h.get("command") == ".cursor/hooks/block-no-verify.sh" for h in hooks
         )
 
     def test_install_hooks_preserves_existing_config(self, adapter, temp_project):
@@ -590,10 +618,16 @@ class TestCursorAdapter:
         cursor_dir = temp_project / ".cursor"
         cursor_dir.mkdir()
         hooks_json = cursor_dir / "hooks.json"
-        hooks_json.write_text(json.dumps({
-            "beforeShellExecution": [{"command": "other-hook.sh", "output": "text"}],
-            "customSetting": True
-        }))
+        hooks_json.write_text(
+            json.dumps(
+                {
+                    "beforeShellExecution": [
+                        {"command": "other-hook.sh", "output": "text"}
+                    ],
+                    "customSetting": True,
+                }
+            )
+        )
 
         adapter.install_hooks(temp_project)
 
@@ -602,7 +636,9 @@ class TestCursorAdapter:
         hooks = config["beforeShellExecution"]
         assert len(hooks) == 2
         assert any(h.get("command") == "other-hook.sh" for h in hooks)
-        assert any(h.get("command") == ".cursor/hooks/block-no-verify.sh" for h in hooks)
+        assert any(
+            h.get("command") == ".cursor/hooks/block-no-verify.sh" for h in hooks
+        )
 
     def test_is_installed_true_after_install(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
@@ -644,7 +680,9 @@ class TestCursorAdapter:
         flag_dir.mkdir()
         (flag_dir / "allow-no-verify-dry-run").write_text("")
 
-        decision = evaluate_command("git push --dry-run --no-verify origin main", cwd=temp_project)
+        decision = evaluate_command(
+            "git push --dry-run --no-verify origin main", cwd=temp_project
+        )
         assert decision.allowed
 
     def test_hook_blocks_dry_run_no_verify_without_flag(self, adapter, temp_project):
@@ -718,7 +756,9 @@ class TestGeminiAdapter:
     def test_install_hooks_creates_files(self, adapter, temp_project):
         files = adapter.install_hooks(temp_project)
 
-        assert len(files) == 4  # hook script, allow_git_push.py, parse_hook_input.py, settings.json
+        assert (
+            len(files) == 4
+        )  # hook script, allow_git_push.py, parse_hook_input.py, settings.json
         assert (temp_project / ".gemini" / "hooks" / "block-no-verify.sh").exists()
         assert (temp_project / ".gemini" / "hooks" / "allow_git_push.py").exists()
         assert (temp_project / ".gemini" / "hooks" / "parse_hook_input.py").exists()
@@ -739,8 +779,11 @@ class TestGeminiAdapter:
         assert "BeforeTool" in settings["hooks"]
         hooks = settings["hooks"]["BeforeTool"]
         assert any(
-            m.get("matcher") == "Bash" and
-            any(h.get("command") == ".gemini/hooks/block-no-verify.sh" for h in m.get("hooks", []))
+            m.get("matcher") == "Bash"
+            and any(
+                h.get("command") == ".gemini/hooks/block-no-verify.sh"
+                for h in m.get("hooks", [])
+            )
             for m in hooks
         )
 
@@ -898,7 +941,9 @@ class TestCodexAdapter:
 
         assert adapter.is_installed(temp_project)
 
-    def test_verify_hooks_passes_after_install(self, adapter, temp_project, monkeypatch):
+    def test_verify_hooks_passes_after_install(
+        self, adapter, temp_project, monkeypatch
+    ):
         adapter.install_hooks(temp_project)
 
         def _fake_execpolicy(_rules_file, command):
@@ -919,14 +964,18 @@ class TestCodexAdapter:
         assert not result.success
         assert "rules_file_exists" in result.checks_failed[0]
 
-    def test_verify_hooks_fails_when_codex_missing(self, adapter, temp_project, monkeypatch):
+    def test_verify_hooks_fails_when_codex_missing(
+        self, adapter, temp_project, monkeypatch
+    ):
         adapter.install_hooks(temp_project)
         monkeypatch.setattr(shutil, "which", lambda _cmd: None)
 
         result = adapter.verify_hooks(temp_project)
 
         assert not result.success
-        assert any("execpolicy_cli_available" in check for check in result.checks_failed)
+        assert any(
+            "execpolicy_cli_available" in check for check in result.checks_failed
+        )
 
 
 class TestUnsupportedAdapter:
@@ -1016,10 +1065,12 @@ class TestParseHookInput:
         assert self.extract_command(raw) == "git push --no-verify"
 
     def test_claude_format_takes_priority(self):
-        raw = json.dumps({
-            "tool_input": {"command": "git push"},
-            "command": "something else",
-        })
+        raw = json.dumps(
+            {
+                "tool_input": {"command": "git push"},
+                "command": "something else",
+            }
+        )
         assert self.extract_command(raw) == "git push"
 
     def test_empty_tool_input_falls_back_to_command(self):
@@ -1060,57 +1111,68 @@ class TestCopilotParseHookInput:
 
     def test_copilot_format(self):
         """Test Copilot CLI format with nested toolArgs JSON string."""
-        raw = json.dumps({
-            "toolName": "bash",
-            "toolArgs": json.dumps({"command": "git push --no-verify"})
-        })
+        raw = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": json.dumps({"command": "git push --no-verify"}),
+            }
+        )
         assert self.extract_command(raw) == "git push --no-verify"
 
     def test_copilot_format_with_extra_args(self):
         """Test Copilot format extracts command from nested JSON with other fields."""
-        raw = json.dumps({
-            "toolName": "bash",
-            "toolArgs": json.dumps({
-                "command": "git commit -m 'test'",
-                "workingDir": "/some/path"
-            })
-        })
+        raw = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": json.dumps(
+                    {"command": "git commit -m 'test'", "workingDir": "/some/path"}
+                ),
+            }
+        )
         assert self.extract_command(raw) == "git commit -m 'test'"
 
     def test_copilot_format_takes_priority(self):
         """Test Copilot toolArgs format takes priority over other formats."""
-        raw = json.dumps({
-            "toolName": "bash",
-            "toolArgs": json.dumps({"command": "git push"}),
-            "command": "something else",  # Cursor format - should be ignored
-        })
+        raw = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": json.dumps({"command": "git push"}),
+                "command": "something else",  # Cursor format - should be ignored
+            }
+        )
         assert self.extract_command(raw) == "git push"
 
     def test_copilot_format_invalid_nested_json(self):
         """Test Copilot format with invalid nested JSON falls back to other formats."""
-        raw = json.dumps({
-            "toolName": "bash",
-            "toolArgs": "not valid json",
-            "command": "git status",  # Cursor fallback
-        })
+        raw = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": "not valid json",
+                "command": "git status",  # Cursor fallback
+            }
+        )
         assert self.extract_command(raw) == "git status"
 
     def test_copilot_format_non_dict_nested(self):
         """Test Copilot format with non-dict nested JSON falls back."""
-        raw = json.dumps({
-            "toolName": "bash",
-            "toolArgs": json.dumps(["array", "not", "dict"]),
-            "command": "git log",  # Cursor fallback
-        })
+        raw = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": json.dumps(["array", "not", "dict"]),
+                "command": "git log",  # Cursor fallback
+            }
+        )
         assert self.extract_command(raw) == "git log"
 
     def test_copilot_format_missing_command_in_args(self):
         """Test Copilot format with missing command key falls back."""
-        raw = json.dumps({
-            "toolName": "bash",
-            "toolArgs": json.dumps({"workingDir": "/path"}),
-            "tool_input": {"command": "git diff"},  # Claude fallback
-        })
+        raw = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": json.dumps({"workingDir": "/path"}),
+                "tool_input": {"command": "git diff"},  # Claude fallback
+            }
+        )
         assert self.extract_command(raw) == "git diff"
 
     def test_copilot_also_supports_claude_format(self):
@@ -1147,6 +1209,7 @@ class TestHookScriptIntegration:
         hook_script = tmp_path / ".github" / "hooks" / "block-no-verify.sh"
         blocked = run_copilot_hook_test(hook_script, "git push --no-verify")
         assert blocked
+
 
 class TestTemplatesExist:
     """Tests that template files exist."""
@@ -1235,7 +1298,12 @@ def get_agent_test_runner(agent_type: AiAgentType):
     Returns a function that takes (hook_script, command) and returns True if blocked.
     This is the DI seam - different agents use different input formats.
     """
-    if agent_type in (AiAgentType.CLAUDE_CODE, AiAgentType.GEMINI, AiAgentType.CURSOR, AiAgentType.COPILOT):
+    if agent_type in (
+        AiAgentType.CLAUDE_CODE,
+        AiAgentType.GEMINI,
+        AiAgentType.CURSOR,
+        AiAgentType.COPILOT,
+    ):
         return lambda _hook_script, command: not evaluate_command(command).allowed
     raise ValueError(f"No test runner for {agent_type}")
 
@@ -1291,19 +1359,25 @@ class TestAgentHooksParametrized:
     def test_hook_script_is_executable(self, agent_setup):
         """Verify hook script is executable."""
         adapter, _, _, hook_path = agent_setup
-        assert os.access(hook_path, os.X_OK), f"{adapter.agent_type.value}: hook not executable"
+        assert os.access(hook_path, os.X_OK), (
+            f"{adapter.agent_type.value}: hook not executable"
+        )
 
     def test_hook_blocks_git_push_no_verify(self, agent_setup):
         """Verify hook blocks 'git push --no-verify'."""
         adapter, test_fn, _, hook_path = agent_setup
         blocked = test_fn(hook_path, "git push --no-verify")
-        assert blocked, f"{adapter.agent_type.value}: failed to block git push --no-verify"
+        assert blocked, (
+            f"{adapter.agent_type.value}: failed to block git push --no-verify"
+        )
 
     def test_hook_blocks_git_commit_no_verify(self, agent_setup):
         """Verify hook blocks 'git commit --no-verify'."""
         adapter, test_fn, _, hook_path = agent_setup
         blocked = test_fn(hook_path, "git commit --no-verify -m 'test'")
-        assert blocked, f"{adapter.agent_type.value}: failed to block git commit --no-verify"
+        assert blocked, (
+            f"{adapter.agent_type.value}: failed to block git commit --no-verify"
+        )
 
     def test_hook_blocks_gh_pr_merge(self, agent_setup):
         """Verify hook blocks 'gh pr merge'."""
@@ -1333,12 +1407,16 @@ class TestAgentHooksParametrized:
         """Verify the adapter's own verification passes."""
         adapter, _, project_root, _ = agent_setup
         result = adapter.verify_hooks(project_root)
-        assert result.success, f"{adapter.agent_type.value}: verification failed: {result.checks_failed}"
+        assert result.success, (
+            f"{adapter.agent_type.value}: verification failed: {result.checks_failed}"
+        )
 
     def test_is_installed_returns_true(self, agent_setup):
         """Verify is_installed returns True after installation."""
         adapter, _, project_root, _ = agent_setup
-        assert adapter.is_installed(project_root), f"{adapter.agent_type.value}: is_installed returned False"
+        assert adapter.is_installed(project_root), (
+            f"{adapter.agent_type.value}: is_installed returned False"
+        )
 
 
 class TestAgentHooksFromConfig:
@@ -1375,7 +1453,9 @@ class TestAgentHooksFromConfig:
             # Should not raise UnsupportedAiAgentError for supported types
             assert adapter.agent_type == agent_type, f"Adapter mismatch for {label}"
 
-    def test_all_config_agents_can_install_hooks(self, mock_config_with_agents, tmp_path):
+    def test_all_config_agents_can_install_hooks(
+        self, mock_config_with_agents, tmp_path
+    ):
         """Verify hooks can be installed for all agents in config."""
         detected = detect_agents_from_config(mock_config_with_agents)
         unique_types = set(detected.values())
@@ -1387,13 +1467,19 @@ class TestAgentHooksFromConfig:
             files = adapter.install_hooks(tmp_path)
             assert len(files) > 0, f"No files created for {agent_type.value}"
 
-    def test_config_agents_hooks_actually_block(self, mock_config_with_agents, tmp_path):
+    def test_config_agents_hooks_actually_block(
+        self, mock_config_with_agents, tmp_path
+    ):
         """Verify hooks for all config agents actually block dangerous commands."""
         detected = detect_agents_from_config(mock_config_with_agents)
         unique_types = set(detected.values())
 
         for agent_type in unique_types:
-            if agent_type in (AiAgentType.AIDER, AiAgentType.UNKNOWN, AiAgentType.CODEX):
+            if agent_type in (
+                AiAgentType.AIDER,
+                AiAgentType.UNKNOWN,
+                AiAgentType.CODEX,
+            ):
                 continue  # Skip unsupported/special types
 
             adapter = get_adapter(agent_type)

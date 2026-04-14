@@ -159,10 +159,10 @@ Sessions that exit without calling `coding-done` are marked as failed.
 ### Step 5: Install Safety Hooks
 
 ```bash
-issue-orchestrator setup-hooks
+issue-orchestrator harden-repo
 ```
 
-This installs hooks that prevent agents from bypassing validation (e.g., blocking `git push --no-verify`).
+This installs the repo-local pre-push gate plus the configured AI-agent hooks that prevent bypasses like `git push --no-verify`.
 
 ### Step 6: Verify Your Setup
 
@@ -317,7 +317,7 @@ agents:
 Hooks prevent agents from bypassing safety guardrails. Without hooks, agents can skip pre-push tests with `--no-verify` or push broken code directly. Technical enforcement is the only reliable solution — prompt instructions are suggestions that agents can forget or work around.
 
 ```bash
-issue-orchestrator setup-hooks
+issue-orchestrator harden-repo
 ```
 
 Verify hooks work:
@@ -438,7 +438,7 @@ issue-orchestrator pause           # Finish current work, don't start new
 issue-orchestrator resume          # Resume after pause
 issue-orchestrator doctor          # Run diagnostics
 issue-orchestrator init            # Initialize GitHub labels
-issue-orchestrator setup-hooks     # Install safety hooks
+issue-orchestrator harden-repo     # Install repo guardrails + AI hooks
 ```
 
 ---

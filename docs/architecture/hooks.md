@@ -43,12 +43,13 @@ flowchart TB
 
 ### Repo Guardrails (local development)
 
-These are optional local hooks you can install to enforce architecture guardrails.
+These are repo-local hooks you install with `issue-orchestrator harden-repo`.
 
 | Hook | Type | Location | Purpose |
 |------|------|----------|---------|
-| Pre-commit | Git | `.git/hooks/pre-commit` | Runs import-linter + AST guardrails |
-| Pre-push | Git | `.git/hooks/pre-push` | Runs pyright + guardrails before push |
+| Pre-push | Git | `.githooks/pre-push` (or your configured `core.hooksPath`) | Runs the repo's canonical `scripts/verify-pr.sh` gate before push |
+| PR gate | Script | `scripts/verify-pr.sh` | Runs the repo's validation command from `validation.cmd` |
+| Hook helper | Python | `scripts/agent-hooks/block_no_verify.py` | Repo-local fallback used by agent hook scripts |
 
 ### Orchestrator-Installed Hooks (per worktree)
 
@@ -63,7 +64,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 
 ### Target Project Hooks (project-specific)
 
-These must be set up in the target project. The orchestrator helps install them via `setup`.
+These are installed in the target project by `issue-orchestrator harden-repo`. `setup-hooks` still exists when you only want the AI-agent side.
 
 | Hook | Type | Location | Purpose | Critical? |
 |------|------|----------|---------|-----------|
@@ -97,6 +98,7 @@ Intercepts commands before the AI can execute them:
 git push --no-verify
 git commit --no-verify -m "message"
 git -c core.hooksPath=/dev/null push
+git config --local core.hooksPath /dev/null
 gh pr merge 123                          # Agents cannot merge PRs
 gh pr merge 123 --squash
 gh api repos/owner/repo/pulls/123/merge  # API merge also blocked

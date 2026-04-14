@@ -31,7 +31,9 @@ def _resolve_repo(config: "Config") -> str:
 
     repo = config.repo or get_repo_from_git()
     if repo is None:
-        raise ValueError("Could not determine repository. Set 'repo' in config or run from a git directory.")
+        raise ValueError(
+            "Could not determine repository. Set 'repo' in config or run from a git directory."
+        )
     return repo
 
 
@@ -142,7 +144,9 @@ def _run_test_setup(config: "Config") -> bool:  # noqa: C901 - inherent complexi
                 labels=labels,
             )
             if issue_number:
-                console.print(f"  Created: https://github.com/{repo}/issues/{issue_number}")
+                console.print(
+                    f"  Created: https://github.com/{repo}/issues/{issue_number}"
+                )
         except Exception as exc:
             logger.warning("Failed to create test issue '%s': %s", title, exc)
 
@@ -157,52 +161,56 @@ def _apply_cli_overrides(args: argparse.Namespace, config: "Config") -> None:  #
         config.filtering.milestones = milestones
         config.filtering.milestone = None
         console.print(f"[cyan]Filtering by milestones: {', '.join(milestones)}[/cyan]")
-    elif hasattr(args, 'milestone') and args.milestone:
+    elif hasattr(args, "milestone") and args.milestone:
         config.filtering.milestone = args.milestone
         config.filtering.milestones = []
         console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
 
     # Handle label override
-    if hasattr(args, 'label') and args.label:
+    if hasattr(args, "label") and args.label:
         config.filtering.label = args.label
         console.print(f"[cyan]Filtering by label: {args.label}[/cyan]")
 
     # Handle single issue filter
-    if hasattr(args, 'issue') and args.issue:
+    if hasattr(args, "issue") and args.issue:
         config.filtering.issue = args.issue
         console.print(f"[cyan]Processing only issue #{args.issue}[/cyan]")
 
     # Handle ui_mode override
-    if hasattr(args, 'ui_mode') and args.ui_mode:
+    if hasattr(args, "ui_mode") and args.ui_mode:
         config.ui_mode = args.ui_mode
     console.print(f"[dim]UI mode: {config.ui_mode}[/dim]")
 
     # Handle queue_refresh override
-    if hasattr(args, 'queue_refresh') and args.queue_refresh is not None:
+    if hasattr(args, "queue_refresh") and args.queue_refresh is not None:
         config.queue_refresh_seconds = args.queue_refresh
 
     # Handle GH audit overrides
-    if hasattr(args, 'gh_audit') and args.gh_audit:
+    if hasattr(args, "gh_audit") and args.gh_audit:
         config.gh_audit_enabled = True
-    if hasattr(args, 'gh_audit_events') and args.gh_audit_events:
+    if hasattr(args, "gh_audit_events") and args.gh_audit_events:
         config.gh_audit_events = True
-    if hasattr(args, 'gh_audit_file') and args.gh_audit_file is not None:
+    if hasattr(args, "gh_audit_file") and args.gh_audit_file is not None:
         config.gh_audit_file = args.gh_audit_file
 
     # Handle max_issues override
-    if hasattr(args, 'max_issues') and args.max_issues is not None:
+    if hasattr(args, "max_issues") and args.max_issues is not None:
         config.filtering.max_to_start = args.max_issues
         if config.filtering.max_to_start > 0:
-            console.print(f"[dim]Max issues to start: {config.filtering.max_to_start}[/dim]")
+            console.print(
+                f"[dim]Max issues to start: {config.filtering.max_to_start}[/dim]"
+            )
 
     # Handle review workflow overrides
-    if hasattr(args, 'review_label') and args.review_label is not None:
+    if hasattr(args, "review_label") and args.review_label is not None:
         config.triage_review_label = args.review_label
         console.print(f"[dim]Review label: {config.triage_review_label}[/dim]")
-    if hasattr(args, 'review_threshold') and args.review_threshold is not None:
+    if hasattr(args, "review_threshold") and args.review_threshold is not None:
         config.triage_review_threshold = args.review_threshold
         if config.triage_review_threshold > 0:
-            console.print(f"[dim]Review threshold: {config.triage_review_threshold} PRs[/dim]")
+            console.print(
+                f"[dim]Review threshold: {config.triage_review_threshold} PRs[/dim]"
+            )
 
 
 def _run_dry_run(args: argparse.Namespace, config: "Config") -> int:
@@ -285,11 +293,15 @@ def _print_dry_run_table(states: list) -> None:
             "stale-orphaned": "yellow",
         }
         style = status_styles.get(status, "white")
-        session_status = "[green]active[/green]" if state.has_session else "[dim]none[/dim]"
+        session_status = (
+            "[green]active[/green]" if state.has_session else "[dim]none[/dim]"
+        )
         branch_status = (
             f"[cyan]{state.branch[:20]}...[/cyan]"
             if state.branch and len(state.branch) > 20
-            else f"[cyan]{state.branch}[/cyan]" if state.branch else "[dim]none[/dim]"
+            else f"[cyan]{state.branch}[/cyan]"
+            if state.branch
+            else "[dim]none[/dim]"
         )
 
         table.add_row(
@@ -305,28 +317,44 @@ def _print_dry_run_table(states: list) -> None:
     console.print(table)
 
 
-def _print_dry_run_summary(states: list, all_issues: list, scheduler, config: "Config") -> None:
+def _print_dry_run_summary(
+    states: list, all_issues: list, scheduler, config: "Config"
+) -> None:
     """Print summary statistics for dry-run mode."""
     available, _ = scheduler.get_available_issues(all_issues, check_dependencies=False)
     console.print(f"\n[dim]Total issues: {len(all_issues)}[/dim]")
     console.print(f"[dim]Available to process: {len(available)}[/dim]")
-    console.print(f"[dim]Would launch up to {config.max_concurrent_sessions} concurrent sessions[/dim]")
+    console.print(
+        f"[dim]Would launch up to {config.max_concurrent_sessions} concurrent sessions[/dim]"
+    )
 
     # Warnings for stale issues
     stale_states = [s for s in states if s.is_stale]
     if stale_states:
-        console.print(f"\n[yellow]Warning: {len(stale_states)} issue(s) marked in-progress but have no active session:[/yellow]")
+        console.print(
+            f"\n[yellow]Warning: {len(stale_states)} issue(s) marked in-progress but have no active session:[/yellow]"
+        )
         for state in stale_states:
             if state.branch:
-                console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:35]} [cyan](has branch: {state.branch})[/cyan]")
+                console.print(
+                    f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:35]} [cyan](has branch: {state.branch})[/cyan]"
+                )
             else:
-                console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:40]}")
+                console.print(
+                    f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:40]}"
+                )
         console.print("\n[dim]Options:[/dim]")
-        console.print("[dim]  - Reset to restart fresh: gh issue edit # --remove-label in-progress[/dim]")
-        console.print("[dim]  - Resume from branch: orchestrator will checkout existing branch if present[/dim]")
+        console.print(
+            "[dim]  - Reset to restart fresh: gh issue edit # --remove-label in-progress[/dim]"
+        )
+        console.print(
+            "[dim]  - Resume from branch: orchestrator will checkout existing branch if present[/dim]"
+        )
 
 
-def _print_orphan_branches(states: list, config: "Config", github, working_copy) -> None:
+def _print_orphan_branches(
+    states: list, config: "Config", github, working_copy
+) -> None:
     """Print orphan branches analysis for dry-run mode."""
     from ..infra.analysis import extract_issue_branches, analyze_orphan_branches
 
@@ -340,14 +368,20 @@ def _print_orphan_branches(states: list, config: "Config", github, working_copy)
         config.repo,
         issue_tracker=github,
         pr_tracker=github,
-        commits_ahead_fn=lambda b: working_copy.get_commits_ahead_count(config.repo_root, b),
-        last_commit_date_fn=lambda b: working_copy.get_last_commit_date(config.repo_root, b),
+        commits_ahead_fn=lambda b: working_copy.get_commits_ahead_count(
+            config.repo_root, b
+        ),
+        last_commit_date_fn=lambda b: working_copy.get_last_commit_date(
+            config.repo_root, b
+        ),
     )
 
     if not orphan_states:
         return
 
-    console.print(f"\n[yellow]Warning: {len(orphan_states)} orphan branch(es) found:[/yellow]")
+    console.print(
+        f"\n[yellow]Warning: {len(orphan_states)} orphan branch(es) found:[/yellow]"
+    )
 
     orphan_table = Table(title=None, box=None)
     orphan_table.add_column("#", style="cyan", width=6)
@@ -373,10 +407,15 @@ def _print_orphan_branches(states: list, config: "Config", github, working_copy)
 
     # Actionable hints
     resume_count = sum(1 for o in orphan_states if o.suggested_action == "resume-work")
-    delete_count = sum(1 for o in orphan_states if o.suggested_action == "delete-branch")
+    delete_count = sum(
+        1 for o in orphan_states if o.suggested_action == "delete-branch"
+    )
     if resume_count > 0:
-        console.print(f"\n[dim]To resume work on open issues, add in-progress label:[/dim]")
+        console.print(
+            f"\n[dim]To resume work on open issues, add in-progress label:[/dim]"
+        )
         from ..control.label_manager import LabelManager
+
         _lm = LabelManager(config)
         console.print(f"[dim]  gh issue edit # --add-label {_lm.in_progress}[/dim]")
     if delete_count > 0:
@@ -387,7 +426,9 @@ def _print_orphan_branches(states: list, config: "Config", github, working_copy)
 def _format_orphan_issue_info(orphan) -> str:
     """Format issue info for orphan branch display."""
     if orphan.issue_title:
-        title_short = orphan.issue_title[:25] + ("..." if len(orphan.issue_title) > 25 else "")
+        title_short = orphan.issue_title[:25] + (
+            "..." if len(orphan.issue_title) > 25 else ""
+        )
         state_color = "green" if orphan.issue_state == "open" else "red"
         return f"[{state_color}]{orphan.issue_state}[/{state_color}]: {title_short}"
     elif orphan.issue_state:
@@ -427,7 +468,9 @@ async def _run_no_dashboard(orchestrator, api_port: int | None) -> None:
             await control_api.stop()
 
 
-async def _run_web_dashboard(orchestrator, config: "Config", args: argparse.Namespace, api_port: int | None) -> None:
+async def _run_web_dashboard(
+    orchestrator, config: "Config", args: argparse.Namespace, api_port: int | None
+) -> None:
     """Run orchestrator with web dashboard."""
     import signal
     from .web import run_with_web_dashboard, trigger_server_shutdown
@@ -453,7 +496,9 @@ async def _run_web_dashboard(orchestrator, config: "Config", args: argparse.Name
         try:
             await control_api.start()
             if api_port == 0:
-                console.print(f"[dim]Control API on http://127.0.0.1:{control_api.port}[/dim]")
+                console.print(
+                    f"[dim]Control API on http://127.0.0.1:{control_api.port}[/dim]"
+                )
         except OSError as exc:
             logging.warning("Control API failed to start on port %s: %s", api_port, exc)
             control_api = None
@@ -466,7 +511,9 @@ async def _run_web_dashboard(orchestrator, config: "Config", args: argparse.Name
             await control_api.stop()
 
 
-async def _run_tui_dashboard(orchestrator, config: "Config", api_port: int | None) -> bool:
+async def _run_tui_dashboard(
+    orchestrator, config: "Config", api_port: int | None
+) -> bool:
     """Run orchestrator with TUI dashboard."""
     from .control_api import ControlAPIServer
     from .dashboard import run_with_dashboard
@@ -486,8 +533,8 @@ async def _run_tui_dashboard(orchestrator, config: "Config", api_port: int | Non
 
 def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI entry point with config/logging/validation/startup phases
     """Start the orchestrator."""
-    debug = getattr(args, 'debug', False)
-    no_dashboard = getattr(args, 'no_dashboard', False)
+    debug = getattr(args, "debug", False)
+    no_dashboard = getattr(args, "no_dashboard", False)
     log_level = "DEBUG" if debug else "INFO"
 
     console.print("[green]Starting issue-orchestrator...[/green]")
@@ -523,14 +570,19 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
         # Run doctor checks including guardrails - fail fast if environment is broken
         from ..infra.launcher import launch_preflight_only
         from ..execution.command_runner import LocalCommandRunner
-        launch_result = launch_preflight_only(config=config, runner=LocalCommandRunner())
+
+        launch_result = launch_preflight_only(
+            config=config, runner=LocalCommandRunner()
+        )
         if launch_result.status == "doctor_error":
             console.print("[red]Startup checks failed:[/red]")
             for check in launch_result.doctor.checks:
                 if check.status == "error":
                     console.print(f"  [red]✗ {check.name}: {check.detail}[/red]")
                     logging.error(f"Doctor check failed: {check.name}: {check.detail}")
-            console.print("\n[yellow]Run 'issue-orchestrator doctor' for full diagnostics[/yellow]")
+            console.print(
+                "\n[yellow]Run 'issue-orchestrator doctor' for full diagnostics[/yellow]"
+            )
             return 1
         elif launch_result.status == "doctor_warning":
             for check in launch_result.doctor.checks:
@@ -611,10 +663,12 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
     _apply_cli_overrides(args, config)
 
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
-    console.print(f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]")
+    console.print(
+        f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]"
+    )
 
     # Handle dry-run mode
-    if hasattr(args, 'dry_run') and args.dry_run:
+    if hasattr(args, "dry_run") and args.dry_run:
         return _run_dry_run(args, config)
 
     if is_locked(config.repo_root):
@@ -633,13 +687,15 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
                 console.print("[red]Failed to stop existing orchestrator.[/red]")
                 return 1
         else:
-            console.print("[red]Non-interactive start aborted (orchestrator already running).[/red]")
+            console.print(
+                "[red]Non-interactive start aborted (orchestrator already running).[/red]"
+            )
             return 1
 
     orchestrator = build_orchestrator(config=config)
 
     # Get control API port (CLI --api-port overrides config; 0 = auto-assign)
-    cli_api_port = getattr(args, 'api_port', None)
+    cli_api_port = getattr(args, "api_port", None)
     api_port = cli_api_port if cli_api_port is not None else config.control_api_port
 
     try:
@@ -654,7 +710,9 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
             port = args.port if args.port != 8080 else config.web_port
             console.print("[dim]Starting web dashboard...[/dim]")
             if port != 0:
-                console.print(f"[green]Dashboard will open at {_client_dashboard_link(port)}[/green]")
+                console.print(
+                    f"[green]Dashboard will open at {_client_dashboard_link(port)}[/green]"
+                )
             asyncio.run(_run_web_dashboard(orchestrator, config, args, api_port))
         else:
             # Run with interactive TUI dashboard (tmux mode)
@@ -680,11 +738,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         if config.filtering.label:
             console.print(f"  Filter label: {config.filtering.label}")
         if config.filtering.milestones:
-            console.print(f"  Filter milestones: {', '.join(config.filtering.milestones)}")
+            console.print(
+                f"  Filter milestones: {', '.join(config.filtering.milestones)}"
+            )
         elif config.filtering.milestone:
             console.print(f"  Filter milestone: {config.filtering.milestone}")
 
-        console.print("\n[dim]Note: Use the web dashboard to view active sessions[/dim]")
+        console.print(
+            "\n[dim]Note: Use the web dashboard to view active sessions[/dim]"
+        )
         return 0
     except FileNotFoundError:
         console.print("[yellow]Orchestrator not configured yet[/yellow]")
@@ -708,14 +770,18 @@ def cmd_switch(args: argparse.Namespace) -> int:
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Switch to dashboard (deprecated - use web dashboard)."""
     console.print("[yellow]The 'dashboard' command is no longer available.[/yellow]")
-    console.print("Start the orchestrator to access the web dashboard: issue-orchestrator start")
+    console.print(
+        "Start the orchestrator to access the web dashboard: issue-orchestrator start"
+    )
     return 1
 
 
 def cmd_output(args: argparse.Namespace) -> int:
     """Show recent output from an issue's session."""
     console.print("[yellow]The 'output' command is no longer available.[/yellow]")
-    console.print("View session recordings in .issue-orchestrator/sessions/<run>/terminal-recording.jsonl")
+    console.print(
+        "View session recordings in .issue-orchestrator/sessions/<run>/terminal-recording.jsonl"
+    )
     return 1
 
 
@@ -748,7 +814,9 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     try:
         response = httpx.post(f"{base_url}/api/refresh", timeout=5.0)
         if response.status_code == 200:
-            console.print("[green]Refresh requested - issues will be fetched on next loop iteration[/green]")
+            console.print(
+                "[green]Refresh requested - issues will be fetched on next loop iteration[/green]"
+            )
             return 0
         else:
             console.print(f"[red]Failed to request refresh: {response.text}[/red]")
@@ -782,7 +850,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
         if resp.status_code == 200:
             console.print(f"[green]Found orchestrator on port {port}[/green]")
         else:
-            console.print(f"[yellow]Orchestrator responded with {resp.status_code}[/yellow]")
+            console.print(
+                f"[yellow]Orchestrator responded with {resp.status_code}[/yellow]"
+            )
     except httpx.ConnectError:
         console.print(f"[yellow]No orchestrator running on port {port}[/yellow]")
         console.print("[cyan]Starting fresh...[/cyan]")
@@ -808,13 +878,15 @@ def cmd_restart(args: argparse.Namespace) -> int:
             # Still running
             time.sleep(1)
             if i % 5 == 4:
-                console.print(f"[dim]Still waiting... ({i+1}s)[/dim]")
+                console.print(f"[dim]Still waiting... ({i + 1}s)[/dim]")
         except httpx.ConnectError:
             # Orchestrator has exited
             console.print("[green]Orchestrator stopped[/green]")
             break
     else:
-        console.print("[yellow]Orchestrator didn't stop in time, continuing anyway...[/yellow]")
+        console.print(
+            "[yellow]Orchestrator didn't stop in time, continuing anyway...[/yellow]"
+        )
 
     # Step 4: Start new orchestrator
     console.print("[cyan]Starting new orchestrator...[/cyan]")
@@ -829,19 +901,20 @@ def _start_fresh(args: argparse.Namespace) -> int:
     cmd = [sys.executable, "-m", "issue_orchestrator.entrypoints.cli", "start"]
 
     # Pass through relevant flags
-    if hasattr(args, 'config') and args.config:
+    if hasattr(args, "config") and args.config:
         cmd.extend(["--config", args.config])
-    if hasattr(args, 'port') and args.port:
+    if hasattr(args, "port") and args.port:
         cmd.extend(["--port", str(args.port)])
-    if hasattr(args, 'debug') and args.debug:
+    if hasattr(args, "debug") and args.debug:
         cmd.append("--debug")
-    if hasattr(args, 'ui_mode') and args.ui_mode:
+    if hasattr(args, "ui_mode") and args.ui_mode:
         cmd.extend(["--ui-mode", args.ui_mode])
 
     console.print(f"[dim]Running: {' '.join(cmd)}[/dim]")
 
     # Replace this process with the new orchestrator
     import os
+
     os.execvp(cmd[0], cmd)
     # execvp doesn't return on success
     return 1
@@ -850,9 +923,7 @@ def _start_fresh(args: argparse.Namespace) -> int:
 def cmd_next(args: argparse.Namespace) -> int:
     """Prioritize an issue."""
     issue_number: int = args.issue_number
-    console.print(
-        f"[cyan]Prioritizing issue #{issue_number}...[/cyan]"
-    )
+    console.print(f"[cyan]Prioritizing issue #{issue_number}...[/cyan]")
     # TODO: implement prioritization logic
     return 0
 
@@ -864,7 +935,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     from .cli_tools.setup_wizard import run_wizard
 
     target_path = Path(args.path).expanduser().resolve() if args.path else None
-    dry_run = getattr(args, 'dry_run', False)
+    dry_run = getattr(args, "dry_run", False)
     run_wizard(target_path, dry_run=dry_run)
     return 0
 
@@ -895,6 +966,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     # Collect all labels to create
     from ..control.label_manager import LabelManager
+
     _lm = LabelManager(config)
     labels = [
         _lm.in_progress,
@@ -910,7 +982,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     created = 0
     updated = 0
     failed = 0
-    existing = {label.get("name") for label in client.list_labels() if isinstance(label, dict)}
+    existing = {
+        label.get("name") for label in client.list_labels() if isinstance(label, dict)
+    }
 
     for label in labels:
         try:
@@ -932,7 +1006,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     console.print(f"  Failed: {failed}")
 
     if failed > 0:
-        console.print("\n[yellow]Some labels failed to create. Check your GitHub token/auth.[/yellow]")
+        console.print(
+            "\n[yellow]Some labels failed to create. Check your GitHub token/auth.[/yellow]"
+        )
         return 1
 
     console.print("\n[green]✓ Label initialization complete![/green]")
@@ -963,7 +1039,9 @@ def cmd_test_reset(args: argparse.Namespace) -> int:
     if teardown_script.exists():
         result = subprocess.run([sys.executable, str(teardown_script)])
         if result.returncode != 0:
-            console.print("[yellow]Warning: Teardown had issues, continuing...[/yellow]")
+            console.print(
+                "[yellow]Warning: Teardown had issues, continuing...[/yellow]"
+            )
     else:
         console.print("[yellow]Teardown script not found, skipping...[/yellow]")
 
@@ -1003,6 +1081,7 @@ def cmd_e2e_reset(args: argparse.Namespace) -> int:
     timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
     if timeline_db_path.exists():
         from ..execution.timeline_store import SqliteTimelineStore
+
         timeline_store = SqliteTimelineStore(db_path=timeline_db_path)
 
     db = E2EDB(db_path)
@@ -1016,6 +1095,7 @@ def cmd_e2e_reset(args: argparse.Namespace) -> int:
     log_dir = repo_root / ".issue-orchestrator" / "logs" / "e2e"
     if log_dir.is_dir():
         import shutil
+
         shutil.rmtree(log_dir, ignore_errors=True)
         log_dir.mkdir(parents=True, exist_ok=True)
         console.print("  log files: directory cleared")
@@ -1039,7 +1119,7 @@ def _load_config(args: argparse.Namespace) -> "Config":
     from ..infra.config import Config
 
     overrides = getattr(args, "set", None) or []
-    if hasattr(args, 'config') and args.config:
+    if hasattr(args, "config") and args.config:
         config_path = Path(args.config)
         # Config.load() handles repo_root calculation properly
         return Config.load(config_path, overrides=overrides)
@@ -1106,12 +1186,15 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
         console.print(f"  [red]✗[/red] Config not found: {e}")
         errors.append("Config file not found - run 'issue-orchestrator setup'")
         # Can't continue without config
-        console.print(f"\n[bold red]Verification failed: {len(errors)} error(s)[/bold red]")
+        console.print(
+            f"\n[bold red]Verification failed: {len(errors)} error(s)[/bold red]"
+        )
         return 1
 
     # 2. Check git repository
     console.print("\n[bold]2. Git Repository[/bold]")
     from ..execution.git_working_copy import GitWorkingCopy
+
     working_copy = GitWorkingCopy()
     if working_copy.is_git_repo(config.repo_root):
         console.print(f"  [green]✓[/green] Valid git repository")
@@ -1131,7 +1214,9 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
             if snapshot:
                 console.print("  [green]✓[/green] GitHub token authenticated")
             else:
-                console.print("  [yellow]![/yellow] GitHub token not verified (no response)")
+                console.print(
+                    "  [yellow]![/yellow] GitHub token not verified (no response)"
+                )
                 warnings.append("GitHub token could not be verified")
     except Exception as exc:
         console.print(f"  [red]✗[/red] GitHub auth failed: {exc}")
@@ -1157,7 +1242,9 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
             console.print(f"  [green]✓[/green] Project pre-push hook found")
             console.print(f"  [cyan]ℹ[/cyan] Hooks will be chained in worktrees")
         else:
-            console.print(f"  [yellow]![/yellow] No project pre-push hook at {project_hook}")
+            console.print(
+                f"  [yellow]![/yellow] No project pre-push hook at {project_hook}"
+            )
             warnings.append("No project pre-push hook found (chaining not needed)")
     else:
         # Check standard hooks location
@@ -1167,7 +1254,9 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
             console.print(f"  [cyan]ℹ[/cyan] Hooks will be chained in worktrees")
         else:
             console.print(f"  [yellow]![/yellow] No project pre-push hook")
-            warnings.append("No project pre-push hook (only orchestrator hook will run)")
+            warnings.append(
+                "No project pre-push hook (only orchestrator hook will run)"
+            )
 
     # 5. Check agent commands
     console.print("\n[bold]5. Agent Commands[/bold]")
@@ -1179,8 +1268,12 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
             if shutil.which(executable):
                 console.print(f"  [green]✓[/green] {agent_name}: {executable} found")
             else:
-                console.print(f"  [yellow]![/yellow] {agent_name}: {executable} not in PATH")
-                warnings.append(f"Agent '{agent_name}' command '{executable}' not in PATH")
+                console.print(
+                    f"  [yellow]![/yellow] {agent_name}: {executable} not in PATH"
+                )
+                warnings.append(
+                    f"Agent '{agent_name}' command '{executable}' not in PATH"
+                )
         else:
             console.print(f"  [yellow]![/yellow] {agent_name}: no command configured")
             warnings.append(f"Agent '{agent_name}' has no command")
@@ -1204,7 +1297,9 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
 
-    console.print(f"  [cyan]ℹ[/cyan] Detected AI agents: {[t.value for t in unique_types]}")
+    console.print(
+        f"  [cyan]ℹ[/cyan] Detected AI agents: {[t.value for t in unique_types]}"
+    )
 
     for agent_label, agent_type in agent_types.items():
         console.print(f"    {agent_label} → {agent_type.value}")
@@ -1220,36 +1315,56 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
                 result = adapter.verify_hooks(config.repo_root)
 
                 if result.success:
-                    console.print(f"  [green]✓[/green] {agent_type.value}: {len(result.checks_passed)} checks passed")
+                    console.print(
+                        f"  [green]✓[/green] {agent_type.value}: {len(result.checks_passed)} checks passed"
+                    )
                     # Show some details on verbose
-                    block_checks = [c for c in result.checks_passed if c.startswith("blocks:")]
+                    block_checks = [
+                        c for c in result.checks_passed if c.startswith("blocks:")
+                    ]
                     if block_checks:
-                        console.print(f"    [dim]Verified blocking: {len(block_checks)} patterns[/dim]")
+                        console.print(
+                            f"    [dim]Verified blocking: {len(block_checks)} patterns[/dim]"
+                        )
 
                     # AI gate test if requested
-                    if getattr(args, 'test_ai_gate', False):
+                    if getattr(args, "test_ai_gate", False):
                         if adapter.supports_ai_gate():
                             console.print("  [cyan]🔄[/cyan] Running AI gate test...")
-                            timeout = getattr(args, 'ai_gate_timeout', 60)
-                            ai_success, ai_msg = adapter.test_ai_gate(config.repo_root, timeout=timeout)
+                            timeout = getattr(args, "ai_gate_timeout", 60)
+                            ai_success, ai_msg = adapter.test_ai_gate(
+                                config.repo_root, timeout=timeout
+                            )
                             if ai_success:
                                 console.print(f"  [green]✓[/green] AI gate test passed")
-                                console.print(f"    [dim]{ai_msg.split(chr(10))[0]}[/dim]")
+                                console.print(
+                                    f"    [dim]{ai_msg.split(chr(10))[0]}[/dim]"
+                                )
                             else:
                                 console.print(f"  [red]✗[/red] AI gate test failed")
                                 console.print(f"    {ai_msg}")
-                                errors.append(f"{agent_type.value}: ai gate test failed")
+                                errors.append(
+                                    f"{agent_type.value}: ai gate test failed"
+                                )
                         else:
-                            console.print(f"  [yellow]![/yellow] {agent_type.value}: ai gate test not supported (skipping)")
+                            console.print(
+                                f"  [yellow]![/yellow] {agent_type.value}: ai gate test not supported (skipping)"
+                            )
 
                 else:
-                    console.print(f"  [red]✗[/red] {agent_type.value}: verification failed")
+                    console.print(
+                        f"  [red]✗[/red] {agent_type.value}: verification failed"
+                    )
                     for failure in result.checks_failed:
                         console.print(f"    [red]✗[/red] {failure}")
                         errors.append(f"{agent_type.value}: {failure}")
             else:
-                console.print(f"  [yellow]![/yellow] {agent_type.value}: hooks not installed")
-                warnings.append(f"{agent_type.value} hooks not installed - run 'issue-orchestrator setup-hooks'")
+                console.print(
+                    f"  [yellow]![/yellow] {agent_type.value}: hooks not installed"
+                )
+                warnings.append(
+                    f"{agent_type.value} hooks not installed - run 'issue-orchestrator setup-hooks'"
+                )
 
         except UnsupportedAiAgentError as e:
             console.print(f"  [red]✗[/red] {agent_type.value}: {e.reason}")
@@ -1258,14 +1373,18 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
     # Summary
     console.print("\n" + "=" * 50)
     if errors:
-        console.print(f"\n[bold red]Verification FAILED: {len(errors)} error(s), {len(warnings)} warning(s)[/bold red]")
+        console.print(
+            f"\n[bold red]Verification FAILED: {len(errors)} error(s), {len(warnings)} warning(s)[/bold red]"
+        )
         for err in errors:
             console.print(f"  [red]✗[/red] {err}")
         for warn in warnings:
             console.print(f"  [yellow]![/yellow] {warn}")
         return 1
     elif warnings:
-        console.print(f"\n[bold yellow]Verification PASSED with {len(warnings)} warning(s)[/bold yellow]")
+        console.print(
+            f"\n[bold yellow]Verification PASSED with {len(warnings)} warning(s)[/bold yellow]"
+        )
         for warn in warnings:
             console.print(f"  [yellow]![/yellow] {warn}")
         return 0
@@ -1304,7 +1423,11 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
     console.print()
 
     # Determine target directory
-    target_root = Path(args.target).resolve() if hasattr(args, 'target') and args.target else config.repo_root
+    target_root = (
+        Path(args.target).resolve()
+        if hasattr(args, "target") and args.target
+        else config.repo_root
+    )
 
     console.print(f"[bold]Target Project:[/bold] {target_root}\n")
 
@@ -1327,7 +1450,9 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
             # Verify installation
             result = adapter.verify_hooks(target_root)
             if result.success:
-                console.print(f"  [green]✓[/green] Static verification passed ({len(result.checks_passed)} checks)")
+                console.print(
+                    f"  [green]✓[/green] Static verification passed ({len(result.checks_passed)} checks)"
+                )
                 supported_adapters.append((agent_type, adapter))
             else:
                 console.print(f"  [yellow]![/yellow] Verification had issues:")
@@ -1342,13 +1467,19 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
     console.print()
 
     if errors:
-        console.print(f"[bold red]Setup completed with {len(errors)} error(s)[/bold red]")
-        console.print("\n[yellow]Some AI agents are not supported. Consider using Claude Code.[/yellow]")
+        console.print(
+            f"[bold red]Setup completed with {len(errors)} error(s)[/bold red]"
+        )
+        console.print(
+            "\n[yellow]Some AI agents are not supported. Consider using Claude Code.[/yellow]"
+        )
         return 1
 
     console.print(f"[green]✓[/green] Files installed")
     if verification_failures:
-        console.print(f"[yellow]![/yellow] Static verification failed for: {', '.join(verification_failures)}")
+        console.print(
+            f"[yellow]![/yellow] Static verification failed for: {', '.join(verification_failures)}"
+        )
     else:
         console.print(f"[green]✓[/green] Static verification passed")
 
@@ -1363,16 +1494,19 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
             try:
                 if not adapter.supports_ai_gate():
                     gate_results[agent_name] = (True, "skipped (not supported)")
-                    console.print(f"[yellow]![/yellow] {agent_name}: ai gate test not supported (skipping)")
+                    console.print(
+                        f"[yellow]![/yellow] {agent_name}: ai gate test not supported (skipping)"
+                    )
                     continue
                 success, message = adapter.test_ai_gate(target_root)
                 gate_results[agent_name] = (success, message)
 
-
                 if success:
                     # Extract the blocked command from the message if available
                     detail = message.split("\n")[0] if message else "blocked"
-                    console.print(f"[green]✓[/green] {agent_name}: correctly {detail[:60]}")
+                    console.print(
+                        f"[green]✓[/green] {agent_name}: correctly {detail[:60]}"
+                    )
                 else:
                     console.print(f"[red]✗[/red] {agent_name}: {message[:60]}")
                     gate_failures.append(agent_name)
@@ -1390,25 +1524,107 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
         if gate_failures:
             console.print()
             if config.hooks.ai_gate.dangerous_allow_failure:
-                console.print(f"[bold yellow]⚠ AI gate test failed for: {', '.join(gate_failures)}[/bold yellow]")
-                console.print("[dim]Continuing because dangerous_allow_failure is enabled[/dim]")
+                console.print(
+                    f"[bold yellow]⚠ AI gate test failed for: {', '.join(gate_failures)}[/bold yellow]"
+                )
+                console.print(
+                    "[dim]Continuing because dangerous_allow_failure is enabled[/dim]"
+                )
             else:
-                console.print(f"[bold red]AI gate test failed for: {', '.join(gate_failures)}[/bold red]")
-                console.print("\n[yellow]Hooks installed but AI gate test failed.[/yellow]")
-                console.print("[dim]Set hooks.ai_gate.dangerous_allow_failure: true to bypass[/dim]")
+                console.print(
+                    f"[bold red]AI gate test failed for: {', '.join(gate_failures)}[/bold red]"
+                )
+                console.print(
+                    "\n[yellow]Hooks installed but AI gate test failed.[/yellow]"
+                )
+                console.print(
+                    "[dim]Set hooks.ai_gate.dangerous_allow_failure: true to bypass[/dim]"
+                )
                 return 1
 
     console.print()
     if verification_failures:
-        console.print(f"[bold yellow]Hooks installed (verification failed for {len(verification_failures)} agent(s)).[/bold yellow]")
+        console.print(
+            f"[bold yellow]Hooks installed (verification failed for {len(verification_failures)} agent(s)).[/bold yellow]"
+        )
         return 1
     console.print(f"[bold green]Hooks installed and verified.[/bold green]")
+    return 0
+
+
+def cmd_harden_repo(args: argparse.Namespace) -> int:
+    """Install repo-local guardrails and AI agent hook wiring."""
+    from ..infra.repo_hardening import harden_repo, RepoHardeningError
+
+    console.print("[bold cyan]Hardening Repository Guardrails[/bold cyan]\n")
+
+    try:
+        config = _load_config(args)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        console.print("No config found. Run 'issue-orchestrator setup' first.")
+        return 1
+
+    target_root = (
+        Path(args.target).resolve()
+        if getattr(args, "target", None)
+        else config.repo_root
+    )
+    validation_cmd = getattr(args, "validation_cmd", None)
+    hooks_path = getattr(args, "hooks_dir", None)
+
+    try:
+        result = harden_repo(
+            config,
+            target_root=target_root,
+            validation_cmd=validation_cmd,
+            hooks_path=hooks_path,
+        )
+    except RepoHardeningError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        return 1
+
+    console.print(
+        f"[green]✓[/green] Hooks path: [bold]{result.hooks_path_config}[/bold]"
+    )
+    console.print(
+        f"[green]✓[/green] Repo pre-push: {result.pre_push_hook.relative_to(result.repo_root)}"
+    )
+    console.print(
+        f"[green]✓[/green] PR gate: {result.verify_script.relative_to(result.repo_root)}"
+    )
+    console.print(
+        f"[green]✓[/green] Hook helper: {result.helper_script.relative_to(result.repo_root)}"
+    )
+
+    for preserved in result.preserved_files:
+        console.print(
+            f"[cyan]ℹ[/cyan] Preserved existing hook: {preserved.relative_to(result.repo_root)}"
+        )
+
+    if result.agent_hook_files:
+        console.print("\n[bold]AI Agent Hooks[/bold]")
+        for agent_name, paths in sorted(result.agent_hook_files.items()):
+            for path in paths:
+                console.print(
+                    f"  [green]✓[/green] {agent_name}: {path.relative_to(result.repo_root)}"
+                )
+    else:
+        console.print(
+            "\n[yellow]![/yellow] No AI agent hooks were installed (no supported agents detected)."
+        )
+
+    console.print("\n[bold green]Repository hardened.[/bold green]")
+    console.print(
+        "[dim]Run 'issue-orchestrator doctor' to verify the guardrails end-to-end.[/dim]"
+    )
     return 0
 
 
 def cmd_auth(args: argparse.Namespace) -> int:
     """Manage GitHub authentication."""
     from rich.console import Console
+
     console = Console()
 
     action = getattr(args, "auth_action", None)
@@ -1446,7 +1662,9 @@ def _cmd_auth_store(args: argparse.Namespace, console) -> int:
     try:
         store_keyring_token(token.strip())
         console.print("[green]✓ Token stored in OS keychain[/green]")
-        console.print("[dim]The token will be used when ISSUE_ORCH_GITHUB_TOKEN is not set.[/dim]")
+        console.print(
+            "[dim]The token will be used when ISSUE_ORCH_GITHUB_TOKEN is not set.[/dim]"
+        )
         return 0
     except ImportError:
         console.print("[red]Error: keyring library not installed[/red]")
@@ -1472,7 +1690,9 @@ def cmd_keys(args: argparse.Namespace) -> int:
     """Manage AI provider API keys."""
     action = getattr(args, "keys_action", None)
     if action is None:
-        console.print("[yellow]Usage: issue-orchestrator keys <list|set|delete>[/yellow]")
+        console.print(
+            "[yellow]Usage: issue-orchestrator keys <list|set|delete>[/yellow]"
+        )
         return 1
 
     if action == "list":
@@ -1498,7 +1718,9 @@ def _cmd_keys_list(args: argparse.Namespace) -> int:
         if source == "not set":
             console.print(f"  {provider_name} ({key_name}): [dim]not configured[/dim]")
         else:
-            console.print(f"  {provider_name} ({key_name}): {masked} [dim]({source})[/dim] ✓")
+            console.print(
+                f"  {provider_name} ({key_name}): {masked} [dim]({source})[/dim] ✓"
+            )
     console.print()
     return 0
 
@@ -1518,7 +1740,9 @@ def _cmd_keys_set(args: argparse.Namespace) -> int:
         info = AI_PROVIDERS[key_name]
         console.print(f"\n[bold]{info['name']}[/bold]")
         if info.get("setup_cmd"):
-            console.print(f"  Run in another terminal: [cyan]{info['setup_cmd']}[/cyan]")
+            console.print(
+                f"  Run in another terminal: [cyan]{info['setup_cmd']}[/cyan]"
+            )
             console.print("  Then paste the key here.")
         else:
             console.print(f"  {info.get('setup_help', info.get('url', ''))}")
@@ -1684,6 +1908,7 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dr
     table.add_column("Dependencies")
 
     import re
+
     for issue in issues:
         deps = parse_dependencies(issue.body or "")
         dep_str = ", ".join(f"#{d[0]}" for d in deps) if deps else "-"
@@ -1708,22 +1933,29 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dr
     # Create a mock issue checker
     class MockIssueChecker:
         """Mock checker simulating GitHub issue states."""
+
         def __init__(self):
             # Issue #1 is closed (satisfied), others are open
             self.states = {1: "closed", 2: "open", 3: "open", 4: "open", 5: "open"}
             # All mock issues are in M1 for demo purposes
             self.milestones = {1: "M1", 2: "M1", 3: "M1", 4: "M1", 5: "M1"}
 
-        def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        def get_issue_state(
+            self, issue_number: int, repo: str | None = None
+        ) -> str | None:
             return self.states.get(issue_number)
 
-        def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        def get_issue_milestone(
+            self, issue_number: int, repo: str | None = None
+        ) -> str | None:
             return self.milestones.get(issue_number)
 
     class CollectingEventSink:
         """Collects events for display."""
+
         def __init__(self):
             self.events = []
+
         def publish(self, event):
             self.events.append(event)
 
@@ -1748,7 +1980,9 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dr
     scheduler = Scheduler(config=config, dependency_evaluator=evaluator)
 
     # Show dependency evaluation
-    console.print("[bold]Scenario:[/bold] Issue #1 is CLOSED (completed), issues #2-5 are OPEN")
+    console.print(
+        "[bold]Scenario:[/bold] Issue #1 is CLOSED (completed), issues #2-5 are OPEN"
+    )
     console.print()
 
     console.print("[bold]Dependency Evaluation:[/bold]")
@@ -1782,7 +2016,9 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dr
     sorted_available = scheduler.sort_by_priority(available)
 
     console.print("[bold]Scheduling Decision:[/bold]")
-    console.print(f"  Available issues: {len(available)} (would launch up to {config.max_concurrent_sessions})")
+    console.print(
+        f"  Available issues: {len(available)} (would launch up to {config.max_concurrent_sessions})"
+    )
     console.print(f"  Blocked by dependencies: {len(blocked)}")
     console.print()
 
@@ -1801,18 +2037,20 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dr
             console.print(f"  • #{issue.number}: {reason}")
 
     console.print()
-    console.print(Panel(
-        "[dim]This demo shows how the orchestrator:\n"
-        "1. Uses naming standard: [Mx-nnn][Px-nnn] title\n"
-        "   - Mx-nnn = milestone + external ID\n"
-        "   - Px-nnn = priority tier (P0 highest) + sequence\n"
-        "2. Parses 'Depends-on: #N' lines from issue bodies\n"
-        "3. Checks if dependency issues are closed (satisfied)\n"
-        "4. Blocks issues with unsatisfied dependencies\n"
-        "5. Sorts by: milestone → priority tier → sequence → issue #[/dim]",
-        title="Summary",
-        expand=False,
-    ))
+    console.print(
+        Panel(
+            "[dim]This demo shows how the orchestrator:\n"
+            "1. Uses naming standard: [Mx-nnn][Px-nnn] title\n"
+            "   - Mx-nnn = milestone + external ID\n"
+            "   - Px-nnn = priority tier (P0 highest) + sequence\n"
+            "2. Parses 'Depends-on: #N' lines from issue bodies\n"
+            "3. Checks if dependency issues are closed (satisfied)\n"
+            "4. Blocks issues with unsatisfied dependencies\n"
+            "5. Sorts by: milestone → priority tier → sequence → issue #[/dim]",
+            title="Summary",
+            expand=False,
+        )
+    )
 
     return 0
 
@@ -1821,7 +2059,10 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
     """Default command when no subcommand is given - open unified dashboard."""
     import webbrowser
 
-    from ..observation.instance_detector import detect_system_state, get_best_entry_point
+    from ..observation.instance_detector import (
+        detect_system_state,
+        get_best_entry_point,
+    )
 
     console.print("[cyan]Issue Orchestrator[/cyan]")
 
@@ -1844,6 +2085,7 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
         import subprocess
         import sys
         import time
+
         port = entry["port"]
         repo_path = entry.get("repo_path")
         url = _client_dashboard_link(port, repo_path=repo_path)
@@ -1860,7 +2102,8 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
 
         # Start in background, but capture stderr for error reporting
         import tempfile
-        stderr_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.log')
+
+        stderr_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".log")
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
@@ -1888,7 +2131,9 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
                     error_output = f.read()
                 console.print("[red]Failed to start dashboard server[/red]")
                 if "address already in use" in error_output.lower():
-                    console.print(f"[yellow]Port {port} is already in use. Kill the existing process:[/yellow]")
+                    console.print(
+                        f"[yellow]Port {port} is already in use. Kill the existing process:[/yellow]"
+                    )
                     console.print(f"  lsof -ti :{port} | xargs kill")
                 elif error_output.strip():
                     console.print(f"[dim]Error: {error_output[:500]}[/dim]")
@@ -1921,7 +2166,9 @@ def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901 - log parsing with
     def find_log_file() -> Path | None:
         current = Path.cwd()
         for _ in range(10):  # Max 10 levels up
-            candidate = current / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+            candidate = (
+                current / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+            )
             if candidate.exists():
                 return candidate
             if current.parent == current:
@@ -1933,7 +2180,9 @@ def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901 - log parsing with
 
     if log_file is None:
         console.print("[red]Error: orchestrator.log not found[/red]")
-        console.print("Run this command from within a repository that has the orchestrator running.")
+        console.print(
+            "Run this command from within a repository that has the orchestrator running."
+        )
         return 1
 
     # Read the log file
@@ -1947,7 +2196,10 @@ def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901 - log parsing with
             last_start = i
 
     if last_start == 0 and lines:
-        console.print("[yellow]Warning: No startup marker found, showing all entries[/yellow]", style="dim")
+        console.print(
+            "[yellow]Warning: No startup marker found, showing all entries[/yellow]",
+            style="dim",
+        )
 
     # Filter entries for this issue
     # Matches: [issue-N] or issue=N or issue_number=N or issue #N
@@ -1979,19 +2231,18 @@ def main() -> int:
         description="Orchestrate AI agents working on GitHub issues"
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         type=str,
         default=None,
-        help="Path to config file (default: .issue-orchestrator/config/default.yaml)"
+        help="Path to config file (default: .issue-orchestrator/config/default.yaml)",
     )
     parser.add_argument(
         "--set",
         action="append",
         help="Override config value (path=value). Use YAML/JSON for lists or dicts.",
     )
-    subparsers: Any = parser.add_subparsers(
-        dest="command", required=False
-    )
+    subparsers: Any = parser.add_subparsers(dest="command", required=False)
 
     # start command
     start_parser: argparse.ArgumentParser = subparsers.add_parser(
@@ -2000,105 +2251,99 @@ def main() -> int:
     start_parser.add_argument(
         "--no-dashboard",
         action="store_true",
-        help="Run without dashboard UI (useful for CI/debugging)"
+        help="Run without dashboard UI (useful for CI/debugging)",
     )
     start_parser.add_argument(
         "--test-mode",
         action="store_true",
-        help="Clear test issues, create fresh ones, and run with filter_label=test-data"
+        help="Clear test issues, create fresh ones, and run with filter_label=test-data",
     )
     start_parser.add_argument(
-        "--milestone",
-        type=str,
-        default=None,
-        help="Filter issues by milestone name"
+        "--milestone", type=str, default=None, help="Filter issues by milestone name"
     )
     start_parser.add_argument(
         "--milestones",
         type=str,
         default=None,
-        help="Filter issues by milestone names (comma-separated)"
+        help="Filter issues by milestone names (comma-separated)",
     )
     start_parser.add_argument(
         "--label",
         type=str,
         default=None,
-        help="Filter issues by label (e.g., 'agent:test' for e2e testing)"
+        help="Filter issues by label (e.g., 'agent:test' for e2e testing)",
     )
     start_parser.add_argument(
         "--issue",
         type=int,
         default=None,
-        help="Process only this specific issue number"
+        help="Process only this specific issue number",
     )
     start_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what issues would be processed without launching sessions"
+        help="Show what issues would be processed without launching sessions",
     )
     start_parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable verbose DEBUG-level logging to ~/.issue-orchestrator.log"
+        help="Enable verbose DEBUG-level logging to ~/.issue-orchestrator.log",
     )
     start_parser.add_argument(
         "--ui-mode",
         choices=["web"],
         default=None,
-        help="UI mode: web (browser dashboard, default)"
+        help="UI mode: web (browser dashboard, default)",
     )
     start_parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="Port for web dashboard (default: 8080)"
+        "--port", type=int, default=8080, help="Port for web dashboard (default: 8080)"
     )
     start_parser.add_argument(
         "--api-port",
         type=int,
         default=None,
         dest="api_port",
-        help="Port for control API (default: 19080, 0=disabled). Control API is always available regardless of UI mode."
+        help="Port for control API (default: 19080, 0=disabled). Control API is always available regardless of UI mode.",
     )
     start_parser.add_argument(
         "--queue-refresh",
         type=int,
         default=None,
-        help="Seconds between queue refreshes from GitHub (default: 600, 0=manual only)"
+        help="Seconds between queue refreshes from GitHub (default: 600, 0=manual only)",
     )
     start_parser.add_argument(
         "--gh-audit",
         action="store_true",
-        help="Enable GH audit reporting (overrides config)"
+        help="Enable GH audit reporting (overrides config)",
     )
     start_parser.add_argument(
         "--gh-audit-events",
         action="store_true",
-        help="Emit GH audit events to the event stream (overrides config)"
+        help="Emit GH audit events to the event stream (overrides config)",
     )
     start_parser.add_argument(
         "--gh-audit-file",
         type=str,
         default=None,
-        help="Path for GH audit report output (supports {pid})"
+        help="Path for GH audit report output (supports {pid})",
     )
     start_parser.add_argument(
         "--max-issues",
         type=int,
         default=None,
-        help="Max issues to start processing this session (default: 0=unlimited)"
+        help="Max issues to start processing this session (default: 0=unlimited)",
     )
     start_parser.add_argument(
         "--review-label",
         type=str,
         default=None,
-        help="Label to add to PRs for review (e.g., 'needs-triage-review')"
+        help="Label to add to PRs for review (e.g., 'needs-triage-review')",
     )
     start_parser.add_argument(
         "--review-threshold",
         type=int,
         default=None,
-        help="Auto-trigger triage review after N PRs with review label (default: 0=manual only)"
+        help="Auto-trigger triage review after N PRs with review label (default: 0=manual only)",
     )
     start_parser.set_defaults(func=cmd_start)
 
@@ -2117,7 +2362,7 @@ def main() -> int:
         type=int,
         nargs="?",
         default=None,
-        help="Optional: switch to this issue's window after attaching"
+        help="Optional: switch to this issue's window after attaching",
     )
     attach_parser.set_defaults(func=cmd_attach)
 
@@ -2126,9 +2371,7 @@ def main() -> int:
         "switch", help="(deprecated) Use web dashboard instead"
     )
     switch_parser.add_argument(
-        "issue_number",
-        type=int,
-        help="GitHub issue number to switch to"
+        "issue_number", type=int, help="GitHub issue number to switch to"
     )
     switch_parser.set_defaults(func=cmd_switch)
 
@@ -2142,16 +2385,13 @@ def main() -> int:
     output_parser: argparse.ArgumentParser = subparsers.add_parser(
         "output", help="Show recent output from an issue's session"
     )
+    output_parser.add_argument("issue_number", type=int, help="GitHub issue number")
     output_parser.add_argument(
-        "issue_number",
-        type=int,
-        help="GitHub issue number"
-    )
-    output_parser.add_argument(
-        "-n", "--lines",
+        "-n",
+        "--lines",
         type=int,
         default=20,
-        help="Number of lines to show (default: 20)"
+        help="Number of lines to show (default: 20)",
     )
     output_parser.set_defaults(func=cmd_output)
 
@@ -2175,7 +2415,7 @@ def main() -> int:
         "--port",
         type=int,
         default=8080,
-        help="Port of running orchestrator (default: 8080)"
+        help="Port of running orchestrator (default: 8080)",
     )
     refresh_parser.set_defaults(func=cmd_refresh)
 
@@ -2187,18 +2427,13 @@ def main() -> int:
         "--port",
         type=int,
         default=8080,
-        help="Port of running orchestrator (default: 8080)"
+        help="Port of running orchestrator (default: 8080)",
     )
     restart_parser.add_argument(
-        "--ui-mode",
-        choices=["web"],
-        default=None,
-        help="UI mode for new orchestrator"
+        "--ui-mode", choices=["web"], default=None, help="UI mode for new orchestrator"
     )
     restart_parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging"
+        "--debug", action="store_true", help="Enable debug logging"
     )
     restart_parser.set_defaults(func=cmd_restart)
 
@@ -2207,9 +2442,7 @@ def main() -> int:
         "next", help="Prioritize an issue"
     )
     next_parser.add_argument(
-        "issue_number",
-        type=int,
-        help="GitHub issue number to prioritize"
+        "issue_number", type=int, help="GitHub issue number to prioritize"
     )
     next_parser.set_defaults(func=cmd_next)
 
@@ -2221,12 +2454,12 @@ def main() -> int:
         "path",
         nargs="?",
         default=None,
-        help="Project directory to set up (default: prompts interactively)"
+        help="Project directory to set up (default: prompts interactively)",
     )
     setup_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what files would be created/modified without writing them"
+        help="Show what files would be created/modified without writing them",
     )
     setup_parser.set_defaults(func=cmd_setup)
 
@@ -2244,7 +2477,8 @@ def main() -> int:
 
     # e2e-reset command
     e2e_reset_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "e2e-reset", help="Clear all E2E run history (runs, results, logs, timeline events)"
+        "e2e-reset",
+        help="Clear all E2E run history (runs, results, logs, timeline events)",
     )
     e2e_reset_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
@@ -2270,13 +2504,13 @@ def main() -> int:
     verify_parser.add_argument(
         "--test-ai-gate",
         action="store_true",
-        help="Test AI gating (hooks/execpolicy) for configured agents"
+        help="Test AI gating (hooks/execpolicy) for configured agents",
     )
     verify_parser.add_argument(
         "--ai-gate-timeout",
         type=int,
         default=60,
-        help="Timeout in seconds for AI gate tests (default: 60)"
+        help="Timeout in seconds for AI gate tests (default: 60)",
     )
     verify_parser.set_defaults(func=cmd_verify)
 
@@ -2288,12 +2522,39 @@ def main() -> int:
         "--target",
         type=str,
         default=None,
-        help="Target project directory (default: repo_root from config)"
+        help="Target project directory (default: repo_root from config)",
     )
     setup_hooks_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     setup_hooks_parser.set_defaults(func=cmd_setup_hooks)
+
+    harden_repo_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "harden-repo",
+        help="Install repo-local pre-push guardrails and AI agent hooks",
+    )
+    harden_repo_parser.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Target project directory (default: repo_root from config)",
+    )
+    harden_repo_parser.add_argument(
+        "--hooks-dir",
+        type=str,
+        default=None,
+        help="Repo-local hooks directory to use for core.hooksPath (default: existing value or .githooks)",
+    )
+    harden_repo_parser.add_argument(
+        "--validation-cmd",
+        type=str,
+        default=None,
+        help="Override validation.cmd when generating scripts/verify-pr.sh",
+    )
+    harden_repo_parser.add_argument(
+        "--config", type=Path, help="Path to config file (default: auto-detect)"
+    )
+    harden_repo_parser.set_defaults(func=cmd_harden_repo)
 
     # auth command
     auth_parser: argparse.ArgumentParser = subparsers.add_parser(
@@ -2308,9 +2569,7 @@ def main() -> int:
         "--token", "-t", type=str, help="GitHub token (will prompt if not provided)"
     )
 
-    auth_subparsers.add_parser(
-        "clear", help="Clear GitHub token from OS keychain"
-    )
+    auth_subparsers.add_parser("clear", help="Clear GitHub token from OS keychain")
 
     auth_parser.set_defaults(func=cmd_auth)
 
@@ -2320,25 +2579,19 @@ def main() -> int:
     )
     keys_subparsers = keys_parser.add_subparsers(dest="keys_action")
 
-    keys_subparsers.add_parser(
-        "list", help="List stored API keys"
-    )
+    keys_subparsers.add_parser("list", help="List stored API keys")
 
     keys_set_parser = keys_subparsers.add_parser(
         "set", help="Store an API key in keyring"
     )
     keys_set_parser.add_argument(
-        "key_name",
-        help="Key name (e.g., ANTHROPIC_API_KEY or just 'anthropic')"
+        "key_name", help="Key name (e.g., ANTHROPIC_API_KEY or just 'anthropic')"
     )
 
     keys_delete_parser = keys_subparsers.add_parser(
         "delete", help="Remove an API key from keyring"
     )
-    keys_delete_parser.add_argument(
-        "key_name",
-        help="Key name to remove"
-    )
+    keys_delete_parser.add_argument("key_name", help="Key name to remove")
 
     keys_parser.set_defaults(func=cmd_keys)
 
@@ -2346,9 +2599,7 @@ def main() -> int:
     doctor_parser: argparse.ArgumentParser = subparsers.add_parser(
         "doctor", help="Run diagnostics on configuration and environment"
     )
-    doctor_parser.add_argument(
-        "--config", "-c", type=str, help="Path to config file"
-    )
+    doctor_parser.add_argument("--config", "-c", type=str, help="Path to config file")
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # demo command
@@ -2361,11 +2612,7 @@ def main() -> int:
     trace_parser: argparse.ArgumentParser = subparsers.add_parser(
         "trace", help="Trace log entries for a specific issue"
     )
-    trace_parser.add_argument(
-        "issue_number",
-        type=int,
-        help="Issue number to trace"
-    )
+    trace_parser.add_argument("issue_number", type=int, help="Issue number to trace")
     trace_parser.set_defaults(func=cmd_trace)
 
     args: argparse.Namespace = parser.parse_args()
