@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import shlex
 import shutil
-import subprocess
 
+from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
 from .config import Config
 from .hooks.hooks import install_hooks_for_config
 
@@ -174,30 +174,28 @@ def _resolve_active_hooks_dir(repo_root: Path, hooks_path_config: str | None) ->
 
 
 def _get_local_hooks_path(repo_root: Path) -> str | None:
-    result = subprocess.run(
-        ["git", "config", "--local", "--get", "core.hooksPath"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
+    git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+    result = git.run(
+        repo_root,
+        ["config", "--local", "--get", "core.hooksPath"],
         check=False,
     )
     if result.returncode != 0:
         return None
-    value = result.stdout.strip()
+    value = (result.stdout or "").strip()
     return value or None
 
 
 def _set_local_hooks_path(repo_root: Path, hooks_path: str) -> None:
-    result = subprocess.run(
-        ["git", "config", "--local", "core.hooksPath", hooks_path],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
+    git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+    result = git.run(
+        repo_root,
+        ["config", "--local", "core.hooksPath", hooks_path],
         check=False,
     )
     if result.returncode != 0:
         raise RepoHardeningError(
-            f"Failed to set core.hooksPath to {hooks_path}: {result.stderr.strip()}"
+            f"Failed to set core.hooksPath to {hooks_path}: {(result.stderr or '').strip()}"
         )
 
 
