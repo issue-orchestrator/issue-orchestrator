@@ -15,7 +15,7 @@ def probe_orchestrator_json(url: str, *, timeout_seconds: float) -> dict[str, An
     try:
         response = httpx.get(url, timeout=timeout_seconds)
         response.raise_for_status()
-    except httpx.HTTPError:
+    except Exception:
         return None
 
     try:

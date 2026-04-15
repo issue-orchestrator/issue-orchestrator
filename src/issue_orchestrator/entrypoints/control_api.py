@@ -50,7 +50,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -69,6 +69,9 @@ from ..execution.control_center_actions import (
     ControlCenterActions,
     RepoActionRequest,
     TraceActionRequest,
+)
+from ..execution.orchestrator_http_api import (
+    probe_orchestrator_json as _probe_orchestrator_json,
 )
 from ..execution.control_center_runtime import (
     annotate_identity_mismatch as _annotate_identity_mismatch,
@@ -224,9 +227,11 @@ _global_shutdown_operation: dict[str, Any] | None = None
 _engine_shutdown_operations: dict[str, dict[str, Any]] = {}
 
 
-def _coerce_graceful_timeout_seconds(raw: Any, default: int = 2) -> int:
+def _coerce_graceful_timeout_seconds(raw: object, default: int = 2) -> int:
     """Parse graceful timeout from API payload with safe bounds."""
     if raw is None:
+        return default
+    if not isinstance(raw, (bool, int, float, str)):
         return default
     try:
         parsed = int(float(raw))
@@ -284,19 +289,25 @@ def get_tracked_pids() -> list[int]:
         return list(_tracked_pids)
 
 
-def _track_launched_pids(supervisor_data: dict) -> None:
+def _track_launched_pids(supervisor_data: Mapping[str, object]) -> None:
     """Register launched orchestrator PIDs for zombie reaping.
 
     Called by control_start after successfully launching orchestrators.
     """
     # Handle multi-instance launches
-    if "instances" in supervisor_data:
-        for instance in supervisor_data["instances"]:
-            if "pid" in instance:
-                track_child_pid(instance["pid"])
+    instances = supervisor_data.get("instances")
+    if isinstance(instances, list):
+        for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+            pid = instance.get("pid")
+            if isinstance(pid, int):
+                track_child_pid(pid)
     # Handle single-instance launches
-    elif "pid" in supervisor_data:
-        track_child_pid(supervisor_data["pid"])
+    else:
+        pid = supervisor_data.get("pid")
+        if isinstance(pid, int):
+            track_child_pid(pid)
 
 
 def _begin_engine_shutdown_operation(
@@ -1623,8 +1634,6 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
     Shared by both the REST endpoint and SSE stream.
     """
-    import httpx
-
     from ..infra.repo_registry import add_repo, list_repos
     from ..infra.config import list_configs, get_config_path, Config
 
@@ -1691,20 +1700,16 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
                 # Fetch internal state from each running instance
                 if inst_status.state == "running" and inst_status.port:
-                    try:
-                        resp = httpx.get(
-                            f"http://127.0.0.1:{inst_status.port}/api/status",
-                            timeout=2.0,
-                        )
-                        if resp.status_code == 200:
-                            internal = resp.json()
-                            inst_data["paused"] = internal.get("paused", False)
-                            inst_data["shutdown_requested"] = internal.get("shutdown_requested", False)
-                            active_sessions = internal.get("active_sessions", [])
-                            inst_data["active_session_count"] = len(active_sessions)
-                            inst_data["e2e_role"] = internal.get("e2e_role")
-                    except Exception:
-                        pass
+                    internal = _probe_orchestrator_json(
+                        f"http://127.0.0.1:{inst_status.port}/api/status",
+                        timeout_seconds=2.0,
+                    )
+                    if internal is not None:
+                        inst_data["paused"] = internal.get("paused", False)
+                        inst_data["shutdown_requested"] = internal.get("shutdown_requested", False)
+                        active_sessions = internal.get("active_sessions", [])
+                        inst_data["active_session_count"] = len(active_sessions)
+                        inst_data["e2e_role"] = internal.get("e2e_role")
 
                 enriched_instance = _enrich_runtime_health(path, inst_data, instance_id=inst_data.get("instance_id"))
                 instance_data = enriched_instance or inst_data
@@ -1746,21 +1751,17 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
             # If running, fetch internal state from the orchestrator
             if status_info and status_info.state == "running" and status_info.port:
-                try:
-                    resp = httpx.get(
-                        f"http://127.0.0.1:{status_info.port}/api/status",
-                        timeout=2.0,
-                    )
-                    if resp.status_code == 200 and repo_data["status"]:
-                        internal = resp.json()
-                        repo_data["status"]["paused"] = internal.get("paused", False)
-                        repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
-                        # Include active session count for shutdown state determination
-                        active_sessions = internal.get("active_sessions", [])
-                        repo_data["status"]["active_session_count"] = len(active_sessions)
-                        repo_data["status"]["e2e_role"] = internal.get("e2e_role")
-                except Exception:
-                    pass  # Keep supervisor status only
+                internal = _probe_orchestrator_json(
+                    f"http://127.0.0.1:{status_info.port}/api/status",
+                    timeout_seconds=2.0,
+                )
+                if internal is not None and repo_data["status"]:
+                    repo_data["status"]["paused"] = internal.get("paused", False)
+                    repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
+                    # Include active session count for shutdown state determination
+                    active_sessions = internal.get("active_sessions", [])
+                    repo_data["status"]["active_session_count"] = len(active_sessions)
+                    repo_data["status"]["e2e_role"] = internal.get("e2e_role")
 
         repo_data["dashboard_url"] = _client_dashboard_url((repo_data.get("status") or {}).get("port"))
 

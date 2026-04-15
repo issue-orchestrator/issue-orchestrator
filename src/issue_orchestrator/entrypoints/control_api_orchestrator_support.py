@@ -4,21 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Annotated, Callable
+from typing import TYPE_CHECKING, Annotated, Callable, Mapping
 
 from fastapi import Depends, FastAPI, Request
 
 _ORCHESTRATOR_DEPENDENCIES_STATE_KEY = "control_api_orchestrator_dependencies"
 
+if TYPE_CHECKING:
+    from ..execution.control_center_actions import ControlCenterActions
+    from ..infra.supervisor import SupervisorOps
+
+
 @dataclass(frozen=True)
 class ControlApiOrchestratorDependencies:
     """Dependency hooks needed by Control Center orchestrator routes."""
 
-    get_supervisor: Callable[[], Any]
-    get_control_actions: Callable[[], Any]
+    get_supervisor: Callable[[], SupervisorOps]
+    get_control_actions: Callable[[], ControlCenterActions]
     validate_repo_root: Callable[[str | None], Path | None]
-    track_launched_pids: Callable[[dict[str, Any]], None]
-    coerce_graceful_timeout_seconds: Callable[[Any, int], int]
+    track_launched_pids: Callable[[Mapping[str, object]], None]
+    coerce_graceful_timeout_seconds: Callable[[object, int], int]
     global_shutdown_in_progress: Callable[[], bool]
     begin_engine_shutdown_operation: Callable[[Path, bool, bool, int], None]
     finish_engine_shutdown_operation: Callable[[Path], None]
