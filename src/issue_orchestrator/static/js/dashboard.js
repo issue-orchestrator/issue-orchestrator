@@ -7068,7 +7068,6 @@ function closeE2EStatsModal() {
 }
 
 async function showFlakyTestsList() {
-    // Close stats modal and show flaky tests in a simple alert for now
     closeE2EStatsModal();
     if (!REPO_ROOT) {
         openModal('Flaky Analysis', '<p>No repository selected for E2E flaky analysis.</p>');
@@ -7076,31 +7075,42 @@ async function showFlakyTestsList() {
     }
 
     try {
-        const res = await fetch(`/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`);
-        const data = await res.json();
+        const url = `/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`;
+        console.log('[Flaky Analysis] Fetching:', url);
+        const res = await fetch(url);
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (parseErr) {
+            console.error('[Flaky Analysis] Response not JSON:', res.status, text.slice(0, 500));
+            openModal('Flaky Analysis', `<p>Unexpected response (HTTP ${res.status}): ${escapeHtml(text.slice(0, 200))}</p>`);
+            return;
+        }
 
         if (!res.ok) {
-            openModal('Flaky Analysis', `<p>Failed to load flaky tests: ${escapeHtml(data.error || 'unknown error')}</p>`);
+            console.error('[Flaky Analysis] Error response:', res.status, data);
+            openModal('Flaky Analysis', `<p>Failed to load flaky tests (HTTP ${res.status}): ${escapeHtml(data.error || data.detail || 'unknown error')}</p>`);
             return;
         }
 
-        if (data.flaky_tests.length === 0) {
-            showToast('No flaky tests detected');
+        if (!data.flaky_tests || data.flaky_tests.length === 0) {
+            openModal('Flaky Analysis', '<p>No flaky tests detected in recent runs.</p>');
             return;
         }
 
-        let message = `Flaky Tests (flip rate > ${data.threshold}%)\n`;
-        message += `${'='.repeat(50)}\n\n`;
-
-        for (const test of data.flaky_tests) {
-            const quarantineBadge = test.is_quarantined ? ' [QUARANTINED]' : '';
-            message += `• ${test.nodeid}${quarantineBadge}\n`;
-            message += `  Flip rate: ${test.flip_rate_percent}% (${test.flip_count} flips in ${data.window} runs)\n\n`;
-        }
-
-        alert(message);
+        const rows = data.flaky_tests.map(t => {
+            const badge = t.is_quarantined ? ' <span class="quarantine-badge">[Q]</span>' : '';
+            return `<tr><td>${escapeHtml(t.nodeid)}${badge}</td><td>${t.flip_rate_percent}%</td><td>${t.flip_count} in ${data.window} runs</td></tr>`;
+        }).join('');
+        openModal('Flaky Analysis', `
+            <p>Tests with flip rate &gt; ${data.threshold}%</p>
+            <table class="flaky-table"><thead><tr><th>Test</th><th>Flip rate</th><th>Flips</th></tr></thead>
+            <tbody>${rows}</tbody></table>
+        `);
     } catch (err) {
-        showToast('Failed to load flaky tests: ' + err.message, true);
+        console.error('[Flaky Analysis] Fetch failed:', err);
+        openModal('Flaky Analysis', `<p>Failed to load flaky tests: ${escapeHtml(err.message)}</p>`);
     }
 }
 
