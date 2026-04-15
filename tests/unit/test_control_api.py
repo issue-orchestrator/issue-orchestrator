@@ -1689,6 +1689,7 @@ class TestSupervisorStart:
         assert response.status_code == 422
         data = response.json()
         assert data["error"] == "doctor_failed"
+        assert data["detail"] == "Pre-flight checks failed: Hooks: not installed"
         assert data["doctor"]["overall"] == "error"
         mock_supervisor.start.assert_not_called()
 

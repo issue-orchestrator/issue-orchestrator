@@ -182,6 +182,10 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert "await waitForRepoToBeReady(path);" in template
     assert "config = getValidRepoConfig(repo, config);" in template
     assert "throw new Error('Select a valid config before starting this repository engine');" in template
+    assert "function showDoctorResultsModal(title, data, prefixMessage = null, prefixClass = 'info')" in template
+    assert "if (error.error === 'doctor_failed' && error.doctor)" in template
+    assert "Start Blocked — ${repoLabel}" in template
+    assert "See Doctor Results." in template
     assert "Choose config..." in template
     assert "Saved config is unavailable:" in template
     assert "Select a valid config before starting this repository engine." in template
