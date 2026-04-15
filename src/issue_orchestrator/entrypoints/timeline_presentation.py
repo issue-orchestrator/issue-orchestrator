@@ -1,4 +1,9 @@
-"""Shared timeline shaping helpers for entrypoint HTTP surfaces."""
+"""Shared timeline shaping helpers for entrypoint HTTP surfaces.
+
+These helpers define the timeline semantics that both control and web surfaces
+render. The extraction is intentionally behavior-preserving: entrypoints remain
+composition roots while the event-shaping rules live in one owner module.
+"""
 
 from __future__ import annotations
 

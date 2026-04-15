@@ -1,4 +1,9 @@
-"""E2E run affordance matching shared by control and web entrypoints."""
+"""E2E run affordance matching shared by control and web entrypoints.
+
+The control API and web UI must present the same test-to-issue mapping for a
+run. Keeping the matching rules in one module avoids cross-surface drift while
+letting the entrypoints stay focused on HTTP composition.
+"""
 
 from __future__ import annotations
 
