@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Callable
+from typing import Annotated, Any, Callable
 
 from fastapi import Depends, FastAPI, Request
 
-if TYPE_CHECKING:
-    from ..infra.orchestrator import Orchestrator
+from ..infra.orchestrator import Orchestrator
 
 _WEB_SESSION_CONTEXT_GETTER_STATE_KEY = "web_session_context_get_orchestrator"
 
@@ -39,7 +38,7 @@ def get_web_orchestrator(request: Request) -> Orchestrator | None:
 
 
 WebOrchestratorDependency = Annotated[
-    Any | None,
+    Orchestrator | None,
     Depends(get_web_orchestrator),
 ]
 
