@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Managed by issue-orchestrator harden-repo: pre-push
+
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+LOG_FILE="$HOOK_DIR/pre-push.log"
+PROJECT_HOOK="$HOOK_DIR/pre-push.project"
+VERIFY_SCRIPT="$REPO_ROOT/scripts/verify-pr.sh"
+
+log() {
+  printf "%s %s\n" "$(date -Iseconds)" "$1" >> "$LOG_FILE"
+}
+
+log "repo-pre-push-started"
+
+if [ -x "$PROJECT_HOOK" ]; then
+  log "project-hook-starting"
+  if "$PROJECT_HOOK" "$@"; then
+    log "project-hook exit=0"
+  else
+    project_exit=$?
+    log "project-hook exit=$project_exit"
+    exit "$project_exit"
+  fi
+else
+  log "project-hook-skipped"
+fi
+
+if [ ! -x "$VERIFY_SCRIPT" ]; then
+  log "verify-script-missing"
+  echo "pre-push: missing executable $VERIFY_SCRIPT" >&2
+  exit 1
+fi
+
+log "verify-pr-starting"
+if "$VERIFY_SCRIPT"; then
+  log "verify-pr exit=0"
+else
+  verify_exit=$?
+  log "verify-pr exit=$verify_exit"
+  exit "$verify_exit"
+fi
+
+log "repo-pre-push-completed"

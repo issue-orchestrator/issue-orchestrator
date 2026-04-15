@@ -175,12 +175,23 @@ def _resolve_repo_hooks_dir(
     requested: str | None = None,
     local_hooks_path: str | None = None,
 ) -> tuple[str, Path]:
-    hooks_path_value = (
-        requested or local_hooks_path or DEFAULT_HOOKS_PATH
-    ).strip()
-    if not hooks_path_value:
-        hooks_path_value = DEFAULT_HOOKS_PATH
+    requested_value = (requested or "").strip()
+    if requested_value:
+        return _resolve_hooks_dir_value(repo_root, requested_value)
 
+    local_hooks_path_value = (local_hooks_path or "").strip()
+    if local_hooks_path_value:
+        try:
+            return _resolve_hooks_dir_value(repo_root, local_hooks_path_value)
+        except RepoHardeningError:
+            # Recover from inherited worktree/common-config drift by resetting to
+            # the managed repo-local hooks path instead of preserving it.
+            pass
+
+    return _resolve_hooks_dir_value(repo_root, DEFAULT_HOOKS_PATH)
+
+
+def _resolve_hooks_dir_value(repo_root: Path, hooks_path_value: str) -> tuple[str, Path]:
     hooks_dir = Path(hooks_path_value)
     if hooks_dir.is_absolute():
         resolved = hooks_dir.resolve()
