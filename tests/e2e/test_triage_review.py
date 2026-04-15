@@ -25,13 +25,34 @@ from issue_orchestrator.testing.support.test_data import close_issue, cleanup_is
 from tests.e2e.flows import (
     E2EFlow,
     start_orchestrator_runtime,
-    wait_for_issue_with_label,
 )
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SESSION_COMPLETE = 300
 TIMEOUT_CODE_REVIEW_COMPLETE = 240
+
+
+async def _wait_for_issue_with_labels(
+    watcher,
+    *,
+    labels: tuple[str, ...],
+    timeout_s: float,
+) -> str:
+    deadline = time.monotonic() + timeout_s
+    required = set(labels)
+
+    while time.monotonic() < deadline:
+        for issue_key, issue_view in watcher.view.issues.items():
+            if required.issubset(set(issue_view.labels)):
+                return issue_key
+        try:
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()  # noqa: SLF001
+
+    raise TimeoutError(f"Timed out waiting for issue with labels {sorted(required)}")
 
 
 @pytest.mark.e2e
@@ -66,6 +87,7 @@ class TestTriageReviewTrigger:
         pr_numbers = []
         runtime = None
         flow: E2EFlow | None = None
+        run_label: str | None = None
 
         try:
             triage_config = copy.deepcopy(e2e_session_config)
@@ -85,7 +107,6 @@ class TestTriageReviewTrigger:
             triage_config.code_reviewed_label = reviewed_label
             flow = E2EFlow(repo=repo_name, watcher=None, filter_label=run_label)
             flow.ensure_labels([review_label, reviewed_label])
-            cleanup_issues_by_label(repo_name, "agent:triage-investigator")
 
             logger.info("Starting orchestrator with triage config...")
             orchestrator = OrchestratorProcess(triage_config, e2e_project_root)
@@ -135,9 +156,9 @@ class TestTriageReviewTrigger:
 
             # Check for triage review issue
             logger.info("Checking for triage review issue...")
-            triage_issue_key = await wait_for_issue_with_label(
+            triage_issue_key = await _wait_for_issue_with_labels(
                 runtime.watcher,
-                label="agent:triage-investigator",
+                labels=("agent:triage-investigator", run_label),
                 timeout_s=600,
             )
             logger.info("  ✓ Triage review issue created: %s", triage_issue_key)
@@ -165,3 +186,5 @@ class TestTriageReviewTrigger:
             # Always close issues to prevent accumulation
             for issue_num in issue_numbers:
                 close_issue(repo_name, issue_num, "E2E triage test completed")
+            if run_label:
+                cleanup_issues_by_label(repo_name, run_label)
