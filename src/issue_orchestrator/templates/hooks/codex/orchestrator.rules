@@ -40,6 +40,24 @@ prefix_rule(
     justification = "Disabling hooks via core.hooksPath is forbidden.",
 )
 
+prefix_rule(
+    pattern = ["git", "config", "core.hooksPath", "/dev/null"],
+    decision = "forbidden",
+    justification = "Configuring core.hooksPath=/dev/null is forbidden.",
+)
+
+prefix_rule(
+    pattern = ["git", "config", "--local", "core.hooksPath", "/dev/null"],
+    decision = "forbidden",
+    justification = "Configuring core.hooksPath=/dev/null is forbidden.",
+)
+
+prefix_rule(
+    pattern = ["git", "config", "--worktree", "core.hooksPath", "/dev/null"],
+    decision = "forbidden",
+    justification = "Configuring core.hooksPath=/dev/null is forbidden.",
+)
+
 # Block gh pr merge - agents cannot merge PRs
 prefix_rule(
     pattern = ["gh", "pr", "merge"],

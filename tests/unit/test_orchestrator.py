@@ -1569,19 +1569,24 @@ class TestGatherTriageFacts:
 class TestLaunchReviewSession:
     """Test the launch_review_session method."""
 
+    @staticmethod
+    def _review_worktree_manager(tmp_path: Path) -> MockWorktreeManager:
+        return MockWorktreeManager(
+            worktree_path=tmp_path / "review-worktree",
+            branch_name="feature/issue-42",
+        )
+
     def test_launch_review_session_creates_worktree(
         self,
         sample_config,
+        tmp_path: Path,
     ):
         """Test that launch_review_session creates a worktree."""
         from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager(
-            worktree_path=Path("/tmp/review-worktree"),
-            branch_name="feature/issue-42",
-        )
+        mock_worktree_manager = self._review_worktree_manager(tmp_path)
 
         # Configure code review agent
         sample_config.code_review_agent = "agent:web"
@@ -1604,16 +1609,14 @@ class TestLaunchReviewSession:
     def test_launch_review_session_creates_tmux_session(
         self,
         sample_config,
+        tmp_path: Path,
     ):
         """Test that launch_review_session creates a tmux session."""
         from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager(
-            worktree_path=Path("/tmp/review-worktree"),
-            branch_name="feature/issue-42",
-        )
+        mock_worktree_manager = self._review_worktree_manager(tmp_path)
 
         sample_config.code_review_agent = "agent:web"
         sample_config.ui_mode = "tmux"  # Explicitly use tmux mode
@@ -1638,16 +1641,14 @@ class TestLaunchReviewSession:
     def test_launch_review_session_adds_to_active_sessions(
         self,
         sample_config,
+        tmp_path: Path,
     ):
         """Test that launch_review_session adds session to active_sessions."""
         from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager(
-            worktree_path=Path("/tmp/review-worktree"),
-            branch_name="feature/issue-42",
-        )
+        mock_worktree_manager = self._review_worktree_manager(tmp_path)
 
         sample_config.code_review_agent = "agent:web"
 
@@ -1670,16 +1671,14 @@ class TestLaunchReviewSession:
     def test_launch_review_session_removes_from_pending_queue(
         self,
         sample_config,
+        tmp_path: Path,
     ):
         """Test that launch_review_session removes PR from pending_reviews."""
         from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager(
-            worktree_path=Path("/tmp/review-worktree"),
-            branch_name="feature/issue-42",
-        )
+        mock_worktree_manager = self._review_worktree_manager(tmp_path)
 
         sample_config.code_review_agent = "agent:web"
 
@@ -1773,16 +1772,14 @@ class TestLaunchReviewSession:
     def test_launch_review_session_does_not_enforce_hooks(
         self,
         sample_config,
+        tmp_path: Path,
     ):
         """Test that launch_review_session does not install pre-push hooks."""
         from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager(
-            worktree_path=Path("/tmp/review-worktree"),
-            branch_name="feature/issue-42",
-        )
+        mock_worktree_manager = self._review_worktree_manager(tmp_path)
 
         sample_config.code_review_agent = "agent:web"
         sample_config.enforce_hooks = True  # Even if enabled globally

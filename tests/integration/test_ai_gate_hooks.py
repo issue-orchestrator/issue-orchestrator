@@ -119,14 +119,9 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         env=clean_env,
     )
 
-    # Copy hooks from fixture
-    src_claude = fixtures_path / "hooks-installed" / ".claude"
-    dst_claude = work / ".claude"
-    shutil.copytree(src_claude, dst_claude)
+    from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
-    # Ensure hook is executable
-    hook_script = dst_claude / "hooks" / "block-no-verify.sh"
-    hook_script.chmod(0o755)
+    ClaudeCodeAdapter().install_hooks(work)
 
     # Create initial commit and push to establish branch
     readme = work / "README.md"

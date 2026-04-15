@@ -6,11 +6,14 @@ from ..types import Check
 from ...config import Config
 from ...hooks.hooks import get_adapter
 from ...ai_gate_state import load_ai_gate_state, save_ai_gate_state
+from ...repo_hardening import inspect_repo_hardening
 
 logger = logging.getLogger(__name__)
 
 
-def _check_hook_installation(config: Config, unique_types: set, unsupported_types: set) -> tuple[Check, bool]:
+def _check_hook_installation(
+    config: Config, unique_types: set, unsupported_types: set
+) -> tuple[Check, bool]:
     """Check if hooks are installed. Returns (check, hooks_ok)."""
     missing_hooks = []
     unsupported = []
@@ -72,7 +75,9 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
     ), True
 
 
-def _check_full_verification(config: Config, unique_types: set, unsupported_types: set, hooks_ok: bool) -> Check:
+def _check_full_verification(
+    config: Config, unique_types: set, unsupported_types: set, hooks_ok: bool
+) -> Check:
     """Run full hook verification."""
     if not hooks_ok:
         return Check(
@@ -146,7 +151,10 @@ def _run_ai_gate_tests(
         try:
             if not adapter.supports_ai_gate():
                 results[agent_name] = (True, "skipped (not supported)")
-                expandable["results"][agent_name] = {"success": True, "message": "skipped (not supported)"}
+                expandable["results"][agent_name] = {
+                    "success": True,
+                    "message": "skipped (not supported)",
+                }
                 continue
             success, message = adapter.test_ai_gate(repo_root)
 
@@ -190,7 +198,12 @@ def _check_ai_gate_report(
     }
 
     if not hooks_ok:
-        return Check(name="AI Gate", status="info", detail="Skipped - hooks not installed", expandable=expandable)
+        return Check(
+            name="AI Gate",
+            status="info",
+            detail="Skipped - hooks not installed",
+            expandable=expandable,
+        )
 
     trigger_reason = "first run" if state.last_check is None else "interval exceeded"
     if not state.is_stale(interval_days):
@@ -200,14 +213,27 @@ def _check_ai_gate_report(
         # manually deletes the state file.
         cached_failures = []
         for agent_type, result in state.last_results.items():
-            expandable["results"][agent_type] = {"success": result.success, "message": result.message}
+            expandable["results"][agent_type] = {
+                "success": result.success,
+                "message": result.message,
+            }
             if not result.success:
                 cached_failures.append(agent_type)
         from datetime import datetime, timezone
-        days_ago = (datetime.now(timezone.utc).date() - state.last_check.date()).days if state.last_check else 0
+
+        days_ago = (
+            (datetime.now(timezone.utc).date() - state.last_check.date()).days
+            if state.last_check
+            else 0
+        )
 
         if not cached_failures:
-            return Check(name="AI Gate", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
+            return Check(
+                name="AI Gate",
+                status="ok",
+                detail=f"Passed (last check {days_ago}d ago)",
+                expandable=expandable,
+            )
         # Fall through to re-run — don't trust cached failures
         trigger_reason = f"cached failure retry ({', '.join(cached_failures)})"
 
@@ -216,18 +242,35 @@ def _check_ai_gate_report(
     expandable["ran"] = True
     expandable["triggered_by"] = trigger_reason
 
-    results, failures = _run_ai_gate_tests(unique_types, unsupported_types, config.repo_root, expandable)
+    results, failures = _run_ai_gate_tests(
+        unique_types, unsupported_types, config.repo_root, expandable
+    )
 
     state.mark_checked(results)
     save_ai_gate_state(config.repo_root, state)
 
     if not failures:
-        return Check(name="AI Gate", status="ok", detail=f"Passed ({len(results)} agent(s) verified)", expandable=expandable)
+        return Check(
+            name="AI Gate",
+            status="ok",
+            detail=f"Passed ({len(results)} agent(s) verified)",
+            expandable=expandable,
+        )
 
     if config.hooks.ai_gate.dangerous_allow_failure:
-        return Check(name="AI Gate", status="warning", detail=f"Failed ({len(failures)} agent(s)) - allowed by config", expandable=expandable)
+        return Check(
+            name="AI Gate",
+            status="warning",
+            detail=f"Failed ({len(failures)} agent(s)) - allowed by config",
+            expandable=expandable,
+        )
 
-    return Check(name="AI Gate", status="error", detail=f"Failed: {'; '.join(failures)}", expandable=expandable)
+    return Check(
+        name="AI Gate",
+        status="error",
+        detail=f"Failed: {'; '.join(failures)}",
+        expandable=expandable,
+    )
 
 
 def check_hook_verification(config: Config) -> list[Check]:
@@ -242,16 +285,77 @@ def check_hook_verification(config: Config) -> list[Check]:
     unsupported_types = _get_unsupported_types(unique_types)
 
     # Check hook installation
-    install_check, hooks_ok = _check_hook_installation(config, unique_types, unsupported_types)
+    install_check, hooks_ok = _check_hook_installation(
+        config, unique_types, unsupported_types
+    )
     checks.append(install_check)
 
     # Run full verification (gated on installation success)
-    full_check = _check_full_verification(config, unique_types, unsupported_types, hooks_ok)
+    full_check = _check_full_verification(
+        config, unique_types, unsupported_types, hooks_ok
+    )
     checks.append(full_check)
 
     # Run AI gate tests (verification with state persistence)
-    ai_gate_check = _check_ai_gate_report(config, unique_types, unsupported_types, hooks_ok)
+    ai_gate_check = _check_ai_gate_report(
+        config, unique_types, unsupported_types, hooks_ok
+    )
     if ai_gate_check:
         checks.append(ai_gate_check)
 
     return checks
+
+
+def check_repo_hardening(config: Config) -> list[Check]:
+    """Check repo-local pre-push hardening state."""
+    if not config.validation.cmd:
+        return [
+            Check(
+                name="Repo Guardrails",
+                status="info",
+                detail="Skipped - validation.cmd not configured",
+            )
+        ]
+
+    status = inspect_repo_hardening(config.repo_root)
+
+    if not status.pre_push_exists and not status.verify_exists:
+        return [
+            Check(
+                name="Repo Guardrails",
+                status="warning",
+                detail="Not installed. Run 'issue-orchestrator harden-repo'.",
+            )
+        ]
+
+    problems: list[str] = []
+    if not status.pre_push_exists:
+        problems.append("pre-push hook missing")
+    elif not status.pre_push_executable:
+        problems.append("pre-push hook is not executable")
+    elif not status.pre_push_calls_verify:
+        problems.append("pre-push hook does not call scripts/verify-pr.sh")
+
+    if not status.verify_exists:
+        problems.append("scripts/verify-pr.sh missing")
+    elif not status.verify_executable:
+        problems.append("scripts/verify-pr.sh is not executable")
+
+    if problems:
+        return [
+            Check(
+                name="Repo Guardrails",
+                status="error",
+                detail="; ".join(problems) + ". Run 'issue-orchestrator harden-repo'.",
+            )
+        ]
+
+    hooks_path = status.hooks_path_config or ".git/hooks"
+    helper_suffix = " with repo-local hook helper" if status.helper_exists else ""
+    return [
+        Check(
+            name="Repo Guardrails",
+            status="ok",
+            detail=f"{hooks_path}/pre-push -> scripts/verify-pr.sh{helper_suffix}",
+        )
+    ]

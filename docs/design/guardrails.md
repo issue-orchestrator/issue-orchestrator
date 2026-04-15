@@ -19,6 +19,8 @@ Guardrails are layered so that no single bypass defeats the system:
 4. **CI** re-runs the canonical validation gate in a clean environment. This is the ultimate backstop for code quality.
 5. **Static guardrails** (import-linter + custom AST checks) prevent architectural drift at every layer.
 
+For a target repo, the intended install path is `issue-orchestrator harden-repo`: it installs the repo-local pre-push gate plus the configured AI-agent hook wiring in one step.
+
 For the full hook architecture and inventory, see [Hook Enforcement Architecture](../architecture/hooks.md).
 For the validation gate design, see [Validation System](../architecture/validation.md).
 

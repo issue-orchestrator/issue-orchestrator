@@ -29,7 +29,9 @@ class Prompter(Protocol):
         """Prompt for yes/no answer."""
         ...
 
-    def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
+    def choice(
+        self, question: str, choices: list[str], allow_custom: bool = False
+    ) -> str:
         """Prompt user to choose from a list."""
         ...
 
@@ -53,7 +55,9 @@ class ConsolePrompter:
             return default
         return result in ("y", "yes")
 
-    def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
+    def choice(
+        self, question: str, choices: list[str], allow_custom: bool = False
+    ) -> str:
         print(f"\n{question}")
         for i, choice in enumerate(choices, 1):
             print(f"  {i}. {choice}")
@@ -99,7 +103,7 @@ class PlannedWrite:
 
     def size_display(self) -> str:
         """Return human-readable size."""
-        size = len(self.content.encode('utf-8'))
+        size = len(self.content.encode("utf-8"))
         if size < 1024:
             return f"{size} B"
         return f"{size / 1024:.1f} KB"
@@ -208,7 +212,9 @@ def fetch_github_labels(repo: str) -> list[str]:
         return []
 
 
-def find_existing_config(start_path: Path | None = None) -> tuple[Path | None, dict | None]:
+def find_existing_config(
+    start_path: Path | None = None,
+) -> tuple[Path | None, dict | None]:
     """Find existing config file.
 
     Looks for configs in .issue-orchestrator/config/ only.
@@ -274,7 +280,10 @@ def find_prompt_candidates(start_path: Path | None = None) -> list[Path]:
         for path in start_path.glob(pattern):
             if path.is_file() and path not in candidates:
                 # Skip node_modules, .git, etc.
-                if any(part.startswith(".") or part == "node_modules" for part in path.parts):
+                if any(
+                    part.startswith(".") or part == "node_modules"
+                    for part in path.parts
+                ):
                     continue
                 candidates.append(path)
 
@@ -350,7 +359,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("Each agent needs a prompt file with instructions.\n")
 
     while True:
-        agent_name = prompter.input("Agent label (e.g., 'agent:backend', or empty to finish)")
+        agent_name = prompter.input(
+            "Agent label (e.g., 'agent:backend', or empty to finish)"
+        )
         if not agent_name:
             if not config["agents"]:
                 prompter.print("You need at least one agent!")
@@ -391,33 +402,53 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         selected_provider = None
 
         if agent_type == "custom":
-            prompter.print("\n  Enter your custom command template. Available variables:")
-            prompter.print("    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}")
+            prompter.print(
+                "\n  Enter your custom command template. Available variables:"
+            )
+            prompter.print(
+                "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
+            )
             custom_command = prompter.input("Custom command")
             model = "sonnet"  # Not relevant for custom, but keep a default
         else:
             selected_provider = agent_type
             # Model selection depends on provider
             if selected_provider == "claude-code":
-                model = prompter.choice("Model for this agent", ["sonnet", "opus", "haiku"])
+                model = prompter.choice(
+                    "Model for this agent", ["sonnet", "opus", "haiku"]
+                )
 
                 # Permission mode for Claude CLI
-                prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
+                prompter.print(
+                    "\n  Permission mode controls how Claude handles tool permissions:"
+                )
                 prompter.print("    default          - Prompt for each action (safest)")
-                prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
-                prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
+                prompter.print(
+                    "    acceptEdits      - Auto-accept file edits, prompt for others"
+                )
+                prompter.print(
+                    "    bypassPermissions - Skip all prompts (use for trusted automation)"
+                )
                 permission_mode = prompter.choice(
-                    "Permission mode",
-                    ["default", "acceptEdits", "bypassPermissions"]
+                    "Permission mode", ["default", "acceptEdits", "bypassPermissions"]
                 )
 
                 # Safety confirmation for bypassPermissions
                 if permission_mode == "bypassPermissions":
-                    prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
-                    prompter.print("     - Execute any shell commands without confirmation")
+                    prompter.print(
+                        "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
+                    )
+                    prompter.print(
+                        "     - Execute any shell commands without confirmation"
+                    )
                     prompter.print("     - Read/write any files without confirmation")
-                    prompter.print("     - Access network resources without confirmation")
-                    if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
+                    prompter.print(
+                        "     - Access network resources without confirmation"
+                    )
+                    if not prompter.yes_no(
+                        "Are you sure you want to bypass all permission prompts?",
+                        default=False,
+                    ):
                         permission_mode = "default"
                         prompter.print("  → Using 'default' mode instead")
             elif selected_provider == "codex":
@@ -475,9 +506,13 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     if advanced:
         prompter.print("\n--- Issue Scheduling ---")
         prompter.print("Issues are scheduled using a multi-level sort:\n")
-        prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
+        prompter.print(
+            "  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close"
+        )
         prompter.print("  2. Milestone     - Configurable strategy (see below)")
-        prompter.print("  3. Priority tier - From issue title: [P0-x] < [P1-x] < ... < [P9-x]")
+        prompter.print(
+            "  3. Priority tier - From issue title: [P0-x] < [P1-x] < ... < [P9-x]"
+        )
         prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
         prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
         prompter.print("Milestone sort strategies:")
@@ -490,12 +525,16 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
             milestone_sort = prompter.input("Milestone sort strategy", "due_date")
             if milestone_sort in valid_strategies:
                 break
-            prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
+            prompter.print(
+                f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}"
+            )
         milestones_config: dict[str, Any] = {"sort": milestone_sort}
         config["milestones"] = milestones_config
 
         if milestone_sort == "pattern":
-            prompter.print("\n  Enter a regex pattern with one capture group for the number.")
+            prompter.print(
+                "\n  Enter a regex pattern with one capture group for the number."
+            )
             prompter.print("  Examples:")
             prompter.print("    M(\\d+)       → matches 'M13' → 13")
             prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
@@ -506,11 +545,17 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
             "Optional milestone order (comma-separated, blank for none)", ""
         )
         if order_raw.strip():
-            milestones_config["order"] = [m.strip() for m in order_raw.split(",") if m.strip()]
+            milestones_config["order"] = [
+                m.strip() for m in order_raw.split(",") if m.strip()
+            ]
 
         # Foundation milestone for dependency scope
-        prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
-        prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
+        prompter.print(
+            "\n  Dependencies must be within the same milestone OR in the foundation milestone."
+        )
+        prompter.print(
+            "  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues."
+        )
         foundation_milestone = prompter.input("Foundation milestone", "M0")
         milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
         milestones_config["foundation"] = foundation_milestone
@@ -522,9 +567,15 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("Each issue gets its own git worktree for isolated work.")
     prompter.print("Examples:")
     prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
-    prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
+    prompter.print(
+        "  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)"
+    )
     _wt_fields = get_setup_fields("worktrees")
-    _wt_field = _wt_fields[0] if _wt_fields else {"prompt": "Worktree Base Directory", "default": "../"}
+    _wt_field = (
+        _wt_fields[0]
+        if _wt_fields
+        else {"prompt": "Worktree Base Directory", "default": "../"}
+    )
     worktree_base = prompter.input(_wt_field["prompt"], str(_wt_field["default"]))
 
     # Set at top-level (not per-agent)
@@ -551,12 +602,16 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
     # Worktree setup commands
     prompter.print("\n--- Worktree Setup Commands ---")
-    prompter.print("Commands to run in each new worktree after creation (e.g., install deps).")
+    prompter.print(
+        "Commands to run in each new worktree after creation (e.g., install deps)."
+    )
     prompter.print("Examples:")
     prompter.print("  npm install")
     prompter.print("  pip install -e '.[dev]'")
     prompter.print("  make setup")
-    setup_input = prompter.input("Setup commands (comma-separated, or empty to skip)", "")
+    setup_input = prompter.input(
+        "Setup commands (comma-separated, or empty to skip)", ""
+    )
     if setup_input.strip():
         setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
         worktrees_config["setup"] = setup_cmds
@@ -565,7 +620,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("\n--- UI Mode ---")
     prompter.print("How do you want to monitor agent sessions?\n")
     prompter.print("  web    - Browser dashboard (recommended)")
-    prompter.print("           Best for most users. Opens in your browser or forwarded client URL.")
+    prompter.print(
+        "           Best for most users. Opens in your browser or forwarded client URL."
+    )
     prompter.print("  tmux   - Terminal multiplexer sessions")
     prompter.print("           For terminal power users. Requires tmux installed.\n")
     ui_mode = prompter.input("UI mode", "web")
@@ -605,7 +662,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     label_prefix = prompter.input("Label prefix (optional)", "")
     if label_prefix:
         config["labels"] = {"prefix": label_prefix}
-        prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
+        prompter.print(
+            f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc."
+        )
 
     # Validation
     prompter.print("\n--- Validation ---")
@@ -630,9 +689,15 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     enable_review = prompter.yes_no("Enable code review?", default=False)
     if enable_review:
         prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
-        code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
-        code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
-        code_reviewed_label = prompter.input("  Label after review passes", "code-reviewed")
+        code_review_agent = prompter.input(
+            "  Code review agent label", "agent:reviewer"
+        )
+        code_review_label = prompter.input(
+            "  Label for PRs needing review", "needs-code-review"
+        )
+        code_reviewed_label = prompter.input(
+            "  Label after review passes", "code-reviewed"
+        )
 
         # Use new review structure with enabled flag
         config["review"] = {
@@ -649,8 +714,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
             prompter.print("")
             if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
                 prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-                triage_review_agent = prompter.input("  triage review agent label", "agent:triage")
-                triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
+                triage_review_agent = prompter.input(
+                    "  triage review agent label", "agent:triage"
+                )
+                triage_reviewed_label = prompter.input(
+                    "  Label after triage review", "triage-reviewed"
+                )
                 threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
                 config["review"]["triage_review_agent"] = triage_review_agent
@@ -659,10 +728,14 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
                     threshold_int = int(threshold)
                     if threshold_int > 0:
                         config["review"]["triage_review_threshold"] = threshold_int
-                        prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+                        prompter.print(
+                            f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'"
+                        )
                 except ValueError:
                     pass
-                prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}")
+                prompter.print(
+                    f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}"
+                )
 
     return config
 
@@ -712,14 +785,18 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
     unconfigured_agents = [a for a in state.agent_labels if a not in configured_agents]
 
     if unconfigured_agents:
-        prompter.print(f"\n--- Found {len(unconfigured_agents)} agent labels not in config ---")
+        prompter.print(
+            f"\n--- Found {len(unconfigured_agents)} agent labels not in config ---"
+        )
         for agent_label in unconfigured_agents:
             prompter.print(f"\nAgent: {agent_label}")
             if prompter.yes_no(f"Add {agent_label} to config?"):
                 # Suggest prompt files
                 agent_short = agent_label.split(":")[-1]
                 matching_prompts = [
-                    p for p in state.prompt_candidates if agent_short.lower() in p.name.lower()
+                    p
+                    for p in state.prompt_candidates
+                    if agent_short.lower() in p.name.lower()
                 ]
 
                 if matching_prompts:
@@ -745,8 +822,12 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 prompter.print("\n  Agent provider options:")
                 for p in providers:
                     provider_obj = get_provider(p)
-                    available = "✓" if provider_obj.is_available() else "✗ not installed"
-                    prompter.print(f"    {p}  - {provider_obj.description} ({available})")
+                    available = (
+                        "✓" if provider_obj.is_available() else "✗ not installed"
+                    )
+                    prompter.print(
+                        f"    {p}  - {provider_obj.description} ({available})"
+                    )
                 prompter.print("    custom  - Use a custom command/script")
 
                 provider_choices = providers + ["custom"]
@@ -757,8 +838,12 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 selected_provider = None
 
                 if agent_type == "custom":
-                    prompter.print("\n  Enter your custom command template. Available variables:")
-                    prompter.print("    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}")
+                    prompter.print(
+                        "\n  Enter your custom command template. Available variables:"
+                    )
+                    prompter.print(
+                        "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
+                    )
                     custom_command = prompter.input("Custom command")
                     model = "sonnet"  # Not relevant for custom, but keep a default
                 else:
@@ -768,22 +853,41 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                         model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
 
                         # Permission mode for Claude CLI
-                        prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
-                        prompter.print("    default          - Prompt for each action (safest)")
-                        prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
-                        prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
+                        prompter.print(
+                            "\n  Permission mode controls how Claude handles tool permissions:"
+                        )
+                        prompter.print(
+                            "    default          - Prompt for each action (safest)"
+                        )
+                        prompter.print(
+                            "    acceptEdits      - Auto-accept file edits, prompt for others"
+                        )
+                        prompter.print(
+                            "    bypassPermissions - Skip all prompts (use for trusted automation)"
+                        )
                         permission_mode = prompter.choice(
                             "Permission mode",
-                            ["default", "acceptEdits", "bypassPermissions"]
+                            ["default", "acceptEdits", "bypassPermissions"],
                         )
 
                         # Safety confirmation for bypassPermissions
                         if permission_mode == "bypassPermissions":
-                            prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
-                            prompter.print("     - Execute any shell commands without confirmation")
-                            prompter.print("     - Read/write any files without confirmation")
-                            prompter.print("     - Access network resources without confirmation")
-                            if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
+                            prompter.print(
+                                "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
+                            )
+                            prompter.print(
+                                "     - Execute any shell commands without confirmation"
+                            )
+                            prompter.print(
+                                "     - Read/write any files without confirmation"
+                            )
+                            prompter.print(
+                                "     - Access network resources without confirmation"
+                            )
+                            if not prompter.yes_no(
+                                "Are you sure you want to bypass all permission prompts?",
+                                default=False,
+                            ):
                                 permission_mode = "default"
                                 prompter.print("  → Using 'default' mode instead")
                     elif selected_provider == "codex":
@@ -793,8 +897,12 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
 
                 # Ask if this agent does code reviews (affects initial_prompt template)
                 prompter.print("\n  Does this agent do code reviews?")
-                prompter.print("    Review agents need {pr_number} in their prompt template.")
-                is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
+                prompter.print(
+                    "    Review agents need {pr_number} in their prompt template."
+                )
+                is_review_agent = prompter.yes_no(
+                    "Is this a review agent?", default=False
+                )
 
                 # Generate appropriate initial_prompt based on agent type
                 if is_review_agent:
@@ -823,8 +931,13 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 elif selected_provider:
                     agent_cfg["provider"] = selected_provider
                     # Add provider-specific args
-                    if selected_provider == "claude-code" and permission_mode != "default":
-                        agent_cfg["provider_args"] = {"permission_mode": permission_mode}
+                    if (
+                        selected_provider == "claude-code"
+                        and permission_mode != "default"
+                    ):
+                        agent_cfg["provider_args"] = {
+                            "permission_mode": permission_mode
+                        }
 
                 config["agents"][agent_label] = agent_cfg
                 prompter.print(f"  ✓ Added {agent_label}")
@@ -834,15 +947,21 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("\n--- Concurrency Settings ---")
         max_sessions = prompter.input("Max concurrent sessions", "3")
         config.setdefault("execution", {})
-        config["execution"]["concurrency"] = {"max_concurrent_sessions": int(max_sessions)}
+        config["execution"]["concurrency"] = {
+            "max_concurrent_sessions": int(max_sessions)
+        }
 
     # Milestone sorting - only ask if not already configured
     if "milestones" not in config or "sort" not in config.get("milestones", {}):
         prompter.print("\n--- Issue Scheduling ---")
         prompter.print("Issues are scheduled using a multi-level sort:\n")
-        prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
+        prompter.print(
+            "  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close"
+        )
         prompter.print("  2. Milestone     - Configurable strategy (see below)")
-        prompter.print("  3. Priority tier - From issue title: [P0-x] < [P1-x] < ... < [P9-x]")
+        prompter.print(
+            "  3. Priority tier - From issue title: [P0-x] < [P1-x] < ... < [P9-x]"
+        )
         prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
         prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
         prompter.print("Milestone sort strategies:")
@@ -855,12 +974,16 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             milestone_sort = prompter.input("Milestone sort strategy", "due_date")
             if milestone_sort in valid_strategies:
                 break
-            prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
+            prompter.print(
+                f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}"
+            )
         milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
         milestones_config["sort"] = milestone_sort
 
         if milestone_sort == "pattern":
-            prompter.print("\n  Enter a regex pattern with one capture group for the number.")
+            prompter.print(
+                "\n  Enter a regex pattern with one capture group for the number."
+            )
             prompter.print("  Examples:")
             prompter.print("    M(\\d+)       → matches 'M13' → 13")
             prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
@@ -872,13 +995,21 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             "Optional milestone order (comma-separated, blank for none)", ""
         )
         if order_raw.strip():
-            milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
-            milestones_config["order"] = [m.strip() for m in order_raw.split(",") if m.strip()]
+            milestones_config = cast(
+                dict[str, Any], config.setdefault("milestones", {})
+            )
+            milestones_config["order"] = [
+                m.strip() for m in order_raw.split(",") if m.strip()
+            ]
 
     # Foundation milestone for dependency scope - only ask if not already configured
     if "milestones" not in config or "foundation" not in config.get("milestones", {}):
-        prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
-        prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
+        prompter.print(
+            "\n  Dependencies must be within the same milestone OR in the foundation milestone."
+        )
+        prompter.print(
+            "  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues."
+        )
         foundation_milestone = prompter.input("Foundation milestone", "M0")
         milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
         milestones_config["foundation"] = foundation_milestone
@@ -889,9 +1020,15 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("Each issue gets its own git worktree for isolated work.")
         prompter.print("Examples:")
         prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
-        prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
+        prompter.print(
+            "  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)"
+        )
         _wt_fields = get_setup_fields("worktrees")
-        _wt_field = _wt_fields[0] if _wt_fields else {"prompt": "Worktree Base Directory", "default": "../"}
+        _wt_field = (
+            _wt_fields[0]
+            if _wt_fields
+            else {"prompt": "Worktree Base Directory", "default": "../"}
+        )
         worktree_base = prompter.input(_wt_field["prompt"], str(_wt_field["default"]))
         worktrees_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
         worktrees_config["base"] = worktree_base
@@ -918,12 +1055,16 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
     worktrees_cfg = config.get("worktrees", {})
     if "setup" not in worktrees_cfg:
         prompter.print("\n--- Worktree Setup Commands ---")
-        prompter.print("Commands to run in each new worktree after creation (e.g., install deps).")
+        prompter.print(
+            "Commands to run in each new worktree after creation (e.g., install deps)."
+        )
         prompter.print("Examples:")
         prompter.print("  npm install")
         prompter.print("  pip install -e '.[dev]'")
         prompter.print("  make setup")
-        setup_input = prompter.input("Setup commands (comma-separated, or empty to skip)", "")
+        setup_input = prompter.input(
+            "Setup commands (comma-separated, or empty to skip)", ""
+        )
         if setup_input.strip():
             setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
             wt_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
@@ -934,9 +1075,13 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("\n--- UI Mode ---")
         prompter.print("How do you want to monitor agent sessions?\n")
         prompter.print("  web    - Browser dashboard (recommended)")
-        prompter.print("           Best for most users. Opens in your browser or forwarded client URL.")
+        prompter.print(
+            "           Best for most users. Opens in your browser or forwarded client URL."
+        )
         prompter.print("  tmux   - Terminal multiplexer sessions")
-        prompter.print("           For terminal power users. Requires tmux installed.\n")
+        prompter.print(
+            "           For terminal power users. Requires tmux installed.\n"
+        )
         ui_mode = prompter.input("UI mode", "web")
         if ui_mode not in ("web", "tmux"):
             prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
@@ -946,7 +1091,11 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         if ui_mode == "web":
             for field in get_setup_fields("ui"):
                 cond = field.get("condition")
-                if cond and cond.get("field") == "ui_mode" and cond.get("value") != ui_mode:
+                if (
+                    cond
+                    and cond.get("field") == "ui_mode"
+                    and cond.get("value") != ui_mode
+                ):
                     continue
                 raw = prompter.input(field["prompt"], str(field["default"]))
                 ui_config[field["name"]] = int(raw)
@@ -962,20 +1111,26 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")
                 terminal_backend = "tmux"
             if terminal_backend == "subprocess":
-                execution_config = cast(dict[str, Any], config.setdefault("execution", {}))
+                execution_config = cast(
+                    dict[str, Any], config.setdefault("execution", {})
+                )
                 execution_config["terminal_adapter"] = "subprocess"
 
     # Label prefix - only ask if not already configured
     if "labels" not in config or "prefix" not in config.get("labels", {}):
         prompter.print("\n--- Label Prefix ---")
-        prompter.print("Prefix for status labels to avoid conflicts with existing labels.")
+        prompter.print(
+            "Prefix for status labels to avoid conflicts with existing labels."
+        )
         prompter.print("  Example: 'io' → 'io:in-progress', 'io:blocked', etc.\n")
         label_prefix = prompter.input("Label prefix", "io")
         if label_prefix:
             if "labels" not in config:
                 config["labels"] = {}
             config["labels"]["prefix"] = label_prefix
-            prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
+            prompter.print(
+                f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc."
+            )
 
     # Two-stage review workflow - ask if not already configured (default enabled)
     has_review_config = "review" in config and config["review"].get("enabled")
@@ -983,14 +1138,22 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("\n--- Review Workflow ---")
         prompter.print("Code review is RECOMMENDED to catch issues before merging:")
         prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
-        prompter.print("  Stage 2: Triage batch review (when N reviewed PRs accumulate)\n")
+        prompter.print(
+            "  Stage 2: Triage batch review (when N reviewed PRs accumulate)\n"
+        )
 
         # Stage 1: Per-PR Code Review (default enabled)
         if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=True):
             prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
-            code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
-            code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
-            code_reviewed_label = prompter.input("  Label after review passes", "code-reviewed")
+            code_review_agent = prompter.input(
+                "  Code review agent label", "agent:reviewer"
+            )
+            code_review_label = prompter.input(
+                "  Label for PRs needing review", "needs-code-review"
+            )
+            code_reviewed_label = prompter.input(
+                "  Label after review passes", "code-reviewed"
+            )
 
             # Use new review structure with enabled flag
             config["review"] = {
@@ -1000,14 +1163,20 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 "code_reviewed_label": code_reviewed_label,
             }
             prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
-            prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
+            prompter.print(
+                f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}"
+            )
 
             # Stage 2: Triage Batch Review (only if Stage 1 enabled)
             prompter.print("")
             if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
                 prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-                triage_review_agent = prompter.input("  triage review agent label", "agent:triage")
-                triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
+                triage_review_agent = prompter.input(
+                    "  triage review agent label", "agent:triage"
+                )
+                triage_reviewed_label = prompter.input(
+                    "  Label after triage review", "triage-reviewed"
+                )
                 threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
                 config["review"]["triage_review_agent"] = triage_review_agent
@@ -1016,10 +1185,14 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                     threshold_int = int(threshold)
                     if threshold_int > 0:
                         config["review"]["triage_review_threshold"] = threshold_int
-                        prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+                        prompter.print(
+                            f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'"
+                        )
                 except ValueError:
                     pass
-                prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}")
+                prompter.print(
+                    f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}"
+                )
 
     return config, updating_existing_path
 
@@ -1352,8 +1525,16 @@ def write_config(
         file_collector: If provided, collect the write instead of executing it.
     """
     import io
+
     buffer = io.StringIO()
-    yaml.dump(config, buffer, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    yaml.dump(
+        config,
+        buffer,
+        Dumper=_NoAliasDumper,
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+    )
     content = CONFIG_HEADER + buffer.getvalue()
 
     if file_collector is not None:
@@ -1364,7 +1545,9 @@ def write_config(
             f.write(content)
 
 
-def _print_changes_summary(collector: FileCollector, prompter: Prompter, dry_run: bool = False) -> None:
+def _print_changes_summary(
+    collector: FileCollector, prompter: Prompter, dry_run: bool = False
+) -> None:
     """Print summary of changes to be applied."""
     prompter.print("\n" + "=" * 50)
     if dry_run:
@@ -1390,7 +1573,9 @@ def _print_changes_summary(collector: FileCollector, prompter: Prompter, dry_run
     prompter.print("")
 
 
-def _apply_changes(collector: FileCollector, repo: str | None, prompter: Prompter) -> None:
+def _apply_changes(
+    collector: FileCollector, repo: str | None, prompter: Prompter
+) -> None:
     """Apply all collected changes."""
     # Write files
     for write in collector.writes:
@@ -1428,7 +1613,9 @@ def setup_ai_providers(prompter: Prompter) -> None:
             if not prompter.yes_no(f"  Update {info['name']} key?", default=False):
                 continue
         else:
-            if not prompter.yes_no(f"Configure {info['name']}?", default=key_name == "ANTHROPIC_API_KEY"):
+            if not prompter.yes_no(
+                f"Configure {info['name']}?", default=key_name == "ANTHROPIC_API_KEY"
+            ):
                 continue
 
         # Show setup instructions
@@ -1442,6 +1629,7 @@ def setup_ai_providers(prompter: Prompter) -> None:
 
         # Prompt for key
         import getpass
+
         value = getpass.getpass(f"  Paste your {key_name}: ")
         if value.strip():
             try:
@@ -1449,7 +1637,9 @@ def setup_ai_providers(prompter: Prompter) -> None:
                 prompter.print(f"  ✓ Stored {key_name} in keyring\n")
             except Exception as e:
                 prompter.print(f"  ✗ Failed to store key: {e}")
-                prompter.print("    You can set it as an environment variable instead.\n")
+                prompter.print(
+                    "    You can set it as an environment variable instead.\n"
+                )
         else:
             prompter.print("  Skipped (no key provided)\n")
 
@@ -1487,7 +1677,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         # Check if this looks like the issue-orchestrator package itself
         is_orchestrator_dir = (cwd / "src" / "issue_orchestrator").exists()
         if is_orchestrator_dir:
-            prompter.print("⚠ This looks like the issue-orchestrator package directory.")
+            prompter.print(
+                "⚠ This looks like the issue-orchestrator package directory."
+            )
             prompter.print("  You probably want to set up a different project.\n")
             # Don't default to this directory
             target_input = prompter.input("Project directory to set up (required)", "")
@@ -1508,6 +1700,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
 
     # Change to target directory for the rest of the wizard
     import os
+
     _original_cwd = Path.cwd()
     os.chdir(target_path)
     prompter.print(f"\nSetting up: {target_path}\n")
@@ -1524,7 +1717,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
             all_ok = False
 
     if not all_ok:
-        prompter.print("\n⚠ Some prerequisites are missing. Install them before continuing.")
+        prompter.print(
+            "\n⚠ Some prerequisites are missing. Install them before continuing."
+        )
         if not prereqs["github_auth"]:
             prompter.print("  Set a GitHub token (GITHUB_TOKEN or config)")
         if not prereqs.get("any_ai_provider", False):
@@ -1604,15 +1799,25 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     # Use absolute paths to avoid issues with cwd
     from ...infra.config import CONFIG_DIR, DEFAULT_CONFIG_NAME
 
-    default_config_path = f"{CONFIG_DIR}/{DEFAULT_CONFIG_NAME}"  # .issue-orchestrator/config/default.yaml
+    default_config_path = (
+        f"{CONFIG_DIR}/{DEFAULT_CONFIG_NAME}"  # .issue-orchestrator/config/default.yaml
+    )
 
     if existing_config_path:
-        output_path = target_path / existing_config_path if not existing_config_path.is_absolute() else existing_config_path
+        output_path = (
+            target_path / existing_config_path
+            if not existing_config_path.is_absolute()
+            else existing_config_path
+        )
     elif dry_run:
         output_path = target_path / default_config_path
     else:
-        user_path = Path(prompter.input(f"Config filename ({target_path}/)", default_config_path))
-        output_path = target_path / user_path if not user_path.is_absolute() else user_path
+        user_path = Path(
+            prompter.input(f"Config filename ({target_path}/)", default_config_path)
+        )
+        output_path = (
+            target_path / user_path if not user_path.is_absolute() else user_path
+        )
 
     write_config(config, output_path, file_collector)
 
@@ -1624,7 +1829,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     code_review_label = review_config.get("code_review_label", "needs-code-review")
     code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
     triage_review_agent = review_config.get("triage_review_agent")
-    triage_reviewed_label = review_config.get("triage_reviewed_label", "triage-reviewed")
+    triage_reviewed_label = review_config.get(
+        "triage_reviewed_label", "triage-reviewed"
+    )
 
     # Track all prompt files for the next steps summary
     all_prompt_paths: list[Path] = []
@@ -1632,7 +1839,11 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     for agent_name, agent_config in config.get("agents", {}).items():
         prompt_rel_path = Path(agent_config["prompt"])
         # Use absolute path for file operations
-        prompt_path = target_path / prompt_rel_path if not prompt_rel_path.is_absolute() else prompt_rel_path
+        prompt_path = (
+            target_path / prompt_rel_path
+            if not prompt_rel_path.is_absolute()
+            else prompt_rel_path
+        )
         all_prompt_paths.append(prompt_rel_path)  # Keep relative for display
 
         # Collect prompt file writes for missing files
@@ -1646,15 +1857,24 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
             ) or "triage" in agent_name.lower()
 
             if is_code_review_agent and code_review_agent:
-                create_code_review_prompt(prompt_path, code_review_label, code_reviewed_label, file_collector)
+                create_code_review_prompt(
+                    prompt_path, code_review_label, code_reviewed_label, file_collector
+                )
             elif is_triage_review_agent and triage_review_agent:
-                create_triage_review_prompt(prompt_path, code_reviewed_label, triage_reviewed_label, file_collector)
+                create_triage_review_prompt(
+                    prompt_path,
+                    code_reviewed_label,
+                    triage_reviewed_label,
+                    file_collector,
+                )
             else:
                 create_starter_prompt(agent_name, prompt_path, file_collector)
 
     # Collect all labels to create on GitHub
     repo_config = config.get("repo") or {}
-    repo_name = repo_config.get("name") if isinstance(repo_config, dict) else repo_config
+    repo_name = (
+        repo_config.get("name") if isinstance(repo_config, dict) else repo_config
+    )
     if repo_name:
         # Gather all labels we want to ensure exist
         labels_config = config.get("labels", {})
@@ -1676,18 +1896,32 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
             ("priority:low", "0E8A16", "Nice to have"),
         ]
         status_labels = [
-            (prefixed(labels_config.get("in_progress", "in-progress")), "5319E7", "Agent is working on this"),
-            (prefixed(labels_config.get("blocked", "blocked")), "B60205", "Agent is blocked"),
-            (prefixed(labels_config.get("needs_human", "needs-human")), "FBCA04", "Agent needs human input"),
+            (
+                prefixed(labels_config.get("in_progress", "in-progress")),
+                "5319E7",
+                "Agent is working on this",
+            ),
+            (
+                prefixed(labels_config.get("blocked", "blocked")),
+                "B60205",
+                "Agent is blocked",
+            ),
+            (
+                prefixed(labels_config.get("needs_human", "needs-human")),
+                "FBCA04",
+                "Agent needs human input",
+            ),
         ]
         all_labels = agent_labels + priority_labels + status_labels
 
         # Add review labels if configured (two-stage review workflow)
         if code_review_agent:
-            all_labels.extend([
-                (code_review_label, "7057FF", "PR needs code review"),
-                (code_reviewed_label, "0E8A16", "PR has been code reviewed"),
-            ])
+            all_labels.extend(
+                [
+                    (code_review_label, "7057FF", "PR needs code review"),
+                    (code_reviewed_label, "0E8A16", "PR has been code reviewed"),
+                ]
+            )
         if triage_review_agent:
             all_labels.append(
                 (triage_reviewed_label, "1D76DB", "PR has been triage reviewed")
@@ -1695,7 +1929,11 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
 
         # Check which labels already exist and collect missing ones
         existing_labels = set(fetch_github_labels(repo_name))
-        missing_labels = [(name, color, desc) for name, color, desc in all_labels if name not in existing_labels]
+        missing_labels = [
+            (name, color, desc)
+            for name, color, desc in all_labels
+            if name not in existing_labels
+        ]
 
         for name, color, desc in missing_labels:
             file_collector.add_label(name, color, desc)
@@ -1716,7 +1954,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     _apply_changes(file_collector, repo_name, prompter)
 
     # Install AI agent hooks (blocks --no-verify and other bypass attempts)
-    install_hooks_now = prompter.yes_no("\nInstall AI agent hooks now? (recommended)", default=True)
+    install_hooks_now = prompter.yes_no(
+        "\nInstall AI agent hooks now? (recommended)", default=True
+    )
     if install_hooks_now:
         try:
             from ...infra.config import Config
@@ -1735,6 +1975,33 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
             prompter.print(f"\n⚠ Hook installation failed: {exc}")
             prompter.print("  You can retry later with: issue-orchestrator setup-hooks")
 
+    if (config.get("validation") or {}).get("cmd"):
+        harden_repo_now = prompter.yes_no(
+            "\nInstall repo-local pre-push guardrails now? (recommended)",
+            default=True,
+        )
+        if harden_repo_now:
+            try:
+                from ...infra.config import Config
+                from ...infra.repo_hardening import harden_repo
+
+                temp_config = Config.load(output_path)
+                result = harden_repo(temp_config, target_root=target_path)
+                prompter.print("\nRepo guardrails installed:")
+                prompter.print(f"  ✓ Hooks path: {result.hooks_path_config}")
+                prompter.print(f"  ✓ {result.pre_push_hook.relative_to(target_path)}")
+                prompter.print(f"  ✓ {result.verify_script.relative_to(target_path)}")
+            except Exception as exc:
+                prompter.print(f"\n⚠ Repo hardening failed: {exc}")
+                prompter.print(
+                    "  You can retry later with: issue-orchestrator harden-repo"
+                )
+    else:
+        prompter.print(
+            "\nRepo-local pre-push hardening skipped: configure validation.cmd first, "
+            "then run 'issue-orchestrator harden-repo'."
+        )
+
     # AI provider key setup
     if prompter.yes_no("\nSet up AI provider API keys now?", default=True):
         setup_ai_providers(prompter)
@@ -1749,7 +2016,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         if isinstance(exchange, dict) and exchange.get("mode") in ("via-mcp", "auto"):
             prompter.print("\nRunning MCP review-exchange validation...")
             temp_config = Config.load(output_path)
-            checks = probe_review_exchange(temp_config, LocalCommandRunner(), force=True)
+            checks = probe_review_exchange(
+                temp_config, LocalCommandRunner(), force=True
+            )
             for check in checks:
                 prompter.print(f"  - {check.name}: {check.status} ({check.detail})")
     except Exception as exc:
@@ -1768,7 +2037,8 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     agent_labels = list(config.get("agents", {}).keys())
     # Exclude review agents from the list (they work on PRs, not issues)
     work_agent_labels = [
-        label for label in agent_labels
+        label
+        for label in agent_labels
         if label != code_review_agent and label != triage_review_agent
     ]
     prompter.print("\n  2. Add agent labels to your GitHub issues:")
@@ -1778,10 +2048,17 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     prompter.print("\n  3. Run: issue-orchestrator start")
 
     if not install_hooks_now:
-        prompter.print("\n  4. Install AI agent hooks (recommended): issue-orchestrator setup-hooks")
+        prompter.print(
+            "\n  4. Install AI agent hooks (recommended): issue-orchestrator setup-hooks"
+        )
+        prompter.print(
+            "  5. Harden repo guardrails (recommended): issue-orchestrator harden-repo"
+        )
 
     prompter.print("\n  Advanced features (enable in config later):")
-    prompter.print("     E2E Test Runner - Automatically runs your test suite when main")
+    prompter.print(
+        "     E2E Test Runner - Automatically runs your test suite when main"
+    )
     prompter.print("     branch changes. Tracks flaky tests, retries failures, shows")
     prompter.print("     progress in dashboard. Enable: e2e.enabled: true")
     prompter.print("     See: docs/user/e2e.md")

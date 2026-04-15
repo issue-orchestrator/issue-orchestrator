@@ -91,18 +91,31 @@ def evaluate_command(command: str, cwd: Path | None = None) -> HookDecision:
         return HookDecision(True, "")
 
     patterns = [
-        (re.compile(r"git\s+(commit|push).*--no-verify"),
-         "BLOCKED: --no-verify is forbidden. Pre-push hooks must run."),
-        (re.compile(r"git\s+--no-verify"),
-         "BLOCKED: --no-verify is forbidden."),
-        (re.compile(r"git\s+commit.*\s-n\s"),
-         "BLOCKED: -n (--no-verify) is forbidden."),
-        (re.compile(r"git\s+-c\s+core\.hooksPath=/dev/null"),
-         "BLOCKED: Disabling hooks via core.hooksPath is forbidden."),
-        (re.compile(r"gh\s+pr\s+merge"),
-         "BLOCKED: Agents cannot merge PRs. Only humans can merge."),
-        (re.compile(r"gh\s+api\s+.*pulls/[0-9]+/merge"),
-         "BLOCKED: Agents cannot merge PRs via API. Only humans can merge."),
+        (
+            re.compile(r"git\s+(commit|push).*--no-verify"),
+            "BLOCKED: --no-verify is forbidden. Pre-push hooks must run.",
+        ),
+        (re.compile(r"git\s+--no-verify"), "BLOCKED: --no-verify is forbidden."),
+        (
+            re.compile(r"git\s+commit.*\s-n\s"),
+            "BLOCKED: -n (--no-verify) is forbidden.",
+        ),
+        (
+            re.compile(r"git\s+-c\s+core\.hooksPath=/dev/null"),
+            "BLOCKED: Disabling hooks via core.hooksPath is forbidden.",
+        ),
+        (
+            re.compile(r"git\s+config\b[^\n]*\bcore\.hooksPath\b[^\n]*/dev/null\b"),
+            "BLOCKED: Disabling hooks via core.hooksPath=/dev/null is forbidden.",
+        ),
+        (
+            re.compile(r"gh\s+pr\s+merge"),
+            "BLOCKED: Agents cannot merge PRs. Only humans can merge.",
+        ),
+        (
+            re.compile(r"gh\s+api\s+.*pulls/[0-9]+/merge"),
+            "BLOCKED: Agents cannot merge PRs via API. Only humans can merge.",
+        ),
     ]
 
     for pattern, reason in patterns:
@@ -116,7 +129,10 @@ def evaluate_raw_input(raw: str, cwd: Path | None = None) -> HookDecision:
     """Evaluate raw hook JSON input and return allow/deny decision."""
     command = extract_command_from_input(raw)
     if raw and not command:
-        return HookDecision(False, "BLOCKED: unable to extract command from hook input. Input may be malformed.")
+        return HookDecision(
+            False,
+            "BLOCKED: unable to extract command from hook input. Input may be malformed.",
+        )
     return evaluate_command(command, cwd=cwd)
 
 
@@ -129,14 +145,18 @@ def format_cursor_response(decision: HookDecision) -> str:
 def format_copilot_response(decision: HookDecision) -> str:
     if decision.allowed:
         return json.dumps({"permissionDecision": "allow"})
-    return json.dumps({"permissionDecision": "deny", "permissionDecisionReason": decision.reason})
+    return json.dumps(
+        {"permissionDecision": "deny", "permissionDecisionReason": decision.reason}
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("claude", "cursor", "gemini", "copilot"), required=True)
+    parser.add_argument(
+        "--mode", choices=("claude", "cursor", "gemini", "copilot"), required=True
+    )
     args = parser.parse_args(argv)
 
     raw = sys.stdin.read()

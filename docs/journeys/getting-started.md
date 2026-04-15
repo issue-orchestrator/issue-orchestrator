@@ -32,13 +32,13 @@ The wizard asks about your repo, agents, validation, and review preferences. If 
 
 The wizard creates `.issue-orchestrator/config/default.yaml`. You can also write this by hand — see [Configuration](../user/configuration.md) for a minimal starter config.
 
-## 3. Install safety hooks
+## 3. Harden the repo
 
 ```bash
-issue-orchestrator setup-hooks
+issue-orchestrator harden-repo
 ```
 
-Hooks prevent agents from bypassing validation (e.g., `git push --no-verify`). This is important — without hooks, agents can skip your tests. See [Guardrails](../design/guardrails.md) for why this matters.
+This installs the repo-local pre-push gate plus the configured AI-agent hooks. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. See [Guardrails](../design/guardrails.md) for why this matters.
 
 ## 4. Label a GitHub issue
 
@@ -58,7 +58,7 @@ Open `http://localhost:8080` to watch the dashboard. You'll see your issue move 
 issue-orchestrator doctor
 ```
 
-Doctor checks GitHub connectivity, token permissions, config validity, and hook installation.
+Doctor checks GitHub connectivity, token permissions, config validity, AI hook installation, and repo hardening state.
 
 ## What happens under the hood
 

@@ -34,6 +34,7 @@ class AiAgentType(Enum):
 
     Values match ai_systems.yaml for unified configuration.
     """
+
     CLAUDE_CODE = "claude-code"
     CURSOR = "cursor"
     COPILOT = "copilot"
@@ -54,12 +55,14 @@ class UnsupportedAiAgentError(Exception):
 
 class HookVerificationError(Exception):
     """Raised when hook verification fails."""
+
     pass
 
 
 @dataclass
 class VerificationResult:
     """Result of hook verification."""
+
     success: bool
     meta_agent: AiAgentType
     checks_passed: list[str]
@@ -234,7 +237,9 @@ class ClaudeCodeAdapter(AiAgentAdapter):
     def supports_ai_gate(self) -> bool:
         return True
 
-    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+    def _copy_hook_file(
+        self, src: Path, target: Path, files_created: list[Path]
+    ) -> None:
         """Copy a hook file and make it executable."""
         if not src.exists():
             raise FileNotFoundError(f"Template not found: {src}")
@@ -243,7 +248,9 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         files_created.append(target)
         logger.info(f"Installed {target}")
 
-    def _update_settings_json(self, settings_path: Path, files_created: list[Path]) -> None:
+    def _update_settings_json(
+        self, settings_path: Path, files_created: list[Path]
+    ) -> None:
         """Update settings.json with hook configuration."""
         settings = {}
         if settings_path.exists():
@@ -256,17 +263,22 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         our_cmd = ".claude/hooks/block-no-verify.sh"
 
         # Find existing Bash matcher
-        bash_matcher = next((h for h in settings["hooks"]["PreToolUse"] if h.get("matcher") == "Bash"), None)
+        bash_matcher = next(
+            (h for h in settings["hooks"]["PreToolUse"] if h.get("matcher") == "Bash"),
+            None,
+        )
         if bash_matcher:
             existing_hooks = bash_matcher.get("hooks", [])
-            if not any(h.get("type") == "command" and h.get("command") == our_cmd for h in existing_hooks):
+            if not any(
+                h.get("type") == "command" and h.get("command") == our_cmd
+                for h in existing_hooks
+            ):
                 existing_hooks.append({"type": "command", "command": our_cmd})
                 bash_matcher["hooks"] = existing_hooks
         else:
-            settings["hooks"]["PreToolUse"].append({
-                "matcher": "Bash",
-                "hooks": [{"type": "command", "command": our_cmd}]
-            })
+            settings["hooks"]["PreToolUse"].append(
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": our_cmd}]}
+            )
 
         settings_path.write_text(json.dumps(settings, indent=2) + "\n")
         files_created.append(settings_path)
@@ -279,16 +291,32 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy hook scripts
-        self._copy_hook_file(TEMPLATES_DIR / "claude" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
-        self._copy_hook_file(TEMPLATES_DIR / "claude" / "allow_git_push.py", hooks_dir / "allow_git_push.py", files_created)
-        self._copy_hook_file(TEMPLATES_DIR / "claude" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+        self._copy_hook_file(
+            TEMPLATES_DIR / "claude" / "block-no-verify.sh",
+            hooks_dir / "block-no-verify.sh",
+            files_created,
+        )
+        self._copy_hook_file(
+            TEMPLATES_DIR / "claude" / "allow_git_push.py",
+            hooks_dir / "allow_git_push.py",
+            files_created,
+        )
+        self._copy_hook_file(
+            TEMPLATES_DIR / "claude" / "parse_hook_input.py",
+            hooks_dir / "parse_hook_input.py",
+            files_created,
+        )
 
         # Update settings.json
-        self._update_settings_json(project_root / ".claude" / "settings.json", files_created)
+        self._update_settings_json(
+            project_root / ".claude" / "settings.json", files_created
+        )
 
         return files_created
 
-    def _verify_settings_json(self, settings_path: Path, checks_passed: list, checks_failed: list) -> None:
+    def _verify_settings_json(
+        self, settings_path: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Verify settings.json configuration."""
         if not settings_path.exists():
             checks_failed.append("settings_json_configured: settings.json not found")
@@ -299,7 +327,8 @@ class ClaudeCodeAdapter(AiAgentAdapter):
             pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
             found_hook = any(
                 hook.get("command") == ".claude/hooks/block-no-verify.sh"
-                for matcher in pre_tool_use if matcher.get("matcher") == "Bash"
+                for matcher in pre_tool_use
+                if matcher.get("matcher") == "Bash"
                 for hook in matcher.get("hooks", [])
             )
             if found_hook:
@@ -309,25 +338,39 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         except json.JSONDecodeError as e:
             checks_failed.append(f"settings_json_configured: invalid JSON - {e}")
 
-    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+    def _run_hook_test_cases(
+        self, hook_script: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Run hook test cases and record results."""
         test_cases = [
-            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
-            ("git push origin main --no-verify", True), ("git --no-verify push", True),
-            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
-            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("git push --no-verify", True),
+            ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True),
+            ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True),
+            ("git -c core.hooksPath=/dev/null push", True),
+            ("git config --local core.hooksPath /dev/null", True),
+            ("gh pr merge 123", True),
+            ("gh pr merge 123 --squash", True),
             ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
-            ("git push origin main", False), ("git commit -m 'test'", False),
-            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+            ("git push origin main", False),
+            ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False),
+            ("gh pr view 123", False),
+            ("ls -la", False),
         ]
 
         for cmd, should_block in test_cases:
             blocked = self._test_hook_blocks(hook_script, cmd)
             label = cmd[:30]
             if should_block == blocked:
-                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+                checks_passed.append(
+                    f"{'blocks' if should_block else 'allows'}:{label}"
+                )
             else:
-                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+                checks_failed.append(
+                    f"{'should_block' if should_block else 'wrongly_blocks'}:{label}"
+                )
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
         """Verify Claude Code hooks are working."""
@@ -339,7 +382,9 @@ class ClaudeCodeAdapter(AiAgentAdapter):
 
         if not hook_script.exists():
             checks_failed.append("hook_script_exists: not found")
-            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+            return VerificationResult(
+                False, self.agent_type, checks_passed, checks_failed
+            )
         checks_passed.append("hook_script_exists")
 
         if os.access(hook_script, os.X_OK):
@@ -371,11 +416,7 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         Returns True if blocked (exit code 2), False if allowed.
         """
         # Claude Code sends JSON with tool_input.command
-        test_input = json.dumps({
-            "tool_input": {
-                "command": command
-            }
-        })
+        test_input = json.dumps({"tool_input": {"command": command}})
 
         project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
         try:
@@ -458,16 +499,17 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                     [
                         "claude",
                         "--print",
-                        "--output-format", "text",
+                        "--output-format",
+                        "text",
                         "--dangerously-skip-permissions",
                         prompt,
                     ],
-                        cwd=work_repo,
-                        capture_output=True,
-                        text=True,
-                        env=_test_ai_gate_env(project_root),
-                        timeout=timeout,
-                    )
+                    cwd=work_repo,
+                    capture_output=True,
+                    text=True,
+                    env=_test_ai_gate_env(project_root),
+                    timeout=timeout,
+                )
 
                 output = result.stdout + result.stderr
 
@@ -475,7 +517,10 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                 was_blocked = _detect_blocked_from_output(output)
 
                 if was_blocked:
-                    return True, f"AI gate test passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}"
+                    return (
+                        True,
+                        f"AI gate test passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}",
+                    )
                 else:
                     diag = (
                         f"AI gate test FAILED: Claude was NOT blocked\n"
@@ -488,7 +533,10 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                     return False, diag
 
             except subprocess.TimeoutExpired:
-                return False, f"AI gate test timed out after {timeout}s (cwd={work_repo})"
+                return (
+                    False,
+                    f"AI gate test timed out after {timeout}s (cwd={work_repo})",
+                )
             except FileNotFoundError:
                 return False, "Claude CLI not found - is it installed?"
             except Exception as e:
@@ -509,7 +557,9 @@ class CursorAdapter(AiAgentAdapter):
     def supports_ai_gate(self) -> bool:
         return True
 
-    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+    def _copy_hook_file(
+        self, src: Path, target: Path, files_created: list[Path]
+    ) -> None:
         """Copy a hook file and make it executable."""
         if not src.exists():
             raise FileNotFoundError(f"Template not found: {src}")
@@ -518,7 +568,9 @@ class CursorAdapter(AiAgentAdapter):
         files_created.append(target)
         logger.info(f"Installed {target}")
 
-    def _update_hooks_json(self, hooks_json_path: Path, files_created: list[Path]) -> None:
+    def _update_hooks_json(
+        self, hooks_json_path: Path, files_created: list[Path]
+    ) -> None:
         """Update hooks.json with hook configuration."""
         hooks_config: dict = {}
         if hooks_json_path.exists():
@@ -546,15 +598,25 @@ class CursorAdapter(AiAgentAdapter):
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy hook scripts
-        self._copy_hook_file(TEMPLATES_DIR / "cursor" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
-        self._copy_hook_file(TEMPLATES_DIR / "cursor" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+        self._copy_hook_file(
+            TEMPLATES_DIR / "cursor" / "block-no-verify.sh",
+            hooks_dir / "block-no-verify.sh",
+            files_created,
+        )
+        self._copy_hook_file(
+            TEMPLATES_DIR / "cursor" / "parse_hook_input.py",
+            hooks_dir / "parse_hook_input.py",
+            files_created,
+        )
 
         # Update hooks.json
         self._update_hooks_json(project_root / ".cursor" / "hooks.json", files_created)
 
         return files_created
 
-    def _verify_hooks_json(self, hooks_json_path: Path, checks_passed: list, checks_failed: list) -> None:
+    def _verify_hooks_json(
+        self, hooks_json_path: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Verify hooks.json configuration."""
         if not hooks_json_path.exists():
             checks_failed.append("hooks_json_configured: hooks.json not found")
@@ -570,7 +632,9 @@ class CursorAdapter(AiAgentAdapter):
             if found_hook:
                 checks_passed.append("hooks_json_configured")
             else:
-                checks_failed.append("hooks_json_configured: hook not in beforeShellExecution")
+                checks_failed.append(
+                    "hooks_json_configured: hook not in beforeShellExecution"
+                )
         except json.JSONDecodeError as e:
             checks_failed.append(f"hooks_json_configured: invalid JSON - {e}")
 
@@ -603,7 +667,9 @@ class CursorAdapter(AiAgentAdapter):
             )
             # Cursor hooks output JSON - parse for permission field
             try:
-                output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                output = (
+                    json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                )
                 blocked = output.get("permission") == "deny"
             except json.JSONDecodeError:
                 # If we can't parse JSON, treat as not blocked (hook is broken)
@@ -619,25 +685,39 @@ class CursorAdapter(AiAgentAdapter):
             logger.warning(f"Hook script error testing '{command}': {e}")
             return (False, "") if return_stderr else False
 
-    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+    def _run_hook_test_cases(
+        self, hook_script: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Run hook test cases and record results."""
         test_cases = [
-            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
-            ("git push origin main --no-verify", True), ("git --no-verify push", True),
-            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
-            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("git push --no-verify", True),
+            ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True),
+            ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True),
+            ("git -c core.hooksPath=/dev/null push", True),
+            ("git config --local core.hooksPath /dev/null", True),
+            ("gh pr merge 123", True),
+            ("gh pr merge 123 --squash", True),
             ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
-            ("git push origin main", False), ("git commit -m 'test'", False),
-            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+            ("git push origin main", False),
+            ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False),
+            ("gh pr view 123", False),
+            ("ls -la", False),
         ]
 
         for cmd, should_block in test_cases:
             blocked = self._test_hook_blocks(hook_script, cmd)
             label = cmd[:30]
             if should_block == blocked:
-                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+                checks_passed.append(
+                    f"{'blocks' if should_block else 'allows'}:{label}"
+                )
             else:
-                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+                checks_failed.append(
+                    f"{'should_block' if should_block else 'wrongly_blocks'}:{label}"
+                )
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
         """Verify Cursor hooks are working."""
@@ -649,7 +729,9 @@ class CursorAdapter(AiAgentAdapter):
 
         if not hook_script.exists():
             checks_failed.append("hook_script_exists: not found")
-            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+            return VerificationResult(
+                False, self.agent_type, checks_passed, checks_failed
+            )
         checks_passed.append("hook_script_exists")
 
         if os.access(hook_script, os.X_OK):
@@ -711,7 +793,8 @@ class CursorAdapter(AiAgentAdapter):
                     [
                         "cursor-agent",
                         "--print",
-                        "--output-format", "text",
+                        "--output-format",
+                        "text",
                         prompt,
                     ],
                     cwd=work_repo,
@@ -725,8 +808,14 @@ class CursorAdapter(AiAgentAdapter):
                 was_blocked = _detect_blocked_from_output(output)
 
                 if was_blocked:
-                    return True, f"AI gate test passed: Cursor was blocked from running --no-verify\nOutput: {output[:500]}"
-                return False, f"AI gate test FAILED: Cursor was NOT blocked\nOutput: {output[:500]}"
+                    return (
+                        True,
+                        f"AI gate test passed: Cursor was blocked from running --no-verify\nOutput: {output[:500]}",
+                    )
+                return (
+                    False,
+                    f"AI gate test FAILED: Cursor was NOT blocked\nOutput: {output[:500]}",
+                )
             except subprocess.TimeoutExpired:
                 return False, f"AI gate test timed out after {timeout}s"
             except Exception as e:
@@ -747,7 +836,9 @@ class GeminiAdapter(AiAgentAdapter):
     def supports_ai_gate(self) -> bool:
         return True
 
-    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+    def _copy_hook_file(
+        self, src: Path, target: Path, files_created: list[Path]
+    ) -> None:
         """Copy a hook file and make it executable."""
         if not src.exists():
             raise FileNotFoundError(f"Template not found: {src}")
@@ -756,7 +847,9 @@ class GeminiAdapter(AiAgentAdapter):
         files_created.append(target)
         logger.info(f"Installed {target}")
 
-    def _update_settings_json(self, settings_path: Path, files_created: list[Path]) -> None:
+    def _update_settings_json(
+        self, settings_path: Path, files_created: list[Path]
+    ) -> None:
         """Update settings.json with hook configuration."""
         settings: dict = {}
         if settings_path.exists():
@@ -769,17 +862,22 @@ class GeminiAdapter(AiAgentAdapter):
         our_cmd = ".gemini/hooks/block-no-verify.sh"
 
         # Find existing Bash matcher
-        bash_matcher = next((h for h in settings["hooks"]["BeforeTool"] if h.get("matcher") == "Bash"), None)
+        bash_matcher = next(
+            (h for h in settings["hooks"]["BeforeTool"] if h.get("matcher") == "Bash"),
+            None,
+        )
         if bash_matcher:
             existing_hooks = bash_matcher.get("hooks", [])
-            if not any(h.get("type") == "command" and h.get("command") == our_cmd for h in existing_hooks):
+            if not any(
+                h.get("type") == "command" and h.get("command") == our_cmd
+                for h in existing_hooks
+            ):
                 existing_hooks.append({"type": "command", "command": our_cmd})
                 bash_matcher["hooks"] = existing_hooks
         else:
-            settings["hooks"]["BeforeTool"].append({
-                "matcher": "Bash",
-                "hooks": [{"type": "command", "command": our_cmd}]
-            })
+            settings["hooks"]["BeforeTool"].append(
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": our_cmd}]}
+            )
 
         settings_path.write_text(json.dumps(settings, indent=2) + "\n")
         files_created.append(settings_path)
@@ -792,16 +890,32 @@ class GeminiAdapter(AiAgentAdapter):
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy hook scripts
-        self._copy_hook_file(TEMPLATES_DIR / "gemini" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
-        self._copy_hook_file(TEMPLATES_DIR / "gemini" / "allow_git_push.py", hooks_dir / "allow_git_push.py", files_created)
-        self._copy_hook_file(TEMPLATES_DIR / "gemini" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+        self._copy_hook_file(
+            TEMPLATES_DIR / "gemini" / "block-no-verify.sh",
+            hooks_dir / "block-no-verify.sh",
+            files_created,
+        )
+        self._copy_hook_file(
+            TEMPLATES_DIR / "gemini" / "allow_git_push.py",
+            hooks_dir / "allow_git_push.py",
+            files_created,
+        )
+        self._copy_hook_file(
+            TEMPLATES_DIR / "gemini" / "parse_hook_input.py",
+            hooks_dir / "parse_hook_input.py",
+            files_created,
+        )
 
         # Update settings.json
-        self._update_settings_json(project_root / ".gemini" / "settings.json", files_created)
+        self._update_settings_json(
+            project_root / ".gemini" / "settings.json", files_created
+        )
 
         return files_created
 
-    def _verify_settings_json(self, settings_path: Path, checks_passed: list, checks_failed: list) -> None:
+    def _verify_settings_json(
+        self, settings_path: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Verify settings.json configuration."""
         if not settings_path.exists():
             checks_failed.append("settings_json_configured: settings.json not found")
@@ -812,7 +926,8 @@ class GeminiAdapter(AiAgentAdapter):
             before_tool = settings.get("hooks", {}).get("BeforeTool", [])
             found_hook = any(
                 hook.get("command") == ".gemini/hooks/block-no-verify.sh"
-                for matcher in before_tool if matcher.get("matcher") == "Bash"
+                for matcher in before_tool
+                if matcher.get("matcher") == "Bash"
                 for hook in matcher.get("hooks", [])
             )
             if found_hook:
@@ -836,11 +951,7 @@ class GeminiAdapter(AiAgentAdapter):
         Returns True if blocked (exit code 2), False if allowed.
         """
         # Gemini CLI sends JSON with tool_input.command (same as Claude)
-        test_input = json.dumps({
-            "tool_input": {
-                "command": command
-            }
-        })
+        test_input = json.dumps({"tool_input": {"command": command}})
 
         project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
         try:
@@ -865,25 +976,39 @@ class GeminiAdapter(AiAgentAdapter):
             logger.warning(f"Hook script error testing '{command}': {e}")
             return (False, "") if return_stderr else False
 
-    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+    def _run_hook_test_cases(
+        self, hook_script: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Run hook test cases and record results."""
         test_cases = [
-            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
-            ("git push origin main --no-verify", True), ("git --no-verify push", True),
-            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
-            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("git push --no-verify", True),
+            ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True),
+            ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True),
+            ("git -c core.hooksPath=/dev/null push", True),
+            ("git config --local core.hooksPath /dev/null", True),
+            ("gh pr merge 123", True),
+            ("gh pr merge 123 --squash", True),
             ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
-            ("git push origin main", False), ("git commit -m 'test'", False),
-            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+            ("git push origin main", False),
+            ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False),
+            ("gh pr view 123", False),
+            ("ls -la", False),
         ]
 
         for cmd, should_block in test_cases:
             blocked = self._test_hook_blocks(hook_script, cmd)
             label = cmd[:30]
             if should_block == blocked:
-                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+                checks_passed.append(
+                    f"{'blocks' if should_block else 'allows'}:{label}"
+                )
             else:
-                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+                checks_failed.append(
+                    f"{'should_block' if should_block else 'wrongly_blocks'}:{label}"
+                )
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
         """Verify Gemini CLI hooks are working."""
@@ -895,7 +1020,9 @@ class GeminiAdapter(AiAgentAdapter):
 
         if not hook_script.exists():
             checks_failed.append("hook_script_exists: not found")
-            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+            return VerificationResult(
+                False, self.agent_type, checks_passed, checks_failed
+            )
         checks_passed.append("hook_script_exists")
 
         if os.access(hook_script, os.X_OK):
@@ -974,8 +1101,14 @@ class GeminiAdapter(AiAgentAdapter):
                 was_blocked = _detect_blocked_from_output(output)
 
                 if was_blocked:
-                    return True, f"AI gate test passed: Gemini was blocked from running --no-verify\nOutput: {output[:500]}"
-                return False, f"AI gate test FAILED: Gemini was NOT blocked\nOutput: {output[:500]}"
+                    return (
+                        True,
+                        f"AI gate test passed: Gemini was blocked from running --no-verify\nOutput: {output[:500]}",
+                    )
+                return (
+                    False,
+                    f"AI gate test FAILED: Gemini was NOT blocked\nOutput: {output[:500]}",
+                )
             except subprocess.TimeoutExpired:
                 return False, f"AI gate test timed out after {timeout}s"
             except Exception as e:
@@ -996,7 +1129,9 @@ class CopilotAdapter(AiAgentAdapter):
     def supports_ai_gate(self) -> bool:
         return True
 
-    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+    def _copy_hook_file(
+        self, src: Path, target: Path, files_created: list[Path]
+    ) -> None:
         """Copy a hook file and make it executable."""
         if not src.exists():
             raise FileNotFoundError(f"Template not found: {src}")
@@ -1005,7 +1140,9 @@ class CopilotAdapter(AiAgentAdapter):
         files_created.append(target)
         logger.info(f"Installed {target}")
 
-    def _update_hooks_json(self, hooks_json_path: Path, files_created: list[Path]) -> None:
+    def _update_hooks_json(
+        self, hooks_json_path: Path, files_created: list[Path]
+    ) -> None:
         """Update hooks.json with hook configuration."""
         hooks_config: dict = {"version": 1, "hooks": {}}
         if hooks_json_path.exists():
@@ -1034,15 +1171,27 @@ class CopilotAdapter(AiAgentAdapter):
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy hook scripts
-        self._copy_hook_file(TEMPLATES_DIR / "copilot" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
-        self._copy_hook_file(TEMPLATES_DIR / "copilot" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+        self._copy_hook_file(
+            TEMPLATES_DIR / "copilot" / "block-no-verify.sh",
+            hooks_dir / "block-no-verify.sh",
+            files_created,
+        )
+        self._copy_hook_file(
+            TEMPLATES_DIR / "copilot" / "parse_hook_input.py",
+            hooks_dir / "parse_hook_input.py",
+            files_created,
+        )
 
         # Update hooks.json
-        self._update_hooks_json(project_root / ".github" / "hooks" / "hooks.json", files_created)
+        self._update_hooks_json(
+            project_root / ".github" / "hooks" / "hooks.json", files_created
+        )
 
         return files_created
 
-    def _verify_hooks_json(self, hooks_json_path: Path, checks_passed: list, checks_failed: list) -> None:
+    def _verify_hooks_json(
+        self, hooks_json_path: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Verify hooks.json configuration."""
         if not hooks_json_path.exists():
             checks_failed.append("hooks_json_configured: hooks.json not found")
@@ -1076,10 +1225,9 @@ class CopilotAdapter(AiAgentAdapter):
         Returns True if blocked (JSON permissionDecision=deny), False if allowed.
         """
         # Copilot sends JSON with toolArgs containing command
-        test_input = json.dumps({
-            "toolName": "bash",
-            "toolArgs": json.dumps({"command": command})
-        })
+        test_input = json.dumps(
+            {"toolName": "bash", "toolArgs": json.dumps({"command": command})}
+        )
 
         project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
         try:
@@ -1094,7 +1242,9 @@ class CopilotAdapter(AiAgentAdapter):
             )
             # Copilot hooks output JSON - parse for permissionDecision field
             try:
-                output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                output = (
+                    json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                )
                 blocked = output.get("permissionDecision") == "deny"
             except json.JSONDecodeError:
                 # If we can't parse JSON, treat as not blocked (hook is broken)
@@ -1110,25 +1260,39 @@ class CopilotAdapter(AiAgentAdapter):
             logger.warning(f"Hook script error testing '{command}': {e}")
             return (False, "") if return_output else False
 
-    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+    def _run_hook_test_cases(
+        self, hook_script: Path, checks_passed: list, checks_failed: list
+    ) -> None:
         """Run hook test cases and record results."""
         test_cases = [
-            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
-            ("git push origin main --no-verify", True), ("git --no-verify push", True),
-            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
-            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("git push --no-verify", True),
+            ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True),
+            ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True),
+            ("git -c core.hooksPath=/dev/null push", True),
+            ("git config --local core.hooksPath /dev/null", True),
+            ("gh pr merge 123", True),
+            ("gh pr merge 123 --squash", True),
             ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
-            ("git push origin main", False), ("git commit -m 'test'", False),
-            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+            ("git push origin main", False),
+            ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False),
+            ("gh pr view 123", False),
+            ("ls -la", False),
         ]
 
         for cmd, should_block in test_cases:
             blocked = self._test_hook_blocks(hook_script, cmd)
             label = cmd[:30]
             if should_block == blocked:
-                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+                checks_passed.append(
+                    f"{'blocks' if should_block else 'allows'}:{label}"
+                )
             else:
-                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+                checks_failed.append(
+                    f"{'should_block' if should_block else 'wrongly_blocks'}:{label}"
+                )
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
         """Verify Copilot CLI hooks are working."""
@@ -1140,7 +1304,9 @@ class CopilotAdapter(AiAgentAdapter):
 
         if not hook_script.exists():
             checks_failed.append("hook_script_exists: not found")
-            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+            return VerificationResult(
+                False, self.agent_type, checks_passed, checks_failed
+            )
         checks_passed.append("hook_script_exists")
 
         if os.access(hook_script, os.X_OK):
@@ -1223,8 +1389,14 @@ class CopilotAdapter(AiAgentAdapter):
                 was_blocked = _detect_blocked_from_output(output)
 
                 if was_blocked:
-                    return True, f"AI gate test passed: Copilot was blocked from running --no-verify\nOutput: {output[:500]}"
-                return False, f"AI gate test FAILED: Copilot was NOT blocked\nOutput: {output[:500]}"
+                    return (
+                        True,
+                        f"AI gate test passed: Copilot was blocked from running --no-verify\nOutput: {output[:500]}",
+                    )
+                return (
+                    False,
+                    f"AI gate test FAILED: Copilot was NOT blocked\nOutput: {output[:500]}",
+                )
             except subprocess.TimeoutExpired:
                 return False, f"AI gate test timed out after {timeout}s"
             except Exception as e:
@@ -1247,7 +1419,9 @@ class CodexAdapter(AiAgentAdapter):
         """Get the Codex rules directory for a project."""
         return project_root / ".codex" / "rules"
 
-    def _copy_rules_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+    def _copy_rules_file(
+        self, src: Path, target: Path, files_created: list[Path]
+    ) -> None:
         """Copy a rules file."""
         if not src.exists():
             raise FileNotFoundError(f"Template not found: {src}")
@@ -1269,7 +1443,7 @@ class CodexAdapter(AiAgentAdapter):
         self._copy_rules_file(
             TEMPLATES_DIR / "codex" / "orchestrator.rules",
             rules_dir / "orchestrator.rules",
-            files_created
+            files_created,
         )
 
         return files_created
@@ -1287,7 +1461,9 @@ class CodexAdapter(AiAgentAdapter):
 
         if not rules_file.exists():
             checks_failed.append("rules_file_exists: orchestrator.rules not found")
-            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+            return VerificationResult(
+                False, self.agent_type, checks_passed, checks_failed
+            )
         checks_passed.append("rules_file_exists")
 
         # Verify rules file contains our blocking rules
@@ -1307,16 +1483,22 @@ class CodexAdapter(AiAgentAdapter):
         codex_bin = shutil.which("codex")
         if not codex_bin:
             checks_failed.append("execpolicy_cli_available: codex not available")
-            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+            return VerificationResult(
+                False, self.agent_type, checks_passed, checks_failed
+            )
 
         try:
-            blocked = self._execpolicy_allows(rules_file, ["git", "push", "--no-verify"])
+            blocked = self._execpolicy_allows(
+                rules_file, ["git", "push", "--no-verify"]
+            )
             if blocked is False:
                 checks_passed.append("execpolicy_blocks:git push --no-verify")
             else:
                 checks_failed.append("execpolicy_should_block:git push --no-verify")
 
-            allowed = self._execpolicy_allows(rules_file, ["git", "push", "origin", "main"])
+            allowed = self._execpolicy_allows(
+                rules_file, ["git", "push", "origin", "main"]
+            )
             if allowed is True:
                 checks_passed.append("execpolicy_allows:git push origin main")
             else:
@@ -1339,7 +1521,16 @@ class CodexAdapter(AiAgentAdapter):
     def _execpolicy_allows(self, rules_file: Path, command: list[str]) -> bool | None:
         """Return True if execpolicy allows command, False if forbidden, None if unknown."""
         result = subprocess.run(
-            ["codex", "execpolicy", "check", "--rules", str(rules_file), "--pretty", "--", *command],
+            [
+                "codex",
+                "execpolicy",
+                "check",
+                "--rules",
+                str(rules_file),
+                "--pretty",
+                "--",
+                *command,
+            ],
             capture_output=True,
             text=True,
             timeout=120,
@@ -1461,13 +1652,17 @@ def detect_agents_from_config(config) -> dict[str, AiAgentType]:
                 result[label] = AiAgentType(meta_agent)
                 continue
             except ValueError:
-                logger.warning("Unknown AI agent override for %s: %s", label, meta_agent)
+                logger.warning(
+                    "Unknown AI agent override for %s: %s", label, meta_agent
+                )
         command = getattr(agent_config, "command", None) or ""
         result[label] = detect_ai_agent(command)
     return result
 
 
-def install_hooks_for_config(config, project_root: Path) -> dict[AiAgentType, list[Path]]:
+def install_hooks_for_config(
+    config, project_root: Path
+) -> dict[AiAgentType, list[Path]]:
     """Install hooks for all AI agents detected in config.
 
     Returns:
@@ -1488,7 +1683,9 @@ def install_hooks_for_config(config, project_root: Path) -> dict[AiAgentType, li
     return results
 
 
-def verify_hooks_for_config(config, project_root: Path) -> dict[AiAgentType, VerificationResult]:
+def verify_hooks_for_config(
+    config, project_root: Path
+) -> dict[AiAgentType, VerificationResult]:
     """Verify hooks for all AI agents detected in config.
 
     Returns:

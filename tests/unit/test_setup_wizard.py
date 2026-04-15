@@ -1038,6 +1038,7 @@ class TestRunWizard:
             ".issue-orchestrator.yaml",  # config filename
             True,                   # Apply these changes?
             False,                  # Install AI agent hooks now?
+            False,                  # Install repo-local pre-push guardrails now?
             False,                  # Set up AI provider API keys now?
         ])
 
