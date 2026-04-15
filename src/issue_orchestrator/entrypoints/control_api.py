@@ -83,7 +83,7 @@ from .control_api_e2e_runs import control_e2e_runs_router
 from .control_api_orchestrator_routes import control_orchestrator_router
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependencies,
-    configure_control_api_orchestrator_dependencies,
+    install_control_api_orchestrator_dependencies,
 )
 from .control_api_e2e_support import (
     ControlApiE2EDependencies,
@@ -1596,7 +1596,8 @@ install_control_api_e2e_dependencies(
         validate_repo_root=_validate_repo_root,
     ),
 )
-configure_control_api_orchestrator_dependencies(
+install_control_api_orchestrator_dependencies(
+    control_app,
     ControlApiOrchestratorDependencies(
         get_supervisor=get_supervisor,
         get_control_actions=get_control_actions,

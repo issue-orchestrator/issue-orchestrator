@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
 
 from ..execution.git_working_copy import GitWorkingCopy
+from ..execution.orchestrator_http_api import probe_orchestrator_json
 from ..infra.repo_identity import (
     RepoIdentity,
     build_repo_identity_with_status,
@@ -172,19 +170,8 @@ def is_shutdown_complete(port: int | None) -> bool:
 
 
 def _read_json(url: str, *, timeout: float) -> dict[str, Any] | None:
-    try:
-        with urlopen(url, timeout=timeout) as response:
-            if getattr(response, "status", None) != 200:
-                return None
-            payload = response.read().decode("utf-8", errors="replace")
-    except (HTTPError, OSError, URLError, ValueError):
-        return None
-
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+    """Probe a local orchestrator endpoint via the execution-owned HTTP adapter."""
+    return probe_orchestrator_json(url, timeout_seconds=timeout)
 
 
 def heartbeat_age_seconds(iso_timestamp: str | None) -> int | None:

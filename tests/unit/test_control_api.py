@@ -16,6 +16,7 @@ Testing strategy:
 
 import pytest
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -1136,12 +1137,13 @@ class TestSupervisorStop:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
-
         monkeypatch.setattr(
-            control_api_orchestrator_routes,
-            "control_api_global_shutdown_in_progress",
-            lambda: True,
+            control_app.state,
+            "control_api_orchestrator_dependencies",
+            replace(
+                control_app.state.control_api_orchestrator_dependencies,
+                global_shutdown_in_progress=lambda: True,
+            ),
         )
 
         response = supervisor_client.post(

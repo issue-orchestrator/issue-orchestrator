@@ -26,14 +26,7 @@ from ..execution.control_center_runtime import (
 )
 from ..infra.supervisor import MultiInstanceStatus, SupervisorOps
 from .control_api_orchestrator_support import (
-    begin_control_api_engine_shutdown_operation,
-    coerce_control_api_graceful_timeout_seconds,
-    control_api_global_shutdown_in_progress,
-    finish_control_api_engine_shutdown_operation,
-    get_control_api_control_actions,
-    get_control_api_orchestrator_supervisor,
-    track_control_api_launched_pids,
-    validate_control_api_orchestrator_repo_root,
+    ControlApiOrchestratorDependency,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,19 +35,22 @@ control_orchestrator_router = APIRouter()
 
 
 @control_orchestrator_router.post("/control/orchestrator/start")
-async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR0912 - orchestrator startup with config validation and initialization
+async def control_start(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:  # noqa: C901, PLR0912 - orchestrator startup with config validation and initialization
     """Start an orchestrator for a repository."""
     from ..infra.repo_lock import AlreadyRunning
     from ..infra.repo_registry import set_selected_config
 
-    sv = get_control_api_orchestrator_supervisor()
+    sv = deps.get_supervisor()
 
     try:
         body = await request.json()
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_orchestrator_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
@@ -166,7 +162,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
         }
         if launch_result.supervisor:
             response_data.update(launch_result.supervisor)
-            track_control_api_launched_pids(launch_result.supervisor)
+            deps.track_launched_pids(launch_result.supervisor)
         return JSONResponse(response_data)
     except FileNotFoundError as exc:
         return JSONResponse(
@@ -187,7 +183,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                     config_name=config_name,
                     expected_identity=expected_identity.to_dict(),
                 )
-                track_control_api_launched_pids({"pid": info.pid})
+                deps.track_launched_pids({"pid": info.pid})
                 return JSONResponse(
                     {
                         "status": "restarted",
@@ -227,9 +223,12 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
 
 
 @control_orchestrator_router.post("/control/orchestrator/stop")
-async def control_stop(request: Request) -> JSONResponse:
+async def control_stop(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
     """Stop the orchestrator for a repository."""
-    sv = get_control_api_orchestrator_supervisor()
+    sv = deps.get_supervisor()
 
     logger.info("[control_stop] Received stop request")
 
@@ -240,22 +239,22 @@ async def control_stop(request: Request) -> JSONResponse:
         logger.error("[control_stop] Invalid JSON")
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_orchestrator_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         logger.error("[control_stop] Invalid repo_root: %s", body.get("repo_root"))
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
     force = body.get("force", False)
     force_if_timeout = bool(body.get("force_if_timeout", True))
-    graceful_timeout_seconds = coerce_control_api_graceful_timeout_seconds(
+    graceful_timeout_seconds = deps.coerce_graceful_timeout_seconds(
         body.get("graceful_timeout_seconds"),
-        default=2,
+        2,
     )
     port_override = body.get("port")
     if port_override is not None and (not isinstance(port_override, int) or port_override < 1 or port_override > 65535):
         return JSONResponse({"error": "Invalid port"}, status_code=400)
 
-    if control_api_global_shutdown_in_progress():
+    if deps.global_shutdown_in_progress():
         return JSONResponse(
             {
                 "error": "global_shutdown_in_progress",
@@ -269,11 +268,11 @@ async def control_stop(request: Request) -> JSONResponse:
             status_code=409,
         )
 
-    begin_control_api_engine_shutdown_operation(
+    deps.begin_engine_shutdown_operation(
         repo_root,
-        force=bool(force),
-        force_if_timeout=force_if_timeout,
-        graceful_timeout_seconds=graceful_timeout_seconds,
+        bool(force),
+        force_if_timeout,
+        graceful_timeout_seconds,
     )
 
     logger.info("[control_stop] Calling supervisor.stop(%s, force=%s)", repo_root, force)
@@ -311,15 +310,18 @@ async def control_stop(request: Request) -> JSONResponse:
             )
         return JSONResponse({"status": "not_running", "repo_root": str(repo_root)})
     finally:
-        finish_control_api_engine_shutdown_operation(repo_root)
+        deps.finish_engine_shutdown_operation(repo_root)
 
 
 @control_orchestrator_router.post("/control/orchestrator/reconcile")
-async def control_reconcile(request: Request) -> JSONResponse:
+async def control_reconcile(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
     """Reconcile stale runtime metadata and optionally stop orphaned/unresponsive engines."""
     from ..infra.repo_registry import list_repos
 
-    sv = get_control_api_orchestrator_supervisor()
+    sv = deps.get_supervisor()
     stop_orphaned, stop_unresponsive, force = await _parse_reconcile_options(request)
 
     reconciled_stale_locks: list[str] = []
@@ -554,13 +556,14 @@ def _reconcile_multi_instance_repo_runtime(
 
 @control_orchestrator_router.get("/control/orchestrator/status")
 async def control_status(
+    deps: ControlApiOrchestratorDependency,
     repo_root: str = Query(...),
     config_name: str | None = Query(None),
 ) -> JSONResponse:
     """Get the status of the orchestrator for a repository."""
-    sv = get_control_api_orchestrator_supervisor()
+    sv = deps.get_supervisor()
 
-    path = validate_control_api_orchestrator_repo_root(repo_root)
+    path = deps.validate_repo_root(repo_root)
     if path is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
@@ -611,52 +614,61 @@ async def control_status(
 
 
 @control_orchestrator_router.post("/control/orchestrator/pause")
-async def control_pause(request: Request) -> JSONResponse:
+async def control_pause(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
     """Pause the orchestrator for a repository."""
     try:
         body = await request.json()
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_orchestrator_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
-    actions = get_control_api_control_actions()
+    actions = deps.get_control_actions()
     result = await actions.pause_cmd.execute(RepoActionRequest(repo_root=repo_root))
     return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_orchestrator_router.post("/control/orchestrator/resume")
-async def control_resume(request: Request) -> JSONResponse:
+async def control_resume(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
     """Resume the orchestrator for a repository."""
     try:
         body = await request.json()
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_orchestrator_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
-    actions = get_control_api_control_actions()
+    actions = deps.get_control_actions()
     result = await actions.resume_cmd.execute(RepoActionRequest(repo_root=repo_root))
     return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_orchestrator_router.post("/control/orchestrator/refresh")
-async def control_refresh(request: Request) -> JSONResponse:
+async def control_refresh(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
     """Trigger refresh on the orchestrator for a repository."""
     try:
         body = await request.json()
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_orchestrator_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
-    actions = get_control_api_control_actions()
+    actions = deps.get_control_actions()
     result = await actions.refresh_cmd.execute(
         RefreshActionRequest(
             repo_root=repo_root,
@@ -667,11 +679,14 @@ async def control_refresh(request: Request) -> JSONResponse:
 
 
 @control_orchestrator_router.get("/control/orchestrator/last_failure")
-async def control_last_failure(repo_root: str = Query(...)) -> JSONResponse:
+async def control_last_failure(
+    deps: ControlApiOrchestratorDependency,
+    repo_root: str = Query(...),
+) -> JSONResponse:
     """Get the last startup failure for a repository."""
     from ..infra.repo_identity import state_dir
 
-    path = validate_control_api_orchestrator_repo_root(repo_root)
+    path = deps.validate_repo_root(repo_root)
     if path is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
@@ -694,19 +709,25 @@ async def control_last_failure(repo_root: str = Query(...)) -> JSONResponse:
 
 
 @control_orchestrator_router.get("/control/orchestrator/doctor")
-async def control_doctor(repo_root: str = Query(...)) -> JSONResponse:
+async def control_doctor(
+    deps: ControlApiOrchestratorDependency,
+    repo_root: str = Query(...),
+) -> JSONResponse:
     """Run diagnostics for a repository."""
-    path = validate_control_api_orchestrator_repo_root(repo_root)
+    path = deps.validate_repo_root(repo_root)
     if path is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
-    actions = get_control_api_control_actions()
+    actions = deps.get_control_actions()
     result = await actions.doctor_cmd.execute(DoctorActionRequest(repo_root=path))
     return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_orchestrator_router.post("/control/orchestrator/ai_diagnose")
-async def control_ai_diagnose(request: Request) -> JSONResponse:
+async def control_ai_diagnose(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
     """Run AI-powered diagnostics for a repository."""
     from ..infra.ai_diagnose import run_ai_diagnose
 
@@ -715,7 +736,7 @@ async def control_ai_diagnose(request: Request) -> JSONResponse:
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_orchestrator_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
@@ -729,13 +750,14 @@ async def control_ai_diagnose(request: Request) -> JSONResponse:
 
 @control_orchestrator_router.get("/control/orchestrator/log_tail")
 async def control_log_tail(
+    deps: ControlApiOrchestratorDependency,
     repo_root: str = Query(...),
     n: int = Query(200, ge=1, le=10000),
 ) -> JSONResponse:
     """Get the last N lines of the orchestrator log."""
     from ..infra.repo_identity import state_dir
 
-    path = validate_control_api_orchestrator_repo_root(repo_root)
+    path = deps.validate_repo_root(repo_root)
     if path is None:
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
