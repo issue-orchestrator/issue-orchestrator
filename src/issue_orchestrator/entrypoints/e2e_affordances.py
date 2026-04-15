@@ -3,6 +3,10 @@
 The control API and web UI must present the same test-to-issue mapping for a
 run. Keeping the matching rules in one module avoids cross-surface drift while
 letting the entrypoints stay focused on HTTP composition.
+
+This module is also the canonical owner for script-facing affordance helpers so
+debug tooling and HTTP surfaces keep the same windowing and label semantics as
+the code is further decomposed.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ def _load_worktree_agent_events(repo_root: Path, run_id: int) -> list[dict]:
 def _build_test_windows(
     e2e_events: list[dict],
 ) -> list[tuple[str, str | None, dict]]:
-    """Pair test_started/test_completed events into time windows."""
+    """Pair test_started/test_completed events into canonical matching windows."""
     windows: list[tuple[str, str | None, dict]] = []
     started_map: dict[str, tuple[str, dict]] = {}
     for evt in e2e_events:
@@ -193,7 +197,11 @@ def _filter_nest_and_project_agent_events(
     view: str,
     run_id: int,
 ) -> list[dict]:
-    """Annotate test events with issue affordances from agent activity windows."""
+    """Annotate test events with issue affordances from agent activity windows.
+
+    The function name is preserved for compatibility, but the behavior now lives
+    here so both extracted entrypoints and external tooling share one owner.
+    """
     return _attach_issue_numbers_to_test_windows(
         e2e_events,
         agent_events,

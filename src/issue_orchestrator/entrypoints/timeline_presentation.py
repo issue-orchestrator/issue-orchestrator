@@ -3,6 +3,11 @@
 These helpers define the timeline semantics that both control and web surfaces
 render. The extraction is intentionally behavior-preserving: entrypoints remain
 composition roots while the event-shaping rules live in one owner module.
+
+This module is also the canonical import surface for operational scripts that
+need the same timeline filtering and grouping behavior. Keeping the rationale
+here avoids the drift that large entrypoint-local helper blocks were already
+causing before the extraction.
 """
 
 from __future__ import annotations
@@ -126,6 +131,7 @@ def _promote_e2e_test_event_fields(
 
 
 def _build_phase_toc(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the phase table of contents from the first appearance of each phase."""
     toc: list[dict[str, Any]] = []
     seen: set[str] = set()
     for event in events:
@@ -141,7 +147,7 @@ def _build_phase_toc(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _build_timeline_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group timeline events into code/review cycles."""
+    """Group timeline events into stable code/review cycles for both HTTP surfaces."""
     cycles: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     cycle_number = 0
@@ -208,7 +214,11 @@ def _retain_semantic_timeline_events(events: list[dict[str, Any]]) -> tuple[list
 
 
 def _filter_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop high-volume low-signal events from timeline payloads."""
+    """Drop high-volume low-signal events from timeline payloads.
+
+    This stays centralized so the control API, web UI, and supporting scripts
+    all suppress the same noise instead of re-implementing their own filters.
+    """
     filtered: list[dict[str, Any]] = []
     for event in events:
         event_name = str(event.get("event"))
