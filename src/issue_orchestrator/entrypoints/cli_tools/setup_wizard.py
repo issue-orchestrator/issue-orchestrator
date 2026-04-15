@@ -1953,31 +1953,12 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     prompter.print("\nApplying changes...")
     _apply_changes(file_collector, repo_name, prompter)
 
-    # Install AI agent hooks (blocks --no-verify and other bypass attempts)
-    install_hooks_now = prompter.yes_no(
-        "\nInstall AI agent hooks now? (recommended)", default=True
-    )
-    if install_hooks_now:
-        try:
-            from ...infra.config import Config
-            from ...infra.hooks.hooks import install_hooks_for_config
-
-            temp_config = Config.load(output_path)
-            installed = install_hooks_for_config(temp_config, target_path)
-            if installed:
-                prompter.print("\nHooks installed:")
-                for agent_type, paths in installed.items():
-                    for path in paths:
-                        prompter.print(f"  ✓ {agent_type.value}: {path}")
-            else:
-                prompter.print("\nNo hooks installed (no supported agents detected).")
-        except Exception as exc:
-            prompter.print(f"\n⚠ Hook installation failed: {exc}")
-            prompter.print("  You can retry later with: issue-orchestrator setup-hooks")
+    install_hooks_now = False
+    harden_repo_now = False
 
     if (config.get("validation") or {}).get("cmd"):
         harden_repo_now = prompter.yes_no(
-            "\nInstall repo-local pre-push guardrails now? (recommended)",
+            "\nInstall repo-local guardrails and AI agent hooks now? (recommended)",
             default=True,
         )
         if harden_repo_now:
@@ -1991,12 +1972,42 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
                 prompter.print(f"  ✓ Hooks path: {result.hooks_path_config}")
                 prompter.print(f"  ✓ {result.pre_push_hook.relative_to(target_path)}")
                 prompter.print(f"  ✓ {result.verify_script.relative_to(target_path)}")
+                if result.agent_hook_files:
+                    for agent_name, paths in sorted(result.agent_hook_files.items()):
+                        for path in paths:
+                            prompter.print(
+                                f"  ✓ {agent_name}: {path.relative_to(target_path)}"
+                            )
             except Exception as exc:
                 prompter.print(f"\n⚠ Repo hardening failed: {exc}")
                 prompter.print(
                     "  You can retry later with: issue-orchestrator harden-repo"
                 )
     else:
+        install_hooks_now = prompter.yes_no(
+            "\nInstall AI agent hooks now? (recommended)", default=True
+        )
+        if install_hooks_now:
+            try:
+                from ...infra.config import Config
+                from ...infra.hooks.hooks import install_hooks_for_config
+
+                temp_config = Config.load(output_path)
+                installed = install_hooks_for_config(temp_config, target_path)
+                if installed:
+                    prompter.print("\nHooks installed:")
+                    for agent_type, paths in installed.items():
+                        for path in paths:
+                            prompter.print(f"  ✓ {agent_type.value}: {path}")
+                else:
+                    prompter.print(
+                        "\nNo hooks installed (no supported agents detected)."
+                    )
+            except Exception as exc:
+                prompter.print(f"\n⚠ Hook installation failed: {exc}")
+                prompter.print(
+                    "  You can retry later with: issue-orchestrator setup-hooks"
+                )
         prompter.print(
             "\nRepo-local pre-push hardening skipped: configure validation.cmd first, "
             "then run 'issue-orchestrator harden-repo'."
@@ -2047,7 +2058,11 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
 
     prompter.print("\n  3. Run: issue-orchestrator start")
 
-    if not install_hooks_now:
+    if not harden_repo_now and (config.get("validation") or {}).get("cmd"):
+        prompter.print(
+            "\n  4. Install repo guardrails + AI hooks (recommended): issue-orchestrator harden-repo"
+        )
+    elif not install_hooks_now:
         prompter.print(
             "\n  4. Install AI agent hooks (recommended): issue-orchestrator setup-hooks"
         )

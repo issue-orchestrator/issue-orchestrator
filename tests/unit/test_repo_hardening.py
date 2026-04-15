@@ -80,11 +80,17 @@ def test_harden_repo_installs_repo_guardrails_and_agent_hooks(tmp_path: Path) ->
     assert hook_result.returncode == 2
     assert "BLOCKED" in hook_result.stderr
 
-    status = inspect_repo_hardening(repo)
+    status = inspect_repo_hardening(repo, config=config)
     assert status.pre_push_managed
     assert status.pre_push_calls_verify
     assert status.verify_managed
+    assert status.helper_executable
     assert status.helper_managed
+    assert status.agent_hooks["claude-code"].installed
+    assert all(
+        managed.exists and managed.executable and managed.matches_template is True
+        for managed in status.agent_hooks["claude-code"].managed_files
+    )
 
 
 def test_harden_repo_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
@@ -119,3 +125,30 @@ def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
     rendered = _render_repo_pre_push_hook(verify_script, repo_root)
 
     assert 'VERIFY_SCRIPT="$REPO_ROOT/scripts/gates/verify-pr.sh"' in rendered
+
+
+def test_harden_repo_refreshes_drifted_agent_hook_files(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    config = _make_config(repo)
+    harden_repo(config)
+
+    hook_path = repo / ".claude" / "hooks" / "block-no-verify.sh"
+    hook_path.write_text("#!/usr/bin/env bash\necho drifted\n")
+    hook_path.chmod(0o755)
+
+    status_before = inspect_repo_hardening(repo, config=config)
+    assert (
+        status_before.agent_hooks["claude-code"].managed_files[0].matches_template
+        is False
+    )
+
+    harden_repo(config)
+
+    status_after = inspect_repo_hardening(repo, config=config)
+    assert (
+        status_after.agent_hooks["claude-code"].managed_files[0].matches_template
+        is True
+    )

@@ -9,7 +9,7 @@ import shutil
 
 from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
 from .config import Config
-from .hooks.hooks import install_hooks_for_config
+from .hooks.hooks import detect_agents_from_config, get_adapter, install_hooks_for_config
 
 DEFAULT_HOOKS_PATH = ".githooks"
 MANAGED_PRE_PUSH_MARKER = "Managed by issue-orchestrator harden-repo: pre-push"
@@ -39,7 +39,28 @@ class RepoHardeningStatus:
     verify_executable: bool
     verify_managed: bool
     helper_exists: bool
+    helper_executable: bool
     helper_managed: bool
+    agent_hooks: dict[str, "AgentHookStatus"] = field(default_factory=dict)
+
+
+@dataclass
+class ManagedAgentHookFileStatus:
+    """Observed state for a managed AI-agent hook artifact."""
+
+    path: Path
+    exists: bool
+    executable: bool
+    matches_template: bool | None
+
+
+@dataclass
+class AgentHookStatus:
+    """Observed hardening state for one configured AI agent."""
+
+    agent_type: str
+    installed: bool
+    managed_files: list[ManagedAgentHookFileStatus] = field(default_factory=list)
 
 
 @dataclass
@@ -61,7 +82,11 @@ class RepoHardeningError(RuntimeError):
     """Raised when repo hardening cannot be applied safely."""
 
 
-def inspect_repo_hardening(repo_root: Path) -> RepoHardeningStatus:
+def inspect_repo_hardening(
+    repo_root: Path,
+    *,
+    config: Config | None = None,
+) -> RepoHardeningStatus:
     """Return the current repo-hardening status for *repo_root*."""
     repo_root = repo_root.resolve()
     hooks_path_config = _get_local_hooks_path(repo_root)
@@ -74,6 +99,7 @@ def inspect_repo_hardening(repo_root: Path) -> RepoHardeningStatus:
     pre_push_content = _safe_read_text(pre_push_hook)
     verify_content = _safe_read_text(verify_script)
     helper_content = _safe_read_text(helper_script)
+    agent_hooks = _inspect_agent_hooks(config, repo_root) if config is not None else {}
 
     return RepoHardeningStatus(
         repo_root=repo_root,
@@ -90,7 +116,9 @@ def inspect_repo_hardening(repo_root: Path) -> RepoHardeningStatus:
         verify_executable=_is_executable(verify_script),
         verify_managed=MANAGED_VERIFY_MARKER in verify_content,
         helper_exists=helper_script.exists(),
+        helper_executable=_is_executable(helper_script),
         helper_managed=MANAGED_HELPER_MARKER in helper_content,
+        agent_hooks=agent_hooks,
     )
 
 
@@ -168,6 +196,41 @@ def _resolve_repo_hooks_dir(
         ) from exc
 
     return hooks_path_value, resolved
+
+
+def _inspect_agent_hooks(
+    config: Config,
+    repo_root: Path,
+) -> dict[str, AgentHookStatus]:
+    statuses: dict[str, AgentHookStatus] = {}
+    unique_types = set(detect_agents_from_config(config).values())
+
+    for agent_type in sorted(unique_types, key=lambda value: value.value):
+        adapter = get_adapter(agent_type)
+        layout = adapter.installation_layout(repo_root)
+        managed_files: list[ManagedAgentHookFileStatus] = []
+        for artifact in layout.managed_files:
+            matches_template = None
+            if artifact.template_path is not None:
+                matches_template = _safe_read_text(artifact.path) == _safe_read_text(
+                    artifact.template_path
+                )
+            managed_files.append(
+                ManagedAgentHookFileStatus(
+                    path=artifact.path,
+                    exists=artifact.path.exists(),
+                    executable=_is_executable(artifact.path),
+                    matches_template=matches_template,
+                )
+            )
+
+        statuses[agent_type.value] = AgentHookStatus(
+            agent_type=agent_type.value,
+            installed=adapter.is_installed(repo_root),
+            managed_files=managed_files,
+        )
+
+    return statuses
 
 
 def _resolve_active_hooks_dir(repo_root: Path, hooks_path_config: str | None) -> Path:

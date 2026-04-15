@@ -38,7 +38,7 @@ The wizard creates `.issue-orchestrator/config/default.yaml`. You can also write
 issue-orchestrator harden-repo
 ```
 
-This installs the repo-local pre-push gate plus the configured AI-agent hooks. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. See [Guardrails](../design/guardrails.md) for why this matters.
+This installs the repo-local pre-push gate plus the configured AI-agent hooks, and rerunning it refreshes those managed hook files if they drift. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. See [Guardrails](../design/guardrails.md) for why this matters.
 
 ## 4. Label a GitHub issue
 
