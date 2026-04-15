@@ -1010,7 +1010,7 @@ class TestSupervisorStatus:
         self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Return running state when untracked orchestrator is detected."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
         def fake_detect(repo_root: Path, config_name: str, **_: object) -> dict:
             return {
@@ -1020,7 +1020,11 @@ class TestSupervisorStatus:
                 "status": {"shutdown_requested": False, "active_sessions": []},
             }
 
-        monkeypatch.setattr(control_api, "_detect_orchestrator_by_port", fake_detect)
+        monkeypatch.setattr(
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
+            fake_detect,
+        )
 
         response = supervisor_client.get(
             "/control/orchestrator/status",
@@ -1109,10 +1113,14 @@ class TestSupervisorStop:
         mock_supervisor: MagicMock,
     ) -> None:
         """Return 409 when port does not match orchestrator."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
         mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
-        monkeypatch.setattr(control_api, "_confirm_orchestrator_at_port", lambda *_, **__: False)
+        monkeypatch.setattr(
+            control_api_orchestrator_routes,
+            "confirm_orchestrator_at_port",
+            lambda *_, **__: False,
+        )
 
         response = supervisor_client.post(
             "/control/orchestrator/stop",
@@ -1128,9 +1136,13 @@ class TestSupervisorStop:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
-        monkeypatch.setattr(control_api, "_global_shutdown_in_progress", lambda: True)
+        monkeypatch.setattr(
+            control_api_orchestrator_routes,
+            "control_api_global_shutdown_in_progress",
+            lambda: True,
+        )
 
         response = supervisor_client.post(
             "/control/orchestrator/stop",
@@ -1168,7 +1180,7 @@ class TestSupervisorReconcile:
     def test_reconcile_reports_orphaned_and_can_stop(
         self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_supervisor: MagicMock
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
         mock_supervisor.status_all_instances.return_value = MultiInstanceStatus(
             repo_root=str(tmp_path),
@@ -1180,7 +1192,11 @@ class TestSupervisorReconcile:
             "issue_orchestrator.infra.repo_registry.list_repos",
             lambda: [SimpleNamespace(path=str(tmp_path), selected_config="default.yaml")],
         )
-        monkeypatch.setattr(control_api, "_detect_orchestrator_by_port", lambda *_, **__: {"port": 19080, "status": {}})
+        monkeypatch.setattr(
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
+            lambda *_, **__: {"port": 19080, "status": {}},
+        )
 
         response = supervisor_client.post("/control/orchestrator/reconcile", json={"stop_orphaned": True})
 
@@ -1344,7 +1360,7 @@ class TestSupervisorReconcileMultiInstance:
         monkeypatch: pytest.MonkeyPatch,
         mock_supervisor: MagicMock,
     ) -> None:
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
         mock_supervisor.status_all_instances.return_value = MultiInstanceStatus(
             repo_root=str(tmp_path),
@@ -1374,8 +1390,8 @@ class TestSupervisorReconcileMultiInstance:
             lambda: [SimpleNamespace(path=str(tmp_path), selected_config="multi.yaml")],
         )
         monkeypatch.setattr(
-            control_api,
-            "_detect_orchestrator_by_port",
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
             lambda *_, **__: pytest.fail("orphan detector should not run for multi-instance reconcile"),
         )
 
@@ -1393,7 +1409,11 @@ class TestSupervisorReconcileMultiInstance:
             data["runtime_health"] = "healthy"
             return data
 
-        monkeypatch.setattr(control_api, "_enrich_runtime_health", fake_enrich)
+        monkeypatch.setattr(
+            control_api_orchestrator_routes,
+            "enrich_runtime_health",
+            fake_enrich,
+        )
 
         response = supervisor_client.post("/control/orchestrator/reconcile", json={"stop_unresponsive": True})
 
@@ -1457,11 +1477,11 @@ class TestSupervisorStart:
         self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Return 409 when an untracked orchestrator is detected."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
         monkeypatch.setattr(
-            control_api,
-            "_detect_orchestrator_by_port",
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
             lambda *_, **__: {"port": 19080, "health": "ok"},
         )
 
@@ -1481,7 +1501,7 @@ class TestSupervisorStart:
         mock_supervisor: MagicMock,
     ) -> None:
         """Identity mismatch should be stopped and relaunched without user intervention."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
         from issue_orchestrator.infra import launcher
         from issue_orchestrator.infra.doctor.types import DoctorResult
         from issue_orchestrator.infra.launcher import LaunchResult
@@ -1491,8 +1511,8 @@ class TestSupervisorStart:
         (config_dir / "default.yaml").write_text("agents: {}\n")
 
         monkeypatch.setattr(
-            control_api,
-            "_detect_orchestrator_by_port",
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
             lambda *_, **__: {
                 "port": 19080,
                 "identity_mismatch": {"commit_sha": {"expected": "abc", "observed": "def"}},
@@ -1547,7 +1567,7 @@ class TestSupervisorStart:
         }
         details: dict[str, object] = {}
 
-        control_api._annotate_identity_mismatch(
+        control_api._annotate_identity_mismatch(  # noqa: SLF001
             details,
             info,
             expected,
@@ -1562,7 +1582,7 @@ class TestSupervisorStart:
         mock_supervisor: MagicMock,
     ) -> None:
         """Identity mismatch with failed stop should fail closed."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
 
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -1570,8 +1590,8 @@ class TestSupervisorStart:
 
         mock_supervisor.stop_by_port.return_value = False
         monkeypatch.setattr(
-            control_api,
-            "_detect_orchestrator_by_port",
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
             lambda *_, **__: {
                 "port": 19080,
                 "identity_mismatch": {"commit_sha": {"expected": "abc", "observed": "def"}},
@@ -1593,7 +1613,7 @@ class TestSupervisorStart:
         mock_supervisor: MagicMock,
     ) -> None:
         """Force restart should stop the orphaned process before starting."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
         from issue_orchestrator.infra import launcher
         from issue_orchestrator.infra.repo_lock import LockInfo
         from issue_orchestrator.infra.doctor.types import DoctorResult
@@ -1611,8 +1631,8 @@ class TestSupervisorStart:
             lambda **_kwargs: DoctorResult(checks=[]),
         )
         monkeypatch.setattr(
-            control_api,
-            "_detect_orchestrator_by_port",
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
             lambda *_, **__: {"port": 19080, "health": "ok"},
         )
         mock_supervisor.stop_by_port.return_value = True
@@ -3896,15 +3916,15 @@ class TestControlCenterShutdownEndpoint:
                             target()
 
             assert response.status_code == 200
-            with control_api._shutdown_ops_lock:
-                op = control_api._global_shutdown_operation
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                op = control_api._global_shutdown_operation  # noqa: SLF001
                 assert op is not None
                 assert op["state"] == "failed"
                 assert op["failed_orchestrators"] == ["/tmp/repo-a"]
             schedule_exit.assert_not_called()
         finally:
-            with control_api._shutdown_ops_lock:
-                control_api._global_shutdown_operation = None
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._global_shutdown_operation = None  # noqa: SLF001
             set_supervisor(None)
 
     def test_shutdown_abort_is_honored_after_current_repo_attempt(self):
@@ -3932,13 +3952,13 @@ class TestControlCenterShutdownEndpoint:
                             assert callable(target)
                             target()
 
-            with control_api._shutdown_ops_lock:
-                op = control_api._global_shutdown_operation
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                op = control_api._global_shutdown_operation  # noqa: SLF001
                 assert op is not None
                 assert op["state"] == "aborted"
         finally:
-            with control_api._shutdown_ops_lock:
-                control_api._global_shutdown_operation = None
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._global_shutdown_operation = None  # noqa: SLF001
             set_supervisor(None)
 
     def test_shutdown_reports_superseded_engine_shutdowns(self):
@@ -3949,9 +3969,9 @@ class TestControlCenterShutdownEndpoint:
         try:
             with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=[]):
                 with patch("threading.Thread") as mock_thread:
-                    with control_api._shutdown_ops_lock:
-                        control_api._engine_shutdown_operations.clear()
-                        control_api._engine_shutdown_operations["/tmp/repo-a"] = {
+                    with control_api._shutdown_ops_lock:  # noqa: SLF001
+                        control_api._engine_shutdown_operations.clear()  # noqa: SLF001
+                        control_api._engine_shutdown_operations["/tmp/repo-a"] = {  # noqa: SLF001
                             "repo_root": "/tmp/repo-a",
                             "state": "in_progress",
                         }
@@ -3967,16 +3987,16 @@ class TestControlCenterShutdownEndpoint:
             assert data["superseded_engine_shutdowns"] == ["/tmp/repo-a"]
             mock_thread.assert_called_once()
         finally:
-            with control_api._shutdown_ops_lock:
-                control_api._engine_shutdown_operations.clear()
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._engine_shutdown_operations.clear()  # noqa: SLF001
             set_supervisor(None)
 
     def test_shutdown_state_endpoint_returns_global_operation(self):
         from issue_orchestrator.entrypoints import control_api
 
         try:
-            with control_api._shutdown_ops_lock:
-                control_api._global_shutdown_operation = {
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._global_shutdown_operation = {  # noqa: SLF001
                     "operation_id": "shutdown-test",
                     "state": "in_progress",
                 }
@@ -3986,15 +4006,15 @@ class TestControlCenterShutdownEndpoint:
             data = response.json()
             assert data["global_shutdown"]["operation_id"] == "shutdown-test"
         finally:
-            with control_api._shutdown_ops_lock:
-                control_api._global_shutdown_operation = None
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._global_shutdown_operation = None  # noqa: SLF001
 
     def test_shutdown_control_endpoints_update_state(self):
         from issue_orchestrator.entrypoints import control_api
 
         try:
-            with control_api._shutdown_ops_lock:
-                control_api._global_shutdown_operation = {
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._global_shutdown_operation = {  # noqa: SLF001
                     "operation_id": "shutdown-test",
                     "state": "in_progress",
                     "force_orchestrators": False,
@@ -4011,11 +4031,11 @@ class TestControlCenterShutdownEndpoint:
             assert update.status_code == 200
             assert force.status_code == 200
             assert abort.status_code == 200
-            with control_api._shutdown_ops_lock:
-                assert control_api._global_shutdown_operation["graceful_timeout_seconds"] == 30
-                assert control_api._global_shutdown_operation["force_orchestrators"] is True
-                assert control_api._global_shutdown_operation["force_now_requested"] is True
-                assert control_api._global_shutdown_operation["abort_requested"] is True
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                assert control_api._global_shutdown_operation["graceful_timeout_seconds"] == 30  # noqa: SLF001
+                assert control_api._global_shutdown_operation["force_orchestrators"] is True  # noqa: SLF001
+                assert control_api._global_shutdown_operation["force_now_requested"] is True  # noqa: SLF001
+                assert control_api._global_shutdown_operation["abort_requested"] is True  # noqa: SLF001
         finally:
-            with control_api._shutdown_ops_lock:
-                control_api._global_shutdown_operation = None
+            with control_api._shutdown_ops_lock:  # noqa: SLF001
+                control_api._global_shutdown_operation = None  # noqa: SLF001
