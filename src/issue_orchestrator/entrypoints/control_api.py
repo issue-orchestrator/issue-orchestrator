@@ -79,6 +79,19 @@ from ..execution.control_center_actions import (
     RepoActionRequest,
     TraceActionRequest,
 )
+from .e2e_affordances import (
+    _attach_issue_numbers_to_test_windows,
+    _compact_branch_label,
+    _filter_nest_and_project_agent_events,
+    _load_worktree_agent_events,
+)
+from .timeline_presentation import (
+    _build_phase_toc,
+    _build_timeline_cycles,
+    _decorate_timeline_events,
+    _filter_timeline_events,
+    _promote_e2e_test_event_fields,
+)
 
 # Path to templates
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -90,6 +103,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _PREFERRED_REPO_ROOT_ENV = "ISSUE_ORCHESTRATOR_CC_REPO_ROOT"
 _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
+_COMPAT_EXPORTS = (
+    _attach_issue_numbers_to_test_windows,
+    _compact_branch_label,
+)
 
 # Default E2E config (used when orchestrator not available)
 
@@ -4404,300 +4421,6 @@ async def e2e_run_details(
             {"error": "db_error", "detail": str(e)},
             status_code=500,
         )
-
-
-def _load_worktree_agent_events(repo_root: Path, run_id: int) -> list[dict]:
-    """Load agent events from the E2E worktree timeline for a run."""
-    from ..infra.e2e_worktree import get_e2e_worktree_path
-    from ..infra.e2e_timeline import read_orchestrator_events_by_window
-    from ..infra.e2e_db import E2EDB
-
-    db_path = repo_root / ".issue-orchestrator" / "e2e.db"
-    wt_timeline = get_e2e_worktree_path(repo_root) / ".issue-orchestrator" / "state" / "timeline.sqlite"
-    if not db_path.exists():
-        return []
-    db = E2EDB(db_path)
-    run = db.get_run(run_id)
-    if not run or not wt_timeline.exists():
-        return []
-    return read_orchestrator_events_by_window(
-        wt_timeline, started_at=run.started_at, finished_at=run.finished_at,
-    )
-
-
-def _build_test_windows(
-    e2e_events: list[dict],
-) -> list[tuple[str, str | None, dict]]:
-    """Pair test_started/test_completed events into time windows.
-
-    Returns ``(start_ts, end_ts, started_event_dict)`` tuples. ``end_ts`` is
-    ``None`` for still-in-progress tests (a ``test_started`` with no matching
-    ``test_completed`` yet) so that agent activity observed during a live run
-    can still be attached.
-    """
-    windows: list[tuple[str, str | None, dict]] = []
-    started_map: dict[str, tuple[str, dict]] = {}
-    for evt in e2e_events:
-        name = evt.get("event", "")
-        nodeid = (evt.get("nodeid") or "").strip()
-        if not nodeid:
-            continue
-        if name == "e2e.test_started":
-            started_map[nodeid] = (evt["timestamp"], evt)
-            evt.setdefault("issue_affordances", [])
-        elif name == "e2e.test_completed" and nodeid in started_map:
-            start_ts, started_dict = started_map.pop(nodeid)
-            windows.append((start_ts, evt["timestamp"], started_dict))
-            evt.setdefault("issue_affordances", started_dict["issue_affordances"])
-    # Any test_started still sitting in started_map is in-progress: treat it
-    # as an open-ended window so active agent activity still attaches.
-    for start_ts, started_dict in started_map.values():
-        windows.append((start_ts, None, started_dict))
-    return windows
-
-
-_BRANCH_LABEL_MAX_LEN = 24
-_BRANCH_LABEL_STRIP_SUFFIXES = (
-    "-test-issue",
-    "-test-data",
-    "-checkpoint",
-    "-status",
-    "-test",
-)
-
-
-def _compact_branch_label(branch_name: str, issue_number: int) -> str | None:
-    """Derive a short human-readable label from a GitHub branch name.
-
-    The e2e tests create issues with branch names like
-    ``5713-m0-800-e2e-concurrent-1-concurrent-pipeline-test``. The
-    descriptive portion buried inside (``concurrent-1-pipeline``) is
-    what the user wants to see on the affordance — not the raw
-    branch or just the issue number.
-
-    Transformations applied in order:
-
-    1. Strip the leading ``<issue_number>-`` prefix.
-    2. Strip a leading ``m<digits>-<digits>-`` milestone prefix (the
-       milestone identifier is useful for grepping but noisy inline —
-       the full branch name is still available via a hover title).
-    3. Strip any ``e2e-`` token anywhere in the slug (it's implicit
-       in this context).
-    4. Strip trailing ``-test`` / ``-test-issue`` / ``-checkpoint`` /
-       ``-status`` / ``-test-data`` suffixes — these are template
-       tails that don't discriminate between issues in the same run.
-    5. Collapse duplicate tokens (any position, not just adjacent)
-       so ``pr-pr-creation`` becomes ``pr-creation`` and
-       ``concurrent-1-concurrent-pipeline`` becomes
-       ``concurrent-1-pipeline``.
-    6. Cap at ``_BRANCH_LABEL_MAX_LEN`` characters with an ellipsis;
-       the full original branch name goes in the affordance's
-       ``title`` so the user can hover to reclaim it.
-
-    Returns ``None`` if the cleaned label collapses to empty.
-    """
-    import re
-
-    if not isinstance(branch_name, str) or not branch_name.strip():
-        return None
-    s = branch_name.strip()
-    prefix = f"{issue_number}-"
-    if s.startswith(prefix):
-        s = s[len(prefix):]
-    # Milestone prefix: m<digits>-<digits>-
-    s = re.sub(r"^m\d+-\d+-", "", s)
-    # e2e- token anywhere (at start or after a dash)
-    s = re.sub(r"(^|-)e2e-", r"\1", s)
-    # Strip trailing decorative suffixes (longest first so "-test-issue"
-    # wins over "-test").
-    for suffix in _BRANCH_LABEL_STRIP_SUFFIXES:
-        if s.endswith(suffix):
-            s = s[:-len(suffix)]
-            break
-    # Dedupe tokens, keeping the FIRST occurrence of each. Catches both
-    # adjacent ("pr-pr-") and non-adjacent ("concurrent-1-concurrent-")
-    # duplication.
-    parts = [p for p in s.split("-") if p]
-    seen: set[str] = set()
-    unique: list[str] = []
-    for part in parts:
-        if part in seen:
-            continue
-        seen.add(part)
-        unique.append(part)
-    s = "-".join(unique)
-    if not s:
-        return None
-    if len(s) > _BRANCH_LABEL_MAX_LEN:
-        s = s[: _BRANCH_LABEL_MAX_LEN - 1] + "\u2026"
-    return s
-
-
-def _collect_branch_names_by_issue(agent_events: list[dict]) -> dict[int, str]:
-    """Index the first non-empty ``branch_name`` seen per issue.
-
-    Only certain agent events carry ``branch_name`` (notably
-    ``session.started`` and ``agent.coding_started``). We just need
-    one per issue, so we stop as soon as we have it.
-    """
-    by_issue: dict[int, str] = {}
-    for evt in agent_events:
-        issue_num = evt.get("issue_number")
-        if not isinstance(issue_num, int) or issue_num <= 0:
-            continue
-        if issue_num in by_issue:
-            continue
-        branch = evt.get("branch_name")
-        if isinstance(branch, str) and branch.strip():
-            by_issue[issue_num] = branch.strip()
-    return by_issue
-
-
-def _assign_issue_to_window(
-    windows: list[tuple[str, str | None, dict]],
-    ts: str,
-    issue_num: int,
-    run_id: int,
-    label: str | None = None,
-    branch_name: str | None = None,
-) -> None:
-    """Append an affordance for ``issue_num`` to the first window containing ``ts``.
-
-    Each affordance is a dict carrying the run_id so the frontend can
-    route the click to the explicit e2e issue-detail endpoint without
-    needing a base-repo fallback. When a compact ``label`` is supplied
-    the frontend renders ``{label} (N)`` instead of bare ``#N``; the
-    full ``branch_name`` is carried separately for hover/title usage.
-
-    A window with ``end_ts is None`` is still in progress and matches any
-    timestamp at or after its ``start_ts``.
-    """
-    for start_ts, end_ts, parent_evt in windows:
-        if ts < start_ts:
-            continue
-        if end_ts is not None and ts > end_ts:
-            continue
-        affordances = parent_evt["issue_affordances"]
-        if not any(a["issue_number"] == issue_num for a in affordances):
-            entry: dict[str, Any] = {"issue_number": issue_num, "run_id": run_id}
-            if label:
-                entry["label"] = label
-            if branch_name:
-                entry["branch_name"] = branch_name
-            affordances.append(entry)
-        return
-
-
-def _issues_visible_in_view(
-    agent_events: list[dict],
-    view: str,
-) -> set[int]:
-    """Return the set of issue numbers that have ≥1 event visible in ``view``.
-
-    An event is "visible" in a view if it has no ``views`` tag (legacy
-    events are visible everywhere) or its ``views`` tag contains the
-    requested view name.
-
-    Used by the matcher to skip attaching affordances for issues whose
-    only in-window activity would be filtered out by the issue-detail
-    drawer's view filter — clicking such an affordance opens an empty
-    drawer, which is broken UX. We render the affordance only when
-    clicking it would actually show something.
-    """
-    visible: set[int] = set()
-    for evt in agent_events:
-        issue_num = evt.get("issue_number")
-        if not isinstance(issue_num, int) or issue_num <= 0:
-            continue
-        if issue_num in visible:
-            continue
-        views = evt.get("views")
-        if views is None or (isinstance(views, list) and view in views):
-            visible.add(issue_num)
-    return visible
-
-
-def _attach_issue_numbers_to_test_windows(
-    e2e_events: list[dict],
-    agent_events: list[dict],
-    run_id: int,
-    view: str = "user",
-) -> list[dict]:
-    """Attach issue affordances to E2E test events based on time-window matching.
-
-    For each test_started/test_completed pair, find which issues had agent
-    activity during that window. Each attached affordance is a structured
-    dict ``{"issue_number": N, "run_id": run_id}`` so the frontend can
-    route the click directly to the explicit e2e issue-detail endpoint
-    without the server needing to guess which timeline to read from.
-
-    Two-stage filtering:
-
-    1. ``view`` is applied PER-ISSUE (not per-event) — an issue is
-       eligible for an affordance only if it has ≥1 event visible in
-       the requested view. This guarantees clicking the affordance opens
-       a non-empty drawer; without it, an issue whose only in-window
-       activity is debug-tagged would silently render an unclickable
-       (or worse, empty-on-click) affordance.
-
-    2. The PER-EVENT view filter is intentionally NOT applied to
-       ``agent_events`` before matching. ``_filter_events_by_view``
-       drops events such as ``claim.acquired``/``issue.labels_changed``
-       that are still required to discover an issue's presence in a
-       test window — pre-filtering them loses time-window coverage
-       for issues that DO have user-visible activity overall.
-
-    The caller MUST pass the unfiltered agent events.
-    """
-    if not agent_events:
-        return e2e_events
-
-    visible_issues = _issues_visible_in_view(agent_events, view)
-    branch_by_issue = _collect_branch_names_by_issue(agent_events)
-    windows = _build_test_windows(e2e_events)
-    for agent_evt in agent_events:
-        issue_num = agent_evt.get("issue_number")
-        if not isinstance(issue_num, int) or issue_num <= 0:
-            continue
-        if issue_num not in visible_issues:
-            continue
-        branch = branch_by_issue.get(issue_num)
-        label = _compact_branch_label(branch, issue_num) if branch else None
-        _assign_issue_to_window(
-            windows,
-            agent_evt.get("timestamp", ""),
-            issue_num,
-            run_id,
-            label=label,
-            branch_name=branch,
-        )
-
-    return e2e_events
-
-
-def _filter_nest_and_project_agent_events(
-    e2e_events: list[dict],
-    agent_events: list[dict],
-    view: str,
-    run_id: int,
-) -> list[dict]:
-    """Annotate test events with issue affordances from agent activity windows.
-
-    Replaces the old nesting approach. Each test event now carries
-    ``issue_affordances``, a list of ``{"issue_number", "run_id"}`` dicts
-    which the frontend renders as clickable links routed to the explicit
-    e2e issue-detail endpoint.
-
-    The ``view`` parameter is forwarded to the matcher so that
-    affordances are only attached for issues that have ≥1 event visible
-    in the requested view — clicking such affordances always opens a
-    non-empty drawer.
-    """
-    return _attach_issue_numbers_to_test_windows(
-        e2e_events, agent_events, run_id=run_id, view=view,
-    )
-
-
 @control_app.get("/control/e2e/run/{run_id}/timeline")
 async def e2e_run_timeline_endpoint(
     run_id: int,
@@ -4753,7 +4476,6 @@ async def e2e_run_timeline_endpoint(
 
         stream = TimelineStream.from_records(store_key, e2e_records)
         e2e_events = [evt.to_dict() for evt in stream.events]
-        from ..entrypoints.web import _promote_e2e_test_event_fields
         _promote_e2e_test_event_fields(
             e2e_events,
             e2e_records,
@@ -4765,7 +4487,6 @@ async def e2e_run_timeline_endpoint(
         if not agent_events:
             agent_events = _load_worktree_agent_events(validated_root, run_id)
 
-        from ..entrypoints.web import _build_phase_toc, _build_timeline_cycles
         valid_views = {"user", "ops", "debug"}
         if view not in valid_views:
             view = "user"
@@ -6047,12 +5768,6 @@ async def control_issue_detail(
     from ..infra.e2e_worktree import get_e2e_worktree_path
     from ..timeline import TimelineStream
     from ..view_models.issue_detail import build_issue_detail_view_model
-    from ..entrypoints.web import (
-        _filter_timeline_events,
-        _decorate_timeline_events,
-        _build_phase_toc,
-        _build_timeline_cycles,
-    )
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
