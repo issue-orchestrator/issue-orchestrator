@@ -119,6 +119,18 @@ class TestRepoRegistry:
         assert result.path == str(repo_path.resolve())
         assert len(registry.repos) == 1
 
+    def test_add_repo_with_explicit_name(self, tmp_path: Path) -> None:
+        """Adding a repo preserves an explicit display name."""
+        registry = RepoRegistry()
+        repo_path = tmp_path / "my-repo"
+        repo_path.mkdir()
+
+        result = registry.add(repo_path, name="Custom Repo")
+
+        assert result.path == str(repo_path.resolve())
+        assert result.name == "Custom Repo"
+        assert len(registry.repos) == 1
+
     def test_add_duplicate_raises(self, tmp_path: Path) -> None:
         """Adding a duplicate raises ValueError."""
         registry = RepoRegistry()
@@ -297,6 +309,24 @@ class TestConvenienceFunctions:
         # Verify persisted
         data = json.loads(repos_file.read_text())
         assert len(data["repos"]) == 1
+
+    def test_add_repo_saves_explicit_name(self, tmp_path: Path) -> None:
+        """add_repo persists an explicit display name."""
+        repos_file = tmp_path / "repos.json"
+        repo_path = tmp_path / "my-repo"
+        repo_path.mkdir()
+
+        with patch(
+            "issue_orchestrator.infra.repo_registry._repos_file",
+            return_value=repos_file,
+        ):
+            result = add_repo(repo_path, name="Custom Repo")
+
+        assert result.path == str(repo_path.resolve())
+        assert result.name == "Custom Repo"
+
+        data = json.loads(repos_file.read_text())
+        assert data["repos"][0]["name"] == "Custom Repo"
 
     def test_remove_repo_saves(self, tmp_path: Path) -> None:
         """remove_repo saves to disk."""

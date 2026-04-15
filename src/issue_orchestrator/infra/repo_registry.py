@@ -119,7 +119,12 @@ class RepoRegistry:
 
     repos: list[RegisteredRepo] = field(default_factory=list)
 
-    def add(self, repo_path: str | Path) -> RegisteredRepo:
+    def add(
+        self,
+        repo_path: str | Path,
+        *,
+        name: str | None = None,
+    ) -> RegisteredRepo:
         """Add a repository to the registry.
 
         Args:
@@ -138,7 +143,7 @@ class RepoRegistry:
             if repo.path == normalized:
                 raise ValueError(f"Repository already registered: {normalized}")
 
-        repo = RegisteredRepo(path=normalized)
+        repo = RegisteredRepo(path=normalized, name=name or "")
         self.repos.append(repo)
         return repo
 
@@ -223,7 +228,11 @@ def save_registry(registry: RepoRegistry) -> None:
         json.dump(registry.to_dict(), f, indent=2)
 
 
-def add_repo(repo_path: str | Path) -> RegisteredRepo:
+def add_repo(
+    repo_path: str | Path,
+    *,
+    name: str | None = None,
+) -> RegisteredRepo:
     """Add a repository to the registry.
 
     Convenience function that loads, adds, and saves.
@@ -235,7 +244,7 @@ def add_repo(repo_path: str | Path) -> RegisteredRepo:
         The registered repo entry
     """
     registry = load_registry()
-    repo = registry.add(repo_path)
+    repo = registry.add(repo_path, name=name)
     save_registry(registry)
     return repo
 
