@@ -143,6 +143,15 @@ class AiAgentAdapter(ABC):
         """
         return False, f"AI gate test not supported for {self.agent_type.value}"
 
+    def _managed_files(self, project_root: Path) -> tuple[ManagedHookArtifact, ...]:
+        """Return the managed artifacts declared by installation_layout().
+
+        installation_layout() is the source of truth for managed file coverage.
+        install_hooks() implementations should derive template copies from this
+        list so drift inspection and installation stay in sync.
+        """
+        return self.installation_layout(project_root).managed_files
+
 
 def _test_ai_gate_env(project_root: Path) -> dict[str, str]:
     """Build environment variables for AI gate tests.
@@ -330,25 +339,11 @@ class ClaudeCodeAdapter(AiAgentAdapter):
     def install_hooks(self, project_root: Path) -> list[Path]:
         """Install Claude Code PreToolUse hooks."""
         files_created = []
-        hooks_dir = project_root / ".claude" / "hooks"
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy hook scripts
-        self._copy_hook_file(
-            TEMPLATES_DIR / "claude" / "block-no-verify.sh",
-            hooks_dir / "block-no-verify.sh",
-            files_created,
-        )
-        self._copy_hook_file(
-            TEMPLATES_DIR / "claude" / "allow_git_push.py",
-            hooks_dir / "allow_git_push.py",
-            files_created,
-        )
-        self._copy_hook_file(
-            TEMPLATES_DIR / "claude" / "parse_hook_input.py",
-            hooks_dir / "parse_hook_input.py",
-            files_created,
-        )
+        for artifact in self._managed_files(project_root):
+            if artifact.template_path is None:
+                continue
+            artifact.path.parent.mkdir(parents=True, exist_ok=True)
+            self._copy_hook_file(artifact.template_path, artifact.path, files_created)
 
         # Update settings.json
         self._update_settings_json(
@@ -654,20 +649,11 @@ class CursorAdapter(AiAgentAdapter):
     def install_hooks(self, project_root: Path) -> list[Path]:
         """Install Cursor beforeShellExecution hooks."""
         files_created: list[Path] = []
-        hooks_dir = project_root / ".cursor" / "hooks"
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy hook scripts
-        self._copy_hook_file(
-            TEMPLATES_DIR / "cursor" / "block-no-verify.sh",
-            hooks_dir / "block-no-verify.sh",
-            files_created,
-        )
-        self._copy_hook_file(
-            TEMPLATES_DIR / "cursor" / "parse_hook_input.py",
-            hooks_dir / "parse_hook_input.py",
-            files_created,
-        )
+        for artifact in self._managed_files(project_root):
+            if artifact.template_path is None:
+                continue
+            artifact.path.parent.mkdir(parents=True, exist_ok=True)
+            self._copy_hook_file(artifact.template_path, artifact.path, files_created)
 
         # Update hooks.json
         self._update_hooks_json(project_root / ".cursor" / "hooks.json", files_created)
@@ -968,25 +954,11 @@ class GeminiAdapter(AiAgentAdapter):
     def install_hooks(self, project_root: Path) -> list[Path]:
         """Install Gemini CLI BeforeTool hooks."""
         files_created: list[Path] = []
-        hooks_dir = project_root / ".gemini" / "hooks"
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy hook scripts
-        self._copy_hook_file(
-            TEMPLATES_DIR / "gemini" / "block-no-verify.sh",
-            hooks_dir / "block-no-verify.sh",
-            files_created,
-        )
-        self._copy_hook_file(
-            TEMPLATES_DIR / "gemini" / "allow_git_push.py",
-            hooks_dir / "allow_git_push.py",
-            files_created,
-        )
-        self._copy_hook_file(
-            TEMPLATES_DIR / "gemini" / "parse_hook_input.py",
-            hooks_dir / "parse_hook_input.py",
-            files_created,
-        )
+        for artifact in self._managed_files(project_root):
+            if artifact.template_path is None:
+                continue
+            artifact.path.parent.mkdir(parents=True, exist_ok=True)
+            self._copy_hook_file(artifact.template_path, artifact.path, files_created)
 
         # Update settings.json
         self._update_settings_json(
@@ -1266,20 +1238,11 @@ class CopilotAdapter(AiAgentAdapter):
     def install_hooks(self, project_root: Path) -> list[Path]:
         """Install Copilot CLI preToolUse hooks."""
         files_created: list[Path] = []
-        hooks_dir = project_root / ".github" / "hooks"
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy hook scripts
-        self._copy_hook_file(
-            TEMPLATES_DIR / "copilot" / "block-no-verify.sh",
-            hooks_dir / "block-no-verify.sh",
-            files_created,
-        )
-        self._copy_hook_file(
-            TEMPLATES_DIR / "copilot" / "parse_hook_input.py",
-            hooks_dir / "parse_hook_input.py",
-            files_created,
-        )
+        for artifact in self._managed_files(project_root):
+            if artifact.template_path is None:
+                continue
+            artifact.path.parent.mkdir(parents=True, exist_ok=True)
+            self._copy_hook_file(artifact.template_path, artifact.path, files_created)
 
         # Update hooks.json
         self._update_hooks_json(
@@ -1545,15 +1508,11 @@ class CodexAdapter(AiAgentAdapter):
         Installs rules into the project's .codex/rules/ directory.
         """
         files_created: list[Path] = []
-        rules_dir = self._get_rules_dir(project_root)
-        rules_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy rules file
-        self._copy_rules_file(
-            TEMPLATES_DIR / "codex" / "orchestrator.rules",
-            rules_dir / "orchestrator.rules",
-            files_created,
-        )
+        for artifact in self._managed_files(project_root):
+            if artifact.template_path is None:
+                continue
+            artifact.path.parent.mkdir(parents=True, exist_ok=True)
+            self._copy_rules_file(artifact.template_path, artifact.path, files_created)
 
         return files_created
 
