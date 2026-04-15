@@ -4,18 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Annotated, Callable
+from typing import TYPE_CHECKING, Annotated, Callable
 
 from fastapi import Depends, FastAPI, Request
 
 _E2E_DEPENDENCIES_STATE_KEY = "control_api_e2e_dependencies"
 
+if TYPE_CHECKING:
+    from ..infra.config import Config
+    from ..infra.orchestrator import Orchestrator
+
+
 @dataclass(frozen=True)
 class ControlApiE2EDependencies:
     """Dependency hooks needed by Control Center E2E route modules."""
 
-    get_orchestrator: Callable[[], Any | None]
-    load_config_by_name: Callable[[Path, str], Any]
+    get_orchestrator: Callable[[], Orchestrator | None]
+    load_config_by_name: Callable[[Path, str], Config]
     validate_repo_root: Callable[[str | None], Path | None]
 
 
