@@ -11,10 +11,10 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from .control_api_e2e_support import (
-    get_control_api_orchestrator,
-    load_control_api_config_by_name,
-    validate_control_api_repo_root,
+    ControlApiE2EDependencies,
+    ControlApiE2EDependency,
 )
+from .control_api_e2e_issue_creation import create_e2e_sub_issues
 from .e2e_affordances import (
     _filter_nest_and_project_agent_events,
     _load_worktree_agent_events,
@@ -31,7 +31,10 @@ control_e2e_runs_router = APIRouter()
 
 
 @control_e2e_runs_router.post("/control/e2e/start")
-async def e2e_start(request: Request) -> JSONResponse:
+async def e2e_start(
+    request: Request,
+    deps: ControlApiE2EDependency,
+) -> JSONResponse:
     """Start an E2E test run for a repository."""
     from ..infra.e2e_runner import E2EAlreadyRunning, get_e2e_runner_manager
 
@@ -40,7 +43,7 @@ async def e2e_start(request: Request) -> JSONResponse:
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse(
             {"error": "Invalid or missing repo_root"},
@@ -55,7 +58,7 @@ async def e2e_start(request: Request) -> JSONResponse:
         )
 
     try:
-        config = load_control_api_config_by_name(repo_root, config_name)
+        config = deps.load_config_by_name(repo_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
             {"error": "Config not found", "detail": f"Config file not found: {config_name}"},
@@ -75,7 +78,7 @@ async def e2e_start(request: Request) -> JSONResponse:
     runner = get_e2e_runner_manager()
 
     try:
-        orchestrator = get_control_api_orchestrator()
+        orchestrator = deps.get_orchestrator()
         instance_id = orchestrator.deps.services.instance_id if orchestrator else ""
         result = runner.start(
             repo_root=repo_root,
@@ -122,7 +125,10 @@ async def e2e_start(request: Request) -> JSONResponse:
 
 
 @control_e2e_runs_router.post("/control/e2e/stop")
-async def e2e_stop(request: Request) -> JSONResponse:
+async def e2e_stop(
+    request: Request,
+    deps: ControlApiE2EDependency,
+) -> JSONResponse:
     """Stop a running E2E test."""
     from ..infra.e2e_runner import get_e2e_runner_manager
 
@@ -131,7 +137,7 @@ async def e2e_stop(request: Request) -> JSONResponse:
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    repo_root = validate_control_api_repo_root(body.get("repo_root"))
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
     if repo_root is None:
         return JSONResponse(
             {"error": "Invalid or missing repo_root"},
@@ -146,7 +152,7 @@ async def e2e_stop(request: Request) -> JSONResponse:
         )
 
     try:
-        config = load_control_api_config_by_name(repo_root, config_name)
+        config = deps.load_config_by_name(repo_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
             {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
@@ -172,6 +178,7 @@ async def e2e_stop(request: Request) -> JSONResponse:
 
 @control_e2e_runs_router.get("/control/e2e/status")
 async def e2e_status(
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
 ) -> JSONResponse:
@@ -179,12 +186,12 @@ async def e2e_status(
     from ..infra.e2e_db import E2EDB
     from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
     try:
-        config = load_control_api_config_by_name(validated_root, config_name)
+        config = deps.load_config_by_name(validated_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
             {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
@@ -214,7 +221,7 @@ async def e2e_status(
                 elif run_obj.status == "failed":
                     untriaged_count = _count_untriaged_failures(db, run_obj.id)
                     needs_attention = untriaged_count > 0
-                _auto_create_e2e_issues_if_needed(config, db, run_obj, proc_status)
+                _auto_create_e2e_issues_if_needed(deps, config, db, run_obj, proc_status)
             signal_score = db.compute_signal_score(config.orchestrator_id)
         except Exception as exc:
             logger.warning("Failed to read E2E DB: %s", exc)
@@ -240,6 +247,7 @@ async def e2e_status(
 
 @control_e2e_runs_router.get("/control/e2e/runs")
 async def e2e_runs(
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
     limit: int = Query(20, ge=1, le=100),
@@ -247,12 +255,12 @@ async def e2e_runs(
     """List recent E2E runs."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
     try:
-        config = load_control_api_config_by_name(validated_root, config_name)
+        config = deps.load_config_by_name(validated_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
             {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
@@ -278,6 +286,7 @@ async def e2e_runs(
 @control_e2e_runs_router.get("/control/e2e/run/{run_id}")
 async def e2e_run_details(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
     enhanced: bool = Query(
@@ -288,7 +297,7 @@ async def e2e_run_details(
     """Get details of a specific E2E run."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -302,7 +311,7 @@ async def e2e_run_details(
     try:
         db = E2EDB(db_path)
         if enhanced:
-            e2e_config = load_control_api_config_by_name(validated_root, config_name).e2e
+            e2e_config = deps.load_config_by_name(validated_root, config_name).e2e
             details = db.run_details_enhanced(
                 run_id,
                 history_limit=5,
@@ -328,6 +337,7 @@ async def e2e_run_details(
 @control_e2e_runs_router.get("/control/e2e/run/{run_id}/timeline")
 async def e2e_run_timeline_endpoint(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     view: str = Query(
         "user",
@@ -338,7 +348,7 @@ async def e2e_run_timeline_endpoint(
     from ..domain.timeline_key import TimelineKey
     from ..timeline import TimelineStream
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -402,13 +412,14 @@ async def e2e_run_timeline_endpoint(
 @control_e2e_runs_router.get("/control/e2e/logs/{run_id}")
 async def e2e_logs(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     tail: int = Query(500, ge=1, le=10000),
 ) -> JSONResponse:
     """Get logs for a specific E2E run."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -465,12 +476,13 @@ async def e2e_logs(
 @control_e2e_runs_router.get("/control/e2e/failed/{run_id}")
 async def e2e_failed_tests(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
 ) -> JSONResponse:
     """Get failed tests from a specific run."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -495,17 +507,18 @@ async def e2e_failed_tests(
 
 @control_e2e_runs_router.get("/control/e2e/quarantine")
 async def e2e_quarantine_list(
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
 ) -> JSONResponse:
     """Get the quarantine list for a repository."""
     from ..infra.e2e_db import load_quarantine_list
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
-    e2e_config = load_control_api_config_by_name(validated_root, config_name).e2e
+    e2e_config = deps.load_config_by_name(validated_root, config_name).e2e
     quarantine_file = e2e_config.quarantine_file
     quarantine_path = validated_root / quarantine_file
     tests = load_quarantine_list(quarantine_path)
@@ -544,13 +557,14 @@ def _apply_quarantine_changes(
 @control_e2e_runs_router.post("/control/e2e/quarantine")
 async def e2e_quarantine_modify(
     request: Request,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
 ) -> JSONResponse:
     """Add or remove tests from the quarantine list."""
     from ..infra.e2e_db import load_quarantine_list, save_quarantine_list
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -567,7 +581,7 @@ async def e2e_quarantine_modify(
     if not nodeids:
         return JSONResponse({"error": "nodeids is required"}, status_code=400)
 
-    e2e_config = load_control_api_config_by_name(validated_root, config_name).e2e
+    e2e_config = deps.load_config_by_name(validated_root, config_name).e2e
     quarantine_file = e2e_config.quarantine_file
     quarantine_path = validated_root / quarantine_file
     current_tests = load_quarantine_list(quarantine_path)
@@ -594,6 +608,7 @@ async def e2e_quarantine_modify(
 
 @control_e2e_runs_router.get("/control/e2e/stats")
 async def e2e_stats(
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
 ) -> JSONResponse:
@@ -601,12 +616,12 @@ async def e2e_stats(
     from ..infra.e2e_db import E2EDB, load_quarantine_list
     from ..infra.e2e_runner import get_next_run_info
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
     try:
-        config = load_control_api_config_by_name(validated_root, config_name)
+        config = deps.load_config_by_name(validated_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
             {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
@@ -666,6 +681,7 @@ async def e2e_stats(
 
 @control_e2e_runs_router.get("/control/e2e/flaky-tests")
 async def e2e_flaky_tests(
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
     threshold: int = Query(default=20),
@@ -674,7 +690,7 @@ async def e2e_flaky_tests(
     """Get tests that exhibit flaky behavior via flip-rate analysis."""
     from ..infra.e2e_db import E2EDB, load_quarantine_list
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -685,7 +701,7 @@ async def e2e_flaky_tests(
             status_code=404,
         )
 
-    e2e_config = load_control_api_config_by_name(validated_root, config_name).e2e
+    e2e_config = deps.load_config_by_name(validated_root, config_name).e2e
     quarantine_file = e2e_config.quarantine_file
     quarantined = load_quarantine_list(validated_root / quarantine_file)
 
@@ -717,12 +733,13 @@ async def e2e_flaky_tests(
 @control_e2e_runs_router.get("/control/e2e/summary/{run_id}")
 async def e2e_test_summary(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
 ) -> JSONResponse:
     """Get comprehensive test summary for a run."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -747,13 +764,14 @@ async def e2e_test_summary(
 @control_e2e_runs_router.get("/control/e2e/diagnosis/{run_id}")
 async def e2e_run_diagnosis(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
 ) -> JSONResponse:
     """Get comprehensive diagnosis for an E2E run failure."""
     from ..infra.e2e_db import E2EDB
     from ..infra.e2e_run_diagnosis import create_e2e_run_diagnosis
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -792,55 +810,8 @@ def _count_untriaged_failures(db: object, run_id: int) -> int:
     return count
 
 
-def _create_e2e_sub_issues(
-    tracker: Any,
-    parent_issue: Any,
-    nodeids: list[str],
-    results_by_nodeid: dict,
-    run: Any,
-    db: Any,
-    run_id: int,
-    agent: str,
-) -> list[dict]:
-    """Create sub-issues for selected test failures."""
-    sub_issues: list[dict] = []
-    sub_labels = ["e2e:test-failure", agent]
-
-    for nodeid in nodeids:
-        test_result = results_by_nodeid.get(nodeid)
-        if not test_result:
-            logger.warning("[e2e-create-issues] Node ID not found: %s", nodeid)
-            continue
-
-        sub_issue = tracker.create_test_failure_issue(
-            parent_issue=parent_issue,
-            test_result=test_result,
-            first_failing_sha=run.commit_sha or "",
-            last_passing_sha=None,
-            labels=sub_labels,
-        )
-        if not sub_issue:
-            continue
-
-        db.record_failure_issue(
-            nodeid=nodeid,
-            github_issue_number=sub_issue.issue_number,
-            parent_issue_number=parent_issue.issue_number,
-            first_failing_run_id=run_id,
-            first_failing_sha=run.commit_sha or "",
-        )
-        sub_issues.append(
-            {
-                "number": sub_issue.issue_number,
-                "url": sub_issue.html_url,
-                "nodeid": nodeid,
-            },
-        )
-
-    return sub_issues
-
-
 def _auto_create_e2e_issues_if_needed(
+    deps: ControlApiE2EDependencies,
     config: Any,
     db: Any,
     run: Any,
@@ -854,7 +825,7 @@ def _auto_create_e2e_issues_if_needed(
     if proc_status.get("running"):
         return
 
-    orchestrator = get_control_api_orchestrator()
+    orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         logger.warning("[e2e-auto-issues] Orchestrator not running; cannot create issues")
         return
@@ -880,7 +851,7 @@ def _auto_create_e2e_issues_if_needed(
         db.record_run_issue(run.id, parent_issue.issue_number)
 
         results_by_nodeid = {result.nodeid: result for result in failed_results}
-        _create_e2e_sub_issues(
+        create_e2e_sub_issues(
             tracker,
             parent_issue,
             list(results_by_nodeid.keys()),

@@ -10,10 +10,10 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from .control_api_e2e_support import (
-    get_control_api_orchestrator,
-    load_control_api_config_by_name,
-    validate_control_api_repo_root,
+    ControlApiE2EDependencies,
+    ControlApiE2EDependency,
 )
+from .control_api_e2e_issue_creation import create_e2e_sub_issues
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ control_e2e_triage_router = APIRouter()
 async def create_e2e_diagnostic_issue(
     request: Request,
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
 ) -> JSONResponse:
     """Create a GitHub issue for diagnosing E2E test failures."""
@@ -34,7 +35,7 @@ async def create_e2e_diagnostic_issue(
         write_e2e_diagnostic,
     )
 
-    orchestrator = get_control_api_orchestrator()
+    orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -47,7 +48,7 @@ async def create_e2e_diagnostic_issue(
     if not agent:
         return JSONResponse({"error": "Agent label is required"}, status_code=400)
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -96,7 +97,11 @@ async def create_e2e_diagnostic_issue(
         )
 
 
-def _build_issue_status(run_issue: Any, db: Any) -> dict:
+def _build_issue_status(
+    deps: ControlApiE2EDependencies,
+    run_issue: Any,
+    db: Any,
+) -> dict:
     """Build issue status dict for triage response."""
     if not run_issue:
         return {
@@ -106,7 +111,7 @@ def _build_issue_status(run_issue: Any, db: Any) -> dict:
             "sub_issues_summary": {"total": 0, "resolved": 0},
         }
 
-    orchestrator = get_control_api_orchestrator()
+    orchestrator = deps.get_orchestrator()
     repo = orchestrator.config.repo if orchestrator else None
     parent_issue_url = (
         f"https://github.com/{repo}/issues/{run_issue.github_issue_number}"
@@ -149,13 +154,14 @@ def _build_issue_status(run_issue: Any, db: Any) -> dict:
 @control_e2e_triage_router.get("/control/e2e/triage/{run_id}")
 async def e2e_triage_data(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
     config_name: str = Query(...),
 ) -> JSONResponse:
     """Get triage data for an E2E run."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -178,7 +184,7 @@ async def e2e_triage_data(
         failed_results = db.get_failed_tests(run_id)
         run_issue = db.get_run_issue(run_id)
 
-        e2e_config = load_control_api_config_by_name(validated_root, config_name).e2e
+        e2e_config = deps.load_config_by_name(validated_root, config_name).e2e
         flake_threshold = e2e_config.flake_threshold
         flake_window = e2e_config.flake_window_runs
 
@@ -205,7 +211,7 @@ async def e2e_triage_data(
                 },
             )
 
-        issue_status = _build_issue_status(run_issue, db)
+        issue_status = _build_issue_status(deps, run_issue, db)
 
         return JSONResponse(
             {
@@ -268,6 +274,7 @@ def _calculate_history_summary(history: list[dict]) -> dict:
 @control_e2e_triage_router.get("/control/e2e/test/{run_id}")
 async def e2e_test_detail(
     run_id: int,
+    deps: ControlApiE2EDependency,
     nodeid: str = Query(...),
     repo_root: str = Query(...),
     config_name: str = Query(...),
@@ -275,7 +282,7 @@ async def e2e_test_detail(
     """Get detailed information for a single test failure."""
     from ..infra.e2e_db import E2EDB
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -302,7 +309,7 @@ async def e2e_test_detail(
                 status_code=404,
             )
 
-        e2e_config = load_control_api_config_by_name(validated_root, config_name).e2e
+        e2e_config = deps.load_config_by_name(validated_root, config_name).e2e
         stability = db.get_test_stability(
             nodeid,
             window_runs=e2e_config.flake_window_runs,
@@ -352,55 +359,8 @@ async def e2e_test_detail(
         )
 
 
-def _create_e2e_sub_issues(
-    tracker: Any,
-    parent_issue: Any,
-    nodeids: list[str],
-    results_by_nodeid: dict,
-    run: Any,
-    db: Any,
-    run_id: int,
-    agent: str,
-) -> list[dict]:
-    """Create sub-issues for selected test failures."""
-    sub_issues: list[dict] = []
-    sub_labels = ["e2e:test-failure", agent]
-
-    for nodeid in nodeids:
-        test_result = results_by_nodeid.get(nodeid)
-        if not test_result:
-            logger.warning("[e2e-create-issues] Node ID not found: %s", nodeid)
-            continue
-
-        sub_issue = tracker.create_test_failure_issue(
-            parent_issue=parent_issue,
-            test_result=test_result,
-            first_failing_sha=run.commit_sha or "",
-            last_passing_sha=None,
-            labels=sub_labels,
-        )
-        if not sub_issue:
-            continue
-
-        db.record_failure_issue(
-            nodeid=nodeid,
-            github_issue_number=sub_issue.issue_number,
-            parent_issue_number=parent_issue.issue_number,
-            first_failing_run_id=run_id,
-            first_failing_sha=run.commit_sha or "",
-        )
-        sub_issues.append(
-            {
-                "number": sub_issue.issue_number,
-                "url": sub_issue.html_url,
-                "nodeid": nodeid,
-            },
-        )
-
-    return sub_issues
-
-
 def _validate_e2e_create_request(
+    deps: ControlApiE2EDependencies,
     nodeids: list,
     agent: str,
     repo_root: str,
@@ -411,7 +371,7 @@ def _validate_e2e_create_request(
     if not agent:
         return JSONResponse({"error": "Agent label is required"}, status_code=400)
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
@@ -428,12 +388,13 @@ def _validate_e2e_create_request(
 async def e2e_create_issues(
     request: Request,
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
 ) -> JSONResponse:
     """Create GitHub issues from E2E test failures."""
     from ..infra.e2e_db import E2EDB
 
-    orchestrator = get_control_api_orchestrator()
+    orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -445,7 +406,7 @@ async def e2e_create_issues(
     nodeids = body.get("nodeids", [])
     agent = body.get("agent", "").strip()
 
-    validation_result = _validate_e2e_create_request(nodeids, agent, repo_root)
+    validation_result = _validate_e2e_create_request(deps, nodeids, agent, repo_root)
     if isinstance(validation_result, JSONResponse):
         return validation_result
     db_path = validation_result
@@ -482,7 +443,7 @@ async def e2e_create_issues(
 
         failed_results = db.get_failed_tests(run_id)
         results_by_nodeid = {result.nodeid: result for result in failed_results}
-        sub_issues = _create_e2e_sub_issues(
+        sub_issues = create_e2e_sub_issues(
             tracker,
             parent_issue,
             nodeids,
@@ -581,16 +542,17 @@ def _sync_close_parent_issues(
 @control_e2e_triage_router.post("/control/e2e/sync-issues/{run_id}")
 async def e2e_sync_issues(
     run_id: int,
+    deps: ControlApiE2EDependency,
     repo_root: str = Query(...),
 ) -> JSONResponse:
     """Sync E2E issue state based on test results from a run."""
     from ..infra.e2e_db import E2EDB
 
-    orchestrator = get_control_api_orchestrator()
+    orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    validated_root = validate_control_api_repo_root(repo_root)
+    validated_root = deps.validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 

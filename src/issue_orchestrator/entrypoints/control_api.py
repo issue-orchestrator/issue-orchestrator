@@ -82,7 +82,7 @@ from ..execution.control_center_actions import (
 from .control_api_e2e_runs import control_e2e_runs_router
 from .control_api_e2e_support import (
     ControlApiE2EDependencies,
-    configure_control_api_e2e_dependencies,
+    install_control_api_e2e_dependencies,
 )
 from .control_api_e2e_triage import control_e2e_triage_router
 from .e2e_affordances import (
@@ -1571,7 +1571,8 @@ def _validate_repo_root(repo_root: str | None) -> Path | None:
         return None
 
 
-configure_control_api_e2e_dependencies(
+install_control_api_e2e_dependencies(
+    control_app,
     ControlApiE2EDependencies(
         get_orchestrator=get_orchestrator,
         load_config_by_name=_load_config_by_name,

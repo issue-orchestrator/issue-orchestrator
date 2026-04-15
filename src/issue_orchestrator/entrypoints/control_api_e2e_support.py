@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Annotated, Callable
 
+from fastapi import Depends, FastAPI, Request
+
+_E2E_DEPENDENCIES_STATE_KEY = "control_api_e2e_dependencies"
 
 @dataclass(frozen=True)
 class ControlApiE2EDependencies:
@@ -16,42 +19,31 @@ class ControlApiE2EDependencies:
     validate_repo_root: Callable[[str | None], Path | None]
 
 
-_deps: ControlApiE2EDependencies | None = None
-
-
-def configure_control_api_e2e_dependencies(
+def install_control_api_e2e_dependencies(
+    app: FastAPI,
     deps: ControlApiE2EDependencies,
 ) -> None:
     """Install shared dependencies for Control Center E2E routers."""
-    global _deps
-    _deps = deps
+    setattr(app.state, _E2E_DEPENDENCIES_STATE_KEY, deps)
 
 
-def _require_deps() -> ControlApiE2EDependencies:
-    if _deps is None:
+def get_control_api_e2e_dependencies(request: Request) -> ControlApiE2EDependencies:
+    """Resolve router dependencies from the FastAPI application state."""
+    deps = getattr(request.app.state, _E2E_DEPENDENCIES_STATE_KEY, None)
+    if deps is None:
         raise RuntimeError("Control Center E2E dependencies not configured")
-    return _deps
+    return deps
 
 
-def get_control_api_orchestrator() -> Any | None:
-    """Return the configured control API orchestrator accessor."""
-    return _require_deps().get_orchestrator()
-
-
-def load_control_api_config_by_name(repo_root: Path, config_name: str) -> Any:
-    """Load control API config through the configured dependency hook."""
-    return _require_deps().load_config_by_name(repo_root, config_name)
-
-
-def validate_control_api_repo_root(repo_root: str | None) -> Path | None:
-    """Validate repo roots through the configured dependency hook."""
-    return _require_deps().validate_repo_root(repo_root)
+ControlApiE2EDependency = Annotated[
+    ControlApiE2EDependencies,
+    Depends(get_control_api_e2e_dependencies),
+]
 
 
 __all__ = [
+    "ControlApiE2EDependency",
     "ControlApiE2EDependencies",
-    "configure_control_api_e2e_dependencies",
-    "get_control_api_orchestrator",
-    "load_control_api_config_by_name",
-    "validate_control_api_repo_root",
+    "get_control_api_e2e_dependencies",
+    "install_control_api_e2e_dependencies",
 ]
