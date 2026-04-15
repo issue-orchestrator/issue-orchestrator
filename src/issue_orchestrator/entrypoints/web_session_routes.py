@@ -3,8 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -694,27 +692,3 @@ async def get_session_prompt_content(issue_number: int, run_dir: str | None = No
             "content": content,
         }
     )
-
-
-@web_session_router.post("/api/prompt/{agent_type}")
-async def open_agent_prompt(agent_type: str) -> JSONResponse:
-    """Open the agent's prompt file in the default editor."""
-    orchestrator = get_web_orchestrator()
-    if not orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    full_label = agent_type if agent_type.startswith("agent:") else f"agent:{agent_type}"
-    agent_config = orchestrator.config.agents.get(full_label)
-    if not agent_config:
-        return JSONResponse({"error": f"Agent type '{agent_type}' not found"}, status_code=404)
-
-    prompt_path = agent_config.prompt_path
-    if not prompt_path.is_absolute():
-        prompt_path = orchestrator.config.repo_root / prompt_path
-    if not prompt_path.exists():
-        return JSONResponse({"error": f"Prompt file not found: {prompt_path}"}, status_code=404)
-
-    if os.uname().sysname == "Darwin":
-        subprocess.run(["open", str(prompt_path)])
-        return JSONResponse({"status": "opened", "path": str(prompt_path)})
-    return JSONResponse({"error": "Open is only available on macOS"}, status_code=400)

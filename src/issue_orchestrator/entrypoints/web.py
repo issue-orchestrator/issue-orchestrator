@@ -59,6 +59,7 @@ from ..view_models.dialogs import (
     build_validation_failure_dialog,
 )
 from .timeline_presentation import (
+    _decorate_timeline_events,
     _is_agent_scoped_event,
     _timeline_event_default_actions,
     _timeline_event_actions,
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _COMPAT_EXPORTS = (
+    _decorate_timeline_events,
     _is_agent_scoped_event,
     _timeline_event_default_actions,
     _timeline_event_actions,
@@ -1243,6 +1245,31 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         })
     except Exception as e:
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
+
+
+@app.post("/api/prompt/{agent_type}")
+async def open_agent_prompt(agent_type: str) -> JSONResponse:
+    """Open the agent's prompt file in the default editor."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    full_label = agent_type if agent_type.startswith("agent:") else f"agent:{agent_type}"
+    agent_config = _orchestrator.config.agents.get(full_label)
+    if not agent_config:
+        return JSONResponse({"error": f"Agent type '{agent_type}' not found"}, status_code=404)
+
+    prompt_path = agent_config.prompt_path
+    if not prompt_path.is_absolute():
+        prompt_path = _orchestrator.config.repo_root / prompt_path
+    if not prompt_path.exists():
+        return JSONResponse({"error": f"Prompt file not found: {prompt_path}"}, status_code=404)
+
+    if os.uname().sysname == "Darwin":
+        subprocess.run(["open", str(prompt_path)])
+        return JSONResponse({"status": "opened", "path": str(prompt_path)})
+    return JSONResponse({"error": "Open is only available on macOS"}, status_code=400)
+
+
 def _latest_history_entries(session_history: list[Any], limit: int = 50) -> list[Any]:
     """Return most recent history entries, deduplicated by issue number."""
     return latest_history_entries_by_issue(session_history, limit=limit)
