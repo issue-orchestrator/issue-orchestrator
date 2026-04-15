@@ -465,10 +465,10 @@ def _load_orchestrator_events_for_run(
         return []
 
 
-def _build_issue_story_context(
+def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls from multiple orchestrator-owned stores
     orchestrator: Any,
     issue_number: int,
-) -> IssueStoryContext | None:  # noqa: C901, PLR0912
+) -> IssueStoryContext | None:
     """Assemble story context from orchestrator state for one issue."""
     if not orchestrator:
         return None
