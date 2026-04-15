@@ -7078,12 +7078,12 @@ async function showFlakyTestsList() {
         const url = `/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`;
         console.log('[Flaky Analysis] Fetching:', url);
         const res = await fetch(url);
+        const text = await res.text();
         let data;
         try {
-            data = await res.json();
+            data = JSON.parse(text);
         } catch (parseErr) {
-            const text = await res.text().catch(() => '(no body)');
-            console.error('[Flaky Analysis] Response not JSON:', res.status, text);
+            console.error('[Flaky Analysis] Response not JSON:', res.status, text.slice(0, 500));
             openModal('Flaky Analysis', `<p>Unexpected response (HTTP ${res.status}): ${escapeHtml(text.slice(0, 200))}</p>`);
             return;
         }

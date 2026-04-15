@@ -885,3 +885,32 @@ def test_e2e_header_updater_handles_warning_status() -> None:
            "'warning'" in js, (
         "Badge classList.remove must include 'warning' to avoid stale classes"
     )
+
+
+def test_flaky_analysis_uses_modal_for_all_outcomes() -> None:
+    """showFlakyTestsList must use openModal for errors, empty, and success."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "showFlakyTestsList")
+    # All outcomes must use openModal — not showToast or alert
+    assert "showToast" not in body, (
+        "showFlakyTestsList must not use showToast — toasts are too easy to miss"
+    )
+    assert "alert(" not in body, (
+        "showFlakyTestsList must use openModal, not alert()"
+    )
+    assert "openModal(" in body, (
+        "showFlakyTestsList must use openModal for all user-visible feedback"
+    )
+
+
+def test_flaky_analysis_parses_response_as_text_first() -> None:
+    """showFlakyTestsList must read response as text then JSON.parse,
+    not res.json() which consumes the body and prevents fallback."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "showFlakyTestsList")
+    assert "res.text()" in body, (
+        "Must read body as text first so non-JSON responses can be displayed"
+    )
+    assert "JSON.parse(" in body, (
+        "Must parse text as JSON rather than using res.json()"
+    )
