@@ -1,5 +1,6 @@
 """Hook verification checks for doctor."""
 
+from collections.abc import Mapping
 import logging
 
 from ..types import Check
@@ -317,7 +318,7 @@ def check_repo_hardening(config: Config) -> list[Check]:
             )
         ]
 
-    status = inspect_repo_hardening(config.repo_root)
+    status = inspect_repo_hardening(config.repo_root, config=config)
 
     if not status.pre_push_exists and not status.verify_exists:
         return [
@@ -328,6 +329,46 @@ def check_repo_hardening(config: Config) -> list[Check]:
             )
         ]
 
+    problems = _repo_guardrail_problems(config, status)
+    managed_agents = _managed_agent_names(status)
+
+    if problems:
+        return [
+            Check(
+                name="Repo Guardrails",
+                status="error",
+                detail="; ".join(problems) + ". Run 'issue-orchestrator harden-repo'.",
+            )
+        ]
+
+    hooks_path = status.hooks_path_config or ".git/hooks"
+    detail = f"{hooks_path}/pre-push -> scripts/verify-pr.sh"
+    if status.helper_exists:
+        detail += " with repo-local hook helper"
+    if managed_agents:
+        detail += f"; managed AI hooks: {', '.join(managed_agents)}"
+    return [
+        Check(
+            name="Repo Guardrails",
+            status="ok",
+            detail=detail,
+        )
+    ]
+
+
+def _requires_repo_local_hook_helper(agent_hooks: Mapping[str, object]) -> bool:
+    """Return True when configured agent hooks depend on the repo-local helper."""
+    return any(agent_name != "codex" for agent_name in agent_hooks)
+
+
+def _repo_guardrail_problems(config: Config, status) -> list[str]:
+    problems = _repo_pre_push_problems(status)
+    problems.extend(_repo_helper_problems(status))
+    problems.extend(_managed_agent_hook_problems(config, status))
+    return problems
+
+
+def _repo_pre_push_problems(status) -> list[str]:
     problems: list[str] = []
     if not status.pre_push_exists:
         problems.append("pre-push hook missing")
@@ -340,22 +381,50 @@ def check_repo_hardening(config: Config) -> list[Check]:
         problems.append("scripts/verify-pr.sh missing")
     elif not status.verify_executable:
         problems.append("scripts/verify-pr.sh is not executable")
+    return problems
 
-    if problems:
-        return [
-            Check(
-                name="Repo Guardrails",
-                status="error",
-                detail="; ".join(problems) + ". Run 'issue-orchestrator harden-repo'.",
+
+def _repo_helper_problems(status) -> list[str]:
+    if not _requires_repo_local_hook_helper(status.agent_hooks):
+        return []
+    if not status.helper_exists:
+        return ["scripts/agent-hooks/block_no_verify.py missing"]
+    if not status.helper_executable:
+        return ["scripts/agent-hooks/block_no_verify.py is not executable"]
+    if not status.helper_managed:
+        return ["scripts/agent-hooks/block_no_verify.py drifted"]
+    return []
+
+
+def _managed_agent_hook_problems(config: Config, status) -> list[str]:
+    problems: list[str] = []
+    for agent_name, agent_status in sorted(status.agent_hooks.items()):
+        if not agent_status.installed:
+            problems.append(f"{agent_name} hook wiring missing")
+            continue
+        problems.extend(_managed_agent_file_problems(config, agent_name, agent_status))
+    return problems
+
+
+def _managed_agent_file_problems(config: Config, agent_name: str, agent_status) -> list[str]:
+    problems: list[str] = []
+    for file_status in agent_status.managed_files:
+        relative = file_status.path.relative_to(config.repo_root)
+        if not file_status.exists:
+            problems.append(f"{agent_name} managed hook file missing: {relative}")
+            continue
+        if not file_status.executable and relative.suffix in {".sh", ".py"}:
+            problems.append(
+                f"{agent_name} managed hook file is not executable: {relative}"
             )
-        ]
+        if file_status.matches_template is False:
+            problems.append(f"{agent_name} managed hook file drifted: {relative}")
+    return problems
 
-    hooks_path = status.hooks_path_config or ".git/hooks"
-    helper_suffix = " with repo-local hook helper" if status.helper_exists else ""
+
+def _managed_agent_names(status) -> list[str]:
     return [
-        Check(
-            name="Repo Guardrails",
-            status="ok",
-            detail=f"{hooks_path}/pre-push -> scripts/verify-pr.sh{helper_suffix}",
-        )
+        agent_name
+        for agent_name, agent_status in sorted(status.agent_hooks.items())
+        if agent_status.installed
     ]

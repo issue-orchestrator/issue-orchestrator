@@ -64,7 +64,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 
 ### Target Project Hooks (project-specific)
 
-These are installed in the target project by `issue-orchestrator harden-repo`. `setup-hooks` still exists when you only want the AI-agent side.
+These are installed and refreshed in the target project by `issue-orchestrator harden-repo`. `setup-hooks` still exists as the hook-only fallback when you intentionally are not managing repo-local pre-push guardrails yet.
 
 | Hook | Type | Location | Purpose | Critical? |
 |------|------|----------|---------|-----------|

@@ -8,6 +8,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
 from issue_orchestrator.infra.ai_gate_state import AiGateState, AiGateResult
 from issue_orchestrator.infra.repo_hardening import harden_repo
+from issue_orchestrator.domain.models import AgentConfig
 
 
 def test_check_hook_verification_no_agents_reports_ai_agent_check():
@@ -52,6 +53,49 @@ def test_check_repo_hardening_reports_ok_after_install(tmp_path):
     assert checks[0].name == "Repo Guardrails"
     assert checks[0].status == "ok"
     assert "scripts/verify-pr.sh" in checks[0].detail
+
+
+def test_check_repo_hardening_reports_managed_ai_hooks_after_install(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+    config.validation.cmd = "make validate-pr"
+    config.agents = {
+        "agent:dev": AgentConfig(
+            prompt_path=tmp_path / "prompt.md",
+            command="claude --print",
+        )
+    }
+
+    harden_repo(config)
+
+    checks = hook_checks.check_repo_hardening(config)
+
+    assert len(checks) == 1
+    assert checks[0].status == "ok"
+    assert "managed AI hooks: claude-code" in checks[0].detail
+
+
+def test_check_repo_hardening_reports_drifted_managed_ai_hook(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+    config.validation.cmd = "make validate-pr"
+    config.agents = {
+        "agent:dev": AgentConfig(
+            prompt_path=tmp_path / "prompt.md",
+            command="claude --print",
+        )
+    }
+
+    harden_repo(config)
+    drifted_hook = tmp_path / ".claude" / "hooks" / "block-no-verify.sh"
+    drifted_hook.write_text("#!/usr/bin/env bash\necho drifted\n")
+    drifted_hook.chmod(0o755)
+
+    checks = hook_checks.check_repo_hardening(config)
+
+    assert len(checks) == 1
+    assert checks[0].status == "error"
+    assert ".claude/hooks/block-no-verify.sh" in checks[0].detail
 
 
 class TestAiGate:
