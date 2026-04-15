@@ -267,6 +267,25 @@ class TestFactGathererTriageFacts:
         assert result is not None
         assert result.existing_triage_issue == 100
 
+    def test_triage_facts_ignores_existing_issue_outside_filter_label(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Test filtered runs ignore triage issues outside the active label scope."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_config.filtering.label = "io:e2e:run-1"
+
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.existing_triage_issue is None
+
     def test_triage_facts_uses_triage_label_over_code_reviewed(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):

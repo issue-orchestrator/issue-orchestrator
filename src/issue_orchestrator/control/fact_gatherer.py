@@ -206,8 +206,15 @@ class FactGatherer:
         triage_agent = self.config.triage_review_agent
         if not triage_agent:
             return None
-        existing = self.repository_host.list_issues(labels=[triage_agent], limit=10)
+        existing = self.repository_host.list_issues(
+            labels=[triage_agent],
+            state="open",
+            limit=10,
+        )
+        filter_label = self.config.filtering.label
         for issue in existing:
+            if filter_label and filter_label not in issue.labels:
+                continue
             if "Batch Review" in issue.title or "Triage Review" in issue.title:
                 return issue.number
         return None

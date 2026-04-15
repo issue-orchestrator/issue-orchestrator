@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import os
 import shutil
@@ -25,7 +26,6 @@ from issue_orchestrator.domain.event_taxonomy import (
     REVIEW_START_CLUSTER_EVENT_NAMES,
     REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
 )
-from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
@@ -35,6 +35,8 @@ CODING_AGENT_TIMEOUT_MINUTES = 75
 REVIEW_AGENT_TIMEOUT_MINUTES = 35
 E2E_TIMEOUT_MINUTES = 150
 FOLLOW_UP_FILE_PATH = "/tmp/follow-up-issues.jsonl"
+ISSUE_4057_TARGET_TEST = "tests/unit/test_dashboard_view_model.py"
+ISSUE_4057_VALIDATION_CMD = f"pytest {ISSUE_4057_TARGET_TEST} -q"
 
 pytestmark = [
     pytest.mark.e2e,
@@ -48,21 +50,20 @@ def build_issue_4057_prompt() -> str:
     return (
         "Work on issue #{issue_number}: {issue_title}. "
         f"This session is time-bounded to {CODING_AGENT_TIMEOUT_MINUTES} minutes, so finish the core task first. "
-        "Stay strictly focused on this issue implementation; do NOT refactor unrelated areas. "
-        "Start by checking only src/issue_orchestrator/view_models/dashboard.py and "
-        "tests/unit/test_dashboard_view_model.py. "
-        "First determine whether the provider circuit breaker status is already correctly surfaced and covered by tests. "
-        "If it is already implemented, stop exploring, run `make validate-quick`, complete with coding-done, and exit. "
-        "If changes are needed, keep the smallest possible diff and limit code edits to "
-        "src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required for correctness. "
+        "This is a production-flow E2E control-path check, not an open-ended feature build. "
+        f"Open only {ISSUE_4057_TARGET_TEST}. "
+        "Add exactly one new regression test named "
+        "`test_normalize_status_reason_drops_none_and_blank_values` that proves "
+        "`_normalize_status_reason(None)` and `_normalize_status_reason(\"   \")` both return `None`. "
+        "Do NOT edit production files, generated contracts, schemas, `.gitignore`, or any other tests. "
         "Do NOT edit src/issue_orchestrator/entrypoints/cli_tools/agent_done.py, "
         "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py, or "
         "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py. "
         "Do NOT modify tests in tests/unit/test_worktree.py, tests/unit/test_cli.py, "
         "or tests/unit/test_completion_processor.py. "
         "Do not spend time in unrelated orchestration, validation, or session-plumbing files. "
-        "Run `pytest tests/unit/test_dashboard_view_model.py -q` once your focused change is ready. "
-        "For this session, run final validation with `make validate-quick` and do not run `make validate`. "
+        f"Run `{ISSUE_4057_VALIDATION_CMD}` once your focused change is ready. "
+        f"For this session, run final validation with `{ISSUE_4057_VALIDATION_CMD}` only. "
         "If you discover unrelated ancillary work, do not fix it in this session. "
         f"Write it to {FOLLOW_UP_FILE_PATH} and pass `--follow-up-file {FOLLOW_UP_FILE_PATH}` to coding-done completed. "
         "Do not look up or reference other issue numbers. "
@@ -76,12 +77,13 @@ def build_issue_4057_body() -> str:
         "Production-parity focused E2E run.\n\n"
         "Requirements:\n"
         "- Follow repo-specific/prompts/simple-fix.md\n"
-        "- Treat this as a time-bounded issue session: finish the assigned dashboard task first\n"
-        "- First inspect src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py only\n"
-        "- Limit edits to src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required\n"
-        "- If behavior is already implemented, make no code changes; run make validate-quick and complete via coding-done\n"
-        "- Run pytest tests/unit/test_dashboard_view_model.py -q before final validation when you make a dashboard change\n"
-        "- Validation must run through make validate-quick\n"
+        "- Treat this as a control-flow verification, not a feature implementation task\n"
+        f"- Open only {ISSUE_4057_TARGET_TEST}\n"
+        "- Add exactly one regression test named test_normalize_status_reason_drops_none_and_blank_values\n"
+        "- Assert _normalize_status_reason(None) is None and _normalize_status_reason(\"   \") is None\n"
+        "- Do not edit production files, generated contracts, schemas, .gitignore, or any other tests\n"
+        f"- Run {ISSUE_4057_VALIDATION_CMD} before completion\n"
+        f"- Final validation must run through {ISSUE_4057_VALIDATION_CMD}\n"
         f"- Record unrelated ancillary work in {FOLLOW_UP_FILE_PATH} and pass --follow-up-file instead of broadening scope\n"
         "- Complete via coding-done and exit\n"
     )
@@ -103,65 +105,52 @@ def _seed_ref_for_local_issue_worktrees(repo_root: Path) -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
-async def _wait_for_run_event(
-    watcher,
-    *,
+
+
+async def _wait_for_session_manifest(
+    web_port: int,
     issue_number: int,
-    event_name: EventName,
+    *,
     timeout_s: float,
+    previous_run_dir: Path | None = None,
+    required_artifacts: tuple[str, ...] = (),
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout_s
-    needle = event_name.value
-    issue_id = str(issue_number)
+    last_status = "no response"
+    last_payload: dict[str, object] | None = None
 
-    while time.monotonic() < deadline:
-        for event in watcher.view.global_events:
-            if event.get("type") != needle:
-                continue
-            payload = event.get("payload") or {}
-            if str(payload.get("issue_number")) != issue_id:
-                continue
-            run_dir = payload.get("run_dir")
-            if isinstance(run_dir, str) and run_dir:
-                return payload
-        try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
-        except asyncio.TimeoutError:
-            pass
-        watcher._notify.clear()  # noqa: SLF001
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        while time.monotonic() < deadline:
+            response = await client.get(
+                f"http://localhost:{web_port}/api/session/manifest/{issue_number}"
+            )
+            last_status = f"{response.status_code}: {response.text[:200]}"
+            if response.status_code == 200:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    last_payload = payload
+                    run_dir_value = payload.get("run_dir")
+                    manifest = payload.get("manifest")
+                    artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+                    if isinstance(run_dir_value, str) and run_dir_value:
+                        run_dir = Path(run_dir_value)
+                        if previous_run_dir is not None and run_dir == previous_run_dir:
+                            await asyncio.sleep(1.0)
+                            continue
+                        if required_artifacts and not (
+                            isinstance(artifacts, dict)
+                            and all(name in artifacts for name in required_artifacts)
+                        ):
+                            await asyncio.sleep(1.0)
+                            continue
+                        return payload
+            await asyncio.sleep(1.0)
 
-    raise TimeoutError(f"Timed out waiting for {needle} with run_dir for issue {issue_number}")
-
-
-async def _wait_for_issue_event(
-    watcher,
-    *,
-    issue_number: int,
-    event_name: EventName,
-    timeout_s: float,
-    predicate=None,
-) -> dict[str, object]:
-    deadline = time.monotonic() + timeout_s
-    needle = event_name.value
-    issue_id = str(issue_number)
-
-    while time.monotonic() < deadline:
-        for event in watcher.view.global_events:
-            if event.get("type") != needle:
-                continue
-            payload = event.get("payload") or {}
-            if str(payload.get("issue_number")) != issue_id:
-                continue
-            if predicate is not None and not predicate(payload):
-                continue
-            return payload
-        try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
-        except asyncio.TimeoutError:
-            pass
-        watcher._notify.clear()  # noqa: SLF001
-
-    raise TimeoutError(f"Timed out waiting for {needle} for issue {issue_number}")
+    raise TimeoutError(
+        f"Timed out waiting for session manifest for issue {issue_number} "
+        f"(required_artifacts={required_artifacts}, previous_run_dir={previous_run_dir}). "
+        f"Last status: {last_status}. Last payload: {last_payload}"
+    )
 
 
 async def _wait_for_file(path: Path, *, timeout_s: float = 180.0, non_empty: bool = False) -> None:
@@ -338,7 +327,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.code_review_agent = "agent:reviewer"
     config.code_review_label = review_label
     config.code_reviewed_label = reviewed_label
-    config.validation.cmd = "make validate-quick"
+    config.validation.cmd = ISSUE_4057_VALIDATION_CMD
     config.validation.timeout_seconds = 20 * 60
     config.review_exchange_mode = "via-local-loop"
     config.review_exchange_require_validation = True
@@ -403,7 +392,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             fail_on_blocked_failed=True,
         )
 
-        issue_title = "[M4-057] UI: Surface provider circuit breaker status [production parity e2e]"
+        issue_title = "[M4-057] E2E: add dashboard status-normalization regression test [production parity]"
         issue, issue_number = flow.create_issue(
             issue_title,
             ["agent:backend", issue_tag, isolated_label],
@@ -414,14 +403,14 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         await flow.issue_seen(issue, timeout_s=120)
         await flow.session_started(issue, timeout_s=10 * 60)
 
-        coding_started = await _wait_for_run_event(
-            runtime.watcher,
-            issue_number=issue_number,
-            event_name=EventName.SESSION_STARTED,
-            timeout_s=10 * 60,
+        coding_manifest = await _wait_for_session_manifest(
+            config.web_port,
+            issue_number,
+            timeout_s=120,
+            required_artifacts=("terminal_recording",),
         )
-        coding_run_dir = Path(str(coding_started["run_dir"]))
-        logger.info("[4057] SESSION_STARTED event found. run_dir=%s", coding_run_dir)
+        coding_run_dir = Path(str(coding_manifest["run_dir"]))
+        logger.info("[4057] Coding manifest resolved. run_dir=%s", coding_run_dir)
 
         detail_during_coding = await _fetch_issue_detail(config.web_port, issue_number)
         coding_steps = _steps_from_issue_detail(detail_during_coding)
@@ -445,39 +434,35 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             web_port=config.web_port,
             watcher=runtime.watcher,
         )
-        logger.info("[4057] Live log stream OK. Waiting for REVIEW_EXCHANGE_STARTED event...")
+        logger.info("[4057] Live log stream OK. Waiting for review manifest...")
 
-        review_started = await _wait_for_run_event(
-            runtime.watcher,
-            issue_number=issue_number,
-            event_name=EventName.REVIEW_EXCHANGE_STARTED,
+        review_manifest = await _wait_for_session_manifest(
+            config.web_port,
+            issue_number,
             timeout_s=25 * 60,
+            previous_run_dir=coding_run_dir,
+            required_artifacts=("review_exchange_summary", "validation_record"),
         )
-        review_run_dir = Path(str(review_started["run_dir"]))
-        logger.info("[4057] REVIEW_EXCHANGE_STARTED found. run_dir=%s", review_run_dir)
+        review_run_dir = Path(str(review_manifest["run_dir"]))
+        logger.info("[4057] Review manifest resolved. run_dir=%s", review_run_dir)
         logger.info("[4057] Checking coding stage artifacts...")
         await _assert_stage_artifacts(
             coding_run_dir,
             completion_file_names=["completion-record.json"],
             require_validation=True,
         )
-        logger.info("[4057] Coding artifacts OK. Waiting for REVIEW_EXCHANGE_COMPLETED event...")
-        review_completed = await _wait_for_issue_event(
-            runtime.watcher,
-            issue_number=issue_number,
-            event_name=EventName.REVIEW_EXCHANGE_COMPLETED,
-            timeout_s=30 * 60,
-        )
-        status = str(review_completed.get("status") or "")
-        reason = str(review_completed.get("reason") or "")
-        logger.info("[4057] REVIEW_EXCHANGE_COMPLETED: status=%s reason=%s", status, reason)
+        logger.info("[4057] Coding artifacts OK. Checking review exchange summary...")
+        review_summary_path = review_run_dir / "review-exchange" / "summary.json"
+        await _wait_for_file(review_summary_path, non_empty=True)
+        review_summary = json.loads(review_summary_path.read_text(encoding="utf-8"))
+        status = str(review_summary.get("status") or "")
+        logger.info("[4057] Review summary status=%s", status)
         assert status == "ok", (
             "Review exchange did not finish successfully "
-            f"(status={status!r}, reason={reason!r}, payload={review_completed})"
+            f"(status={status!r}, payload={review_summary})"
         )
         logger.info("[4057] Checking review stage artifacts...")
         await _assert_review_stage_artifacts(review_run_dir, require_validation=True)
-        await _wait_for_file(review_run_dir / "review-exchange" / "summary.json")
         # Check the raw terminal recording for protocol errors.
         review_log = review_run_dir / "terminal-recording.jsonl"
         if review_log.exists():
