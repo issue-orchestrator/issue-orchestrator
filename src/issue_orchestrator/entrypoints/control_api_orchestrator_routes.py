@@ -35,10 +35,10 @@ control_orchestrator_router = APIRouter()
 
 
 @control_orchestrator_router.post("/control/orchestrator/start")
-async def control_start(
+async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans validation and supervisor handoff
     request: Request,
     deps: ControlApiOrchestratorDependency,
-) -> JSONResponse:  # noqa: C901, PLR0912 - orchestrator startup with config validation and initialization
+) -> JSONResponse:
     """Start an orchestrator for a repository."""
     from ..infra.repo_lock import AlreadyRunning
     from ..infra.repo_registry import set_selected_config
