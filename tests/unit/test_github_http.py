@@ -5,6 +5,8 @@ from __future__ import annotations
 import httpx
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -14,6 +16,7 @@ from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpConfig,
     GitHubHttpError,
     describe_github_token_sources,
+    _read_keyring_token,
     resolve_github_token,
     validate_github_token,
 )
@@ -55,6 +58,38 @@ def test_resolve_github_token_repo_scoped_keyring(monkeypatch: pytest.MonkeyPatc
         configured_keyring_service="tixmeup-github",
         configured_keyring_username="bruce",
     )
+
+    assert token == "repo-keyring-token"
+
+
+def test_read_keyring_token_falls_back_to_macos_security(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeKeyring:
+        @staticmethod
+        def get_password(service: str, username: str) -> None:
+            assert service == "tixmeup-github"
+            assert username == "brucegordon"
+            return None
+
+    monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.http_client.sys.platform",
+        "darwin",
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.http_client.shutil.which",
+        lambda name: "/usr/bin/security" if name == "security" else None,
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.http_client.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="repo-keyring-token\n",
+            stderr="",
+        ),
+    )
+
+    token = _read_keyring_token(service="tixmeup-github", username="brucegordon")
 
     assert token == "repo-keyring-token"
 

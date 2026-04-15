@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, cast
@@ -1454,16 +1457,51 @@ def _read_keyring_token(
 
     Returns None if keyring is not available or no token is stored.
     """
+    token: str | None = None
     try:
         import keyring
     except ImportError:
+        keyring = None
+    if keyring is not None:
+        try:
+            token = keyring.get_password(service, username)
+            if token:
+                return token
+        except Exception:
+            # Keyring can fail for various reasons (no backend, locked, etc.).
+            # Fall through to the macOS security CLI if available.
+            pass
+    return _read_macos_security_keychain_token(service=service, username=username)
+
+
+def _read_macos_security_keychain_token(*, service: str, username: str) -> str | None:
+    """Read a generic password directly from the macOS login keychain."""
+    if sys.platform != "darwin":
+        return None
+    if not shutil.which("security"):
         return None
     try:
-        token = keyring.get_password(service, username)
-        return token if token else None
-    except Exception:
-        # Keyring can fail for various reasons (no backend, locked, etc.)
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                service,
+                "-a",
+                username,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
+    if result.returncode != 0:
+        return None
+    token = result.stdout.strip()
+    return token or None
 
 
 def store_keyring_token(token: str) -> None:

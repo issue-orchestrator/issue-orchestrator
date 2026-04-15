@@ -4275,6 +4275,16 @@
 
                 if (!response.ok) {
                     const error = await response.json();
+                    if (error.error === 'doctor_failed' && error.doctor) {
+                        const repoLabel = path.split('/').pop();
+                        showDoctorResultsModal(
+                            `Start Blocked — ${repoLabel}`,
+                            error.doctor,
+                            error.detail || 'Pre-flight checks failed',
+                            'fail',
+                        );
+                        throw new Error((error.detail || 'Pre-flight checks failed') + '. See Doctor Results.');
+                    }
                     throw new Error(error.detail || 'Failed to start');
                 }
 
@@ -4494,6 +4504,9 @@
         // Doctor
         // ============================================
         function _renderDoctorResults(data) {
+            if (!data) {
+                return '';
+            }
             let html = '';
             if (data.checks) {
                 const renderExpandable = (check) => {
@@ -4543,21 +4556,34 @@
             return html || 'All checks passed!';
         }
 
+        function showDoctorResultsModal(title, data, prefixMessage = null, prefixClass = 'info') {
+            const modal = document.getElementById('doctorModal');
+            const modalTitle = document.getElementById('doctorModalTitle');
+            const results = document.getElementById('doctorResults');
+            modal.classList.add('active');
+            modalTitle.textContent = title;
+            const prefix = prefixMessage
+                ? `<div class="doctor-check ${prefixClass}">${escapeHtml(prefixMessage)}</div>`
+                : '';
+            results.innerHTML = prefix + _renderDoctorResults(data);
+        }
+
         async function runDoctor() {
             const targetPath = state.activeRepo?.path;
             if (!targetPath) {
                 showToast('Select a repository first', 'warning');
                 return;
             }
-            const modal = document.getElementById('doctorModal');
-            const modalTitle = document.getElementById('doctorModalTitle');
             const results = document.getElementById('doctorResults');
-            modal.classList.add('active');
-            modalTitle.textContent = `Doctor — ${targetPath.split('/').pop()}`;
-            results.innerHTML = `<div class="doctor-check info">Running diagnostics for <code>${escapeHtml(targetPath)}</code>...</div>`;
+            showDoctorResultsModal(
+                `Doctor — ${targetPath.split('/').pop()}`,
+                null,
+                `Running diagnostics for ${targetPath}...`,
+                'info',
+            );
             try {
                 const response = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`);
-                results.innerHTML = _renderDoctorResults(await response.json());
+                showDoctorResultsModal(`Doctor — ${targetPath.split('/').pop()}`, await response.json());
             } catch (error) {
                 results.innerHTML = `<div class="doctor-check fail">✗ Failed to run diagnostics: ${escapeHtml(error.message)}</div>`;
             }
