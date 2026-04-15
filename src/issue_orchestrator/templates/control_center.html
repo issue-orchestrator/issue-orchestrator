@@ -4504,6 +4504,9 @@
         // Doctor
         // ============================================
         function _renderDoctorResults(data) {
+            if (!data) {
+                return '';
+            }
             let html = '';
             if (data.checks) {
                 const renderExpandable = (check) => {
@@ -4574,7 +4577,7 @@
             const results = document.getElementById('doctorResults');
             showDoctorResultsModal(
                 `Doctor — ${targetPath.split('/').pop()}`,
-                { checks: [] },
+                null,
                 `Running diagnostics for ${targetPath}...`,
                 'info',
             );
