@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,8 @@ from ..infra.supervisor import SupervisorOps
 if TYPE_CHECKING:
     from ..infra.repo_registry import RegisteredRepo
 
+logger = logging.getLogger(__name__)
+
 
 def build_repos_status(
     *,
@@ -24,7 +27,7 @@ def build_repos_status(
 ) -> list[dict[str, Any]]:
     """Build status payloads for registered repositories."""
     from ..infra import repo_registry
-    from ..infra.config import Config, get_config_path, list_configs
+    from ..infra.config import list_configs
 
     preferred_repo = str(preferred_repo_root) if preferred_repo_root else None
     repos = repo_registry.list_repos()
@@ -44,12 +47,7 @@ def build_repos_status(
     for repo in repos:
         path = Path(repo.path)
         path_resolved = path.resolve() if path.exists() else path
-        expected_instances = _expected_instances_for_repo(
-            path,
-            repo.selected_config,
-            config_loader=Config.load,
-            config_path_getter=get_config_path,
-        )
+        expected_instances = _expected_instances_for_repo(path, repo.selected_config)
         available_configs = list_configs(path) if path.exists() else []
         repo_data: dict[str, Any] = {
             "path": repo.path,
@@ -88,19 +86,24 @@ def build_repos_status(
 def _expected_instances_for_repo(
     repo_path: Path,
     selected_config: str | None,
-    *,
-    config_loader: Any,
-    config_path_getter: Any,
 ) -> int:
     """Return configured instance count, falling back to single-instance mode."""
+    from ..infra.config import Config, get_config_path
+
     if not repo_path.exists() or not selected_config:
         return 1
     try:
-        config_path = config_path_getter(repo_path, selected_config)
+        config_path = get_config_path(repo_path, selected_config)
         if not config_path.exists():
             return 1
-        config = config_loader(config_path)
+        config = Config.load(config_path)
     except Exception:
+        logger.debug(
+            "Falling back to single-instance mode for repo=%s config=%s",
+            repo_path,
+            selected_config,
+            exc_info=True,
+        )
         return 1
     return config.instances
 
