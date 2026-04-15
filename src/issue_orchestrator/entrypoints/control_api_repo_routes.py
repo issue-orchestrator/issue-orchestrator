@@ -1,0 +1,413 @@
+"""Control Center repo registry and status routes."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
+
+from ..execution.control_center_repo_status import build_repos_status
+from ..execution.control_center_runtime import build_repo_identity
+from ..infra.repo_identity import deserialize_repo_identity
+from .control_api_repo_support import ControlApiRepoDependency
+
+logger = logging.getLogger(__name__)
+
+control_repo_router = APIRouter()
+
+
+def _repo_status_snapshot(deps: ControlApiRepoDependency) -> list[dict[str, Any]]:
+    """Build a current repo-status snapshot from the configured dependencies."""
+    return build_repos_status(
+        supervisor=deps.get_supervisor(),
+        preferred_repo_root=deps.get_preferred_repo_root(),
+    )
+
+
+@control_repo_router.get("/control/repos")
+async def list_repos_endpoint(deps: ControlApiRepoDependency) -> JSONResponse:
+    """List all registered repositories with their status."""
+    return JSONResponse({"repos": _repo_status_snapshot(deps)})
+
+
+@control_repo_router.get("/control/info")
+async def control_info(deps: ControlApiRepoDependency) -> JSONResponse:
+    """Get Control Center build and identity info."""
+    repo_root = Path.cwd()
+    identity = build_repo_identity(repo_root)
+    preferred_root = deps.get_preferred_repo_root()
+    expected_identity_raw = deps.get_expected_engine_identity_raw()
+    expected_identity = None
+    if expected_identity_raw:
+        try:
+            expected_identity = deserialize_repo_identity(expected_identity_raw).to_dict()
+        except Exception:
+            expected_identity = None
+    return JSONResponse({
+        "repo_root": str(repo_root),
+        "preferred_repo_root": str(preferred_root) if preferred_root else None,
+        "commit_sha": identity.commit_sha,
+        "commit_short": identity.commit_sha[:7] if identity.commit_sha else None,
+        "repo_identity": identity.to_dict(),
+        "expected_engine_identity": expected_identity,
+    })
+
+
+@control_repo_router.get("/control/events")
+async def control_events(
+    request: Request,
+    deps: ControlApiRepoDependency,
+):
+    """Stream Control Center repo status updates via SSE."""
+    logger.info("[Control SSE] Client connected")
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    logger.info("[Control SSE] Client disconnected")
+                    break
+
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"repos": _repo_status_snapshot(deps)}),
+                }
+                await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            logger.info("[Control SSE] Stream cancelled")
+            raise
+
+    return EventSourceResponse(event_generator())
+
+
+@control_repo_router.post("/control/repos")
+async def add_repo_endpoint(
+    request: Request,
+    deps: ControlApiRepoDependency,
+) -> JSONResponse:
+    """Add a repository to the registry."""
+    from ..infra import repo_registry
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
+
+    try:
+        repo = repo_registry.add_repo(repo_root, name=body.get("name"))
+        return JSONResponse({"status": "added", "repo": repo.to_dict()})
+    except ValueError as exc:
+        return JSONResponse(
+            {"error": "already_registered", "detail": str(exc)},
+            status_code=409,
+        )
+
+
+@control_repo_router.delete("/control/repos")
+async def remove_repo_endpoint(
+    request: Request,
+    deps: ControlApiRepoDependency,
+) -> JSONResponse:
+    """Remove a repository from the registry."""
+    from ..infra.repo_registry import remove_repo
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = body.get("repo_root")
+    if not repo_root:
+        return JSONResponse({"error": "Missing repo_root"}, status_code=400)
+
+    try:
+        normalized = str(Path(repo_root).resolve())
+    except (ValueError, OSError):
+        return JSONResponse({"error": "Invalid repo_root path"}, status_code=400)
+
+    if body.get("stop_orchestrator", True):
+        path = Path(normalized)
+        if path.exists():
+            deps.get_supervisor().stop(path)
+
+    if remove_repo(normalized):
+        return JSONResponse({"status": "removed", "repo_root": normalized})
+    return JSONResponse(
+        {"error": "not_found", "repo_root": normalized},
+        status_code=404,
+    )
+
+
+@control_repo_router.post("/control/repos/select-config")
+async def select_config_endpoint(
+    request: Request,
+    deps: ControlApiRepoDependency,
+) -> JSONResponse:
+    """Persist the selected config for a repository."""
+    from ..infra.repo_registry import set_selected_config
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
+
+    config_name = body.get("config_name")
+    if not config_name:
+        return JSONResponse({"error": "Missing config_name"}, status_code=400)
+
+    normalized_config_name = config_name if config_name.endswith(".yaml") else f"{config_name}.yaml"
+    if set_selected_config(repo_root, normalized_config_name):
+        return JSONResponse({"status": "ok", "config_name": normalized_config_name})
+    return JSONResponse({"error": "Repo not found"}, status_code=404)
+
+
+@control_repo_router.post("/control/repos/validate")
+async def validate_repo_config(
+    request: Request,
+    deps: ControlApiRepoDependency,
+) -> JSONResponse:
+    """Validate a repository configuration without starting an engine."""
+    from ..infra.config import CONFIG_DIR, Config, get_config_path, list_configs
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
+
+    config_name = body.get("config_name", "default.yaml")
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    available = list_configs(repo_root)
+    if not available:
+        return JSONResponse({
+            "valid": False,
+            "has_config": False,
+            "config_path": None,
+            "errors": [f"No configs found in {CONFIG_DIR}/"],
+            "warnings": [],
+        })
+
+    config_path = get_config_path(repo_root, config_name)
+    if not config_path.exists():
+        return JSONResponse({
+            "valid": False,
+            "has_config": True,
+            "config_path": None,
+            "available_configs": available,
+            "errors": [f"Config '{config_name}' not found. Available: {', '.join(available)}"],
+            "warnings": [],
+        })
+
+    try:
+        config = Config.load(config_path)
+        errors = config.validate()
+        warnings: list[str] = []
+        if not config.code_review_agent:
+            warnings.append("No code review agent configured - PRs won't be auto-reviewed")
+        if not config.triage_review_agent:
+            warnings.append("No triage review agent configured - no batch reviews")
+
+        return JSONResponse({
+            "valid": len(errors) == 0,
+            "has_config": True,
+            "config_path": str(config_path),
+            "errors": errors,
+            "warnings": warnings,
+            "config_summary": {
+                "repo": config.repo,
+                "agents": list(config.agents.keys()),
+                "ui_mode": config.ui_mode,
+                "review_enabled": config.review_enabled,
+            },
+        })
+    except Exception as exc:
+        return JSONResponse({
+            "valid": False,
+            "has_config": True,
+            "config_path": str(config_path),
+            "errors": [f"Failed to load config: {exc}"],
+            "warnings": [],
+        })
+
+
+@control_repo_router.post("/control/repos/doctor")
+async def doctor_repo(
+    request: Request,
+    deps: ControlApiRepoDependency,
+) -> JSONResponse:
+    """Run doctor checks and persist repo health."""
+    from ..infra.repo_registry import update_repo_health
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
+
+    config_name = body.get("config_name")
+    if config_name and not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    try:
+        health = update_repo_health(repo_root, config_name=config_name)
+    except Exception as exc:
+        logger.exception("Doctor check failed for %s", repo_root)
+        return JSONResponse({
+            "status": "error",
+            "checked_at": "",
+            "errors": [f"Doctor check failed: {exc}"],
+            "warnings": [],
+            "can_start": False,
+        }, status_code=500)
+
+    return JSONResponse({
+        "status": health.status,
+        "checked_at": health.checked_at,
+        "errors": health.errors,
+        "warnings": health.warnings,
+        "can_start": health.status == "valid",
+    })
+
+
+@control_repo_router.get("/control/repos/config")
+async def get_repo_config(
+    deps: ControlApiRepoDependency,
+    repo_root: str = Query(..., description="Repository root path"),
+    config_name: str = Query(default="default.yaml", description="Config file name"),
+) -> JSONResponse:
+    """Get the YAML contents of a repo config file."""
+    from ..infra.config import get_config_path
+
+    path = deps.validate_repo_root(repo_root)
+    if path is None:
+        return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
+
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    config_path = get_config_path(path, config_name)
+    if not config_path.exists():
+        return JSONResponse(
+            {"error": "config_not_found", "config_name": config_name},
+            status_code=404,
+        )
+
+    try:
+        content = config_path.read_text()
+    except Exception as exc:
+        return JSONResponse({"error": "read_failed", "detail": str(exc)}, status_code=500)
+
+    return JSONResponse({
+        "config_name": config_name,
+        "config_path": str(config_path),
+        "content": content,
+    })
+
+
+@control_repo_router.get("/control/repos/discover")
+async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning with filtering
+    search_paths: str = Query(
+        default="",
+        description="Comma-separated paths to search (default: ~/dev, ~/projects, ~/code, ~/repos)",
+    ),
+    max_depth: int = Query(default=3, description="Max directory depth to search"),
+) -> JSONResponse:
+    """Discover unregistered git repositories and classify setup readiness."""
+    from ..infra.config import list_configs
+    from ..infra.repo_registry import load_registry
+
+    if search_paths:
+        paths_to_search = [Path(path.strip()).expanduser() for path in search_paths.split(",")]
+    else:
+        home = Path.home()
+        cwd = Path.cwd()
+        paths_to_search = [
+            home / "dev",
+            home / "projects",
+            home / "code",
+            home / "repos",
+            home / "src",
+            home / "work",
+            home / "github",
+            cwd,
+            cwd.parent,
+        ]
+
+    seen_paths: set[str] = set()
+    deduped_paths: list[Path] = []
+    for path in paths_to_search:
+        key = str(path.expanduser())
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        deduped_paths.append(path)
+
+    registry = load_registry()
+    registered_paths = {repo.path for repo in registry.repos}
+    discovered: list[dict[str, Any]] = []
+
+    def scan_directory(base: Path, depth: int) -> None:  # noqa: C901 - recursive scan with ignore patterns
+        if depth > max_depth or not base.exists() or not base.is_dir():
+            return
+
+        try:
+            for entry in os.scandir(base):
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+
+                entry_path = Path(entry.path)
+                git_path = entry_path / ".git"
+                if git_path.exists():
+                    if git_path.is_file():
+                        continue
+
+                    resolved = str(entry_path.resolve())
+                    if resolved in registered_paths:
+                        continue
+
+                    configs = list_configs(entry_path)
+                    legacy_config = (entry_path / ".issue-orchestrator.yaml").exists()
+                    status = "ready" if configs else "legacy" if legacy_config else "needs_setup"
+                    discovered.append({
+                        "path": resolved,
+                        "name": entry_path.name,
+                        "configs": configs,
+                        "status": status,
+                    })
+                    continue
+
+                scan_directory(entry_path, depth + 1)
+        except PermissionError:
+            return
+
+    for search_path in deduped_paths:
+        scan_directory(search_path, 0)
+
+    discovered.sort(key=lambda repo: repo["name"].lower())
+    return JSONResponse({"discovered": discovered})
+
+
+__all__ = ["control_repo_router"]

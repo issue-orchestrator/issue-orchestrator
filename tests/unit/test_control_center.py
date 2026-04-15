@@ -80,7 +80,7 @@ def test_start_tray_icon_returns_icon_when_available() -> None:
     with (
         patch("issue_orchestrator.entrypoints.control_center.sys.platform", "linux"),
         patch(
-            "issue_orchestrator.entrypoints.control_api._build_repos_status",
+            "issue_orchestrator.execution.control_center_repo_status.build_repos_status",
             return_value=[{"name": "repo-a", "status": {"state": "running"}}],
         ),
         patch(
@@ -104,7 +104,7 @@ def test_start_tray_icon_returns_none_when_startup_fails() -> None:
             side_effect=RuntimeError("no tray backend"),
         ),
         patch(
-            "issue_orchestrator.entrypoints.control_api._build_repos_status",
+            "issue_orchestrator.execution.control_center_repo_status.build_repos_status",
             return_value=[],
         ),
     ):
