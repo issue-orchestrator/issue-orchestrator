@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
 
-
 @dataclass(frozen=True)
 class ControlApiE2EDependencies:
     """Dependency hooks needed by Control Center E2E route modules."""

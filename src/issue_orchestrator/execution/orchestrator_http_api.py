@@ -10,6 +10,21 @@ import httpx
 from ..ports.orchestrator_api import OrchestratorApi
 
 
+def probe_orchestrator_json(url: str, *, timeout_seconds: float) -> dict[str, Any] | None:
+    """Return a JSON object from an orchestrator endpoint, or ``None`` on probe failure."""
+    try:
+        response = httpx.get(url, timeout=timeout_seconds)
+        response.raise_for_status()
+    except Exception:
+        return None
+
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 class OrchestratorHttpApi(OrchestratorApi):
     def __init__(
         self,

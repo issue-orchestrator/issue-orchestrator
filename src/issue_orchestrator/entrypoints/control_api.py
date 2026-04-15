@@ -49,9 +49,8 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -60,26 +59,35 @@ from sse_starlette.sse import EventSourceResponse
 from ..control.worktree_manager import get_worktree_path
 from ..control.queue_cache import QueueCache
 from ..domain.models import get_completion_path
-from ..execution.git_working_copy import GitWorkingCopy
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
-from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
-from ..infra.repo_identity import (
-    RepoIdentity,
-    build_repo_identity_with_status,
-    deserialize_repo_identity,
-    diff_repo_identity,
-)
+from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
+from ..infra.repo_identity import deserialize_repo_identity
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import (
     AuditActionRequest,
     ControlCenterActions,
-    DoctorActionRequest,
-    RefreshActionRequest,
     RepoActionRequest,
     TraceActionRequest,
 )
+from ..execution.orchestrator_http_api import (
+    probe_orchestrator_json as _probe_orchestrator_json,
+)
+from ..execution.control_center_runtime import (
+    annotate_identity_mismatch as _annotate_identity_mismatch,
+    build_repo_identity as _build_repo_identity,
+    client_dashboard_url as _client_dashboard_url,
+    confirm_orchestrator_at_port as _confirm_orchestrator_at_port,
+    detect_orchestrator_by_port as _detect_orchestrator_by_port,
+    enrich_runtime_health as _enrich_runtime_health,
+    is_shutdown_complete as _is_shutdown_complete,
+)
 from .control_api_e2e_runs import control_e2e_runs_router
+from .control_api_orchestrator_routes import control_orchestrator_router
+from .control_api_orchestrator_support import (
+    ControlApiOrchestratorDependencies,
+    install_control_api_orchestrator_dependencies,
+)
 from .control_api_e2e_support import (
     ControlApiE2EDependencies,
     install_control_api_e2e_dependencies,
@@ -109,27 +117,10 @@ _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 _COMPAT_EXPORTS = (
     _attach_issue_numbers_to_test_windows,
     _compact_branch_label,
+    _annotate_identity_mismatch,
+    _confirm_orchestrator_at_port,
+    _is_shutdown_complete,
 )
-
-# Default E2E config (used when orchestrator not available)
-
-
-def _build_repo_identity(repo_root: Path) -> RepoIdentity:
-    """Build repo identity with execution-layer git status resolution."""
-    git = GitWorkingCopy()
-
-    def _resolve_repo_status(root: Path) -> tuple[str | None, list[str]]:
-        branch: str | None = None
-        try:
-            branch = git.get_current_branch(root)
-        except Exception:
-            branch = None
-        dirty_lines = git.get_status_porcelain_lines(root)
-        return branch, dirty_lines
-
-    return build_repo_identity_with_status(repo_root, status_resolver=_resolve_repo_status)
-
-
 
 def _load_config_by_name(repo_root: Path, config_name: str) -> "Config":
     """Load orchestrator config by repo root and config file name.
@@ -202,6 +193,11 @@ def set_control_actions(actions: ControlCenterActions) -> None:
     _control_actions = actions
 
 
+def get_control_actions() -> ControlCenterActions:
+    """Get the control-center action service."""
+    return _control_actions
+
+
 def _preferred_repo_root() -> Path | None:
     """Resolve preferred repo root for this Control Center process."""
     raw = os.environ.get(_PREFERRED_REPO_ROOT_ENV, "").strip()
@@ -231,9 +227,11 @@ _global_shutdown_operation: dict[str, Any] | None = None
 _engine_shutdown_operations: dict[str, dict[str, Any]] = {}
 
 
-def _coerce_graceful_timeout_seconds(raw: Any, default: int = 2) -> int:
+def _coerce_graceful_timeout_seconds(raw: object, default: int = 2) -> int:
     """Parse graceful timeout from API payload with safe bounds."""
     if raw is None:
+        return default
+    if not isinstance(raw, (bool, int, float, str)):
         return default
     try:
         parsed = int(float(raw))
@@ -291,19 +289,49 @@ def get_tracked_pids() -> list[int]:
         return list(_tracked_pids)
 
 
-def _track_launched_pids(supervisor_data: dict) -> None:
+def _track_launched_pids(supervisor_data: Mapping[str, object]) -> None:
     """Register launched orchestrator PIDs for zombie reaping.
 
     Called by control_start after successfully launching orchestrators.
     """
     # Handle multi-instance launches
-    if "instances" in supervisor_data:
-        for instance in supervisor_data["instances"]:
-            if "pid" in instance:
-                track_child_pid(instance["pid"])
+    instances = supervisor_data.get("instances")
+    if isinstance(instances, list):
+        for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+            pid = instance.get("pid")
+            if isinstance(pid, int):
+                track_child_pid(pid)
     # Handle single-instance launches
-    elif "pid" in supervisor_data:
-        track_child_pid(supervisor_data["pid"])
+    else:
+        pid = supervisor_data.get("pid")
+        if isinstance(pid, int):
+            track_child_pid(pid)
+
+
+def _begin_engine_shutdown_operation(
+    repo_root: Path,
+    force: bool,
+    force_if_timeout: bool,
+    graceful_timeout_seconds: int,
+) -> None:
+    repo_key = str(repo_root)
+    with _shutdown_ops_lock:
+        _engine_shutdown_operations[repo_key] = {
+            "repo_root": repo_key,
+            "state": "in_progress",
+            "started_at_epoch": time.time(),
+            "force": force,
+            "force_if_timeout": force_if_timeout,
+            "graceful_timeout_seconds": graceful_timeout_seconds,
+        }
+
+
+def _finish_engine_shutdown_operation(repo_root: Path) -> None:
+    repo_key = str(repo_root)
+    with _shutdown_ops_lock:
+        _engine_shutdown_operations.pop(repo_key, None)
 
 
 # ======================================================================# Unified Dashboard API Endpoints
@@ -1579,1027 +1607,26 @@ install_control_api_e2e_dependencies(
         validate_repo_root=_validate_repo_root,
     ),
 )
+install_control_api_orchestrator_dependencies(
+    control_app,
+    ControlApiOrchestratorDependencies(
+        get_supervisor=get_supervisor,
+        get_control_actions=get_control_actions,
+        validate_repo_root=_validate_repo_root,
+        track_launched_pids=_track_launched_pids,
+        coerce_graceful_timeout_seconds=_coerce_graceful_timeout_seconds,
+        global_shutdown_in_progress=_global_shutdown_in_progress,
+        begin_engine_shutdown_operation=_begin_engine_shutdown_operation,
+        finish_engine_shutdown_operation=_finish_engine_shutdown_operation,
+    ),
+)
+control_app.include_router(control_orchestrator_router)
 control_app.include_router(control_e2e_runs_router)
 control_app.include_router(control_e2e_triage_router)
 
 
-def _get_selected_config(repo_root: Path) -> str:
-    """Return the selected config name for a repo, defaulting to default.yaml."""
-    from ..infra.repo_registry import load_registry
-
-    registry = load_registry()
-    normalized = str(repo_root.resolve())
-    for repo in registry.repos:
-        if repo.path == normalized:
-            return repo.selected_config or "default.yaml"
-    return "default.yaml"
-
-
-def _load_config_port(repo_root: Path, config_name: str) -> int | None:
-    """Load the web port from a repo config."""
-    from ..infra.config import Config, get_config_path
-
-    config_path = get_config_path(repo_root, config_name)
-    if not config_path.exists():
-        return None
-    try:
-        config = Config.load(config_path)
-    except Exception:
-        return None
-    return config.web_port
-
-
-def _client_dashboard_url(port: int | None) -> str | None:
-    """Resolve the browser-facing dashboard URL for a repo engine port."""
-    if port is None:
-        return None
-    if port == 0:
-        return None
-
-    from ..infra.client_urls import resolve_client_dashboard_url
-
-    return resolve_client_dashboard_url(port)
-
-
-def _detect_orchestrator_by_port(
-    repo_root: Path,
-    config_name: str,
-    *,
-    expected_identity: RepoIdentity | None = None,
-) -> dict[str, Any] | None:
-    """Detect an orchestrator by probing the configured port.
-
-    Returns info dict with port and metadata if an orchestrator responds
-    and matches repo_root.
-    """
-    import httpx
-
-    port = _load_config_port(repo_root, config_name)
-    if not port:
-        return None
-
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        resp = httpx.get(f"{base_url}/api/info", timeout=0.6)
-        if resp.status_code != 200:
-            return None
-        info = resp.json()
-        if info.get("repo_root") != str(repo_root):
-            return None
-    except Exception:
-        return None
-
-    details: dict[str, Any] = {"port": port, "info": info}
-    _annotate_identity_mismatch(details, info, expected_identity)
-    _annotate_orchestrator_health(details, base_url)
-
-    return details
-
-
-def _annotate_identity_mismatch(
-    details: dict[str, Any],
-    info: dict[str, Any],
-    expected_identity: RepoIdentity | None,
-) -> None:
-    if expected_identity is None:
-        return
-    observed_identity_payload = info.get("repo_identity")
-    if not isinstance(observed_identity_payload, dict):
-        return
-    observed_identity = RepoIdentity(
-        repo_root=str(observed_identity_payload.get("repo_root", "")),
-        commit_sha=(str(observed_identity_payload["commit_sha"]) if observed_identity_payload.get("commit_sha") else None),
-        branch=(str(observed_identity_payload["branch"]) if observed_identity_payload.get("branch") else None),
-        working_tree_dirty=bool(observed_identity_payload.get("working_tree_dirty", False)),
-        dirty_fingerprint=(str(observed_identity_payload["dirty_fingerprint"]) if observed_identity_payload.get("dirty_fingerprint") else None),
-        source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
-    )
-    identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
-    for volatile_field in ("working_tree_dirty", "dirty_fingerprint"):
-        identity_mismatch.pop(volatile_field, None)
-    if identity_mismatch:
-        details["identity_mismatch"] = identity_mismatch
-        details["observed_identity"] = observed_identity.to_dict()
-        details["expected_identity"] = expected_identity.to_dict()
-
-
-def _annotate_orchestrator_health(details: dict[str, Any], base_url: str) -> None:
-    import httpx
-    import time
-
-    try:
-        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
-        if status_resp.status_code != 200:
-            return
-        status_data = status_resp.json()
-        details["status"] = status_data
-        last_tick = status_data.get("last_tick_time")
-        if not isinstance(last_tick, (int, float)) or last_tick <= 0:
-            return
-        tick_age = time.time() - last_tick
-        details["tick_age_seconds"] = tick_age
-        details["health"] = "stale" if tick_age > 120 else "ok"
-    except Exception:
-        details.setdefault("health", "unknown")
-
-
-def _confirm_orchestrator_at_port(repo_root: Path, port: int) -> bool:
-    """Confirm the orchestrator at a port belongs to the repo_root."""
-    import httpx
-
-    try:
-        resp = httpx.get(f"http://127.0.0.1:{port}/api/info", timeout=0.6)
-        if resp.status_code != 200:
-            return False
-        info = resp.json()
-        return info.get("repo_root") == str(repo_root)
-    except Exception:
-        return False
-
-
-def _is_shutdown_complete(port: int | None) -> bool:
-    """Check if an orchestrator is in shutdown-complete state.
-
-    Returns True if shutdown_requested=True and no active sessions.
-    """
-    if not port:
-        return False
-    try:
-        import httpx
-        resp = httpx.get(f"http://127.0.0.1:{port}/api/status", timeout=2.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            shutdown_requested = data.get("shutdown_requested", False)
-            active_sessions = data.get("active_sessions", [])
-            return shutdown_requested and len(active_sessions) == 0
-    except Exception:
-        pass
-    return False
-
-
-@control_app.post("/control/orchestrator/start")
-async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR0912 - orchestrator startup with config validation and initialization
-    """Start an orchestrator for a repository.
-
-    JSON body:
-        repo_root: str - Repository root path
-        config_name: str (optional) - Config file name (default: default.yaml)
-        force_restart: bool (optional) - Force restart if an untracked orchestrator is detected
-
-    If the orchestrator is in shutdown-complete state (shutdown requested,
-    no active sessions), it will be automatically restarted.
-    """
-    from ..infra.repo_lock import AlreadyRunning
-    from ..infra.repo_registry import set_selected_config
-
-    sv = get_supervisor()
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_root = _validate_repo_root(body.get("repo_root"))
-    if repo_root is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    # Validate port if provided
-    port = body.get("port")
-    if port is not None:
-        if not isinstance(port, int) or port < 1 or port > 65535:
-            return JSONResponse({"error": "Invalid port"}, status_code=400)
-
-    config_name = body.get("config_name", "default.yaml")
-    if not config_name.endswith(".yaml"):
-        config_name += ".yaml"
-    force_restart = bool(body.get("force_restart", False))
-    expected_identity = _build_repo_identity(repo_root)
-
-    try:
-        detected = _detect_orchestrator_by_port(
-            repo_root,
-            config_name,
-            expected_identity=expected_identity,
-        )
-        if detected and detected.get("identity_mismatch"):
-            stopped = sv.stop_by_port(detected["port"], force=True)
-            if not stopped:
-                return JSONResponse({
-                    "error": "engine_identity_mismatch",
-                    "detail": "Mismatched engine detected and could not be stopped",
-                    "port": detected["port"],
-                    "expected_identity": detected.get("expected_identity"),
-                    "observed_identity": detected.get("observed_identity"),
-                    "identity_mismatch": detected.get("identity_mismatch"),
-                }, status_code=409)
-        elif detected and not force_restart:
-            return JSONResponse({
-                "error": "orphaned_running",
-                "status": "running",
-                "port": detected["port"],
-                "repo_root": str(repo_root),
-                "health": detected.get("health", "unknown"),
-                "tick_age_seconds": detected.get("tick_age_seconds"),
-            }, status_code=409)
-        if detected and force_restart:
-            stopped = sv.stop_by_port(detected["port"], force=True)
-            if not stopped:
-                return JSONResponse({
-                    "error": "stop_failed",
-                    "detail": "Unable to stop existing orchestrator process.",
-                }, status_code=500)
-
-        # Update selected config in registry
-        set_selected_config(repo_root, config_name)
-
-        # Load config and run unified launcher (doctor + supervisor.start)
-        from ..infra.config import Config, get_config_path
-        from ..infra.launcher import launch_subprocess
-
-        config_path = get_config_path(repo_root, config_name)
-        config = Config.load(config_path)
-
-        launch_result = launch_subprocess(
-            repo_root=repo_root,
-            config=config,
-            config_name=config_name,
-            supervisor_ops=sv,
-            expected_identity=expected_identity.to_dict(),
-        )
-
-        if launch_result.status == "doctor_error":
-            return JSONResponse({
-                "error": "doctor_failed",
-                "detail": "Pre-flight checks failed",
-                "doctor": launch_result.doctor.to_dict(),
-            }, status_code=422)
-
-        if launch_result.status == "already_running":
-            response = {
-                "error": "already_running",
-                "detail": launch_result.error or "Orchestrator already running",
-                "doctor": launch_result.doctor.to_dict(),
-            }
-            if launch_result.supervisor:
-                response.update(launch_result.supervisor)
-            return JSONResponse(response, status_code=409)
-
-        if not launch_result.launched:
-            return JSONResponse({
-                "error": "launch_failed",
-                "detail": launch_result.error or "Unknown launch error",
-                "doctor": launch_result.doctor.to_dict(),
-            }, status_code=500)
-
-        response_data: dict = {
-            "status": "started",
-            "repo_root": str(repo_root),
-            "config_name": config_name,
-            "repo_identity": expected_identity.to_dict(),
-            "doctor": launch_result.doctor.to_dict(),
-        }
-        if launch_result.supervisor:
-            response_data.update(launch_result.supervisor)
-            # Track PIDs for zombie reaping (control center only)
-            _track_launched_pids(launch_result.supervisor)
-        return JSONResponse(response_data)
-    except FileNotFoundError as e:
-        return JSONResponse({
-            "error": "config_not_found",
-            "detail": str(e),
-        }, status_code=404)
-    except AlreadyRunning as e:
-        # Check if the running orchestrator is in shutdown-complete state
-        if _is_shutdown_complete(e.port):
-            # Stop the old instance and restart
-            logger.info("Orchestrator in shutdown-complete state, restarting: %s", repo_root)
-            try:
-                sv.stop(repo_root)
-                # Brief pause to allow cleanup
-                import time
-                time.sleep(0.5)
-                # Try starting again
-                info = sv.start(
-                    repo_root,
-                    config_name=config_name,
-                    expected_identity=expected_identity.to_dict(),
-                )
-                # Track PID for zombie reaping
-                _track_launched_pids({"pid": info.pid})
-                return JSONResponse({
-                    "status": "restarted",
-                    "pid": info.pid,
-                    "port": info.http_port,
-                    "repo_root": str(repo_root),
-                    "config_name": config_name,
-                })
-            except Exception as restart_err:
-                logger.exception("Failed to restart orchestrator for %s", repo_root)
-                return JSONResponse({
-                    "error": "restart_failed",
-                    "detail": str(restart_err),
-                }, status_code=500)
-        # Not in shutdown-complete state, return already_running error
-        return JSONResponse({
-            "error": "already_running",
-            "pid": e.pid,
-            "port": e.port,
-            "repo_root": str(e.repo_root),
-        }, status_code=409)
-    except Exception as e:
-        logger.exception("Failed to start orchestrator for %s", repo_root)
-        return JSONResponse({
-            "error": "start_failed",
-            "detail": str(e),
-        }, status_code=500)
-
-
-@control_app.post("/control/orchestrator/stop")
-async def control_stop(request: Request) -> JSONResponse:
-    """Stop the orchestrator for a repository.
-
-    JSON body:
-        repo_root: str - Repository root path
-        force: bool (optional) - Force kill (SIGKILL) instead of graceful (SIGTERM)
-        port: int (optional) - Port to stop when no lock exists (untracked process)
-    """
-    sv = get_supervisor()
-
-    logger.info("[control_stop] Received stop request")
-
-    try:
-        body = await request.json()
-        logger.info("[control_stop] Body: %s", body)
-    except json.JSONDecodeError:
-        logger.error("[control_stop] Invalid JSON")
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_root = _validate_repo_root(body.get("repo_root"))
-    if repo_root is None:
-        logger.error("[control_stop] Invalid repo_root: %s", body.get("repo_root"))
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    force = body.get("force", False)
-    force_if_timeout = bool(body.get("force_if_timeout", True))
-    graceful_timeout_seconds = _coerce_graceful_timeout_seconds(
-        body.get("graceful_timeout_seconds"),
-        default=2,
-    )
-    port_override = body.get("port")
-    if port_override is not None and (not isinstance(port_override, int) or port_override < 1 or port_override > 65535):
-        return JSONResponse({"error": "Invalid port"}, status_code=400)
-
-    if _global_shutdown_in_progress():
-        return JSONResponse({
-            "error": "global_shutdown_in_progress",
-            "detail": "Global shutdown is in progress and already controls engine shutdown behavior.",
-            "actions": [
-                "View global shutdown status",
-                "Change global shutdown",
-                "Abort global shutdown",
-            ],
-        }, status_code=409)
-
-    repo_key = str(repo_root)
-    with _shutdown_ops_lock:
-        _engine_shutdown_operations[repo_key] = {
-            "repo_root": repo_key,
-            "state": "in_progress",
-            "started_at_epoch": time.time(),
-            "force": bool(force),
-            "force_if_timeout": force_if_timeout,
-            "graceful_timeout_seconds": graceful_timeout_seconds,
-        }
-
-    logger.info("[control_stop] Calling supervisor.stop(%s, force=%s)", repo_root, force)
-
-    try:
-        status_info = sv.status(repo_root)
-        if status_info.state != "running" and port_override:
-            if not _confirm_orchestrator_at_port(repo_root, port_override):
-                return JSONResponse({
-                    "error": "port_mismatch",
-                    "detail": "No matching orchestrator found on the provided port.",
-                }, status_code=409)
-            stopped = sv.stop_by_port(port_override, force=force)
-            stopped_count = 1 if stopped else 0
-        else:
-            # Stop all instances (single and multi-instance)
-            stopped_count = sv.stop_all_instances(
-                repo_root,
-                force=force,
-                graceful_timeout_seconds=graceful_timeout_seconds,
-                force_if_graceful_fails=force_if_timeout or force,
-            )
-            stopped = stopped_count > 0
-        logger.info("[control_stop] supervisor.stop_all_instances returned: %d", stopped_count)
-
-        if stopped:
-            return JSONResponse({
-                "status": "stopped",
-                "repo_root": str(repo_root),
-                "stopped_count": stopped_count,
-            })
-        return JSONResponse({
-            "status": "not_running",
-            "repo_root": str(repo_root),
-        })
-    finally:
-        with _shutdown_ops_lock:
-            _engine_shutdown_operations.pop(repo_key, None)
-
-
-@control_app.post("/control/orchestrator/reconcile")
-async def control_reconcile(request: Request) -> JSONResponse:
-    """Reconcile stale runtime metadata and optionally stop orphaned/unresponsive engines.
-
-    JSON body:
-        stop_orphaned: bool (optional, default false)
-        stop_unresponsive: bool (optional, default false)
-        force: bool (optional, default false)
-    """
-    sv = get_supervisor()
-    from ..infra.repo_registry import list_repos
-
-    stop_orphaned, stop_unresponsive, force = await _parse_reconcile_options(request)
-
-    reconciled_stale_locks: list[str] = []
-    orphaned_detected: list[dict[str, Any]] = []
-    stopped_orphaned: list[str] = []
-    unresponsive_detected: list[dict[str, Any]] = []
-    stopped_unresponsive: list[str] = []
-
-    for repo in list_repos():
-        reconciliation = _reconcile_repo_runtime(
-            sv=sv,
-            repo_path=Path(repo.path),
-            selected_config=repo.selected_config or "default.yaml",
-            stop_orphaned=stop_orphaned,
-            stop_unresponsive=stop_unresponsive,
-            force=force,
-        )
-        if reconciliation is None:
-            continue
-
-        if reconciliation["reconciled_stale_lock"]:
-            reconciled_stale_locks.append(repo.path)
-        orphaned_detected.extend(reconciliation["orphaned_detected"])
-        if reconciliation["stopped_orphaned"]:
-            stopped_orphaned.append(repo.path)
-        unresponsive_detected.extend(reconciliation["unresponsive_detected"])
-        if reconciliation["stopped_unresponsive"]:
-            stopped_unresponsive.append(repo.path)
-
-    return JSONResponse({
-        "status": "ok",
-        "reconciled_stale_locks": reconciled_stale_locks,
-        "orphaned_detected": orphaned_detected,
-        "stopped_orphaned": stopped_orphaned,
-        "unresponsive_detected": unresponsive_detected,
-        "stopped_unresponsive": stopped_unresponsive,
-    })
-
-
-async def _parse_reconcile_options(request: Request) -> tuple[bool, bool, bool]:
-    stop_orphaned = False
-    stop_unresponsive = False
-    force = False
-    try:
-        body = await request.json()
-        if isinstance(body, dict):
-            stop_orphaned = bool(body.get("stop_orphaned", False))
-            stop_unresponsive = bool(body.get("stop_unresponsive", False))
-            force = bool(body.get("force", False))
-    except Exception:
-        pass
-    return stop_orphaned, stop_unresponsive, force
-
-
-def _reconcile_repo_runtime(
-    *,
-    sv: SupervisorOps,
-    repo_path: Path,
-    selected_config: str,
-    stop_orphaned: bool,
-    stop_unresponsive: bool,
-    force: bool,
-) -> dict[str, Any] | None:
-    """Reconcile one repository and return aggregated reconciliation outcomes."""
-    if not repo_path.exists():
-        return None
-
-    multi_status = sv.status_all_instances(repo_path, config_name=selected_config)
-    if _is_multi_instance_repo(multi_status):
-        return _reconcile_multi_instance_repo_runtime(
-            sv=sv,
-            repo_path=repo_path,
-            multi_status=multi_status,
-            stop_unresponsive=stop_unresponsive,
-            force=force,
-        )
-
-    status_info = sv.status(repo_path)
-
-    if status_info.state == "failed":
-        return {
-            "reconciled_stale_lock": sv.stop(repo_path, force=False),
-            "orphaned_detected": [],
-            "stopped_orphaned": False,
-            "unresponsive_detected": [],
-            "stopped_unresponsive": False,
-        }
-
-    if status_info.state != "running":
-        detected = _detect_orchestrator_by_port(repo_path, selected_config)
-        if not detected:
-            return {
-                "reconciled_stale_lock": False,
-                "orphaned_detected": [],
-                "stopped_orphaned": False,
-                "unresponsive_detected": [],
-                "stopped_unresponsive": False,
-            }
-        orphaned_entry = {"repo_root": str(repo_path), "port": detected.get("port")}
-        if stop_orphaned and detected.get("port"):
-            stopped = sv.stop_by_port(int(detected["port"]), force=force)
-            return {
-                "reconciled_stale_lock": False,
-                "orphaned_detected": [orphaned_entry],
-                "stopped_orphaned": stopped,
-                "unresponsive_detected": [],
-                "stopped_unresponsive": False,
-            }
-        return {
-            "reconciled_stale_lock": False,
-            "orphaned_detected": [orphaned_entry],
-            "stopped_orphaned": False,
-            "unresponsive_detected": [],
-            "stopped_unresponsive": False,
-        }
-
-    payload = _enrich_runtime_health(repo_path, status_info.to_dict())
-    if payload is None or payload.get("runtime_health") != "unresponsive":
-        return {
-            "reconciled_stale_lock": False,
-            "orphaned_detected": [],
-            "stopped_orphaned": False,
-            "unresponsive_detected": [],
-            "stopped_unresponsive": False,
-        }
-
-    unresponsive_entry = {
-        "repo_root": str(repo_path),
-        "instance_id": None,
-        "heartbeat_age_seconds": payload.get("heartbeat_age_seconds"),
-        "pid": payload.get("pid"),
-        "port": payload.get("port"),
-    }
-    if stop_unresponsive:
-        return {
-            "reconciled_stale_lock": False,
-            "orphaned_detected": [],
-            "stopped_orphaned": False,
-            "unresponsive_detected": [unresponsive_entry],
-            "stopped_unresponsive": sv.stop(repo_path, force=force),
-        }
-    return {
-        "reconciled_stale_lock": False,
-        "orphaned_detected": [],
-        "stopped_orphaned": False,
-        "unresponsive_detected": [unresponsive_entry],
-        "stopped_unresponsive": False,
-    }
-
-
-def _is_multi_instance_repo(multi_status: MultiInstanceStatus) -> bool:
-    return multi_status.expected_count > 1 or any(inst.instance_id is not None for inst in multi_status.instances)
-
-
-def _reconcile_multi_instance_repo_runtime(
-    *,
-    sv: SupervisorOps,
-    repo_path: Path,
-    multi_status: MultiInstanceStatus,
-    stop_unresponsive: bool,
-    force: bool,
-) -> dict[str, Any]:
-    """Reconcile a multi-instance repository.
-
-    Orphaned process probing is skipped in multi-instance mode because a single
-    config-level port probe is ambiguous across N orchestrator instances.
-    """
-    reconciled_stale_lock = False
-    unresponsive_detected: list[dict[str, Any]] = []
-    stopped_unresponsive = False
-
-    instance_ids: list[str | None] = [None]
-    instance_ids.extend(f"orchestrator-{i}" for i in range(1, multi_status.expected_count + 1))
-    instance_ids.extend(
-        inst.instance_id
-        for inst in multi_status.instances
-        if inst.instance_id is not None
-    )
-
-    # Deduplicate while preserving order.
-    deduped_ids: list[str | None] = []
-    for instance_id in instance_ids:
-        if instance_id not in deduped_ids:
-            deduped_ids.append(instance_id)
-
-    for instance_id in deduped_ids:
-        status_info = sv.status(repo_path, instance_id=instance_id)
-
-        if status_info.state == "failed":
-            if sv.stop(repo_path, force=False, instance_id=instance_id):
-                reconciled_stale_lock = True
-            continue
-
-        if status_info.state != "running":
-            continue
-
-        payload = _enrich_runtime_health(repo_path, status_info.to_dict(), instance_id=instance_id)
-        if payload is None or payload.get("runtime_health") != "unresponsive":
-            continue
-
-        unresponsive_detected.append({
-            "repo_root": str(repo_path),
-            "instance_id": instance_id,
-            "heartbeat_age_seconds": payload.get("heartbeat_age_seconds"),
-            "pid": payload.get("pid"),
-            "port": payload.get("port"),
-        })
-
-        if not stop_unresponsive:
-            continue
-
-        port = payload.get("port")
-        stopped = sv.stop_by_port(port, force=force) if isinstance(port, int) else sv.stop(
-            repo_path,
-            force=force,
-            instance_id=instance_id,
-        )
-        if stopped:
-            stopped_unresponsive = True
-
-    return {
-        "reconciled_stale_lock": reconciled_stale_lock,
-        "orphaned_detected": [],
-        "stopped_orphaned": False,
-        "unresponsive_detected": unresponsive_detected,
-        "stopped_unresponsive": stopped_unresponsive,
-    }
-
-
-@control_app.get("/control/orchestrator/status")
-async def control_status(
-    repo_root: str = Query(...),
-    config_name: str | None = Query(None),
-) -> JSONResponse:
-    """Get the status of the orchestrator for a repository.
-
-    Query params:
-        repo_root: str - Repository root path
-        config_name: str (optional) - Config name to probe for untracked processes
-
-    Returns either a single status dict (legacy) or multi-instance status when
-    instances > 1 in config.
-    """
-    sv = get_supervisor()
-
-    path = _validate_repo_root(repo_root)
-    if path is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    # Get status of all instances
-    selected = config_name or _get_selected_config(path) or "default.yaml"
-    multi_status = sv.status_all_instances(path, config_name=selected)
-
-    # If multiple instances expected or running, return multi-instance format
-    if multi_status.expected_count > 1 or len(multi_status.instances) > 1:
-        return JSONResponse({
-            "multi_instance": True,
-            "repo_root": str(path),
-            "expected_count": multi_status.expected_count,
-            "running_count": sum(1 for s in multi_status.instances if s.state == "running"),
-            "instances": [s.to_dict() for s in multi_status.instances],
-        })
-
-    # Single instance mode - return backward-compatible format
-    # Check if we have exactly one running instance
-    if multi_status.instances and len(multi_status.instances) == 1:
-        payload = _enrich_runtime_health(path, multi_status.instances[0].to_dict())
-        return JSONResponse(payload or multi_status.instances[0].to_dict())
-
-    # No running instances - check for orphaned process
-    status_info = sv.status(path)
-    if status_info.state != "running":
-        detected = _detect_orchestrator_by_port(path, selected)
-        if detected:
-            status_data = detected.get("status", {})
-            orphaned_payload = {
-                "state": "running",
-                "pid": None,
-                "port": detected["port"],
-                "started_at": None,
-                "recovered": False,
-                "error": None,
-                "orphaned": True,
-                "health": detected.get("health", "unknown"),
-                "tick_age_seconds": detected.get("tick_age_seconds"),
-                "shutdown_requested": status_data.get("shutdown_requested", False),
-                "active_session_count": len(status_data.get("active_sessions", [])),
-            }
-            return JSONResponse(_enrich_runtime_health(path, orphaned_payload, orphaned=True) or orphaned_payload)
-
-    payload = _enrich_runtime_health(path, status_info.to_dict())
-    return JSONResponse(payload or status_info.to_dict())
-
-
-@control_app.post("/control/orchestrator/pause")
-async def control_pause(request: Request) -> JSONResponse:
-    """Pause the orchestrator for a repository (passthrough to running instance).
-
-    JSON body:
-        repo_root: str - Repository root path
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_root = _validate_repo_root(body.get("repo_root"))
-    if repo_root is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    result = await _control_actions.pause_cmd.execute(RepoActionRequest(repo_root=repo_root))
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/orchestrator/resume")
-async def control_resume(request: Request) -> JSONResponse:
-    """Resume the orchestrator for a repository (passthrough to running instance).
-
-    JSON body:
-        repo_root: str - Repository root path
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_root = _validate_repo_root(body.get("repo_root"))
-    if repo_root is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    result = await _control_actions.resume_cmd.execute(RepoActionRequest(repo_root=repo_root))
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/orchestrator/refresh")
-async def control_refresh(request: Request) -> JSONResponse:
-    """Trigger refresh on the orchestrator for a repository (passthrough).
-
-    JSON body:
-        repo_root: str - Repository root path
-        inflight_stable_ids: list[str] (optional) - Expected issue IDs
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_root = _validate_repo_root(body.get("repo_root"))
-    if repo_root is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    result = await _control_actions.refresh_cmd.execute(
-        RefreshActionRequest(
-            repo_root=repo_root,
-            inflight_stable_ids=body.get("inflight_stable_ids"),
-        ),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.get("/control/orchestrator/last_failure")
-async def control_last_failure(repo_root: str = Query(...)) -> JSONResponse:
-    """Get the last startup failure for a repository.
-
-    Query params:
-        repo_root: str - Repository root path
-    """
-    from ..infra.repo_identity import state_dir
-
-    path = _validate_repo_root(repo_root)
-    if path is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    failure_path = state_dir(path) / "last_failure.json"
-    if not failure_path.exists():
-        return JSONResponse({"last_failure": None})
-
-    try:
-        with open(failure_path) as f:
-            data = json.load(f)
-        return JSONResponse({"last_failure": data})
-    except (json.JSONDecodeError, OSError) as e:
-        return JSONResponse({
-            "error": "read_failed",
-            "detail": str(e),
-        }, status_code=500)
-
-
-@control_app.get("/control/orchestrator/doctor")
-async def control_doctor(repo_root: str = Query(...)) -> JSONResponse:
-    """Run diagnostics for a repository.
-
-    Query params:
-        repo_root: str - Repository root path
-    """
-    path = _validate_repo_root(repo_root)
-    if path is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-    result = await _control_actions.doctor_cmd.execute(DoctorActionRequest(repo_root=path))
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/orchestrator/ai_diagnose")
-async def control_ai_diagnose(request: Request) -> JSONResponse:
-    """Run AI-powered diagnostics for a repository.
-
-    JSON body:
-        repo_root: str - Repository root path
-        timeout: int (optional) - Timeout in seconds (default: 120)
-    """
-    from ..infra.ai_diagnose import run_ai_diagnose
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_root = _validate_repo_root(body.get("repo_root"))
-    if repo_root is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    timeout = body.get("timeout", 120)
-    if not isinstance(timeout, int) or timeout < 10 or timeout > 600:
-        timeout = 120
-
-    result = run_ai_diagnose(repo_root, timeout_seconds=timeout)
-    return JSONResponse(result.to_dict())
-
-
-@control_app.get("/control/orchestrator/log_tail")
-async def control_log_tail(
-    repo_root: str = Query(...),
-    n: int = Query(200, ge=1, le=10000),
-) -> JSONResponse:
-    """Get the last N lines of the orchestrator log.
-
-    Query params:
-        repo_root: str - Repository root path
-        n: int - Number of lines (default: 200, max: 10000)
-    """
-    from ..infra.repo_identity import state_dir
-
-    path = _validate_repo_root(repo_root)
-    if path is None:
-        return JSONResponse(
-            {"error": "Invalid or missing repo_root"},
-            status_code=400,
-        )
-
-    log_path = state_dir(path) / "logs" / "orchestrator.log"
-    if not log_path.exists():
-        return JSONResponse({"lines": [], "total_lines": 0})
-
-    try:
-        # Read last N lines efficiently
-        with open(log_path, "rb") as f:
-            # Seek to end
-            f.seek(0, 2)
-            file_size = f.tell()
-
-            # Read in chunks from the end
-            lines = []
-            chunk_size = 8192
-            remaining = file_size
-
-            while len(lines) < n + 1 and remaining > 0:
-                read_size = min(chunk_size, remaining)
-                remaining -= read_size
-                f.seek(remaining)
-                chunk = f.read(read_size).decode("utf-8", errors="replace")
-                chunk_lines = chunk.split("\n")
-
-                if lines:
-                    # Merge with previous chunk
-                    lines[0] = chunk_lines[-1] + lines[0]
-                    chunk_lines = chunk_lines[:-1]
-
-                lines = chunk_lines + lines
-
-            # Trim to N lines
-            lines = lines[-n:] if len(lines) > n else lines
-
-            # Count total lines (approximate)
-            f.seek(0)
-            total_lines = sum(1 for _ in f)
-
-        return JSONResponse({
-            "lines": lines,
-            "total_lines": total_lines,
-            "returned_lines": len(lines),
-        })
-    except OSError as e:
-        return JSONResponse({
-            "error": "read_failed",
-            "detail": str(e),
-        }, status_code=500)
-
-
 # ======================================================================# Multi-Repo Registry API Endpoints
 # ======================================================================# These endpoints manage the repo registry for multi-repo supervision.
-
-LOCK_HEARTBEAT_UNRESPONSIVE_SECONDS = 45
-
-
-def _heartbeat_age_seconds(iso_timestamp: str | None) -> int | None:
-    if not iso_timestamp:
-        return None
-    try:
-        parsed = datetime.fromisoformat(iso_timestamp)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
-
-
-def _enrich_runtime_health(
-    repo_path: Path,
-    status_payload: dict[str, Any] | None,
-    *,
-    orphaned: bool = False,
-    instance_id: str | None = None,
-) -> dict[str, Any] | None:
-    if status_payload is None:
-        return None
-
-    from ..infra.repo_lock import read_lock
-
-    lock_info = read_lock(repo_path, instance_id=instance_id)
-    last_heartbeat_at = lock_info.last_heartbeat_at if lock_info is not None else None
-    heartbeat_age = _heartbeat_age_seconds(last_heartbeat_at)
-    status_payload["last_heartbeat_at"] = last_heartbeat_at
-    status_payload["heartbeat_age_seconds"] = heartbeat_age
-
-    if orphaned:
-        status_payload["runtime_health"] = "orphaned"
-        return status_payload
-
-    state = status_payload.get("state")
-    if state == "failed":
-        status_payload["runtime_health"] = "stale_lock"
-        return status_payload
-    if state == "running" and heartbeat_age is not None and heartbeat_age > LOCK_HEARTBEAT_UNRESPONSIVE_SECONDS:
-        status_payload["runtime_health"] = "unresponsive"
-        status_payload["unresponsive"] = True
-        return status_payload
-    if state == "running":
-        status_payload["runtime_health"] = "healthy"
-        status_payload["unresponsive"] = False
-        return status_payload
-    status_payload["runtime_health"] = "not_running"
-    return status_payload
 
 
 def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - multi-repo status with state aggregation
@@ -2607,8 +1634,6 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
     Shared by both the REST endpoint and SSE stream.
     """
-    import httpx
-
     from ..infra.repo_registry import add_repo, list_repos
     from ..infra.config import list_configs, get_config_path, Config
 
@@ -2675,20 +1700,16 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
                 # Fetch internal state from each running instance
                 if inst_status.state == "running" and inst_status.port:
-                    try:
-                        resp = httpx.get(
-                            f"http://127.0.0.1:{inst_status.port}/api/status",
-                            timeout=2.0,
-                        )
-                        if resp.status_code == 200:
-                            internal = resp.json()
-                            inst_data["paused"] = internal.get("paused", False)
-                            inst_data["shutdown_requested"] = internal.get("shutdown_requested", False)
-                            active_sessions = internal.get("active_sessions", [])
-                            inst_data["active_session_count"] = len(active_sessions)
-                            inst_data["e2e_role"] = internal.get("e2e_role")
-                    except Exception:
-                        pass
+                    internal = _probe_orchestrator_json(
+                        f"http://127.0.0.1:{inst_status.port}/api/status",
+                        timeout_seconds=2.0,
+                    )
+                    if internal is not None:
+                        inst_data["paused"] = internal.get("paused", False)
+                        inst_data["shutdown_requested"] = internal.get("shutdown_requested", False)
+                        active_sessions = internal.get("active_sessions", [])
+                        inst_data["active_session_count"] = len(active_sessions)
+                        inst_data["e2e_role"] = internal.get("e2e_role")
 
                 enriched_instance = _enrich_runtime_health(path, inst_data, instance_id=inst_data.get("instance_id"))
                 instance_data = enriched_instance or inst_data
@@ -2730,21 +1751,17 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
             # If running, fetch internal state from the orchestrator
             if status_info and status_info.state == "running" and status_info.port:
-                try:
-                    resp = httpx.get(
-                        f"http://127.0.0.1:{status_info.port}/api/status",
-                        timeout=2.0,
-                    )
-                    if resp.status_code == 200 and repo_data["status"]:
-                        internal = resp.json()
-                        repo_data["status"]["paused"] = internal.get("paused", False)
-                        repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
-                        # Include active session count for shutdown state determination
-                        active_sessions = internal.get("active_sessions", [])
-                        repo_data["status"]["active_session_count"] = len(active_sessions)
-                        repo_data["status"]["e2e_role"] = internal.get("e2e_role")
-                except Exception:
-                    pass  # Keep supervisor status only
+                internal = _probe_orchestrator_json(
+                    f"http://127.0.0.1:{status_info.port}/api/status",
+                    timeout_seconds=2.0,
+                )
+                if internal is not None and repo_data["status"]:
+                    repo_data["status"]["paused"] = internal.get("paused", False)
+                    repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
+                    # Include active session count for shutdown state determination
+                    active_sessions = internal.get("active_sessions", [])
+                    repo_data["status"]["active_session_count"] = len(active_sessions)
+                    repo_data["status"]["e2e_role"] = internal.get("e2e_role")
 
         repo_data["dashboard_url"] = _client_dashboard_url((repo_data.get("status") or {}).get("port"))
 
