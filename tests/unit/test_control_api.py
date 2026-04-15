@@ -1666,18 +1666,23 @@ class TestSupervisorStart:
         """Return 422 with doctor_failed when preflight checks fail."""
         from issue_orchestrator.infra import launcher
         from issue_orchestrator.infra.doctor.types import Check, DoctorResult
+        from issue_orchestrator.infra.launcher import LaunchResult
 
         # Create config file
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text("agents: {}\n")
 
-        # Doctor returns an error
+        # Launcher returns a doctor failure with a concrete failing check.
         monkeypatch.setattr(
             launcher,
-            "run_doctor",
-            lambda **_kw: DoctorResult(
-                checks=[Check(name="Hooks", status="error", detail="not installed")]
+            "launch_subprocess",
+            lambda **_kw: LaunchResult(
+                doctor=DoctorResult(
+                    checks=[Check(name="Hooks", status="error", detail="not installed")]
+                ),
+                launched=False,
+                status="doctor_error",
             ),
         )
 

@@ -61,12 +61,14 @@ from ..control.queue_cache import QueueCache
 from ..domain.models import get_completion_path
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
-from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
-from ..infra.repo_identity import deserialize_repo_identity
+from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
+from ..infra.repo_identity import RepoIdentity, deserialize_repo_identity, diff_repo_identity
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import (
     AuditActionRequest,
     ControlCenterActions,
+    DoctorActionRequest,
+    RefreshActionRequest,
     RepoActionRequest,
     TraceActionRequest,
 )

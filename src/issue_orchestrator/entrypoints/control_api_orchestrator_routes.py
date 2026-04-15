@@ -34,6 +34,22 @@ logger = logging.getLogger(__name__)
 control_orchestrator_router = APIRouter()
 
 
+def _summarize_doctor_failures(doctor_result: Any) -> str:
+    """Return a short human-readable summary of failed doctor checks."""
+    checks = getattr(doctor_result, "checks", []) or []
+    failed = [check for check in checks if getattr(check, "status", None) == "error"]
+    if not failed:
+        return "Pre-flight checks failed"
+    parts: list[str] = []
+    for check in failed[:2]:
+        name = getattr(check, "name", "Check")
+        detail = (getattr(check, "detail", "") or "").strip()
+        parts.append(f"{name}: {detail}" if detail else name)
+    if len(failed) > 2:
+        parts.append(f"+{len(failed) - 2} more")
+    return "Pre-flight checks failed: " + "; ".join(parts)
+
+
 @control_orchestrator_router.post("/control/orchestrator/start")
 async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans validation and supervisor handoff
     request: Request,
@@ -127,7 +143,7 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
             return JSONResponse(
                 {
                     "error": "doctor_failed",
-                    "detail": "Pre-flight checks failed",
+                    "detail": _summarize_doctor_failures(launch_result.doctor),
                     "doctor": launch_result.doctor.to_dict(),
                 },
                 status_code=422,
