@@ -62,7 +62,7 @@ from ..domain.models import get_completion_path
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
-from ..infra.repo_identity import RepoIdentity, deserialize_repo_identity, diff_repo_identity
+from ..infra.repo_identity import deserialize_repo_identity
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import (
     AuditActionRequest,
@@ -82,6 +82,7 @@ from ..execution.control_center_runtime import (
     confirm_orchestrator_at_port as _confirm_orchestrator_at_port,
     detect_orchestrator_by_port as _detect_orchestrator_by_port,
     enrich_runtime_health as _enrich_runtime_health,
+    get_selected_config as _get_selected_config,
     is_shutdown_complete as _is_shutdown_complete,
 )
 from .control_api_e2e_runs import control_e2e_runs_router
@@ -1641,160 +1642,6 @@ install_control_api_orchestrator_dependencies(
 control_app.include_router(control_orchestrator_router)
 control_app.include_router(control_e2e_runs_router)
 control_app.include_router(control_e2e_triage_router)
-
-
-def _get_selected_config(repo_root: Path) -> str:
-    """Return the selected config name for a repo, defaulting to default.yaml."""
-    from ..infra.repo_registry import load_registry
-
-    registry = load_registry()
-    normalized = str(repo_root.resolve())
-    for repo in registry.repos:
-        if repo.path == normalized:
-            return repo.selected_config or "default.yaml"
-    return "default.yaml"
-
-
-def _load_config_port(repo_root: Path, config_name: str) -> int | None:
-    """Load the web port from a repo config."""
-    from ..infra.config import Config, get_config_path
-
-    config_path = get_config_path(repo_root, config_name)
-    if not config_path.exists():
-        return None
-    try:
-        config = Config.load(config_path)
-    except Exception:
-        return None
-    return config.web_port
-
-
-def _client_dashboard_url(port: int | None) -> str | None:
-    """Resolve the browser-facing dashboard URL for a repo engine port."""
-    if port is None:
-        return None
-    if port == 0:
-        return None
-
-    from ..infra.client_urls import resolve_client_dashboard_url
-
-    return resolve_client_dashboard_url(port)
-
-
-def _detect_orchestrator_by_port(
-    repo_root: Path,
-    config_name: str,
-    *,
-    expected_identity: RepoIdentity | None = None,
-) -> dict[str, Any] | None:
-    """Detect an orchestrator by probing the configured port.
-
-    Returns info dict with port and metadata if an orchestrator responds
-    and matches repo_root.
-    """
-    import httpx
-
-    port = _load_config_port(repo_root, config_name)
-    if not port:
-        return None
-
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        resp = httpx.get(f"{base_url}/api/info", timeout=0.6)
-        if resp.status_code != 200:
-            return None
-        info = resp.json()
-        if info.get("repo_root") != str(repo_root):
-            return None
-    except Exception:
-        return None
-
-    details: dict[str, Any] = {"port": port, "info": info}
-    _annotate_identity_mismatch(details, info, expected_identity)
-    _annotate_orchestrator_health(details, base_url)
-
-    return details
-
-
-def _annotate_identity_mismatch(
-    details: dict[str, Any],
-    info: dict[str, Any],
-    expected_identity: RepoIdentity | None,
-) -> None:
-    if expected_identity is None:
-        return
-    observed_identity_payload = info.get("repo_identity")
-    if not isinstance(observed_identity_payload, dict):
-        return
-    observed_identity = RepoIdentity(
-        repo_root=str(observed_identity_payload.get("repo_root", "")),
-        commit_sha=(str(observed_identity_payload["commit_sha"]) if observed_identity_payload.get("commit_sha") else None),
-        branch=(str(observed_identity_payload["branch"]) if observed_identity_payload.get("branch") else None),
-        working_tree_dirty=bool(observed_identity_payload.get("working_tree_dirty", False)),
-        dirty_fingerprint=(str(observed_identity_payload["dirty_fingerprint"]) if observed_identity_payload.get("dirty_fingerprint") else None),
-        source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
-    )
-    identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
-    for volatile_field in ("working_tree_dirty", "dirty_fingerprint"):
-        identity_mismatch.pop(volatile_field, None)
-    if identity_mismatch:
-        details["identity_mismatch"] = identity_mismatch
-        details["observed_identity"] = observed_identity.to_dict()
-        details["expected_identity"] = expected_identity.to_dict()
-
-
-def _annotate_orchestrator_health(details: dict[str, Any], base_url: str) -> None:
-    import httpx
-    import time
-
-    try:
-        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
-        if status_resp.status_code != 200:
-            return
-        status_data = status_resp.json()
-        details["status"] = status_data
-        last_tick = status_data.get("last_tick_time")
-        if not isinstance(last_tick, (int, float)) or last_tick <= 0:
-            return
-        tick_age = time.time() - last_tick
-        details["tick_age_seconds"] = tick_age
-        details["health"] = "stale" if tick_age > 120 else "ok"
-    except Exception:
-        details.setdefault("health", "unknown")
-
-
-def _confirm_orchestrator_at_port(repo_root: Path, port: int) -> bool:
-    """Confirm the orchestrator at a port belongs to the repo_root."""
-    import httpx
-
-    try:
-        resp = httpx.get(f"http://127.0.0.1:{port}/api/info", timeout=0.6)
-        if resp.status_code != 200:
-            return False
-        info = resp.json()
-        return info.get("repo_root") == str(repo_root)
-    except Exception:
-        return False
-
-
-def _is_shutdown_complete(port: int | None) -> bool:
-    """Check if an orchestrator is in shutdown-complete state.
-
-    Returns True if shutdown_requested=True and no active sessions.
-    """
-    if not port:
-        return False
-    try:
-        import httpx
-        resp = httpx.get(f"http://127.0.0.1:{port}/api/status", timeout=2.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            shutdown_requested = data.get("shutdown_requested", False)
-            active_sessions = data.get("active_sessions", [])
-            return shutdown_requested and len(active_sessions) == 0
-    except Exception:
-        pass
-    return False
 
 
 @control_app.post("/control/orchestrator/start")
