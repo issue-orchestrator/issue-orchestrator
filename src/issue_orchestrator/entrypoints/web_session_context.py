@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Annotated, Any, Callable
+
+from fastapi import Depends, FastAPI, Request
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
+
+_WEB_SESSION_CONTEXT_GETTER_STATE_KEY = "web_session_context_get_orchestrator"
 
 
 @dataclass(frozen=True)
@@ -17,25 +21,34 @@ class IssueSessionContext:
     run_dir: Path | None = None
 
 
-_get_orchestrator: Callable[[], Orchestrator | None] | None = None
+def install_web_session_context_dependencies(
+    app: FastAPI,
+    *,
+    get_orchestrator: Callable[[], Orchestrator | None],
+) -> None:
+    """Install web session-context dependencies on the FastAPI app."""
+    setattr(app.state, _WEB_SESSION_CONTEXT_GETTER_STATE_KEY, get_orchestrator)
 
 
-def configure_web_session_context(*, get_orchestrator: Callable[[], Orchestrator | None]) -> None:
-    """Configure access to the web module's orchestrator singleton."""
-    global _get_orchestrator
-    _get_orchestrator = get_orchestrator
-
-
-def get_web_orchestrator() -> Orchestrator | None:
+def get_web_orchestrator(request: Request) -> Orchestrator | None:
     """Return the configured web orchestrator, if available."""
-    if _get_orchestrator is None:
+    getter = getattr(request.app.state, _WEB_SESSION_CONTEXT_GETTER_STATE_KEY, None)
+    if getter is None:
         return None
-    return _get_orchestrator()
+    return getter()
 
 
-def _latest_session_history_entry(issue_number: int) -> Any | None:
+WebOrchestratorDependency = Annotated[
+    Any | None,
+    Depends(get_web_orchestrator),
+]
+
+
+def _latest_session_history_entry(
+    orchestrator: Orchestrator | None,
+    issue_number: int,
+) -> Any | None:
     """Return the most recent history entry for an issue."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return None
     for entry in reversed(orchestrator.state.session_history):
@@ -44,9 +57,11 @@ def _latest_session_history_entry(issue_number: int) -> Any | None:
     return None
 
 
-def resolve_issue_session_context(issue_number: int) -> IssueSessionContext:
+def resolve_issue_session_context(
+    orchestrator: Orchestrator | None,
+    issue_number: int,
+) -> IssueSessionContext:
     """Resolve current issue session context from active or local history."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return IssueSessionContext()
 
@@ -66,7 +81,7 @@ def resolve_issue_session_context(issue_number: int) -> IssueSessionContext:
                 run_dir=run_dir,
             )
 
-    history_entry = _latest_session_history_entry(issue_number)
+    history_entry = _latest_session_history_entry(orchestrator, issue_number)
     if history_entry:
         worktree_value = getattr(history_entry, "worktree_path", None)
         worktree_path = Path(worktree_value) if worktree_value else None
@@ -95,9 +110,11 @@ def worktree_path_from_run_dir(run_dir: Path) -> Path | None:
     return Path(*parts[:idx])
 
 
-def issue_title_for(issue_number: int) -> str:
+def issue_title_for(
+    orchestrator: Orchestrator | None,
+    issue_number: int,
+) -> str:
     """Resolve the best-known title for an issue from active and persisted state."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return f"Issue #{issue_number}"
     for session in orchestrator.state.active_sessions:
@@ -110,3 +127,14 @@ def issue_title_for(issue_number: int) -> str:
         if entry.issue_number == issue_number:
             return entry.title
     return f"Issue #{issue_number}"
+
+
+__all__ = [
+    "IssueSessionContext",
+    "WebOrchestratorDependency",
+    "get_web_orchestrator",
+    "install_web_session_context_dependencies",
+    "issue_title_for",
+    "resolve_issue_session_context",
+    "worktree_path_from_run_dir",
+]

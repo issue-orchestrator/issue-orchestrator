@@ -20,7 +20,7 @@ from ..infra.claude_jsonl import claude_jsonl_entry_preview_lines
 from ..infra.terminal_recording import first_terminal_geometry, iter_terminal_recording
 from .timeline_presentation import _format_phase_name, _phase_status_icon, _positive_int
 from .web_session_context import (
-    get_web_orchestrator,
+    WebOrchestratorDependency,
     resolve_issue_session_context,
     worktree_path_from_run_dir,
 )
@@ -115,6 +115,7 @@ def serve_terminal_recording(
 @web_session_router.get("/api/session/terminal-recording/{issue_number}")
 async def get_terminal_recording(
     issue_number: int,
+    orchestrator: WebOrchestratorDependency,
     offset: int = 0,
     limit: int = 200,
     run_dir: str | None = None,
@@ -122,7 +123,7 @@ async def get_terminal_recording(
     session_role: str | None = None,
 ) -> JSONResponse:
     """Return the canonical raw terminal recording for a run."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     return serve_terminal_recording(
         issue_number,
@@ -276,14 +277,15 @@ def _manifest_response(run_dir: Path, session_name: str | None) -> JSONResponse:
 @web_session_router.get("/api/session/manifest/{issue_number}")
 async def get_session_manifest(
     issue_number: int,
+    orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
 ) -> JSONResponse:  # noqa: C901, PLR0912
     """Get the session manifest for an issue."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     requested_run_dir = run_dir
-    context = resolve_issue_session_context(issue_number)
+    context = resolve_issue_session_context(orchestrator, issue_number)
     worktree_path = context.worktree_path
     session_name = context.session_name
     resolved_run_dir = context.run_dir
@@ -328,12 +330,15 @@ async def get_session_manifest(
 
 
 @web_session_router.get("/api/session/worktree/{issue_number}")
-async def get_session_worktree(issue_number: int) -> JSONResponse:  # noqa: C901
+async def get_session_worktree(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+) -> JSONResponse:  # noqa: C901
     """Get the worktree path for a session (active or history)."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    context = resolve_issue_session_context(issue_number)
+    context = resolve_issue_session_context(orchestrator, issue_number)
     if not context.worktree_path:
         return JSONResponse(
             {"error": f"No worktree path found for issue #{issue_number}"},
@@ -350,14 +355,17 @@ async def get_session_worktree(issue_number: int) -> JSONResponse:  # noqa: C901
 
 
 @web_session_router.get("/api/session/phases/{issue_number}")
-async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901
+async def get_session_phases(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+) -> JSONResponse:  # noqa: C901
     """Get the linear phase history for an issue."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..execution.session_output_adapter import FileSystemSessionOutput
 
-    context = resolve_issue_session_context(issue_number)
+    context = resolve_issue_session_context(orchestrator, issue_number)
     if not context.worktree_path:
         return JSONResponse(
             {
@@ -403,10 +411,10 @@ async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901
 @web_session_router.get("/api/session/orchestrator-log/{issue_number}")
 async def get_filtered_orchestrator_log(  # noqa: C901, PLR0912
     issue_number: int,
+    orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
 ) -> JSONResponse:
     """Generate and return a filtered orchestrator log for an issue."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -414,7 +422,7 @@ async def get_filtered_orchestrator_log(  # noqa: C901, PLR0912
     from ..infra.logging_config import get_repo_log_path
 
     session_output = FileSystemSessionOutput()
-    context = resolve_issue_session_context(issue_number)
+    context = resolve_issue_session_context(orchestrator, issue_number)
     worktree_path = context.worktree_path
     session_name = context.session_name
     resolved_run_dir = context.run_dir
@@ -490,11 +498,12 @@ async def get_filtered_orchestrator_log(  # noqa: C901, PLR0912
 @web_session_router.get("/api/session/claude-log/{issue_number}")
 async def get_claude_log_content(
     issue_number: int,
+    orchestrator: WebOrchestratorDependency,
     limit: int = 200,
     run_dir: str | None = None,
 ) -> JSONResponse:  # noqa: C901, PLR0912
     """Fetch and parse Claude session log for viewing in the dashboard."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     if not run_dir:
         return JSONResponse(
@@ -550,12 +559,13 @@ async def get_claude_log_content(
 @web_session_router.get("/api/session/review-transcript/{issue_number}")
 async def get_review_transcript_content(
     issue_number: int,
+    orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
     round_index: int | None = None,
     transcript_role: str | None = None,
 ) -> JSONResponse:
     """Return the dedicated review-exchange transcript for a run."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     if not run_dir:
         return JSONResponse(
@@ -634,9 +644,13 @@ def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:
 
 
 @web_session_router.get("/api/session/prompt/{issue_number}")
-async def get_session_prompt_content(issue_number: int, run_dir: str | None = None) -> JSONResponse:
+async def get_session_prompt_content(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+    run_dir: str | None = None,
+) -> JSONResponse:
     """Return run-scoped prompt content for a session."""
-    if not get_web_orchestrator():
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     if not run_dir:
         return JSONResponse(

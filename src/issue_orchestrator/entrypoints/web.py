@@ -68,8 +68,8 @@ from .timeline_presentation import (
 )
 from .web_issue_detail_routes import web_issue_detail_router
 from .web_session_context import (
-    configure_web_session_context,
-    resolve_issue_session_context as _resolve_issue_session_context,
+    install_web_session_context_dependencies,
+    resolve_issue_session_context,
 )
 from .web_session_routes import (
     build_ui_log_stream_observation as _build_ui_log_stream_observation,
@@ -205,7 +205,12 @@ def get_orchestrator():
     return _orchestrator
 
 
-configure_web_session_context(get_orchestrator=get_orchestrator)
+def _resolve_issue_session_context(issue_number: int):
+    """Compatibility wrapper for callers still importing from ``web``."""
+    return resolve_issue_session_context(get_orchestrator(), issue_number)
+
+
+install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 
@@ -467,7 +472,11 @@ async def get_session_diagnostics_dialog(
     run_dir: str | None = None,
 ) -> SessionDiagnosticsDialogPayload | JSONResponse:
     """Get view model for session diagnostics dialog."""
-    response = await get_session_manifest(issue_number, run_dir=run_dir)
+    response = await get_session_manifest(
+        issue_number,
+        orchestrator=get_orchestrator(),
+        run_dir=run_dir,
+    )
     if response.status_code != 200:
         return response
     payload = _response_json(response)
@@ -480,7 +489,11 @@ async def get_validation_failure_dialog(
     run_dir: str | None = None,
 ) -> ValidationFailureDialogPayload | JSONResponse:
     """Get a focused dialog for a failed validation run."""
-    response = await get_session_manifest(issue_number, run_dir=run_dir)
+    response = await get_session_manifest(
+        issue_number,
+        orchestrator=get_orchestrator(),
+        run_dir=run_dir,
+    )
     if response.status_code != 200:
         return response
     payload = _response_json(response)
@@ -503,7 +516,7 @@ async def get_blocked_issues_dialog() -> BlockedIssuesDialogPayload | JSONRespon
 @app.get("/api/dialog/phase/{issue_number}", response_model=PhaseDialogPayload)
 async def get_phase_dialog(issue_number: int, phase: str | None = None) -> PhaseDialogPayload | JSONResponse:
     """Get view model for phase details dialog."""
-    response = await get_session_phases(issue_number)
+    response = await get_session_phases(issue_number, orchestrator=get_orchestrator())
     if response.status_code != 200:
         return response
     payload = _response_json(response)

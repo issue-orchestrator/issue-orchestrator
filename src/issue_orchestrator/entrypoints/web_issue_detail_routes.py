@@ -21,7 +21,7 @@ from .timeline_presentation import (
     _retain_semantic_timeline_events,
 )
 from .web_session_context import (
-    get_web_orchestrator,
+    WebOrchestratorDependency,
     issue_title_for,
     resolve_issue_session_context,
 )
@@ -37,9 +37,12 @@ def _normalize_detail_view(view: str) -> str:
     return view if view in _VALID_DETAIL_VIEWS else "user"
 
 
-def _current_run_validation_diagnostic(issue_number: int) -> dict[str, Any] | None:
+def _current_run_validation_diagnostic(
+    orchestrator: Any,
+    issue_number: int,
+) -> dict[str, Any] | None:
     """Return a focused diagnostic for the latest/current run's validation state."""
-    context = resolve_issue_session_context(issue_number)
+    context = resolve_issue_session_context(orchestrator, issue_number)
     run_dir = context.run_dir
     if run_dir is None:
         return None
@@ -62,8 +65,11 @@ def _current_run_validation_diagnostic(issue_number: int) -> dict[str, Any] | No
     }
 
 
-def _apply_issue_detail_actions(issue_number: int, payload: dict[str, Any]) -> None:
-    orchestrator = get_web_orchestrator()
+def _apply_issue_detail_actions(
+    orchestrator: Any,
+    issue_number: int,
+    payload: dict[str, Any],
+) -> None:
     if orchestrator and orchestrator.deps.publish_recovery.can_retry_publish(
         issue_number,
         orchestrator.state,
@@ -101,6 +107,7 @@ def _apply_issue_detail_run_diagnostic(payload: dict[str, Any], run_diagnostic: 
 
 def _finalize_issue_detail_payload(
     *,
+    orchestrator: Any,
     issue_number: int,
     payload: dict[str, Any],
     raw_events: list[dict[str, Any]],
@@ -108,8 +115,8 @@ def _finalize_issue_detail_payload(
     events: list[dict[str, Any]],
     dropped_missing_semantics: int,
 ) -> dict[str, Any]:
-    run_diagnostic = _current_run_validation_diagnostic(issue_number)
-    _apply_issue_detail_actions(issue_number, payload)
+    run_diagnostic = _current_run_validation_diagnostic(orchestrator, issue_number)
+    _apply_issue_detail_actions(orchestrator, issue_number, payload)
     if run_diagnostic:
         _apply_issue_detail_run_diagnostic(payload, run_diagnostic)
     if is_timeline_trace_enabled():
@@ -135,6 +142,7 @@ def _finalize_issue_detail_payload(
             cycle_count,
         )
     diagnostic = _timeline_missing_diagnostic(
+        orchestrator,
         issue_number,
         events,
         dropped_missing_semantics=dropped_missing_semantics,
@@ -151,9 +159,11 @@ def _finalize_issue_detail_payload(
 
 
 @web_issue_detail_router.get("/api/timeline/{issue_number}")
-async def get_issue_timeline(issue_number: int) -> JSONResponse:
+async def get_issue_timeline(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+) -> JSONResponse:
     """Get timeline events for an issue."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -186,6 +196,7 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
             len(payload["cycles"]) if isinstance(payload.get("cycles"), list) else 0,
         )
     diagnostic = _timeline_missing_diagnostic(
+        orchestrator,
         issue_number,
         events,
         dropped_missing_semantics=dropped_missing_semantics,
@@ -196,9 +207,12 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
 
 
 @web_issue_detail_router.get("/api/issue-detail/{issue_number}", response_model=IssueDetailPayload)
-async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetailPayload | JSONResponse:
+async def get_issue_detail(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+    view: str = "user",
+) -> IssueDetailPayload | JSONResponse:
     """Get an issue-detail payload for drawer rendering."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -220,15 +234,16 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
     cycles = _build_timeline_cycles(events)
     payload = build_issue_detail_view_model(
         issue_number=issue_number,
-        title=issue_title_for(issue_number),
+        title=issue_title_for(orchestrator, issue_number),
         issue_url=issue_url_for(orchestrator.config, issue_number),
         events=events,
         phase_toc=phase_toc,
         cycles=cycles,
-        context=_build_issue_story_context(issue_number),
+        context=_build_issue_story_context(orchestrator, issue_number),
         view=_normalize_detail_view(view),
     )
     payload = _finalize_issue_detail_payload(
+        orchestrator=orchestrator,
         issue_number=issue_number,
         payload=payload,
         raw_events=raw_events,
@@ -240,12 +255,15 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
 
 
 @web_issue_detail_router.get("/api/e2e-run-detail/{run_id}")
-async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
+async def get_e2e_run_detail(
+    run_id: int,
+    orchestrator: WebOrchestratorDependency,
+    view: str = "user",
+) -> JSONResponse:
     """Get E2E run detail using the shared issue-detail timeline pipeline."""
     from ..domain.timeline_key import TimelineKey
     from ..timeline import TimelineStream
 
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -279,7 +297,7 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
     e2e_events = _filter_timeline_events(raw_events)
     agent_events = [record.data for record in snapshot_records if isinstance(record.data, dict)]
     if not agent_events:
-        agent_events = _load_orchestrator_events_for_run(run_id)
+        agent_events = _load_orchestrator_events_for_run(orchestrator, run_id)
 
     matcher_view = _normalize_detail_view(view)
     events = _attach_issue_numbers_to_test_windows(
@@ -305,6 +323,7 @@ async def get_e2e_run_detail(run_id: int, view: str = "user") -> JSONResponse:
 async def get_e2e_issue_detail(
     run_id: int,
     issue_number: int,
+    orchestrator: WebOrchestratorDependency,
     view: str = "user",
 ) -> JSONResponse:
     """Return issue detail for an ephemeral E2E issue from a specific run."""
@@ -313,7 +332,6 @@ async def get_e2e_issue_detail(
     from ..infra.e2e_worktree import get_e2e_worktree_path
     from ..timeline import TimelineStream
 
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -397,6 +415,7 @@ async def get_e2e_issue_detail(
         view=_normalize_detail_view(view),
     )
     payload = _finalize_issue_detail_payload(
+        orchestrator=orchestrator,
         issue_number=issue_number,
         payload=payload,
         raw_events=raw_events,
@@ -407,12 +426,14 @@ async def get_e2e_issue_detail(
     return JSONResponse(payload)
 
 
-def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
+def _load_orchestrator_events_for_run(
+    orchestrator: Any,
+    run_id: int,
+) -> list[dict[str, Any]]:
     """Read orchestrator events from timeline.sqlite for an E2E run's time window."""
     from ..infra.e2e_timeline import read_orchestrator_events_by_window
     from ..infra.e2e_worktree import get_e2e_worktree_path
 
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return []
 
@@ -444,9 +465,11 @@ def _load_orchestrator_events_for_run(run_id: int) -> list[dict[str, Any]]:
         return []
 
 
-def _build_issue_story_context(issue_number: int) -> IssueStoryContext | None:  # noqa: C901, PLR0912
+def _build_issue_story_context(
+    orchestrator: Any,
+    issue_number: int,
+) -> IssueStoryContext | None:  # noqa: C901, PLR0912
     """Assemble story context from orchestrator state for one issue."""
-    orchestrator = get_web_orchestrator()
     if not orchestrator:
         return None
 
@@ -540,13 +563,13 @@ def _determine_issue_flow_stage(
 
 
 def _timeline_missing_diagnostic(
+    orchestrator: Any,
     issue_number: int,
     events: list[dict[str, Any]],
     *,
     dropped_missing_semantics: int = 0,
 ) -> dict[str, Any] | None:
     """Return diagnostic details when timeline is unexpectedly empty."""
-    orchestrator = get_web_orchestrator()
     if events or not orchestrator:
         return None
 
@@ -563,7 +586,7 @@ def _timeline_missing_diagnostic(
     if issue_number in state.completed_today:
         signals.append("completed_today_present")
 
-    context = resolve_issue_session_context(issue_number)
+    context = resolve_issue_session_context(orchestrator, issue_number)
     if context.run_dir is not None:
         signals.append("session_run_present")
     if dropped_missing_semantics > 0:
