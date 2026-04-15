@@ -75,11 +75,11 @@ def main() -> int:
 
     from issue_orchestrator.domain.timeline_key import TimelineKey
     from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
-    from issue_orchestrator.entrypoints.control_api import (
+    from issue_orchestrator.entrypoints.e2e_affordances import (
         _attach_issue_numbers_to_test_windows,
         _build_test_windows,
     )
-    from issue_orchestrator.entrypoints.web import _filter_timeline_events
+    from issue_orchestrator.entrypoints.timeline_presentation import _filter_timeline_events
     from issue_orchestrator.timeline import TimelineStream
     from issue_orchestrator.infra.e2e_db import E2EDB
     from issue_orchestrator.infra.e2e_timeline import read_orchestrator_events_by_window
