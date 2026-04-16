@@ -6,7 +6,7 @@ import io
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import yaml
 
@@ -149,6 +149,23 @@ def find_existing_config(
         current = current.parent
 
     return None, None
+
+
+def find_existing_default_config(
+    start_path: Path | None = None,
+) -> tuple[Path | None, dict | None]:
+    """Find the legacy default config used by the Control Center setup API."""
+    from ..infra.config import find_config_file
+
+    config_path = find_config_file(start_path)
+    if config_path is None:
+        return None, None
+
+    try:
+        with open(config_path) as handle:
+            return config_path, yaml.safe_load(handle)
+    except Exception:
+        return config_path, None
 
 
 def find_prompt_candidates(start_path: Path | None = None) -> list[Path]:
@@ -620,10 +637,33 @@ def write_missing_setup_prompts(
     return created_paths
 
 
-def plan_setup_labels(config: Mapping[str, Any]) -> list[tuple[str, str, str]]:
-    """Return the canonical label set for a setup-wizard config."""
+def plan_setup_labels(
+    config: Mapping[str, Any],
+    *,
+    include_priority_labels: bool = True,
+    include_review_labels_without_default: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Return the label set for a setup-wizard config."""
     labels_config = config.get("labels", {}) or {}
     review_config = config.get("review", {}) or {}
+    return _plan_setup_labels(
+        labels_config=labels_config,
+        review_config=review_config,
+        agent_names=(config.get("agents", {}) or {}).keys(),
+        include_priority_labels=include_priority_labels,
+        include_review_labels_without_default=include_review_labels_without_default,
+    )
+
+
+def _plan_setup_labels(
+    *,
+    labels_config: Mapping[str, Any],
+    review_config: Mapping[str, Any],
+    agent_names: Iterable[str],
+    include_priority_labels: bool = True,
+    include_review_labels_without_default: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Build setup labels for CLI and Control Center surfaces."""
     label_prefix = labels_config.get("prefix", "")
 
     def prefixed(label: str) -> str:
@@ -631,7 +671,7 @@ def plan_setup_labels(config: Mapping[str, Any]) -> list[tuple[str, str, str]]:
 
     agent_labels = [
         (agent_name, "1D76DB", f"Issues for {agent_name.split(':')[-1]} agent")
-        for agent_name in (config.get("agents", {}) or {}).keys()
+        for agent_name in agent_names
     ]
     priority_labels = [
         ("priority:high", "D93F0B", "Urgent - do first"),
@@ -656,10 +696,13 @@ def plan_setup_labels(config: Mapping[str, Any]) -> list[tuple[str, str, str]]:
         ),
     ]
 
-    all_labels = agent_labels + priority_labels + status_labels
+    all_labels = agent_labels + status_labels
+    if include_priority_labels:
+        all_labels.extend(priority_labels)
 
     code_review_agent = review_config.get("default")
-    if code_review_agent:
+    review_enabled = bool(review_config.get("enabled"))
+    if code_review_agent or (include_review_labels_without_default and review_enabled):
         all_labels.extend(
             [
                 (
@@ -705,6 +748,18 @@ def load_config_for_repo(repo_root: Path | None) -> "Config | None":
         return None
 
 
+def _probe_cli_version(executable: str, *, fallback: str) -> str:
+    """Return ``<cli> --version`` output when available."""
+    from ..execution.command_runner import LocalCommandRunner
+
+    result = LocalCommandRunner().run([executable, "--version"], timeout_seconds=5)
+    if result.returncode == 0:
+        detail = result.stdout.strip() or result.stderr.strip()
+        if detail:
+            return detail
+    return fallback
+
+
 def build_agent_checks(config: "Config | None") -> list[dict[str, Any]]:
     """Check agent CLI availability for the supplied config."""
     if config is None:
@@ -741,7 +796,7 @@ def build_agent_checks(config: "Config | None") -> list[dict[str, Any]]:
         checks.append({
             "name": f"{exec_name} CLI",
             "ok": True,
-            "detail": path,
+            "detail": _probe_cli_version(path, fallback=path),
         })
     return checks
 
@@ -781,6 +836,7 @@ __all__ = [
     "detect_repo",
     "fetch_github_labels",
     "find_existing_config",
+    "find_existing_default_config",
     "find_prompt_candidates",
     "get_repository_host",
     "load_config_for_repo",

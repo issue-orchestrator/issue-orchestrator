@@ -26,6 +26,7 @@ from ..setup_wizard_common import (
 # Schema metadata for defaults/labels/hints
 from ...infra.settings_schema import get_setup_fields
 
+# Compatibility re-export for existing tests and external imports.
 PlannedWrite = _PlannedWrite
 
 

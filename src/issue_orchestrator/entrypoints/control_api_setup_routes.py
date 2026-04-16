@@ -17,8 +17,8 @@ from .setup_wizard_common import (
     build_agent_checks,
     build_github_auth_check,
     detect_repo,
+    find_existing_default_config,
     fetch_github_labels,
-    find_existing_config,
     find_prompt_candidates,
     load_config_for_repo,
     plan_setup_labels,
@@ -90,7 +90,7 @@ def _persist_setup_config(
     config_dir = get_config_dir(repo_root)
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = get_config_path(repo_root, config_name)
-    write_config(config, config_path)
+    write_config(config, config_path, include_header=False)
     return config_path
 
 
@@ -123,7 +123,11 @@ def _create_setup_labels(repo_name: str, config: Mapping[str, Any]) -> list[str]
         return []
 
     created_labels: list[str] = []
-    for name, color, desc in plan_setup_labels(config):
+    for name, color, desc in plan_setup_labels(
+        config,
+        include_priority_labels=False,
+        include_review_labels_without_default=True,
+    ):
         if name in existing:
             continue
         try:
@@ -194,7 +198,7 @@ async def setup_detect(
 
     result["repo"] = detect_repo(cwd=path)
 
-    config_path, existing_config = find_existing_config(path)
+    config_path, existing_config = find_existing_default_config(path)
     if config_path is not None:
         result["config_path"] = str(config_path)
     if existing_config is not None:
@@ -237,7 +241,7 @@ async def setup_preview(request: Request) -> JSONResponse:
         else str(Path(CONFIG_DIR) / DEFAULT_CONFIG_NAME)
     )
 
-    yaml_content = render_config_yaml(config)
+    yaml_content = render_config_yaml(config, include_header=False)
     files_to_create: list[dict[str, Any]] = [{
         "path": config_path,
         "action": "create",

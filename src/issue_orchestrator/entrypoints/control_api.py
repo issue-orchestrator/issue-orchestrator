@@ -198,10 +198,10 @@ def _get_goal_pilot() -> GoalPilot:
     )
 
 
-def set_supervisor(supervisor: SupervisorOps | None) -> None:
+def set_supervisor(supervisor: SupervisorOps) -> None:
     """Set the supervisor operations instance (for testing)."""
     global _supervisor, _control_actions
-    _supervisor = supervisor or DefaultSupervisorOps()
+    _supervisor = supervisor
     _control_actions = ControlCenterActions(supervisor=_supervisor)
 
 
