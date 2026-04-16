@@ -38,7 +38,7 @@ from .actions import Action, AddLabelAction, RemoveLabelAction
 from .completion_action_planner import (
     CompletionActionPlanner,
     _critical_processing_errors,
-    _has_review_exchange_errors,
+    has_review_exchange_errors,
 )
 from .reconciliation import build_expected_for_mutation
 from pathlib import Path
@@ -167,7 +167,7 @@ class CompletionHandler:
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
 
-        review_exchange_halted = review_exchange_halted or _has_review_exchange_errors(processing_errors)
+        review_exchange_halted = review_exchange_halted or has_review_exchange_errors(processing_errors)
 
         # Fetch PR info if completed (or use hint from completion processor)
         pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status, pr_url_hint=pr_url_hint)

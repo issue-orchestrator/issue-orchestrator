@@ -114,7 +114,7 @@ def _has_critical_errors(
     return bool(critical)
 
 
-def _has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
+def has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
     """Check if processing_errors contains review exchange halt/failure markers."""
     if not processing_errors:
         return False
