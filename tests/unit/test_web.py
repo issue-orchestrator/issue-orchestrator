@@ -1991,11 +1991,11 @@ class TestDialogEndpoints:
 
     def test_doctor_dialog_returns_non_200_upstream_response(self):
         """GET /api/dialog/doctor forwards upstream error response unchanged."""
-        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints import web_diagnostics_routes
         from fastapi.responses import JSONResponse
 
         with patch.object(
-            web,
+            web_diagnostics_routes,
             "get_doctor",
             AsyncMock(return_value=JSONResponse({"error": "Orchestrator not running"}, status_code=503)),
         ):

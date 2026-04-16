@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import os
-import platform
 import signal
 import socket
 import subprocess
@@ -20,32 +19,13 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from ..contracts.ui_openapi_models import (
-    BlockedIssuesDialogPayload,
-    ConfigDialogPayload,
-    DebugDialogPayload,
-    DoctorDialogPayload,
-    InfoDialogPayload,
-    PhaseDialogPayload,
-    SessionDiagnosticsDialogPayload,
-    ValidationFailureDialogPayload,
-)
 from ..control.queue_cache import QueueCache, QueueMutationStatus, clear_issue_refresh, record_issue_refreshes
 from ..control.shutdown_manager import shutdown_manager
 from ..events import EventName
 from ..execution.client_host import ClientHost, detect_client_host
 from ..history import latest_history_entries_by_issue
 from ..ports.event_sink import make_trace_event
-from ..view_models.dialogs import (
-    build_blocked_issues_dialog,
-    build_config_dialog,
-    build_debug_dialog,
-    build_doctor_dialog,
-    build_info_dialog,
-    build_phase_dialog,
-    build_session_diagnostics_dialog,
-    build_validation_failure_dialog,
-)
+from .web_diagnostics_routes import install_web_diagnostics_dependencies, web_diagnostics_router
 from .timeline_presentation import (
     _decorate_timeline_events,
     _is_agent_scoped_event,
@@ -64,12 +44,7 @@ from .web_session_context import (
     install_web_session_context_dependencies,
     resolve_issue_session_context,
 )
-from .web_session_routes import (
-    get_session_manifest,
-    get_session_phases,
-    serve_terminal_recording,
-    web_session_router,
-)
+from .web_session_routes import serve_terminal_recording, web_session_router
 from .web_status_routes import web_status_router
 
 if TYPE_CHECKING:
@@ -206,12 +181,14 @@ install_web_operator_dependencies(
     broadcast_event=broadcast_event,
     trigger_server_shutdown=trigger_server_shutdown,
 )
+install_web_diagnostics_dependencies(app, get_client_host=lambda: _client_host)
 app.include_router(web_read_model_router)
 app.include_router(web_status_router)
 app.include_router(web_refresh_router)
 app.include_router(web_settings_router)
 app.include_router(web_log_router)
 app.include_router(web_operator_router)
+app.include_router(web_diagnostics_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 
@@ -234,13 +211,6 @@ def set_server(server) -> None:
     _server = server
 
 
-def _response_json(response: JSONResponse) -> dict:
-    body = response.body
-    if isinstance(body, memoryview):
-        body = body.tobytes()
-    return json.loads(body.decode("utf-8"))
-
-
 @app.get("/favicon.ico")
 async def favicon():
     """Serve the logo as favicon."""
@@ -253,211 +223,6 @@ async def favicon():
             media_type="image/svg+xml",
         )
     return Response(status_code=204)
-
-
-@app.get("/api/dialog/info", response_model=InfoDialogPayload)
-async def get_info_dialog() -> InfoDialogPayload | JSONResponse:
-    """Get view model for the About dialog."""
-    response = await get_info()
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return InfoDialogPayload.model_validate(build_info_dialog(payload))
-
-
-@app.get("/api/dialog/config", response_model=ConfigDialogPayload)
-async def get_config_dialog() -> ConfigDialogPayload | JSONResponse:
-    """Get view model for the configuration dialog."""
-    response = await get_config()
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return ConfigDialogPayload.model_validate(build_config_dialog(payload.get("config", "")))
-
-
-@app.get("/api/dialog/debug", response_model=DebugDialogPayload)
-async def get_debug_dialog() -> DebugDialogPayload | JSONResponse:
-    """Get view model for the debug dialog."""
-    response = await get_debug()
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return DebugDialogPayload.model_validate(build_debug_dialog(payload))
-
-
-@app.get("/api/dialog/doctor", response_model=DoctorDialogPayload)
-async def get_doctor_dialog() -> DoctorDialogPayload | JSONResponse:
-    """Get view model for the doctor dialog."""
-    response = await get_doctor()
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return DoctorDialogPayload.model_validate(build_doctor_dialog(payload))
-
-
-@app.get("/api/dialog/session-diagnostics/{issue_number}", response_model=SessionDiagnosticsDialogPayload)
-async def get_session_diagnostics_dialog(
-    issue_number: int,
-    run_dir: str | None = None,
-) -> SessionDiagnosticsDialogPayload | JSONResponse:
-    """Get view model for session diagnostics dialog."""
-    response = await get_session_manifest(
-        issue_number,
-        orchestrator=get_orchestrator(),
-        run_dir=run_dir,
-    )
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return SessionDiagnosticsDialogPayload.model_validate(build_session_diagnostics_dialog(issue_number, payload))
-
-
-@app.get("/api/dialog/validation-failure/{issue_number}", response_model=ValidationFailureDialogPayload)
-async def get_validation_failure_dialog(
-    issue_number: int,
-    run_dir: str | None = None,
-) -> ValidationFailureDialogPayload | JSONResponse:
-    """Get a focused dialog for a failed validation run."""
-    response = await get_session_manifest(
-        issue_number,
-        orchestrator=get_orchestrator(),
-        run_dir=run_dir,
-    )
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    validation = payload.get("validation_failure")
-    if not isinstance(validation, dict):
-        return JSONResponse({"error": "No validation failure details found"}, status_code=404)
-    return ValidationFailureDialogPayload.model_validate(build_validation_failure_dialog(issue_number, payload))
-
-
-@app.get("/api/dialog/blocked-issues", response_model=BlockedIssuesDialogPayload)
-async def get_blocked_issues_dialog() -> BlockedIssuesDialogPayload | JSONResponse:
-    """Get view model for blocked issues dialog."""
-    response = await get_blocked_issues()
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return BlockedIssuesDialogPayload.model_validate(build_blocked_issues_dialog(payload))
-
-
-@app.get("/api/dialog/phase/{issue_number}", response_model=PhaseDialogPayload)
-async def get_phase_dialog(issue_number: int, phase: str | None = None) -> PhaseDialogPayload | JSONResponse:
-    """Get view model for phase details dialog."""
-    response = await get_session_phases(issue_number, orchestrator=get_orchestrator())
-    if response.status_code != 200:
-        return response
-    payload = _response_json(response)
-    return PhaseDialogPayload.model_validate(build_phase_dialog(payload, issue_number, phase))
-
-
-@app.get("/api/dependency-problems")
-async def get_dependency_problems() -> JSONResponse:
-    """Get current dependency problems for issues.
-
-    Returns a dict mapping issue number to problem details.
-    The web UI fetches this on load and then listens for
-    dependency.blocked/dependency.unblocked events to stay updated.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-
-    # Build URL helper
-    def make_issue_url(issue_number: int) -> str:
-        return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
-
-    problems = {}
-    for issue_num, problem in state.dependency_problems.items():
-        problems[issue_num] = {
-            "issue_number": problem.issue_number,
-            "issue_title": problem.issue_title,
-            "summary": problem.summary,
-            "issue_url": make_issue_url(problem.issue_number),
-        }
-
-    return JSONResponse({"problems": problems})
-
-
-@app.get("/api/stale-issues")
-async def get_stale_issues() -> JSONResponse:
-    """Get issues with stale in-progress labels.
-
-    Returns a dict mapping issue number to stale state details.
-    The web UI fetches this on load and then listens for
-    stale.in_progress_detected/stale.in_progress_cleared events to stay updated.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-    threshold = config.stale_escalation_ticks
-
-    stale = {}
-    for issue_num, ticks in state.stale_issue_ticks.items():
-        stale[issue_num] = {
-            "issue_number": issue_num,
-            "consecutive_ticks": ticks,
-            "persistent": threshold > 0 and ticks >= threshold,
-            "threshold": threshold,
-        }
-
-    return JSONResponse({"stale": stale})
-
-
-@app.get("/api/info")
-async def get_info() -> JSONResponse:
-    """Get orchestrator info for the About modal."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-    from ..infra.repo_identity import build_repo_identity
-    repo_identity = build_repo_identity(config.repo_root)
-    commit_sha = repo_identity.commit_sha
-    client_capabilities = _client_host.capabilities()
-
-    return JSONResponse({
-        "version": "0.1.0",  # TODO: get from package
-        "repo": config.repo,
-        "repo_root": str(config.repo_root) if config.repo_root else None,
-        "ui_mode": config.ui_mode,
-        "terminal_backend": config.terminal_adapter or "subprocess",
-        "client_capabilities": {
-            "focus_session": (config.terminal_adapter or "subprocess") != "subprocess",
-            "open_path": client_capabilities.open_path,
-            "reveal_worktree": client_capabilities.reveal_worktree,
-            "local_server_paths_only": client_capabilities.local_only,
-            "host_platform": platform.system().lower(),
-        },
-        "commit_sha": commit_sha,
-        "commit_short": commit_sha[:7] if commit_sha else None,
-        "repo_identity": repo_identity.to_dict(),
-        "max_sessions": config.max_concurrent_sessions,
-        "active_sessions": len(state.active_sessions),
-        "completed_today": len(state.completed_today),
-    })
-
-
-@app.get("/api/config")
-async def get_config() -> JSONResponse:
-    """Get the raw config file contents."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    config = _orchestrator.config
-
-    # Try to read the config file
-    config_text = "Config file not found"
-    if config.config_path and config.config_path.exists():
-        config_text = config.config_path.read_text()
-
-    return JSONResponse({"config": config_text})
 
 
 @app.get("/api/events")
@@ -663,97 +428,6 @@ async def bulk_deprioritize(request: Request) -> JSONResponse:
             state.priority_queue.remove(num)
             removed.append(num)
     return JSONResponse({"deprioritized": removed})
-
-
-@app.get("/api/blocked-issues")
-async def get_blocked_issues() -> JSONResponse:
-    """Get all blocked issues with their blocking labels and context.
-
-    Returns detailed information for the "Manage Blocked Issues" modal.
-    Includes worktree path and completion status for debug session support.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    from ..control.worktree_manager import get_worktree_path
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-    lm = _orchestrator.deps.label_manager
-
-    def make_issue_url(issue_number: int) -> str:
-        return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
-
-    blocked_issues = []
-
-    # Get blocked issues from cached queue
-    if state.startup_status == "complete":
-        for issue in state.cached_queue_issues:
-            if not issue.is_blocked:
-                continue
-
-            blocking_labels = lm.get_blocking(list(issue.labels))
-            blocking_label = blocking_labels[0] if blocking_labels else "blocked"
-            needs_human = lm.requires_human_any(list(issue.labels))
-
-            # Try to get failure reason from history
-            failure_reason = None
-            for entry in reversed(state.session_history):
-                if entry.issue_number == issue.number:
-                    failure_reason = getattr(entry, 'status_reason', None) or entry.status
-                    break
-
-            # Get worktree info for debug session support
-            worktree_path = get_worktree_path(config, issue.number)
-            worktree_exists = worktree_path.exists()
-            has_completion = False
-            if worktree_exists:
-                completion_path = worktree_path / ".issue-orchestrator" / "completion.json"
-                has_completion = completion_path.exists()
-
-            blocked_issues.append({
-                "issue_number": issue.number,
-                "title": issue.title,
-                "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
-                "blocking_label": blocking_label,
-                "all_blocking_labels": blocking_labels,
-                "needs_human": needs_human,
-                "failure_reason": failure_reason,
-                "issue_url": make_issue_url(issue.number),
-                "worktree_path": str(worktree_path) if worktree_exists else None,
-                "has_completion": has_completion,
-            })
-
-    return JSONResponse({"blocked_issues": blocked_issues})
-
-
-@app.get("/api/failure-diagnosis/{issue_number}")
-async def get_failure_diagnosis(issue_number: int) -> JSONResponse:
-    """Get detailed failure diagnosis for an issue.
-
-    Analyzes AI session logs to provide actionable insights about why a session failed.
-    Returns the log path so users can open it directly.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    diagnosis = _orchestrator.get_failure_diagnosis(issue_number)
-    return JSONResponse(diagnosis)
-
-
-@app.post("/api/issues/{issue_number}/audit")
-async def force_issue_audit(issue_number: int) -> JSONResponse:
-    """Force a fresh session-failure audit for an issue.
-
-    This is an operator-facing alias for the failure diagnosis path. Use it when
-    you want an explicit "audit this issue now" action without going through the
-    queue-audit tool, which answers a different question.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    diagnosis = _orchestrator.get_failure_diagnosis(issue_number)
-    return JSONResponse(diagnosis)
 
 
 @app.post("/api/unblock-retry")
@@ -1122,75 +796,6 @@ def _make_reset_failure(
         "error": error,
         "partial": partial,
     }
-
-
-@app.get("/api/debug")
-async def get_debug() -> JSONResponse:
-    """Get debug info for troubleshooting."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-
-    agents = {}
-    for name, agent_cfg in config.agents.items():
-        agents[name] = {
-            "timeout": agent_cfg.timeout_minutes,
-            "command": agent_cfg.command[:50] + "..." if len(agent_cfg.command) > 50 else agent_cfg.command,
-        }
-
-    # Startup options based on current config state
-    startup_options = {
-        "ui_mode": config.ui_mode,
-        "web_port": config.web_port,
-        "test_mode": config.filtering.label == "test-data",  # Inferred from filter
-        "filtering": {
-            "label": config.filtering.label,
-            "milestone": config.filtering.milestone,
-            "milestones": config.filtering.get_milestones(),
-        },
-        "max_sessions": config.max_concurrent_sessions,
-    }
-
-    return JSONResponse({
-        "paused": state.paused,
-        "config_path": str(config.config_path) if config.config_path else "None",
-        "repo_root": str(config.repo_root),
-        "priority_queue": state.priority_queue,
-        "agents": agents,
-        "startup_options": startup_options,
-    })
-
-
-@app.get("/api/doctor")
-async def get_doctor() -> JSONResponse:
-    """Run diagnostics and return health status."""
-    from ..infra.doctor import run_doctor
-    from ..execution.command_runner import LocalCommandRunner
-
-    # Get config from running orchestrator if available
-    config = _orchestrator.config if _orchestrator else None
-
-    # Run unified doctor
-    result = run_doctor(config=config, runner=LocalCommandRunner())
-
-    # Add orchestrator-specific check (only web knows if orchestrator is running)
-    if _orchestrator:
-        # Insert at position 2 (after auth checks)
-        result.checks.insert(2, type(result.checks[0])(
-            name="Orchestrator",
-            status="ok",
-            detail=f"Running, {'paused' if _orchestrator.state.paused else 'active'}",
-        ))
-    else:
-        result.checks.insert(2, type(result.checks[0])(
-            name="Orchestrator",
-            status="error",
-            detail="Not running",
-        ))
-
-    return JSONResponse(result.to_dict())
 
 
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
