@@ -305,8 +305,7 @@ def _install_helper_script(
 ) -> None:
     helper_script.parent.mkdir(parents=True, exist_ok=True)
     source_path = Path(__file__).parent / "hooks" / "block_no_verify.py"
-    helper_body = source_path.read_text()
-    rendered = f"#!/usr/bin/env python3\n# {MANAGED_HELPER_MARKER}\n\n{helper_body}"
+    rendered = _render_helper_script(source_path)
     _write_executable_file(helper_script, rendered, result)
 
 
@@ -350,6 +349,11 @@ fi
 echo "verify-pr: running $validation_cmd"
 bash -lc "$validation_cmd"
 """
+
+
+def _render_helper_script(source_path: Path) -> str:
+    helper_body = source_path.read_text()
+    return f"#!/usr/bin/env python3\n# {MANAGED_HELPER_MARKER}\n\n{helper_body}"
 
 
 def _render_repo_pre_push_hook(verify_script: Path, repo_root: Path) -> str:

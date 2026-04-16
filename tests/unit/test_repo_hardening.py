@@ -12,6 +12,7 @@ from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_hardening import (
     _render_repo_pre_push_hook,
+    _render_helper_script,
     harden_repo,
     inspect_repo_hardening,
     RepoHardeningError,
@@ -166,6 +167,14 @@ def test_harden_repo_rejects_explicit_external_hooks_path(tmp_path: Path) -> Non
         match="core.hooksPath must resolve inside the repository",
     ):
         harden_repo(_make_config(repo), hooks_path=str(external_hooks))
+
+
+def test_checked_in_helper_matches_generated_output() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    source_path = repo_root / "src" / "issue_orchestrator" / "infra" / "hooks" / "block_no_verify.py"
+    helper_path = repo_root / "scripts" / "agent-hooks" / "block_no_verify.py"
+
+    assert helper_path.read_text() == _render_helper_script(source_path)
 
 
 def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:

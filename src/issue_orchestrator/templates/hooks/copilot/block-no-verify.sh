@@ -21,36 +21,13 @@ set -euo pipefail
 
 input="$(< /dev/stdin)"
 
-fallback_block_no_verify() {
-    local payload="$1"
-    if [[ "$payload" == *"--no-verify"* && "$payload" == *"git"* ]]; then
-        return 0
-    fi
-    if [[ "$payload" == *"gh pr merge"* ]]; then
-        return 0
-    fi
-    if [[ "$payload" == *"gh api"* && "$payload" == *"/merge"* ]]; then
-        return 0
-    fi
-    if [[ "$payload" == *"git commit -n"* ]]; then
-        return 0
-    fi
-    if [[ "$payload" == *"core.hooksPath=/dev/null"* ]]; then
-        return 0
-    fi
-    if [[ "$payload" == *"git config"* && "$payload" == *"core.hooksPath"* && "$payload" == *"/dev/null"* ]]; then
-        return 0
-    fi
-    return 1
-}
+# Fail closed if the Python evaluator is unavailable or errors. This hook is an
+# enforcement layer; allowing execution through a broken hook would bypass the
+# repo guardrails entirely.
 
 python_bin="$(command -v python3 || true)"
 if [[ -z "$python_bin" ]]; then
-    if fallback_block_no_verify "$input"; then
-        echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: python3 missing; blocked --no-verify."}'
-    else
-        echo '{"permissionDecision": "allow"}'
-    fi
+    echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: python3 is required for orchestrator hooks. Fix PATH or install python3."}'
     exit 0
 fi
 
@@ -79,11 +56,7 @@ fi
 status=$?
 set -e
 if [[ $status -ne 0 ]]; then
-    if fallback_block_no_verify "$input"; then
-        echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: hook evaluation failed; blocked --no-verify."}'
-    else
-        echo '{"permissionDecision": "allow"}'
-    fi
+    echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: hook evaluation failed."}'
     exit 0
 fi
 
