@@ -435,7 +435,12 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
                 if (!colEl) continue;
                 const countEl = colEl.querySelector('.count');
                 const visibleItems = filterSuppressedItems(col.items || [], col.id);
-                if (countEl) countEl.textContent = visibleItems.length;
+                const serverCount = Number(col.count);
+                if (countEl) {
+                    countEl.textContent = String(
+                        Number.isFinite(serverCount) ? serverCount : visibleItems.length,
+                    );
+                }
 
                 // Rebuild compact cards (skip if column is expanded — it has its own refresh)
                 if (colEl.dataset.expanded !== 'true') {
