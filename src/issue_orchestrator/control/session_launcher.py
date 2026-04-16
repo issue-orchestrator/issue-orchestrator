@@ -30,13 +30,9 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .completion_handler import CompletionHandler
     from .action_applier import ActionApplier
-    from .session_manager import SessionType
     from .session_controller import SessionController
-    from .session_restorer import SessionRestorer
-    from .state_machine_manager import StateMachineManager
     from ..observation.observer import SessionObserver
     from ..domain.models import OrchestratorState
-    from ..ports.session_runner import DiscoveredSession
     from ..ports.claim_manager import ClaimManager
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -45,7 +41,7 @@ from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
-from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind, AgentConfig
+from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, get_completion_path, SessionKey, TaskKind, AgentConfig
 from ..domain.issue_key import IssueKey
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
@@ -70,7 +66,6 @@ from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .review_validity import evaluate_review_validity
-from .active_sessions import append_unique_active_sessions
 from .session_manager import SessionManager
 from .transition_log import log_transition
 
@@ -2330,84 +2325,6 @@ def _surface_failure_context(session: Session, status: SessionStatus) -> None:
         logger.warning("[FAILURE_CONTEXT] Could not extract failure context for #%d: %s", session.issue.number, e)
 
 
-def orchestrator_launch_review_session(
-    review: PendingReview,
-    state: "OrchestratorState",
-    session_launcher: SessionLauncher,
-    session_restorer: "SessionRestorer",
-) -> Optional[Session]:
-    """Orchestrator wrapper for launching review sessions - moved per method table.
-
-    Args:
-        review: The pending review to launch
-        state: Orchestrator state (active_sessions, pending_reviews)
-        session_launcher: For launching the actual session
-        session_restorer: For restoring orphaned terminals
-
-    Returns:
-        The launched session or None
-    """
-    result = session_launcher.launch_review_session(review, state.active_sessions)
-    # Always remove from pending after attempting launch
-    state.pending_reviews = [r for r in state.pending_reviews if r.pr_number != review.pr_number]
-    if result.success and result.session:
-        append_unique_active_sessions(state.active_sessions, [result.session])
-    elif result.keep_queued:
-        # Terminal exists but we can't track it - try to restore/adopt it
-        session_name = f"review-{review.pr_number}"
-        restored = session_restorer.restore_sessions(
-            running=[{"issue_number": review.issue_number, "tab_name": session_name, "is_review": True}],
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
-    return result.session if result.success else None
-
-
-def orchestrator_launch_rework_session(
-    rework: PendingRework,
-    state: "OrchestratorState",
-    session_launcher: SessionLauncher,
-    session_restorer: "SessionRestorer",
-) -> Optional[Session]:
-    """Orchestrator wrapper for launching rework sessions - moved per method table.
-
-    Args:
-        rework: The pending rework to launch
-        state: Orchestrator state (active_sessions, pending_reworks)
-        session_launcher: For launching the actual session
-        session_restorer: For restoring orphaned terminals
-
-    Returns:
-        The launched session or None
-    """
-    result = session_launcher.launch_rework_session(rework, state.active_sessions)
-    # Always remove from pending after attempting launch
-    state.pending_reworks = [r for r in state.pending_reworks if r.issue_key != rework.issue_key]
-    if result.success and result.session:
-        append_unique_active_sessions(state.active_sessions, [result.session])
-    elif result.keep_queued:
-        # Terminal exists but we can't track it - try to restore/adopt it
-        issue_number = rework.resolve_issue_number()
-        if issue_number is None:
-            logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
-            return None
-        session_name = f"rework-{issue_number}"
-        restored = session_restorer.restore_sessions(
-            running=[{"issue_number": issue_number, "tab_name": session_name, "is_review": False}],
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
-    return result.session if result.success else None
-
-
 def process_active_sessions(
     state: "OrchestratorState",
     observer: "SessionObserver",
@@ -2486,116 +2403,3 @@ def process_active_sessions(
                 session.issue.number,
                 obs.observation.value,
             )
-
-
-def launch_triage_session(
-    triage: PendingTriageReview,
-    config: Config,
-    launch_session_fn: Callable[[Issue], Optional[Session]],
-) -> None:
-    """Launch triage session - moved from Orchestrator per method table.
-
-    Args:
-        triage: The pending triage review
-        config: Configuration with triage agent settings
-        launch_session_fn: Function to launch issue sessions
-    """
-    agent = config.triage_review_agent
-    if not agent or agent not in config.agents:
-        raise ValueError(f"Invalid triage agent: {agent}")
-    launch_session_fn(Issue(triage.issue_number, triage.title, [agent]))
-
-
-def session_launcher_callback(
-    session_type: "SessionType",
-    number: int,
-    launch_issue_fn: Callable[[int], Optional[Session]],
-    launch_review_fn: Callable[[int], Optional[Session]],
-    launch_rework_fn: Callable[[int], Optional[Session]],
-    launch_triage_fn: Callable[[int], Optional[Session]],
-) -> Optional[Session]:
-    """Session launcher callback - moved per method table."""
-    from .session_manager import SessionType
-    handlers = {
-        SessionType.ISSUE: launch_issue_fn,
-        SessionType.REVIEW: launch_review_fn,
-        SessionType.REWORK: launch_rework_fn,
-        SessionType.TRIAGE: launch_triage_fn,
-    }
-    return handlers.get(session_type, lambda n: None)(number)
-
-
-def restore_running_sessions(
-    running: list["DiscoveredSession"],
-    active_sessions: list[Session],
-    session_restorer: "SessionRestorer",
-) -> None:
-    """Restore running sessions - moved per method table."""
-    restored = session_restorer.restore_sessions(running, active_sessions)
-    append_unique_active_sessions(active_sessions, restored)
-
-
-def parse_session_ref(
-    session_name: str,
-    operation: str,
-    events: EventSink,
-):
-    """Parse session ref - moved per method table."""
-    from .session_manager import SessionRef
-    try:
-        return SessionRef.from_name(session_name)
-    except ValueError as e:
-        from ..events import EventName
-        from ..ports import make_trace_event
-        events.publish(make_trace_event(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)}))
-        raise
-
-
-def create_session(
-    name: str,
-    cmd: str,
-    wd: Path,
-    title: str | None,
-    session_manager: SessionManager,
-    events: EventSink,
-) -> bool:
-    """Create session - moved per method table."""
-    from .session_manager import SessionContext
-    ref = parse_session_ref(name, "create", events)
-    return session_manager.start(SessionContext(ref=ref, command=cmd, working_dir=wd, title=title))
-
-
-def session_exists(name: str, session_manager: SessionManager, events: EventSink) -> bool:
-    """Check if session exists - moved per method table."""
-    return session_manager.exists(parse_session_ref(name, "exists", events))
-
-
-def kill_session(name: str, session_manager: SessionManager, events: EventSink) -> None:
-    """Kill session - moved per method table."""
-    session_manager.stop(parse_session_ref(name, "kill", events))
-
-
-def get_session_machine(name: str, n: int, timeout: int, state_machines: "StateMachineManager") -> Optional["SessionStateMachine"]:
-    """Get session state machine - moved per method table."""
-    return state_machines.get_session_machine(name, n, timeout)
-
-
-def orchestrator_launch_session(
-    issue: IssueProtocol,
-    state: "OrchestratorState",
-    session_launcher: SessionLauncher,
-) -> Optional[Session]:
-    """Launch session wrapper - moved per method table.
-
-    Args:
-        issue: The issue to launch a session for
-        state: Orchestrator state (active_sessions)
-        session_launcher: For launching the actual session
-
-    Returns:
-        The launched session or None
-    """
-    result = session_launcher.launch_issue_session(issue, state.active_sessions)
-    if result.success and result.session:
-        append_unique_active_sessions(state.active_sessions, [result.session])
-    return result.session if result.success else None

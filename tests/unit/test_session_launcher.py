@@ -23,10 +23,12 @@ from issue_orchestrator.control.session_launcher import (
     detect_existing_work,
     log_transition,
     handle_session_completion,
+    process_active_sessions,
+)
+from issue_orchestrator.control.session_routing import (
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
-    process_active_sessions,
     launch_triage_session,
     session_launcher_callback,
     restore_running_sessions,
