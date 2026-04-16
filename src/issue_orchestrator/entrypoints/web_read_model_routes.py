@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import time
 from typing import Any
@@ -35,6 +36,29 @@ class ViewModelSnapshotPayload(BaseModel):
     count: int
 
 
+@dataclass(frozen=True)
+class DashboardQueryParams:
+    """Shared dashboard pagination and tab query parameters."""
+
+    queue_page: int
+    e2e_page: int
+    active_tab: str
+
+
+def _dashboard_query_params(request: Request) -> DashboardQueryParams:
+    queue_page = int(request.query_params.get("page", 1))
+    if queue_page < 1:
+        queue_page = 1
+    e2e_page = int(request.query_params.get("e2e_page", 1))
+    if e2e_page < 1:
+        e2e_page = 1
+    return DashboardQueryParams(
+        queue_page=queue_page,
+        e2e_page=e2e_page,
+        active_tab=request.query_params.get("tab", "flow"),
+    )
+
+
 def _build_dashboard_vm_sync(orchestrator: Any, queue_page: int, active_tab: str, e2e_page: int):
     return build_dashboard_view_model(
         orchestrator,
@@ -65,15 +89,8 @@ async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -
     """Render the main dashboard."""
     request_start = time.time()
 
-    # Get query params
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
-    logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, queue_page, active_tab)
+    query = _dashboard_query_params(request)
+    logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, query.queue_page, query.active_tab)
 
     templates = get_templates()
     template = templates.get_template("dashboard.html")
@@ -81,9 +98,9 @@ async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -
     view_model = await asyncio.to_thread(
         _build_dashboard_vm_sync,
         orchestrator,
-        queue_page,
-        active_tab,
-        e2e_page,
+        query.queue_page,
+        query.active_tab,
+        query.e2e_page,
     )
     vm_elapsed = time.time() - vm_start
     render_start = time.time()
@@ -105,28 +122,24 @@ async def get_view_model(
     orchestrator: WebOrchestratorDependency,
 ) -> DashboardViewModelPayload | JSONResponse:
     """Get the dashboard view model as JSON."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
+    query = _dashboard_query_params(request)
 
     view_model = await asyncio.to_thread(
         _build_dashboard_vm_sync,
         orchestrator,
-        queue_page,
-        active_tab,
-        e2e_page,
+        query.queue_page,
+        query.active_tab,
+        query.e2e_page,
     )
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
 
 @web_read_model_router.get("/api/view-model-snapshot", response_model=ViewModelSnapshotPayload)
 async def get_view_model_snapshot(
+    # Keep the dependency-injected orchestrator before Query defaults so
+    # FastAPI and Python signature ordering both remain valid.
     orchestrator: WebOrchestratorDependency,
     tab: str = Query("flow"),
     page: int = Query(1, ge=1),
@@ -136,7 +149,7 @@ async def get_view_model_snapshot(
 
     This keeps tab counts and rendered list rows in lockstep for UI refreshes.
     """
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     queue_page = page
@@ -165,22 +178,16 @@ async def get_issue_rows(
     orchestrator: WebOrchestratorDependency,
 ) -> IssueRowsPayload | JSONResponse:
     """Get rendered issue rows for the current view."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
+    query = _dashboard_query_params(request)
 
     templates = get_templates()
     template = templates.get_template("issue_row.html")
 
     def _build_rows_sync() -> tuple[Any, list[dict[str, Any]]]:
-        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
+        vm = _build_dashboard_vm_sync(orchestrator, query.queue_page, query.active_tab, query.e2e_page)
         return vm, _render_issue_rows_sync(template, vm)
 
     view_model, rows = await asyncio.to_thread(_build_rows_sync)
