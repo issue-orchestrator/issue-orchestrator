@@ -61,6 +61,7 @@ from .timeline_presentation import (
 )
 from .web_issue_detail_routes import web_issue_detail_router
 from .web_read_model_routes import web_read_model_router
+from .web_refresh_routes import web_refresh_router
 from .web_session_context import (
     install_web_session_context_dependencies,
     resolve_issue_session_context,
@@ -199,6 +200,7 @@ def _resolve_issue_session_context(issue_number: int):
 install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 app.include_router(web_read_model_router)
 app.include_router(web_status_router)
+app.include_router(web_refresh_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 
@@ -345,131 +347,6 @@ async def get_phase_dialog(issue_number: int, phase: str | None = None) -> Phase
         return response
     payload = _response_json(response)
     return PhaseDialogPayload.model_validate(build_phase_dialog(payload, issue_number, phase))
-
-
-@app.post("/api/pause")
-async def pause() -> JSONResponse:
-    """Pause the orchestrator."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    _orchestrator.pause()
-    return JSONResponse({"status": "paused"})
-
-
-@app.post("/api/resume")
-async def resume() -> JSONResponse:
-    """Resume the orchestrator."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    _orchestrator.resume()
-    return JSONResponse({"status": "resumed"})
-
-
-@app.post("/api/refresh")
-async def refresh(request: Request) -> JSONResponse:
-    """Request an immediate refresh of issues from GitHub.
-
-    This triggers the orchestrator to fetch issues on the next loop iteration,
-    bypassing the fetch-layer network sync interval. Also resets the timer for
-    the next scheduled refresh.
-
-    Optional JSON body:
-        inflight_stable_ids: list[str] - Issue IDs that tests expect to discover.
-            If provided and these issues are not found after a cached refresh,
-            the orchestrator will retry without cache to handle GitHub's
-            eventual consistency.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    # Parse optional inflight_stable_ids from request body
-    inflight_stable_ids: set[str] = set()
-    try:
-        body = await request.body()
-        if body:
-            data = json.loads(body)
-            if isinstance(data, dict) and "inflight_stable_ids" in data:
-                ids = data["inflight_stable_ids"]
-                if isinstance(ids, list):
-                    inflight_stable_ids = set(str(i) for i in ids)
-    except (json.JSONDecodeError, ValueError):
-        pass  # Ignore malformed body, proceed with empty set
-
-    _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
-    return JSONResponse({
-        "status": "refresh_requested",
-        "refresh": {
-            "requested": True,
-            "in_progress": bool(_orchestrator.state.queue_refresh_in_progress),
-        },
-    })
-
-
-@app.post("/api/refresh/visibility")
-async def update_refresh_visibility(request: Request) -> JSONResponse:
-    """Store issue visibility hints from Flow UI for visibility-aware refresh.
-
-    JSON body:
-        issues: list[int] - Issue numbers currently visible to the user.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    raw_issues = body.get("issues", [])
-    if not isinstance(raw_issues, list):
-        return JSONResponse({"error": "issues must be a list"}, status_code=400)
-
-    visible_numbers: list[int] = []
-    for value in raw_issues:
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            continue
-        if number > 0:
-            visible_numbers.append(number)
-
-    state = _orchestrator.state
-    state.ui_visible_issue_numbers = sorted(set(visible_numbers))
-    state.ui_visible_updated_at = time.time()
-    return JSONResponse({"status": "ok", "count": len(state.ui_visible_issue_numbers)})
-
-
-@app.post("/api/issues/{issue_number}/refresh")
-async def refresh_issue(issue_number: int) -> JSONResponse:
-    """Refresh a single issue from GitHub and update cached queue state."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    issue = _orchestrator.repository_host.get_issue(issue_number)
-    if issue is None:
-        return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-    queue_cache = QueueCache(config, state)
-    outcome = queue_cache.upsert_refreshed_issue(issue)
-    refreshed_at = time.time()
-    if outcome.status == QueueMutationStatus.ACCEPTED:
-        record_issue_refreshes(state, {issue_number}, refreshed_at)
-    else:
-        clear_issue_refresh(state, issue_number)
-    queue_cache.prune_refresh_timestamps()
-
-    return JSONResponse({
-        "status": "refreshed" if outcome.status == QueueMutationStatus.ACCEPTED else outcome.status.value,
-        "issue_number": issue_number,
-        "updated": outcome.updated,
-        "in_scope": outcome.in_queue,
-        "last_refreshed_label": "just now",
-        "last_refreshed_age_seconds": 0,
-        "is_stale": False,
-        "stale_reason": "",
-    })
 
 
 def _label_manager_for_api() -> LabelManager:
