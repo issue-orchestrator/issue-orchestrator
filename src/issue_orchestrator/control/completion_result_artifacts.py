@@ -1,0 +1,275 @@
+"""Completion result artifacts, comments, and durable record helpers."""
+
+import json
+import logging
+import shutil
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Protocol
+
+from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
+from ..domain.events import SessionEvent
+from ..ports.session_output import SessionOutput
+from .completion_failure_reporting import (
+    build_cleanup_failure_comment,
+    build_processing_failure_comment,
+    write_failure_diagnostic,
+)
+from .completion_types import ProcessingResult
+
+logger = logging.getLogger(__name__)
+
+EmitCompletionEvent = Callable[[SessionEvent, int, dict[str, Any]], None]
+CleanupRecord = Callable[[Path, str | None], bool]
+
+
+class PostIssueComment(Protocol):
+    def __call__(self, issue_number: int, comment: str, *, context: str) -> None: ...
+
+
+def build_processing_result(
+    *,
+    session_output: SessionOutput,
+    worktree: Path,
+    record: CompletionRecord,
+    session_name: str | None,
+    issue_number: int,
+    issue_title: str,
+    branch: str | None,
+    pr_url: str | None,
+    review_exchange_completed: bool,
+    actions_taken: list[str],
+    errors: list[str],
+    error_details: list[dict[str, Any]],
+    total_duration: float,
+    completion_path: str | None,
+    preserved_completion_path: str | None,
+    emit_completion_event: EmitCompletionEvent,
+    post_issue_comment: PostIssueComment,
+    cleanup_completion_record: Callable[[Path, str | None, int], None],
+) -> ProcessingResult:
+    """Build final processing result and handle completion diagnostics."""
+    success = len(errors) == 0 or (
+        RequestedAction.PUSH_BRANCH in record.requested_actions
+        and "Pushed branch to remote" in actions_taken
+    )
+    if any(error.startswith("review_exchange:") for error in errors):
+        success = False
+    logger.info(
+        "Completion result: issue=%s success=%s actions=%s errors=%s pr_url=%s",
+        issue_number,
+        success,
+        actions_taken,
+        errors,
+        pr_url,
+    )
+    logger.info(
+        "Completion processing duration: issue=%s elapsed=%.2fs",
+        issue_number,
+        total_duration,
+    )
+
+    diagnostic_path: str | None = None
+    if success:
+        message = f"Processed {record.outcome.value}: {', '.join(actions_taken)}"
+        emit_completion_event(
+            SessionEvent.COMPLETED,
+            issue_number,
+            {
+                "outcome": record.outcome.value,
+                "actions_taken": actions_taken,
+                "pr_url": pr_url,
+            },
+        )
+    else:
+        message = f"Processing failed: {'; '.join(errors)}"
+        emit_completion_event(
+            SessionEvent.FAILED,
+            issue_number,
+            {
+                "outcome": record.outcome.value,
+                "actions_taken": actions_taken,
+                "errors": errors,
+            },
+        )
+        diagnostic_path = write_failure_diagnostic(
+            session_output=session_output,
+            worktree=worktree,
+            session_name=session_name,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            branch=branch,
+            outcome=record.outcome.value,
+            requested_actions=[action.value for action in record.requested_actions],
+            actions_taken=actions_taken,
+            errors=errors,
+            error_details=error_details,
+            duration_seconds=total_duration,
+        )
+        comment = build_processing_failure_comment(
+            errors=errors,
+            actions_taken=actions_taken,
+            diagnostic_path=diagnostic_path,
+        )
+        post_issue_comment(issue_number, comment, context="processing failure")
+
+    cleanup_completion_record(worktree, completion_path, issue_number)
+
+    review_exchange_halted = any(error.startswith("review_exchange:") for error in errors)
+
+    return ProcessingResult(
+        success=success,
+        message=message,
+        pr_url=pr_url,
+        actions_taken=actions_taken if actions_taken else None,
+        diagnostic_path=diagnostic_path,
+        completion_record_path=preserved_completion_path,
+        errors=errors if errors else None,
+        review_exchange_completed=review_exchange_completed,
+        review_exchange_halted=review_exchange_halted,
+    )
+
+
+def preserve_completion_record(
+    *,
+    session_output: SessionOutput,
+    worktree: Path,
+    completion_path: str | None,
+    session_name: str | None,
+) -> str | None:
+    """Persist a run-scoped completion copy before cleanup for timeline/audit use."""
+    source_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+    if not source_path.exists():
+        return None
+
+    run_dir = run_dir_from_completion_path(worktree, completion_path)
+    if run_dir is None:
+        resolved_session_name = session_name or session_output.session_name_from_path(completion_path)
+        if not resolved_session_name:
+            return None
+        run_dir = session_output.find_run_dir(worktree, resolved_session_name)
+    if not run_dir:
+        return None
+
+    target_path = run_dir / "completion-record.json"
+    try:
+        shutil.copy2(source_path, target_path)
+        session_output.update_manifest(run_dir, {"completion_record_path": str(target_path)})
+        return str(target_path)
+    except Exception:
+        logger.exception("Failed to preserve completion record for run_dir=%s", run_dir)
+        return None
+
+
+def cleanup_completion_record(
+    *,
+    worktree: Path,
+    completion_path: str | None,
+    issue_number: int,
+    cleanup_record: CleanupRecord,
+    post_issue_comment: PostIssueComment,
+) -> None:
+    """Clean up the completion record after processing."""
+    record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+    existed_before = record_path.exists()
+    cleanup_ok = cleanup_record(worktree, completion_path)
+    exists_after = record_path.exists()
+    logger.warning(
+        "CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
+        issue_number,
+        record_path,
+        existed_before,
+        exists_after,
+    )
+    if existed_before and exists_after and not cleanup_ok:
+        comment = build_cleanup_failure_comment(
+            issue_number=issue_number,
+            worktree=worktree,
+            record_path=record_path,
+        )
+        post_issue_comment(issue_number, comment, context="cleanup warning")
+
+
+def build_pr_body(record: CompletionRecord, issue_number: int) -> str:
+    """Build the PR body from the completion record."""
+    parts = [
+        f"Closes #{issue_number}",
+        "",
+    ]
+
+    if record.implementation:
+        parts.extend([
+            "## Implementation",
+            record.implementation,
+            "",
+        ])
+
+    if record.problems:
+        parts.extend([
+            "## Problems Encountered",
+            record.problems,
+            "",
+        ])
+
+    parts.extend([
+        "---",
+        "*Generated by issue-orchestrator*",
+    ])
+
+    return "\n".join(parts)
+
+
+def write_reviewer_feedback_file(
+    run_dir: Path,
+    pr_number: int,
+    review_issues: str,
+) -> Path | None:
+    """Write reviewer feedback to the review session's run directory.
+
+    This supports the local-cache pattern: when a rework session starts shortly
+    after review, it can read feedback from the review run directory instead of
+    depending on GitHub's eventual consistency.
+    """
+    feedback_file = run_dir / "reviewer-feedback.json"
+
+    feedback_data = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pr_number": pr_number,
+        "review_issues": review_issues,
+    }
+
+    try:
+        feedback_file.write_text(json.dumps(feedback_data, indent=2))
+        logger.info(
+            "[REVIEW_FEEDBACK] Wrote reviewer feedback for PR #%d: %s",
+            pr_number,
+            feedback_file,
+        )
+        return feedback_file
+    except Exception as exc:
+        logger.warning(
+            "[REVIEW_FEEDBACK] Failed to write feedback file for PR #%d: %s",
+            pr_number,
+            exc,
+        )
+        return None
+
+
+def run_dir_from_completion_path(
+    worktree: Path,
+    completion_path: str | None,
+) -> Path | None:
+    if not completion_path:
+        return None
+    parts = Path(completion_path).parts
+    try:
+        sessions_idx = parts.index("sessions")
+    except ValueError:
+        return None
+    if sessions_idx + 1 >= len(parts):
+        return None
+    run_dir = worktree.joinpath(*parts[:sessions_idx + 2])
+    if not run_dir.exists() or not run_dir.is_dir():
+        return None
+    return run_dir
