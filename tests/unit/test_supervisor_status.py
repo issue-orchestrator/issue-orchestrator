@@ -8,10 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from issue_orchestrator.infra.supervisor import (
+    LockInfo,
     SupervisorStatus,
     MultiInstanceStatus,
     status,
     start,
+    start_instances,
     find_free_port,
     status_all_instances,
 )
@@ -230,6 +232,28 @@ class TestSupervisorStartErrorSurfacing:
         # Should still mention where logs would be
         assert "logs" in error_msg.lower()
 
+    def test_start_paused_adds_subprocess_flag(self, tmp_path: Path) -> None:
+        """Supervisor passes --start-paused to the child process before launch."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        captured: dict[str, object] = {}
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+        mock_process.poll.return_value = 1
+
+        def spawn_process(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return mock_process
+
+        with pytest.raises(RuntimeError):
+            start(tmp_path, start_paused=True, spawn_process=spawn_process)
+
+        command = captured["args"][0]
+        assert "--start-paused" in command
+
 
 class TestMultiInstanceSupport:
     """Tests for multi-instance supervisor functionality."""
@@ -279,6 +303,50 @@ class TestMultiInstanceSupport:
         assert result.pid == os.getpid()
         assert result.port == 8081
         assert result.instance_id == "orchestrator-1"
+
+    def test_start_instances_forwards_start_paused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multi-instance startup passes --start-paused intent to each child."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("instances: 2\nagents: {}\n")
+
+        calls: list[dict[str, object]] = []
+
+        def fake_start(
+            repo_root: Path | str,
+            config_name: str = "default.yaml",
+            instance_id: str | None = None,
+            port: int | None = None,
+            expected_identity: dict[str, object] | None = None,
+            start_paused: bool = False,
+        ) -> LockInfo:
+            calls.append({
+                "instance_id": instance_id,
+                "port": port,
+                "start_paused": start_paused,
+            })
+            return LockInfo(
+                repo_root=str(repo_root),
+                pid=1000 + len(calls),
+                started_at="",
+                http_port=port or 0,
+                state_dir=str(tmp_path / ".issue-orchestrator" / "state"),
+                recovered=False,
+                instance_id=instance_id,
+            )
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.supervisor.find_free_port",
+            MagicMock(side_effect=[19081, 19082]),
+        )
+        monkeypatch.setattr("issue_orchestrator.infra.supervisor.start", fake_start)
+
+        infos = start_instances(tmp_path, count=2, start_paused=True)
+
+        assert [info.instance_id for info in infos] == ["orchestrator-1", "orchestrator-2"]
+        assert [call["start_paused"] for call in calls] == [True, True]
 
 
 class TestMultiInstanceStatus:

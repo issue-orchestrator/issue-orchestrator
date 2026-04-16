@@ -362,6 +362,8 @@ class TestControlCenterTemplate:
         assert "Start engine" in body
         assert "Not running" in body
         assert "Closing this window does not stop repository engines" in body
+        assert "await startRepo(path, null, true);" in body
+        assert "start_paused: startPaused" in body
         assert ">Stopped<" not in body
         assert 'id="sidebarRepoList"' not in body
         assert "nav-repo-list" not in body
@@ -1811,6 +1813,53 @@ class TestSupervisorStart:
 
         assert response.status_code == 200
         assert response.json()["status"] == "started"
+
+    def test_start_forwards_start_paused_to_launcher(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Start Paused request body is preserved across the control route."""
+        from issue_orchestrator.entrypoints import control_api_orchestrator_routes
+        from issue_orchestrator.infra import launcher
+        from issue_orchestrator.infra.doctor.types import DoctorResult
+        from issue_orchestrator.infra.launcher import LaunchResult
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(
+            control_api_orchestrator_routes,
+            "detect_orchestrator_by_port",
+            lambda *_, **__: None,
+        )
+
+        def fake_launch_subprocess(**kwargs: object) -> LaunchResult:
+            captured.update(kwargs)
+            return LaunchResult(
+                doctor=DoctorResult(checks=[]),
+                launched=True,
+                status="ok",
+                supervisor={"pid": 123, "port": 19080},
+            )
+
+        monkeypatch.setattr(launcher, "launch_subprocess", fake_launch_subprocess)
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={
+                "repo_root": str(tmp_path),
+                "config_name": "default.yaml",
+                "start_paused": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured["start_paused"] is True
 
     def test_start_returns_422_when_doctor_fails(
         self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

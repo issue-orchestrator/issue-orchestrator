@@ -1375,6 +1375,32 @@ class TestRunTick:
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.PLAN_NOOP in event_names
 
+    def test_manual_refresh_runs_while_paused(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """run_tick allows a pending queue refresh while keeping paused planning safe."""
+        inflight = {}
+        sample_orchestrator_state.paused = True
+        sample_orchestrator_state.queue_refresh_requested = True
+        planning_fn = Mock()
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids=inflight,
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.blocked("paused")),
+            run_planning_cycle_fn=planning_fn,
+            emit_heartbeat_fn=Mock(),
+        )
+
+        planning_fn.assert_called_once()
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.PLAN_NOOP not in event_names
+
     def test_prunes_expired_inflight_ids(
         self, sample_orchestrator_state, mock_event_sink, sample_event_context
     ):

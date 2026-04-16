@@ -128,6 +128,7 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
     if not config_name.endswith(".yaml"):
         config_name += ".yaml"
     force_restart = bool(body.get("force_restart", False))
+    start_paused = bool(body.get("start_paused", False))
     expected_identity = build_repo_identity(repo_root)
 
     try:
@@ -186,6 +187,7 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
             config_name=config_name,
             supervisor_ops=sv,
             expected_identity=expected_identity.to_dict(),
+            start_paused=start_paused,
         )
 
         if launch_result.status == "doctor_error":
