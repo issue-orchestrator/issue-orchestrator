@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
@@ -76,7 +76,7 @@ from .web_session_routes import (
     serve_terminal_recording,
     web_session_router,
 )
-from .web_templates import TEMPLATE_DIR, get_templates
+from .web_templates import get_templates
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
