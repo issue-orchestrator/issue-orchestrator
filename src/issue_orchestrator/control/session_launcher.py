@@ -28,11 +28,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from .dependency_evaluator import DependencyEvaluator
-    from .completion_handler import CompletionHandler
     from .action_applier import ActionApplier
-    from .session_controller import SessionController
-    from ..observation.observer import SessionObserver
-    from ..domain.models import OrchestratorState
     from ..ports.claim_manager import ClaimManager
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
