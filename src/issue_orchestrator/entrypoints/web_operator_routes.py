@@ -18,14 +18,7 @@ from ..control.queue_cache import QueueCache
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost
 from ..execution.label_ops import LabelOperation, apply_label_operations
-from ..execution.manifest_accessor import ArtifactNotFoundError, ManifestAccessor, RunIdentity
-from ..infra.terminal_cleaning import extract_stream_json_text
-from .web_session_context import WebOrchestratorDependency, resolve_issue_session_context
-from .web_session_routes import (
-    build_ui_log_stream_observation as _build_ui_log_stream_observation,
-    preview_lines_from_claude_jsonl as _preview_lines_from_claude_jsonl,
-    preview_lines_from_terminal_recording as _preview_lines_from_terminal_recording,
-)
+from .web_session_context import WebOrchestratorDependency
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +208,7 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
 
     state = orchestrator.state
     repo = orchestrator.repository_host
-    lm = orchestrator.deps.label_manager
+    lm = _label_manager_for_api(orchestrator)
 
     issue = next((candidate for candidate in state.cached_queue_issues if candidate.number == issue_number), None)
     if issue is None:
@@ -271,7 +264,7 @@ async def kill_session(
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
     """Force terminate an issue session and prevent automatic relaunch."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     sessions = [s for s in orchestrator.state.active_sessions if s.issue.number == issue_number]
@@ -301,7 +294,7 @@ async def focus_session(
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
     """Focus the terminal session for a specific issue."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     session = None
@@ -324,7 +317,7 @@ async def _reveal_worktree(
     operator_deps: WebOperatorDependencies,
 ) -> JSONResponse:
     """Reveal the worktree path in the current client host for a specific session."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     session = None
@@ -369,150 +362,14 @@ async def open_in_finder(
     return await _reveal_worktree(issue_number, orchestrator, operator_deps)
 
 
-@web_operator_router.get("/api/log/{issue_number}")
-async def get_session_log(
-    issue_number: int,
-    orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:  # noqa: C901 - log retrieval with multiple fallback paths
-    """Get Claude session log for an issue."""
-    if not orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    context = resolve_issue_session_context(orchestrator, issue_number)
-    worktree_path = context.worktree_path
-
-    if not worktree_path:
-        return JSONResponse({
-            "error": f"No worktree path found for issue #{issue_number}",
-            "hint": "Session may have been cleaned up or never started",
-        }, status_code=404)
-
-    path_str = str(worktree_path)
-    escaped_path = path_str.replace("/", "-")
-    if not escaped_path.startswith("-"):
-        escaped_path = "-" + escaped_path
-
-    claude_projects = Path.home() / ".claude" / "projects" / escaped_path
-    if not claude_projects.exists():
-        return JSONResponse({
-            "error": "Claude project directory not found",
-            "path": str(claude_projects),
-            "hint": "Session may not have been started yet",
-        }, status_code=404)
-
-    jsonl_files = sorted(claude_projects.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not jsonl_files:
-        return JSONResponse({
-            "error": "No session logs found",
-            "path": str(claude_projects),
-        }, status_code=404)
-
-    latest_log = jsonl_files[0]
-
-    try:
-        lines = latest_log.read_text().strip().split("\n")
-        total_lines = len(lines)
-
-        if total_lines > 100:
-            lines = lines[-100:]
-            truncated = True
-        else:
-            truncated = False
-
-        return JSONResponse({
-            "issue_number": issue_number,
-            "log_path": str(latest_log),
-            "total_lines": total_lines,
-            "truncated": truncated,
-            "lines": lines,
-        })
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
-
-
-@web_operator_router.get("/api/log/local/{issue_number}")
-async def get_agent_ui_log(
-    issue_number: int,
-    orchestrator: WebOrchestratorDependency,
-    offset: int = 0,
-    limit: int = 200,
-    run_dir: str | None = None,
-) -> JSONResponse:  # noqa: C901, PLR0912 - log parsing with format detection and streaming
-    """Get the local agent UI log for an issue."""
-    if not orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    if not run_dir:
-        return JSONResponse({
-            "error": "run_dir is required",
-            "hint": "Open logs from a run-scoped timeline action.",
-        }, status_code=400)
-
-    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
-    accessor = ManifestAccessor(run_identity)
-    stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=None)
-    try:
-        artifact = accessor.get_agent_log(allow_empty=True)
-    except ArtifactNotFoundError as e:
-        return JSONResponse({
-            "error": "No agent log found",
-            "hint": "Session may not have started or its run-scoped log was not attached",
-            "diagnostic": {
-                "run_dir": str(run_identity.run_dir),
-                "detail": str(e),
-            },
-            "stream_observation": stream_observation,
-        }, status_code=404)
-    log_path = artifact.path
-    stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=log_path)
-
-    try:
-        if artifact.descriptor.content_type == "application/x-ndjson":
-            all_lines = _preview_lines_from_terminal_recording(log_path)
-        else:
-            all_lines = _preview_lines_from_claude_jsonl(log_path)
-
-        stream_json_lines = extract_stream_json_text(all_lines)
-        if stream_json_lines is not None:
-            all_lines = stream_json_lines
-
-        all_lines = [line for line in all_lines if line.strip()]
-        total_lines = len(all_lines)
-
-        if offset > 0:
-            lines = all_lines[offset:]
-        else:
-            lines = all_lines
-
-        truncated = False
-        if limit > 0 and len(lines) > limit:
-            if offset == 0:
-                lines = lines[-limit:]
-                truncated = True
-            else:
-                lines = lines[:limit]
-
-        return JSONResponse({
-            "issue_number": issue_number,
-            "log_path": str(log_path),
-            "total_lines": total_lines,
-            "offset": offset,
-            "truncated": truncated,
-            "lines": lines,
-            "stream_observation": stream_observation,
-        })
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
-
-
 @web_operator_router.post("/api/prompt/{agent_type}")
 async def open_agent_prompt(
     agent_type: str,
     orchestrator: WebOrchestratorDependency,
     operator_deps: WebOperatorDependency,
 ) -> JSONResponse:
-    """Open the agent's prompt file in the default editor."""
-    if not orchestrator:
+    """Open the agent prompt, or return a copy-path action when local opening is unavailable."""
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     full_label = agent_type if agent_type.startswith("agent:") else f"agent:{agent_type}"
@@ -542,7 +399,7 @@ async def shutdown(
     force: bool = False,
 ) -> JSONResponse:
     """Request orchestrator shutdown."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     orchestrator.request_shutdown(force=force)
@@ -569,7 +426,7 @@ async def send_input(
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
     """Send input to a running agent session."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     try:
@@ -603,7 +460,7 @@ async def bulk_kill(
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
     """Terminate sessions and hold issues until explicit retry/unblock."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     body = await request.json()
     issue_numbers = body.get("issue_numbers", [])
@@ -630,7 +487,7 @@ async def bulk_cancel_queued(
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
     """Place queued issues on hold so they are not launched automatically."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     body = await request.json()
