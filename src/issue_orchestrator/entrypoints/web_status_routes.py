@@ -7,6 +7,7 @@ import os
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from ..infra.audit import SkipReason, audit_queue
 from ..infra.e2e_runner import get_e2e_role
 from ..view_models.dashboard import blocked_summary, flow_steps_for, issue_url_for
 from .web_session_context import WebOrchestratorDependency
@@ -17,7 +18,7 @@ web_status_router = APIRouter()
 @web_status_router.get("/api/status")
 async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     """Get current orchestrator status as JSON."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     state = orchestrator.state
@@ -59,6 +60,9 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     publish_jobs = []
     try:
         executor = orchestrator.deps.publish_executor
+    except AttributeError:
+        publish_job_stats = {"running": 0, "pending": 0}
+    else:
         for job in executor.get_running_jobs():
             publish_jobs.append({
                 "job_id": job.job_id,
@@ -71,8 +75,6 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
             "running": executor.get_running_count(),
             "pending": executor.get_pending_count(),
         }
-    except Exception:
-        publish_job_stats = {"running": 0, "pending": 0}
 
     return JSONResponse({
         "paused": state.paused,
@@ -103,41 +105,42 @@ async def get_publish_jobs(
     Returns:
         List of recent publish jobs with their status and results.
     """
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     try:
         executor = orchestrator.deps.publish_executor
-        records = executor.get_job_history(issue_number=issue_number, limit=100)
+    except AttributeError as exc:
+        return JSONResponse({"error": f"Publish executor unavailable: {exc}", "jobs": []}, status_code=500)
 
-        jobs = []
-        for record in records:
-            jobs.append({
-                "job_id": record.job_id,
-                "issue_number": record.issue_number,
-                "session_key": record.session_key,
-                "worktree_path": record.worktree_path,
-                "worktree_id": record.worktree_id,
-                "branch_name": record.branch_name,
-                "status": record.status,
-                "created_at": record.created_at,
-                "started_at": record.started_at,
-                "finished_at": record.finished_at,
-                "pr_url": record.pr_url,
-                "pr_number": record.pr_number,
-                "error_message": record.error_message,
-                "duration_seconds": record.duration_seconds,
-            })
+    records = executor.get_job_history(issue_number=issue_number, limit=100)
 
-        return JSONResponse({"jobs": jobs, "count": len(jobs)})
-    except Exception as e:
-        return JSONResponse({"error": str(e), "jobs": []}, status_code=500)
+    jobs = []
+    for record in records:
+        jobs.append({
+            "job_id": record.job_id,
+            "issue_number": record.issue_number,
+            "session_key": record.session_key,
+            "worktree_path": record.worktree_path,
+            "worktree_id": record.worktree_id,
+            "branch_name": record.branch_name,
+            "status": record.status,
+            "created_at": record.created_at,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "pr_url": record.pr_url,
+            "pr_number": record.pr_number,
+            "error_message": record.error_message,
+            "duration_seconds": record.duration_seconds,
+        })
+
+    return JSONResponse({"jobs": jobs, "count": len(jobs)})
 
 
 @web_status_router.get("/api/excluded-issues")
 async def get_excluded_issues(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     """Get issues known to the system but excluded from scheduling."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     state = orchestrator.state
@@ -150,8 +153,6 @@ async def get_excluded_issues(orchestrator: WebOrchestratorDependency) -> JSONRe
     } | {
         e.issue_number for e in state.session_history
     }
-
-    from ..infra.audit import SkipReason, audit_queue
 
     entries = audit_queue(config, state=state, issue_tracker=orchestrator.repository_host)
     excluded: list[dict[str, object]] = []
