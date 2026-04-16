@@ -32,6 +32,7 @@ from issue_orchestrator.entrypoints.control_api import (
     set_control_actions,
     set_supervisor,
 )
+from issue_orchestrator.entrypoints import control_api_shutdown_state
 from issue_orchestrator.execution.control_center_actions import ActionResult, ControlCenterActions
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config
@@ -3951,15 +3952,13 @@ class TestControlCenterShutdownEndpoint:
                             target()
 
             assert response.status_code == 200
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                op = control_api._global_shutdown_operation  # noqa: SLF001
-                assert op is not None
-                assert op["state"] == "failed"
-                assert op["failed_orchestrators"] == ["/tmp/repo-a"]
+            op = control_api_shutdown_state.snapshot_shutdown_ops()["global_shutdown"]
+            assert op is not None
+            assert op["state"] == "failed"
+            assert op["failed_orchestrators"] == ["/tmp/repo-a"]
             schedule_exit.assert_not_called()
         finally:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._global_shutdown_operation = None  # noqa: SLF001
+            control_api_shutdown_state.reset_shutdown_operations_for_testing()
             set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_abort_is_honored_after_current_repo_attempt(self):
@@ -3987,29 +3986,25 @@ class TestControlCenterShutdownEndpoint:
                             assert callable(target)
                             target()
 
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                op = control_api._global_shutdown_operation  # noqa: SLF001
-                assert op is not None
-                assert op["state"] == "aborted"
+            op = control_api_shutdown_state.snapshot_shutdown_ops()["global_shutdown"]
+            assert op is not None
+            assert op["state"] == "aborted"
         finally:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._global_shutdown_operation = None  # noqa: SLF001
+            control_api_shutdown_state.reset_shutdown_operations_for_testing()
             set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_reports_superseded_engine_shutdowns(self):
-        from issue_orchestrator.entrypoints import control_api
-
         mock_supervisor = MagicMock()
         set_supervisor(mock_supervisor)
         try:
             with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=[]):
                 with patch("threading.Thread") as mock_thread:
-                    with control_api._shutdown_ops_lock:  # noqa: SLF001
-                        control_api._engine_shutdown_operations.clear()  # noqa: SLF001
-                        control_api._engine_shutdown_operations["/tmp/repo-a"] = {  # noqa: SLF001
-                            "repo_root": "/tmp/repo-a",
-                            "state": "in_progress",
-                        }
+                    control_api_shutdown_state.begin_engine_shutdown_operation(
+                        Path("/tmp/repo-a"),
+                        force=False,
+                        force_if_timeout=False,
+                        graceful_timeout_seconds=2,
+                    )
                     client = TestClient(control_app)
                     response = client.post(
                         "/control/shutdown",
@@ -4022,41 +4017,34 @@ class TestControlCenterShutdownEndpoint:
             assert data["superseded_engine_shutdowns"] == ["/tmp/repo-a"]
             mock_thread.assert_called_once()
         finally:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._engine_shutdown_operations.clear()  # noqa: SLF001
+            control_api_shutdown_state.reset_shutdown_operations_for_testing()
             set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_state_endpoint_returns_global_operation(self):
-        from issue_orchestrator.entrypoints import control_api
-
         try:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._global_shutdown_operation = {  # noqa: SLF001
-                    "operation_id": "shutdown-test",
-                    "state": "in_progress",
-                }
+            begin_result = control_api_shutdown_state.begin_global_shutdown_operation(
+                stop_orchestrators=True,
+                force_orchestrators=False,
+                graceful_timeout_seconds=2,
+            )
+            assert not isinstance(begin_result, control_api_shutdown_state.GlobalShutdownConflict)
+            operation_id, _ = begin_result
             client = TestClient(control_app)
             response = client.get("/control/shutdown/state")
             assert response.status_code == 200
             data = response.json()
-            assert data["global_shutdown"]["operation_id"] == "shutdown-test"
+            assert data["global_shutdown"]["operation_id"] == operation_id
         finally:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._global_shutdown_operation = None  # noqa: SLF001
+            control_api_shutdown_state.reset_shutdown_operations_for_testing()
 
     def test_shutdown_control_endpoints_update_state(self):
-        from issue_orchestrator.entrypoints import control_api
-
         try:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._global_shutdown_operation = {  # noqa: SLF001
-                    "operation_id": "shutdown-test",
-                    "state": "in_progress",
-                    "force_orchestrators": False,
-                    "graceful_timeout_seconds": 2,
-                    "abort_requested": False,
-                    "force_now_requested": False,
-                }
+            begin_result = control_api_shutdown_state.begin_global_shutdown_operation(
+                stop_orchestrators=True,
+                force_orchestrators=False,
+                graceful_timeout_seconds=2,
+            )
+            assert not isinstance(begin_result, control_api_shutdown_state.GlobalShutdownConflict)
 
             client = TestClient(control_app)
             update = client.post("/control/shutdown/update", json={"graceful_timeout_seconds": 30})
@@ -4066,14 +4054,14 @@ class TestControlCenterShutdownEndpoint:
             assert update.status_code == 200
             assert force.status_code == 200
             assert abort.status_code == 200
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                assert control_api._global_shutdown_operation["graceful_timeout_seconds"] == 30  # noqa: SLF001
-                assert control_api._global_shutdown_operation["force_orchestrators"] is True  # noqa: SLF001
-                assert control_api._global_shutdown_operation["force_now_requested"] is True  # noqa: SLF001
-                assert control_api._global_shutdown_operation["abort_requested"] is True  # noqa: SLF001
+            op = control_api_shutdown_state.snapshot_shutdown_ops()["global_shutdown"]
+            assert op is not None
+            assert op["graceful_timeout_seconds"] == 30
+            assert op["force_orchestrators"] is True
+            assert op["force_now_requested"] is True
+            assert op["abort_requested"] is True
         finally:
-            with control_api._shutdown_ops_lock:  # noqa: SLF001
-                control_api._global_shutdown_operation = None  # noqa: SLF001
+            control_api_shutdown_state.reset_shutdown_operations_for_testing()
 
 
 class TestControlCenterSetupRoutes:
