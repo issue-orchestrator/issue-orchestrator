@@ -14,12 +14,14 @@ Testing strategy:
 - Test actual behavior, not implementation details
 """
 
-import pytest
 import json
+from collections import Counter
 from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
+
+import pytest
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.control_api import (
@@ -122,6 +124,32 @@ def client_without_orchestrator():
 
 
 # --- Test: Orchestrator Not Initialized (503 errors) ---
+
+
+class TestRouteRegistration:
+    """Route registration guardrails for the control API app."""
+
+    def test_control_orchestrator_routes_are_registered_once(self) -> None:
+        orchestrator_paths = {
+            "/control/orchestrator/start",
+            "/control/orchestrator/stop",
+            "/control/orchestrator/reconcile",
+            "/control/orchestrator/status",
+            "/control/orchestrator/pause",
+            "/control/orchestrator/resume",
+            "/control/orchestrator/refresh",
+            "/control/orchestrator/last_failure",
+            "/control/orchestrator/doctor",
+            "/control/orchestrator/ai_diagnose",
+            "/control/orchestrator/log_tail",
+        }
+        counts = Counter(
+            route.path
+            for route in control_app.routes
+            if route.path in orchestrator_paths
+        )
+
+        assert counts == Counter({path: 1 for path in orchestrator_paths})
 
 
 class TestOrchestratorNotInitialized:
@@ -1546,7 +1574,7 @@ class TestSupervisorStart:
         self,
     ) -> None:
         """Volatile dirty-state fields should not trigger identity mismatch."""
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.execution.control_center_runtime import annotate_identity_mismatch
         from issue_orchestrator.infra.repo_identity import RepoIdentity
 
         expected = RepoIdentity(
@@ -1569,7 +1597,7 @@ class TestSupervisorStart:
         }
         details: dict[str, object] = {}
 
-        control_api._annotate_identity_mismatch(  # noqa: SLF001
+        annotate_identity_mismatch(
             details,
             info,
             expected,
