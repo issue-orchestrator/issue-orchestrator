@@ -17,13 +17,15 @@ from pathlib import Path
 from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
+from issue_orchestrator.control.session_completion import (
+    handle_session_completion,
+    process_active_sessions,
+)
 from issue_orchestrator.control.session_launcher import (
     SessionLauncher,
     LaunchResult,
     detect_existing_work,
     log_transition,
-    handle_session_completion,
-    process_active_sessions,
 )
 from issue_orchestrator.control.session_routing import (
     orchestrator_launch_session,
@@ -1042,7 +1044,7 @@ class TestLaunchReviewSession:
 
         worktree_info = WorktreeInfo(path=Path("/tmp/worktree"), branch_name="issue-123")
 
-        note = launcher_bundle.launcher._build_review_existing_work(worktree_info, pr_number=456)
+        note = launcher_bundle.launcher._build_review_existing_work(worktree_info, pr_number=456)  # noqa: SLF001 - unit test targets internal launch prompt helper
 
         assert note is not None
         assert "Keep the current approach" in note
@@ -2189,13 +2191,13 @@ class TestExtraProviderArgsFromLabels:
     """Test _extra_provider_args_from_labels static helper."""
 
     def test_verbose_label_produces_verbose_arg(self):
-        result = SessionLauncher._extra_provider_args_from_labels(["verbose", "priority:high"])
+        result = SessionLauncher._extra_provider_args_from_labels(["verbose", "priority:high"])  # noqa: SLF001 - unit test targets internal label parser
         assert result == {"verbose": "true"}
 
     def test_no_verbose_label_returns_none(self):
-        result = SessionLauncher._extra_provider_args_from_labels(["priority:high", "agent:web"])
+        result = SessionLauncher._extra_provider_args_from_labels(["priority:high", "agent:web"])  # noqa: SLF001 - unit test targets internal label parser
         assert result is None
 
     def test_empty_labels_returns_none(self):
-        result = SessionLauncher._extra_provider_args_from_labels([])
+        result = SessionLauncher._extra_provider_args_from_labels([])  # noqa: SLF001 - unit test targets internal label parser
         assert result is None

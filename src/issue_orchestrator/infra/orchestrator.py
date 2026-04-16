@@ -37,11 +37,11 @@ from ..control.dependency_evaluator import DependencyEvaluator
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
-from ..control.session_launcher import (
-    SessionLauncher,
+from ..control.session_completion import (
     handle_session_completion as _handle_session_completion,
     process_active_sessions as _process_active_sessions,
 )
+from ..control.session_launcher import SessionLauncher
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
