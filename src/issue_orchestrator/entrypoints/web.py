@@ -25,7 +25,6 @@ from ..events import EventName
 from ..execution.client_host import ClientHost, detect_client_host
 from ..history import latest_history_entries_by_issue
 from ..ports.event_sink import make_trace_event
-from .web_diagnostics_routes import install_web_diagnostics_dependencies, web_diagnostics_router
 from .timeline_presentation import (
     _decorate_timeline_events,
     _is_agent_scoped_event,
@@ -34,6 +33,7 @@ from .timeline_presentation import (
     _timeline_event_recommended_actions,
     _timeline_event_requires_run_dir,
 )
+from .web_diagnostics_routes import install_web_diagnostics_dependencies, web_diagnostics_router
 from .web_issue_detail_routes import web_issue_detail_router
 from .web_log_routes import web_log_router
 from .web_operator_routes import install_web_operator_dependencies, web_operator_router
