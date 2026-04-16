@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from .dependency_evaluator import DependencyEvaluator
     from .completion_handler import CompletionHandler
-    from .completion_observer import CompletionObserver, ObservationDecision
     from .action_applier import ActionApplier
     from .session_manager import SessionType
     from .session_controller import SessionController
@@ -65,13 +64,13 @@ from ..ports.session_output import SessionOutput
 from ..ports.event_sink import make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from ..ports.session_log import detect_ai_system_from_command
-from ..ports.provider_resilience import ProviderErrorType
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from ..ports.pull_request_tracker import PRInfo
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .review_validity import evaluate_review_validity
+from .active_sessions import append_unique_active_sessions
 from .session_manager import SessionManager
 from .transition_log import log_transition
 
@@ -2352,7 +2351,7 @@ def orchestrator_launch_review_session(
     # Always remove from pending after attempting launch
     state.pending_reviews = [r for r in state.pending_reviews if r.pr_number != review.pr_number]
     if result.success and result.session:
-        _append_unique_active_sessions(state.active_sessions, [result.session])
+        append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
         session_name = f"review-{review.pr_number}"
@@ -2361,7 +2360,7 @@ def orchestrator_launch_review_session(
             already_tracked=state.active_sessions,
         )
         if restored:
-            _append_unique_active_sessions(state.active_sessions, restored)
+            append_unique_active_sessions(state.active_sessions, restored)
             logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
         else:
             logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
@@ -2389,7 +2388,7 @@ def orchestrator_launch_rework_session(
     # Always remove from pending after attempting launch
     state.pending_reworks = [r for r in state.pending_reworks if r.issue_key != rework.issue_key]
     if result.success and result.session:
-        _append_unique_active_sessions(state.active_sessions, [result.session])
+        append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
         issue_number = rework.resolve_issue_number()
@@ -2402,7 +2401,7 @@ def orchestrator_launch_rework_session(
             already_tracked=state.active_sessions,
         )
         if restored:
-            _append_unique_active_sessions(state.active_sessions, restored)
+            append_unique_active_sessions(state.active_sessions, restored)
             logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
         else:
             logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
@@ -2489,228 +2488,6 @@ def process_active_sessions(
             )
 
 
-def _log_observation(session: Session, decision: "ObservationDecision") -> None:
-    logger.info(
-        "[OBSERVE] Session completed: session=%s issue=%d status=%s has_completion=%s",
-        session.terminal_id,
-        session.issue.number,
-        decision.status.value,
-        decision.observed is not None,
-    )
-
-
-def _publish_observation_event(
-    session: Session,
-    decision: "ObservationDecision",
-    events: Optional[EventSink],
-) -> None:
-    if not events:
-        return
-    events.publish(make_trace_event(EventName.OBSERVATION_RESULT, {
-        "issue_number": session.issue.number,
-        "session_name": session.terminal_id,
-        "status": decision.status.value,
-        "has_completion": decision.observed is not None,
-        "recovered_from_timeout": decision.recovered_from_timeout,
-    }))
-
-
-def _remove_active_session(state: "OrchestratorState", session: Session) -> None:
-    state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
-
-
-def _kill_session(kill_session_fn: Callable[[str], None], session: Session) -> None:
-    try:
-        kill_session_fn(session.terminal_id)
-        logger.debug("[OBSERVE] Killed terminal: %s", session.terminal_id)
-    except Exception as exc:
-        logger.warning("[OBSERVE] Failed to kill terminal %s: %s", session.terminal_id, exc)
-
-
-def _release_claim_if_needed(
-    session: Session,
-    decision: "ObservationDecision",
-    claim_manager: Optional["ClaimManager"],
-    events: Optional[EventSink],
-) -> None:
-    if not claim_manager or not session.lease_id:
-        return
-    try:
-        claim_manager.release_claim(session.issue.number, session.lease_id)
-        logger.info(
-            "[OBSERVE] Released claim for issue #%d: lease_id=%s",
-            session.issue.number,
-            session.lease_id,
-        )
-        if events:
-            events.publish(make_trace_event(
-                EventName.CLAIM_RELEASED,
-                {
-                    "issue_number": session.issue.number,
-                    "lease_id": session.lease_id,
-                    "status": decision.status.value,
-                },
-            ))
-    except Exception as exc:
-        logger.warning(
-            "[OBSERVE] Failed to release claim for issue #%d: %s",
-            session.issue.number,
-            exc,
-        )
-
-
-def _update_provider_resilience(
-    decision: "ObservationDecision",
-    provider_resilience: Optional["ProviderResilienceManager"],
-) -> None:
-    if not provider_resilience or not decision.provider_status:
-        return
-    provider = decision.provider_status.provider
-    if decision.provider_status.succeeded:
-        provider_resilience.record_success(provider)
-        return
-    if decision.provider_status.error_type == ProviderErrorType.TRANSIENT:
-        provider_resilience.record_transient_failure(
-            provider,
-            error_summary=decision.provider_status.last_error_summary,
-            attempts=decision.provider_status.attempts,
-        )
-
-
-def _record_observed_completion(
-    state: "OrchestratorState",
-    session: Session,
-    decision: "ObservationDecision",
-) -> None:
-    if decision.observed:
-        state.observed_completions.append(decision.observed)
-        logger.info(
-            "[OBSERVE] Collected completion: issue=%d outcome=%s needs_publish=%s",
-            session.issue.number,
-            decision.observed.outcome,
-            decision.observed.needs_publish,
-        )
-        return
-    from ..domain.models import DiscoveredFailure
-    state.discovered_failures.append(DiscoveredFailure(
-        session.issue.number,
-        session.issue.title,
-        decision.status.value,
-    ))
-    state.failed_this_cycle.add(session.issue.number)
-    logger.warning(
-        "[OBSERVE] No completion record for issue #%d, status=%s",
-        session.issue.number,
-        decision.status.value,
-    )
-
-
-def _warn_if_slow(obs_elapsed: float, session: Session) -> None:
-    if obs_elapsed <= 1.0:
-        return
-    logger.warning(
-        "[OBSERVE] Session observation took %.1fs (session=%s issue=%s) - should be <1s",
-        obs_elapsed,
-        session.terminal_id,
-        session.issue.number,
-    )
-
-
-def _append_unique_active_sessions(
-    active_sessions: list[Session],
-    incoming: list[Session],
-) -> int:
-    """Append sessions while preserving unique terminal identity."""
-    existing_ids = {s.terminal_id for s in active_sessions}
-    added = 0
-    for session in incoming:
-        if session.terminal_id in existing_ids:
-            logger.warning(
-                "[ACTIVE_SESSIONS] Duplicate terminal suppressed: %s (issue=%s)",
-                session.terminal_id,
-                session.issue.number,
-            )
-            continue
-        active_sessions.append(session)
-        existing_ids.add(session.terminal_id)
-        added += 1
-    return added
-
-
-def _observe_active_session(
-    state: "OrchestratorState",
-    session: Session,
-    observer: "SessionObserver",
-    completion_observer: "CompletionObserver",
-    kill_session_fn: Callable[[str], None],
-    claim_manager: Optional["ClaimManager"],
-    events: Optional[EventSink],
-    provider_resilience: Optional["ProviderResilienceManager"],
-) -> None:
-    import time
-    from ..observation.observation import SessionObservation
-
-    obs_start = time.monotonic()
-    obs = observer.observe_session(session)
-    if obs.observation == SessionObservation.RUNNING:
-        return
-
-    decision = completion_observer.observe_completion(session, obs)
-
-    _log_observation(session, decision)
-    _publish_observation_event(session, decision, events)
-    _remove_active_session(state, session)
-    _kill_session(kill_session_fn, session)
-    _release_claim_if_needed(session, decision, claim_manager, events)
-    _update_provider_resilience(decision, provider_resilience)
-    _record_observed_completion(state, session, decision)
-
-    obs_elapsed = time.monotonic() - obs_start
-    _warn_if_slow(obs_elapsed, session)
-
-
-def observe_active_sessions(
-    state: "OrchestratorState",
-    observer: "SessionObserver",
-    completion_observer: "CompletionObserver",
-    kill_session_fn: Callable[[str], None],
-    claim_manager: Optional["ClaimManager"] = None,
-    events: Optional[EventSink] = None,
-    provider_resilience: Optional["ProviderResilienceManager"] = None,
-) -> None:
-    """Observe active sessions and collect completion facts (fast, no I/O-heavy operations).
-
-    This is Phase 1 of the async completion flow:
-    1. Observe each session to detect termination
-    2. For terminated sessions, use CompletionObserver to read completion.json
-    3. Collect ObservedCompletion facts into state.observed_completions
-    4. Remove sessions from active tracking and kill terminals
-
-    The Planner will see observed_completions and:
-    - Plan immediate label updates (remove in-progress, add pr-pending/blocked)
-    - Create PublishJobs for background execution
-
-    Args:
-        state: Orchestrator state (active_sessions, observed_completions)
-        observer: Session observer for checking session status
-        completion_observer: For reading completion.json (no execution)
-        kill_session_fn: Function to kill terminal session
-        claim_manager: Optional ClaimManager for releasing claims
-        events: Optional EventSink for emitting events
-    """
-    for session in list(state.active_sessions):
-        _observe_active_session(
-            state=state,
-            session=session,
-            observer=observer,
-            completion_observer=completion_observer,
-            kill_session_fn=kill_session_fn,
-            claim_manager=claim_manager,
-            events=events,
-            provider_resilience=provider_resilience,
-        )
-
-
 def launch_triage_session(
     triage: PendingTriageReview,
     config: Config,
@@ -2755,7 +2532,7 @@ def restore_running_sessions(
 ) -> None:
     """Restore running sessions - moved per method table."""
     restored = session_restorer.restore_sessions(running, active_sessions)
-    _append_unique_active_sessions(active_sessions, restored)
+    append_unique_active_sessions(active_sessions, restored)
 
 
 def parse_session_ref(
@@ -2820,5 +2597,5 @@ def orchestrator_launch_session(
     """
     result = session_launcher.launch_issue_session(issue, state.active_sessions)
     if result.success and result.session:
-        _append_unique_active_sessions(state.active_sessions, [result.session])
+        append_unique_active_sessions(state.active_sessions, [result.session])
     return result.session if result.success else None

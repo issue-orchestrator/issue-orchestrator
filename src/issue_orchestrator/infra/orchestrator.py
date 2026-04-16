@@ -41,7 +41,6 @@ from ..control.session_launcher import (
     SessionLauncher,
     handle_session_completion as _handle_session_completion,
     process_active_sessions as _process_active_sessions,
-    observe_active_sessions as _observe_active_sessions,
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     launch_triage_session as _launch_triage_session,
@@ -54,6 +53,7 @@ from ..control.session_launcher import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
+from ..control.session_observation import observe_active_sessions as _observe_active_sessions
 from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
 from ..control.completion_handler import (
