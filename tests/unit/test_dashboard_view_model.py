@@ -743,9 +743,9 @@ def test_view_model_matches_public_contract():
 
 
 def test_e2e_recent_run_item_carries_note(tmp_path):
-    """When an e2e run has a note, _build_e2e_recent_run_items must include it."""
+    """When an e2e run has a note, build_e2e_recent_run_items must include it."""
     from issue_orchestrator.infra.e2e_db import E2EDB
-    from issue_orchestrator.view_models.dashboard import _build_e2e_recent_run_items
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_recent_run_items
 
     config = _make_config()
     # orchestrator_id is derived from repo_root.name
@@ -764,7 +764,7 @@ def test_e2e_recent_run_item_carries_note(tmp_path):
         note="Fixture errors: test_foo (teardown): GH activity exceeded limit",
     )
 
-    items = _build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
+    items = build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
 
     assert len(items) == 1
     assert items[0]["status"] == "failed"
@@ -774,7 +774,7 @@ def test_e2e_recent_run_item_carries_note(tmp_path):
 def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
     """When an e2e run has no note, the item must not have a note key."""
     from issue_orchestrator.infra.e2e_db import E2EDB
-    from issue_orchestrator.view_models.dashboard import _build_e2e_recent_run_items
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_recent_run_items
 
     config = _make_config()
     orch_id = config.orchestrator_id
@@ -787,7 +787,7 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
     )
     db.finish_run(run_id, status="passed", exit_code=0)
 
-    items = _build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
+    items = build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
 
     assert len(items) == 1
     assert "note" not in items[0]
@@ -795,9 +795,9 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
 
 def test_e2e_badge_state_maps_warning():
     """The E2E view model must map last_run status='warning' to badge_state='warning'."""
-    from issue_orchestrator.view_models.dashboard import _build_e2e_view_model
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_view_model
 
-    vm = _build_e2e_view_model(
+    vm = build_e2e_view_model(
         e2e_status={
             "running": False,
             "needs_attention": False,
