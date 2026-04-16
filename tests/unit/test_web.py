@@ -127,6 +127,9 @@ class TestWebRouteRegistration:
             "/api/host/reveal-worktree/{issue_number}",
             "/api/shutdown",
             "/api/bulk-cancel-queued",
+            "/api/history",
+            "/api/retry/{issue_number}",
+            "/api/reset-retry",
         ]:
             assert route_paths.count(path) == 1
 
