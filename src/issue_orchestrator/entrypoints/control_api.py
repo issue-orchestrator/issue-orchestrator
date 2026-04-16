@@ -234,6 +234,11 @@ def _schedule_control_center_exit(delay_seconds: float = 0.5) -> None:
     threading.Thread(target=delayed_shutdown, daemon=False).start()
 
 
+def _schedule_control_center_exit_dependency() -> None:
+    """FastAPI dependency hook that keeps tests patchable without inline lambdas."""
+    _schedule_control_center_exit()
+
+
 def track_child_pid(pid: int) -> None:
     """Register an orchestrator child PID for zombie reaping."""
     with _tracked_pids_lock:
@@ -1227,7 +1232,7 @@ install_control_api_shutdown_dependencies(
     control_app,
     ControlApiShutdownDependencies(
         get_supervisor=get_supervisor,
-        schedule_control_center_exit=_schedule_control_center_exit,
+        schedule_control_center_exit=_schedule_control_center_exit_dependency,
     ),
 )
 install_control_api_repo_dependencies(
