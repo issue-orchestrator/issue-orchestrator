@@ -6,9 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 import logging
-import os
 from pathlib import Path
-import subprocess
 import threading
 from typing import Annotated, Any
 
@@ -344,8 +342,6 @@ async def _reveal_worktree(
 
     try:
         result = operator_deps.get_client_host().reveal_worktree(worktree_path)
-    except subprocess.CalledProcessError as e:
-        return JSONResponse({"error": f"Failed to open worktree: {e}"}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -513,6 +509,7 @@ async def get_agent_ui_log(
 async def open_agent_prompt(
     agent_type: str,
     orchestrator: WebOrchestratorDependency,
+    operator_deps: WebOperatorDependency,
 ) -> JSONResponse:
     """Open the agent's prompt file in the default editor."""
     if not orchestrator:
@@ -529,10 +526,13 @@ async def open_agent_prompt(
     if not prompt_path.exists():
         return JSONResponse({"error": f"Prompt file not found: {prompt_path}"}, status_code=404)
 
-    if os.uname().sysname == "Darwin":
-        subprocess.run(["open", str(prompt_path)])
-        return JSONResponse({"status": "opened", "path": str(prompt_path)})
-    return JSONResponse({"error": "Open is only available on macOS"}, status_code=400)
+    try:
+        result = operator_deps.get_client_host().open_path(prompt_path)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    status_code = 200 if result.action == "opened" else 409
+    return JSONResponse({"status": result.action, **result.to_dict()}, status_code=status_code)
 
 
 @web_operator_router.post("/api/shutdown")
@@ -686,8 +686,6 @@ async def _open_host_path(request: Request, operator_deps: WebOperatorDependenci
         result = operator_deps.get_client_host().open_path(Path(file_path))
         status_code = 200 if result.action == "opened" else 409
         return JSONResponse(result.to_dict(), status_code=status_code)
-    except subprocess.CalledProcessError as e:
-        return JSONResponse({"error": f"Failed to open file: {e}"}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
