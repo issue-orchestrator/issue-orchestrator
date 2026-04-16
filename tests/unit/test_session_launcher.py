@@ -21,9 +21,9 @@ from issue_orchestrator.control.session_completion import (
     handle_session_completion,
     process_active_sessions,
 )
+from issue_orchestrator.control.session_launch_types import LaunchResult
 from issue_orchestrator.control.session_launcher import (
     SessionLauncher,
-    LaunchResult,
     detect_existing_work,
     log_transition,
 )

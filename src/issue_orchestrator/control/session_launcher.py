@@ -13,12 +13,10 @@ The orchestrator calls into this for all session launching, keeping
 the orchestrator focused on coordination and main loop logic.
 """
 
-import json
 import logging
 import shlex
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable, Sequence
@@ -38,8 +36,6 @@ from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import Issue, Session, PendingReview, PendingRework, get_completion_path, SessionKey, TaskKind, AgentConfig
-from ..domain.issue_key import IssueKey
-from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from ..domain.triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
@@ -60,11 +56,18 @@ from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
+from .session_launch_types import ClaimAcquisitionResult, LaunchResult
+from .session_rework_launcher import (
+    ReworkLaunchDependencies,
+    launch_rework_session as launch_rework_flow,
+)
 from .session_review_support import (
     build_review_existing_work,
-    copy_review_feedback_to_rework,
-    format_reviewer_feedback,
     review_launch_validity,
+)
+from .session_worktree_diagnostics import (
+    build_worktree_error_comment,
+    write_worktree_diagnostic,
 )
 from .transition_log import log_transition
 
@@ -103,72 +106,6 @@ def detect_existing_work(
     except Exception as e:
         logger.warning("Failed to detect existing work: %s", e)
         return None
-
-
-def _build_worktree_error_comment(error: WorktreePreparationError) -> str:
-    """Build a comment explaining the worktree preparation failure."""
-    safe_path = error.path.name
-    return (
-        f"## Worktree Preparation Failed\n\n"
-        f"The orchestrator could not prepare the worktree for this issue.\n\n"
-        f"**Error:** {error}\n\n"
-        f"**Worktree path:** `{safe_path}`\n\n"
-        f"**Details:** `.issue-orchestrator/diagnostics/worktree-prep.json` in that worktree; "
-        f"look under your `worktree_base` (default: parent of the repo) for `{safe_path}`.\n\n"
-        f"This usually means stale files from a previous session could not be deleted. "
-        f"Please manually check and clean the worktree, then remove the `blocked-needs-human` label "
-        f"to allow the orchestrator to retry."
-    )
-
-
-def _write_worktree_diagnostic(error: WorktreePreparationError) -> None:
-    """Write a local diagnostic file with full details (not posted to GitHub)."""
-    diag_dir = error.path / ".issue-orchestrator" / "diagnostics"
-    try:
-        diag_dir.mkdir(parents=True, exist_ok=True)
-        diag_path = diag_dir / "worktree-prep.json"
-        diag_path.write_text(
-            json.dumps(
-                {
-                    "issue_number": error.issue_number,
-                    "worktree_path": str(error.path),
-                    "error": str(error),
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-    except Exception as exc:
-        logger.warning("Failed to write worktree diagnostics: %s", exc)
-
-
-@dataclass
-class LaunchResult:
-    """Result of a session launch attempt."""
-
-    session: Optional[Session]
-    success: bool
-    reason: str = ""
-    keep_queued: bool = False  # If True, don't remove from pending queue (terminal already running)
-
-
-@dataclass
-class ClaimAcquisitionResult:
-    """Result of attempting to acquire a distributed claim for an issue.
-
-    Used to track claim state through the launch process so cleanup
-    can release claims on failure.
-    """
-
-    success: bool
-    lease_id: str | None = None
-    lease_acquired_at: datetime | None = None
-    lease_expires_at: datetime | None = None
-    error: str | None = None
-
-    def as_launch_failure(self) -> LaunchResult:
-        """Convert a failed claim to a LaunchResult."""
-        return LaunchResult(None, False, self.error or "Claim acquisition failed")
 
 
 class SessionLauncher:
@@ -709,7 +646,7 @@ class SessionLauncher:
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
+            write_worktree_diagnostic(ctx.error)
             needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
@@ -719,7 +656,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=issue.number,
-                    comment=_build_worktree_error_comment(ctx.error),
+                    comment=build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_issue")
@@ -1117,7 +1054,7 @@ class SessionLauncher:
         if ctx.error:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
+            write_worktree_diagnostic(ctx.error)
             needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
@@ -1127,7 +1064,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=review.issue_number,
-                    comment=_build_worktree_error_comment(ctx.error),
+                    comment=build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_review")
@@ -1308,310 +1245,27 @@ class SessionLauncher:
         active_sessions: list[Session],
     ) -> LaunchResult:
         """Launch a rework session to fix issues found in review."""
-        agent_config = self.config.agents.get(rework.agent_type)
-        if not agent_config:
-            return LaunchResult(None, False, f"No agent config for {rework.agent_type}")
-
-        issue_key = rework.issue_key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.REWORK)
-        issue_number = rework.resolve_issue_number()
-        if issue_number is None:
-            return LaunchResult(None, False, f"Unresolved issue number for rework {issue_key}")
-
-        if result := self._check_provider_circuit(agent_config.provider, issue_number):
-            return result
-
-        pr_number, branch_name = self._resolve_rework_pr(rework, issue_number)
-
-        # Check for conflicts
-        session_name = f"rework-{issue_number}"
-        if result := self._check_rework_conflicts(session_name, active_sessions, issue_number):
-            return result
-
-        log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
-        logger.info(
-            "[launch] Rework session identity: issue=%s issue_key=%s pr=%s agent=%s task=%s session=%s branch=%s cycle=%s",
-            issue_number,
-            issue_key,
-            pr_number,
-            rework.agent_type,
-            TaskKind.REWORK.value,
-            session_name,
-            branch_name,
-            rework.rework_cycle,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-        logger.info(
-            "[launch] Rework session key: issue=%s pr=%s session=%s session_key=%s",
-            issue_number,
-            pr_number,
-            session_name,
-            session_key.stable_id(),
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-
-        # Rework cycle N means coding attempt N+1
-        # (initial coding was attempt 1, first rework is attempt 2, etc.)
-        coding_attempt = rework.rework_cycle + 1
-        phase_name = f"coding-{coding_attempt}"
-
-        # Create and prepare worktree using WorktreeContext
-        ctx = WorktreeContext.create(
-            worktree_manager=self._worktree_manager,
+        deps = ReworkLaunchDependencies(
             config=self.config,
             events=self.events,
-            session_output=self._session_output,
-            issue_number=issue_number,
-            issue_title=f"Rework #{pr_number}",
-            session_name=session_name,
-            agent_label=rework.agent_type,
-            branch_name=branch_name,
-            enforce_hooks=self.config.enforce_hooks,
-            pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
-            phase_name=phase_name,
-        )
-
-        # Handle worktree preparation errors
-        if ctx.error:
-            log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
-            logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self._lm.needs_human
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=issue_number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=issue_number,
-                    comment=_build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_rework")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
-                    "issue_number": issue_number,
-                    "pr_number": pr_number,
-                    "reason": str(ctx.error),
-                },
-            ))
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
-
-        # Extract values from context
-        worktree_path = ctx.worktree_path
-        worktree_info = ctx.worktree_info
-        run = ctx.run
-        claude_project_dir = ctx.claude_project_dir
-
-        # Write session metadata
-        ctx.write_worktree_note()
-        ctx.write_session_identity({
-            "task": TaskKind.REWORK.value,
-            "issue_key": issue_key.stable_id(),
-            "pr_number": pr_number,
-            "session_key": session_key.stable_id(),
-            "agent": rework.agent_type,
-            "rework_cycle": rework.rework_cycle,
-            **self._session_identity_launch_metadata(
-                agent_config,
-                extra_provider_args=None,
-            ),
-        })
-        # Rework is a coding retry attempt; clear interrupted retry guard.
-        self._clear_interrupted_retry_guard_label(
-            issue_number=issue_number,
-            mode="coding",
-            context="launch_clear_interrupted_guard_rework",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=issue_number,
-            context="launch_clear_reset_retry_pending_rework",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=issue_number,
-            context="launch_clear_reset_retry_scratch_pending_rework",
-        )
-
-        logger.info(
-            "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
-            run.run_id,
-            session_name,
-            issue_number,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-        logger.info(
-            "[launch] Rework session paths: issue=%s pr=%s worktree=%s branch=%s",
-            issue_number,
-            pr_number,
-            worktree_path,
-            branch_name,
-        )
-        logger.info(
-            "[launch] Claude project dir: session=%s path=%s exists=%s",
-            session_name,
-            claude_project_dir,
-            claude_project_dir.exists(),
-        )
-
-        # Check if rebase failed (rework branch couldn't be updated to latest main)
-        existing_work: str | None = None
-        if worktree_info.rebase_failed:
-            existing_work = (
-                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-                "The code is out of date. You should resolve the conflicts by running: "
-                "git fetch origin main && git rebase origin/main. "
-                "If conflicts occur, resolve them and continue with: git rebase --continue. "
-                "This is critical to ensure tests pass with the latest code."
-            )
-            logger.warning("[launch] Rebase failed for rework - agent will need to resolve merge conflicts")
-
-        # Copy reviewer feedback from review session to rework session (for local cache)
-        copy_review_feedback_to_rework(
-            worktree_path=worktree_path,
-            pr_number=pr_number,
-            rework_run_dir=run.run_dir,
-        )
-
-        # Add reviewer feedback to the prompt so agent knows what to fix
-        # Checks local file first (within cache window), falls back to GitHub API
-        reviewer_feedback = format_reviewer_feedback(
-            pr_number=pr_number,
             repository_host=self.repository_host,
-            cache_minutes=self.config.reviewer_feedback_cache_minutes,
-            run_dir=run.run_dir,
-            sleep_fn=time.sleep,
+            worktree_manager=self._worktree_manager,
+            session_output=self._session_output,
+            label_manager=self._lm,
+            session_exists=self._session_exists,
+            create_session=self._create_session,
+            apply_actions=self._apply_actions,
+            worktree_reuse_options=self._worktree_reuse_options,
+            session_identity_launch_metadata=self._session_identity_launch_metadata,
+            clear_interrupted_retry_guard_label=self._clear_interrupted_retry_guard_label,
+            clear_reset_retry_pending_label=self._clear_reset_retry_pending_label,
+            clear_reset_retry_scratch_pending_label=self._clear_reset_retry_scratch_pending_label,
+            persist_session_prompt=self._persist_session_prompt,
+            wrap_provider_command=self._wrap_provider_command,
+            build_session_env=self._build_session_env,
+            check_provider_circuit=self._check_provider_circuit,
         )
-        if reviewer_feedback:
-            if existing_work:
-                existing_work = f"{existing_work}\n\n{reviewer_feedback}"
-            else:
-                existing_work = reviewer_feedback
-            logger.info("[launch] Including reviewer feedback in rework session prompt")
-
-            # Save feedback for diagnostics (per-cycle file)
-            self._session_output.save_review_feedback(
-                worktree_path=worktree_path,
-                cycle=rework.rework_cycle,
-                feedback=reviewer_feedback,
-                pr_number=pr_number,
-            )
-
-        # Build command
-        rendered_prompt = agent_config.render_initial_prompt(
-            issue_number=issue_number,
-            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
-            worktree=worktree_path,
-            pr_number=pr_number,
-            existing_work=existing_work,
-        )
-        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-        base_command = agent_config.get_command(
-            issue_number=issue_number,
-            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
-            worktree=worktree_path,
-            pr_number=pr_number,
-            existing_work=existing_work,
-            task_kind=TaskKind.REWORK.value,
-        )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(rework.agent_type, run_dir=run.run_dir.name)
-        self._session_output.update_manifest(
-            run.run_dir,
-            {
-                "completion_path": completion_path,
-                "session_prompt_path": prompt_path,
-            },
-        )
-        env_exports = self._build_session_env(
-            completion_path=completion_path,
-            session_id=run.session_name,
-            agent_label=rework.agent_type,
-            issue_number=issue_number,
-            run_dir=run.run_dir,
-            worktree_path=worktree_path,
-        )
-        command = f"{env_exports} && {base_command}"
-        logger.info(
-            "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
-            issue_number,
-            pr_number,
-            session_name,
-            worktree_path,
-            completion_path,
-            command,
-        )
-
-        # Create session
-        session_created = self._create_session(session_name, command, worktree_path, f"Rework #{issue_number}")
-        logger.info(
-            "[launch] Rework session create result: issue=%s pr=%s session=%s created=%s",
-            issue_number,
-            pr_number,
-            session_name,
-            session_created,
-        )
-
-
-        # Create issue object for session tracking
-        rework_issue = Issue(
-            number=issue_number,
-            title=f"Rework #{pr_number}",
-            labels=[rework.agent_type],
-        )
-
-        # Create session with domain identity (REWORK task type)
-        session = Session(
-            key=session_key,
-            issue=rework_issue,
-            agent_config=agent_config,
-            terminal_id=session_name,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            completion_path=completion_path,
-            agent_label=rework.agent_type,
-            pr_number=pr_number,
-            rework_cycle=rework.rework_cycle,
-        )
-
-        log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
-        logger.info("Launched rework session for issue #%d (cycle %d)", issue_number, rework.rework_cycle)
-
-        # Emit event
-        full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(make_run_scoped_event(EventName.REWORK_STARTED, {
-            "issue_number": issue_number,
-            "pr_number": pr_number,
-            "session_name": session_name,
-            "rework_cycle": rework.rework_cycle,
-            "run_id": run.run_id,
-            "run_dir": str(run.run_dir),
-            "completion_path": completion_path,
-            "completion_path_absolute": str(full_completion_path),
-            "session_prompt_path": prompt_path,
-        }))
-
-        # Update rework cycle label
-        self._update_rework_cycle_label(pr_number, issue_number, issue_key, rework.rework_cycle)
-
-        # Remove needs-rework label
-        self._apply_actions([
-            RemoveLabelAction(
-                issue_number=pr_number,
-                label=self._lm.needs_rework,
-                reason="rework started",
-            ),
-        ], context="rework_remove_needs_rework")
-        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "issue_key": issue_key.stable_id(),
-            "removed": [self._lm.needs_rework],
-        }))
-
-        return LaunchResult(session, True)
+        return launch_rework_flow(rework, active_sessions, deps)
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""
@@ -1716,39 +1370,6 @@ class SessionLauncher:
         ], context="provider_unavailable")
         return LaunchResult(None, False, f"Provider unavailable: {provider}")
 
-    def _check_rework_conflicts(
-        self,
-        session_name: str,
-        active_sessions: list[Session],
-        issue_number: int,
-    ) -> Optional["LaunchResult"]:
-        if any(s.terminal_id == session_name for s in active_sessions):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
-        if self._session_exists(session_name):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
-        return None
-
-    def _resolve_rework_pr(self, rework: PendingRework, issue_number: int) -> tuple[int, str]:
-        """Resolve PR number and branch for a rework session.
-
-        Uses the scanner-provided pr_number when available, falling back
-        to searching for PRs by issue number.
-        """
-        if rework.pr_number:
-            pr_info = self.repository_host.get_pr(rework.pr_number)
-            if pr_info:
-                return pr_info.number, pr_info.branch or f"{issue_number}-rework"
-        return self._resolve_rework_pr_details(issue_number)
-
-    def _resolve_rework_pr_details(self, issue_number: int) -> tuple[int, str]:
-        prs = self.repository_host.get_prs_for_issue(issue_number)
-        if not prs:
-            return issue_number, f"{issue_number}-rework"
-        pr = prs[0]
-        return pr.number, pr.branch
-
     def _trigger_issue_session_state_transitions(
         self,
         issue: "IssueProtocol",
@@ -1793,32 +1414,3 @@ class SessionLauncher:
         if review_machine.state == ReviewState.PENDING.value:
             logger.debug(f"[STATE_MACHINE] PR #{pr_number}: PENDING -> IN_REVIEW")
             review_machine.start_review()
-
-    def _update_rework_cycle_label(
-        self, pr_number: int, issue_number: int, issue_key: IssueKey, cycle: int,
-    ) -> None:
-        """Update the rework cycle label on a PR."""
-        actions: list[Action] = []
-        removed: list[str] = []
-        for i in range(1, cycle):
-            label = self._lm.rework_cycle(i)
-            removed.append(label)
-            actions.append(RemoveLabelAction(
-                issue_number=pr_number,
-                label=label,
-                reason="rework cycle update",
-            ))
-        added_label = self._lm.rework_cycle(cycle)
-        actions.append(AddLabelAction(
-            issue_number=pr_number,
-            label=added_label,
-            reason="rework cycle update",
-        ))
-        self._apply_actions(actions, context="rework_cycle_label")
-        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "issue_key": issue_key.stable_id(),
-            "added": [added_label],
-            "removed": removed,
-        }))
