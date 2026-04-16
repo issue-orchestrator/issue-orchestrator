@@ -4640,6 +4640,14 @@
                 showToast('Select a repository first', 'warning');
                 return;
             }
+            const confirmed = window.confirm(
+                'Repair repo guardrails now?\n\n'
+                + 'This will overwrite issue-orchestrator managed hook files if they drifted. '
+                + 'Existing project pre-push hooks are preserved as pre-push.project when possible.'
+            );
+            if (!confirmed) {
+                return;
+            }
 
             const button = document.getElementById('repairGuardrailsBtn');
             const results = document.getElementById('doctorResults');

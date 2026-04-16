@@ -189,6 +189,9 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert 'id="repairGuardrailsBtn"' in template
     assert "function hasRepairableRepoGuardrails(data)" in template
     assert "function repairGuardrails()" in template
+    assert "const confirmed = window.confirm(" in template
+    assert "This will overwrite issue-orchestrator managed hook files if they drifted." in template
+    assert "if (!confirmed) {" in template
     assert "/control/orchestrator/guardrails/repair" in template
     assert "Repair Guardrails" in template
     assert "{ repoRoot: path, configName: config }" in template
