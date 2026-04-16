@@ -17,7 +17,7 @@ web_refresh_router = APIRouter()
 @web_refresh_router.post("/api/pause")
 async def pause(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     """Pause the orchestrator."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     orchestrator.pause()
     return JSONResponse({"status": "paused"})
@@ -26,7 +26,7 @@ async def pause(orchestrator: WebOrchestratorDependency) -> JSONResponse:
 @web_refresh_router.post("/api/resume")
 async def resume(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     """Resume the orchestrator."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     orchestrator.resume()
     return JSONResponse({"status": "resumed"})
@@ -49,7 +49,7 @@ async def refresh(
             the orchestrator will retry without cache to handle GitHub's
             eventual consistency.
     """
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     # Parse optional inflight_stable_ids from request body
@@ -85,12 +85,12 @@ async def update_refresh_visibility(
     JSON body:
         issues: list[int] - Issue numbers currently visible to the user.
     """
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     try:
         body = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     raw_issues = body.get("issues", [])
@@ -118,7 +118,7 @@ async def refresh_issue(
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
     """Refresh a single issue from GitHub and update cached queue state."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     issue = orchestrator.repository_host.get_issue(issue_number)
