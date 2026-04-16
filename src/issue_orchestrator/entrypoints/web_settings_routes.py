@@ -25,7 +25,7 @@ async def settings_page(orchestrator: WebOrchestratorDependency) -> HTMLResponse
     templates = get_templates()
     template = templates.get_template("settings.html")
 
-    config = Config() if not orchestrator else orchestrator.config
+    config = Config() if orchestrator is None else orchestrator.config
     tab_values = from_config(config)
     schemas = get_settings_json_schema()
     values_dump = {k: v.model_dump() for k, v in tab_values.items()}
@@ -46,7 +46,7 @@ async def settings_page(orchestrator: WebOrchestratorDependency) -> HTMLResponse
 @web_settings_router.get("/api/settings")
 async def get_settings(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     """Get current settings as JSON for the settings UI."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     tab_values = from_config(orchestrator.config)
@@ -65,12 +65,12 @@ async def update_settings(
 
     JSON body: {tab_key: {field: value, ...}, ...}
     """
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     try:
         body = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     config = orchestrator.config
@@ -139,7 +139,7 @@ async def update_settings(
 @web_settings_router.get("/api/milestones")
 async def get_milestones(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     """Get available milestones, indicating which are included/excluded."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     config = orchestrator.config
@@ -171,7 +171,7 @@ async def get_milestones(orchestrator: WebOrchestratorDependency) -> JSONRespons
             "filter_milestones": filter_milestones,
         })
     except Exception as e:
-        logger.error("[web] Failed to fetch milestones: %s", e)
+        logger.error("[settings] Failed to fetch milestones: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -190,12 +190,12 @@ async def create_issue(
         priority: str - Priority label (e.g., "P1")
         labels: list[str] - Additional labels (optional)
     """
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     try:
         body = await request.json()
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     title = body.get("title", "").strip()
@@ -237,5 +237,5 @@ async def create_issue(
             "url": issue_url,
         })
     except Exception as e:
-        logger.error("[web] Failed to create issue: %s", e)
+        logger.error("[settings] Failed to create issue: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
