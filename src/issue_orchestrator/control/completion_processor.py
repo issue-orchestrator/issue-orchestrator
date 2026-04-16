@@ -16,7 +16,6 @@ as untrusted input.
 """
 
 import json
-import re
 import logging
 import os
 import shutil
@@ -33,12 +32,10 @@ from ..domain.models import (
     COMPLETION_RECORD_PATH,
     sanitize_agent_label,
 )
-from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
-from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..infra.runtime_artifacts import (
     filter_runtime_managed_dirty_paths,
     is_runtime_managed_dirty_path,
@@ -48,6 +45,17 @@ from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
 from .review_publish_pipeline import resolve_review_publish_pipeline
+from .completion_pr_collision import (
+    create_pr_with_collision_handling,
+    get_open_pr_for_issue,
+    maybe_switch_branch_for_pr_collision,
+)
+from .completion_failure_reporting import (
+    report_cleanup_failure,
+    report_gate_failure_comment,
+    report_processing_failure_comment,
+    write_failure_diagnostic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -590,7 +598,8 @@ class CompletionProcessor:
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
             tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
-            self._report_processing_failure_comment(
+            report_processing_failure_comment(
+                pr_adapter=self.pr_adapter,
                 issue_number=issue_number,
                 errors=[tagged_reason],
                 actions_taken=[],
@@ -733,7 +742,8 @@ class CompletionProcessor:
             return None
         # Get session output dir for validation to write directly there
         if not session_name:
-            self._report_processing_failure_comment(
+            report_processing_failure_comment(
+                pr_adapter=self.pr_adapter,
                 issue_number=issue_number,
                 errors=["session_name is required for publish gate"],
                 actions_taken=[],
@@ -747,7 +757,8 @@ class CompletionProcessor:
         session_output_dir = self.session_output.find_run_dir(worktree, session_name)
         if session_output_dir is None:
             message = f"Session output directory not found for {session_name}"
-            self._report_processing_failure_comment(
+            report_processing_failure_comment(
+                pr_adapter=self.pr_adapter,
                 issue_number=issue_number,
                 errors=[message],
                 actions_taken=[],
@@ -821,7 +832,12 @@ class CompletionProcessor:
                 issue_number,
                 e,
             )
-        self._report_gate_failure_comment(issue_number=issue_number, gate_reason=gate_reason)
+        report_gate_failure_comment(
+            pr_adapter=self.pr_adapter,
+            issue_number=issue_number,
+            gate_reason=gate_reason,
+            validation_failed_label=validation_failed_label,
+        )
 
         self._emit(
             SessionEvent.FAILED,
@@ -1344,7 +1360,9 @@ class CompletionProcessor:
 
         # Maybe switch branch for PR collision
         if self._pr_collision_strategy == "new_branch":
-            branch = self._maybe_switch_branch_for_pr_collision(
+            branch = maybe_switch_branch_for_pr_collision(
+                pr_adapter=self.pr_adapter,
+                git_adapter=self.git_adapter,
                 worktree=worktree,
                 branch=branch,
                 issue_number=issue_number,
@@ -1355,7 +1373,11 @@ class CompletionProcessor:
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
         draft_pr = exchange_mode not in {"via-mcp", "via-local-loop"}
-        pr = self._create_pr_with_collision_handling(
+        pr = create_pr_with_collision_handling(
+            pr_adapter=self.pr_adapter,
+            git_adapter=self.git_adapter,
+            base_branch=self._base_branch,
+            pr_collision_strategy=self._pr_collision_strategy,
             worktree=worktree,
             pr_title=pr_title,
             pr_body=pr_body,
@@ -1421,7 +1443,11 @@ class CompletionProcessor:
     ) -> "_ActionResult | None":
         if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
             return None
-        existing_pr = self._get_open_pr_for_issue(issue_number, expected_branch=branch)
+        existing_pr = get_open_pr_for_issue(
+            self.pr_adapter,
+            issue_number,
+            expected_branch=branch,
+        )
         if not existing_pr:
             return None
         actions_taken.append(f"Reused PR #{existing_pr.number}")
@@ -1915,54 +1941,6 @@ class CompletionProcessor:
             on_started=on_started,
         )
 
-    def _create_pr_with_collision_handling(
-        self,
-        *,
-        worktree: Path,
-        pr_title: str,
-        pr_body: str,
-        branch: str,
-        issue_number: int,
-        actions_taken: list[str],
-        skip_hooks: bool,
-        draft: bool,
-    ) -> PRInfo | None:
-        """Create PR with collision handling."""
-        try:
-                return self.pr_adapter.create_pr(
-                    title=pr_title,
-                    body=pr_body,
-                    head=branch,
-                    base=self._base_branch(),
-                    draft=draft,
-                )
-        except Exception as e:
-            if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
-                new_branch = self._switch_to_suffixed_branch(
-                    worktree=worktree,
-                    branch=branch,
-                    issue_number=issue_number,
-                    actions_taken=actions_taken,
-                    skip_hooks=skip_hooks,
-                )
-                return self.pr_adapter.create_pr(
-                    title=pr_title,
-                    body=pr_body,
-                    head=new_branch,
-                    base=self._base_branch(),
-                    draft=draft,
-                )
-            elif self._is_no_commits_error(e):
-                raise RuntimeError(
-                    f"Cannot create PR: no commits between {self._base_branch()} and {branch}. "
-                    f"Possible causes: (1) agent didn't make any changes, "
-                    f"(2) work already merged via another PR, "
-                    f"(3) commits lost during rebase. "
-                    f"Human review required."
-                )
-            else:
-                raise
-
     def _apply_pr_labels(
         self,
         pr: PRInfo,
@@ -2049,7 +2027,8 @@ class CompletionProcessor:
                 },
             )
             # Write detailed failure diagnostics to worktree
-            diagnostic_path = self._write_failure_diagnostic(
+            diagnostic_path = write_failure_diagnostic(
+                session_output=self.session_output,
                 worktree=worktree,
                 session_name=session_name,
                 issue_number=issue_number,
@@ -2062,7 +2041,8 @@ class CompletionProcessor:
                 error_details=error_details,
                 duration_seconds=total_duration,
             )
-            self._report_processing_failure_comment(
+            report_processing_failure_comment(
+                pr_adapter=self.pr_adapter,
                 issue_number=issue_number,
                 errors=errors,
                 actions_taken=actions_taken,
@@ -2133,7 +2113,12 @@ class CompletionProcessor:
         logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
                       issue_number, record_path, existed_before, exists_after)
         if existed_before and exists_after and not cleanup_ok:
-            self._report_cleanup_failure(issue_number, worktree, record_path)
+            report_cleanup_failure(
+                pr_adapter=self.pr_adapter,
+                issue_number=issue_number,
+                worktree=worktree,
+                record_path=record_path,
+            )
 
     def _build_pr_body(self, record: CompletionRecord, issue_number: int) -> str:
         """Build the PR body from the completion record.
@@ -2182,114 +2167,6 @@ class CompletionProcessor:
                 "stale info",
             )
         )
-
-    def _is_pr_collision_error(self, error: Exception) -> bool:
-        message = str(error).lower()
-        return "pull request" in message and "already exists" in message
-
-    def _is_no_commits_error(self, error: Exception) -> bool:
-        """Detect GitHub 422 'No commits between base and branch' error.
-
-        This happens when the branch is identical to main, meaning the work
-        was already merged (possibly from a previous session or other PR).
-        """
-        message = str(error).lower()
-        return "no commits between" in message
-
-    def _pr_matches_issue(self, pr: PRInfo, issue_number: int) -> bool:
-        if pr.branch and pr.branch.startswith(f"{issue_number}-"):
-            return True
-        if pr.title and f"#{issue_number}" in pr.title:
-            return True
-        return False
-
-    def _get_open_pr_for_issue(
-        self,
-        issue_number: int,
-        *,
-        expected_branch: str | None = None,
-    ) -> PRInfo | None:
-        try:
-            prs = self.pr_adapter.get_prs_for_issue(issue_number, state="open")
-        except Exception as e:
-            logger.warning("Failed to query open PRs for issue %s: %s", issue_number, e)
-            return None
-        matching_prs = [pr for pr in prs if self._pr_matches_issue(pr, issue_number)]
-        scoped = scope_prs_to_active_issue_branch(
-            issue_number,
-            matching_prs,
-            expected_branch=expected_branch,
-        )
-        for pr in scoped.ignored:
-            logger.info(
-                "Ignoring open PR from prior attempt for issue #%d: pr=%d branch=%s expected_branch=%s",
-                issue_number,
-                pr.number,
-                pr.branch,
-                scoped.expected_branch,
-            )
-        return scoped.first_matching
-
-    def _maybe_switch_branch_for_pr_collision(
-        self,
-        *,
-        worktree: Path,
-        branch: str,
-        issue_number: int,
-        actions_taken: list[str],
-        skip_hooks: bool,
-    ) -> str:
-        try:
-            prs = self.pr_adapter.get_prs_for_branch(branch, state="all")
-        except Exception as e:
-            logger.warning("Failed to query PRs for branch %s: %s", branch, e)
-            return branch
-        if not prs:
-            return branch
-        for pr in prs:
-            if pr.state.lower() == "open" and self._pr_matches_issue(pr, issue_number):
-                return branch
-        return self._switch_to_suffixed_branch(
-            worktree=worktree,
-            branch=branch,
-            issue_number=issue_number,
-            actions_taken=actions_taken,
-            skip_hooks=skip_hooks,
-        )
-
-    def _next_branch_name(self, worktree: Path, branch: str) -> str:
-        base = re.sub(r"-r\d+$", "", branch)
-        existing = self.git_adapter.list_branch_names(worktree)
-        pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
-        max_suffix = 0
-        for name in existing:
-            match = pattern.match(name)
-            if match:
-                max_suffix = max(max_suffix, int(match.group(1)))
-        return f"{base}-r{max_suffix + 1}"
-
-    def _switch_to_suffixed_branch(
-        self,
-        *,
-        worktree: Path,
-        branch: str,
-        issue_number: int,
-        actions_taken: list[str],
-        skip_hooks: bool,
-    ) -> str:
-        new_branch = self._next_branch_name(worktree, branch)
-        self.git_adapter.create_branch_from_current(worktree, new_branch)
-        push_result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
-        if not push_result.success:
-            raise RuntimeError(f"Failed to push new branch {new_branch}: {push_result.message}")
-        actions_taken.append(f"Switched to new branch {new_branch}")
-        logger.info(
-            "PR collision remediation for issue #%d: branch=%s -> %s",
-            issue_number,
-            branch,
-            new_branch,
-        )
-        return new_branch
 
     def _write_reviewer_feedback_file(
         self,
@@ -2357,173 +2234,3 @@ class CompletionProcessor:
         except Exception as e:
             logger.warning(f"Failed to remove completion record: {e}")
             return False
-
-    def _report_cleanup_failure(
-        self,
-        issue_number: int,
-        worktree: Path,
-        record_path: Path,
-    ) -> None:
-        """Report cleanup failure with a local diagnostic reference."""
-        diagnostic = write_issue_diagnostic(
-            worktree=worktree,
-            issue_number=issue_number,
-            kind="completion-cleanup",
-            summary="Completion record could not be deleted",
-            details={
-                "record_path": str(record_path),
-                "worktree": str(worktree),
-            },
-        )
-
-        if diagnostic:
-            comment = (
-                "WARNING: Cleanup incomplete\n\n"
-                "The completion record could not be deleted after processing. "
-                "This can happen if the file is still open or locked.\n\n"
-                f"- Worktree: `{diagnostic.worktree_name}`\n"
-                f"- Diagnostic file: `{diagnostic.relative_path}`\n\n"
-                "Close any editors or processes using the file, then delete it manually."
-            )
-        else:
-            comment = (
-                "WARNING: Cleanup incomplete\n\n"
-                "The completion record could not be deleted after processing. "
-                "Close any editors or processes using the file, then delete it manually."
-            )
-
-        try:
-            self.pr_adapter.add_comment(issue_number, comment)
-        except Exception as exc:
-            logger.warning("Failed to add cleanup warning comment for #%d: %s", issue_number, exc)
-
-    def _report_gate_failure_comment(self, issue_number: int, gate_reason: str) -> None:
-        """Post a GitHub comment for publish gate failures."""
-        comment = (
-            "## Validation Failed\n\n"
-            "Publish actions were blocked by validation.\n\n"
-            f"- Reason: {gate_reason}\n"
-            f"- Label added: `{self._get_label('validation_failed')}`\n"
-        )
-        try:
-            self.pr_adapter.add_comment(issue_number, comment)
-        except Exception as exc:
-            logger.warning(
-                "Failed to add validation failure comment for #%d: %s",
-                issue_number,
-                exc,
-            )
-
-    def _report_processing_failure_comment(
-        self,
-        issue_number: int,
-        errors: list[str],
-        actions_taken: list[str],
-        diagnostic_path: str | None,
-    ) -> None:
-        """Post a GitHub comment for completion processing failures."""
-        primary_error = errors[0] if errors else "Unknown processing error"
-        comment = (
-            "## Orchestrator Processing Failed\n\n"
-            "The agent reported completion, but orchestrator publish/finalize steps failed.\n\n"
-            f"- Primary error: {primary_error}\n"
-        )
-        if actions_taken:
-            comment += f"- Actions completed before failure: {', '.join(actions_taken)}\n"
-        if diagnostic_path:
-            comment += f"- Diagnostic file: `{diagnostic_path}`\n"
-        try:
-            self.pr_adapter.add_comment(issue_number, comment)
-        except Exception as exc:
-            logger.warning(
-                "Failed to add processing failure comment for #%d: %s",
-                issue_number,
-                exc,
-            )
-
-    def _write_failure_diagnostic(
-        self,
-        worktree: Path,
-        session_name: str | None,
-        issue_number: int,
-        issue_title: str,
-        branch: str | None,
-        outcome: str,
-        requested_actions: list[str],
-        actions_taken: list[str],
-        errors: list[str],
-        error_details: list[dict[str, Any]],
-        duration_seconds: float,
-    ) -> str | None:
-        """Write detailed failure diagnostics to a file in the worktree.
-
-        This captures stack traces and detailed error context that would be
-        inappropriate to post publicly on GitHub.
-
-        Args:
-            worktree: Path to the worktree.
-            issue_number: The issue number.
-            issue_title: The issue title.
-            branch: Branch name (if known).
-            outcome: The agent's reported outcome.
-            requested_actions: Actions requested by the agent.
-            actions_taken: Actions that succeeded.
-            errors: Summary error messages.
-            error_details: Full error details including stack traces.
-            duration_seconds: How long processing took.
-
-        Returns:
-            Relative path to the diagnostic file, or None if writing failed.
-        """
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        filename = f"failure-diagnostic-{timestamp}.json"
-        if session_name:
-            run_dir = self.session_output.find_run_dir(worktree, session_name=session_name)
-            if run_dir:
-                diagnostic_dir = run_dir
-                diagnostic_rel = f".issue-orchestrator/sessions/{run_dir.name}/{filename}"
-            else:
-                diagnostic_dir = self.session_output.ensure_run_dir(worktree, session_name)
-                diagnostic_rel = f".issue-orchestrator/sessions/{diagnostic_dir.name}/{filename}"
-        else:
-            diagnostic_dir = worktree / ".issue-orchestrator"
-            diagnostic_rel = f".issue-orchestrator/{filename}"
-        diagnostic_path = diagnostic_dir / filename
-
-        diagnostic = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "session_name": session_name,
-            "issue_number": issue_number,
-            "issue_title": issue_title,
-            "branch": branch,
-            "worktree": str(worktree),
-            "outcome_reported": outcome,
-            "requested_actions": requested_actions,
-            "actions_taken": actions_taken,
-            "errors": errors,
-            "error_details": error_details,
-            "duration_seconds": round(duration_seconds, 2),
-        }
-
-        try:
-            diagnostic_dir.mkdir(parents=True, exist_ok=True)
-            diagnostic_path.write_text(json.dumps(diagnostic, indent=2))
-            if session_name:
-                run_dir = self.session_output.find_run_dir(worktree, session_name=session_name)
-                if run_dir:
-                    self.session_output.update_manifest(
-                        run_dir,
-                        {"diagnostic_path": diagnostic_rel},
-                    )
-            logger.info(
-                "[DIAGNOSTIC] Wrote failure diagnostic: issue=%d path=%s",
-                issue_number, diagnostic_path,
-            )
-            # Return relative path for inclusion in GitHub comment
-            return diagnostic_rel
-        except Exception as e:
-            logger.warning(
-                "[DIAGNOSTIC] Failed to write failure diagnostic: issue=%d error=%s",
-                issue_number, e,
-            )
-            return None
