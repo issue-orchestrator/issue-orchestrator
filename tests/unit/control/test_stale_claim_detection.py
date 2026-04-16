@@ -4,6 +4,8 @@ import pytest
 
 from issue_orchestrator.control.planner import (
     Planner,
+)
+from issue_orchestrator.control.planner_types import (
     OrchestratorSnapshot,
 )
 from issue_orchestrator.control.scheduler import Scheduler
