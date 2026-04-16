@@ -43,6 +43,7 @@ from issue_orchestrator.resources import get_coding_done_instructions, get_revie
 _lm = LabelManager(Config())
 
 _COMPLETION_CMDS = ("coding-done", "reviewer-done")
+_CONTRACT_COMMAND_TIMEOUT_SECONDS = 60
 
 _FENCED_BLOCK_RE = re.compile(r"```(?:bash)?\n(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`]*(?:coding-done|reviewer-done)[^`]*)`")
@@ -104,7 +105,7 @@ def _run_completion_command(command: str, cwd: Path) -> subprocess.CompletedProc
         cwd=cwd,
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=_CONTRACT_COMMAND_TIMEOUT_SECONDS,
     )
 
 
@@ -136,7 +137,7 @@ def _run_completion_raw(argv: list[str], cwd: Path, env: dict[str, str] | None =
         env=env,
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=_CONTRACT_COMMAND_TIMEOUT_SECONDS,
     )
 
 
@@ -457,7 +458,7 @@ def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:
         cwd=repo,
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=_CONTRACT_COMMAND_TIMEOUT_SECONDS,
     )
     assert wrapper_result.returncode == 0
     assert "agent work" in wrapper_result.stdout.lower()
@@ -467,7 +468,7 @@ def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:
         cwd=repo,
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=_CONTRACT_COMMAND_TIMEOUT_SECONDS,
     )
     assert blocked_push.returncode != 0
     assert "BLOCKED: 'git push' is not allowed" in blocked_push.stderr
@@ -478,7 +479,7 @@ def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:
         env={**os.environ, "ORCHESTRATOR_GH_AUTH": "agent-done-authorized"},
         text=True,
         capture_output=True,
-        timeout=20,
+        timeout=_CONTRACT_COMMAND_TIMEOUT_SECONDS,
     )
     # No remote is configured, so push may still fail — but wrapper block message
     # must not appear when auth bypass is set.

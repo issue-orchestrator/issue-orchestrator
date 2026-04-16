@@ -36,6 +36,7 @@ from issue_orchestrator.entrypoints import control_api_shutdown_state
 from issue_orchestrator.execution.control_center_actions import ActionResult, ControlCenterActions
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.repo_hardening import RepoHardeningError
 from issue_orchestrator.infra.supervisor import (
     DefaultSupervisorOps,
     MultiInstanceStatus,
@@ -1369,6 +1370,113 @@ class TestActionEndpointMapping:
         assert response.status_code == 200
         assert response.json()["overall"] == "ok"
         mock_control_actions.doctor_cmd.execute.assert_awaited_once()
+
+    def test_repair_guardrails_runs_harden_repo(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: owner/repo\nvalidation:\n  cmd: pytest\n",
+            encoding="utf-8",
+        )
+        repo_root = tmp_path.resolve()
+        result = SimpleNamespace(
+            repo_root=repo_root,
+            hooks_path_config=".githooks",
+            hooks_dir=repo_root / ".githooks",
+            pre_push_hook=repo_root / ".githooks" / "pre-push",
+            verify_script=repo_root / "scripts" / "verify-pr.sh",
+            helper_script=repo_root / "scripts" / "agent-hooks" / "block_no_verify.py",
+            installed_files=[
+                repo_root / "scripts" / "verify-pr.sh",
+                repo_root / "scripts" / "agent-hooks" / "block_no_verify.py",
+                repo_root / ".githooks" / "pre-push",
+            ],
+            preserved_files=[repo_root / ".githooks" / "pre-push.project"],
+            agent_hook_files={
+                "claude-code": [repo_root / ".claude" / "hooks" / "block-no-verify.sh"]
+            },
+        )
+
+        with patch(
+            "issue_orchestrator.entrypoints.control_api_orchestrator_routes.harden_repo",
+            return_value=result,
+        ) as harden_mock:
+            response = supervisor_client.post(
+                "/control/orchestrator/guardrails/repair",
+                json={"repo_root": str(tmp_path), "config_name": "default"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "repaired"
+        assert data["config_name"] == "default.yaml"
+        assert data["installed_files"] == [
+            "scripts/verify-pr.sh",
+            "scripts/agent-hooks/block_no_verify.py",
+            ".githooks/pre-push",
+        ]
+        assert data["preserved_files"] == [".githooks/pre-push.project"]
+        assert data["agent_hook_files"] == {
+            "claude-code": [".claude/hooks/block-no-verify.sh"]
+        }
+        assert "Review and commit changed files" in data["message"]
+        harden_mock.assert_called_once()
+        harden_config = harden_mock.call_args.args[0]
+        assert harden_config.repo == "owner/repo"
+        assert harden_mock.call_args.kwargs["target_root"] == repo_root
+
+    def test_repair_guardrails_rejects_invalid_config_name(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/orchestrator/guardrails/repair",
+            json={"repo_root": str(tmp_path), "config_name": "../default"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid config_name"
+
+    def test_repair_guardrails_returns_missing_config(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/orchestrator/guardrails/repair",
+            json={"repo_root": str(tmp_path), "config_name": "missing"},
+        )
+
+        assert response.status_code == 404
+        assert response.json()["error"] == "config_not_found"
+        assert response.json()["config_name"] == "missing.yaml"
+
+    def test_repair_guardrails_reports_hardening_errors(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("validation:\n  cmd: pytest\n", encoding="utf-8")
+
+        with patch(
+            "issue_orchestrator.entrypoints.control_api_orchestrator_routes.harden_repo",
+            side_effect=RepoHardeningError("validation.cmd is not configured"),
+        ):
+            response = supervisor_client.post(
+                "/control/orchestrator/guardrails/repair",
+                json={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+            )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "repair_failed"
+        assert response.json()["detail"] == "validation.cmd is not configured"
 
     def test_audit_endpoint_delegates_to_command(
         self,
