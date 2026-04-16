@@ -113,6 +113,55 @@ def launch_preflight_only(
     return preflight(config, runner, doctor_fn=doctor_fn)
 
 
+def _start_with_supervisor(
+    sv: SupervisorOps,
+    *,
+    repo_root: Path,
+    config: Config,
+    config_name: str,
+    instance_id: Optional[str],
+    port: Optional[int],
+    expected_identity: Optional[dict[str, Any]],
+    start_paused: bool,
+) -> dict[str, Any]:
+    if config.instances > 1 and instance_id is None:
+        start_instances_kwargs: dict[str, Any] = {
+            "repo_root": repo_root,
+            "config_name": config_name,
+        }
+        if expected_identity is not None:
+            start_instances_kwargs["expected_identity"] = expected_identity
+        if start_paused:
+            start_instances_kwargs["start_paused"] = True
+        infos = sv.start_instances(**start_instances_kwargs)
+        return {
+            "instances": [
+                {"pid": info.pid, "port": info.http_port, "instance_id": info.instance_id}
+                for info in infos
+            ],
+        }
+
+    start_kwargs: dict[str, Any] = {
+        "repo_root": repo_root,
+        "config_name": config_name,
+        "instance_id": instance_id,
+        "port": port,
+    }
+    if expected_identity is not None:
+        start_kwargs["expected_identity"] = expected_identity
+    if start_paused:
+        start_kwargs["start_paused"] = True
+    info = sv.start(**start_kwargs)
+
+    supervisor_data = {
+        "pid": info.pid,
+        "port": info.http_port,
+    }
+    if info.instance_id:
+        supervisor_data["instance_id"] = info.instance_id
+    return supervisor_data
+
+
 def launch_subprocess(
     repo_root: Path,
     config: Config,
@@ -121,6 +170,7 @@ def launch_subprocess(
     instance_id: Optional[str] = None,
     port: Optional[int] = None,
     expected_identity: Optional[dict[str, Any]] = None,
+    start_paused: bool = False,
     supervisor_ops: Optional[SupervisorOps] = None,
     doctor_fn: Optional[DoctorFn] = None,
 ) -> LaunchResult:
@@ -154,36 +204,16 @@ def launch_subprocess(
     # Doctor passed (ok or warning) — start the orchestrator subprocess
     sv = supervisor_ops or supervisor
     try:
-        if config.instances > 1 and instance_id is None:
-            start_instances_kwargs: dict[str, Any] = {
-                "repo_root": repo_root,
-                "config_name": config_name,
-            }
-            if expected_identity is not None:
-                start_instances_kwargs["expected_identity"] = expected_identity
-            infos = sv.start_instances(**start_instances_kwargs)
-            supervisor_data = {
-                "instances": [
-                    {"pid": info.pid, "port": info.http_port, "instance_id": info.instance_id}
-                    for info in infos
-                ],
-            }
-        else:
-            start_kwargs: dict[str, Any] = {
-                "repo_root": repo_root,
-                "config_name": config_name,
-                "instance_id": instance_id,
-                "port": port,
-            }
-            if expected_identity is not None:
-                start_kwargs["expected_identity"] = expected_identity
-            info = sv.start(**start_kwargs)
-            supervisor_data = {
-                "pid": info.pid,
-                "port": info.http_port,
-            }
-            if info.instance_id:
-                supervisor_data["instance_id"] = info.instance_id
+        supervisor_data = _start_with_supervisor(
+            sv,
+            repo_root=repo_root,
+            config=config,
+            config_name=config_name,
+            instance_id=instance_id,
+            port=port,
+            expected_identity=expected_identity,
+            start_paused=start_paused,
+        )
 
         return LaunchResult(
             doctor=doctor_result,

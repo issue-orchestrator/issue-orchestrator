@@ -127,6 +127,19 @@ class TestLaunchSubprocess:
         assert result.launched is True
         assert result.status == "doctor_warning"
 
+    def test_launch_start_paused_passes_supervisor_flag(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path,
+            mock_config,
+            doctor_fn=_ok_doctor,
+            supervisor_ops=sv,
+            start_paused=True,
+        )
+        assert result.launched is True
+        sv.start.assert_called_once()
+        assert sv.start.call_args.kwargs["start_paused"] is True
+
     def test_launch_supervisor_error(self, mock_config, tmp_path):
         sv = _mock_supervisor()
         sv.start.side_effect = RuntimeError("port in use")
@@ -150,6 +163,26 @@ class TestLaunchSubprocess:
         assert result.launched is True
         assert "instances" in result.supervisor
         assert len(result.supervisor["instances"]) == 2
+
+    def test_launch_multi_instance_start_paused_passes_supervisor_flag(
+        self, mock_config, tmp_path
+    ):
+        mock_config.instances = 3
+        sv = _mock_supervisor()
+        mock_info = MagicMock(pid=1, http_port=8081, instance_id="i1")
+        sv.start_instances.return_value = [mock_info]
+
+        result = launch_subprocess(
+            tmp_path,
+            mock_config,
+            doctor_fn=_ok_doctor,
+            supervisor_ops=sv,
+            start_paused=True,
+        )
+
+        assert result.launched is True
+        sv.start_instances.assert_called_once()
+        assert sv.start_instances.call_args.kwargs["start_paused"] is True
 
     def test_launch_multi_instance_with_instance_id_starts_single(
         self, mock_config, tmp_path

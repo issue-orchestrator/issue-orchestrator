@@ -693,6 +693,9 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
             return 1
 
     orchestrator = build_orchestrator(config=config)
+    if args.start_paused:
+        orchestrator.set_start_paused()
+        console.print("[dim]Starting paused[/dim]")
 
     # Get control API port (CLI --api-port overrides config; 0 = auto-assign)
     cli_api_port = getattr(args, "api_port", None)
@@ -2310,6 +2313,11 @@ def main() -> int:
         type=int,
         default=None,
         help="Seconds between queue refreshes from GitHub (default: 600, 0=manual only)",
+    )
+    start_parser.add_argument(
+        "--start-paused",
+        action="store_true",
+        help="Start with planning/session launch paused while keeping the dashboard available",
     )
     start_parser.add_argument(
         "--gh-audit",

@@ -878,6 +878,28 @@ class TestRunLoop:
         assert len(mock_repository_host.list_issues_calls) == 0
 
     @pytest.mark.asyncio
+    async def test_run_loop_emits_started_before_initial_paused(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Initial start-paused state should emit started before paused."""
+        mock_repository_host.issues = []
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.set_start_paused()
+        orchestrator.shutdown_requested = True
+
+        await orchestrator.run_loop()
+
+        lifecycle = [
+            event.name
+            for event in orchestrator.deps.events.events
+            if event.name in {"orchestrator.started", "orchestrator.paused"}
+        ]
+        assert lifecycle == ["orchestrator.started", "orchestrator.paused"]
+
+    @pytest.mark.asyncio
     async def test_run_loop_respects_max_sessions_limit(
         self,
         sample_config,
@@ -3093,8 +3115,8 @@ class TestRefreshRequestPreservation:
         """Test that request_refresh() during planning cycle is preserved.
 
         This tests the fix for a race condition where:
-        1. _run_planning_cycle() captures _refresh_requested
-        2. During the cycle, request_refresh() sets _refresh_requested = True
+        1. _run_planning_cycle() captures state.queue_refresh_requested
+        2. During the cycle, request_refresh() sets the state flag again
         3. The cycle returns and SHOULD NOT overwrite the new True value
         """
         mock_repository_host.issues = []
@@ -3102,57 +3124,49 @@ class TestRefreshRequestPreservation:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         # Initially False
-        assert orchestrator._refresh_requested is False  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is False
 
         # Set to True (simulating a request before cycle)
-        orchestrator._refresh_requested = True  # noqa: SLF001
+        orchestrator.state.queue_refresh_requested = True
 
         # Run planning cycle - this should clear the flag when processing it
         orchestrator._run_planning_cycle()  # noqa: SLF001
 
         # After cycle processes the request, flag should be False
-        assert orchestrator._refresh_requested is False  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is False
 
-        # Now test the race condition fix:
-        # Set up so request_refresh is called DURING the cycle
-        original_impl = orchestrator._run_planning_cycle  # noqa: SLF001, F841
-
-        def cycle_with_mid_request():
-            # Capture what _run_planning_cycle does internally
-            refresh_to_process = orchestrator._refresh_requested  # noqa: SLF001, F841
-            orchestrator._refresh_requested = False  # noqa: SLF001
-
-            # Simulate request_refresh() being called during the impl
+        # Now test the race condition fix by calling request_refresh()
+        # during the planning implementation itself.
+        def request_during_cycle(*_args, **_kwargs):
             orchestrator.request_refresh({'new-issue-123'})
+            return 0.0, False
 
-            # Now _refresh_requested should be True from the new request
-            assert orchestrator._refresh_requested is True, \
-                "request_refresh during cycle should set flag"  # noqa: SLF001
-
-            # Don't actually run the impl - we're just testing the flag logic
-
-        cycle_with_mid_request()
+        with patch(
+            "issue_orchestrator.infra.orchestrator._run_planning_cycle_impl",
+            side_effect=request_during_cycle,
+        ):
+            orchestrator._run_planning_cycle()  # noqa: SLF001
 
         # After our simulated cycle, the flag should STILL be True
         # (the fix ensures we don't overwrite it)
-        assert orchestrator._refresh_requested is True, \
-            "refresh request during cycle should be preserved"  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is True, \
+            "refresh request during cycle should be preserved"
 
     def test_request_refresh_sets_flag(
         self,
         sample_config,
         mock_repository_host,
     ):
-        """Test that request_refresh() sets the _refresh_requested flag."""
+        """Test that request_refresh() sets the state refresh flag."""
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        assert orchestrator._refresh_requested is False  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is False
 
         orchestrator.request_refresh()
 
-        assert orchestrator._refresh_requested is True  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is True
 
     def test_request_refresh_with_inflight_ids_sets_flag(
         self,
@@ -3164,12 +3178,12 @@ class TestRefreshRequestPreservation:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        assert orchestrator._refresh_requested is False  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is False
         assert len(orchestrator._inflight_stable_ids) == 0  # noqa: SLF001
 
         orchestrator.request_refresh({'issue-1', 'issue-2'})
 
-        assert orchestrator._refresh_requested is True  # noqa: SLF001
+        assert orchestrator.state.queue_refresh_requested is True
         assert 'issue-1' in orchestrator._inflight_stable_ids  # noqa: SLF001
         assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001
 
