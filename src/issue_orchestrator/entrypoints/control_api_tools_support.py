@@ -1,4 +1,4 @@
-"""Dependency wiring for Control Center tool routes."""
+"""Dependency wiring for Control Center tools routes."""
 
 from __future__ import annotations
 

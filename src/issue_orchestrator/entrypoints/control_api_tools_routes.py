@@ -1,4 +1,7 @@
-"""Control Center tool routes."""
+"""Control Center tool routes.
+
+These endpoints provide utilities accessible from the unified dashboard.
+"""
 
 from __future__ import annotations
 
