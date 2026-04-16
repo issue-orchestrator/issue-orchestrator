@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -51,8 +52,6 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
             continue
 
         try:
-            import json
-
             run_manifest = json.loads(run_manifest_path.read_text())
             triage_manifest_path = run_manifest.get("triage_manifest")
             if triage_manifest_path:
@@ -74,10 +73,13 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
     return None
 
 
-def _critical_processing_errors(
+def critical_processing_errors(
     processing_errors: Optional[list[str]],
     *,
     pr_url: str | None = None,
+    issue_number: int | None = None,
+    log_downgraded: bool = False,
+    context: str = "completion",
 ) -> tuple[list[str], list[str]]:
     """Return (critical, downgraded) publish/finalize errors.
 
@@ -101,6 +103,15 @@ def _critical_processing_errors(
                 downgraded.append(error)
             else:
                 critical.append(error)
+    if downgraded and log_downgraded and issue_number is not None:
+        logger.info(
+            "[COMPLETION] Ignoring non-blocking create_pr processing errors: "
+            "context=%s issue=%d pr_url=%s errors=%s",
+            context,
+            issue_number,
+            pr_url,
+            downgraded,
+        )
     return critical, downgraded
 
 
@@ -110,7 +121,7 @@ def _has_critical_errors(
     pr_url: str | None = None,
 ) -> bool:
     """Check if processing_errors contains critical publish/finalize failures."""
-    critical, _ = _critical_processing_errors(processing_errors, pr_url=pr_url)
+    critical, _ = critical_processing_errors(processing_errors, pr_url=pr_url)
     return bool(critical)
 
 
@@ -302,17 +313,13 @@ class CompletionActionPlanner:
         expected = build_expected_for_mutation()
 
         # Check for critical processing errors (push/PR creation failures).
-        critical_errors, downgraded_errors = _critical_processing_errors(
+        critical_errors, _downgraded_errors = critical_processing_errors(
             processing_errors,
             pr_url=pr_url,
+            issue_number=session.issue.number,
+            log_downgraded=True,
+            context="actions",
         )
-        if downgraded_errors:
-            logger.info(
-                "[COMPLETION] Ignoring non-blocking create_pr processing errors during action generation: issue=%d pr_url=%s errors=%s",
-                session.issue.number,
-                pr_url,
-                downgraded_errors,
-            )
 
         # If agent said "completed" but critical processing failed, treat as blocked-failed.
         if status == SessionStatus.COMPLETED and critical_errors:

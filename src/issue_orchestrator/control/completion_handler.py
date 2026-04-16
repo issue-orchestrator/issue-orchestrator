@@ -37,7 +37,7 @@ from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction
 from .completion_action_planner import (
     CompletionActionPlanner,
-    _critical_processing_errors,
+    critical_processing_errors,
     has_review_exchange_errors,
 )
 from .reconciliation import build_expected_for_mutation
@@ -189,17 +189,13 @@ class CompletionHandler:
         # use FAILED for history to show red dot in UI
         history_status = status
         history_status_reason: Optional[str] = None
-        critical_errors, downgraded_errors = _critical_processing_errors(
+        critical_errors, _downgraded_errors = critical_processing_errors(
             processing_errors,
             pr_url=pr_url,
+            issue_number=session.issue.number,
+            log_downgraded=True,
+            context="history",
         )
-        if downgraded_errors:
-            logger.info(
-                "[COMPLETION] Downgrading create_pr processing errors because PR exists: issue=%d pr_url=%s errors=%s",
-                session.issue.number,
-                pr_url,
-                downgraded_errors,
-            )
 
         if status == SessionStatus.COMPLETED and critical_errors:
             logger.info(
@@ -247,14 +243,18 @@ class CompletionHandler:
         )
 
         # Generate actions for label/comment changes (policy logic)
-        completion_actions = list(self.generate_completion_actions(
-            session, status, processing_errors=processing_errors,
-            diagnostic_path=diagnostic_path,
-            review_exchange_halted=review_exchange_halted,
-            blocked_label=blocked_label,
-            blocked_reason=blocked_reason,
-            pr_url=pr_url,
-        ))
+        completion_actions = list(
+            self._action_planner.generate_completion_actions(
+                session,
+                status,
+                processing_errors=processing_errors,
+                diagnostic_path=diagnostic_path,
+                review_exchange_halted=review_exchange_halted,
+                blocked_label=blocked_label,
+                blocked_reason=blocked_reason,
+                pr_url=pr_url,
+            )
+        )
         if review_exchange_completed and pr_url:
             completion_actions.append(AddLabelAction(
                 issue_number=session.issue.number,
@@ -1113,30 +1113,6 @@ class CompletionHandler:
         if manifest.get("issue_number") == session.issue.number:
             return fallback
         return None
-
-    def generate_completion_actions(
-        self,
-        session: Session,
-        status: SessionStatus,
-        processing_errors: Optional[list[str]] = None,
-        diagnostic_path: Optional[str] = None,
-        review_exchange_halted: bool = False,
-        blocked_label: Optional[str] = None,
-        blocked_reason: Optional[str] = None,
-        pr_url: Optional[str] = None,
-    ) -> tuple[Action, ...]:
-        """Generate label/comment actions for session completion."""
-        return self._action_planner.generate_completion_actions(
-            session,
-            status,
-            processing_errors=processing_errors,
-            diagnostic_path=diagnostic_path,
-            review_exchange_halted=review_exchange_halted,
-            blocked_label=blocked_label,
-            blocked_reason=blocked_reason,
-            pr_url=pr_url,
-        )
-
 
 def launch_review_by_number(
     n: int,
