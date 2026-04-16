@@ -63,11 +63,11 @@ from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
-from ..execution.control_center_actions import (
-    AuditActionRequest,
-    ControlCenterActions,
-    RepoActionRequest,
-    TraceActionRequest,
+from ..execution.control_center_actions import ControlCenterActions
+from .control_api_goal_pilot_routes import control_goal_pilot_router
+from .control_api_goal_pilot_support import (
+    ControlApiGoalPilotDependencies,
+    install_control_api_goal_pilot_dependencies,
 )
 from .control_api_e2e_runs import control_e2e_runs_router
 from .control_api_orchestrator_routes import control_orchestrator_router
@@ -99,6 +99,11 @@ from .control_api_shutdown_state import (
 from .control_api_shutdown_support import (
     ControlApiShutdownDependencies,
     install_control_api_shutdown_dependencies,
+)
+from .control_api_tools_routes import control_tools_router
+from .control_api_tools_support import (
+    ControlApiToolsDependencies,
+    install_control_api_tools_dependencies,
 )
 from .control_api_e2e_triage import control_e2e_triage_router
 from .timeline_presentation import (
@@ -1235,6 +1240,20 @@ install_control_api_shutdown_dependencies(
         schedule_control_center_exit=_schedule_control_center_exit_dependency,
     ),
 )
+install_control_api_goal_pilot_dependencies(
+    control_app,
+    ControlApiGoalPilotDependencies(
+        get_orchestrator=get_orchestrator,
+        get_goal_pilot=_get_goal_pilot,
+    ),
+)
+install_control_api_tools_dependencies(
+    control_app,
+    ControlApiToolsDependencies(
+        get_control_actions=get_control_actions,
+        validate_repo_root=_validate_repo_root,
+    ),
+)
 install_control_api_repo_dependencies(
     control_app,
     ControlApiRepoDependencies(
@@ -1255,292 +1274,12 @@ install_control_api_setup_dependencies(
 )
 control_app.include_router(control_orchestrator_router)
 control_app.include_router(control_shutdown_router)
+control_app.include_router(control_goal_pilot_router)
+control_app.include_router(control_tools_router)
 control_app.include_router(control_repo_router)
 control_app.include_router(control_setup_router)
 control_app.include_router(control_e2e_runs_router)
 control_app.include_router(control_e2e_triage_router)
-
-
-# ======================================================================# Goal Pilot API Endpoints
-# ======================================================================# These endpoints expose Goal Pilot planning and skill-management operations.
-
-
-@control_app.post("/control/goal_pilot/runs")
-async def goal_pilot_create(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    goals = body.get("goals") or []
-    done_criteria = body.get("done_criteria") or {}
-    name = body.get("name")
-    milestones = body.get("milestones")
-    if not name or not str(name).strip():
-        return JSONResponse({"error": "name_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    run_id = pilot.create(goals=goals, done_criteria=done_criteria, name=name)
-    if milestones:
-        pilot.update_goals(run_id, goals, note=f"milestones={milestones}")
-    return JSONResponse({"run_id": run_id})
-
-
-@control_app.get("/control/goal_pilot/runs")
-async def goal_pilot_runs() -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    pilot = _get_goal_pilot()
-    return JSONResponse({"runs": pilot.list_runs()})
-
-
-@control_app.get("/control/goal_pilot/config")
-async def goal_pilot_config() -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    gp_config = _orchestrator.config.goal_pilot
-    configured = bool(gp_config.enabled and gp_config.agent)
-    return JSONResponse({
-        "enabled": gp_config.enabled,
-        "agent": gp_config.agent,
-        "approval_policy": gp_config.approval_policy,
-        "approval_batch_size": gp_config.approval_batch_size,
-        "approval_batch_window_minutes": gp_config.approval_batch_window_minutes,
-        "configured": configured,
-    })
-
-
-@control_app.get("/control/goal_pilot/runs/{run_id}")
-async def goal_pilot_status(run_id: str) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    pilot = _get_goal_pilot()
-    status = pilot.status(run_id)
-    return JSONResponse({"status": status})
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/phase")
-async def goal_pilot_phase(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    phase = body.get("phase")
-    reason = body.get("reason")
-    changes = body.get("changes") or {}
-    if not phase or not reason:
-        return JSONResponse({"error": "phase_and_reason_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    result = pilot.set_phase(run_id, phase=phase, reason=reason, changes=changes)
-    return JSONResponse(result)
-
-
-@control_app.get("/control/goal_pilot/runs/{run_id}/journeys")
-async def goal_pilot_journeys(run_id: str) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    pilot = _get_goal_pilot()
-    return JSONResponse({"journeys": pilot.list_journeys(run_id)})
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/journeys")
-async def goal_pilot_journey_create(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    pilot = _get_goal_pilot()
-    try:
-        journey = pilot.create_journey(run_id, body)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    return JSONResponse({"journey": journey})
-
-
-@control_app.patch("/control/goal_pilot/journeys/{journey_id}")
-async def goal_pilot_journey_update(journey_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    pilot = _get_goal_pilot()
-    try:
-        journey = pilot.update_journey(journey_id, body)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    return JSONResponse({"journey": journey})
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/journeys/reorder")
-async def goal_pilot_journey_reorder(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    order = body.get("order")
-    if not isinstance(order, list):
-        return JSONResponse({"error": "order_list_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    try:
-        result = pilot.reorder_journeys(run_id, order)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    result = pilot.reorder_journeys(run_id, order)
-    return JSONResponse(result)
-
-
-@control_app.patch("/control/goal_pilot/runs/{run_id}")
-async def goal_pilot_update(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    goals = body.get("goals")
-    note = body.get("note")
-    if goals is None or not isinstance(goals, list):
-        return JSONResponse({"error": "goals_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    result = pilot.update_goals(run_id, goals, note=note)
-    return JSONResponse(result)
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/actions")
-async def goal_pilot_action(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    action = body.get("action")
-    if not isinstance(action, dict):
-        return JSONResponse({"error": "action_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    result = pilot.execute_action(run_id, action, _orchestrator.deps.repository_host)
-    return JSONResponse(result)
-
-
-@control_app.get("/control/goal_pilot/skills")
-async def goal_pilot_skills(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    status = request.query_params.get("status")
-    pilot = _get_goal_pilot()
-    skills = pilot.list_skills(status=status)
-    return JSONResponse({"skills": skills})
-
-
-@control_app.post("/control/goal_pilot/skills")
-async def goal_pilot_upsert_skill(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    pilot = _get_goal_pilot()
-    skill = pilot.upsert_skill(body)
-    return JSONResponse({"skill": skill})
-
-
-@control_app.post("/control/goal_pilot/skills/export")
-async def goal_pilot_export_skills(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    status = body.get("status", "active")
-    pilot = _get_goal_pilot()
-    result = pilot.export_skills(status=status)
-    return JSONResponse(result)
-
-
-# ======================================================================# Tools API
-# ======================================================================# These endpoints provide utilities accessible from the unified dashboard.
-
-
-@control_app.get("/control/tools/audit")
-async def tools_audit(
-    repo_root: str = Query(...),
-    issue_number: int | None = Query(default=None),
-) -> JSONResponse:
-    """Audit why issues are queued or blocked.
-
-    Query params:
-        repo_root: str - Repository root path
-        issue_number: int (optional) - Specific issue to audit
-
-    Returns:
-        List of audit entries with issue status and reasons.
-    """
-    repo_path = _validate_repo_root(repo_root)
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-    result = await _control_actions.audit_cmd.execute(
-        AuditActionRequest(repo_root=repo_path, issue_number=issue_number),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.get("/control/tools/trace")
-async def tools_trace(
-    repo_root: str = Query(...),
-    issue_number: int = Query(...),
-    limit: int = Query(default=100),
-) -> JSONResponse:
-    """Get trace log entries for a specific issue.
-
-    Query params:
-        repo_root: str - Repository root path
-        issue_number: int - Issue number to trace
-        limit: int - Max lines to return (default: 100)
-
-    Returns:
-        List of log entries related to the issue.
-    """
-    repo_path = _validate_repo_root(repo_root)
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-    result = await _control_actions.trace_cmd.execute(
-        TraceActionRequest(repo_root=repo_path, issue_number=issue_number, limit=limit),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/tools/labels/init")
-async def tools_labels_init(request: Request) -> JSONResponse:
-    """Initialize or refresh GitHub labels for a repository.
-
-    JSON body:
-        repo_root: str - Repository root path
-
-    Returns:
-        Summary of created/updated labels.
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_path = _validate_repo_root(body.get("repo_root"))
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-
-    result = await _control_actions.labels_cmd.execute(RepoActionRequest(repo_root=repo_path))
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/tools/worktrees/cleanup")
-async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
-    """List stale worktrees (read-only, no deletion).
-
-    This endpoint only LISTS stale worktrees. It does not delete them.
-    Users should run `git worktree prune` manually to clean up.
-
-    JSON body:
-        repo_root: str - Repository root path
-
-    Returns:
-        List of stale worktrees and instructions for cleanup.
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_path = _validate_repo_root(body.get("repo_root"))
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-
-    result = await _control_actions.stale_worktrees_cmd.execute(
-        RepoActionRequest(repo_root=repo_path),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.get("/api/session/terminal-recording/{issue_number}")
