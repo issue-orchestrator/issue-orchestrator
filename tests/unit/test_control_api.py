@@ -168,6 +168,69 @@ class TestRouteRegistration:
 
         assert counts == Counter({path: 1 for path in shutdown_paths})
 
+    def test_extracted_control_route_families_are_registered_once(self) -> None:
+        extracted_paths = {
+            "/control/goal_pilot/runs",
+            "/control/goal_pilot/config",
+            "/control/goal_pilot/runs/{run_id}",
+            "/control/goal_pilot/runs/{run_id}/phase",
+            "/control/goal_pilot/runs/{run_id}/journeys",
+            "/control/goal_pilot/journeys/{journey_id}",
+            "/control/goal_pilot/runs/{run_id}/journeys/reorder",
+            "/control/goal_pilot/runs/{run_id}/actions",
+            "/control/goal_pilot/skills",
+            "/control/goal_pilot/skills/export",
+            "/control/tools/audit",
+            "/control/tools/trace",
+            "/control/tools/labels/init",
+            "/control/tools/worktrees/cleanup",
+        }
+        counts = Counter(
+            route.path
+            for route in control_app.routes
+            if route.path in extracted_paths
+        )
+
+        expected = Counter({path: 1 for path in extracted_paths})
+        expected["/control/goal_pilot/runs"] = 2
+        expected["/control/goal_pilot/runs/{run_id}"] = 2
+        expected["/control/goal_pilot/runs/{run_id}/journeys"] = 2
+        expected["/control/goal_pilot/skills"] = 2
+
+        assert counts == expected
+
+
+class TestGoalPilotRoutes:
+    """Behavior guardrails for extracted Goal Pilot routes."""
+
+    def test_goal_pilot_reorder_invokes_store_once(self) -> None:
+        from issue_orchestrator.entrypoints.control_api_goal_pilot_support import (
+            ControlApiGoalPilotDependencies,
+            install_control_api_goal_pilot_dependencies,
+        )
+
+        pilot = MagicMock()
+        pilot.reorder_journeys.return_value = {"status": "ok"}
+        original_deps = getattr(control_app.state, "control_api_goal_pilot_dependencies")
+        install_control_api_goal_pilot_dependencies(
+            control_app,
+            ControlApiGoalPilotDependencies(
+                get_orchestrator=lambda: MagicMock(),
+                get_goal_pilot=lambda: pilot,
+            ),
+        )
+        try:
+            response = TestClient(control_app).post(
+                "/control/goal_pilot/runs/run-1/journeys/reorder",
+                json={"order": ["journey-1", "journey-2"]},
+            )
+        finally:
+            install_control_api_goal_pilot_dependencies(control_app, original_deps)
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        pilot.reorder_journeys.assert_called_once_with("run-1", ["journey-1", "journey-2"])
+
 
 class TestOrchestratorNotInitialized:
     """Test that endpoints return 503 when orchestrator is not initialized."""
