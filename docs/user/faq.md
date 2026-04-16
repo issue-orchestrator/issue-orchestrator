@@ -63,12 +63,18 @@ repo:
   github:
     token_env: "TIXMEUP_GITHUB_TOKEN"
     keyring_service: "tixmeup-github"
-    keyring_username: "bruce"
+    keyring_username: "${USER}"
 ```
 
 `doctor` and Control Center prereq/start checks validate access to `repo.name`,
 not just `/user`. If the repo-scoped source is missing, startup fails with a
 clear auth error instead of silently falling back to a different token.
+
+When you launch a repository from Control Center, the repository engine is
+started directly by the orchestrator supervisor. Target-repo wrapper scripts are
+not run, so any token export that only happens inside such a script is not
+available. Put the env var in the Control Center process environment, or declare
+the Keychain fallback in the repo config as shown above.
 
 For a fine-grained PAT, grant repository access only to the target repo and set these permissions:
 

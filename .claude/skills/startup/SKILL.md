@@ -55,6 +55,28 @@ launch_preflight_only()    launch_subprocess()          launch_subprocess()
 | `run_doctor()` | `infra/doctor/runner.py` | All diagnostic checks |
 | `supervisor.start()` | `infra/supervisor.py` | Launch orchestrator subprocess |
 
+### Control Center Auth Boundary
+
+Control Center launches repository engines directly through `launch_subprocess()`
+and `supervisor.start()`. It does not execute target-repo wrapper scripts. If a
+target repo relies on a wrapper script to export a GitHub token from Keychain,
+that export is bypassed for Control Center launches.
+
+For repo-specific GitHub auth, inspect the selected repo config itself:
+
+```yaml
+repo:
+  github:
+    token_env: TIXMEUP_GITHUB_TOKEN
+    keyring_service: tixmeup-github
+    keyring_username: "${USER}"
+```
+
+`token_env` only works when the variable is already present in the Control
+Center process environment. Add `keyring_service` and `keyring_username` when
+Control Center should resolve the token from macOS Keychain without a manual env
+export.
+
 ### LaunchResult
 
 ```python
@@ -78,7 +100,7 @@ a 2-tier system: Installation and Verification.
 
 | Check | File | What It Tests |
 |-------|------|---------------|
-| GitHub Auth | `checks/github.py` | `gh auth status` |
+| GitHub Auth | `checks/github.py` | Configured token sources and repo access |
 | AI Provider CLIs | `checks/ai.py` | Claude/agent CLIs installed |
 | Config File | `checks/config.py` | Config loads, validates |
 | Config Schema | `checks/config.py` | No unknown fields |

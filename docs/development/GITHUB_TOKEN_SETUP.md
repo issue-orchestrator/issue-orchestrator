@@ -36,7 +36,7 @@ repo:
   github:
     token_env: TIXMEUP_GITHUB_TOKEN
     keyring_service: tixmeup-github
-    keyring_username: bruce
+    keyring_username: "${USER}"
 ```
 
 Notes:
@@ -50,10 +50,17 @@ On macOS you can create a matching generic password entry like this:
 ```bash
 security add-generic-password \
   -s tixmeup-github \
-  -a bruce \
+  -a "$USER" \
   -w "ghp_..."
 ```
 
 Notes:
 - `doctor` validates access to the configured `repo.name`, not just a generic GitHub `/user` check.
 - Control Center prereqs/start use the same repo-scoped auth logic as the runtime adapter.
+- Control Center starts repository engines directly through the orchestrator
+  supervisor. It does not run target-repo wrapper scripts, so any script-only
+  export of `TIXMEUP_GITHUB_TOKEN` is bypassed unless that variable is already
+  present in the Control Center process environment.
+- For Control Center launches, declare the durable fallback in the repo config
+  itself with `keyring_service` and `keyring_username` when you want macOS
+  Keychain auth to work without exporting the token manually.
