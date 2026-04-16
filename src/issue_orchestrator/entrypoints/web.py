@@ -55,6 +55,7 @@ from .timeline_presentation import (
     _timeline_event_requires_run_dir,
 )
 from .web_issue_detail_routes import web_issue_detail_router
+from .web_log_routes import web_log_router
 from .web_operator_routes import install_web_operator_dependencies, web_operator_router
 from .web_read_model_routes import web_read_model_router
 from .web_refresh_routes import web_refresh_router
@@ -190,17 +191,26 @@ def _resolve_issue_session_context(issue_number: int):
     return resolve_issue_session_context(get_orchestrator(), issue_number)
 
 
+def trigger_server_shutdown():
+    """Trigger uvicorn server shutdown."""
+    global _server
+    if _server:
+        _server.should_exit = True
+        _server.force_exit = True  # Don't wait for graceful shutdown
+
+
 install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 install_web_operator_dependencies(
     app,
     get_client_host=lambda: _client_host,
     broadcast_event=broadcast_event,
-    trigger_server_shutdown=lambda: trigger_server_shutdown(),
+    trigger_server_shutdown=trigger_server_shutdown,
 )
 app.include_router(web_read_model_router)
 app.include_router(web_status_router)
 app.include_router(web_refresh_router)
 app.include_router(web_settings_router)
+app.include_router(web_log_router)
 app.include_router(web_operator_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
@@ -216,14 +226,6 @@ def set_client_host(client_host: ClientHost) -> None:
     """Set the client-host adapter. Used by tests."""
     global _client_host
     _client_host = client_host
-
-
-def trigger_server_shutdown():
-    """Trigger uvicorn server shutdown."""
-    global _server
-    if _server:
-        _server.should_exit = True
-        _server.force_exit = True  # Don't wait for graceful shutdown
 
 
 def set_server(server) -> None:

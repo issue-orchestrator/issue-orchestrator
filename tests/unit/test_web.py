@@ -115,6 +115,22 @@ class _StubClientHost:
         )
 
 
+class TestWebRouteRegistration:
+    """Guard extracted web route families against accidental deregistration."""
+
+    def test_extracted_operator_and_log_routes_are_registered_once(self):
+        route_paths = [getattr(route, "path", None) for route in app.routes]
+
+        for path in [
+            "/api/log/{issue_number}",
+            "/api/log/local/{issue_number}",
+            "/api/host/reveal-worktree/{issue_number}",
+            "/api/shutdown",
+            "/api/bulk-cancel-queued",
+        ]:
+            assert route_paths.count(path) == 1
+
+
 def _ensure_test_run_dir(issue_number: int) -> str:
     """Create a real run dir with required artifacts for strict action wiring."""
     existing = _TEST_RUN_DIR_BY_ISSUE.get(issue_number)
@@ -749,7 +765,7 @@ class TestHostOpenPathEndpoint:
     def test_open_host_path_success(self):
         set_client_host(_StubClientHost())
 
-        with patch("issue_orchestrator.entrypoints.web.Path.exists") as mock_exists:
+        with patch("issue_orchestrator.entrypoints.web_operator_routes.Path.exists") as mock_exists:
             mock_exists.return_value = True
             client = TestClient(app)
             response = client.post("/api/host/open-path", json={"path": "/tmp/ui-session.log"})
@@ -761,7 +777,7 @@ class TestHostOpenPathEndpoint:
     def test_open_host_path_unsupported_returns_copy_hint(self):
         set_client_host(UnsupportedClientHost())
 
-        with patch("issue_orchestrator.entrypoints.web.Path.exists") as mock_exists:
+        with patch("issue_orchestrator.entrypoints.web_operator_routes.Path.exists") as mock_exists:
             mock_exists.return_value = True
             client = TestClient(app)
             response = client.post("/api/host/open-path", json={"path": "/tmp/ui-session.log"})
@@ -814,6 +830,28 @@ class TestPromptEndpoint:
         response = client.post("/api/prompt/agent:web")
 
         assert response.status_code == 200
+
+    def test_open_agent_prompt_unsupported_host_returns_copy_hint(self):
+        """Non-local UI hosts return a copy-path response instead of opening locally."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        set_client_host(UnsupportedClientHost())
+
+        prompt_path = MagicMock()
+        prompt_path.exists.return_value = True
+        prompt_path.is_absolute.return_value = True
+        prompt_path.__str__.return_value = "/tmp/prompt.txt"
+        mock_orch.config.agents["agent:web"].prompt_path = prompt_path
+
+        client = TestClient(app)
+        response = client.post("/api/prompt/web")
+
+        assert response.status_code == 409
+        data = response.json()
+        assert data["status"] == "copy_path"
+        assert data["action"] == "copy_path"
+        assert data["path"] == "/tmp/prompt.txt"
 
     def test_open_agent_prompt_not_found(self):
         """Test opening prompt for unknown agent type."""
@@ -4582,7 +4620,7 @@ class TestGetSessionLogEndpoint:
 
         try:
             # Mock the Claude project directory structure
-            with patch("issue_orchestrator.entrypoints.web.Path.home") as mock_home:
+            with patch("issue_orchestrator.entrypoints.web_log_routes.Path.home") as mock_home:
                 mock_claude_dir = MagicMock()
                 mock_home.return_value = mock_claude_dir
 
@@ -4637,7 +4675,7 @@ class TestGetSessionLogEndpoint:
         set_orchestrator(mock_orch)
 
         try:
-            with patch("issue_orchestrator.entrypoints.web.Path.home") as mock_home:
+            with patch("issue_orchestrator.entrypoints.web_log_routes.Path.home") as mock_home:
                 mock_claude_dir = MagicMock()
                 mock_home.return_value = mock_claude_dir
 
