@@ -39,10 +39,8 @@ from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..execution.manifest_accessor import ArtifactNotFoundError, ManifestAccessor, RunIdentity
 from ..history import latest_history_entries_by_issue
-from ..infra.e2e_runner import get_e2e_role
 from ..infra.terminal_cleaning import extract_stream_json_text
 from ..ports.event_sink import make_trace_event
-from ..view_models.dashboard import blocked_summary, flow_steps_for, issue_url_for
 from ..view_models.dialogs import (
     build_blocked_issues_dialog,
     build_config_dialog,
@@ -76,6 +74,7 @@ from .web_session_routes import (
     serve_terminal_recording,
     web_session_router,
 )
+from .web_status_routes import web_status_router
 from .web_templates import get_templates
 
 if TYPE_CHECKING:
@@ -199,6 +198,7 @@ def _resolve_issue_session_context(issue_number: int):
 
 install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 app.include_router(web_read_model_router)
+app.include_router(web_status_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 
@@ -345,178 +345,6 @@ async def get_phase_dialog(issue_number: int, phase: str | None = None) -> Phase
         return response
     payload = _response_json(response)
     return PhaseDialogPayload.model_validate(build_phase_dialog(payload, issue_number, phase))
-
-
-@app.get("/api/status")
-async def get_status() -> JSONResponse:
-    """Get current orchestrator status as JSON."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-
-    sessions = []
-    for session in state.active_sessions:
-        sessions.append({
-            "issue_number": session.issue.number,
-            "title": session.issue.title,
-            "runtime_minutes": session.runtime_minutes,
-            "agent_type": session.issue.agent_type,
-            "status": "running" if session.runtime_minutes < session.agent_config.timeout_minutes else "slow",
-            "branch": session.branch_name,
-        })
-
-    # Serialize pending reviews
-    pending_reviews = []
-    for review in state.pending_reviews:
-        pending_reviews.append({
-            "issue_number": review.issue_number,
-            "pr_number": review.pr_number,
-            "pr_url": review.pr_url,
-            "branch_name": review.branch_name,
-        })
-
-    tick_id = _orchestrator.event_context.tick_id
-    if not isinstance(tick_id, (int, float)):
-        tick_id = None
-    last_tick_time = _orchestrator.last_tick_time
-    if not isinstance(last_tick_time, (int, float)):
-        last_tick_time = None
-
-    # Determine E2E role for this instance
-    instance_id = os.environ.get("INSTANCE_ID")
-    e2e_role = get_e2e_role(config.e2e, instance_id=instance_id)
-
-    # Collect publish job status
-    publish_jobs = []
-    try:
-        executor = _orchestrator.deps.publish_executor
-        for job in executor.get_running_jobs():
-            publish_jobs.append({
-                "job_id": job.job_id,
-                "issue_number": job.issue_number,
-                "session_key": job.session_key,
-                "status": job.status.value,
-                "started_at": job.started_at,
-            })
-        publish_job_stats = {
-            "running": executor.get_running_count(),
-            "pending": executor.get_pending_count(),
-        }
-    except Exception:
-        publish_job_stats = {"running": 0, "pending": 0}
-
-    return JSONResponse({
-        "paused": state.paused,
-        "shutdown_requested": _orchestrator.shutdown_requested,
-        "active_sessions": sessions,
-        "max_sessions": config.max_concurrent_sessions,
-        "completed_today": state.completed_today,
-        "queue": state.priority_queue,
-        "pending_reviews": pending_reviews,
-        "tick_id": tick_id,
-        "last_tick_time": last_tick_time,
-        "e2e_role": e2e_role if config.e2e.enabled else None,
-        "publish_jobs": publish_jobs,
-        "publish_job_stats": publish_job_stats,
-    })
-
-
-@app.get("/api/publish-jobs")
-async def get_publish_jobs(issue_number: int | None = None) -> JSONResponse:
-    """Get publish job history.
-
-    Query params:
-        issue_number: Optional filter to a specific issue
-
-    Returns:
-        List of recent publish jobs with their status and results.
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    try:
-        executor = _orchestrator.deps.publish_executor
-        records = executor.get_job_history(issue_number=issue_number, limit=100)
-
-        jobs = []
-        for record in records:
-            jobs.append({
-                "job_id": record.job_id,
-                "issue_number": record.issue_number,
-                "session_key": record.session_key,
-                "worktree_path": record.worktree_path,
-                "worktree_id": record.worktree_id,
-                "branch_name": record.branch_name,
-                "status": record.status,
-                "created_at": record.created_at,
-                "started_at": record.started_at,
-                "finished_at": record.finished_at,
-                "pr_url": record.pr_url,
-                "pr_number": record.pr_number,
-                "error_message": record.error_message,
-                "duration_seconds": record.duration_seconds,
-            })
-
-        return JSONResponse({"jobs": jobs, "count": len(jobs)})
-    except Exception as e:
-        return JSONResponse({"error": str(e), "jobs": []}, status_code=500)
-
-
-@app.get("/api/excluded-issues")
-async def get_excluded_issues() -> JSONResponse:
-    """Get issues known to the system but excluded from scheduling."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    state = _orchestrator.state
-    config = _orchestrator.config
-
-    displayed_numbers = {
-        s.issue.number for s in state.active_sessions
-    } | {
-        i.number for i in state.cached_queue_issues
-    } | {
-        e.issue_number for e in state.session_history
-    }
-
-    from ..infra.audit import audit_queue, SkipReason
-
-    entries = audit_queue(config, state=state, issue_tracker=_orchestrator.repository_host)
-    excluded: list[dict[str, object]] = []
-
-    for entry in entries:
-        if entry.status == SkipReason.QUEUED:
-            continue
-        if entry.issue.number in displayed_numbers:
-            continue
-
-        dep_problem = state.dependency_problems.get(entry.issue.number)
-        if dep_problem:
-            reason = f"dependency: {dep_problem.summary}"
-        else:
-            reason = entry.status.value
-            if entry.detail:
-                reason = f"{reason}: {entry.detail}"
-
-        flow_stage = "not_eligible"
-        excluded.append({
-            "issue_number": entry.issue.number,
-            "title": entry.issue.title,
-            "agent_type": (entry.issue.agent_type or "unknown").replace("agent:", ""),
-            "issue_url": issue_url_for(config, entry.issue.number),
-            "excluded_reason": reason,
-            "flow_stage": flow_stage,
-            "flow_steps": flow_steps_for(flow_stage),
-            "blocked_summary": blocked_summary(
-                list(entry.issue.labels),
-                _orchestrator.deps.label_manager,
-                dep_problem.summary if dep_problem else None,
-            ),
-        })
-
-    return JSONResponse({"excluded": excluded})
 
 
 @app.post("/api/pause")
