@@ -1989,21 +1989,27 @@ class TestIssueRowsEndpoint:
 class TestDialogEndpoints:
     """Tests for dialog view-model endpoints."""
 
-    def test_doctor_dialog_returns_non_200_upstream_response(self):
-        """GET /api/dialog/doctor forwards upstream error response unchanged."""
-        from issue_orchestrator.entrypoints import web
-        from fastapi.responses import JSONResponse
+    def test_doctor_dialog_runs_without_orchestrator(self):
+        """GET /api/dialog/doctor remains available during startup failures."""
+        from issue_orchestrator.infra.doctor.types import Check, DoctorResult
 
-        with patch.object(
-            web,
-            "get_doctor",
-            AsyncMock(return_value=JSONResponse({"error": "Orchestrator not running"}, status_code=503)),
-        ):
+        set_orchestrator(None)
+
+        with patch(
+            "issue_orchestrator.entrypoints.web_diagnostics_routes.run_doctor",
+            return_value=DoctorResult([Check(name="Config", status="ok", detail="loaded")]),
+        ) as mock_run_doctor:
             client = TestClient(app)
             response = client.get("/api/dialog/doctor")
 
-        assert response.status_code == 503
-        assert response.json() == {"error": "Orchestrator not running"}
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["title"] == "Doctor"
+        assert any(
+            check["name"] == "Orchestrator" and check["status"] == "error"
+            for check in payload["checks"]
+        )
+        mock_run_doctor.assert_called_once()
 
 
 class TestRefreshEndpoint:

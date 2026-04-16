@@ -123,7 +123,7 @@ async def get_terminal_recording(
     session_role: str | None = None,
 ) -> JSONResponse:
     """Return the canonical raw terminal recording for a run."""
-    if not orchestrator:
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     return serve_terminal_recording(
         issue_number,
@@ -274,14 +274,13 @@ def _manifest_response(run_dir: Path, session_name: str | None) -> JSONResponse:
     return JSONResponse(result)
 
 
-@web_session_router.get("/api/session/manifest/{issue_number}")
-async def get_session_manifest(
+def session_manifest_response(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
 ) -> JSONResponse:  # noqa: C901, PLR0912
-    """Get the session manifest for an issue."""
-    if not orchestrator:
+    """Build the session manifest response for an issue."""
+    if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     requested_run_dir = run_dir
@@ -329,6 +328,16 @@ async def get_session_manifest(
     return _manifest_response(resolved_run_dir, session_name)
 
 
+@web_session_router.get("/api/session/manifest/{issue_number}")
+async def get_session_manifest(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+    run_dir: str | None = None,
+) -> JSONResponse:
+    """Get the session manifest for an issue."""
+    return session_manifest_response(issue_number, orchestrator, run_dir=run_dir)
+
+
 @web_session_router.get("/api/session/worktree/{issue_number}")
 async def get_session_worktree(
     issue_number: int,
@@ -354,12 +363,11 @@ async def get_session_worktree(
     )
 
 
-@web_session_router.get("/api/session/phases/{issue_number}")
-async def get_session_phases(
+def session_phases_response(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:  # noqa: C901
-    """Get the linear phase history for an issue."""
+    """Build the linear phase history response for an issue."""
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -406,6 +414,15 @@ async def get_session_phases(
             "issue_number": issue_number,
         }
     )
+
+
+@web_session_router.get("/api/session/phases/{issue_number}")
+async def get_session_phases(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+) -> JSONResponse:
+    """Get the linear phase history for an issue."""
+    return session_phases_response(issue_number, orchestrator)
 
 
 @web_session_router.get("/api/session/orchestrator-log/{issue_number}")
