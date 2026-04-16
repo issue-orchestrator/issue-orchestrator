@@ -450,7 +450,7 @@ class TestCompactBranchLabel:
     """
 
     def _extract(self, branch_name: str, issue_number: int):
-        from issue_orchestrator.entrypoints.control_api import (
+        from issue_orchestrator.entrypoints.e2e_affordances import (
             _compact_branch_label,
         )
         return _compact_branch_label(branch_name, issue_number)
@@ -608,7 +608,7 @@ class TestOrchestratorWindowExcludesE2EEvents:
         """
         from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
         from issue_orchestrator.infra.e2e_timeline import read_orchestrator_events_by_window
-        from issue_orchestrator.entrypoints.control_api import (
+        from issue_orchestrator.entrypoints.e2e_affordances import (
             _attach_issue_numbers_to_test_windows,
         )
 
