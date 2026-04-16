@@ -1731,7 +1731,7 @@ class TestDiscoverReposEndpoint:
 class TestSetupPrereqsGitHubAuth:
     def test_build_github_auth_check_uses_repo_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from issue_orchestrator.adapters.github.http_client import TokenValidationResult
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints.setup_wizard_common import build_github_auth_check
 
         cfg = Config()
         cfg.repo = "BruceBGordon/tixmeup"
@@ -1747,8 +1747,7 @@ class TestSetupPrereqsGitHubAuth:
 
         monkeypatch.setattr("issue_orchestrator.adapters.github.http_client.validate_github_token", _validate)
 
-        build_check = getattr(control_api, "_build_github_auth_check")
-        check = build_check(cfg)
+        check = build_github_auth_check(cfg)
 
         assert check == {"ok": False, "detail": "missing repo auth"}
         assert seen["configured_env"] == "TIXMEUP_GITHUB_TOKEN"
@@ -3863,7 +3862,7 @@ class TestControlCenterShutdownEndpoint:
             mock_supervisor.stop.assert_not_called()
             mock_thread.assert_called_once()
         finally:
-            set_supervisor(None)
+            set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_force_stops_running_engines_when_requested(self):
         from issue_orchestrator.entrypoints import control_api
@@ -3899,7 +3898,7 @@ class TestControlCenterShutdownEndpoint:
             assert stop_kwargs["force_if_graceful_fails"] is True
             mock_thread.assert_called_once()
         finally:
-            set_supervisor(None)
+            set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_marks_failed_when_running_engine_cannot_be_stopped(self):
         from issue_orchestrator.entrypoints import control_api
@@ -3933,7 +3932,7 @@ class TestControlCenterShutdownEndpoint:
         finally:
             with control_api._shutdown_ops_lock:  # noqa: SLF001
                 control_api._global_shutdown_operation = None  # noqa: SLF001
-            set_supervisor(None)
+            set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_abort_is_honored_after_current_repo_attempt(self):
         from issue_orchestrator.entrypoints import control_api
@@ -3967,7 +3966,7 @@ class TestControlCenterShutdownEndpoint:
         finally:
             with control_api._shutdown_ops_lock:  # noqa: SLF001
                 control_api._global_shutdown_operation = None  # noqa: SLF001
-            set_supervisor(None)
+            set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_reports_superseded_engine_shutdowns(self):
         from issue_orchestrator.entrypoints import control_api
@@ -3997,7 +3996,7 @@ class TestControlCenterShutdownEndpoint:
         finally:
             with control_api._shutdown_ops_lock:  # noqa: SLF001
                 control_api._engine_shutdown_operations.clear()  # noqa: SLF001
-            set_supervisor(None)
+            set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_state_endpoint_returns_global_operation(self):
         from issue_orchestrator.entrypoints import control_api
@@ -4047,3 +4046,81 @@ class TestControlCenterShutdownEndpoint:
         finally:
             with control_api._shutdown_ops_lock:  # noqa: SLF001
                 control_api._global_shutdown_operation = None  # noqa: SLF001
+
+
+class TestControlCenterSetupRoutes:
+    """Test extracted setup-wizard route behavior."""
+
+    def test_setup_preview_returns_raw_yaml_without_header(self):
+        """Preview should preserve the legacy raw-YAML response."""
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/setup/preview",
+            json={"config": {"repo": {"name": "owner/repo"}, "agents": {}}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "Issue Orchestrator Configuration" not in data["yaml"]
+        assert data["yaml"].startswith("repo:\n  name: owner/repo\n")
+        assert data["files"][0]["size"] == len(data["yaml"])
+
+    def test_setup_detect_ignores_non_default_config_files(self, tmp_path):
+        """Detect should only surface the legacy default config file."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        config_dir = repo_root / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "custom.yaml").write_text("repo:\n  name: owner/repo\n")
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/setup/detect",
+            params={"repo_root": str(repo_root)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["config_path"] is None
+        assert data["existing_config"] is None
+
+    def test_setup_save_preserves_legacy_labels_and_raw_yaml(self, tmp_path):
+        """Save should keep the old label set and config-file format."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        host = MagicMock()
+        host.list_labels.return_value = []
+
+        with patch(
+            "issue_orchestrator.execution.providers.create_repository_host",
+            return_value=host,
+        ):
+            client = TestClient(control_app)
+            response = client.post(
+                "/control/setup/save",
+                json={
+                    "repo_root": str(repo_root),
+                    "config_name": "default",
+                    "create_prompts": False,
+                    "create_labels": True,
+                    "config": {
+                        "repo": {"name": "owner/repo"},
+                        "agents": {
+                            "agent:backend": {"prompt": ".prompts/backend.md"},
+                        },
+                        "review": {"enabled": True},
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "priority:high" not in data["created_labels"]
+        assert "needs-code-review" in data["created_labels"]
+        assert "code-reviewed" in data["created_labels"]
+
+        config_path = repo_root / ".issue-orchestrator" / "config" / "default.yaml"
+        config_text = config_path.read_text()
+        assert "Issue Orchestrator Configuration" not in config_text
+        assert config_text.startswith("repo:\n  name: owner/repo\n")

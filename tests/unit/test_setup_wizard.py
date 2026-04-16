@@ -2,25 +2,32 @@
 
 import pytest
 from pathlib import Path
-from unittest.mock import patch, Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
-    create_starter_prompt,
-    create_triage_review_prompt,
-    detect_repo,
-    check_prerequisites,
-    fetch_github_labels,
-    find_existing_config,
-    scan_existing_repo,
-    wizard_new_project,
-    wizard_existing_project,
-    run_wizard,
-    write_config,
-    Prompter,
-    ConsolePrompter,
     DetectedState,
     FileCollector,
     PlannedWrite,
+    Prompter,
+    ConsolePrompter,
+    check_prerequisites,
+    create_starter_prompt,
+    create_triage_review_prompt,
+    detect_repo,
+    fetch_github_labels,
+    find_existing_config,
+    run_wizard,
+    scan_existing_repo,
+    wizard_existing_project,
+    wizard_new_project,
+    write_config,
+)
+from issue_orchestrator.entrypoints.setup_wizard_common import (
+    build_agent_checks,
+    find_existing_default_config,
+    plan_setup_labels,
+    write_missing_setup_prompts,
 )
 
 
@@ -389,6 +396,142 @@ class TestFindExistingConfig:
 
         assert path == default_config
         assert config["repo"]["name"] == "default/repo"
+
+
+class TestFindExistingDefaultConfig:
+    """Test legacy Control Center config discovery."""
+
+    def test_only_finds_default_yaml(self, tmp_path):
+        """Control Center detection should ignore non-default config files."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "custom.yaml").write_text("repo:\n  name: owner/repo")
+
+        path, config = find_existing_default_config(tmp_path)
+
+        assert path is None
+        assert config is None
+
+    def test_returns_path_and_none_when_config_cannot_be_read(self, tmp_path):
+        """Control Center detection should preserve the path on read failure."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
+        config_file.write_text("repo:\n  name: owner/repo")
+
+        with patch("builtins.open", side_effect=PermissionError("denied")):
+            path, config = find_existing_default_config(tmp_path)
+
+        assert path == config_file
+        assert config is None
+
+
+class TestSetupWizardSharedHelpers:
+    """Test shared setup-wizard extraction helpers."""
+
+    def test_write_missing_setup_prompts_chooses_prompt_type_by_agent_role(self, tmp_path):
+        """Prompt generation should stay role-aware after extraction."""
+        collector = FileCollector()
+        config = {
+            "agents": {
+                "agent:backend": {"prompt": ".prompts/backend.md"},
+                "agent:reviewer": {"prompt": ".prompts/reviewer.md"},
+                "agent:triage": {"prompt": ".prompts/triage.md"},
+            },
+            "review": {
+                "default": "agent:reviewer",
+                "code_review_label": "needs-review",
+                "code_reviewed_label": "reviewed",
+                "triage_review_agent": "agent:triage",
+                "triage_reviewed_label": "triage-reviewed",
+            },
+        }
+
+        created_paths = write_missing_setup_prompts(
+            config,
+            tmp_path,
+            file_collector=collector,
+        )
+
+        assert created_paths == [
+            tmp_path / ".prompts" / "backend.md",
+            tmp_path / ".prompts" / "reviewer.md",
+            tmp_path / ".prompts" / "triage.md",
+        ]
+        writes_by_agent = {write.agent: write for write in collector.writes}
+        assert "coding-done" in writes_by_agent["agent:backend"].content
+        assert "needs-review" in writes_by_agent["agent:reviewer"].content
+        assert "reviewer-done approved" in writes_by_agent["agent:reviewer"].content
+        assert 'gh pr list --label "reviewed"' in writes_by_agent["agent:triage"].content
+
+    def test_plan_setup_labels_matches_cli_defaults(self):
+        """CLI setup should keep priority labels and default-agent review gating."""
+        labels = plan_setup_labels({
+            "agents": {
+                "agent:backend": {},
+                "agent:reviewer": {},
+            },
+            "labels": {"prefix": "io"},
+            "review": {
+                "default": "agent:reviewer",
+                "triage_review_agent": "agent:triage",
+            },
+        })
+
+        label_names = {name for name, _, _ in labels}
+        assert "agent:backend" in label_names
+        assert "agent:reviewer" in label_names
+        assert "priority:high" in label_names
+        assert "io:in-progress" in label_names
+        assert "needs-code-review" in label_names
+        assert "code-reviewed" in label_names
+        assert "triage-reviewed" in label_names
+
+    def test_plan_setup_labels_can_preserve_control_api_behavior(self):
+        """Control Center setup should keep its legacy label surface."""
+        labels = plan_setup_labels(
+            {
+                "agents": {"agent:backend": {}},
+                "review": {"enabled": True},
+            },
+            include_priority_labels=False,
+            include_review_labels_without_default=True,
+        )
+
+        label_names = {name for name, _, _ in labels}
+        assert "priority:high" not in label_names
+        assert "needs-code-review" in label_names
+        assert "code-reviewed" in label_names
+
+    @patch(
+        "issue_orchestrator.entrypoints.setup_wizard_common._probe_cli_version",
+        return_value="claude 1.2.3",
+    )
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.shutil.which")
+    def test_build_agent_checks_prefers_version_output(
+        self,
+        mock_which,
+        mock_probe_cli_version,
+    ):
+        """Prereq checks should surface version strings, not raw paths."""
+        mock_which.return_value = "/usr/local/bin/claude"
+        config = SimpleNamespace(
+            agents={
+                "agent:backend": SimpleNamespace(command="claude --model sonnet"),
+            }
+        )
+
+        checks = build_agent_checks(config)
+
+        assert checks == [{
+            "name": "claude CLI",
+            "ok": True,
+            "detail": "claude 1.2.3",
+        }]
+        mock_probe_cli_version.assert_called_once_with(
+            "/usr/local/bin/claude",
+            fallback="/usr/local/bin/claude",
+        )
 
 
 class TestScanExistingRepo:
