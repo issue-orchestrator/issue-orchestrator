@@ -74,7 +74,7 @@ repo:
   github:
     token_env: "TIXMEUP_GITHUB_TOKEN"
     keyring_service: "tixmeup-github"
-    keyring_username: "bruce"
+    keyring_username: "${USER}"
 ```
 
 Use `token_env` when the repo should read a specific environment variable.
@@ -87,6 +87,13 @@ those sources become authoritative:
 - Control Center start checks validate access to `repo.name`, not just `/user`
 - startup fails clearly if the repo-scoped source is missing, instead of
   silently falling back to another token that may not have repo access
+
+Control Center starts repository engines directly through the orchestrator
+supervisor. It does not run target-repo wrapper scripts, so script-only token
+exports are not available to Control Center-launched engines. Use `token_env`
+only when the variable is already present in the Control Center process
+environment; add `keyring_service` and `keyring_username` for a durable
+per-repo Keychain fallback.
 
 ---
 
