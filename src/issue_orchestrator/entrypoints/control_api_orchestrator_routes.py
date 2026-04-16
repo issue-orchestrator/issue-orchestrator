@@ -24,6 +24,8 @@ from ..execution.control_center_runtime import (
     get_selected_config,
     is_shutdown_complete,
 )
+from ..infra.config import Config, get_config_path
+from ..infra.repo_hardening import RepoHardeningError, RepoHardeningInstallResult, harden_repo
 from ..infra.supervisor import MultiInstanceStatus, SupervisorOps
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependency,
@@ -32,6 +34,54 @@ from .control_api_orchestrator_support import (
 logger = logging.getLogger(__name__)
 
 control_orchestrator_router = APIRouter()
+
+
+def _normalize_config_name(raw: object) -> str | None:
+    """Normalize a repo config name while preventing path traversal."""
+    if raw in (None, ""):
+        config_name = "default.yaml"
+    elif isinstance(raw, str):
+        config_name = raw
+    else:
+        return None
+
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    config_path = Path(config_name)
+    if config_path.is_absolute() or config_path.name != config_name or config_name == ".yaml":
+        return None
+    return config_name
+
+
+def _repo_relative_path(repo_root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _serialize_hardening_result(result: RepoHardeningInstallResult) -> dict[str, object]:
+    repo_root = result.repo_root
+    return {
+        "status": "repaired",
+        "repo_root": str(repo_root),
+        "hooks_path": result.hooks_path_config,
+        "hooks_dir": _repo_relative_path(repo_root, result.hooks_dir),
+        "pre_push_hook": _repo_relative_path(repo_root, result.pre_push_hook),
+        "verify_script": _repo_relative_path(repo_root, result.verify_script),
+        "helper_script": _repo_relative_path(repo_root, result.helper_script),
+        "installed_files": [
+            _repo_relative_path(repo_root, path) for path in result.installed_files
+        ],
+        "preserved_files": [
+            _repo_relative_path(repo_root, path) for path in result.preserved_files
+        ],
+        "agent_hook_files": {
+            agent_type: [_repo_relative_path(repo_root, path) for path in paths]
+            for agent_type, paths in result.agent_hook_files.items()
+        },
+    }
 
 
 def _summarize_doctor_failures(doctor_result: Any) -> str:
@@ -125,7 +175,6 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
 
         set_selected_config(repo_root, config_name)
 
-        from ..infra.config import Config, get_config_path
         from ..infra.launcher import launch_subprocess
 
         config_path = get_config_path(repo_root, config_name)
@@ -737,6 +786,58 @@ async def control_doctor(
     actions = deps.get_control_actions()
     result = await actions.doctor_cmd.execute(DoctorActionRequest(repo_root=path))
     return JSONResponse(result.payload, status_code=result.status_code)
+
+
+@control_orchestrator_router.post("/control/orchestrator/guardrails/repair")
+async def control_repair_guardrails(
+    request: Request,
+    deps: ControlApiOrchestratorDependency,
+) -> JSONResponse:
+    """Repair repo-local guardrails by running the standard harden-repo flow."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = deps.validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
+
+    config_name = _normalize_config_name(body.get("config_name"))
+    if config_name is None:
+        return JSONResponse({"error": "Invalid config_name"}, status_code=400)
+
+    config_path = get_config_path(repo_root, config_name)
+    if not config_path.exists():
+        return JSONResponse(
+            {
+                "error": "config_not_found",
+                "detail": f"Config file not found: {config_name}",
+                "config_name": config_name,
+            },
+            status_code=404,
+        )
+
+    try:
+        config = Config.load(config_path)
+        result = harden_repo(config, target_root=repo_root)
+    except RepoHardeningError as exc:
+        return JSONResponse(
+            {
+                "error": "repair_failed",
+                "detail": str(exc),
+                "config_name": config_name,
+            },
+            status_code=400,
+        )
+
+    payload = _serialize_hardening_result(result)
+    payload["config_name"] = config_name
+    payload["message"] = (
+        "Repo guardrails repaired. Review and commit changed files if this updated "
+        "tracked files."
+    )
+    return JSONResponse(payload)
 
 
 @control_orchestrator_router.post("/control/orchestrator/ai_diagnose")

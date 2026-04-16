@@ -182,7 +182,17 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert "await waitForRepoToBeReady(path);" in template
     assert "config = getValidRepoConfig(repo, config);" in template
     assert "throw new Error('Select a valid config before starting this repository engine');" in template
-    assert "function showDoctorResultsModal(title, data, prefixMessage = null, prefixClass = 'info')" in template
+    assert (
+        "function showDoctorResultsModal(title, data, prefixMessage = null, "
+        "prefixClass = 'info', context = {})" in template
+    )
+    assert 'id="repairGuardrailsBtn"' in template
+    assert "function hasRepairableRepoGuardrails(data)" in template
+    assert "function repairGuardrails()" in template
+    assert "/control/orchestrator/guardrails/repair" in template
+    assert "Repair Guardrails" in template
+    assert "{ repoRoot: path, configName: config }" in template
+    assert "Guardrails repaired (${fileCount} file${fileCount === 1 ? '' : 's'} written)" in template
     assert "if (!data) {" in template
     assert "if (error.error === 'doctor_failed' && error.doctor)" in template
     assert "Start Blocked — ${repoLabel}" in template

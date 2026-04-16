@@ -43,7 +43,10 @@ flowchart TB
 
 ### Repo Guardrails (local development)
 
-These are repo-local hooks you install with `issue-orchestrator harden-repo`.
+These are repo-local hooks installed by `issue-orchestrator harden-repo`.
+Control Center uses the same hardening flow when Doctor reports repairable
+repo-guardrail drift, so users can repair managed files from the Doctor modal
+instead of switching to a terminal.
 
 | Hook | Type | Location | Purpose |
 |------|------|----------|---------|
