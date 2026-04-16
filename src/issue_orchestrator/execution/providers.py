@@ -105,7 +105,7 @@ def validate_github_token(
     Returns:
         Token validation result from the GitHub adapter layer
     """
-    from ..adapters.github.tokens import validate_github_token as _validate
+    from ..adapters.github.http_client import validate_github_token as _validate
 
     return _validate(
         configured_token=configured_token,

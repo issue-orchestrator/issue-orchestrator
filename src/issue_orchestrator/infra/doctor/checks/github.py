@@ -13,8 +13,8 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
         KEYRING_SERVICE,
         KEYRING_USERNAME,
         describe_github_token_sources,
-        validate_github_token,
     )
+    from ....adapters.github.http_client import validate_github_token
 
     checks: list[Check] = []
     auth_kwargs = config.github_auth_kwargs() if config else {}

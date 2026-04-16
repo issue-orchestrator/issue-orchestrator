@@ -8,8 +8,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-import httpx
-
 from .errors import GitHubAuthError
 
 
@@ -152,79 +150,6 @@ def _resolve_repo_scoped_github_token(
     )
 
 
-def validate_github_token(
-    token: str | None = None,
-    *,
-    configured_token: str | None = None,
-    configured_env: str | None = None,
-    configured_keyring_service: str | None = None,
-    configured_keyring_username: str | None = None,
-    repo: str | None = None,
-    api_url: str = "https://api.github.com",
-) -> TokenValidationResult:
-    """Validate a GitHub token by calling the API.
-
-    Args:
-        token: Token to validate. If None, will resolve using standard sources.
-        configured_token: Explicit repo-configured token.
-        configured_env: Repo-configured token env var.
-        configured_keyring_service: Repo-configured keyring service.
-        configured_keyring_username: Repo-configured keyring username/account.
-        repo: Optional owner/repo to verify access against.
-        api_url: GitHub API base URL.
-
-    Returns:
-        TokenValidationResult with valid status, username, or error message.
-    """
-    try:
-        if token is None:
-            token = resolve_github_token(
-                configured_token=configured_token,
-                configured_env=configured_env,
-                configured_keyring_service=configured_keyring_service,
-                configured_keyring_username=configured_keyring_username,
-            )
-    except GitHubAuthError as e:
-        return TokenValidationResult(valid=False, error=str(e))
-
-    base_url = api_url.rstrip("/")
-    try:
-        resp = httpx.get(
-            f"{base_url}/user",
-            headers={"Authorization": f"token {token}"},
-            timeout=10.0,
-        )
-        if resp.status_code == 200:
-            user_info = resp.json()
-            username = user_info.get("login")
-            if repo:
-                repo_resp = httpx.get(
-                    f"{base_url}/repos/{repo}",
-                    headers={"Authorization": f"token {token}"},
-                    timeout=10.0,
-                )
-                if repo_resp.status_code != 200:
-                    return TokenValidationResult(
-                        valid=False,
-                        username=username,
-                        error=(
-                            f"Token cannot access repo {repo} "
-                            f"(HTTP {repo_resp.status_code})"
-                        ),
-                    )
-            return TokenValidationResult(
-                valid=True,
-                username=username,
-            )
-        else:
-            return TokenValidationResult(
-                valid=False,
-                error=f"Token invalid (HTTP {resp.status_code})",
-            )
-    except Exception as e:
-        return TokenValidationResult(valid=False, error=str(e))
-
-
 def _read_keyring_token(
     *,
     service: str = KEYRING_SERVICE,
@@ -332,5 +257,4 @@ __all__ = [
     "describe_github_token_sources",
     "resolve_github_token",
     "store_keyring_token",
-    "validate_github_token",
 ]

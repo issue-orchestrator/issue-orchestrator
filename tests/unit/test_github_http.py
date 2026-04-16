@@ -119,7 +119,7 @@ def test_validate_github_token_checks_repo_access(monkeypatch: pytest.MonkeyPatc
             return httpx.Response(404, json={"message": "Not Found"})
         raise AssertionError(f"Unexpected URL: {url}")
 
-    monkeypatch.setattr("issue_orchestrator.adapters.github.tokens.httpx.get", _mock_get)
+    monkeypatch.setattr("issue_orchestrator.adapters.github.http_client.httpx.get", _mock_get)
 
     result = validate_github_token(token="repo-token", repo="BruceBGordon/tixmeup")
 

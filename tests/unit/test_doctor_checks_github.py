@@ -15,7 +15,7 @@ def test_check_github_auth_respects_repo_scoped_sources(monkeypatch):
         lambda **_kw: [],
     )
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.tokens.validate_github_token",
+        "issue_orchestrator.adapters.github.http_client.validate_github_token",
         lambda **_kw: TokenValidationResult(
             valid=False,
             error="GitHub token not configured for repo-specific auth. Checked env:TIXMEUP_GITHUB_TOKEN.",
@@ -42,7 +42,7 @@ def test_check_github_auth_reports_repo_access(monkeypatch):
         lambda **_kw: ["Keyring (tixmeup-github/bruce): ghp_...1234"],
     )
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.tokens.validate_github_token",
+        "issue_orchestrator.adapters.github.http_client.validate_github_token",
         lambda **_kw: TokenValidationResult(valid=True, username="octocat"),
     )
 

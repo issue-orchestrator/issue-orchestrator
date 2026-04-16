@@ -26,7 +26,6 @@ from .tokens import (
     describe_github_token_sources,
     resolve_github_token,
     store_keyring_token,
-    validate_github_token,
 )
 
 logger = logging.getLogger(__name__)
@@ -1196,6 +1195,70 @@ class GitHubHttpClient:
             if item.get("title") == title:
                 return item.get("number")
         return None
+
+
+def validate_github_token(
+    token: str | None = None,
+    *,
+    configured_token: str | None = None,
+    configured_env: str | None = None,
+    configured_keyring_service: str | None = None,
+    configured_keyring_username: str | None = None,
+    repo: str | None = None,
+    api_url: str = "https://api.github.com",
+) -> TokenValidationResult:
+    """Validate a GitHub token by calling the API.
+
+    Token source resolution lives in tokens.py; validation stays here because
+    this module owns GitHub HTTP transport and import-linter allows httpx here.
+    """
+    try:
+        if token is None:
+            token = resolve_github_token(
+                configured_token=configured_token,
+                configured_env=configured_env,
+                configured_keyring_service=configured_keyring_service,
+                configured_keyring_username=configured_keyring_username,
+            )
+    except GitHubAuthError as e:
+        return TokenValidationResult(valid=False, error=str(e))
+
+    base_url = api_url.rstrip("/")
+    try:
+        resp = httpx.get(
+            f"{base_url}/user",
+            headers={"Authorization": f"token {token}"},
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            user_info = resp.json()
+            username = user_info.get("login")
+            if repo:
+                repo_resp = httpx.get(
+                    f"{base_url}/repos/{repo}",
+                    headers={"Authorization": f"token {token}"},
+                    timeout=10.0,
+                )
+                if repo_resp.status_code != 200:
+                    return TokenValidationResult(
+                        valid=False,
+                        username=username,
+                        error=(
+                            f"Token cannot access repo {repo} "
+                            f"(HTTP {repo_resp.status_code})"
+                        ),
+                    )
+            return TokenValidationResult(
+                valid=True,
+                username=username,
+            )
+        else:
+            return TokenValidationResult(
+                valid=False,
+                error=f"Token invalid (HTTP {resp.status_code})",
+            )
+    except Exception as e:
+        return TokenValidationResult(valid=False, error=str(e))
 
 
 def _search_items(payload: Any) -> list[dict[str, Any]]:
