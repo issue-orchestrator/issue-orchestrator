@@ -738,7 +738,7 @@ class TestRunTestSetup:
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
         with patch(
-            "issue_orchestrator.entrypoints.cli._get_repository_host"
+            "issue_orchestrator.entrypoints.cli_support._get_repository_host"
         ) as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
@@ -760,7 +760,7 @@ class TestRunTestSetup:
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
         with patch(
-            "issue_orchestrator.entrypoints.cli._get_repository_host"
+            "issue_orchestrator.entrypoints.cli_support._get_repository_host"
         ) as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = []
@@ -1478,7 +1478,9 @@ class TestGetRepositoryHost:
         config = Mock()
         config.repo = None
 
-        with patch("issue_orchestrator.entrypoints.cli._resolve_repo") as mock_resolve:
+        with patch(
+            "issue_orchestrator.entrypoints.cli_support._resolve_repo"
+        ) as mock_resolve:
             mock_resolve.side_effect = Exception("Error")
 
             result = _get_repository_host(config)
