@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -77,7 +77,6 @@ from .web_session_routes import (
     web_session_router,
 )
 from .web_status_routes import web_status_router
-from .web_templates import get_templates
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
