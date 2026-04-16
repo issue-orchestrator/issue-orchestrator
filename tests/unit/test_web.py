@@ -1599,7 +1599,7 @@ class TestGetTemplates:
 
     def test_get_templates_returns_jinja_environment(self):
         """Test that get_templates returns a Jinja2 Environment."""
-        from issue_orchestrator.entrypoints.web import get_templates
+        from issue_orchestrator.entrypoints.web_templates import get_templates
         from jinja2 import Environment
 
         env = get_templates()

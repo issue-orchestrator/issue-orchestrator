@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -62,6 +62,7 @@ from .timeline_presentation import (
 from .web_issue_detail_routes import web_issue_detail_router
 from .web_read_model_routes import web_read_model_router
 from .web_refresh_routes import web_refresh_router
+from .web_settings_routes import web_settings_router
 from .web_session_context import (
     install_web_session_context_dependencies,
     resolve_issue_session_context,
@@ -76,7 +77,6 @@ from .web_session_routes import (
     web_session_router,
 )
 from .web_status_routes import web_status_router
-from .web_templates import get_templates
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -201,6 +201,7 @@ install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 app.include_router(web_read_model_router)
 app.include_router(web_status_router)
 app.include_router(web_refresh_router)
+app.include_router(web_settings_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 
@@ -1834,233 +1835,6 @@ async def get_doctor() -> JSONResponse:
         ))
 
     return JSONResponse(result.to_dict())
-
-
-@app.get("/settings", response_class=HTMLResponse)
-async def settings_page() -> HTMLResponse:
-    """Render the settings page."""
-    from ..infra.settings_schema import TAB_DEFINITIONS, from_config, get_settings_json_schema
-
-    templates = get_templates()
-    template = templates.get_template("settings.html")
-
-    if not _orchestrator:
-        from ..infra.config import Config
-        config = Config()
-    else:
-        config = _orchestrator.config
-
-    tab_values = from_config(config)
-    schemas = get_settings_json_schema()
-    values_dump = {k: v.model_dump() for k, v in tab_values.items()}
-
-    # Serialize for JavaScript (Jinja2 env has no tojson filter)
-    tabs_for_js = [{"key": t["key"], "label": t["label"]} for t in TAB_DEFINITIONS]
-
-    html = template.render(
-        tabs=TAB_DEFINITIONS,
-        schemas=schemas,
-        values=values_dump,
-        tabs_json=json.dumps(tabs_for_js),
-        schemas_json=json.dumps(schemas),
-    )
-    return HTMLResponse(content=html)
-
-
-@app.get("/api/settings")
-async def get_settings() -> JSONResponse:
-    """Get current settings as JSON for the settings UI."""
-    from ..infra.settings_schema import from_config
-
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    tab_values = from_config(_orchestrator.config)
-    return JSONResponse({k: v.model_dump() for k, v in tab_values.items()})
-
-
-@app.post("/api/settings")
-async def update_settings(request: Request) -> JSONResponse:
-    """Update settings and save to YAML.
-
-    Validates via Pydantic, applies to config, runs doctor validation,
-    and saves to YAML. Rolls back on any failure.
-
-    JSON body: {tab_key: {field: value, ...}, ...}
-    """
-    from pydantic import ValidationError
-    from ..infra.settings_schema import TAB_DEFINITIONS, from_config, apply_to
-
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    config = _orchestrator.config
-
-    # Snapshot for rollback
-    snapshot = from_config(config)
-    snapshot_dump = {k: v.model_dump() for k, v in snapshot.items()}
-
-    # Validate + parse via Pydantic
-    try:
-        new_tabs = {}
-        for tab in TAB_DEFINITIONS:
-            key = tab["key"]
-            if key in body:
-                new_tabs[key] = tab["model"].model_validate(body[key])
-            else:
-                new_tabs[key] = snapshot[key]
-    except ValidationError as e:
-        return JSONResponse({
-            "error": "Validation failed",
-            "errors": [{"name": err["loc"][-1] if err["loc"] else "unknown",
-                         "detail": err["msg"]} for err in e.errors()],
-        }, status_code=400)
-
-    # Apply to config
-    restart_required = apply_to(new_tabs, config)
-
-    # Run doctor validation
-    from ..infra.doctor import run_doctor
-    from ..execution.command_runner import LocalCommandRunner
-    result = run_doctor(config=config, runner=LocalCommandRunner())
-
-    # Check for errors - rollback on validation failure
-    errors = [c for c in result.checks if c.status == "error"]
-    if errors:
-        rollback_tabs = {tab["key"]: tab["model"](**snapshot_dump[tab["key"]])
-                         for tab in TAB_DEFINITIONS}
-        apply_to(rollback_tabs, config)
-        return JSONResponse({
-            "error": "Validation failed",
-            "errors": [{"name": c.name, "detail": c.detail} for c in errors],
-        }, status_code=400)
-
-    # Save config to YAML
-    try:
-        if config.config_path:
-            config.save()
-            logger.info("[settings] Config saved to %s", config.config_path)
-    except Exception as e:
-        logger.error("[settings] Failed to save config: %s", e)
-        rollback_tabs = {tab["key"]: tab["model"](**snapshot_dump[tab["key"]])
-                         for tab in TAB_DEFINITIONS}
-        apply_to(rollback_tabs, config)
-        return JSONResponse({
-            "error": f"Failed to save config: {e}",
-        }, status_code=500)
-
-    return JSONResponse({
-        "success": True,
-        "restart_required": restart_required,
-        "warnings": [{"name": c.name, "detail": c.detail} for c in result.checks if c.status == "warning"],
-    })
-
-
-@app.get("/api/milestones")
-async def get_milestones() -> JSONResponse:
-    """Get available milestones, indicating which are included/excluded."""
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    config = _orchestrator.config
-
-    try:
-        # Get all milestones from GitHub via repository_host protocol
-        all_milestones = _orchestrator.repository_host.list_milestones(state="open")
-
-        # Get filter milestones from config
-        filter_milestones = config.get_filter_milestones()
-
-        milestones = []
-        for m in all_milestones:
-            title = m.get("title", "")
-            number = m.get("number")
-            is_included = not filter_milestones or title in filter_milestones
-            milestones.append({
-                "title": title,
-                "number": number,
-                "description": m.get("description", ""),
-                "due_on": m.get("due_on"),
-                "open_issues": m.get("open_issues", 0),
-                "included": is_included,
-            })
-
-        return JSONResponse({
-            "milestones": milestones,
-            "filter_active": bool(filter_milestones),
-            "filter_milestones": filter_milestones,
-        })
-    except Exception as e:
-        logger.error("[web] Failed to fetch milestones: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.post("/api/issues")
-async def create_issue(request: Request) -> JSONResponse:
-    """Create a new issue with specified labels and milestone.
-
-    JSON body:
-        title: str - Issue title (required)
-        body: str - Issue body/description
-        milestone: int - Milestone number (optional)
-        agent: str - Agent label (e.g., "agent:backend")
-        priority: str - Priority label (e.g., "P1")
-        labels: list[str] - Additional labels (optional)
-    """
-    if not _orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    title = body.get("title", "").strip()
-    if not title:
-        return JSONResponse({"error": "Title is required"}, status_code=400)
-
-    issue_body = body.get("body", "")
-    milestone = body.get("milestone")  # milestone number
-    agent = body.get("agent")
-    priority = body.get("priority")
-    extra_labels = body.get("labels", [])
-
-    # Build labels list
-    labels = []
-    if agent:
-        labels.append(agent)
-    if priority:
-        labels.append(priority)
-    labels.extend(extra_labels)
-
-    try:
-        # Create the issue via repository_host protocol
-        result = _orchestrator.repository_host.create_issue(
-            title=title,
-            body=issue_body,
-            labels=labels,
-            milestone=milestone,
-        )
-
-        if result is None:
-            return JSONResponse({"error": "Failed to create issue"}, status_code=500)
-
-        issue_number = result.get("number")
-        issue_url = result.get("html_url")
-
-        return JSONResponse({
-            "status": "created",
-            "issue_number": issue_number,
-            "url": issue_url,
-        })
-    except Exception as e:
-        logger.error("[web] Failed to create issue: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
