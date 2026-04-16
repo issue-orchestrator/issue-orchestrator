@@ -27,6 +27,7 @@ from issue_orchestrator.control.session_launcher import (
     detect_existing_work,
     log_transition,
 )
+from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
     orchestrator_launch_session,
     orchestrator_launch_review_session,
@@ -1044,7 +1045,12 @@ class TestLaunchReviewSession:
 
         worktree_info = WorktreeInfo(path=Path("/tmp/worktree"), branch_name="issue-123")
 
-        note = launcher_bundle.launcher._build_review_existing_work(worktree_info, pr_number=456)  # noqa: SLF001 - unit test targets internal launch prompt helper
+        note = build_review_existing_work(
+            worktree_info=worktree_info,
+            pr_number=456,
+            repository_host=mock_repo_host,
+            keep_current_label=keep_current_label,
+        )
 
         assert note is not None
         assert "Keep the current approach" in note
