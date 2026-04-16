@@ -7,6 +7,8 @@ This reproduces the bug from issue #3861 where review sessions were registered
 under the wrong name, causing session_exists checks to fail.
 """
 
+import shlex
+import sys
 from pathlib import Path
 
 import pluggy
@@ -18,6 +20,11 @@ pytestmark = pytest.mark.xdist_group("pty")
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.hooks.hookspec import PROJECT_NAME, TerminalSpec
+
+
+def _long_running_command() -> str:
+    """Keep subprocess sessions alive long enough to assert registry state."""
+    return f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)'"
 
 
 @pytest.fixture
@@ -68,29 +75,32 @@ class TestSessionNameFlow:
         # This is what the orchestrator does for review sessions
         result = plugin_manager.hook.create_session(
             session_id=3865,
-            command="echo 'test'",
+            command=_long_running_command(),
             working_dir=str(worktree),
             title="Review PR #3865",
             session_name="review-3865",  # This is the key parameter!
         )
 
-        # Session should be created
-        assert result is True, "Session creation should succeed"
+        try:
+            # Session should be created
+            assert result is True, "Session creation should succeed"
 
-        # NOW CHECK: session_exists_by_name("review-3865") should return True
-        exists = plugin_manager.hook.session_exists_by_name(session_name="review-3865")
-        assert exists is True, (
-            "Session should exist under name 'review-3865', "
-            "but session_exists_by_name returned False. "
-            "This means the session was registered under a different name (likely 'issue-3865')."
-        )
+            # NOW CHECK: session_exists_by_name("review-3865") should return True
+            exists = plugin_manager.hook.session_exists_by_name(session_name="review-3865")
+            assert exists is True, (
+                "Session should exist under name 'review-3865', "
+                "but session_exists_by_name returned False. "
+                "This means the session was registered under a different name (likely 'issue-3865')."
+            )
 
-        # And it should NOT exist under "issue-3865"
-        wrong_exists = plugin_manager.hook.session_exists_by_name(session_name="issue-3865")
-        assert wrong_exists is False, (
-            "Session should NOT exist under name 'issue-3865', "
-            "but it does. The session_name parameter is being ignored!"
-        )
+            # And it should NOT exist under "issue-3865"
+            wrong_exists = plugin_manager.hook.session_exists_by_name(session_name="issue-3865")
+            assert wrong_exists is False, (
+                "Session should NOT exist under name 'issue-3865', "
+                "but it does. The session_name parameter is being ignored!"
+            )
+        finally:
+            plugin_manager.hook.kill_session(session_id=3865, session_name="review-3865")
 
     def test_issue_session_uses_explicit_name(
         self, plugin_manager: pluggy.PluginManager, temp_repo_root: Path
@@ -104,17 +114,20 @@ class TestSessionNameFlow:
         # Caller provides explicit session name (no fallbacks)
         result = plugin_manager.hook.create_session(
             session_id=123,
-            command="echo 'test'",
+            command=_long_running_command(),
             working_dir=str(worktree),
             title="Issue #123",
             session_name="issue-123",  # Caller computes name
         )
 
-        assert result is True, "Session creation should succeed"
+        try:
+            assert result is True, "Session creation should succeed"
 
-        # Should exist under "issue-123"
-        exists = plugin_manager.hook.session_exists_by_name(session_name="issue-123")
-        assert exists is True, "Session should exist under name 'issue-123'"
+            # Should exist under "issue-123"
+            exists = plugin_manager.hook.session_exists_by_name(session_name="issue-123")
+            assert exists is True, "Session should exist under name 'issue-123'"
+        finally:
+            plugin_manager.hook.kill_session(session_id=123, session_name="issue-123")
 
 
 class TestPluggyKwargHandling:
