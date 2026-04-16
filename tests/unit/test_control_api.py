@@ -2285,7 +2285,7 @@ class TestResumeIssueEndpoint:
         client, mock_orch = client_with_orchestrator
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = tmp_path / "nonexistent-worktree"
 
@@ -2307,7 +2307,7 @@ class TestResumeIssueEndpoint:
         worktree.mkdir()
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2342,7 +2342,7 @@ class TestResumeIssueEndpoint:
         mock_orch.deps.completion_processor.process.return_value = mock_result
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2388,7 +2388,7 @@ class TestResumeIssueEndpoint:
         mock_orch.deps.completion_processor.process.return_value = mock_result
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2418,7 +2418,7 @@ class TestResumeIssueEndpoint:
         )
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2457,7 +2457,7 @@ class TestResumeIssueEndpoint:
         mock_orch.deps.completion_processor.process.return_value = mock_result
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2488,7 +2488,7 @@ class TestDebugSessionEndpoint:
         client, mock_orch = client_with_orchestrator
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = tmp_path / "nonexistent-worktree"
 
@@ -2515,7 +2515,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.repository_host.get_issue.return_value = None
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2544,7 +2544,7 @@ class TestDebugSessionEndpoint:
         mock_orch.state.cached_queue_issues = [mock_issue]
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2574,7 +2574,7 @@ class TestDebugSessionEndpoint:
         mock_orch.config.agents = {}  # No agent configs
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2612,7 +2612,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.session_exists.return_value = True
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2654,7 +2654,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.session_output.ensure_run_dir.return_value = tmp_path / "run-dir"
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2718,7 +2718,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.create_session.return_value = False
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -2757,7 +2757,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.create_session.return_value = True
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
