@@ -61,14 +61,20 @@ class DarwinClientHost:
         return ClientHostCapabilities(open_path=True, reveal_worktree=True)
 
     def open_path(self, path: Path) -> ClientHostActionResult:
-        subprocess.run(["open", str(path)], check=True)
+        try:
+            subprocess.run(["open", str(path)], check=True)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"Failed to open path: {path}") from exc
         return ClientHostActionResult(
             path=str(path),
             action="opened",
         )
 
     def reveal_worktree(self, path: Path) -> ClientHostActionResult:
-        subprocess.run(["open", str(path)], check=True)
+        try:
+            subprocess.run(["open", str(path)], check=True)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"Failed to open worktree: {path}") from exc
         return ClientHostActionResult(
             path=str(path),
             action="opened",
