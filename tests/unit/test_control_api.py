@@ -1731,7 +1731,7 @@ class TestDiscoverReposEndpoint:
 class TestSetupPrereqsGitHubAuth:
     def test_build_github_auth_check_uses_repo_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from issue_orchestrator.adapters.github.http_client import TokenValidationResult
-        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.entrypoints.setup_wizard_common import build_github_auth_check
 
         cfg = Config()
         cfg.repo = "BruceBGordon/tixmeup"
@@ -1747,8 +1747,7 @@ class TestSetupPrereqsGitHubAuth:
 
         monkeypatch.setattr("issue_orchestrator.adapters.github.http_client.validate_github_token", _validate)
 
-        build_check = getattr(control_api, "_build_github_auth_check")
-        check = build_check(cfg)
+        check = build_github_auth_check(cfg)
 
         assert check == {"ok": False, "detail": "missing repo auth"}
         assert seen["configured_env"] == "TIXMEUP_GITHUB_TOKEN"

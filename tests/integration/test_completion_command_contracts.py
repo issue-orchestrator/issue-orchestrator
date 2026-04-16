@@ -31,10 +31,10 @@ from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
     create_triage_review_prompt,
 )
-from issue_orchestrator.entrypoints.control_api import (
-    _create_code_review_prompt,
-    _create_starter_prompt,
-    _create_triage_review_prompt,
+from issue_orchestrator.entrypoints.setup_wizard_common import (
+    build_code_review_prompt_text,
+    build_starter_prompt_text,
+    build_triage_review_prompt_text,
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
@@ -242,9 +242,9 @@ def test_setup_wizard_generated_prompts_have_valid_completion_commands(tmp_path:
 
 def test_control_api_prompt_templates_have_valid_completion_commands(tmp_path: Path) -> None:
     prompts = [
-        _create_starter_prompt("backend"),
-        _create_code_review_prompt(_lm.code_review, _lm.code_reviewed),
-        _create_triage_review_prompt("triage-review", "triage-reviewed"),
+        build_starter_prompt_text("backend"),
+        build_code_review_prompt_text(_lm.code_review, _lm.code_reviewed),
+        build_triage_review_prompt_text("triage-review", "triage-reviewed"),
     ]
     commands = _extract_completion_commands("\n".join(prompts))
     _assert_commands_are_valid(commands, cwd=tmp_path)
@@ -309,9 +309,9 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
 
 
 def test_prompt_role_status_contracts() -> None:
-    work_prompt = _create_starter_prompt("backend")
-    review_prompt = _create_code_review_prompt(_lm.code_review, _lm.code_reviewed)
-    triage_prompt = _create_triage_review_prompt("triage-review", "triage-reviewed")
+    work_prompt = build_starter_prompt_text("backend")
+    review_prompt = build_code_review_prompt_text(_lm.code_review, _lm.code_reviewed)
+    triage_prompt = build_triage_review_prompt_text("triage-review", "triage-reviewed")
 
     work_statuses = _extract_statuses(_extract_completion_commands(work_prompt))
     review_statuses = _extract_statuses(_extract_completion_commands(review_prompt))
