@@ -148,7 +148,6 @@ async def goal_pilot_journey_reorder(
         result = pilot.reorder_journeys(run_id, order)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    result = pilot.reorder_journeys(run_id, order)
     return JSONResponse(result)
 
 
