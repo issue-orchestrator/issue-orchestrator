@@ -16,22 +16,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from jinja2 import Environment, FileSystemLoader
-from pydantic import BaseModel, ConfigDict
 from sse_starlette.sse import EventSourceResponse
 
 from ..contracts.ui_openapi_models import (
     BlockedIssuesDialogPayload,
     ConfigDialogPayload,
-    DashboardViewModelPayload,
     DebugDialogPayload,
     DoctorDialogPayload,
     InfoDialogPayload,
-    IssueRowsPayload,
-    IssueRowPayload,
     PhaseDialogPayload,
     SessionDiagnosticsDialogPayload,
     ValidationFailureDialogPayload,
@@ -47,7 +42,7 @@ from ..history import latest_history_entries_by_issue
 from ..infra.e2e_runner import get_e2e_role
 from ..infra.terminal_cleaning import extract_stream_json_text
 from ..ports.event_sink import make_trace_event
-from ..view_models.dashboard import build_dashboard_view_model, blocked_summary, flow_steps_for, issue_url_for
+from ..view_models.dashboard import blocked_summary, flow_steps_for, issue_url_for
 from ..view_models.dialogs import (
     build_blocked_issues_dialog,
     build_config_dialog,
@@ -67,6 +62,7 @@ from .timeline_presentation import (
     _timeline_event_requires_run_dir,
 )
 from .web_issue_detail_routes import web_issue_detail_router
+from .web_read_model_routes import web_read_model_router
 from .web_session_context import (
     install_web_session_context_dependencies,
     resolve_issue_session_context,
@@ -80,6 +76,7 @@ from .web_session_routes import (
     serve_terminal_recording,
     web_session_router,
 )
+from .web_templates import TEMPLATE_DIR, get_templates
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -94,16 +91,6 @@ _COMPAT_EXPORTS = (
     _timeline_event_requires_run_dir,
 )
 __all__ = ("_resolve_issue_session_context", "serve_terminal_recording")
-
-
-class ViewModelSnapshotPayload(BaseModel):
-    """Combined view-model + rendered rows from a single snapshot."""
-
-    model_config = ConfigDict(extra="forbid")
-    view_model: DashboardViewModelPayload
-    rows: list[IssueRowPayload]
-    active_tab: str
-    count: int
 
 
 # Create FastAPI app
@@ -211,6 +198,7 @@ def _resolve_issue_session_context(issue_number: int):
 
 
 install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
+app.include_router(web_read_model_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 
@@ -241,45 +229,11 @@ def set_server(server) -> None:
     _server = server
 
 
-# Template directory (templates are in parent package, not entrypoints)
-TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
-
-
-def get_templates() -> Environment:
-    """Get Jinja2 template environment."""
-    return Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
-
-
 def _response_json(response: JSONResponse) -> dict:
     body = response.body
     if isinstance(body, memoryview):
         body = body.tobytes()
     return json.loads(body.decode("utf-8"))
-
-
-def _build_dashboard_vm_sync(orchestrator: Any, queue_page: int, active_tab: str, e2e_page: int):
-    return build_dashboard_view_model(
-        orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
-    )
-
-
-def _render_issue_rows_sync(template, view_model) -> list[dict[str, Any]]:
-    rows = []
-    for issue in view_model.issues:
-        html = template.render(
-            issue=issue,
-            active_tab=view_model.active_tab,
-            github_owner=view_model.github_owner,
-            github_repo=view_model.github_repo,
-        )
-        rows.append({
-            "issue_number": issue.get("issue_number"),
-            "html": html,
-        })
-    return rows
 
 
 @app.get("/favicon.ico")
@@ -294,136 +248,6 @@ async def favicon():
             media_type="image/svg+xml",
         )
     return Response(status_code=204)
-
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) -> HTMLResponse:
-    """Render the main dashboard."""
-    import time
-    request_start = time.time()
-
-    # Get query params
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
-    logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, queue_page, active_tab)
-
-    templates = get_templates()
-    template = templates.get_template("dashboard.html")
-    vm_start = time.time()
-    view_model = await asyncio.to_thread(
-        _build_dashboard_vm_sync,
-        orchestrator,
-        queue_page,
-        active_tab,
-        e2e_page,
-    )
-    vm_elapsed = time.time() - vm_start
-    render_start = time.time()
-    html = await asyncio.to_thread(template.render, **view_model.template_context())
-    render_elapsed = time.time() - render_start
-    total_elapsed = time.time() - request_start
-    logger.info(
-        "[dashboard] Total request time: %.2fs (view_model=%.2fs render=%.2fs)",
-        total_elapsed,
-        vm_elapsed,
-        render_elapsed,
-    )
-    return HTMLResponse(content=html)
-
-
-@app.get("/api/view-model", response_model=DashboardViewModelPayload)
-async def get_view_model(
-    request: Request,
-    orchestrator=Depends(get_orchestrator),
-) -> DashboardViewModelPayload | JSONResponse:
-    """Get the dashboard view model as JSON."""
-    if not orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
-
-    view_model = await asyncio.to_thread(
-        _build_dashboard_vm_sync,
-        orchestrator,
-        queue_page,
-        active_tab,
-        e2e_page,
-    )
-    return DashboardViewModelPayload.model_validate(view_model.to_dict())
-
-
-@app.get("/api/view-model-snapshot", response_model=ViewModelSnapshotPayload)
-async def get_view_model_snapshot(
-    tab: str = Query("flow"),
-    page: int = Query(1, ge=1),
-    e2e_page: int = Query(1, ge=1),
-    orchestrator=Depends(get_orchestrator),
-) -> ViewModelSnapshotPayload | JSONResponse:
-    """Get view-model and rendered rows from a single snapshot.
-
-    This keeps tab counts and rendered list rows in lockstep for UI refreshes.
-    """
-    if not orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    queue_page = page
-    active_tab = tab
-
-    templates = get_templates()
-    row_template = templates.get_template("issue_row.html")
-
-    def _build_snapshot_sync() -> tuple[Any, list[dict[str, Any]]]:
-        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
-        return vm, _render_issue_rows_sync(row_template, vm)
-
-    view_model, rows = await asyncio.to_thread(_build_snapshot_sync)
-
-    return ViewModelSnapshotPayload.model_validate({
-        "view_model": view_model.to_dict(),
-        "rows": rows,
-        "active_tab": view_model.active_tab,
-        "count": len(rows),
-    })
-
-
-@app.get("/api/issue-rows", response_model=IssueRowsPayload)
-async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator)) -> IssueRowsPayload | JSONResponse:
-    """Get rendered issue rows for the current view."""
-    if not orchestrator:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
-
-    templates = get_templates()
-    template = templates.get_template("issue_row.html")
-
-    def _build_rows_sync() -> tuple[Any, list[dict[str, Any]]]:
-        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
-        return vm, _render_issue_rows_sync(template, vm)
-
-    view_model, rows = await asyncio.to_thread(_build_rows_sync)
-
-    return IssueRowsPayload.model_validate({
-        "rows": rows,
-        "active_tab": view_model.active_tab,
-        "count": len(rows),
-    })
 
 
 @app.get("/api/dialog/info", response_model=InfoDialogPayload)
