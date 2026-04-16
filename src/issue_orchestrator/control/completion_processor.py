@@ -51,9 +51,9 @@ from .completion_pr_collision import (
     maybe_switch_branch_for_pr_collision,
 )
 from .completion_failure_reporting import (
-    report_cleanup_failure,
-    report_gate_failure_comment,
-    report_processing_failure_comment,
+    build_cleanup_failure_comment,
+    build_gate_failure_comment,
+    build_processing_failure_comment,
     write_failure_diagnostic,
 )
 
@@ -199,6 +199,17 @@ class CompletionProcessor:
                 entity_id=issue_number,
                 data=data or {},
                 source="completion_processor",
+            )
+
+    def _add_issue_comment(self, issue_number: int, comment: str, *, context: str) -> None:
+        try:
+            self.pr_adapter.add_comment(issue_number, comment)
+        except Exception as exc:
+            logger.warning(
+                "Failed to add %s comment for #%d: %s",
+                context,
+                issue_number,
+                exc,
             )
 
     def set_event_emitter(self, events: EventSink, event_context: EventContext) -> None:
@@ -598,13 +609,12 @@ class CompletionProcessor:
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
             tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
-            report_processing_failure_comment(
-                pr_adapter=self.pr_adapter,
-                issue_number=issue_number,
+            comment = build_processing_failure_comment(
                 errors=[tagged_reason],
                 actions_taken=[],
                 diagnostic_path=None,
             )
+            self._add_issue_comment(issue_number, comment, context="processing failure")
             return ProcessingResult(
                 success=False,
                 message=f"Validation failed: {reason}",
@@ -742,13 +752,12 @@ class CompletionProcessor:
             return None
         # Get session output dir for validation to write directly there
         if not session_name:
-            report_processing_failure_comment(
-                pr_adapter=self.pr_adapter,
-                issue_number=issue_number,
+            comment = build_processing_failure_comment(
                 errors=["session_name is required for publish gate"],
                 actions_taken=[],
                 diagnostic_path=None,
             )
+            self._add_issue_comment(issue_number, comment, context="processing failure")
             return ProcessingResult(
                 success=False,
                 message="Publish gate requires session output but no session name available",
@@ -757,13 +766,12 @@ class CompletionProcessor:
         session_output_dir = self.session_output.find_run_dir(worktree, session_name)
         if session_output_dir is None:
             message = f"Session output directory not found for {session_name}"
-            report_processing_failure_comment(
-                pr_adapter=self.pr_adapter,
-                issue_number=issue_number,
+            comment = build_processing_failure_comment(
                 errors=[message],
                 actions_taken=[],
                 diagnostic_path=None,
             )
+            self._add_issue_comment(issue_number, comment, context="processing failure")
             return ProcessingResult(
                 success=False,
                 message=f"Publish gate requires session output but run dir not found for {session_name}",
@@ -832,12 +840,11 @@ class CompletionProcessor:
                 issue_number,
                 e,
             )
-        report_gate_failure_comment(
-            pr_adapter=self.pr_adapter,
-            issue_number=issue_number,
+        comment = build_gate_failure_comment(
             gate_reason=gate_reason,
             validation_failed_label=validation_failed_label,
         )
+        self._add_issue_comment(issue_number, comment, context="validation failure")
 
         self._emit(
             SessionEvent.FAILED,
@@ -2041,13 +2048,12 @@ class CompletionProcessor:
                 error_details=error_details,
                 duration_seconds=total_duration,
             )
-            report_processing_failure_comment(
-                pr_adapter=self.pr_adapter,
-                issue_number=issue_number,
+            comment = build_processing_failure_comment(
                 errors=errors,
                 actions_taken=actions_taken,
                 diagnostic_path=diagnostic_path,
             )
+            self._add_issue_comment(issue_number, comment, context="processing failure")
 
         # Clean up the completion record after processing to prevent re-processing
         self._cleanup_completion_record(worktree, completion_path, issue_number)
@@ -2113,12 +2119,12 @@ class CompletionProcessor:
         logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
                       issue_number, record_path, existed_before, exists_after)
         if existed_before and exists_after and not cleanup_ok:
-            report_cleanup_failure(
-                pr_adapter=self.pr_adapter,
+            comment = build_cleanup_failure_comment(
                 issue_number=issue_number,
                 worktree=worktree,
                 record_path=record_path,
             )
+            self._add_issue_comment(issue_number, comment, context="cleanup warning")
 
     def _build_pr_body(self, record: CompletionRecord, issue_number: int) -> str:
         """Build the PR body from the completion record.

@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..ports.session_output import SessionOutput
@@ -12,18 +12,13 @@ from ..ports.session_output import SessionOutput
 logger = logging.getLogger(__name__)
 
 
-class CompletionCommentAdapter(Protocol):
-    def add_comment(self, issue_or_pr_number: int, body: str) -> str: ...
-
-
-def report_cleanup_failure(
+def build_cleanup_failure_comment(
     *,
-    pr_adapter: CompletionCommentAdapter,
     issue_number: int,
     worktree: Path,
     record_path: Path,
-) -> None:
-    """Report cleanup failure with a local diagnostic reference."""
+) -> str:
+    """Build a cleanup failure comment with a local diagnostic reference."""
     diagnostic = write_issue_diagnostic(
         worktree=worktree,
         issue_number=issue_number,
@@ -36,7 +31,7 @@ def report_cleanup_failure(
     )
 
     if diagnostic:
-        comment = (
+        return (
             "WARNING: Cleanup incomplete\n\n"
             "The completion record could not be deleted after processing. "
             "This can happen if the file is still open or locked.\n\n"
@@ -44,52 +39,34 @@ def report_cleanup_failure(
             f"- Diagnostic file: `{diagnostic.relative_path}`\n\n"
             "Close any editors or processes using the file, then delete it manually."
         )
-    else:
-        comment = (
-            "WARNING: Cleanup incomplete\n\n"
-            "The completion record could not be deleted after processing. "
-            "Close any editors or processes using the file, then delete it manually."
-        )
-
-    try:
-        pr_adapter.add_comment(issue_number, comment)
-    except Exception as exc:
-        logger.warning("Failed to add cleanup warning comment for #%d: %s", issue_number, exc)
+    return (
+        "WARNING: Cleanup incomplete\n\n"
+        "The completion record could not be deleted after processing. "
+        "Close any editors or processes using the file, then delete it manually."
+    )
 
 
-def report_gate_failure_comment(
+def build_gate_failure_comment(
     *,
-    pr_adapter: CompletionCommentAdapter,
-    issue_number: int,
     gate_reason: str,
     validation_failed_label: str,
-) -> None:
-    """Post a GitHub comment for publish gate failures."""
-    comment = (
+) -> str:
+    """Build the GitHub comment body for publish gate failures."""
+    return (
         "## Validation Failed\n\n"
         "Publish actions were blocked by validation.\n\n"
         f"- Reason: {gate_reason}\n"
         f"- Label added: `{validation_failed_label}`\n"
     )
-    try:
-        pr_adapter.add_comment(issue_number, comment)
-    except Exception as exc:
-        logger.warning(
-            "Failed to add validation failure comment for #%d: %s",
-            issue_number,
-            exc,
-        )
 
 
-def report_processing_failure_comment(
+def build_processing_failure_comment(
     *,
-    pr_adapter: CompletionCommentAdapter,
-    issue_number: int,
     errors: list[str],
     actions_taken: list[str],
     diagnostic_path: str | None,
-) -> None:
-    """Post a GitHub comment for completion processing failures."""
+) -> str:
+    """Build the GitHub comment body for completion processing failures."""
     primary_error = errors[0] if errors else "Unknown processing error"
     comment = (
         "## Orchestrator Processing Failed\n\n"
@@ -100,14 +77,7 @@ def report_processing_failure_comment(
         comment += f"- Actions completed before failure: {', '.join(actions_taken)}\n"
     if diagnostic_path:
         comment += f"- Diagnostic file: `{diagnostic_path}`\n"
-    try:
-        pr_adapter.add_comment(issue_number, comment)
-    except Exception as exc:
-        logger.warning(
-            "Failed to add processing failure comment for #%d: %s",
-            issue_number,
-            exc,
-        )
+    return comment
 
 
 def write_failure_diagnostic(
