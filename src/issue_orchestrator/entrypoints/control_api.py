@@ -1227,7 +1227,7 @@ install_control_api_shutdown_dependencies(
     control_app,
     ControlApiShutdownDependencies(
         get_supervisor=get_supervisor,
-        schedule_control_center_exit=lambda: _schedule_control_center_exit(),
+        schedule_control_center_exit=_schedule_control_center_exit,
     ),
 )
 install_control_api_repo_dependencies(

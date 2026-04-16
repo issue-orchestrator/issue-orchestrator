@@ -1,4 +1,8 @@
-"""Control Center shutdown routes."""
+"""Control Center shutdown routes.
+
+The shutdown routes import ``control_api_shutdown_state`` directly because
+this route family owns the process-local shutdown operation state.
+"""
 
 from __future__ import annotations
 

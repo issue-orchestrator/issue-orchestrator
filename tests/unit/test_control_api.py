@@ -152,6 +152,22 @@ class TestRouteRegistration:
 
         assert counts == Counter({path: 1 for path in orchestrator_paths})
 
+    def test_control_shutdown_routes_are_registered_once(self) -> None:
+        shutdown_paths = {
+            "/control/shutdown",
+            "/control/shutdown/state",
+            "/control/shutdown/abort",
+            "/control/shutdown/update",
+            "/control/shutdown/force",
+        }
+        counts = Counter(
+            route.path
+            for route in control_app.routes
+            if route.path in shutdown_paths
+        )
+
+        assert counts == Counter({path: 1 for path in shutdown_paths})
+
 
 class TestOrchestratorNotInitialized:
     """Test that endpoints return 503 when orchestrator is not initialized."""

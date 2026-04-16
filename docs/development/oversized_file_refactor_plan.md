@@ -10,6 +10,8 @@ This tracks the large-file refactor effort. The goal is to reduce obvious scale 
 
 ## Source Targets
 
+Snapshot: planning counts captured on 2026-04-16 before the #5886-#5894 oversized-file stack. Counts are prioritization input, not an assertion about current `main` after any subset of the stack lands.
+
 | Lines | File | Primary seam candidates |
 | ---: | --- | --- |
 | 2,824 | `src/issue_orchestrator/control/session_launcher.py` | launch preconditions, claim handling, environment preparation, terminal startup, review/rework launch policies |

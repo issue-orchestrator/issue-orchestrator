@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import threading
 import time
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 
 @dataclass(frozen=True)
@@ -24,9 +24,39 @@ class ShutdownPolicyUpdate:
     force_orchestrators: bool
 
 
+class GlobalShutdownOperation(TypedDict):
+    """Mutable state for a Control Center-wide shutdown operation."""
+
+    operation_id: str
+    state: Literal["in_progress", "completed", "failed", "aborted"]
+    started_at_epoch: float
+    stop_orchestrators: bool
+    force_orchestrators: bool
+    graceful_timeout_seconds: int
+    superseded_engine_shutdowns: list[str]
+    current_repo: str | None
+    total_repos: int
+    completed_repos: int
+    stopped_orchestrators: list[str]
+    failed_orchestrators: list[str]
+    abort_requested: bool
+    force_now_requested: bool
+
+
+class EngineShutdownOperation(TypedDict):
+    """Mutable state for a single repository-engine shutdown operation."""
+
+    repo_root: str
+    state: Literal["in_progress"]
+    started_at_epoch: float
+    force: bool
+    force_if_timeout: bool
+    graceful_timeout_seconds: int
+
+
 _shutdown_ops_lock = threading.Lock()
-_global_shutdown_operation: dict[str, Any] | None = None
-_engine_shutdown_operations: dict[str, dict[str, Any]] = {}
+_global_shutdown_operation: GlobalShutdownOperation | None = None
+_engine_shutdown_operations: dict[str, EngineShutdownOperation] = {}
 
 
 def coerce_graceful_timeout_seconds(raw: object, default: int = 2) -> int:
