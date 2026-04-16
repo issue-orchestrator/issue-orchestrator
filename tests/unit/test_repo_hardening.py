@@ -6,12 +6,16 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_hardening import (
     _render_repo_pre_push_hook,
+    _render_helper_script,
     harden_repo,
     inspect_repo_hardening,
+    RepoHardeningError,
 )
 
 
@@ -116,6 +120,61 @@ def test_harden_repo_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
     assert preserved in result.preserved_files
     assert preserved.read_text() == "#!/usr/bin/env bash\necho original-hook\n"
     assert "scripts/verify-pr.sh" in result.pre_push_hook.read_text()
+
+
+def test_harden_repo_recovers_from_external_existing_hooks_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    external_hooks = tmp_path / "external-hooks"
+    external_hooks.mkdir()
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", str(external_hooks)],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    config = _make_config(repo)
+    result = harden_repo(config)
+
+    hooks_path = subprocess.run(
+        ["git", "config", "--local", "--get", "core.hooksPath"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert hooks_path == ".githooks"
+    assert result.hooks_dir == repo / ".githooks"
+    assert result.pre_push_hook.exists()
+    assert result.verify_script.exists()
+    assert result.helper_script.exists()
+
+
+def test_harden_repo_rejects_explicit_external_hooks_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    external_hooks = tmp_path / "external-hooks"
+    external_hooks.mkdir()
+
+    with pytest.raises(
+        RepoHardeningError,
+        match="core.hooksPath must resolve inside the repository",
+    ):
+        harden_repo(_make_config(repo), hooks_path=str(external_hooks))
+
+
+def test_checked_in_helper_matches_generated_output() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    source_path = repo_root / "src" / "issue_orchestrator" / "infra" / "hooks" / "block_no_verify.py"
+    helper_path = repo_root / "scripts" / "agent-hooks" / "block_no_verify.py"
+
+    assert helper_path.read_text() == _render_helper_script(source_path)
 
 
 def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:

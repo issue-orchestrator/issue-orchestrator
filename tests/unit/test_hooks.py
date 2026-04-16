@@ -465,7 +465,7 @@ class TestClaudeCodeAdapter:
         blocked, stderr = result
         assert blocked
         assert "python3" in stderr.lower()
-        assert "no-verify" in stderr.lower()
+        assert "install python3" in stderr.lower()
 
     def test_hook_fallback_blocks_other_guardrails_on_python_error(
         self, adapter, temp_project
@@ -1208,6 +1208,28 @@ class TestHookScriptIntegration:
         adapter.install_hooks(tmp_path)
         hook_script = tmp_path / ".github" / "hooks" / "block-no-verify.sh"
         blocked = run_copilot_hook_test(hook_script, "git push --no-verify")
+        assert blocked
+
+    @pytest.mark.parametrize(
+        ("adapter_cls", "hook_rel", "runner"),
+        [
+            (ClaudeCodeAdapter, Path(".claude/hooks/block-no-verify.sh"), run_hook_test),
+            (CursorAdapter, Path(".cursor/hooks/block-no-verify.sh"), run_cursor_hook_test),
+            (GeminiAdapter, Path(".gemini/hooks/block-no-verify.sh"), run_hook_test),
+            (CopilotAdapter, Path(".github/hooks/block-no-verify.sh"), run_copilot_hook_test),
+        ],
+        ids=("claude", "cursor", "gemini", "copilot"),
+    )
+    def test_hook_scripts_fail_closed_when_python_missing(
+        self,
+        tmp_path,
+        adapter_cls,
+        hook_rel,
+        runner,
+    ):
+        adapter_cls().install_hooks(tmp_path)
+        hook_script = tmp_path / hook_rel
+        blocked = runner(hook_script, "git status", env={"PATH": ""})
         assert blocked
 
 

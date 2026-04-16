@@ -20,6 +20,9 @@ set -euo pipefail
 
 input="$(< /dev/stdin)"
 
+# Fail closed if python itself is unavailable; we cannot enforce anything
+# without an interpreter.
+
 fallback_block_no_verify() {
     local payload="$1"
     if [[ "$payload" == *"--no-verify"* && "$payload" == *"git"* ]]; then
@@ -45,11 +48,8 @@ fallback_block_no_verify() {
 
 python_bin="$(command -v python3 || true)"
 if [[ -z "$python_bin" ]]; then
-    if fallback_block_no_verify "$input"; then
-        echo "BLOCKED: python3 missing; blocked --no-verify." >&2
-        exit 2
-    fi
-    exit 0
+    echo "BLOCKED: python3 is required for orchestrator hooks. Fix PATH or install python3." >&2
+    exit 2
 fi
 
 hook_pythonpath="${ORCHESTRATOR_HOOK_PYTHONPATH:-}"
@@ -80,8 +80,10 @@ if [[ $status -eq 0 || $status -eq 2 ]]; then
     exit $status
 fi
 
+# If python exists but the full evaluator cannot import, keep a coarse shell
+# fallback so standalone installs do not brick normal commands.
 if fallback_block_no_verify "$input"; then
-    echo "BLOCKED: hook evaluation failed; blocked --no-verify." >&2
+    echo "BLOCKED: hook evaluation failed; blocked restricted command." >&2
     exit 2
 fi
 exit 0
