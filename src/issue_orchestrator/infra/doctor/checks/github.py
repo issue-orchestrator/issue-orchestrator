@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def check_github_auth(config: "Config | None" = None) -> list[Check]:
-    from ....adapters.github.http_client import (
+    from ....adapters.github.tokens import (
         KEYRING_SERVICE,
         KEYRING_USERNAME,
         describe_github_token_sources,

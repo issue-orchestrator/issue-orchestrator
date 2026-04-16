@@ -5,7 +5,9 @@ import logging
 from ...infra import gh_audit
 from ...infra.config import Config
 from ...ports.fresh_issue_reader import FreshIssueReader
-from .http_client import GitHubHttpClient, GitHubHttpConfig, GitHubHttpError, resolve_github_token
+from .errors import GitHubHttpError
+from .http_client import GitHubHttpClient, GitHubHttpConfig
+from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
 
 logger = logging.getLogger(__name__)

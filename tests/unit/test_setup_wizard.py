@@ -267,7 +267,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
+    @patch("issue_orchestrator.execution.providers.resolve_github_token")
     @patch("shutil.which")
     def test_all_prerequisites_met(self, mock_which, mock_token, mock_subprocess, mock_git):
         """Test when all prerequisites are met."""
@@ -286,7 +286,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
+    @patch("issue_orchestrator.execution.providers.resolve_github_token")
     def test_missing_git(self, mock_token, mock_subprocess, mock_git):
         """Test when git is missing."""
         mock_git.return_value = (False, "")
@@ -300,7 +300,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
+    @patch("issue_orchestrator.execution.providers.resolve_github_token")
     def test_github_not_authenticated(self, mock_token, mock_subprocess, mock_git):
         """Test when GitHub token is missing."""
         mock_git.return_value = (True, "git version 2.40.0")

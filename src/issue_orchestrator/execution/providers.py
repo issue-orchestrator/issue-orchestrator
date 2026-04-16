@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..adapters.github.http_client import TokenValidationResult
+    from ..adapters.github.tokens import TokenValidationResult
     from ..infra.config import Config
     from ..ports import RepositoryHost
 
@@ -73,7 +73,7 @@ def resolve_github_token(
     Raises:
         ValueError: If no token found
     """
-    from ..adapters.github.http_client import resolve_github_token as _resolve
+    from ..adapters.github.tokens import resolve_github_token as _resolve
 
     return _resolve(
         configured_token=configured_token,
@@ -105,7 +105,7 @@ def validate_github_token(
     Returns:
         Token validation result from the GitHub adapter layer
     """
-    from ..adapters.github.http_client import validate_github_token as _validate
+    from ..adapters.github.tokens import validate_github_token as _validate
 
     return _validate(
         configured_token=configured_token,
@@ -123,14 +123,14 @@ def store_keyring_token(token: str) -> None:
     Args:
         token: GitHub token to store
     """
-    from ..adapters.github.http_client import store_keyring_token as _store
+    from ..adapters.github.tokens import store_keyring_token as _store
 
     _store(token)
 
 
 def clear_keyring_token() -> None:
     """Clear GitHub token from system keyring."""
-    from ..adapters.github.http_client import clear_keyring_token as _clear
+    from ..adapters.github.tokens import clear_keyring_token as _clear
 
     _clear()
 

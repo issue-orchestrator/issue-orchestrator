@@ -16,13 +16,12 @@ from ...infra.config import Config
 from ...ports.pull_request_tracker import PRInfo
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
+from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
-    GitHubHttpError,
-    GitHubTransportError,
-    resolve_github_token,
 )
+from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from ...ports.verification import VerificationService
