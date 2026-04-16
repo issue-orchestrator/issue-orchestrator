@@ -19,11 +19,10 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import (
-    _apply_lane_precedence,
-    _exclude_flow_overlaps,
     _normalize_status_reason,
     build_dashboard_view_model,
 )
+from issue_orchestrator.view_models.dashboard_flow import apply_lane_precedence, exclude_flow_overlaps
 from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
@@ -550,7 +549,7 @@ def test_exclude_flow_overlaps_handles_string_issue_numbers():
     backlog_items = [{"issue_number": 4070, "title": "Backlog"}]
     queue_items = [{"issue_number": "4070", "title": "Queued"}]
 
-    result = _exclude_flow_overlaps(
+    result = exclude_flow_overlaps(
         backlog_items=backlog_items,
         queue_items=queue_items,
         active_items=[],
@@ -571,7 +570,7 @@ def test_lane_precedence_enforces_single_lane_membership():
     awaiting_merge_items = [{"issue_number": 3, "title": "Awaiting 3"}, {"issue_number": 4, "title": "Awaiting 4"}]
     completed_items = [{"issue_number": 1, "title": "Done 1"}, {"issue_number": 4, "title": "Done 4"}, {"issue_number": 6, "title": "Done 6"}]
 
-    queue_out, blocked_out, awaiting_out, completed_out = _apply_lane_precedence(
+    queue_out, blocked_out, awaiting_out, completed_out = apply_lane_precedence(
         queue_items=queue_items,
         active_items=active_items,
         blocked_items=blocked_items,
