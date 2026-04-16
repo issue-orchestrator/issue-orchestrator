@@ -17,20 +17,20 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "_client_dashboard_link",
-    "_get_repository_host",
-    "_load_config",
-    "_resolve_repo",
-    "_run_test_setup",
+    "client_dashboard_link",
+    "get_repository_host",
+    "load_config",
+    "resolve_repo",
+    "run_test_setup",
 ]
 
 
-def _client_dashboard_link(port: int, *, repo_path: str | None = None) -> str:
+def client_dashboard_link(port: int, *, repo_path: str | None = None) -> str:
     """Build a browser-usable dashboard URL for local or Codespaces clients."""
     return with_client_query_params(resolve_client_dashboard_url(port), repo=repo_path)
 
 
-def _resolve_repo(config: "Config") -> str:
+def resolve_repo(config: "Config") -> str:
     from ..execution.providers import get_repo_from_git
 
     repo = config.repo or get_repo_from_git()
@@ -41,7 +41,7 @@ def _resolve_repo(config: "Config") -> str:
     return repo
 
 
-def _get_repository_host(config: "Config") -> "RepositoryHost | None":
+def get_repository_host(config: "Config") -> "RepositoryHost | None":
     """Get a RepositoryHost for the given config.
 
     All GitHub access in CLI is routed through the repository host for
@@ -50,7 +50,7 @@ def _get_repository_host(config: "Config") -> "RepositoryHost | None":
     from ..execution.providers import create_repository_host
 
     try:
-        repo = _resolve_repo(config)
+        repo = resolve_repo(config)
     except Exception as exc:
         console.print(f"[red]Error: {exc}[/red]")
         return None
@@ -75,14 +75,14 @@ def _build_action_applier(config: "Config", adapter: "RepositoryHost"):
     )
 
 
-def _run_test_setup(config: "Config") -> bool:  # noqa: C901 - inherent complexity from multi-step setup with graceful error handling
+def run_test_setup(config: "Config") -> bool:  # noqa: C901 - inherent complexity from multi-step setup with graceful error handling
     """Run test teardown and setup. Returns True on success."""
-    adapter = _get_repository_host(config)
+    adapter = get_repository_host(config)
     if adapter is None:
         return False
     action_applier = _build_action_applier(config, adapter)
     try:
-        repo = _resolve_repo(config)
+        repo = resolve_repo(config)
     except Exception as exc:
         console.print(f"[red]Error: {exc}[/red]")
         return False
@@ -157,7 +157,7 @@ def _run_test_setup(config: "Config") -> bool:  # noqa: C901 - inherent complexi
     return True
 
 
-def _load_config(args: argparse.Namespace) -> "Config":
+def load_config(args: argparse.Namespace) -> "Config":
     """Load config from explicit path or search for it.
 
     Args:
