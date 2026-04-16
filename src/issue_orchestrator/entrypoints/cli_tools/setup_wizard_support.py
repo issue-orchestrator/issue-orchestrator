@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..setup_wizard_common import FileCollector
+from ..setup_wizard_common import (
+    FileCollector,
+    detect_repo as detect_repo,
+    fetch_github_labels as fetch_github_labels,
+)
 
 
 class Prompter(Protocol):
@@ -127,42 +131,6 @@ def check_prerequisites(
     checks["any_ai_provider"] = any_provider_available
 
     return checks
-
-
-def detect_repo(run_git_func: RunGit, cwd: Path | None = None) -> str | None:
-    """Detect GitHub repo from the local origin remote."""
-    ok, output = run_git_func(["remote", "get-url", "origin"], cwd=cwd)
-    if not ok:
-        return None
-
-    url = output.strip()
-    if "github.com" not in url:
-        return None
-    if url.startswith("git@"):
-        parts = url.split(":")[-1]
-    else:
-        parts = "/".join(url.split("/")[-2:])
-    return parts.removesuffix(".git")
-
-
-def fetch_github_labels(
-    repository_host_factory: RepositoryHostFactory,
-    repo: str,
-) -> list[str]:
-    """Fetch all labels from GitHub repo."""
-    try:
-        labels = repository_host_factory(repo).list_labels()
-    except Exception:
-        return []
-
-    names: list[str] = []
-    for label in labels:
-        if not isinstance(label, dict):
-            continue
-        name = label.get("name")
-        if isinstance(name, str):
-            names.append(name)
-    return names
 
 
 def scan_existing_repo(

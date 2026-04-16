@@ -52,12 +52,12 @@ def check_prerequisites() -> dict[str, bool]:
 
 def detect_repo(cwd: Path | None = None) -> str | None:
     """Detect GitHub repo from the local origin remote."""
-    return _detect_repo(run_git, cwd=cwd)
+    return _detect_repo(cwd=cwd)
 
 
 def fetch_github_labels(repo: str) -> list[str]:
     """Fetch all labels from GitHub repo."""
-    return _fetch_github_labels(_get_repository_host, repo)
+    return _fetch_github_labels(repo)
 
 
 def scan_existing_repo(path: Path | None = None) -> DetectedState:
