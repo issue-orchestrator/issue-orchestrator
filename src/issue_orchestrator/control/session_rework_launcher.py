@@ -46,7 +46,7 @@ class ActionApplierFn(Protocol):
 
 
 class SessionExistsFn(Protocol):
-    def __call__(self, session_name: str) -> bool: ...
+    def __call__(self, session_name: str, /) -> bool: ...
 
 
 class SessionCreatorFn(Protocol):
@@ -56,6 +56,7 @@ class SessionCreatorFn(Protocol):
         command: str,
         worktree_path: Path,
         title: str | None,
+        /,
     ) -> bool: ...
 
 
@@ -90,7 +91,7 @@ class PromptPersister(Protocol):
 
 
 class ProviderCommandWrapper(Protocol):
-    def __call__(self, command: str, agent_config: AgentConfig, run_dir: Path) -> str: ...
+    def __call__(self, base_command: str, agent_config: AgentConfig, run_dir: Path, /) -> str: ...
 
 
 class SessionEnvBuilder(Protocol):
