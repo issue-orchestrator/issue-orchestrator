@@ -80,6 +80,12 @@ class _FakeProvider:
 
 
 def test_check_ai_provider_clis_reports_actual_executable(monkeypatch):
+    monkeypatch.delenv("NVM_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(
+        "issue_orchestrator.infra.provider_cli_diagnostics._find_executable_outside_path",
+        lambda executable: [],
+    )
     providers = {
         "claude-code": _FakeProvider(
             "claude-code",
@@ -97,10 +103,16 @@ def test_check_ai_provider_clis_reports_actual_executable(monkeypatch):
     missing = next(check for check in checks if check.name == "AI Provider CLIs (Missing)")
     assert available.status == "ok"
     assert "claude-code via claude (2.1.112 (Claude Code))" in available.detail
-    assert missing.detail == "Not installed: codex"
+    assert missing.detail == "Not installed: codex; executable 'codex' not found on PATH"
 
 
 def test_check_ai_provider_clis_reports_expected_executable_when_missing(monkeypatch):
+    monkeypatch.setenv("NVM_BIN", "/Users/test/.nvm/versions/node/v24.11.1/bin")
+    monkeypatch.setenv("PATH", "/Users/test/.nvm/versions/node/v24.11.1/bin:/usr/bin:/bin")
+    monkeypatch.setattr(
+        "issue_orchestrator.infra.provider_cli_diagnostics._find_executable_outside_path",
+        lambda executable: [Path("/Users/test/.nvm/versions/node/v24.14.1/bin/claude")],
+    )
     providers = {
         "claude-code": _FakeProvider("claude-code", "claude", available=False),
     }
@@ -110,4 +122,9 @@ def test_check_ai_provider_clis_reports_expected_executable_when_missing(monkeyp
     checks = ai_checks.check_ai_provider_clis()
 
     missing = next(check for check in checks if check.name == "AI Provider CLIs (Missing)")
-    assert missing.detail == "Not installed: claude-code (expected executable: claude)"
+    assert missing.detail == (
+        "Not installed: claude-code (expected executable: claude); "
+        "executable 'claude' not found on PATH; "
+        "NVM_BIN=/Users/test/.nvm/versions/node/v24.11.1/bin; "
+        "found outside PATH: /Users/test/.nvm/versions/node/v24.14.1/bin/claude"
+    )
