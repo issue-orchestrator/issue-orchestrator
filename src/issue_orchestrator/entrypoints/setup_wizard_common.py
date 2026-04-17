@@ -795,6 +795,42 @@ def build_any_ai_provider_check() -> dict[str, Any]:
     }
 
 
+def _build_provider_agent_check(
+    *,
+    label: str,
+    provider_name: str,
+    seen_executables: set[str],
+) -> dict[str, Any] | None:
+    from issue_orchestrator.agent_runner import get_provider
+
+    try:
+        provider = get_provider(provider_name)
+    except ValueError:
+        return {
+            "name": f"{provider_name} CLI",
+            "ok": False,
+            "detail": f"Unknown provider configured for {label}: {provider_name}",
+        }
+
+    executable = getattr(provider, "executable", provider_name)
+    if executable in seen_executables:
+        return None
+    seen_executables.add(executable)
+    if not provider.is_available():
+        return {
+            "name": f"{provider_name} CLI",
+            "ok": False,
+            "detail": f"Expected executable '{executable}' not found on PATH",
+        }
+    path = shutil.which(executable) or executable
+    detail = provider.check_version() or path
+    return {
+        "name": f"{provider_name} CLI",
+        "ok": True,
+        "detail": _provider_cli_detail(detail, provider_name, executable),
+    }
+
+
 def build_agent_checks(config: "Config | None") -> list[dict[str, Any]]:
     """Check agent CLI availability for the supplied config."""
     if config is None:
@@ -812,27 +848,13 @@ def build_agent_checks(config: "Config | None") -> list[dict[str, Any]]:
         if provider_name is None and default_agent is not None:
             provider_name = getattr(default_agent, "provider", None)
         if provider_name:
-            from issue_orchestrator.agent_runner import get_provider
-
-            provider = get_provider(provider_name)
-            executable = getattr(provider, "executable", provider_name)
-            if executable in seen_executables:
-                continue
-            seen_executables.add(executable)
-            if not provider.is_available():
-                checks.append({
-                    "name": f"{provider_name} CLI",
-                    "ok": False,
-                    "detail": f"Expected executable '{executable}' not found on PATH",
-                })
-                continue
-            path = shutil.which(executable) or executable
-            detail = provider.check_version() or path
-            checks.append({
-                "name": f"{provider_name} CLI",
-                "ok": True,
-                "detail": _provider_cli_detail(detail, provider_name, executable),
-            })
+            check = _build_provider_agent_check(
+                label=label,
+                provider_name=provider_name,
+                seen_executables=seen_executables,
+            )
+            if check:
+                checks.append(check)
             continue
 
         command = getattr(agent_config, "command", None) or ""

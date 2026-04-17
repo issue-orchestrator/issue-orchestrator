@@ -571,6 +571,30 @@ class TestSetupWizardSharedHelpers:
             "detail": "2.1.112 (Claude Code) (executable: claude)",
         }]
 
+    def test_build_agent_checks_reports_unknown_provider(self, monkeypatch):
+        """Invalid provider names should be surfaced as prereq failures."""
+        monkeypatch.setattr(
+            "issue_orchestrator.agent_runner.get_provider",
+            Mock(side_effect=ValueError("Unknown provider")),
+        )
+        config = SimpleNamespace(
+            agents={
+                "agent:backend": SimpleNamespace(
+                    provider="mystery-ai",
+                    command="legacy-missing-command",
+                ),
+            },
+            default_agent=None,
+        )
+
+        checks = build_agent_checks(config)
+
+        assert checks == [{
+            "name": "mystery-ai CLI",
+            "ok": False,
+            "detail": "Unknown provider configured for agent:backend: mystery-ai",
+        }]
+
 
 class TestScanExistingRepo:
     """Test the scan_existing_repo function."""
