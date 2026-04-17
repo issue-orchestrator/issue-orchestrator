@@ -56,9 +56,13 @@ class BackgroundJobRunner(Protocol):
 class NullBackgroundJobRunner:
     """No-op runner used in tests that never exercise async paths.
 
-    ``submit`` always returns ``False`` (as if a duplicate was suppressed) so
-    tests that accidentally rely on background execution fail loudly rather
-    than silently.
+    ``submit`` always returns ``False`` — the same return value a real runner
+    uses to reject duplicate submissions. Consumers MUST treat a ``False``
+    return as "this runner did not start the job", which is the contract
+    :class:`CompletionReviewExchange` relies on to fall back to inline
+    execution when no real runner is wired. Do NOT "fix" this to run ``fn``
+    synchronously and return ``True``: that would turn a test-env fallback
+    into a silent swallow everywhere the null runner is used.
     """
 
     def submit(self, job_id: str, fn: Callable[[], None]) -> bool:

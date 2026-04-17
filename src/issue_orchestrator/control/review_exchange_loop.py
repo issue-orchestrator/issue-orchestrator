@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1319,6 +1321,35 @@ def _write_prompt(exchange_dir: Path, round_index: int, role: str, prompt_text: 
     return prompt_path
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write JSON atomically so mid-write polls never see a torn file.
+
+    The main orchestrator tick polls ``summary.json`` every iteration to
+    detect async review-exchange completion. A non-atomic write (plain
+    ``write_text``) creates a window where a reader can hit a partial file
+    and raise :class:`json.JSONDecodeError`. Write to a sibling temp file on
+    the same filesystem and rename — the rename is atomic on POSIX, so any
+    reader sees either the pre-write content or the full new content.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(payload, indent=2)
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(encoded)
+        os.replace(tmp_path_str, path)
+    except Exception:
+        # Only clean up the tempfile on failure; the successful path has
+        # already renamed it out of existence.
+        try:
+            os.unlink(tmp_path_str)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _write_round_log(
     *,
     exchange_dir: Path,
@@ -1343,7 +1374,7 @@ def _write_round_log(
         except json.JSONDecodeError:
             existing = {}
     existing[role] = payload
-    round_path.write_text(json.dumps(existing, indent=2))
+    _atomic_write_json(round_path, existing)
 
 
 def _write_summary(
@@ -1357,6 +1388,5 @@ def _write_summary(
         "response_text": reviewer_response.response_text if reviewer_response else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    summary_path = exchange_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2))
+    _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary

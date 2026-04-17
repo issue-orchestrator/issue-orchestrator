@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ..domain.models import CompletionRecord, RequestedAction
 from ..ports.background_job import BackgroundJobRunner, NullBackgroundJobRunner
 from ..ports.session_output import SessionOutput
+from .background_job_supervisor import BackgroundJobSupervisor
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
 if TYPE_CHECKING:
@@ -44,12 +45,23 @@ class CompletionReviewExchange:
         emit_review_started: ReviewStartedEmitter,
         emit_review_outcome: ReviewOutcomeEmitter,
         job_runner: BackgroundJobRunner | None = None,
+        job_supervisor: BackgroundJobSupervisor | None = None,
     ) -> None:
         self._config = config
         self._session_output = session_output
         self._emit_review_started = emit_review_started
         self._emit_review_outcome = emit_review_outcome
-        self._job_runner: BackgroundJobRunner = job_runner or NullBackgroundJobRunner()
+        # The supervisor owns failure-handling for the background runner. We
+        # accept either a prebuilt supervisor (preferred; the composition
+        # root wires one and shares it with the tick) or a bare runner, in
+        # which case we wrap it in a private supervisor so the raw surface
+        # still has failure capture — but callers of ``tick`` must then
+        # reach the same instance, so injection is strongly preferred.
+        if job_supervisor is not None:
+            self._job_supervisor = job_supervisor
+        else:
+            runner: BackgroundJobRunner = job_runner or NullBackgroundJobRunner()
+            self._job_supervisor = BackgroundJobSupervisor(runner)
 
     def prepare_review_exchange(
         self,
@@ -165,7 +177,9 @@ class CompletionReviewExchange:
         ``deferred=True`` means the exchange is running asynchronously; the
         caller must stop processing this completion record and retry on a
         later tick. ``outcome`` is populated only when the exchange has
-        finished (either cached or just-completed-synchronously).
+        finished — from the on-disk cache of a prior background run, or
+        from an inline run when no background runner is wired (tests, dev
+        environments).
         """
         try:
             exchange_mode = self.resolve_review_exchange_mode(agent_label)
@@ -197,7 +211,26 @@ class CompletionReviewExchange:
             return mode, outcome, halt, False
 
         job_id = _review_exchange_job_id(issue_number, session_name)
-        if self._job_runner.is_running(job_id):
+
+        # If a previous background attempt raised, the supervisor recorded
+        # it. Surface that as a terminal halt rather than spawning another
+        # attempt — otherwise a crashing job would forkbomb the tick loop
+        # at one resubmit per iteration forever.
+        failure = self._job_supervisor.take_failure(job_id)
+        if failure is not None:
+            reason = (
+                f"review_exchange: background job raised: {failure.error}"
+            )
+            errors.append(reason)
+            logger.error(
+                "[REVIEW_EXCHANGE] background job failed; halting issue=%d job_id=%s",
+                issue_number,
+                job_id,
+                exc_info=(type(failure.error), failure.error, None),
+            )
+            return exchange_mode, None, True, False
+
+        if self._job_supervisor.is_running(job_id):
             logger.info(
                 "[REVIEW_EXCHANGE] job still running issue=%d job_id=%s — deferring",
                 issue_number,
@@ -312,7 +345,7 @@ class CompletionReviewExchange:
                 exchange_result=outcome,
             )
 
-        return self._job_runner.submit(job_id, _job)
+        return self._job_supervisor.submit(job_id, _job)
 
     def _handle_cached_review_exchange_outcome(
         self,

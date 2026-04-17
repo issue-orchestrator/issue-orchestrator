@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.background_job import BackgroundJobRunner
+    from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +292,7 @@ def _create_completion_components(
     provider_resilience: ProviderResilienceManager | None = None,
     label_manager: "LabelManager | None" = None,
     background_job_runner: "BackgroundJobRunner | None" = None,
+    background_job_supervisor: "BackgroundJobSupervisor | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -309,6 +311,7 @@ def _create_completion_components(
         label_config=label_manager.to_label_config_dict(),
         config=config,
         background_job_runner=background_job_runner,
+        background_job_supervisor=background_job_supervisor,
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -601,13 +604,21 @@ def build_orchestrator(
     state_machine_manager = StateMachineManager(config=config)
 
     # Background job runner keeps long review-exchange work off the main tick.
+    # One runner + one supervisor for the whole process: the supervisor drains
+    # completions on each tick so failures cannot silently resubmit forever.
+    # TODO(concurrency): no cap on in-flight jobs — N deferring issues spawn
+    # N concurrent subprocesses. Add a bounded executor if this becomes a real
+    # load issue.
     background_job_runner = ThreadBackgroundJobRunner()
+    from ..control.background_job_supervisor import BackgroundJobSupervisor
+    background_job_supervisor = BackgroundJobSupervisor(background_job_runner)
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
         label_manager=label_manager,
         background_job_runner=background_job_runner,
+        background_job_supervisor=background_job_supervisor,
     )
 
     # Create async completion components (observer + executor)
@@ -679,6 +690,7 @@ def build_orchestrator(
         timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        background_job_supervisor=background_job_supervisor,
         instance_id=instance_id,
         state_health_check=timeline_store.check_health,
     )

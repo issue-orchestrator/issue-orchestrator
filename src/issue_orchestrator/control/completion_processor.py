@@ -35,6 +35,7 @@ from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.background_job import BackgroundJobRunner
+from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
@@ -97,6 +98,7 @@ class CompletionProcessor:
         publish_gate: PublishGate | None = None,
         config: "Config | None" = None,
         background_job_runner: "BackgroundJobRunner | None" = None,
+        background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -140,6 +142,7 @@ class CompletionProcessor:
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
             job_runner=background_job_runner,
+            job_supervisor=background_job_supervisor,
         )
         self._record_validator = CompletionRecordValidator(
             config=config,
