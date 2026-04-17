@@ -16,10 +16,10 @@ from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpConfig,
     GitHubHttpError,
     describe_github_token_sources,
-    _read_keyring_token,
     resolve_github_token,
     validate_github_token,
 )
+from issue_orchestrator.adapters.github.tokens import _read_keyring_token
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import gh_audit
 
