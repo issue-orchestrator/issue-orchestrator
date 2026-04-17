@@ -559,5 +559,5 @@ For more, see [Troubleshooting](../development/TROUBLESHOOTING.md).
 - **Customize prompts** for your project's conventions and testing framework
 - **Enable code review**: set `review.enabled: true` with a reviewer agent — see [Review Workflow](../development/REVIEW_WORKFLOW.md)
 - **Configure E2E testing**: see [E2E Runner](e2e.md)
-- **Explore Goal Pilot**: autonomous goal-driven orchestration — see [Goal Pilot](goal_pilot.md)
+- **Explore Goal Pilot** *(planned)*: autonomous goal-driven orchestration — see [Goal Pilot](goal_pilot.md)
 - **Full configuration**: see [Configuration](configuration.md) and [Configuration Reference](configuration_reference.md)

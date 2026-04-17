@@ -1,5 +1,7 @@
 # Goal Pilot (Goal-Level Operator)
 
+> **Status: planned / not yet implemented.** This document describes intended design. Most capabilities are not yet wired up in the orchestrator.
+
 ## Summary
 Goal Pilot is a goal-level system **whose core is an AI agent**, driving outcomes to completion by orchestrating issue sessions, reviews, and merges. It requires an explicit set of goals as input. It can pivot its plan as new information emerges, and it can use milestones as inputs rather than a fixed sequence. It operates as a controller in the control plane and uses ports to execute actions, keeping all UI/UX surfaces decoupled.
 

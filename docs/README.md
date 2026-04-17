@@ -11,7 +11,7 @@ Getting started with Issue Orchestrator:
 - [Configuration Reference](user/configuration_reference.md) - Every config field
 - [GitHub Permissions](user/github-permissions.md) - Token setup and scopes
 - [E2E Test Runner](user/e2e.md) - Async test execution
-- [Goal Pilot](user/goal_pilot.md) - Autonomous goal-driven orchestration
+- [Goal Pilot](user/goal_pilot.md) *(planned)* - Autonomous goal-driven orchestration
 - [VS Code Integration](user/vscode.md) - IDE integration via MCP
 - [FAQ](user/faq.md)
 

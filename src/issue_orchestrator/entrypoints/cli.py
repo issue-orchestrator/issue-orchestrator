@@ -429,17 +429,49 @@ def cmd_output(args: argparse.Namespace) -> int:
 
 
 def cmd_pause(args: argparse.Namespace) -> int:
-    """Pause the orchestrator."""
-    console.print("[yellow]Pausing issue-orchestrator...[/yellow]")
-    # TODO: implement pause logic
-    return 0
+    """Pause the orchestrator - stop launching new sessions."""
+    import httpx
+
+    port = args.port or 8080
+    base_url = f"http://localhost:{port}"
+
+    try:
+        response = httpx.post(f"{base_url}/api/pause", timeout=5.0)
+        if response.status_code == 200:
+            console.print(
+                "[yellow]Orchestrator paused - no new sessions will launch until resumed[/yellow]"
+            )
+            return 0
+        console.print(f"[red]Failed to pause: {response.text}[/red]")
+        return 1
+    except httpx.ConnectError:
+        console.print("[red]Could not connect to orchestrator. Is it running?[/red]")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Error pausing: {e}[/red]")
+        return 1
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    """Resume the orchestrator."""
-    console.print("[green]Resuming issue-orchestrator...[/green]")
-    # TODO: implement resume logic
-    return 0
+    """Resume the orchestrator - allow launching new sessions."""
+    import httpx
+
+    port = args.port or 8080
+    base_url = f"http://localhost:{port}"
+
+    try:
+        response = httpx.post(f"{base_url}/api/resume", timeout=5.0)
+        if response.status_code == 200:
+            console.print("[green]Orchestrator resumed - new sessions may launch[/green]")
+            return 0
+        console.print(f"[red]Failed to resume: {response.text}[/red]")
+        return 1
+    except httpx.ConnectError:
+        console.print("[red]Could not connect to orchestrator. Is it running?[/red]")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Error resuming: {e}[/red]")
+        return 1
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
@@ -561,14 +593,6 @@ def _start_fresh(args: argparse.Namespace) -> int:
     os.execvp(cmd[0], cmd)
     # execvp doesn't return on success
     return 1
-
-
-def cmd_next(args: argparse.Namespace) -> int:
-    """Prioritize an issue."""
-    issue_number: int = args.issue_number
-    console.print(f"[cyan]Prioritizing issue #{issue_number}...[/cyan]")
-    # TODO: implement prioritization logic
-    return 0
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -862,7 +886,6 @@ def main() -> int:
             resume=cmd_resume,
             refresh=cmd_refresh,
             restart=cmd_restart,
-            next=cmd_next,
             setup=cmd_setup,
             init=cmd_init,
             test_reset=cmd_test_reset,
