@@ -24,7 +24,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import Any, Callable, TYPE_CHECKING
 
 from ..domain.models import (
     CompletionRecord,
@@ -57,63 +57,21 @@ from .completion_result_artifacts import (
     write_reviewer_feedback_file,
 )
 from .completion_review_exchange import CompletionReviewExchange
+from .completion_ports import GitAdapter, LabelAdapter, PRAdapter
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
     ProcessingResult,
 )
+from ..ports.pull_request_tracker import PRInfo
+from ..ports.working_copy import PushResult
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
 
-
-@runtime_checkable
-class LabelAdapter(Protocol):
-    """Protocol for label operations."""
-
-    def add_label(self, issue_number: int, label: str) -> None: ...
-    def remove_label(self, issue_number: int, label: str) -> None: ...
-
-
-from ..ports.pull_request_tracker import PRInfo
-from ..ports.working_copy import PushResult, RebaseResult
-
-
-@runtime_checkable
-class PRAdapter(Protocol):
-    """Protocol for PR operations."""
-
-    def create_pr(
-        self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None
-    ) -> PRInfo: ...
-    def add_comment(self, issue_or_pr_number: int, body: str) -> str: ...
-    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]: ...
-    def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]: ...
-
-
-@runtime_checkable
-class GitAdapter(Protocol):
-    """Protocol for git operations."""
-
-    def push(
-        self,
-        worktree: Path,
-        remote: str = "origin",
-        set_upstream: bool = True,
-        skip_hooks: bool = False,
-    ) -> PushResult: ...
-
-    def rebase_on_branch(self, worktree: Path, target: str = "origin/main") -> RebaseResult: ...
-    def create_branch_from_current(self, worktree: Path, branch: str) -> None: ...
-    def list_branch_names(self, worktree: Path) -> list[str]: ...
-    def get_current_branch(self, worktree: Path) -> str | None: ...
-    def has_uncommitted_changes(self, worktree: Path) -> bool: ...
-    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
-    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]: ...
-    def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
 
 class CompletionProcessor:
     """Process agent completion records and execute requested actions.
