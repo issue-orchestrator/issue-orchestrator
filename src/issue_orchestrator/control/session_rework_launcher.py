@@ -435,6 +435,7 @@ def check_rework_conflicts(
     *,
     session_exists: SessionExistsFn,
 ) -> LaunchResult | None:
+    """Return a launch failure when a rework terminal is already active."""
     if any(s.terminal_id == session_name for s in active_sessions):
         log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
         return LaunchResult(None, False, "Already in active sessions")
@@ -458,6 +459,7 @@ def resolve_rework_pr(
 
 
 def resolve_rework_pr_details(repository_host: RepositoryHost, issue_number: int) -> tuple[int, str]:
+    """Resolve the first open PR for an issue, or fall back to a rework branch."""
     prs = repository_host.get_prs_for_issue(issue_number)
     if not prs:
         return issue_number, f"{issue_number}-rework"

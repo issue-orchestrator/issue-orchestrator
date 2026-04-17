@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from ..domain.models import Session
 
@@ -11,7 +10,7 @@ from ..domain.models import Session
 class LaunchResult:
     """Result of a session launch attempt."""
 
-    session: Optional[Session]
+    session: Session | None
     success: bool
     reason: str = ""
     keep_queued: bool = False  # Terminal already running; keep pending item queued.
