@@ -13,6 +13,9 @@ from ..ports.working_copy import PushResult
 logger = logging.getLogger(__name__)
 
 
+# These protocols intentionally narrow the broader PR/working-copy ports to the
+# methods this policy needs. Keeping the seam small avoids coupling completion
+# collision handling to unrelated adapter capabilities.
 class CompletionPrAdapter(Protocol):
     def create_pr(
         self,
