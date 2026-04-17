@@ -15,6 +15,14 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _read_dashboard_css_bundle() -> str:
+    wrapper = _read(DASHBOARD_CSS)
+    bundle = [wrapper]
+    for match in re.finditer(r'@import url\("/static/css/(?P<path>dashboard/[^"]+)"\);', wrapper):
+        bundle.append(_read(DASHBOARD_CSS.parent / match.group("path")))
+    return "\n".join(bundle)
+
+
 def _function_body(source: str, name: str) -> str:
     marker = f"function {name}("
     start = source.find(marker)
@@ -33,6 +41,19 @@ def _function_body(source: str, name: str) -> str:
                 return source[brace : i + 1]
         i += 1
     raise AssertionError(f"Function '{name}' body end not found")
+
+
+def test_dashboard_css_entrypoint_imports_split_stylesheets() -> None:
+    wrapper = _read(DASHBOARD_CSS)
+
+    assert wrapper.splitlines() == [
+        '@import url("/static/css/dashboard/base.css");',
+        '@import url("/static/css/dashboard/cards.css");',
+        '@import url("/static/css/dashboard/issue_detail.css");',
+        '@import url("/static/css/dashboard/overlays.css");',
+        '@import url("/static/css/dashboard/e2e_run_detail.css");',
+    ]
+    assert ".issue-detail-drawer" in _read_dashboard_css_bundle()
 
 
 def test_unblock_paths_use_unblock_api() -> None:
@@ -330,7 +351,7 @@ def test_timeline_prefers_session_recording_before_review_transcript() -> None:
 
 
 def test_session_replay_terminal_wrap_allows_scroll_for_fixed_geometry() -> None:
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert ".session-replay-terminal {" in css
     assert "overflow: auto;" in css
 
@@ -393,7 +414,7 @@ def test_context_menu_orchestrator_log_avoids_legacy_agent_log_endpoint() -> Non
 
 
 def test_timeline_more_menu_renders_inline_list_not_absolute_popover() -> None:
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert ".timeline-more-items {" in css
     block = css.split(".timeline-more-items {", 1)[1].split("}", 1)[0]
     assert "position: static;" in block
@@ -476,13 +497,13 @@ def test_update_bulk_bar_keeps_retry_columns_visible() -> None:
 
 
 def test_e2e_tab_hidden_in_column_focus_mode() -> None:
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert "body.column-focus-mode #tab-e2e" in css
     assert "display: none;" in css
 
 
 def test_embedded_back_controls_share_primary_button_style() -> None:
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert ".embedded-back {" in css
     assert "color: var(--text);" in css
 
@@ -626,7 +647,7 @@ def test_issue_detail_drawer_stacks_above_modal_overlay() -> None:
     run modal; the CSS fix lets both drawers coexist so closing the
     issue drawer returns to the run drawer.
     """
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     # Extract the .issue-detail-drawer rule block.
     start = css.find(".issue-detail-drawer {")
     assert start != -1, ".issue-detail-drawer rule not found"
@@ -718,7 +739,7 @@ def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
     Focus flow). Without the exception, the run modal would pop
     over the drawer it spawned.
     """
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     # Default: generic .modal-overlay elevates above the drawer.
     assert ":has(#issueDetailDrawer.visible) .modal-overlay.visible" in css, (
         "Missing DEFAULT elevation rule — generic .modal-overlay elements "
@@ -789,7 +810,7 @@ def test_journey_renders_local_timestamps_from_raw_event_times() -> None:
 
 
 def test_journey_layout_uses_content_column_for_actions_and_detail() -> None:
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert ".journey-main" in css
     assert ".journey-summary-row" in css
     assert "grid-template-columns: minmax(72px, max-content) minmax(0, 1fr)" in css
@@ -818,7 +839,7 @@ def test_journey_empty_state_falls_back_to_no_activity_when_no_diagnostic() -> N
 
 def test_expanded_cards_list_uses_start_aligned_grid() -> None:
     """Cards in expanded view should not stretch to fill the container."""
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     # Find the .expanded-cards-list rule
     start = css.find(".expanded-cards-list {")
     assert start != -1, ".expanded-cards-list rule not found in dashboard.css"
@@ -861,7 +882,7 @@ def test_e2e_run_note_rendered_in_template() -> None:
 
 def test_e2e_run_note_has_error_styling() -> None:
     """The e2e-run-note class must have error-toned styling."""
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert ".e2e-run-note" in css, (
         "Dashboard CSS must define .e2e-run-note for fixture error display"
     )
@@ -869,7 +890,7 @@ def test_e2e_run_note_has_error_styling() -> None:
 
 def test_e2e_warning_badge_state_in_css() -> None:
     """The tab-badge must have a warning state style."""
-    css = _read(DASHBOARD_CSS)
+    css = _read_dashboard_css_bundle()
     assert ".tab-badge.warning" in css, (
         "Dashboard CSS must style .tab-badge.warning for retry-needed runs"
     )

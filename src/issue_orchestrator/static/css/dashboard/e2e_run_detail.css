@@ -1,0 +1,72 @@
+/* E2E run detail tab switcher */
+.e2e-run-tabs {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+}
+.e2e-run-tab {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+}
+.e2e-run-tab:hover {
+    background: var(--bg-panel);
+    color: var(--text);
+}
+.e2e-run-tab.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+.e2e-timeline-view-switcher {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.e2e-view-btn {
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+}
+.e2e-view-btn:hover {
+    background: var(--bg-panel);
+    color: var(--text);
+}
+.e2e-view-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+.timeline-issue-links {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.timeline-issue-links a {
+    margin-left: 6px;
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+}
+.timeline-issue-links a:hover {
+    text-decoration: underline;
+}
+
+@media (max-width: 700px) {
+    .container { padding: 12px; }
+    header { flex-direction: column; align-items: flex-start; }
+    .dashboard-columns,
+    .kanban-board { flex-direction: column; }
+    .kanban-column { flex: none; }
+    .e2e-board { grid-template-columns: 1fr; }
+}
