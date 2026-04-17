@@ -1,0 +1,217 @@
+"""Dashboard flow lane and compact-card builders."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[str, Any]:
+    phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
+    phase_age = item.get("time") or ""
+    blocked = item.get("blocked_summary") or ""
+    summary_text = item.get("queue_wait_reason") or (f"Summary: {blocked}" if blocked else "")
+    return {
+        "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
+        "issue_number": item.get("issue_number"),
+        "title": item.get("title", ""),
+        "agent_type": item.get("agent_type", ""),
+        "state_label": state_label or item.get("status", ""),
+        "phase": phase,
+        "phase_age": phase_age,
+        "summary": summary_text,
+        "queue_wait_reason": item.get("queue_wait_reason"),
+        "blocked_summary": blocked,
+        "badges": [],
+        "orchestrator_labels": item.get("orchestrator_labels", []),
+        "focus_action": "focus",
+        "issue_url": item.get("issue_url") or item.get("url") or "",
+        "focus_hint": "Focus issue",
+        "github_hint": "Open in GitHub",
+        "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
+        "is_stale": bool(item.get("is_stale", False)),
+        "stale_reason": item.get("stale_reason", ""),
+        "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
+    }
+
+
+def exclude_flow_overlaps(
+    backlog_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep scope count accurate by removing items already in a kanban column.
+
+    Backlog is used only for scope_summary.in_scope_total; anything already
+    represented in queued/running/blocked/completed should not be double-counted.
+    """
+
+    def _to_issue_number(raw: Any) -> int | None:
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.isdigit():
+            return int(raw)
+        return None
+
+    occupied_numbers = {
+        issue_number
+        for item in queue_items + active_items + blocked_items + completed_items
+        for issue_number in [_to_issue_number(item.get("issue_number"))]
+        if issue_number is not None
+    }
+    return [
+        item
+        for item in backlog_items
+        for issue_number in [_to_issue_number(item.get("issue_number"))]
+        if issue_number is not None and issue_number not in occupied_numbers
+    ]
+
+
+def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
+    """Extract numeric issue numbers from card items."""
+    numbers: set[int] = set()
+    for item in items:
+        raw = item.get("issue_number")
+        if isinstance(raw, int):
+            numbers.add(raw)
+        elif isinstance(raw, str) and raw.isdigit():
+            numbers.add(int(raw))
+    return numbers
+
+
+def _exclude_issue_numbers(
+    items: list[dict[str, Any]],
+    excluded_numbers: set[int],
+) -> list[dict[str, Any]]:
+    """Return items whose issue number is not in excluded_numbers."""
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        raw = item.get("issue_number")
+        issue_number: int | None = None
+        if isinstance(raw, int):
+            issue_number = raw
+        elif isinstance(raw, str) and raw.isdigit():
+            issue_number = int(raw)
+        if issue_number is None or issue_number not in excluded_numbers:
+            filtered.append(item)
+    return filtered
+
+
+def apply_lane_precedence(
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Enforce single-lane ownership across non-running lanes.
+
+    Precedence:
+    running > blocked > awaiting-merge > queued > completed
+    """
+    active_numbers = _issue_numbers(active_items)
+    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
+    blocked_numbers = _issue_numbers(blocked_filtered)
+
+    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
+    awaiting_numbers = _issue_numbers(awaiting_filtered)
+
+    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
+    queue_numbers = _issue_numbers(queue_filtered)
+
+    completed_filtered = _exclude_issue_numbers(
+        completed_items,
+        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
+    )
+    return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
+
+
+def build_awaiting_merge_items(
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    history_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Items with PRs ready to merge, drawn from all lifecycle stages."""
+    return [
+        item for item in queue_items + blocked_items + history_items
+        if item.get("merge_pending")
+    ]
+
+
+def build_flow_columns(
+    queue_items: list[dict[str, Any]],
+    queue_preview_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    # Exclude merge-pending items from the queued column because they appear in awaiting-merge.
+    awaiting_numbers = {item.get("issue_number") for item in awaiting_merge_items}
+    queued_only = [item for item in queue_items if item.get("issue_number") not in awaiting_numbers]
+    queued_preview_only = [
+        item
+        for item in queue_preview_items
+        if item.get("issue_number") not in awaiting_numbers
+    ]
+    return [
+        {
+            "id": "queued",
+            "title": "Queued",
+            "count": len(queued_only),
+            "items": [compact_card(item, "queued") for item in queued_preview_only[:12]],
+            "expandable": True,
+        },
+        {
+            "id": "running",
+            "title": "Running",
+            "count": len(active_items),
+            "items": [compact_card(item, "running") for item in active_items[:12]],
+            "expandable": True,
+        },
+        {
+            "id": "blocked",
+            "title": "Blocked",
+            "count": len(blocked_items),
+            "items": [compact_card(item, "blocked") for item in blocked_items[:12]],
+            "expandable": True,
+        },
+        {
+            "id": "awaiting-merge",
+            "title": "Awaiting Merge",
+            "count": len(awaiting_merge_items),
+            "items": [compact_card(item, "awaiting merge") for item in awaiting_merge_items[:12]],
+            "expandable": True,
+        },
+        {
+            "id": "completed",
+            "title": "Completed",
+            "count": len(completed_items),
+            "items": [compact_card(item, "completed") for item in completed_items[:12]],
+            "expandable": True,
+            "session_scoped": True,
+        },
+    ]
+
+
+def select_issues_for_tab(
+    active_tab: str,
+    active_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    e2e_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if active_tab == "kanban":
+        return active_items if active_items else queue_items
+    if active_tab == "blocked":
+        return blocked_items
+    if active_tab == "awaiting-merge":
+        return awaiting_merge_items
+    if active_tab == "completed":
+        return completed_items
+    if active_tab == "e2e":
+        return e2e_items
+    return active_items

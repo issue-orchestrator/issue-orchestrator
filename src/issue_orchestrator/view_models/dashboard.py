@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import copy
 import json
-import threading
 import time
 from typing import Any, Callable
 
@@ -14,24 +12,18 @@ from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
-from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from ..infra import gh_audit
+from .dashboard_e2e import E2E_PAGE_SIZE
+from .dashboard_e2e import build_e2e_items
+from .dashboard_e2e import build_e2e_view_model
+from .dashboard_e2e import get_e2e_status
+from .dashboard_flow import apply_lane_precedence
+from .dashboard_flow import build_awaiting_merge_items
+from .dashboard_flow import build_flow_columns
+from .dashboard_flow import exclude_flow_overlaps
+from .dashboard_flow import select_issues_for_tab
 
 QUEUE_PAGE_SIZE = 20
-E2E_PAGE_SIZE = 15
-E2E_STATUS_CACHE_TTL_SECONDS = 1.5
-_E2E_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_E2E_STATUS_CACHE_LOCK = threading.Lock()
-
-
-def _e2e_status_cache_key(config: Any) -> str:
-    return f"{str(config.repo_root)}::{config.orchestrator_id}"
-
-
-def invalidate_e2e_status_cache(config: Any) -> None:
-    key = _e2e_status_cache_key(config)
-    with _E2E_STATUS_CACHE_LOCK:
-        _E2E_STATUS_CACHE.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -278,24 +270,6 @@ def _display_labels(labels: list[str], lm: LabelManager) -> list[str]:
     visible = set(lm.get_ours(labels))
     visible.update(label for label in labels if label.startswith("agent:"))
     return sorted(visible)
-
-
-def _relative_time(dt_str: str) -> str:
-    """Convert ISO timestamp to relative time like '2h ago'."""
-    try:
-        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        delta = now - dt
-
-        if delta.days > 0:
-            return f"{delta.days}d ago"
-        hours = delta.seconds // 3600
-        if hours > 0:
-            return f"{hours}h ago"
-        minutes = delta.seconds // 60
-        return f"{minutes}m ago" if minutes > 0 else "just now"
-    except (ValueError, TypeError):
-        return ""
 
 
 def _format_age_seconds(seconds: float | int | None) -> str:
@@ -697,6 +671,15 @@ def _issue_number_value(item: dict[str, Any]) -> int | None:
     return None
 
 
+def _unique_issue_count(items: list[dict[str, Any]]) -> int:
+    return len({
+        issue_number
+        for item in items
+        for issue_number in [_issue_number_value(item)]
+        if issue_number is not None
+    })
+
+
 def _queue_ordered_page(
     queue_items: list[dict[str, Any]],
     queue_order: dict[int, int],
@@ -708,181 +691,6 @@ def _queue_ordered_page(
     )
     page_items, _, _ = _paginate(ordered_items, queue_page, QUEUE_PAGE_SIZE)
     return _sort_by_issue_number(page_items)
-
-
-def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
-    if not e2e_status.get("running"):
-        return []
-    return [{
-        "issue_number": "E2E-running",
-        "title": "E2E Run in Progress",
-        "status": "running",
-        "detail_label": "Tests are executing...",
-        "action": "stop",
-        "action_hint": "Click to stop E2E run",
-        "is_e2e": True,
-        "e2e_running": True,
-        "time": "now",
-    }]
-
-
-def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
-    if not (e2e_status.get("needs_attention") and e2e_status.get("untriaged_count", 0) > 0):
-        return []
-    untriaged = e2e_status["untriaged_count"]
-    last_run = e2e_status.get("last_run", {})
-    run_id = last_run.get("id", "?")
-    failed_tests_data = []
-    failed_tests = e2e_status.get("failed_tests", [])
-    for ft in failed_tests:
-        nodeid = ft.get("nodeid", "")
-        short_name = nodeid.split("::")[-1] if "::" in nodeid else nodeid
-        failed_tests_data.append({
-            "nodeid": nodeid,
-            "short_name": short_name,
-            "outcome": ft.get("outcome", "failed"),
-            "duration": ft.get("duration_seconds"),
-        })
-    return [{
-        "issue_number": f"E2E-{run_id}",
-        "title": f"{untriaged} failure{'s' if untriaged != 1 else ''} need{'s' if untriaged == 1 else ''} triage",
-        "status": "needs_attention",
-        "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
-        "action": "triage",
-        "action_hint": "Click to open triage modal",
-        "is_e2e": True,
-        "e2e_failed_tests": failed_tests_data,
-        "e2e_run_id": run_id,
-        "relative_time": last_run.get("relative_time", ""),
-        "time": last_run.get("relative_time", ""),
-    }]
-
-
-def _build_e2e_open_run_issue_items(db) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for run_issue in db.get_open_run_issues():
-        sub_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
-        if not sub_issues:
-            continue
-        resolved = sum(1 for s in sub_issues if s.resolved_at)
-        total = len(sub_issues)
-        pct = int((resolved / total * 100)) if total > 0 else 0
-        sub_issues_data = []
-        for si in sub_issues:
-            short_name = si.nodeid.split("::")[-1] if "::" in si.nodeid else si.nodeid
-            sub_issues_data.append({
-                "issue_number": si.github_issue_number,
-                "nodeid": si.nodeid,
-                "short_name": short_name,
-                "status": "resolved" if si.resolved_at else "open",
-                "resolved_at": si.resolved_at,
-            })
-        run_issue_number = getattr(run_issue, "github_issue_number", None)
-        run_issue_title = getattr(run_issue, "title", "") or ""
-        run_issue_url = getattr(run_issue, "github_issue_url", "") or ""
-        items.append({
-            "issue_number": run_issue_number,
-            "title": run_issue_title,
-            "status": "triage",
-            "detail_label": f"{resolved}/{total} resolved",
-            "action": "open",
-            "action_hint": f"View issue #{run_issue_number} on GitHub" if run_issue_number else "View issue on GitHub",
-            "url": run_issue_url,
-            "is_e2e": True,
-            "e2e_progress": {"resolved": resolved, "total": total, "percent": pct},
-            "e2e_sub_issues": sub_issues_data,
-            "flow_steps": [
-                {"key": "triage", "label": "Triage"},
-                {"key": "fixing", "label": "Fixing"},
-                {"key": "done", "label": "Done"},
-            ],
-            "flow_stage": "fixing" if resolved < total else "done",
-        })
-    return items
-
-
-def _build_e2e_recent_run_items(db, config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=100)
-    for run in recent_runs:
-        if e2e_status.get("running") and run.status == "running":
-            continue
-        if e2e_status.get("last_run", {}).get("id") == run.id and e2e_status.get("needs_attention"):
-            continue
-        run_issue = db.get_run_issue(run.id)
-        if run_issue and not run_issue.closed_at:
-            continue
-
-        relative_time = _relative_time(run.started_at) if run.started_at else ""
-        item: dict[str, Any] = {
-            "issue_number": f"E2E-{run.id}",
-            "title": run.commit_sha[:7] if run.commit_sha else "no commit",
-            "status": run.status,
-            "detail_label": "",
-            "action": "details",
-            "action_hint": "View run details",
-            "is_e2e": True,
-            "e2e_run_id": run.id,
-            "relative_time": relative_time,
-            "time": relative_time,
-            "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
-        }
-        if run.note:
-            item["note"] = run.note
-        items.append(item)
-    return items
-
-
-def _build_e2e_db_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
-    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config else None
-    if not (db_path and db_path.exists() and config):
-        return []
-    try:
-        from ..infra.e2e_db import E2EDB
-
-        db = E2EDB(db_path)
-        items = _build_e2e_open_run_issue_items(db)
-        items.extend(_build_e2e_recent_run_items(db, config, e2e_status))
-        return items
-    except Exception:
-        return []
-
-
-def _build_e2e_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    items.extend(_build_e2e_running_items(e2e_status))
-    items.extend(_build_e2e_attention_items(e2e_status))
-    items.extend(_build_e2e_db_items(config, e2e_status))
-    return items
-
-
-def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[str, Any]:
-    phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
-    phase_age = item.get("time") or ""
-    blocked = item.get("blocked_summary") or ""
-    summary_text = item.get("queue_wait_reason") or (f"Summary: {blocked}" if blocked else "")
-    return {
-        "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
-        "issue_number": item.get("issue_number"),
-        "title": item.get("title", ""),
-        "agent_type": item.get("agent_type", ""),
-        "state_label": state_label or item.get("status", ""),
-        "phase": phase,
-        "phase_age": phase_age,
-        "summary": summary_text,
-        "queue_wait_reason": item.get("queue_wait_reason"),
-        "blocked_summary": blocked,
-        "badges": [],
-        "orchestrator_labels": item.get("orchestrator_labels", []),
-        "focus_action": "focus",
-        "issue_url": item.get("issue_url") or item.get("url") or "",
-        "focus_hint": "Focus issue",
-        "github_hint": "Open in GitHub",
-        "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
-        "is_stale": bool(item.get("is_stale", False)),
-        "stale_reason": item.get("stale_reason", ""),
-        "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
-    }
 
 
 def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, Any]]:
@@ -915,187 +723,6 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
     return cards
 
 
-def _exclude_flow_overlaps(
-    backlog_items: list[dict[str, Any]],
-    queue_items: list[dict[str, Any]],
-    active_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    completed_items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Keep scope count accurate by removing items already in a kanban column.
-
-    Backlog is used only for scope_summary.in_scope_total; anything already
-    represented in queued/running/blocked/completed should not be double-counted.
-    """
-    def _to_issue_number(raw: Any) -> int | None:
-        if isinstance(raw, int):
-            return raw
-        if isinstance(raw, str) and raw.isdigit():
-            return int(raw)
-        return None
-
-    occupied_numbers = {
-        issue_number
-        for item in queue_items + active_items + blocked_items + completed_items
-        for issue_number in [_to_issue_number(item.get("issue_number"))]
-        if issue_number is not None
-    }
-    return [
-        item
-        for item in backlog_items
-        for issue_number in [_to_issue_number(item.get("issue_number"))]
-        if issue_number is not None and issue_number not in occupied_numbers
-    ]
-
-
-def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
-    """Extract numeric issue numbers from card items."""
-    numbers: set[int] = set()
-    for item in items:
-        raw = item.get("issue_number")
-        if isinstance(raw, int):
-            numbers.add(raw)
-        elif isinstance(raw, str) and raw.isdigit():
-            numbers.add(int(raw))
-    return numbers
-
-
-def _exclude_issue_numbers(
-    items: list[dict[str, Any]],
-    excluded_numbers: set[int],
-) -> list[dict[str, Any]]:
-    """Return items whose issue number is not in excluded_numbers."""
-    filtered: list[dict[str, Any]] = []
-    for item in items:
-        raw = item.get("issue_number")
-        issue_number: int | None = None
-        if isinstance(raw, int):
-            issue_number = raw
-        elif isinstance(raw, str) and raw.isdigit():
-            issue_number = int(raw)
-        if issue_number is None or issue_number not in excluded_numbers:
-            filtered.append(item)
-    return filtered
-
-
-def _apply_lane_precedence(
-    queue_items: list[dict[str, Any]],
-    active_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    awaiting_merge_items: list[dict[str, Any]],
-    completed_items: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Enforce single-lane ownership across non-running lanes.
-
-    Precedence:
-    running > blocked > awaiting-merge > queued > completed
-    """
-    active_numbers = _issue_numbers(active_items)
-    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
-    blocked_numbers = _issue_numbers(blocked_filtered)
-
-    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
-    awaiting_numbers = _issue_numbers(awaiting_filtered)
-
-    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
-    queue_numbers = _issue_numbers(queue_filtered)
-
-    completed_filtered = _exclude_issue_numbers(
-        completed_items,
-        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
-    )
-    return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
-
-
-def _build_awaiting_merge_items(
-    queue_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    history_items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Items with PRs ready to merge — drawn from all lifecycle stages."""
-    return [
-        item for item in queue_items + blocked_items + history_items
-        if item.get("merge_pending")
-    ]
-
-
-def _build_flow_columns(
-    queue_items: list[dict[str, Any]],
-    queue_preview_items: list[dict[str, Any]],
-    active_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    awaiting_merge_items: list[dict[str, Any]],
-    completed_items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    # Exclude merge-pending items from the queued column (they appear in awaiting-merge)
-    awaiting_numbers = {item.get("issue_number") for item in awaiting_merge_items}
-    queued_only = [item for item in queue_items if item.get("issue_number") not in awaiting_numbers]
-    queued_preview_only = [
-        item for item in queue_preview_items
-        if item.get("issue_number") not in awaiting_numbers
-    ]
-    return [
-        {
-            "id": "queued",
-            "title": "Queued",
-            "count": len(queued_only),
-            "items": [_compact_card(item, "queued") for item in queued_preview_only[:12]],
-            "expandable": True,
-        },
-        {
-            "id": "running",
-            "title": "Running",
-            "count": len(active_items),
-            "items": [_compact_card(item, "running") for item in active_items[:12]],
-            "expandable": True,
-        },
-        {
-            "id": "blocked",
-            "title": "Blocked",
-            "count": len(blocked_items),
-            "items": [_compact_card(item, "blocked") for item in blocked_items[:12]],
-            "expandable": True,
-        },
-        {
-            "id": "awaiting-merge",
-            "title": "Awaiting Merge",
-            "count": len(awaiting_merge_items),
-            "items": [_compact_card(item, "awaiting merge") for item in awaiting_merge_items[:12]],
-            "expandable": True,
-        },
-        {
-            "id": "completed",
-            "title": "Completed",
-            "count": len(completed_items),
-            "items": [_compact_card(item, "completed") for item in completed_items[:12]],
-            "expandable": True,
-            "session_scoped": True,
-        },
-    ]
-
-
-def _select_issues_for_tab(
-    active_tab: str,
-    active_items: list[dict[str, Any]],
-    queue_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    e2e_items: list[dict[str, Any]],
-    awaiting_merge_items: list[dict[str, Any]],
-    completed_items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if active_tab == "kanban":
-        return active_items if active_items else queue_items
-    if active_tab == "blocked":
-        return blocked_items
-    if active_tab == "awaiting-merge":
-        return awaiting_merge_items
-    if active_tab == "completed":
-        return completed_items
-    if active_tab == "e2e":
-        return e2e_items
-    return active_items
-
-
 def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> tuple[list[dict[str, Any]], int, int]:
     total = len(items)
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
@@ -1116,154 +743,6 @@ def _format_history_time(entry) -> str:
     if completed_at:
         return str(completed_at)
     return "-"
-
-
-def _count_untriaged_failures(db, run_obj) -> int:
-    count = 0
-    for result in db.get_failed_tests(run_obj.id):
-        if not db.find_open_failure_issue(result.nodeid):
-            count += 1
-    return count
-
-
-def _e2e_cached_status(cache_key: str, *, now_mono: float, proc_running: bool) -> dict[str, Any] | None:
-    with _E2E_STATUS_CACHE_LOCK:
-        cached_entry = _E2E_STATUS_CACHE.get(cache_key)
-    if cached_entry is None:
-        return None
-    cached_at, cached_payload = cached_entry
-    if (now_mono - cached_at) >= E2E_STATUS_CACHE_TTL_SECONDS:
-        return None
-    cached_running = bool(cached_payload.get("running"))
-    if cached_running != proc_running:
-        return None
-    return copy.deepcopy(cached_payload)
-
-
-def _load_e2e_database_state(config, orchestrator_id: str) -> tuple[Any, dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None, int, bool]:
-    from ..infra.e2e_db import E2EDB
-
-    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
-    if not db_path.exists():
-        return None, None, [], None, 0, False
-
-    try:
-        db = E2EDB(db_path)
-        run_obj = db.latest_run(orchestrator_id)
-        last_run = run_obj.to_dict() if run_obj else None
-        failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)] if run_obj else []
-        if last_run and last_run.get("started_at"):
-            last_run["relative_time"] = _relative_time(last_run["started_at"])
-        untriaged_count = (
-            _count_untriaged_failures(db, run_obj)
-            if run_obj and run_obj.status == "failed" and failed_tests
-            else 0
-        )
-        signal_score = db.compute_signal_score(orchestrator_id)
-        low_stability = bool(signal_score and signal_score.get("pass_rate") is not None and signal_score["pass_rate"] < 0.5)
-        return run_obj, last_run, failed_tests, signal_score, untriaged_count, low_stability
-    except Exception:
-        return None, None, [], None, 0, False
-
-
-def _get_e2e_status(config) -> dict[str, Any]:
-    if not config or not config.e2e.enabled:
-        return {"enabled": False, "running": False}
-
-    orchestrator_id = config.orchestrator_id
-    runner = get_e2e_runner_manager()
-    proc_status = runner.status(orchestrator_id)
-    cache_key = _e2e_status_cache_key(config)
-    now_mono = time.monotonic()
-    cached_payload = _e2e_cached_status(
-        cache_key,
-        now_mono=now_mono,
-        proc_running=bool(proc_status.get("running")),
-    )
-    if cached_payload is not None:
-        return cached_payload
-
-    run_obj, last_run, failed_tests, signal_score, untriaged_count, low_stability = _load_e2e_database_state(
-        config,
-        orchestrator_id,
-    )
-
-    next_run = get_next_run_info(config, config.repo_root, run_obj)
-
-    payload = {
-        "enabled": True,
-        "running": proc_status["running"],
-        "pid": proc_status.get("pid"),
-        "last_run": last_run,
-        "failed_tests": failed_tests,
-        "signal_score": signal_score,
-        "next_run": next_run,
-        "needs_attention": untriaged_count > 0,
-        "untriaged_count": untriaged_count,
-        "low_stability": low_stability,
-    }
-    with _E2E_STATUS_CACHE_LOCK:
-        _E2E_STATUS_CACHE[cache_key] = (now_mono, payload)
-    return copy.deepcopy(payload)
-
-
-def _build_e2e_view_model(
-    e2e_status: dict[str, Any],
-    e2e_items: list[dict[str, Any]],
-    e2e_total: int,
-    e2e_page: int,
-    e2e_total_pages: int,
-    agents: list[str],
-) -> dict[str, Any]:
-    """Build dedicated E2E tab view model (UI-facing, template-ready)."""
-    last_run = e2e_status.get("last_run") or {}
-    next_run = e2e_status.get("next_run") or {}
-    running = bool(e2e_status.get("running"))
-    untriaged_count = int(e2e_status.get("untriaged_count", 0) or 0)
-    needs_attention = bool(e2e_status.get("needs_attention"))
-    badge_count = untriaged_count if untriaged_count > 0 else e2e_total
-    last_status = last_run.get("status")
-    badge_state = (
-        "running"
-        if running
-        else "failed"
-        if (last_status == "failed" or needs_attention)
-        else "warning"
-        if last_status == "warning"
-        else "passed"
-        if last_status == "passed"
-        else "idle"
-    )
-    badge_icons = {"running": "⟳", "failed": "✗", "warning": "⚠", "passed": "✓"}
-    badge_icon = badge_icons.get(badge_state, "○")
-
-    return {
-        "badge": {
-            "count": badge_count,
-            "state": badge_state,
-            "icon": badge_icon,
-        },
-        "summary": {
-            "running": running,
-            "needs_attention": needs_attention,
-            "untriaged_count": untriaged_count,
-            "last_status": last_run.get("status", "unknown"),
-            "last_run_label": last_run.get("relative_time") or last_run.get("started_at") or "No runs yet",
-            "next_run_at": next_run.get("next_run_at", ""),
-            "next_run_reason": next_run.get("next_run_reason", ""),
-        },
-        "controls": {
-            "can_start": not running,
-            "can_stop": running,
-        },
-        "runs": e2e_items,
-        "pagination": {
-            "page": e2e_page,
-            "total_pages": e2e_total_pages,
-            "total": e2e_total,
-        },
-        "agents": agents,
-    }
 
 
 def _normalize_tab(active_tab: str) -> str:
@@ -1346,10 +825,10 @@ def build_dashboard_view_model(
         completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = items with PRs ready for human merge
-        awaiting_merge_items = _build_awaiting_merge_items(queue_items, blocked_items, history_items)
+        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items)
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
 
-        queue_items, blocked_items, awaiting_merge_items, completed_items = _apply_lane_precedence(
+        queue_items, blocked_items, awaiting_merge_items, completed_items = apply_lane_precedence(
             queue_items=queue_items,
             active_items=active_items,
             blocked_items=blocked_items,
@@ -1364,14 +843,14 @@ def build_dashboard_view_model(
         completed_items = _sort_by_issue_number(completed_items)
 
         # Backlog used only for scope_summary.in_scope_total (not a kanban column)
-        backlog_items = _exclude_flow_overlaps(
+        backlog_items = exclude_flow_overlaps(
             backlog_items,
             queue_items,
             active_items,
             blocked_items,
             completed_items,
         )
-        flow_columns = _build_flow_columns(
+        flow_columns = build_flow_columns(
             queue_items,
             queue_preview_items,
             active_items,
@@ -1380,15 +859,15 @@ def build_dashboard_view_model(
             completed_items,
         )
 
-    e2e_status_provider = e2e_status_provider or _get_e2e_status
+    e2e_status_provider = e2e_status_provider or get_e2e_status
     e2e_status = e2e_status_provider(config)
 
-    e2e_items = _build_e2e_items(config, e2e_status)
+    e2e_items = build_e2e_items(config, e2e_status)
     e2e_total = len(e2e_items)
 
     e2e_items_paginated, e2e_total_pages, e2e_page = _paginate(e2e_items, e2e_page, E2E_PAGE_SIZE)
     e2e_status = dict(e2e_status)
-    e2e_status["view_model"] = _build_e2e_view_model(
+    e2e_status["view_model"] = build_e2e_view_model(
         e2e_status,
         e2e_items_paginated,
         e2e_total,
@@ -1396,7 +875,7 @@ def build_dashboard_view_model(
         e2e_total_pages,
         list((config.agents if config else {}).keys()),
     )
-    issues = _select_issues_for_tab(
+    issues = select_issues_for_tab(
         active_tab, active_items, queue_items, blocked_items,
         e2e_items_paginated, awaiting_merge_items, completed_items,
     )
@@ -1455,15 +934,13 @@ def build_dashboard_view_model(
     }
     if config:
         milestones = config.get_filter_milestones()
-        in_scope_total = len(
-            _issue_numbers(
-                backlog_items
-                + queue_items
-                + active_items
-                + blocked_items
-                + awaiting_merge_items
-                + completed_items
-            )
+        in_scope_total = _unique_issue_count(
+            backlog_items
+            + queue_items
+            + active_items
+            + blocked_items
+            + awaiting_merge_items
+            + completed_items
         )
         scope_summary = {
             "repo_open_total": queue_total,

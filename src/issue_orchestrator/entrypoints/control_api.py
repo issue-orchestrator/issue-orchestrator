@@ -47,7 +47,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional
@@ -56,18 +55,14 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
-from ..control.worktree_manager import get_worktree_path
-from ..control.queue_cache import QueueCache
-from ..domain.models import get_completion_path
-from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
-from ..execution.control_center_actions import (
-    AuditActionRequest,
-    ControlCenterActions,
-    RepoActionRequest,
-    TraceActionRequest,
+from ..execution.control_center_actions import ControlCenterActions
+from .control_api_goal_pilot_routes import control_goal_pilot_router
+from .control_api_goal_pilot_support import (
+    ControlApiGoalPilotDependencies,
+    install_control_api_goal_pilot_dependencies,
 )
 from .control_api_e2e_runs import control_e2e_runs_router
 from .control_api_orchestrator_routes import control_orchestrator_router
@@ -78,6 +73,11 @@ from .control_api_orchestrator_support import (
 from .control_api_e2e_support import (
     ControlApiE2EDependencies,
     install_control_api_e2e_dependencies,
+)
+from .control_api_issue_routes import control_issue_router
+from .control_api_issue_support import (
+    ControlApiIssueDependencies,
+    install_control_api_issue_dependencies,
 )
 from .control_api_repo_routes import control_repo_router
 from .control_api_repo_support import (
@@ -99,6 +99,11 @@ from .control_api_shutdown_state import (
 from .control_api_shutdown_support import (
     ControlApiShutdownDependencies,
     install_control_api_shutdown_dependencies,
+)
+from .control_api_tools_routes import control_tools_router
+from .control_api_tools_support import (
+    ControlApiToolsDependencies,
+    install_control_api_tools_dependencies,
 )
 from .control_api_e2e_triage import control_e2e_triage_router
 from .timeline_presentation import (
@@ -673,475 +678,6 @@ async def shutdown(request: Request) -> JSONResponse:
     return JSONResponse({"status": "shutdown_requested", "active_sessions": len(active_sessions)})
 
 
-@control_app.post("/api/preflight-push")
-async def preflight_push(request: Request) -> JSONResponse:
-    """Check if a git push would succeed (dry-run).
-
-    This endpoint allows coding-done/reviewer-done to verify a push would work
-    before completing, while the agent is still active and can fix any issues.
-
-    The agent environment has credentials scrubbed, so it cannot do this
-    check itself. The orchestrator has credentials and performs the check.
-
-    JSON body:
-        worktree: str - Path to the worktree
-
-    Returns:
-        would_succeed: bool - Whether push would succeed
-        error: str | null - Error message if push would fail
-        fix_hint: str | null - Suggestion for how to fix the issue
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-
-    worktree_path = body.get("worktree")
-    if not worktree_path:
-        return JSONResponse({"error": "worktree is required"}, status_code=400)
-
-    worktree = Path(worktree_path)
-    if not worktree.exists():
-        return JSONResponse({"error": f"Worktree does not exist: {worktree}"}, status_code=400)
-
-    # Use the GitWorkingCopy adapter (port implementation)
-    from ..execution import GitWorkingCopy
-
-    git = GitWorkingCopy()
-    result = git.push_preflight(worktree)
-
-    return JSONResponse({
-        "would_succeed": result.would_succeed,
-        "error": result.error,
-        "fix_hint": result.fix_hint,
-    })
-
-
-@control_app.post("/api/issues/{issue_number}/resume")
-async def resume_issue(issue_number: int) -> JSONResponse:
-    """Resume orchestrator processing for a blocked/debug issue.
-
-    This endpoint is called by `coding-done --resume` after writing a completion
-    record in a debug session. It triggers the orchestrator to process the
-    completion.json and continue the normal flow (create PR, run review, etc.).
-
-    Can also be called from the web UI "Process Completion" button.
-
-    Args:
-        issue_number: The issue number to resume processing for
-
-    Returns:
-        JSON with:
-        - success: bool - Whether processing succeeded
-        - message: str - Status message
-        - pr_url: str | null - PR URL if one was created
-        - actions_taken: list[str] | null - Actions performed
-        - errors: list[str] | null - Any errors encountered
-    """
-    if _orchestrator is None:
-        return JSONResponse(
-            {"success": False, "error": "Orchestrator not initialized"},
-            status_code=503
-        )
-
-    # Get worktree path for this issue
-    worktree = get_worktree_path(_orchestrator.config, issue_number)
-
-    if not worktree.exists():
-        return JSONResponse({
-            "success": False,
-            "error": f"Worktree not found: {worktree}",
-            "hint": "The worktree may have been cleaned up. Check if the issue is still blocked.",
-        }, status_code=404)
-
-    # Check for completion.json
-    completion_path: str | None = None
-    run_dir = _orchestrator.deps.session_output.find_run_dir(worktree)
-    if isinstance(run_dir, Path):
-        manifest = _orchestrator.deps.session_output.read_manifest(run_dir)
-        if manifest and manifest.get("completion_path"):
-            completion_path = manifest["completion_path"]
-
-    legacy_completion = worktree / ".issue-orchestrator" / "completion.json"
-    completion_record = worktree / completion_path if completion_path else legacy_completion
-    if completion_path and not completion_record.exists() and legacy_completion.exists():
-        completion_path = None
-        completion_record = legacy_completion
-    if not completion_record.exists():
-        return JSONResponse({
-            "success": False,
-            "error": "No completion record found",
-            "hint": "Run 'coding-done completed --implementation ... --problems ...' first.",
-        }, status_code=404)
-
-    issue_title = _get_issue_title(_orchestrator, issue_number)
-
-    # Process the completion
-    try:
-        result = _orchestrator.deps.completion_processor.process(
-            worktree=worktree,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            completion_path=completion_path,
-        )
-
-        return JSONResponse({
-            "success": result.success,
-            "message": result.message,
-            "pr_url": result.pr_url,
-            "actions_taken": result.actions_taken,
-            "errors": result.errors,
-        })
-    except Exception as e:
-        logger.exception("Error processing completion for issue #%d: %s", issue_number, e)
-        return JSONResponse({
-            "success": False,
-            "error": f"Processing failed: {e}",
-        }, status_code=500)
-
-
-@control_app.post("/api/issues/{issue_number}/debug-session")
-async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901 - debug session with validation and setup phases
-    """Launch an interactive debug session for a blocked issue.
-
-    This endpoint creates a terminal session in the issue's existing worktree,
-    with environment variables set so `coding-done --resume` can signal completion
-    back to the orchestrator.
-
-    The session runs the issue's configured agent in interactive mode (without
-    the -p flag for Claude, etc.) so users can debug and fix issues manually.
-
-    Args:
-        issue_number: The issue number to debug
-
-    Returns:
-        JSON with:
-        - success: bool - Whether session launched
-        - session_name: str - Terminal session name
-        - worktree_path: str - Path to the worktree
-        - agent: str - Agent type being used
-        - hint: str - Instructions for the user
-    """
-    if _orchestrator is None:
-        return JSONResponse(
-            {"success": False, "error": "Orchestrator not initialized"},
-            status_code=503
-        )
-
-    config = _orchestrator.config
-    state = _orchestrator.state
-
-    # Get worktree path for this issue
-    worktree = get_worktree_path(config, issue_number)
-
-    if not worktree.exists():
-        return JSONResponse({
-            "success": False,
-            "error": f"Worktree not found: {worktree}",
-            "hint": "The worktree may have been cleaned up. The issue needs to be re-run first.",
-        }, status_code=404)
-
-    # Find the issue in cached queue to get its agent type
-    orchestrator = _orchestrator
-
-    def _cached_issue():
-        assert orchestrator is not None
-        for cached_issue in state.cached_queue_issues:
-            if cached_issue.number == issue_number:
-                return cached_issue
-        return None
-
-    issue = _with_state_lock(_cached_issue)
-
-    if not issue:
-        # Try to fetch from GitHub
-        try:
-            issue = _orchestrator.deps.repository_host.get_issue(issue_number)
-        except Exception as e:
-            logger.warning("Could not fetch issue #%d: %s", issue_number, e)
-
-    if not issue:
-        return JSONResponse({
-            "success": False,
-            "error": f"Issue #{issue_number} not found",
-            "hint": "The issue may have been closed or doesn't exist.",
-        }, status_code=404)
-
-    agent_type = issue.agent_type
-    if not agent_type:
-        return JSONResponse({
-            "success": False,
-            "error": "Issue has no agent type label",
-            "hint": "Add an agent label (e.g., 'agent:claude') to the issue.",
-        }, status_code=400)
-
-    agent_config = config.agents.get(agent_type)
-    if not agent_config:
-        return JSONResponse({
-            "success": False,
-            "error": f"No agent config for {agent_type}",
-            "hint": "Check your orchestrator configuration.",
-        }, status_code=400)
-
-    # Check if a session already exists for this issue
-    session_name = f"debug-{issue_number}"
-    if _orchestrator.deps.runner.session_exists(issue_number, session_name):
-        return JSONResponse({
-            "success": False,
-            "error": f"Debug session already exists: {session_name}",
-            "hint": "A debug session is already running. Focus on it or kill it first.",
-        }, status_code=409)
-
-    # Build command using agent_config.get_command()
-    # Add context that this is a debug session with existing work to evaluate
-    debug_context = (
-        "This is an INTERACTIVE DEBUG SESSION. A previous automated run failed or was blocked. "
-        "Work with the user to investigate and fix the issue. When done, the user will run "
-        "'coding-done --resume' to continue the orchestrator flow."
-    )
-    base_command = agent_config.get_command(
-        issue_number=issue_number,
-        issue_title=issue.title,
-        worktree=worktree,
-        existing_work=debug_context,
-        task_kind="code",
-    )
-
-    completion_path = get_completion_path(agent_type, session_name=session_name)
-    run_dir = _orchestrator.deps.session_output.ensure_run_dir(worktree, session_name)
-    _orchestrator.deps.session_output.update_manifest(
-        run_dir,
-        {
-            "completion_path": completion_path,
-            "issue_number": issue_number,
-            "agent_label": agent_type,
-        },
-    )
-
-    # Set env vars for coding-done --resume
-    env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
-    env_exports += f" ORCHESTRATOR_API_PORT='{config.control_api_port}'"
-    env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
-    env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
-    env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-    # Ensure orchestrator tools (coding-done, reviewer-done) are on PATH for all backends.
-    orch_bin = Path(sys.executable).parent
-    env_exports += f' PATH="{orch_bin}:$PATH"'
-    command = f"{env_exports} && {base_command}"
-
-    logger.info(
-        "[debug-session] Launching for issue #%d: session=%s worktree=%s agent=%s",
-        issue_number, session_name, worktree, agent_type,
-    )
-
-    # Create the terminal session
-    session_created = _orchestrator.deps.runner.create_session(
-        session_id=issue_number,
-        command=command,
-        working_dir=str(worktree),
-        title=f"Debug #{issue_number}",
-        session_name=session_name,
-    )
-
-    if not session_created:
-        return JSONResponse({
-            "success": False,
-            "error": "Failed to create terminal session",
-            "hint": "Check if tmux is running and accessible.",
-        }, status_code=500)
-
-    return JSONResponse({
-        "success": True,
-        "session_name": session_name,
-        "worktree_path": str(worktree),
-        "agent": agent_type.replace("agent:", ""),
-        "hint": f"Debug session launched. When done, run 'coding-done --resume' to process completion.",
-    })
-
-
-def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) -> None:
-    """Update the cached issue to remove specified labels (avoids full queue refresh).
-
-    Since GitHubIssue is frozen/immutable, we create a new instance with updated labels
-    and replace it in the cached_queue_issues list.
-    """
-    if _orchestrator is None:
-        return
-
-    orchestrator = _orchestrator
-    from dataclasses import is_dataclass, replace
-
-    def _update() -> None:
-        state = orchestrator.state
-        for issue in state.cached_queue_issues:
-            if issue.number == issue_number:
-                # Remove the specified labels from the issue
-                new_labels = tuple(
-                    label for label in issue.labels
-                    if label not in labels_to_remove
-                )
-                # Create updated issue with new labels (only works for dataclass implementations)
-                if is_dataclass(issue) and not isinstance(issue, type):
-                    updated_issue = replace(issue, labels=new_labels)
-                    queue_cache = QueueCache(orchestrator.config, state)
-                    queue_cache.upsert_refreshed_issue(updated_issue)
-                    logger.debug(
-                        "[cache] Updated issue #%d labels: removed %s",
-                        issue_number,
-                        labels_to_remove,
-                    )
-                break
-
-    _with_state_lock(_update)
-
-
-def _get_issue_title(orchestrator: "Orchestrator", issue_number: int) -> str:
-    """Resolve issue title from cache, falling back to GitHub."""
-    issue_title = f"Issue #{issue_number}"
-    try:
-        def _cached_title() -> str | None:
-            for issue in orchestrator.state.cached_queue_issues:
-                if issue.number == issue_number:
-                    return issue.title
-            return None
-
-        cached_title = _with_state_lock(_cached_title)
-        if cached_title:
-            return cached_title
-
-        issue_data = orchestrator.deps.repository_host.get_issue(issue_number)
-        if issue_data:
-            return issue_data.title
-    except Exception as e:
-        logger.warning("Could not fetch issue title for #%d: %s", issue_number, e)
-
-    return issue_title
-
-
-@control_app.post("/api/issues/{issue_number}/retry")
-async def retry_issue(issue_number: int) -> JSONResponse:
-    """Retry a blocked issue by removing the blocked label and re-queueing.
-
-    This removes the 'blocked' and 'needs-human' labels from the issue,
-    allowing it to be picked up by the orchestrator again.
-
-    Args:
-        issue_number: The issue number to retry
-
-    Returns:
-        JSON with:
-        - success: bool - Whether the operation succeeded
-        - message: str - Status message
-    """
-    if _orchestrator is None:
-        return JSONResponse(
-            {"success": False, "error": "Orchestrator not initialized"},
-            status_code=503
-        )
-
-    try:
-        lm = _orchestrator.deps.label_manager
-        from ..control.retry_policy import labels_to_remove_for_retry
-
-        current_labels = _orchestrator.repository_host.get_issue_labels(issue_number)
-        labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
-
-        removed = []
-        for label in labels_to_remove:
-            try:
-                _orchestrator.repository_host.remove_label(issue_number, label)
-                removed.append(label)
-            except Exception:
-                pass  # Label might not exist, that's fine
-
-        # Update cache locally to avoid full queue refresh
-        _update_cached_issue_labels(issue_number, labels_to_remove)
-
-        logger.info("[retry] Issue #%d retried, removed labels: %s", issue_number, removed)
-        return JSONResponse({
-            "success": True,
-            "message": f"Issue #{issue_number} queued for retry",
-            "removed_labels": removed,
-        })
-
-    except Exception as e:
-        logger.exception("Error retrying issue #%d: %s", issue_number, e)
-        return JSONResponse({
-            "success": False,
-            "error": str(e),
-        }, status_code=500)
-
-
-@control_app.post("/api/issues/{issue_number}/dismiss")
-async def dismiss_issue(issue_number: int) -> JSONResponse:
-    """Dismiss a blocked issue without retrying.
-
-    This removes the issue from the blocked list by removing blocking labels,
-    but also removes in-progress labels so the issue won't be picked up again
-    unless it has the agent label restored.
-
-    Args:
-        issue_number: The issue number to dismiss
-
-    Returns:
-        JSON with:
-        - success: bool - Whether the operation succeeded
-        - message: str - Status message
-    """
-    if _orchestrator is None:
-        return JSONResponse(
-            {"success": False, "error": "Orchestrator not initialized"},
-            status_code=503
-        )
-
-    try:
-        lm = _orchestrator.deps.label_manager
-
-        # Remove all orchestrator-managed labels to fully dismiss
-        labels_to_remove = [
-            lm.blocked,
-            lm.needs_human,
-            lm.blocked_failed,
-            lm.in_progress,
-        ]
-
-        removed = []
-        for label in labels_to_remove:
-            try:
-                _orchestrator.repository_host.remove_label(issue_number, label)
-                removed.append(label)
-            except Exception:
-                pass  # Label might not exist, that's fine
-
-        orchestrator = _orchestrator
-
-        def _prune_state() -> None:
-            assert orchestrator is not None
-            # Remove from session history if present
-            orchestrator.state.session_history = [
-                entry for entry in orchestrator.state.session_history
-                if entry.issue_number != issue_number
-            ]
-
-            QueueCache(orchestrator.config, orchestrator.state).remove_issue(issue_number)
-
-        _with_state_lock(_prune_state)
-
-        logger.info("[dismiss] Issue #%d dismissed, removed labels: %s", issue_number, removed)
-        return JSONResponse({
-            "success": True,
-            "message": f"Issue #{issue_number} dismissed",
-            "removed_labels": removed,
-        })
-
-    except Exception as e:
-        logger.exception("Error dismissing issue #%d: %s", issue_number, e)
-        return JSONResponse({
-            "success": False,
-            "error": str(e),
-        }, status_code=500)
-
-
 @control_app.get("/favicon.ico")
 async def favicon():
     """Serve the logo as favicon."""
@@ -1235,6 +771,27 @@ install_control_api_shutdown_dependencies(
         schedule_control_center_exit=_schedule_control_center_exit_dependency,
     ),
 )
+install_control_api_goal_pilot_dependencies(
+    control_app,
+    ControlApiGoalPilotDependencies(
+        get_orchestrator=get_orchestrator,
+        get_goal_pilot=_get_goal_pilot,
+    ),
+)
+install_control_api_issue_dependencies(
+    control_app,
+    ControlApiIssueDependencies(
+        get_orchestrator=get_orchestrator,
+        with_state_lock=_with_state_lock,
+    ),
+)
+install_control_api_tools_dependencies(
+    control_app,
+    ControlApiToolsDependencies(
+        get_control_actions=get_control_actions,
+        validate_repo_root=_validate_repo_root,
+    ),
+)
 install_control_api_repo_dependencies(
     control_app,
     ControlApiRepoDependencies(
@@ -1255,292 +812,13 @@ install_control_api_setup_dependencies(
 )
 control_app.include_router(control_orchestrator_router)
 control_app.include_router(control_shutdown_router)
+control_app.include_router(control_goal_pilot_router)
+control_app.include_router(control_issue_router)
+control_app.include_router(control_tools_router)
 control_app.include_router(control_repo_router)
 control_app.include_router(control_setup_router)
 control_app.include_router(control_e2e_runs_router)
 control_app.include_router(control_e2e_triage_router)
-
-
-# ======================================================================# Goal Pilot API Endpoints
-# ======================================================================# These endpoints expose Goal Pilot planning and skill-management operations.
-
-
-@control_app.post("/control/goal_pilot/runs")
-async def goal_pilot_create(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    goals = body.get("goals") or []
-    done_criteria = body.get("done_criteria") or {}
-    name = body.get("name")
-    milestones = body.get("milestones")
-    if not name or not str(name).strip():
-        return JSONResponse({"error": "name_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    run_id = pilot.create(goals=goals, done_criteria=done_criteria, name=name)
-    if milestones:
-        pilot.update_goals(run_id, goals, note=f"milestones={milestones}")
-    return JSONResponse({"run_id": run_id})
-
-
-@control_app.get("/control/goal_pilot/runs")
-async def goal_pilot_runs() -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    pilot = _get_goal_pilot()
-    return JSONResponse({"runs": pilot.list_runs()})
-
-
-@control_app.get("/control/goal_pilot/config")
-async def goal_pilot_config() -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    gp_config = _orchestrator.config.goal_pilot
-    configured = bool(gp_config.enabled and gp_config.agent)
-    return JSONResponse({
-        "enabled": gp_config.enabled,
-        "agent": gp_config.agent,
-        "approval_policy": gp_config.approval_policy,
-        "approval_batch_size": gp_config.approval_batch_size,
-        "approval_batch_window_minutes": gp_config.approval_batch_window_minutes,
-        "configured": configured,
-    })
-
-
-@control_app.get("/control/goal_pilot/runs/{run_id}")
-async def goal_pilot_status(run_id: str) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    pilot = _get_goal_pilot()
-    status = pilot.status(run_id)
-    return JSONResponse({"status": status})
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/phase")
-async def goal_pilot_phase(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    phase = body.get("phase")
-    reason = body.get("reason")
-    changes = body.get("changes") or {}
-    if not phase or not reason:
-        return JSONResponse({"error": "phase_and_reason_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    result = pilot.set_phase(run_id, phase=phase, reason=reason, changes=changes)
-    return JSONResponse(result)
-
-
-@control_app.get("/control/goal_pilot/runs/{run_id}/journeys")
-async def goal_pilot_journeys(run_id: str) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    pilot = _get_goal_pilot()
-    return JSONResponse({"journeys": pilot.list_journeys(run_id)})
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/journeys")
-async def goal_pilot_journey_create(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    pilot = _get_goal_pilot()
-    try:
-        journey = pilot.create_journey(run_id, body)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    return JSONResponse({"journey": journey})
-
-
-@control_app.patch("/control/goal_pilot/journeys/{journey_id}")
-async def goal_pilot_journey_update(journey_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    pilot = _get_goal_pilot()
-    try:
-        journey = pilot.update_journey(journey_id, body)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    return JSONResponse({"journey": journey})
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/journeys/reorder")
-async def goal_pilot_journey_reorder(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    order = body.get("order")
-    if not isinstance(order, list):
-        return JSONResponse({"error": "order_list_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    try:
-        result = pilot.reorder_journeys(run_id, order)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    result = pilot.reorder_journeys(run_id, order)
-    return JSONResponse(result)
-
-
-@control_app.patch("/control/goal_pilot/runs/{run_id}")
-async def goal_pilot_update(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    goals = body.get("goals")
-    note = body.get("note")
-    if goals is None or not isinstance(goals, list):
-        return JSONResponse({"error": "goals_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    result = pilot.update_goals(run_id, goals, note=note)
-    return JSONResponse(result)
-
-
-@control_app.post("/control/goal_pilot/runs/{run_id}/actions")
-async def goal_pilot_action(run_id: str, request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    action = body.get("action")
-    if not isinstance(action, dict):
-        return JSONResponse({"error": "action_required"}, status_code=400)
-    pilot = _get_goal_pilot()
-    result = pilot.execute_action(run_id, action, _orchestrator.deps.repository_host)
-    return JSONResponse(result)
-
-
-@control_app.get("/control/goal_pilot/skills")
-async def goal_pilot_skills(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    status = request.query_params.get("status")
-    pilot = _get_goal_pilot()
-    skills = pilot.list_skills(status=status)
-    return JSONResponse({"skills": skills})
-
-
-@control_app.post("/control/goal_pilot/skills")
-async def goal_pilot_upsert_skill(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    pilot = _get_goal_pilot()
-    skill = pilot.upsert_skill(body)
-    return JSONResponse({"skill": skill})
-
-
-@control_app.post("/control/goal_pilot/skills/export")
-async def goal_pilot_export_skills(request: Request) -> JSONResponse:
-    if _orchestrator is None:
-        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
-    body = await request.json()
-    status = body.get("status", "active")
-    pilot = _get_goal_pilot()
-    result = pilot.export_skills(status=status)
-    return JSONResponse(result)
-
-
-# ======================================================================# Tools API
-# ======================================================================# These endpoints provide utilities accessible from the unified dashboard.
-
-
-@control_app.get("/control/tools/audit")
-async def tools_audit(
-    repo_root: str = Query(...),
-    issue_number: int | None = Query(default=None),
-) -> JSONResponse:
-    """Audit why issues are queued or blocked.
-
-    Query params:
-        repo_root: str - Repository root path
-        issue_number: int (optional) - Specific issue to audit
-
-    Returns:
-        List of audit entries with issue status and reasons.
-    """
-    repo_path = _validate_repo_root(repo_root)
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-    result = await _control_actions.audit_cmd.execute(
-        AuditActionRequest(repo_root=repo_path, issue_number=issue_number),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.get("/control/tools/trace")
-async def tools_trace(
-    repo_root: str = Query(...),
-    issue_number: int = Query(...),
-    limit: int = Query(default=100),
-) -> JSONResponse:
-    """Get trace log entries for a specific issue.
-
-    Query params:
-        repo_root: str - Repository root path
-        issue_number: int - Issue number to trace
-        limit: int - Max lines to return (default: 100)
-
-    Returns:
-        List of log entries related to the issue.
-    """
-    repo_path = _validate_repo_root(repo_root)
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-    result = await _control_actions.trace_cmd.execute(
-        TraceActionRequest(repo_root=repo_path, issue_number=issue_number, limit=limit),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/tools/labels/init")
-async def tools_labels_init(request: Request) -> JSONResponse:
-    """Initialize or refresh GitHub labels for a repository.
-
-    JSON body:
-        repo_root: str - Repository root path
-
-    Returns:
-        Summary of created/updated labels.
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_path = _validate_repo_root(body.get("repo_root"))
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-
-    result = await _control_actions.labels_cmd.execute(RepoActionRequest(repo_root=repo_path))
-    return JSONResponse(result.payload, status_code=result.status_code)
-
-
-@control_app.post("/control/tools/worktrees/cleanup")
-async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
-    """List stale worktrees (read-only, no deletion).
-
-    This endpoint only LISTS stale worktrees. It does not delete them.
-    Users should run `git worktree prune` manually to clean up.
-
-    JSON body:
-        repo_root: str - Repository root path
-
-    Returns:
-        List of stale worktrees and instructions for cleanup.
-    """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    repo_path = _validate_repo_root(body.get("repo_root"))
-    if repo_path is None:
-        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-
-    result = await _control_actions.stale_worktrees_cmd.execute(
-        RepoActionRequest(repo_root=repo_path),
-    )
-    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.get("/api/session/terminal-recording/{issue_number}")

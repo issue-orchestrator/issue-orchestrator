@@ -310,7 +310,7 @@ class TestCmdHardenRepo:
         }
 
         monkeypatch.setattr(
-            "issue_orchestrator.entrypoints.cli._load_config",
+            "issue_orchestrator.entrypoints.cli_support.load_config",
             lambda _args: config,
         )
 
@@ -337,7 +337,7 @@ class TestCmdHardenRepo:
         config.agents = {}
 
         monkeypatch.setattr(
-            "issue_orchestrator.entrypoints.cli._load_config",
+            "issue_orchestrator.entrypoints.cli_support.load_config",
             lambda _args: config,
         )
 
@@ -754,7 +754,7 @@ class TestRunTestSetup:
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
         with patch(
-            "issue_orchestrator.entrypoints.cli._get_repository_host"
+            "issue_orchestrator.entrypoints.cli_support.get_repository_host"
         ) as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
@@ -776,7 +776,7 @@ class TestRunTestSetup:
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
         with patch(
-            "issue_orchestrator.entrypoints.cli._get_repository_host"
+            "issue_orchestrator.entrypoints.cli_support.get_repository_host"
         ) as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = []
@@ -1506,7 +1506,9 @@ class TestGetRepositoryHost:
         config = Mock()
         config.repo = None
 
-        with patch("issue_orchestrator.entrypoints.cli._resolve_repo") as mock_resolve:
+        with patch(
+            "issue_orchestrator.entrypoints.cli_support.resolve_repo"
+        ) as mock_resolve:
             mock_resolve.side_effect = Exception("Error")
 
             result = _get_repository_host(config)
@@ -1799,7 +1801,7 @@ class TestCmdAuthStore:
 
     def test_cmd_auth_store_with_token_argument(self):
         """Verify auth store works with token provided."""
-        from issue_orchestrator.entrypoints.cli import _cmd_auth_store
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_auth_store
 
         with patch(
             "issue_orchestrator.execution.providers.store_keyring_token"
@@ -1812,7 +1814,7 @@ class TestCmdAuthStore:
 
     def test_cmd_auth_store_empty_token(self):
         """Verify auth store rejects empty token."""
-        from issue_orchestrator.entrypoints.cli import _cmd_auth_store
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_auth_store
 
         args = argparse.Namespace(token=None)
         with patch("getpass.getpass") as mock_getpass:
@@ -1827,7 +1829,7 @@ class TestCmdAuthClear:
 
     def test_cmd_auth_clear_success(self):
         """Verify auth clear succeeds."""
-        from issue_orchestrator.entrypoints.cli import _cmd_auth_clear
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_auth_clear
 
         with patch(
             "issue_orchestrator.execution.providers.clear_keyring_token"
@@ -1840,7 +1842,7 @@ class TestCmdAuthClear:
 
     def test_cmd_auth_clear_not_stored(self):
         """Verify auth clear handles no stored token."""
-        from issue_orchestrator.entrypoints.cli import _cmd_auth_clear
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_auth_clear
 
         with patch(
             "issue_orchestrator.execution.providers.clear_keyring_token"
@@ -1857,7 +1859,7 @@ class TestCmdKeysList:
 
     def test_cmd_keys_list_success(self):
         """Verify keys list displays configured keys."""
-        from issue_orchestrator.entrypoints.cli import _cmd_keys_list
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_list
 
         with patch("issue_orchestrator.infra.ai_keys.list_ai_keys") as mock_list:
             mock_list.return_value = {
@@ -1874,7 +1876,7 @@ class TestCmdKeysSet:
 
     def test_cmd_keys_set_success(self):
         """Verify keys set stores key successfully."""
-        from issue_orchestrator.entrypoints.cli import _cmd_keys_set
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_set
 
         with patch("issue_orchestrator.infra.ai_keys.store_ai_key") as mock_store:
             args = argparse.Namespace(key_name="anthropic")
@@ -1887,7 +1889,7 @@ class TestCmdKeysSet:
 
     def test_cmd_keys_set_empty_key(self):
         """Verify keys set rejects empty key."""
-        from issue_orchestrator.entrypoints.cli import _cmd_keys_set
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_set
 
         args = argparse.Namespace(key_name="anthropic")
 
@@ -1903,7 +1905,7 @@ class TestCmdKeysDelete:
 
     def test_cmd_keys_delete_success(self):
         """Verify keys delete removes key successfully."""
-        from issue_orchestrator.entrypoints.cli import _cmd_keys_delete
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_delete
 
         with patch("issue_orchestrator.infra.ai_keys.delete_ai_key") as mock_delete:
             mock_delete.return_value = True
@@ -1914,7 +1916,7 @@ class TestCmdKeysDelete:
 
     def test_cmd_keys_delete_not_found(self):
         """Verify keys delete handles missing key."""
-        from issue_orchestrator.entrypoints.cli import _cmd_keys_delete
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_delete
 
         with patch("issue_orchestrator.infra.ai_keys.delete_ai_key") as mock_delete:
             mock_delete.return_value = False

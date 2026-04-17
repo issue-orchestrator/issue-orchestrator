@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import shutil
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from ...infra.logging_config import issue_log
@@ -16,10 +14,16 @@ from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ...ports.worktree_manager import WorktreeReuseOptions
 from ...infra.worktree_base import resolve_base_branch
-from ..git.git_cli import GitCLI, SubprocessCommandRunner
-
-# Marker file name for worktree identity (must match job_store.py)
-WORKTREE_ID_MARKER = ".issue-orchestrator/worktree-id"
+from ._worktree_git import _git, _git_env_no_prompt, _git_run
+from ._worktree_hooks import HOOKS_DIR as HOOKS_DIR, install_hooks
+from ._worktree_runtime import (
+    _configure_no_verify_dry_run,
+    _hide_runtime_artifacts_from_git_status,
+    _install_worktree_identity,
+    _link_repo_venv_into_worktree,
+    install_claude_settings,
+    sync_cli_tools,
+)
 
 
 @dataclass
@@ -47,28 +51,12 @@ class _WorktreeReuseResult:
 
 logger = logging.getLogger(__name__)
 
-_git = GitCLI(runner=SubprocessCommandRunner())
-
 # Git writes index.lock during operations; treat short-lived locks as in-flight.
 STALE_GIT_LOCK_SECONDS = 5
 STALE_GIT_LOCK_RECHECK_SECONDS = 2
 _BRANCH_IN_USE_BY_WORKTREE_RE = re.compile(
     r"fatal:\s+'([^']+)'\s+is already used by worktree at '([^']+)'"
 )
-def _git_run(
-    repo: Path,
-    argv: list[str],
-    *,
-    check: bool = False,
-    env: dict[str, str] | None = None,
-) -> GitResult:
-    return _git.run(repo=repo, argv=argv, check=check, env=env)
-
-
-def _git_env_no_prompt() -> dict[str, str]:
-    env = _git.clean_env()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    return env
 
 
 def _ensure_origin_branch(repo_root: Path, branch: str) -> None:
@@ -89,76 +77,6 @@ def _ensure_origin_branch(repo_root: Path, branch: str) -> None:
     )
     if ref_result.returncode != 0:
         raise WorktreeError(f"origin/{branch} does not exist after fetch")
-
-
-# Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
-HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
-
-# Claude Code settings to enforce completion command usage on exit
-# The Stop hook checks for a marker file that coding-done/reviewer-done creates
-CLAUDE_SETTINGS_FOR_AGENTS = {
-    "hooks": {
-        "Stop": [
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "test -f .agent-done-marker || echo '⚠️  WARNING: Session ending without completion command! Run: coding-done completed/blocked/needs_human'",
-                        "timeout": 5
-                    }
-                ]
-            }
-        ]
-    }
-}
-
-ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dry-run"
-WORKTREE_LOCAL_EXCLUDE_PATHS: tuple[Path, ...] = (
-    Path(".venv"),
-    Path(WORKTREE_ID_MARKER),
-    ALLOW_NO_VERIFY_DRY_RUN_PATH,
-)
-WORKTREE_TRACKED_RUNTIME_PATHS: tuple[Path, ...] = (
-    Path(".claude/settings.json"),
-    Path(".issue-orchestrator/session-latest.json"),
-)
-
-
-def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
-    flag_path = worktree_path / ALLOW_NO_VERIFY_DRY_RUN_PATH
-    try:
-        if allow:
-            flag_path.parent.mkdir(parents=True, exist_ok=True)
-            flag_path.write_text("allow\n")
-        elif flag_path.exists():
-            flag_path.unlink()
-    except OSError:
-        logger.debug("Failed to update dry-run allow flag: %s", flag_path)
-
-
-def _link_repo_venv_into_worktree(repo_root: Path, worktree_path: Path) -> None:
-    """Expose the repo venv inside a worktree so validation commands work there too."""
-    source_venv = repo_root / ".venv"
-    if not source_venv.exists():
-        return
-
-    target_venv = worktree_path / ".venv"
-    if target_venv.is_symlink():
-        try:
-            if target_venv.resolve() == source_venv.resolve():
-                return
-        except OSError:
-            pass
-        target_venv.unlink()
-    elif target_venv.exists():
-        logger.warning(
-            "Worktree already has a real .venv directory; leaving it in place: %s",
-            target_venv,
-        )
-        return
-
-    target_venv.symlink_to(source_venv, target_is_directory=True)
-    logger.info("Linked shared repo venv into worktree: %s -> %s", target_venv, source_venv)
 
 
 class WorktreeError(Exception):
@@ -393,187 +311,6 @@ def _push_dry_run_preflight(
     return False, f"push dry-run failed: {last_error}"
 
 
-def sync_cli_tools(worktree_path: Path) -> list[Path]:
-    """
-    Sync CLI tools from the orchestrator package to worktree.
-
-    This ensures the worktree has the latest orchestrator tools (especially
-    coding-done/reviewer-done) regardless of when the worktree was created or what branch
-    it's on.
-
-    Uses package-relative paths so this works even when the target repo is
-    a foreign (non-orchestrator) repository.
-
-    Args:
-        worktree_path: Path to the worktree
-    """
-    # Find cli_tools from the orchestrator's own package, not from repo_root.
-    # This ensures tools are found even when targeting a foreign repo.
-    # __file__ = .../adapters/worktree/_worktree.py
-    # parents[2] = .../issue_orchestrator/
-    package_root = Path(__file__).resolve().parents[2]
-    src_cli_tools = package_root / "entrypoints" / "cli_tools"
-    dst_cli_tools = worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
-
-    if not src_cli_tools.exists():
-        logger.debug("No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools)
-        return []
-
-    # Create destination directory tree if it doesn't exist (foreign repos
-    # won't have src/issue_orchestrator/).
-    dst_cli_tools.mkdir(parents=True, exist_ok=True)
-
-    synced_paths: list[Path] = []
-    # Copy each .py file from source to destination
-    for src_file in src_cli_tools.glob("*.py"):
-        dst_file = dst_cli_tools / src_file.name
-        try:
-            shutil.copy2(src_file, dst_file)
-            synced_paths.append(dst_file.relative_to(worktree_path))
-            logger.debug("Synced cli tool: %s -> %s", src_file.name, dst_file)
-        except OSError as e:
-            logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
-
-    logger.info("Synced cli_tools from orchestrator package to worktree")
-    return synced_paths
-
-
-def _install_worktree_identity(worktree_path: Path) -> str:
-    """
-    Install a unique identity marker in the worktree.
-
-    This identity is used to detect path reuse - if a worktree is deleted
-    and recreated at the same path, it gets a new identity. Jobs store
-    the worktree_id and can detect when their worktree has been replaced.
-
-    The identity is only created once - subsequent calls are idempotent.
-
-    Args:
-        worktree_path: Path to the worktree
-
-    Returns:
-        The worktree identity (existing or newly created)
-    """
-    marker_path = worktree_path / WORKTREE_ID_MARKER
-
-    # Check for existing identity
-    if marker_path.exists():
-        try:
-            existing_id = marker_path.read_text().strip()
-            if existing_id:
-                logger.debug("Worktree identity exists: %s", existing_id)
-                return existing_id
-        except Exception:
-            pass
-
-    # Generate new identity
-    worktree_id = f"wt-{uuid.uuid4().hex[:12]}"
-    try:
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text(worktree_id)
-        logger.info("Installed worktree identity: %s", worktree_id)
-    except Exception as e:
-        logger.warning("Failed to install worktree identity: %s", e)
-        # Return the ID anyway - identity is best-effort
-
-    return worktree_id
-
-
-def _worktree_git_dir(worktree_path: Path) -> Path | None:
-    git_file = worktree_path / ".git"
-    if not git_file.exists():
-        return None
-    content = git_file.read_text().strip()
-    if not content.startswith("gitdir:"):
-        return None
-    return Path(content.split(":", 1)[1].strip())
-
-
-def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> None:
-    git_dir = _worktree_git_dir(worktree_path)
-    if git_dir is None:
-        return
-    exclude_path = git_dir / "info" / "exclude"
-    exclude_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_lines: list[str] = []
-    existing_text = ""
-    if exclude_path.exists():
-        existing_text = exclude_path.read_text()
-        existing_lines = existing_text.splitlines()
-    existing = {line.strip() for line in existing_lines if line.strip()}
-    missing = [str(path).replace("\\", "/") for path in paths if str(path).replace("\\", "/") not in existing]
-    if not missing:
-        return
-    suffix = "\n" if existing_lines and not existing_text.endswith("\n") else ""
-    with exclude_path.open("a", encoding="utf-8") as handle:
-        if suffix:
-            handle.write(suffix)
-        for entry in missing:
-            handle.write(f"{entry}\n")
-
-
-def _hide_runtime_artifacts_from_git_status(
-    worktree_path: Path,
-    synced_cli_tool_paths: list[Path],
-) -> None:
-    tracked_paths = [*WORKTREE_TRACKED_RUNTIME_PATHS, *synced_cli_tool_paths]
-    for path in tracked_paths:
-        normalized = str(path).replace("\\", "/")
-        tracked = _git_run(
-            worktree_path,
-            ["ls-files", "--error-unmatch", normalized],
-            check=False,
-        )
-        if tracked.returncode != 0:
-            continue
-        _git_run(
-            worktree_path,
-            ["update-index", "--skip-worktree", "--", normalized],
-            check=False,
-        )
-    _write_worktree_exclude_entries(worktree_path, list(WORKTREE_LOCAL_EXCLUDE_PATHS))
-
-
-def install_claude_settings(worktree_path: Path) -> None:
-    """
-    Install Claude Code settings to enforce completion command usage on exit.
-
-    Creates .claude/settings.json in the worktree with a Stop hook
-    that checks if a completion command was called before allowing exit.
-
-    Args:
-        worktree_path: Path to the worktree
-    """
-    worktree_path = Path(worktree_path)
-    claude_dir = worktree_path / ".claude"
-    settings_file = claude_dir / "settings.json"
-
-    # Create .claude directory if it doesn't exist
-    claude_dir.mkdir(parents=True, exist_ok=True)
-
-    # If settings.json already exists, merge our hooks with existing
-    if settings_file.exists():
-        try:
-            existing = json.loads(settings_file.read_text())
-            # Merge hooks - add our Stop hook
-            if "hooks" not in existing:
-                existing["hooks"] = {}
-            if "Stop" not in existing["hooks"]:
-                existing["hooks"]["Stop"] = []
-            # Add our hook if not already present
-            our_hook = CLAUDE_SETTINGS_FOR_AGENTS["hooks"]["Stop"][0]
-            if our_hook not in existing["hooks"]["Stop"]:
-                existing["hooks"]["Stop"].append(our_hook)
-            settings_file.write_text(json.dumps(existing, indent=2))
-        except (json.JSONDecodeError, KeyError):
-            # If existing file is invalid, overwrite
-            settings_file.write_text(json.dumps(CLAUDE_SETTINGS_FOR_AGENTS, indent=2))
-    else:
-        settings_file.write_text(json.dumps(CLAUDE_SETTINGS_FOR_AGENTS, indent=2))
-
-    logger.debug("Installed Claude settings at %s", settings_file)
-
-
 def slugify(text: str, max_length: int = 40) -> str:
     """
     Convert text to a branch-friendly slug.
@@ -591,186 +328,6 @@ def slugify(text: str, max_length: int = 40) -> str:
     slug = slug.strip('-')
     # Truncate and remove trailing hyphens that may result from truncation
     return slug[:max_length].rstrip('-')
-
-
-def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> None:
-    """
-    Install git hooks into a worktree.
-
-    This function CHAINS hooks - if the project already has a pre-push hook,
-    we preserve it and run it BEFORE the orchestrator's hook.
-
-    Args:
-        worktree_path: Path to the worktree
-        pre_push_hook: Custom pre-push hook path (uses bundled if None)
-
-    Note:
-        Worktrees have a .git file (not directory) that points to the main repo.
-        We need to find the actual hooks directory.
-
-        If the project uses core.hooksPath (e.g., .githooks/), we override it
-        for this worktree and copy the project hooks to the worktree's hooks dir.
-    """
-    worktree_path = Path(worktree_path)
-
-    # Read .git file to find the gitdir
-    git_file = worktree_path / ".git"
-    if not git_file.exists():
-        return  # Not a worktree
-
-    # .git file contains: gitdir: /path/to/main/repo/.git/worktrees/name
-    content = git_file.read_text().strip()
-    if not content.startswith("gitdir:"):
-        return
-
-    gitdir = Path(content.split(":", 1)[1].strip())
-    hooks_dir = gitdir / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check if project uses core.hooksPath (common pattern for version-controlled hooks)
-    # IMPORTANT: Read from main repo config, not worktree config
-    # (worktree config may have our override from a previous install)
-    main_repo_root = gitdir.parent.parent  # /repo/.git from /repo/.git/worktrees/name
-    hooks_path_result = _git_run(
-        main_repo_root,
-        ["config", "--local", "--get", "core.hooksPath"],
-        check=False,
-    )
-    custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
-
-    # Always set per-worktree hooksPath so hooks live with the worktree.
-    # IMPORTANT: Use explicit GIT_DIR to prevent config leaking to wrong worktree.
-    # Without this, symlink resolution issues (/tmp vs /private/tmp) can cause
-    # git to write config to the wrong worktree's config file.
-    git_env = {
-        **os.environ,
-        "GIT_DIR": str(gitdir),
-        "GIT_WORK_TREE": str(worktree_path),
-    }
-    _git_run(
-        worktree_path,
-        ["config", "extensions.worktreeConfig", "true"],
-        check=False,
-        env=git_env,
-    )
-    _git_run(
-        worktree_path,
-        ["config", "--worktree", "core.hooksPath", str(hooks_dir)],
-        check=False,
-        env=git_env,
-    )
-    _git_run(
-        worktree_path,
-        ["config", "--worktree", "core.worktree", str(worktree_path)],
-        check=False,
-        env=git_env,
-    )
-    _git_run(
-        worktree_path,
-        ["config", "--worktree", "core.bare", "false"],
-        check=False,
-        env=git_env,
-    )
-    logger.info("Overriding core.hooksPath to %s for this worktree only (gitdir=%s)", hooks_dir, gitdir)
-
-    # Find the project's pre-push hook
-    project_hook = None
-    if custom_hooks_path:
-        # Project uses custom hooksPath (e.g., .githooks/)
-        # Resolve relative to MAIN repo root (not worktree)
-        project_hook = main_repo_root.parent / custom_hooks_path / "pre-push"
-    else:
-        # Standard hooks location in main repo
-        # The gitdir is like /repo/.git/worktrees/name, so main repo is gitdir.parent.parent
-        main_repo_hooks = gitdir.parent.parent / "hooks"
-        project_hook = main_repo_hooks / "pre-push"
-
-    dst_hook = hooks_dir / "pre-push"
-    orchestrator_hook = pre_push_hook if pre_push_hook else HOOKS_DIR / "pre-push"
-
-    if project_hook.exists() and project_hook.is_file():
-        # Chain hooks: copy project hook, then create wrapper that runs both
-        project_hook_copy = hooks_dir / "pre-push.project"
-        shutil.copy2(project_hook, project_hook_copy)
-        project_hook_copy.chmod(0o755)
-
-        # Create wrapper that runs project hook first, then orchestrator hook
-        wrapper_content = f"""#!/bin/bash
-# Chained pre-push hook: runs project hook first, then orchestrator hook
-set -e
-
-HOOKS_DIR="$(dirname "$0")"
-AUDIT_LOG="$HOOKS_DIR/pre-push.log"
-
-# Audit logging function
-audit() {{
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$AUDIT_LOG"
-    echo "[orchestrator] $1"
-}}
-
-total_start=$(date +%s)
-audit "Pre-push hook started (commit: $(git rev-parse --short HEAD))"
-
-# Run project's pre-push hook first (lint, tests, etc.)
-# Skip if ORCHESTRATOR_SKIP_PROJECT_HOOK=1 (used by e2e tests)
-if [ "${{ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}}" = "1" ]; then
-    audit "Skipping project hook (ORCHESTRATOR_SKIP_PROJECT_HOOK=1)"
-elif [ -x "$HOOKS_DIR/pre-push.project" ]; then
-    audit "Running project pre-push hook..."
-    project_start=$(date +%s)
-    if "$HOOKS_DIR/pre-push.project" "$@"; then
-        project_end=$(date +%s)
-        project_duration=$((project_end - project_start))
-        audit "Project hook PASSED (duration=${{project_duration}}s)"
-    else
-        project_exit=$?
-        project_end=$(date +%s)
-        project_duration=$((project_end - project_start))
-        audit "Project hook FAILED (exit ${{project_exit}} duration=${{project_duration}}s)"
-        exit 1
-    fi
-else
-    audit "No project hook found"
-fi
-
-# Then run orchestrator's trailer validation
-if [ -x "$HOOKS_DIR/pre-push.orchestrator" ]; then
-    audit "Running orchestrator pre-push hook..."
-    orch_start=$(date +%s)
-    if "$HOOKS_DIR/pre-push.orchestrator" "$@"; then
-        orch_end=$(date +%s)
-        orch_duration=$((orch_end - orch_start))
-        audit "Orchestrator hook PASSED (duration=${{orch_duration}}s)"
-    else
-        orch_exit=$?
-        orch_end=$(date +%s)
-        orch_duration=$((orch_end - orch_start))
-        audit "Orchestrator hook FAILED (exit ${{orch_exit}} duration=${{orch_duration}}s)"
-        exit 1
-    fi
-else
-    audit "No orchestrator hook found"
-fi
-
-total_end=$(date +%s)
-total_duration=$((total_end - total_start))
-audit "Pre-push hook completed successfully (total_duration=${{total_duration}}s)"
-"""
-        dst_hook.write_text(wrapper_content)
-        dst_hook.chmod(0o755)
-
-        # Copy orchestrator hook as pre-push.orchestrator
-        if orchestrator_hook.exists():
-            orch_hook_copy = hooks_dir / "pre-push.orchestrator"
-            shutil.copy2(orchestrator_hook, orch_hook_copy)
-            orch_hook_copy.chmod(0o755)
-
-        logger.info("Installed chained pre-push hooks (project + orchestrator)")
-    elif orchestrator_hook.exists():
-        # No project hook, just install orchestrator's hook directly
-        shutil.copy2(orchestrator_hook, dst_hook)
-        dst_hook.chmod(0o755)
-        logger.info("Installed orchestrator pre-push hook")
 
 
 def generate_branch_name(issue_number: int, issue_title: str) -> str:

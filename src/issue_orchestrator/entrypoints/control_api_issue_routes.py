@@ -1,0 +1,412 @@
+"""Agent-facing issue action routes for the Control API."""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+from dataclasses import is_dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+from ..control.queue_cache import QueueCache
+from ..control.worktree_manager import get_worktree_path
+from ..domain.models import get_completion_path
+from ..infra.env import ENV_PREFIX
+from .control_api_issue_support import ControlApiIssueDependency, StateLockFn
+
+if TYPE_CHECKING:
+    from ..infra.orchestrator import Orchestrator
+    from ..ports import Issue as IssueProtocol
+
+logger = logging.getLogger(__name__)
+
+control_issue_router = APIRouter()
+
+
+@control_issue_router.post("/api/preflight-push")
+async def preflight_push(request: Request) -> JSONResponse:
+    """Check if a git push would succeed (dry-run).
+
+    This endpoint allows coding-done/reviewer-done to verify a push would work
+    before completing, while the agent is still active and can fix any issues.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    worktree_path = body.get("worktree")
+    if not worktree_path:
+        return JSONResponse({"error": "worktree is required"}, status_code=400)
+
+    worktree = Path(worktree_path)
+    if not worktree.exists():
+        return JSONResponse({"error": f"Worktree does not exist: {worktree}"}, status_code=400)
+
+    from ..execution import GitWorkingCopy
+
+    result = GitWorkingCopy().push_preflight(worktree)
+    return JSONResponse({
+        "would_succeed": result.would_succeed,
+        "error": result.error,
+        "fix_hint": result.fix_hint,
+    })
+
+
+@control_issue_router.post("/api/issues/{issue_number}/resume")
+async def resume_issue(
+    issue_number: int,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Resume orchestrator processing for a blocked/debug issue."""
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503,
+        )
+
+    worktree = get_worktree_path(orchestrator.config, issue_number)
+    if not worktree.exists():
+        return JSONResponse({
+            "success": False,
+            "error": f"Worktree not found: {worktree}",
+            "hint": "The worktree may have been cleaned up. Check if the issue is still blocked.",
+        }, status_code=404)
+
+    completion_path: str | None = None
+    run_dir = orchestrator.deps.session_output.find_run_dir(worktree)
+    if isinstance(run_dir, Path):
+        manifest = orchestrator.deps.session_output.read_manifest(run_dir)
+        if manifest and manifest.get("completion_path"):
+            completion_path = manifest["completion_path"]
+
+    legacy_completion = worktree / ".issue-orchestrator" / "completion.json"
+    completion_record = worktree / completion_path if completion_path else legacy_completion
+    if completion_path and not completion_record.exists() and legacy_completion.exists():
+        completion_path = None
+        completion_record = legacy_completion
+    if not completion_record.exists():
+        return JSONResponse({
+            "success": False,
+            "error": "No completion record found",
+            "hint": "Run 'coding-done completed --implementation ... --problems ...' first.",
+        }, status_code=404)
+
+    issue_title = _get_issue_title(orchestrator, issue_number, deps.with_state_lock)
+    try:
+        result = orchestrator.deps.completion_processor.process(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            completion_path=completion_path,
+        )
+        return JSONResponse({
+            "success": result.success,
+            "message": result.message,
+            "pr_url": result.pr_url,
+            "actions_taken": result.actions_taken,
+            "errors": result.errors,
+        })
+    except Exception as exc:
+        logger.exception("Error processing completion for issue #%d: %s", issue_number, exc)
+        return JSONResponse({
+            "success": False,
+            "error": f"Processing failed: {exc}",
+        }, status_code=500)
+
+
+@control_issue_router.post("/api/issues/{issue_number}/debug-session")
+async def launch_debug_session(  # noqa: C901 - debug session with validation and setup phases
+    issue_number: int,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Launch an interactive debug session for a blocked issue."""
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503,
+        )
+
+    config = orchestrator.config
+    state = orchestrator.state
+    worktree = get_worktree_path(config, issue_number)
+    if not worktree.exists():
+        return JSONResponse({
+            "success": False,
+            "error": f"Worktree not found: {worktree}",
+            "hint": "The worktree may have been cleaned up. The issue needs to be re-run first.",
+        }, status_code=404)
+
+    def _cached_issue() -> "IssueProtocol | None":
+        for cached_issue in state.cached_queue_issues:
+            if cached_issue.number == issue_number:
+                return cached_issue
+        return None
+
+    issue: IssueProtocol | None = deps.with_state_lock(_cached_issue)
+    if not issue:
+        try:
+            issue = orchestrator.deps.repository_host.get_issue(issue_number)
+        except Exception as exc:
+            logger.warning("Could not fetch issue #%d: %s", issue_number, exc)
+
+    if not issue:
+        return JSONResponse({
+            "success": False,
+            "error": f"Issue #{issue_number} not found",
+            "hint": "The issue may have been closed or doesn't exist.",
+        }, status_code=404)
+
+    agent_type = issue.agent_type
+    if not agent_type:
+        return JSONResponse({
+            "success": False,
+            "error": "Issue has no agent type label",
+            "hint": "Add an agent label (e.g., 'agent:claude') to the issue.",
+        }, status_code=400)
+
+    agent_config = config.agents.get(agent_type)
+    if not agent_config:
+        return JSONResponse({
+            "success": False,
+            "error": f"No agent config for {agent_type}",
+            "hint": "Check your orchestrator configuration.",
+        }, status_code=400)
+
+    session_name = f"debug-{issue_number}"
+    if orchestrator.deps.runner.session_exists(issue_number, session_name):
+        return JSONResponse({
+            "success": False,
+            "error": f"Debug session already exists: {session_name}",
+            "hint": "A debug session is already running. Focus on it or kill it first.",
+        }, status_code=409)
+
+    debug_context = (
+        "This is an INTERACTIVE DEBUG SESSION. A previous automated run failed or was blocked. "
+        "Work with the user to investigate and fix the issue. When done, the user will run "
+        "'coding-done --resume' to continue the orchestrator flow."
+    )
+    base_command = agent_config.get_command(
+        issue_number=issue_number,
+        issue_title=issue.title,
+        worktree=worktree,
+        existing_work=debug_context,
+        task_kind="code",
+    )
+
+    completion_path = get_completion_path(agent_type, session_name=session_name)
+    run_dir = orchestrator.deps.session_output.ensure_run_dir(worktree, session_name)
+    orchestrator.deps.session_output.update_manifest(
+        run_dir,
+        {
+            "completion_path": completion_path,
+            "issue_number": issue_number,
+            "agent_label": agent_type,
+        },
+    )
+
+    env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
+    env_exports += f" ORCHESTRATOR_API_PORT='{config.control_api_port}'"
+    env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
+    env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
+    env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+    orch_bin = Path(sys.executable).parent
+    env_exports += f' PATH="{orch_bin}:$PATH"'
+    command = f"{env_exports} && {base_command}"
+
+    logger.info(
+        "[debug-session] Launching for issue #%d: session=%s worktree=%s agent=%s",
+        issue_number,
+        session_name,
+        worktree,
+        agent_type,
+    )
+    session_created = orchestrator.deps.runner.create_session(
+        session_id=issue_number,
+        command=command,
+        working_dir=str(worktree),
+        title=f"Debug #{issue_number}",
+        session_name=session_name,
+    )
+
+    if not session_created:
+        return JSONResponse({
+            "success": False,
+            "error": "Failed to create terminal session",
+            "hint": "Check if tmux is running and accessible.",
+        }, status_code=500)
+
+    return JSONResponse({
+        "success": True,
+        "session_name": session_name,
+        "worktree_path": str(worktree),
+        "agent": agent_type.replace("agent:", ""),
+        "hint": "Debug session launched. When done, run 'coding-done --resume' to process completion.",
+    })
+
+
+@control_issue_router.post("/api/issues/{issue_number}/retry")
+async def retry_issue(
+    issue_number: int,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Retry a blocked issue by removing the blocked label and re-queueing."""
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503,
+        )
+
+    try:
+        lm = orchestrator.deps.label_manager
+        from ..control.retry_policy import labels_to_remove_for_retry
+
+        current_labels = orchestrator.repository_host.get_issue_labels(issue_number)
+        labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
+
+        removed = []
+        for label in labels_to_remove:
+            try:
+                orchestrator.repository_host.remove_label(issue_number, label)
+                removed.append(label)
+            except Exception:
+                pass
+
+        _update_cached_issue_labels(
+            orchestrator,
+            issue_number,
+            labels_to_remove,
+            deps.with_state_lock,
+        )
+
+        logger.info("[retry] Issue #%d retried, removed labels: %s", issue_number, removed)
+        return JSONResponse({
+            "success": True,
+            "message": f"Issue #{issue_number} queued for retry",
+            "removed_labels": removed,
+        })
+
+    except Exception as exc:
+        logger.exception("Error retrying issue #%d: %s", issue_number, exc)
+        return JSONResponse({
+            "success": False,
+            "error": str(exc),
+        }, status_code=500)
+
+
+@control_issue_router.post("/api/issues/{issue_number}/dismiss")
+async def dismiss_issue(
+    issue_number: int,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Dismiss a blocked issue without retrying."""
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503,
+        )
+
+    try:
+        lm = orchestrator.deps.label_manager
+        labels_to_remove = [
+            lm.blocked,
+            lm.needs_human,
+            lm.blocked_failed,
+            lm.in_progress,
+        ]
+
+        removed = []
+        for label in labels_to_remove:
+            try:
+                orchestrator.repository_host.remove_label(issue_number, label)
+                removed.append(label)
+            except Exception:
+                pass
+
+        def _prune_state() -> None:
+            orchestrator.state.session_history = [
+                entry for entry in orchestrator.state.session_history
+                if entry.issue_number != issue_number
+            ]
+            QueueCache(orchestrator.config, orchestrator.state).remove_issue(issue_number)
+
+        deps.with_state_lock(_prune_state)
+
+        logger.info("[dismiss] Issue #%d dismissed, removed labels: %s", issue_number, removed)
+        return JSONResponse({
+            "success": True,
+            "message": f"Issue #{issue_number} dismissed",
+            "removed_labels": removed,
+        })
+
+    except Exception as exc:
+        logger.exception("Error dismissing issue #%d: %s", issue_number, exc)
+        return JSONResponse({
+            "success": False,
+            "error": str(exc),
+        }, status_code=500)
+
+
+def _update_cached_issue_labels(
+    orchestrator: "Orchestrator",
+    issue_number: int,
+    labels_to_remove: list[str],
+    with_state_lock: StateLockFn,
+) -> None:
+    """Update cached issue labels after a local retry action."""
+
+    def _update() -> None:
+        state = orchestrator.state
+        for issue in state.cached_queue_issues:
+            if issue.number != issue_number:
+                continue
+            new_labels = tuple(
+                label for label in issue.labels
+                if label not in labels_to_remove
+            )
+            if is_dataclass(issue) and not isinstance(issue, type):
+                updated_issue = replace(issue, labels=new_labels)
+                QueueCache(orchestrator.config, state).upsert_refreshed_issue(updated_issue)
+                logger.debug(
+                    "[cache] Updated issue #%d labels: removed %s",
+                    issue_number,
+                    labels_to_remove,
+                )
+            break
+
+    with_state_lock(_update)
+
+
+def _get_issue_title(
+    orchestrator: "Orchestrator",
+    issue_number: int,
+    with_state_lock: StateLockFn,
+) -> str:
+    """Resolve issue title from cache, falling back to GitHub."""
+    issue_title = f"Issue #{issue_number}"
+    try:
+        def _cached_title() -> str | None:
+            for issue in orchestrator.state.cached_queue_issues:
+                if issue.number == issue_number:
+                    return issue.title
+            return None
+
+        cached_title = with_state_lock(_cached_title)
+        if cached_title:
+            return cached_title
+
+        issue_data = orchestrator.deps.repository_host.get_issue(issue_number)
+        if issue_data:
+            return issue_data.title
+    except Exception as exc:
+        logger.warning("Could not fetch issue title for #%d: %s", issue_number, exc)
+
+    return issue_title

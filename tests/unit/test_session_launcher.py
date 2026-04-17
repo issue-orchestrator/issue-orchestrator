@@ -14,19 +14,24 @@ import os
 import pytest
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
+from issue_orchestrator.control.session_completion import (
+    handle_session_completion,
+    process_active_sessions,
+)
+from issue_orchestrator.control.session_launch_types import LaunchResult
 from issue_orchestrator.control.session_launcher import (
     SessionLauncher,
-    LaunchResult,
     detect_existing_work,
     log_transition,
-    handle_session_completion,
+)
+from issue_orchestrator.control.session_review_support import build_review_existing_work
+from issue_orchestrator.control.session_routing import (
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
-    process_active_sessions,
     launch_triage_session,
     session_launcher_callback,
     restore_running_sessions,
@@ -1040,7 +1045,12 @@ class TestLaunchReviewSession:
 
         worktree_info = WorktreeInfo(path=Path("/tmp/worktree"), branch_name="issue-123")
 
-        note = launcher_bundle.launcher._build_review_existing_work(worktree_info, pr_number=456)
+        note = build_review_existing_work(
+            worktree_info=worktree_info,
+            pr_number=456,
+            repository_host=mock_repo_host,
+            keep_current_label=keep_current_label,
+        )
 
         assert note is not None
         assert "Keep the current approach" in note
@@ -1670,6 +1680,22 @@ class TestSessionLauncherCallback:
 
         assert calls == [("issue", 123), ("review", 456)]
 
+    def test_unknown_session_type_fails_fast(self):
+        """Unknown session types should not silently no-op."""
+
+        def launch_fn(_number):
+            return None
+
+        with pytest.raises(KeyError):
+            session_launcher_callback(
+                cast(SessionType, object()),
+                123,
+                launch_fn,
+                launch_fn,
+                launch_fn,
+                launch_fn,
+            )
+
 
 # =============================================================================
 # Session Reference Parsing Tests
@@ -2171,13 +2197,13 @@ class TestExtraProviderArgsFromLabels:
     """Test _extra_provider_args_from_labels static helper."""
 
     def test_verbose_label_produces_verbose_arg(self):
-        result = SessionLauncher._extra_provider_args_from_labels(["verbose", "priority:high"])
+        result = SessionLauncher._extra_provider_args_from_labels(["verbose", "priority:high"])  # noqa: SLF001 - unit test targets internal label parser
         assert result == {"verbose": "true"}
 
     def test_no_verbose_label_returns_none(self):
-        result = SessionLauncher._extra_provider_args_from_labels(["priority:high", "agent:web"])
+        result = SessionLauncher._extra_provider_args_from_labels(["priority:high", "agent:web"])  # noqa: SLF001 - unit test targets internal label parser
         assert result is None
 
     def test_empty_labels_returns_none(self):
-        result = SessionLauncher._extra_provider_args_from_labels([])
+        result = SessionLauncher._extra_provider_args_from_labels([])  # noqa: SLF001 - unit test targets internal label parser
         assert result is None

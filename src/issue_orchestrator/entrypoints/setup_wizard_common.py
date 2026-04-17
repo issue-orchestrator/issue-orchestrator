@@ -7,6 +7,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from urllib.parse import urlparse
 
 import yaml
 
@@ -89,13 +90,25 @@ def detect_repo(cwd: Path | None = None) -> str | None:
         return None
 
     url = output.strip()
+    return _repo_path_from_github_remote(url)
+
+
+def _repo_path_from_github_remote(url: str) -> str | None:
+    """Extract ``owner/repo`` from GitHub remote URL formats."""
+    if url.startswith("git@github.com:"):
+        return url.split(":", 1)[1].removesuffix(".git")
+
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        if parsed.hostname != "github.com":
+            return None
+        repo_path = parsed.path.lstrip("/")
+        return repo_path.removesuffix(".git") or None
+
     if "github.com" not in url:
         return None
-    if url.startswith("git@"):
-        parts = url.split(":")[-1]
-    else:
-        parts = "/".join(url.split("/")[-2:])
-    return parts.removesuffix(".git")
+    repo_path = "/".join(url.split("/")[-2:])
+    return repo_path.removesuffix(".git") or None
 
 
 def fetch_github_labels(repo: str) -> list[str]:

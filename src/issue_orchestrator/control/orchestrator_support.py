@@ -15,7 +15,8 @@ if TYPE_CHECKING:
     from ..ports.queue_cache_store import QueueCacheStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
-    from .planner import Plan, Planner
+    from .planner import Planner
+    from .planner_types import Plan
     from .action_applier import ActionApplier, ActionResult
     from .actions import Action
     from .cleanup_manager import CleanupManager
