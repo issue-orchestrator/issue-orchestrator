@@ -13,7 +13,7 @@ from .provider_resilience import ProviderResilienceManager
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
-    from .planner import OrchestratorSnapshot
+    from .planner_types import OrchestratorSnapshot
 
 
 @dataclass(frozen=True)

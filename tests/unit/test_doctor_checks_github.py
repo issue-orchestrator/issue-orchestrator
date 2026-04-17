@@ -1,6 +1,6 @@
 """Unit tests for GitHub doctor checks."""
 
-from issue_orchestrator.adapters.github.http_client import TokenValidationResult
+from issue_orchestrator.adapters.github.tokens import TokenValidationResult
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor.checks import github as github_checks
 
@@ -11,7 +11,7 @@ def test_check_github_auth_respects_repo_scoped_sources(monkeypatch):
     cfg.github_token_env = "TIXMEUP_GITHUB_TOKEN"
 
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client.describe_github_token_sources",
+        "issue_orchestrator.adapters.github.tokens.describe_github_token_sources",
         lambda **_kw: [],
     )
     monkeypatch.setattr(
@@ -38,7 +38,7 @@ def test_check_github_auth_reports_repo_access(monkeypatch):
     cfg.github_keyring_username = "bruce"
 
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client.describe_github_token_sources",
+        "issue_orchestrator.adapters.github.tokens.describe_github_token_sources",
         lambda **_kw: ["Keyring (tixmeup-github/bruce): ghp_...1234"],
     )
     monkeypatch.setattr(
