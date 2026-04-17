@@ -45,6 +45,10 @@ from issue_orchestrator.infra.supervisor import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CONTROL_CENTER_JS = REPO_ROOT / "src/issue_orchestrator/static/js/control_center.js"
+
+
 # --- Fixtures ---
 
 
@@ -438,15 +442,31 @@ class TestControlCenterTemplate:
         assert 'id="sidebarAppMenuBtn"' in body
         assert 'id="shutdownBtn"' not in body
         assert 'id="menuCloseCC"' not in body
-        assert "Start engine" in body
-        assert "Not running" in body
+        assert 'href="/static/css/control_center.css"' in body
+        assert 'href="/static/css/control_center_setup.css"' in body
+        assert 'src="/static/js/control_center.js"' in body
         assert "Closing this window does not stop repository engines" in body
-        assert "await startRepo(path, null, true);" in body
-        assert "start_paused: startPaused" in body
         assert ">Stopped<" not in body
         assert 'id="sidebarRepoList"' not in body
         assert "nav-repo-list" not in body
         assert "nav-repo-item" not in body
+
+    def test_control_center_static_assets_are_served(self, client_without_orchestrator):
+        css_response = client_without_orchestrator.get("/static/css/control_center.css")
+        js_response = client_without_orchestrator.get("/static/js/control_center.js")
+
+        assert css_response.status_code == 200
+        assert "--sidebar-width" in css_response.text
+        assert js_response.status_code == 200
+        assert "start_paused: startPaused" in js_response.text
+
+    def test_control_center_javascript_preserves_start_paused_wiring(self):
+        script = CONTROL_CENTER_JS.read_text()
+
+        assert "Start engine" in script
+        assert "Not running" in script
+        assert "await startRepo(path, null, true);" in script
+        assert "start_paused: startPaused" in script
 
 
 class TestControlCenterRepoContext:

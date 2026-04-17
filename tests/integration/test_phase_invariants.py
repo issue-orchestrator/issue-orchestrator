@@ -116,13 +116,15 @@ class TestPhase3ControlCenterUI:
         client = TestClient(control_app)
 
         response = client.get("/")
+        script_response = client.get("/static/js/control_center.js")
 
         assert response.status_code == 200
+        assert script_response.status_code == 200
         # UI should have start/stop functionality
-        assert "startRepo" in response.text
-        assert "stopRepo" in response.text
+        assert "startRepo" in script_response.text
+        assert "stopRepo" in script_response.text
         # UI should have repository loading
-        assert "loadRepos" in response.text
+        assert "loadRepos" in script_response.text
 
     def test_sidebar_navigation_present(self) -> None:
         """Unified dashboard has sidebar navigation with key views."""

@@ -162,65 +162,63 @@ def test_main_enables_uvicorn_access_log_with_debug_http_flag() -> None:
 
 def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     """Control Center tracks in-flight starts and disables start buttons."""
-    template = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "issue_orchestrator"
-        / "templates"
-        / "control_center.html"
-    ).read_text(encoding="utf-8")
+    source_root = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
+    template = (source_root / "templates" / "control_center.html").read_text(encoding="utf-8")
+    script = (source_root / "static" / "js" / "control_center.js").read_text(encoding="utf-8")
 
-    assert "const pendingRepoStarts = new Set();" in template
-    assert "const REPO_START_POLL_INTERVAL_MS = 250;" in template
-    assert "const REPO_START_TIMEOUT_MS = 15000;" in template
-    assert "function getSelectedRepoConfig(repo, preferredConfig = null)" in template
-    assert "function requiresExplicitRepoConfigSelection(repo, selectedConfig)" in template
-    assert "if (pendingRepoStarts.has(path))" in template
-    assert "pendingRepoStarts.add(path);" in template
-    assert "pendingRepoStarts.delete(path);" in template
-    assert "async function waitForRepoToBeReady(path)" in template
-    assert "await waitForRepoToBeReady(path);" in template
-    assert "config = getValidRepoConfig(repo, config);" in template
-    assert "throw new Error('Select a valid config before starting this repository engine');" in template
+    assert '<script src="/static/js/control_center.js"></script>' in template
+    assert "const pendingRepoStarts = new Set();" in script
+    assert "const REPO_START_POLL_INTERVAL_MS = 250;" in script
+    assert "const REPO_START_TIMEOUT_MS = 15000;" in script
+    assert "function getSelectedRepoConfig(repo, preferredConfig = null)" in script
+    assert "function requiresExplicitRepoConfigSelection(repo, selectedConfig)" in script
+    assert "if (pendingRepoStarts.has(path))" in script
+    assert "pendingRepoStarts.add(path);" in script
+    assert "pendingRepoStarts.delete(path);" in script
+    assert "async function waitForRepoToBeReady(path)" in script
+    assert "await waitForRepoToBeReady(path);" in script
+    assert "config = getValidRepoConfig(repo, config);" in script
+    assert "throw new Error('Select a valid config before starting this repository engine');" in script
     assert (
         "function showDoctorResultsModal(title, data, prefixMessage = null, "
-        "prefixClass = 'info', context = {})" in template
+        "prefixClass = 'info', context = {})" in script
     )
     assert 'id="repairGuardrailsBtn"' in template
-    assert "function hasRepairableRepoGuardrails(data)" in template
-    assert "function repairGuardrails()" in template
-    assert "const confirmed = window.confirm(" in template
-    assert "This will overwrite issue-orchestrator managed hook files if they drifted." in template
-    assert "if (!confirmed) {" in template
-    assert "/control/orchestrator/guardrails/repair" in template
+    assert "function hasRepairableRepoGuardrails(data)" in script
+    assert "function repairGuardrails()" in script
+    assert "const confirmed = window.confirm(" in script
+    assert "This will overwrite issue-orchestrator managed hook files if they drifted." in script
+    assert "if (!confirmed) {" in script
+    assert "/control/orchestrator/guardrails/repair" in script
     assert "Repair Guardrails" in template
-    assert "{ repoRoot: path, configName: config }" in template
-    assert "Guardrails repaired (${fileCount} file${fileCount === 1 ? '' : 's'} written)" in template
-    assert "if (!data) {" in template
-    assert "if (error.error === 'doctor_failed' && error.doctor)" in template
-    assert "Start Blocked — ${repoLabel}" in template
-    assert "See Doctor Results." in template
-    assert "null," in template
-    assert "Choose config..." in template
-    assert "Saved config is unavailable:" in template
-    assert "Select a valid config before starting this repository engine." in template
-    assert "Starting..." in template
-    assert "Starting repository engine..." in template
-    assert "Waiting for engine to become ready." in template
+    assert "{ repoRoot: path, configName: config }" in script
+    assert "Guardrails repaired (${fileCount} file${fileCount === 1 ? '' : 's'} written)" in script
+    assert "if (!data) {" in script
+    assert "if (error.error === 'doctor_failed' && error.doctor)" in script
+    assert "Start Blocked — ${repoLabel}" in script
+    assert "See Doctor Results." in script
+    assert "null," in script
+    assert "Choose config..." in script
+    assert "Saved config is unavailable:" in script
+    assert "Select a valid config before starting this repository engine." in script
+    assert "Starting..." in script
+    assert "Starting repository engine..." in script
+    assert "Waiting for engine to become ready." in script
     assert 'id="repoStopModal"' in template
     assert 'id="confirmRepoStop"' in template
     assert 'id="repoStopModeGraceful"' in template
     assert 'id="repoStopModeForce"' in template
     assert 'id="shutdownModeGraceful"' in template
     assert 'id="shutdownModeForce"' in template
-    assert "Mode: immediate force" in template
-    assert "Mode: graceful (~${formatGracefulTimeout(op.graceful_timeout_seconds || 120)}), then force if needed" in template
-    assert "State: control center unavailable" in template
-    assert "Control Center is closing..." in template
-    assert "showControlCenterClosedFallback" in template
-    assert "attemptControlCenterTabClose" in template
+    assert "Mode: immediate force" in script
+    assert "Mode: graceful (~${formatGracefulTimeout(op.graceful_timeout_seconds || 120)}), then force if needed" in script
+    assert "State: control center unavailable" in script
+    assert "Control Center is closing..." in script
+    assert "showControlCenterClosedFallback" in script
+    assert "attemptControlCenterTabClose" in script
     assert 'data-action="stop-force"' not in template
-    assert "getRepoDashboardUrl(repo, { embedded: true, theme: iframeTheme })" in template
-    assert "buildDashboardUrlFromBase(repo.dashboard_url, options)" in template
-    assert "Boolean(repo.dashboard_url)" in template
+    assert 'data-action="stop-force"' not in script
+    assert "getRepoDashboardUrl(repo, { embedded: true, theme: iframeTheme })" in script
+    assert "buildDashboardUrlFromBase(repo.dashboard_url, options)" in script
+    assert "Boolean(repo.dashboard_url)" in script
     assert "http://127.0.0.1:${port}" not in template
