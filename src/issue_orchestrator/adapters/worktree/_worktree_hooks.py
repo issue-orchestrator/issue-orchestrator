@@ -49,9 +49,9 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
 
     # Read from main repo config, not worktree config. Worktree config may have
     # our override from a previous install.
-    main_repo_root = gitdir.parent.parent
+    main_git_dir = gitdir.parent.parent
     hooks_path_result = _git_run(
-        main_repo_root,
+        main_git_dir,
         ["config", "--local", "--get", "core.hooksPath"],
         check=False,
     )
@@ -103,10 +103,10 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
 
 
 def _resolve_project_pre_push_hook(gitdir: Path, custom_hooks_path: str | None) -> Path:
-    main_repo_root = gitdir.parent.parent
+    main_git_dir = gitdir.parent.parent
     if custom_hooks_path:
-        return main_repo_root.parent / custom_hooks_path / "pre-push"
-    return main_repo_root / "hooks" / "pre-push"
+        return main_git_dir.parent / custom_hooks_path / "pre-push"
+    return main_git_dir / "hooks" / "pre-push"
 
 
 def _install_chained_hook(
