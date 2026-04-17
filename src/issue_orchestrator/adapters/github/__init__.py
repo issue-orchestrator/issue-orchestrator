@@ -8,13 +8,12 @@ This package provides the concrete adapter implementations for GitHub:
 """
 
 from .github_adapter import GitHubAdapter
+from .errors import GitHubAuthError, GitHubHttpError
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
-    GitHubHttpError,
-    GitHubAuthError,
-    resolve_github_token,
 )
+from .tokens import resolve_github_token
 from .cache import GitHubCache
 from .github_issue import GitHubIssue
 from .issue_resolver import GitHubIssueResolver
