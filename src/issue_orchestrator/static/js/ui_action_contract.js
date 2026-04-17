@@ -139,6 +139,10 @@
         if (sessionRole) {
             params.set('session_role', sessionRole);
         }
+        const sinceHash = typeof options.since_hash === 'string' ? options.since_hash : '';
+        if (sinceHash) {
+            params.set('since_hash', sinceHash);
+        }
         return {
             endpoint: `${ENDPOINTS.TERMINAL_RECORDING(normalized[0])}?${params.toString()}`,
             method: 'GET',

@@ -94,6 +94,20 @@
 .session-replay-terminal .xterm {
     padding: 6px;
 }
+.session-replay-transcript {
+    margin: 0;
+    padding: 10px 12px;
+    min-height: 420px;
+    max-height: 60vh;
+    overflow: auto;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #e6edf3;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: transparent;
+}
 .session-replay-empty {
     display: grid;
     place-items: center;
