@@ -948,20 +948,3 @@ class TestControlAPIServer:
         # Should not raise
         await server.stop()
 
-
-# --- Test: SSE Events Endpoint ---
-# NOTE: Full SSE streaming tests require integration tests with proper async handling.
-# The SSE endpoint behavior is covered by:
-# - 503 error tests (when orchestrator/event_hub is None)
-# - events_since tests (for event buffering)
-# - The EventHub unit tests in test_event_hub.py
-
-
-# =============================================================================
-# Supervisor Control API Tests
-# =============================================================================
-# These test the /control/orchestrator/* endpoints that use the Supervisor
-# to manage orchestrator processes.
-
-
-import os

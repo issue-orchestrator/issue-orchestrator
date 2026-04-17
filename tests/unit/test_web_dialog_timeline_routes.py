@@ -1,6 +1,6 @@
 """Dialog and timeline web route tests split from test_web."""
 
-# ruff: noqa: F403,F405,SLF001
+# ruff: noqa: F403,F405
 
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403

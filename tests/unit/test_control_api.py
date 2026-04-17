@@ -148,6 +148,3 @@ def mock_supervisor():
     yield mock
     set_supervisor(DefaultSupervisorOps())
 
-
-# --- Test: Orchestrator Not Initialized (503 errors) ---
-

@@ -1,6 +1,6 @@
 """Setup, discovery, log-tail, and preflight control route tests split from test_control_api."""
 
-# ruff: noqa: F403,F405,SLF001
+# ruff: noqa: F403,F405
 
 from tests.unit import test_control_api as _support
 from tests.unit.test_control_api import *  # noqa: F403
