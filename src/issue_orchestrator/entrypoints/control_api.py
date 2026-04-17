@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from ..infra import gh_audit
@@ -134,6 +135,9 @@ def _load_config_by_name(repo_root: Path, config_name: str) -> "Config":
 
 # Create minimal control API app
 control_app = FastAPI(title="Issue Orchestrator Control API")
+STATIC_DIR = Path(__file__).parent.parent / "static"
+if STATIC_DIR.exists():
+    control_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
