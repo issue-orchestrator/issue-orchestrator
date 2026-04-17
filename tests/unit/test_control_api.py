@@ -1962,7 +1962,7 @@ class TestDiscoverReposEndpoint:
 
 class TestSetupPrereqsGitHubAuth:
     def test_build_github_auth_check_uses_repo_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from issue_orchestrator.adapters.github.http_client import TokenValidationResult
+        from issue_orchestrator.adapters.github.tokens import TokenValidationResult
         from issue_orchestrator.entrypoints.setup_wizard_common import build_github_auth_check
 
         cfg = Config()
@@ -1977,7 +1977,7 @@ class TestSetupPrereqsGitHubAuth:
             seen.update(kwargs)
             return TokenValidationResult(valid=False, error="missing repo auth")
 
-        monkeypatch.setattr("issue_orchestrator.adapters.github.http_client.validate_github_token", _validate)
+        monkeypatch.setattr("issue_orchestrator.execution.providers.validate_github_token", _validate)
 
         check = build_github_auth_check(cfg)
 
