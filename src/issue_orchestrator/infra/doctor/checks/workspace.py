@@ -68,18 +68,52 @@ def check_hook_dependencies(repo_root: Path) -> list[Check]:
     return checks
 
 
+def _provider_script_problem(agent_name: str, provider_name: str) -> str | None:
+    from issue_orchestrator.agent_runner import get_provider
+
+    try:
+        provider = get_provider(provider_name)
+    except ValueError:
+        return f"{agent_name}: unknown provider {provider_name}"
+
+    if provider.is_available():
+        return None
+
+    executable = getattr(provider, "executable", provider_name)
+    detail = provider_name
+    if executable != provider_name:
+        detail = f"{provider_name} (expected executable: {executable})"
+    return f"{agent_name}: {detail}"
+
+
+def _legacy_script_problem(agent_name: str, command: str) -> str | None:
+    cmd_parts = command.split()
+    script = None
+    for part in cmd_parts:
+        if "=" not in part or part.startswith("{"):
+            script = part
+            break
+    if script and not shutil.which(script) and not Path(script).exists():
+        return f"{agent_name}: {script}"
+    return None
+
+
 def _check_agent_scripts(config: Config) -> Check:
     """Check if agent scripts are available."""
     missing_scripts = []
     for name, agent_cfg in config.agents.items():
-        cmd_parts = agent_cfg.command.split()
-        script = None
-        for part in cmd_parts:
-            if "=" not in part or part.startswith("{"):
-                script = part
-                break
-        if script and not shutil.which(script) and not Path(script).exists():
-            missing_scripts.append(f"{name}: {script}")
+        provider_name = agent_cfg.provider
+        if provider_name is None and config.default_agent:
+            provider_name = config.default_agent.provider
+        if provider_name:
+            problem = _provider_script_problem(name, provider_name)
+            if problem:
+                missing_scripts.append(problem)
+            continue
+
+        problem = _legacy_script_problem(name, agent_cfg.command)
+        if problem:
+            missing_scripts.append(problem)
 
     if missing_scripts:
         return Check(

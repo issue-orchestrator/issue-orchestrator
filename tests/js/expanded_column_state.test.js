@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const expandedColumnState = require('../../src/issue_orchestrator/static/js/expanded_column_state.js');
 
@@ -29,6 +31,17 @@ test('getExpandedItemsFromViewModel filters queued items already shown in awaiti
         expandedColumnState.getExpandedItemsFromViewModel(vm, 'queued'),
         [{ issue_number: 10 }, { issue_number: 30 }],
     );
+});
+
+test('dashboard refresh keeps server column count instead of preview length', () => {
+    const dashboardJs = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard.js'),
+        'utf8',
+    );
+
+    assert.match(dashboardJs, /const serverCount = Number\(col\.count\);/);
+    assert.match(dashboardJs, /Number\.isFinite\(serverCount\) \? serverCount : visibleItems\.length/);
+    assert.doesNotMatch(dashboardJs, /countEl\.textContent = visibleItems\.length/);
 });
 
 test('computeExpandedItemsFingerprint is stable for logically equal inputs', () => {

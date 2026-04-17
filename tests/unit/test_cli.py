@@ -61,6 +61,7 @@ class TestCmdStart:
                 dry_run=False,
                 no_dashboard=False,
                 debug=False,
+                start_paused=False,
             )
 
             result = cmd_start(args)
@@ -103,6 +104,7 @@ class TestCmdStart:
                             dry_run=False,
                             no_dashboard=False,
                             debug=False,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -143,6 +145,7 @@ class TestCmdStart:
                         dry_run=False,
                         no_dashboard=True,
                         debug=False,
+                        start_paused=False,
                     )
 
                     result = cmd_start(args)
@@ -204,6 +207,7 @@ class TestCmdStart:
                                         dry_run=True,
                                         no_dashboard=False,
                                         debug=False,
+                                        start_paused=False,
                                     )
 
                                     result = cmd_start(args)
@@ -485,6 +489,18 @@ class TestMain:
 
             args = mock_cmd_start.call_args[0][0]
             assert args.port == 9000
+
+    def test_main_parses_start_paused(self):
+        """Verify main parses --start-paused correctly."""
+        with patch("issue_orchestrator.entrypoints.cli.cmd_start") as mock_cmd_start:
+            mock_cmd_start.return_value = 0
+
+            with patch("sys.argv", ["issue-orchestrator", "start", "--start-paused"]):
+                result = main()
+
+            assert result == 0
+            args = mock_cmd_start.call_args[0][0]
+            assert args.start_paused is True
 
     def test_main_parses_attach_with_issue_number(self):
         """Verify main parses attach command with issue number."""
@@ -790,6 +806,7 @@ class TestCmdStartAdvanced:
                 dry_run=False,
                 no_dashboard=False,
                 debug=False,
+                start_paused=False,
             )
 
             result = cmd_start(args)
@@ -830,6 +847,7 @@ class TestCmdStartAdvanced:
                                 dry_run=False,
                                 no_dashboard=False,
                                 debug=False,
+                                start_paused=False,
                             )
 
                             result = cmd_start(args)
@@ -871,6 +889,7 @@ class TestCmdStartAdvanced:
                             dry_run=False,
                             no_dashboard=False,
                             debug=False,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -910,6 +929,7 @@ class TestCmdStartAdvanced:
                             dry_run=False,
                             no_dashboard=False,
                             debug=False,
+                            start_paused=False,
                         )
 
                         cmd_start(args)
@@ -950,6 +970,7 @@ class TestCmdStartAdvanced:
                             debug=False,
                             ui_mode="web",
                             port=8080,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -988,6 +1009,7 @@ class TestCmdStartAdvanced:
                             no_dashboard=False,
                             debug=False,
                             queue_refresh=300,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -1026,6 +1048,7 @@ class TestCmdStartAdvanced:
                             no_dashboard=False,
                             debug=False,
                             max_issues=5,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -1064,6 +1087,7 @@ class TestCmdStartAdvanced:
                             no_dashboard=False,
                             debug=False,
                             port=8080,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -1103,6 +1127,7 @@ class TestCmdStartAdvanced:
                             no_dashboard=False,
                             debug=False,
                             port=9000,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -1149,6 +1174,7 @@ class TestCmdStartAdvanced:
                             dry_run=False,
                             no_dashboard=False,
                             debug=False,
+                            start_paused=False,
                         )
 
                         result = cmd_start(args)
@@ -1167,6 +1193,7 @@ class TestCmdStartAdvanced:
                 dry_run=False,
                 no_dashboard=False,
                 debug=False,
+                start_paused=False,
             )
 
             result = cmd_start(args)
@@ -1395,6 +1422,7 @@ agents:
                     dry_run=False,
                     no_dashboard=True,
                     debug=False,
+                    start_paused=False,
                 )
 
                 with patch("issue_orchestrator.infra.orchestrator.Orchestrator"):

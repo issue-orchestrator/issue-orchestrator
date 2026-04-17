@@ -152,6 +152,7 @@ def start(
     instance_id: str | None = None,
     port: int | None = None,
     expected_identity: dict[str, Any] | None = None,
+    start_paused: bool = False,
     *,
     spawn_process: Callable[..., Any] | None = None,
 ) -> LockInfo:
@@ -186,6 +187,8 @@ def start(
         "--config",
         str(config_path),
     ]
+    if start_paused:
+        cmd.append("--start-paused")
 
     # Set up environment for the subprocess
     env = os.environ.copy()
@@ -515,6 +518,7 @@ def start_instances(
     config_name: str = "default.yaml",
     count: int | None = None,
     expected_identity: dict[str, Any] | None = None,
+    start_paused: bool = False,
 ) -> list[LockInfo]:
     """Start multiple orchestrator instances for a repository.
 
@@ -522,6 +526,7 @@ def start_instances(
         repo_root: Repository root path
         config_name: Name of config file
         count: Number of instances to start (reads from config if not specified)
+        start_paused: If True, start every instance paused.
 
     Returns:
         List of LockInfo for started instances
@@ -537,7 +542,14 @@ def start_instances(
 
     if count <= 1:
         # Single instance mode - use legacy lock file
-        return [start(repo_root, config_name, expected_identity=expected_identity)]
+        return [
+            start(
+                repo_root,
+                config_name,
+                expected_identity=expected_identity,
+                start_paused=start_paused,
+            )
+        ]
 
     # Multi-instance mode
     results = []
@@ -551,6 +563,7 @@ def start_instances(
                 instance_id=instance_id,
                 port=port,
                 expected_identity=expected_identity,
+                start_paused=start_paused,
             )
             results.append(info)
             logger.info("Started instance %s on port %d", instance_id, port)
@@ -667,6 +680,7 @@ class SupervisorOps(Protocol):
         instance_id: str | None = None,
         port: int | None = None,
         expected_identity: dict[str, Any] | None = None,
+        start_paused: bool = False,
     ) -> LockInfo: ...
 
     def stop(
@@ -691,6 +705,7 @@ class SupervisorOps(Protocol):
         config_name: str = "default.yaml",
         count: int | None = None,
         expected_identity: dict[str, Any] | None = None,
+        start_paused: bool = False,
     ) -> list[LockInfo]: ...
 
     def stop_all_instances(
@@ -719,8 +734,16 @@ class DefaultSupervisorOps:
         instance_id: str | None = None,
         port: int | None = None,
         expected_identity: dict[str, Any] | None = None,
+        start_paused: bool = False,
     ) -> LockInfo:
-        return start(repo_root, config_name, instance_id, port, expected_identity)
+        return start(
+            repo_root,
+            config_name,
+            instance_id,
+            port,
+            expected_identity,
+            start_paused,
+        )
 
     def stop(
         self,
@@ -753,8 +776,15 @@ class DefaultSupervisorOps:
         config_name: str = "default.yaml",
         count: int | None = None,
         expected_identity: dict[str, Any] | None = None,
+        start_paused: bool = False,
     ) -> list[LockInfo]:
-        return start_instances(repo_root, config_name, count, expected_identity)
+        return start_instances(
+            repo_root,
+            config_name,
+            count,
+            expected_identity,
+            start_paused,
+        )
 
     def stop_all_instances(
         self,

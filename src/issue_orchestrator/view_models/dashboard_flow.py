@@ -141,6 +141,7 @@ def build_awaiting_merge_items(
 
 def build_flow_columns(
     queue_items: list[dict[str, Any]],
+    queue_preview_items: list[dict[str, Any]],
     active_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
     awaiting_merge_items: list[dict[str, Any]],
@@ -149,12 +150,17 @@ def build_flow_columns(
     # Exclude merge-pending items from the queued column because they appear in awaiting-merge.
     awaiting_numbers = {item.get("issue_number") for item in awaiting_merge_items}
     queued_only = [item for item in queue_items if item.get("issue_number") not in awaiting_numbers]
+    queued_preview_only = [
+        item
+        for item in queue_preview_items
+        if item.get("issue_number") not in awaiting_numbers
+    ]
     return [
         {
             "id": "queued",
             "title": "Queued",
             "count": len(queued_only),
-            "items": [compact_card(item, "queued") for item in queued_only[:12]],
+            "items": [compact_card(item, "queued") for item in queued_preview_only[:12]],
             "expandable": True,
         },
         {

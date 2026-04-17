@@ -1,5 +1,7 @@
 """Unit tests for the setup wizard."""
 
+import shutil
+
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
@@ -541,6 +543,66 @@ class TestSetupWizardSharedHelpers:
             "/usr/local/bin/claude",
             fallback="/usr/local/bin/claude",
         )
+
+    def test_build_agent_checks_uses_provider_executable(self, monkeypatch):
+        """Provider-backed agents should check the provider CLI, not legacy command."""
+
+        class Provider:
+            name = "claude-code"
+            executable = "claude"
+
+            def is_available(self):
+                return True
+
+            def check_version(self):
+                return "2.1.112 (Claude Code)"
+
+        monkeypatch.setattr(
+            "issue_orchestrator.agent_runner.get_provider",
+            lambda name: Provider(),
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
+        config = SimpleNamespace(
+            agents={
+                "agent:backend": SimpleNamespace(
+                    provider="claude-code",
+                    command="legacy-missing-claude-command",
+                ),
+            },
+            default_agent=None,
+        )
+
+        checks = build_agent_checks(config)
+
+        assert checks == [{
+            "name": "claude-code CLI",
+            "ok": True,
+            "detail": "2.1.112 (Claude Code) (executable: claude)",
+        }]
+
+    def test_build_agent_checks_reports_unknown_provider(self, monkeypatch):
+        """Invalid provider names should be surfaced as prereq failures."""
+        monkeypatch.setattr(
+            "issue_orchestrator.agent_runner.get_provider",
+            Mock(side_effect=ValueError("Unknown provider")),
+        )
+        config = SimpleNamespace(
+            agents={
+                "agent:backend": SimpleNamespace(
+                    provider="mystery-ai",
+                    command="legacy-missing-command",
+                ),
+            },
+            default_agent=None,
+        )
+
+        checks = build_agent_checks(config)
+
+        assert checks == [{
+            "name": "mystery-ai CLI",
+            "ok": False,
+            "detail": "Unknown provider configured for agent:backend: mystery-ai",
+        }]
 
 
 class TestScanExistingRepo:

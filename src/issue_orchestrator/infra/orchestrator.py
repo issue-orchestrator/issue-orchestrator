@@ -87,7 +87,6 @@ class Orchestrator:
     scheduler: Scheduler = field(init=False)
     observer: SessionObserver = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
-    _refresh_requested: bool = field(default=False, init=False)
     _inflight_stable_ids: dict[str, float] = field(default_factory=dict, init=False)  # stable_id -> expires_at (monotonic)
     _INFLIGHT_TTL_SECONDS: float = field(default=90.0, init=False, repr=False)
     _last_network_sync: float = field(default=0.0, init=False)
@@ -621,12 +620,12 @@ class Orchestrator:
             # Note: We preserve the worktree so work isn't lost
 
     def _run_planning_cycle(self) -> None:
-        # Capture and clear the refresh flag before the cycle.
-        # If request_refresh() is called during the cycle, it will set
-        # _refresh_requested = True again. We must NOT overwrite that
-        # new value when the cycle returns.
-        refresh_to_process = self._refresh_requested
-        self._refresh_requested = False
+        # Capture and clear the state-owned refresh flag before the cycle.
+        # If request_refresh() is called during the cycle, it sets the state
+        # flag again and the next tick will process that new request.
+        with self._state_lock:
+            refresh_to_process = self.state.queue_refresh_requested
+            self.state.queue_refresh_requested = False
         self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
@@ -645,6 +644,12 @@ class Orchestrator:
                 "mode": "web" if hasattr(self, "_web_mode") else "headless",
             }),
         ))
+        with self._state_lock:
+            if self.state.paused:
+                self.deps.events.publish(TraceEvent(
+                    EventName.ORCHESTRATOR_PAUSED,
+                    self._event_context.enrich({"reason": "startup"}),
+                ))
 
         self.reconcile_orphaned_pr_labels()
         self._last_network_sync, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
@@ -760,7 +765,6 @@ class Orchestrator:
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         with self._state_lock:
-            self._refresh_requested = True
             self.state.queue_refresh_requested = True
             self._plan_applier.request_refresh(
                 inflight_stable_ids,
@@ -776,6 +780,12 @@ class Orchestrator:
             EventName.ORCHESTRATOR_PAUSED,
             self._event_context.enrich({}),
         ))
+
+    def set_start_paused(self) -> None:
+        """Set initial paused state; run_loop emits lifecycle events in order."""
+        with self._state_lock:
+            self.state.paused = True
+        logger.info("Orchestrator marked paused for startup")
 
     def resume(self) -> None:
         with self._state_lock:

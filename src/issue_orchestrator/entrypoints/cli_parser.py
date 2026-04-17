@@ -139,6 +139,11 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="Seconds between queue refreshes from GitHub (default: 600, 0=manual only)",
     )
     start_parser.add_argument(
+        "--start-paused",
+        action="store_true",
+        help="Start with planning/session launch paused while keeping the dashboard available",
+    )
+    start_parser.add_argument(
         "--gh-audit",
         action="store_true",
         help="Enable GH audit reporting (overrides config)",

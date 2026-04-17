@@ -4272,7 +4272,7 @@
                 const response = await fetch('/control/orchestrator/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: config })
+                    body: JSON.stringify({ repo_root: path, config_name: config, start_paused: startPaused })
                 });
 
                 if (!response.ok) {
@@ -4295,9 +4295,6 @@
                 selectRepo(path, config, 'registered');
 
                 await waitForRepoToBeReady(path);
-                if (startPaused) {
-                    await pauseRepo(path);
-                }
                 await loadRepos();
                 showToast(
                     startPaused

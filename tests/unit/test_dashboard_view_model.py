@@ -203,6 +203,75 @@ def test_view_model_queue_and_blocked_items():
     assert view_model.blocked_count == 1
 
 
+def test_large_queue_counts_use_full_queue_not_preview_page():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    issues = [
+        Issue(number=i, title=f"Queue Issue {i}", labels=["agent:web"])
+        for i in range(1, 26)
+    ]
+    state = OrchestratorState(startup_status="complete", cached_queue_issues=issues)
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    first_page = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    second_page = build_dashboard_view_model(
+        orchestrator,
+        queue_page=2,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in first_page.flow_columns if col["id"] == "queued")
+    second_page_queued_col = next(col for col in second_page.flow_columns if col["id"] == "queued")
+
+    assert first_page.queue_total == 25
+    assert first_page.queue_total_pages == 2
+    assert first_page.queue_count == 25
+    assert first_page.scope_summary["repo_open_total"] == 25
+    assert first_page.scope_summary["in_scope_total"] == 25
+    assert queued_col["count"] == 25
+    assert len(queued_col["items"]) == 12
+    assert [item["issue_number"] for item in queued_col["items"]] == list(range(1, 13))
+    assert [item["issue_number"] for item in first_page.queue_items] == list(range(1, 26))
+
+    assert second_page.queue_count == 25
+    assert second_page.scope_summary["in_scope_total"] == 25
+    assert second_page_queued_col["count"] == 25
+    assert [item["issue_number"] for item in second_page_queued_col["items"]] == list(range(21, 26))
+
+
+def test_queue_preview_pages_follow_cached_queue_order_before_sorting():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    issues = [
+        Issue(number=i, title=f"Queue Issue {i}", labels=["agent:web"])
+        for i in range(25, 0, -1)
+    ]
+    state = OrchestratorState(startup_status="complete", cached_queue_issues=issues)
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=2,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    assert queued_col["count"] == 25
+    assert [item["issue_number"] for item in queued_col["items"]] == [1, 2, 3, 4, 5]
+
+
 def test_view_model_includes_refresh_freshness_metadata():
     config = _make_config()
     config.flow_refresh_stale_seconds = 60
@@ -269,6 +338,7 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert queued_col["count"] == 0
     assert all(item["issue_number"] != 4072 for item in queued_col["items"])
     assert any(item["issue_number"] == 4072 for item in view_model.awaiting_merge_items)
+    assert view_model.scope_summary["in_scope_total"] == 1
 
 
 def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
@@ -298,6 +368,7 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
 
     assert any(item["issue_number"] == 4057 for item in view_model.awaiting_merge_items)
     assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    assert view_model.scope_summary["in_scope_total"] == 1
 
 
 def test_completed_history_without_pr_url_does_not_enter_completed_lane():

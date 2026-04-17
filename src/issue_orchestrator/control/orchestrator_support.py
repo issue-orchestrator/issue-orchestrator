@@ -639,7 +639,8 @@ def _fetch_and_update_queue(
     gh_usage_before = gh_audit.get_live_usage_snapshot()
     required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
     state.queue_refresh_in_progress = True
-    state.queue_refresh_requested = False
+    # The request flag is captured and cleared by Orchestrator._run_planning_cycle
+    # so requests made during this fetch survive for the next tick.
 
     try:
         if required_stable_ids:
@@ -1144,9 +1145,17 @@ def run_tick(
             len(state.active_sessions),
         )
 
-    # Use HealthGate to check if we can proceed with planning
+    # Use HealthGate to check if we can proceed with planning. A paused
+    # orchestrator may still need to refresh its read-only queue projection
+    # after labels change in GitHub; planning remains safe because the paused
+    # snapshot produces no launch actions.
     health_decision = check_health_fn()
-    if health_decision.can_proceed:
+    refresh_while_paused = (
+        not health_decision.can_proceed
+        and health_decision.reason == "paused"
+        and bool(state.queue_refresh_requested)
+    )
+    if health_decision.can_proceed or refresh_while_paused:
         plan_start = time.monotonic()
         run_planning_cycle_fn()
         plan_elapsed = time.monotonic() - plan_start
