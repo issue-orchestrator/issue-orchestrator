@@ -16,10 +16,10 @@ from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpConfig,
     GitHubHttpError,
     describe_github_token_sources,
-    _read_keyring_token,
     resolve_github_token,
     validate_github_token,
 )
+from issue_orchestrator.adapters.github.tokens import _read_keyring_token
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import gh_audit
 
@@ -47,7 +47,7 @@ def test_resolve_github_token_repo_scoped_env_is_strict(monkeypatch: pytest.Monk
 def test_resolve_github_token_repo_scoped_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ISSUE_ORCH_GITHUB_TOKEN", raising=False)
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client._read_keyring_token",
+        "issue_orchestrator.adapters.github.tokens._read_keyring_token",
         lambda *, service=..., username=...: "repo-keyring-token"
         if service == "tixmeup-github" and username == "bruce"
         else None,
@@ -72,15 +72,15 @@ def test_read_keyring_token_falls_back_to_macos_security(monkeypatch: pytest.Mon
 
     monkeypatch.setitem(sys.modules, "keyring", _FakeKeyring)
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client.sys.platform",
+        "issue_orchestrator.adapters.github.tokens.sys.platform",
         "darwin",
     )
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client.shutil.which",
+        "issue_orchestrator.adapters.github.tokens.shutil.which",
         lambda name: "/usr/bin/security" if name == "security" else None,
     )
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client.subprocess.run",
+        "issue_orchestrator.adapters.github.tokens.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args=args[0],
             returncode=0,
@@ -98,7 +98,7 @@ def test_describe_github_token_sources_repo_scoped_ignores_generic_env(monkeypat
     monkeypatch.setenv("ISSUE_ORCH_GITHUB_TOKEN", "generic-token")
     monkeypatch.delenv("TIXMEUP_GITHUB_TOKEN", raising=False)
     monkeypatch.setattr(
-        "issue_orchestrator.adapters.github.http_client._read_keyring_token",
+        "issue_orchestrator.adapters.github.tokens._read_keyring_token",
         lambda *, service=..., username=...: None,
     )
 
@@ -583,6 +583,7 @@ def test_set_pr_draft_marks_ready_for_review() -> None:
     assert "markPullRequestReadyForReview" in requests_seen[1]["body"]["query"]
     assert requests_seen[1]["body"]["variables"]["pullRequestId"] == "PR_node_123"
     # Result
+    assert result is not None
     assert result["isDraft"] is False
     assert result["number"] == 42
 
@@ -617,6 +618,7 @@ def test_set_pr_draft_converts_to_draft() -> None:
     assert len(requests_seen) == 2
     # Second request should use convertPullRequestToDraft
     assert "convertPullRequestToDraft" in requests_seen[1]["body"]["query"]
+    assert result is not None
     assert result["isDraft"] is True
 
 
