@@ -112,7 +112,7 @@ def session_launcher_callback(
         SessionType.REWORK: launch_rework_fn,
         SessionType.TRIAGE: launch_triage_fn,
     }
-    return handlers.get(session_type, lambda n: None)(number)
+    return handlers[session_type](number)
 
 
 def restore_running_sessions(

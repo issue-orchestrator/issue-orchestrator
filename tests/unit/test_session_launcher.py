@@ -14,7 +14,7 @@ import os
 import pytest
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_launcher import (
@@ -1671,6 +1671,22 @@ class TestSessionLauncherCallback:
         session_launcher_callback(SessionType.REVIEW, 456, issue_fn, review_fn, rework_fn, triage_fn)
 
         assert calls == [("issue", 123), ("review", 456)]
+
+    def test_unknown_session_type_fails_fast(self):
+        """Unknown session types should not silently no-op."""
+
+        def launch_fn(_number):
+            return None
+
+        with pytest.raises(KeyError):
+            session_launcher_callback(
+                cast(SessionType, object()),
+                123,
+                launch_fn,
+                launch_fn,
+                launch_fn,
+                launch_fn,
+            )
 
 
 # =============================================================================
