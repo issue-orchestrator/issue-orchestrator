@@ -310,6 +310,73 @@ def test_view_model_includes_refresh_freshness_metadata():
     assert "calls_per_minute" in gh_usage
 
 
+def test_stale_reason_blames_orchestrator_stall_when_tick_is_overdue():
+    """When the main loop hasn't completed a tick in >60s, say so (not the generic)."""
+    config = _make_config()
+    config.flow_refresh_stale_seconds = 60
+    issue = Issue(number=42, title="Blocked card", labels=["agent:web"])
+    now = datetime.now().timestamp()
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    state.queue_last_refresh_at = now - 300
+    # Loop started but never completed a tick → phase active_sessions has been
+    # running for 3 minutes. This is the exact shape tixmeup hit during the
+    # synchronous review exchange.
+    state.last_tick_started_at = now - 180
+    state.last_tick_completed_at = now - 200
+    state.current_tick_phase = "active_sessions"
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    card = queued_col["items"][0]
+    assert card["is_stale"] is True
+    assert card["stale_reason"].startswith("Orchestrator tick stalled")
+    assert "active_sessions" in card["stale_reason"]
+    # Classic "Older than 15m threshold" must NOT appear — we have a more
+    # informative story to tell.
+    assert "stale threshold" not in card["stale_reason"]
+
+
+def test_stale_reason_uses_threshold_text_when_tick_is_healthy():
+    """If the loop ticked recently, fall back to the legacy threshold message."""
+    config = _make_config()
+    config.flow_refresh_stale_seconds = 60
+    issue = Issue(number=43, title="Stale but healthy orchestrator", labels=["agent:web"])
+    now = datetime.now().timestamp()
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    state.queue_last_refresh_at = now - 300  # stale by the GH-refresh clock
+    state.last_tick_started_at = now - 2     # just ticked
+    state.last_tick_completed_at = now - 2
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    card = queued_col["items"][0]
+    assert card["is_stale"] is True
+    assert "stale threshold" in card["stale_reason"]
+    assert "Orchestrator tick stalled" not in card["stale_reason"]
+
+
 def test_pr_pending_issue_not_shown_in_queued_flow_column():
     config = _make_config()
     agent_config = _make_agent_config()
