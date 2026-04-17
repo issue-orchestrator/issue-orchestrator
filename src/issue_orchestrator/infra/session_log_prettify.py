@@ -75,14 +75,17 @@ def extract_codex_transcript(lines: list[str]) -> list[str] | None:
     (``thread.started`` etc.) are silently skipped.
 
     Returns ``None`` when *lines* does not look like a Codex stream — so the
-    dispatcher can try the next extractor. To avoid mis-classifying an
-    arbitrary file that happens to contain a single ``thread.started`` line,
-    we require at least one rendered item before committing to codex; a
-    stream of pure meta events still commits (that's a legitimate empty
-    codex session and shouldn't fall through to raw PTY decoding).
+    dispatcher can try the next extractor. **Commit rule:** codex exec logs
+    always begin with a codex event (``thread.started`` in real samples), so
+    we only commit to the codex path when the FIRST non-blank line is a
+    parsable codex-shaped JSON record. That protects plain log files with a
+    stray codex-shaped JSON fragment somewhere in the middle from being
+    hijacked and having the rest of their content silently dropped.
     """
+    if not _starts_with_codex_event(lines):
+        return None
+
     saw_codex_item = False
-    saw_codex_meta = False
     items: dict[str, list[str]] = {}
     order: list[str] = []
 
@@ -96,18 +99,36 @@ def extract_codex_transcript(lines: list[str]) -> list[str] | None:
         if event_type.startswith("item."):
             if _ingest_codex_event(record, items, order):
                 saw_codex_item = True
-        elif event_type in _CODEX_META_TYPES:
-            saw_codex_meta = True
 
-    if not saw_codex_item and not saw_codex_meta:
-        return None
     transcript = _codex_transcript_lines(order, items)
-    if not transcript and saw_codex_meta and not saw_codex_item:
+    if not transcript and not saw_codex_item:
         # Legitimate empty codex session (thread started but no items) —
         # emit a breadcrumb so the UI explains the blank instead of
         # silently showing nothing.
         return ["(codex session produced no items)"]
     return transcript
+
+
+def _starts_with_codex_event(lines: list[str]) -> bool:
+    """Return True if the first non-blank line is a codex-shaped JSON record.
+
+    Real codex streams always open with a meta or item event; anything else
+    opening a log file is almost certainly not codex, even if a stray codex
+    JSON line appears later. We deliberately reject the file on the first
+    non-blank line that *isn't* a codex record (including non-JSON plain
+    text) — scanning past prelude garbage would defeat the point.
+    """
+    for raw in lines:
+        if not raw.strip():
+            continue
+        record = _parse_json_line(raw)
+        if record is None:
+            return False
+        event_type = record.get("type")
+        if not isinstance(event_type, str):
+            return False
+        return event_type.startswith("item.") or event_type in _CODEX_META_TYPES
+    return False
 
 
 def _ingest_codex_event(

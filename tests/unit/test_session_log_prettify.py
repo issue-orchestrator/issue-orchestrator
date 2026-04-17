@@ -142,27 +142,70 @@ def test_codex_extractor_emits_breadcrumb_for_pure_meta_streams() -> None:
     assert result == ["(codex session produced no items)"]
 
 
-def test_codex_extractor_ignores_single_unrelated_match() -> None:
-    """Don't commit to codex on one accidental meta-shaped line in another format."""
-    # A plain log file that happens to contain one line matching a codex meta
-    # shape should NOT be classified as codex — the rest of the content would
-    # be dropped. We require at least one rendered item OR exclusively codex
-    # meta events. A lone line beside unrelated text does neither because
-    # the meta event IS present — but the dispatcher falls back to raw text
-    # rendering for the unrelated lines when no item renders.
+def test_codex_extractor_rejects_log_with_codex_line_in_the_middle() -> None:
+    """Plain log + one stray codex-shaped line: the unrelated lines must survive.
+
+    Codex exec logs always OPEN with a codex event. A file that starts with
+    plain text and happens to contain a codex-looking JSON record later is
+    almost certainly something else (a mixed log, a pasted fragment, an
+    aggregator). Committing to the codex path would drop every non-codex
+    line — the regression the reviewer flagged. Rejecting lets the
+    dispatcher fall through to terminal-cleaning, which preserves the
+    plain-text content.
+    """
     mixed = [
-        '{"type": "thread.started"}',
-        'plain unrelated log line',
-        'another unrelated line',
+        "plain unrelated log line",
+        "another unrelated line",
+        '{"type": "thread.started"}',  # stray fragment, NOT a codex log
+        "more unrelated content",
     ]
-    # Current behaviour: this is classified as codex (via meta), returns the
-    # breadcrumb, and the unrelated lines are dropped. Document that this
-    # ONLY happens when the *entire* stream is codex meta — mixed streams
-    # with a single meta record still take the codex path, which is a
-    # trade-off the review flagged. The safer fallback happens at the
-    # *dispatcher* via prettify_session_log, which tests below verify.
-    result = extract_codex_transcript(mixed)
-    assert result == ["(codex session produced no items)"]
+    assert extract_codex_transcript(mixed) is None
+
+
+def test_codex_extractor_rejects_non_codex_json_prelude() -> None:
+    """First-line-must-be-codex rule also rejects non-codex JSON streams."""
+    claude_like = [
+        json.dumps({"type": "assistant", "message": {"content": []}}),
+        json.dumps({"type": "thread.started"}),
+    ]
+    assert extract_codex_transcript(claude_like) is None
+
+
+def test_codex_extractor_tolerates_leading_blank_lines() -> None:
+    """Whitespace-only prelude is skipped; the first real line is the gate."""
+    events = [
+        "",
+        "   ",
+        json.dumps({"type": "thread.started"}),
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"id": "a1", "type": "agent_message", "text": "hello"},
+            }
+        ),
+    ]
+    transcript = extract_codex_transcript(events)
+    assert transcript is not None
+    assert "hello" in transcript
+
+
+def test_prettify_falls_through_to_terminal_cleaning_for_mixed_file() -> None:
+    """End-to-end: mixed file with stray codex line renders plain lines, not breadcrumb."""
+    mixed = [
+        "\x1b[32mbuilding\x1b[0m",
+        "running tests",
+        '{"type": "thread.started"}',
+        "\x1b[31mfailed\x1b[0m",
+    ]
+    transcript = prettify_session_log(mixed)
+    joined = "\n".join(transcript)
+    # ANSI stripped, plain text preserved.
+    assert "building" in joined
+    assert "running tests" in joined
+    assert "failed" in joined
+    # Did NOT commit to codex — no breadcrumb.
+    assert "(codex session produced no items)" not in joined
+    assert "\x1b[" not in joined
 
 
 # ---------------------------------------------------------------------------
