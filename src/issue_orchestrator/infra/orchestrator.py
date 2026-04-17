@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
-    from ..control.planner import Plan
+    from ..control.planner_types import Plan
     from ..control.session_manager import SessionRef, SessionType
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
@@ -37,11 +37,12 @@ from ..control.dependency_evaluator import DependencyEvaluator
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
-from ..control.session_launcher import (
-    SessionLauncher,
+from ..control.session_completion import (
     handle_session_completion as _handle_session_completion,
     process_active_sessions as _process_active_sessions,
-    observe_active_sessions as _observe_active_sessions,
+)
+from ..control.session_launcher import SessionLauncher
+from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     launch_triage_session as _launch_triage_session,
@@ -54,6 +55,7 @@ from ..control.session_launcher import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
+from ..control.session_observation import observe_active_sessions as _observe_active_sessions
 from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
 from ..control.completion_handler import (

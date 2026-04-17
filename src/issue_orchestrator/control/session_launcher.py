@@ -13,31 +13,20 @@ The orchestrator calls into this for all session launching, keeping
 the orchestrator focused on coordination and main loop logic.
 """
 
-import json
 import logging
 import shlex
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Optional, Callable, Sequence
+from typing import TYPE_CHECKING, Optional, Callable, Sequence
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from .dependency_evaluator import DependencyEvaluator
-    from .completion_handler import CompletionHandler
-    from .completion_observer import CompletionObserver, ObservationDecision
     from .action_applier import ActionApplier
-    from .session_manager import SessionType
-    from .session_controller import SessionController
-    from .session_restorer import SessionRestorer
-    from .state_machine_manager import StateMachineManager
-    from ..observation.observer import SessionObserver
-    from ..domain.models import OrchestratorState
-    from ..ports.session_runner import DiscoveredSession
     from ..ports.claim_manager import ClaimManager
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -46,16 +35,13 @@ from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
-from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind, AgentConfig
-from ..domain.issue_key import IssueKey
-from .worktree import WorktreePreparationError
+from ..domain.models import Issue, Session, PendingReview, PendingRework, get_completion_path, SessionKey, TaskKind, AgentConfig
 from .worktree_context import WorktreeContext
 from ..domain.triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
 from ..ports import (
     ManifestDownloader,
     EventSink,
-    ReviewState,
     RepositoryHost,
     Issue as IssueProtocol,
     WorkingCopy,
@@ -63,16 +49,26 @@ from ..ports import (
 )
 from ..ports.session_output import SessionOutput
 from ..ports.event_sink import make_session_started_event
-from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
+from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from ..ports.session_log import detect_ai_system_from_command
-from ..ports.provider_resilience import ProviderErrorType
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
-from ..ports.pull_request_tracker import PRInfo
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
-from .review_validity import evaluate_review_validity
 from .session_manager import SessionManager
+from .session_launch_types import ClaimAcquisitionResult, LaunchResult
+from .session_rework_launcher import (
+    ReworkLaunchDependencies,
+    launch_rework_session as launch_rework_flow,
+)
+from .session_review_support import (
+    build_review_existing_work,
+    review_launch_validity,
+)
+from .session_worktree_diagnostics import (
+    build_worktree_error_comment,
+    write_worktree_diagnostic,
+)
 from .transition_log import log_transition
 
 logger = logging.getLogger(__name__)
@@ -110,72 +106,6 @@ def detect_existing_work(
     except Exception as e:
         logger.warning("Failed to detect existing work: %s", e)
         return None
-
-
-def _build_worktree_error_comment(error: WorktreePreparationError) -> str:
-    """Build a comment explaining the worktree preparation failure."""
-    safe_path = error.path.name
-    return (
-        f"## Worktree Preparation Failed\n\n"
-        f"The orchestrator could not prepare the worktree for this issue.\n\n"
-        f"**Error:** {error}\n\n"
-        f"**Worktree path:** `{safe_path}`\n\n"
-        f"**Details:** `.issue-orchestrator/diagnostics/worktree-prep.json` in that worktree; "
-        f"look under your `worktree_base` (default: parent of the repo) for `{safe_path}`.\n\n"
-        f"This usually means stale files from a previous session could not be deleted. "
-        f"Please manually check and clean the worktree, then remove the `blocked-needs-human` label "
-        f"to allow the orchestrator to retry."
-    )
-
-
-def _write_worktree_diagnostic(error: WorktreePreparationError) -> None:
-    """Write a local diagnostic file with full details (not posted to GitHub)."""
-    diag_dir = error.path / ".issue-orchestrator" / "diagnostics"
-    try:
-        diag_dir.mkdir(parents=True, exist_ok=True)
-        diag_path = diag_dir / "worktree-prep.json"
-        diag_path.write_text(
-            json.dumps(
-                {
-                    "issue_number": error.issue_number,
-                    "worktree_path": str(error.path),
-                    "error": str(error),
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-    except Exception as exc:
-        logger.warning("Failed to write worktree diagnostics: %s", exc)
-
-
-@dataclass
-class LaunchResult:
-    """Result of a session launch attempt."""
-
-    session: Optional[Session]
-    success: bool
-    reason: str = ""
-    keep_queued: bool = False  # If True, don't remove from pending queue (terminal already running)
-
-
-@dataclass
-class ClaimAcquisitionResult:
-    """Result of attempting to acquire a distributed claim for an issue.
-
-    Used to track claim state through the launch process so cleanup
-    can release claims on failure.
-    """
-
-    success: bool
-    lease_id: str | None = None
-    lease_acquired_at: datetime | None = None
-    lease_expires_at: datetime | None = None
-    error: str | None = None
-
-    def as_launch_failure(self) -> LaunchResult:
-        """Convert a failed claim to a LaunchResult."""
-        return LaunchResult(None, False, self.error or "Claim acquisition failed")
 
 
 class SessionLauncher:
@@ -716,7 +646,7 @@ class SessionLauncher:
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
+            write_worktree_diagnostic(ctx.error)
             needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
@@ -726,7 +656,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=issue.number,
-                    comment=_build_worktree_error_comment(ctx.error),
+                    comment=build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_issue")
@@ -1030,7 +960,12 @@ class SessionLauncher:
 
         # Check for conflicts
         session_name = f"review-{review.pr_number}"
-        validity = self._review_launch_validity(review)
+        validity = review_launch_validity(
+            review=review,
+            config=self.config,
+            repository_host=self.repository_host,
+            label_manager=self._lm,
+        )
         if not validity.valid:
             log_transition(
                 "review",
@@ -1119,7 +1054,7 @@ class SessionLauncher:
         if ctx.error:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
+            write_worktree_diagnostic(ctx.error)
             needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
@@ -1129,7 +1064,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=review.issue_number,
-                    comment=_build_worktree_error_comment(ctx.error),
+                    comment=build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_review")
@@ -1198,7 +1133,12 @@ class SessionLauncher:
             claude_project_dir.exists(),
         )
 
-        existing_work = self._build_review_existing_work(worktree_info, review.pr_number)
+        existing_work = build_review_existing_work(
+            worktree_info=worktree_info,
+            pr_number=review.pr_number,
+            repository_host=self.repository_host,
+            keep_current_label=self._lm.review_keep_approach,
+        )
 
         # Build command
         rendered_prompt = agent_config.render_initial_prompt(
@@ -1299,559 +1239,33 @@ class SessionLauncher:
 
         return LaunchResult(session, True)
 
-    def _build_review_existing_work(
-        self,
-        worktree_info: WorktreeInfo,
-        pr_number: int,
-    ) -> str | None:
-        existing_work: str | None = None
-        if worktree_info.rebase_failed:
-            existing_work = (
-                "WARNING: This PR branch could not be rebased onto main due to merge conflicts. "
-                "The branch is behind main. When reviewing, consider whether merge conflicts "
-                "need to be resolved before the PR can be merged."
-            )
-            logger.warning("[launch] Rebase failed for review - PR branch is behind main")
-
-        pr_info = self.repository_host.get_pr(pr_number)
-        if not pr_info:
-            return existing_work
-
-        keep_current_label = self._lm.review_keep_approach
-        if keep_current_label not in pr_info.labels:
-            return existing_work
-
-        keep_current_note = (
-            f"REVIEWER INSTRUCTION: This PR is labeled '{keep_current_label}'. "
-            "Keep the current approach. Do not propose alternative approaches unless "
-            "the current approach cannot work or violates correctness, safety, or security. "
-            "If the current approach is invalid, fail the review with a brief note."
-        )
-        if existing_work:
-            return f"{existing_work}\n\n{keep_current_note}"
-        return keep_current_note
-
-    def _review_launch_validity(self, review: PendingReview):
-        """Load current review facts and decide whether launch is still valid."""
-        current_issue = self.repository_host.get_issue(review.issue_number)
-        if not isinstance(current_issue, IssueProtocol):
-            current_issue = None
-        current_pr = self.repository_host.get_pr(review.pr_number)
-        if not isinstance(current_pr, PRInfo):
-            current_pr = None
-        return evaluate_review_validity(
-            config=self.config,
-            label_manager=self._lm,
-            issue=current_issue,
-            pr=current_pr,
-        )
-
     def launch_rework_session(
         self,
         rework: PendingRework,
         active_sessions: list[Session],
     ) -> LaunchResult:
         """Launch a rework session to fix issues found in review."""
-        agent_config = self.config.agents.get(rework.agent_type)
-        if not agent_config:
-            return LaunchResult(None, False, f"No agent config for {rework.agent_type}")
-
-        issue_key = rework.issue_key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.REWORK)
-        issue_number = rework.resolve_issue_number()
-        if issue_number is None:
-            return LaunchResult(None, False, f"Unresolved issue number for rework {issue_key}")
-
-        if result := self._check_provider_circuit(agent_config.provider, issue_number):
-            return result
-
-        pr_number, branch_name = self._resolve_rework_pr(rework, issue_number)
-
-        # Check for conflicts
-        session_name = f"rework-{issue_number}"
-        if result := self._check_rework_conflicts(session_name, active_sessions, issue_number):
-            return result
-
-        log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
-        logger.info(
-            "[launch] Rework session identity: issue=%s issue_key=%s pr=%s agent=%s task=%s session=%s branch=%s cycle=%s",
-            issue_number,
-            issue_key,
-            pr_number,
-            rework.agent_type,
-            TaskKind.REWORK.value,
-            session_name,
-            branch_name,
-            rework.rework_cycle,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-        logger.info(
-            "[launch] Rework session key: issue=%s pr=%s session=%s session_key=%s",
-            issue_number,
-            pr_number,
-            session_name,
-            session_key.stable_id(),
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-
-        # Rework cycle N means coding attempt N+1
-        # (initial coding was attempt 1, first rework is attempt 2, etc.)
-        coding_attempt = rework.rework_cycle + 1
-        phase_name = f"coding-{coding_attempt}"
-
-        # Create and prepare worktree using WorktreeContext
-        ctx = WorktreeContext.create(
-            worktree_manager=self._worktree_manager,
+        deps = ReworkLaunchDependencies(
             config=self.config,
             events=self.events,
+            repository_host=self.repository_host,
+            worktree_manager=self._worktree_manager,
             session_output=self._session_output,
-            issue_number=issue_number,
-            issue_title=f"Rework #{pr_number}",
-            session_name=session_name,
-            agent_label=rework.agent_type,
-            branch_name=branch_name,
-            enforce_hooks=self.config.enforce_hooks,
-            pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
-            phase_name=phase_name,
+            label_manager=self._lm,
+            session_exists=self._session_exists,
+            create_session=self._create_session,
+            apply_actions=self._apply_actions,
+            worktree_reuse_options=self._worktree_reuse_options,
+            session_identity_launch_metadata=self._session_identity_launch_metadata,
+            clear_interrupted_retry_guard_label=self._clear_interrupted_retry_guard_label,
+            clear_reset_retry_pending_label=self._clear_reset_retry_pending_label,
+            clear_reset_retry_scratch_pending_label=self._clear_reset_retry_scratch_pending_label,
+            persist_session_prompt=self._persist_session_prompt,
+            wrap_provider_command=self._wrap_provider_command,
+            build_session_env=self._build_session_env,
+            check_provider_circuit=self._check_provider_circuit,
         )
-
-        # Handle worktree preparation errors
-        if ctx.error:
-            log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
-            logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self._lm.needs_human
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=issue_number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=issue_number,
-                    comment=_build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_rework")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
-                    "issue_number": issue_number,
-                    "pr_number": pr_number,
-                    "reason": str(ctx.error),
-                },
-            ))
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
-
-        # Extract values from context
-        worktree_path = ctx.worktree_path
-        worktree_info = ctx.worktree_info
-        run = ctx.run
-        claude_project_dir = ctx.claude_project_dir
-
-        # Write session metadata
-        ctx.write_worktree_note()
-        ctx.write_session_identity({
-            "task": TaskKind.REWORK.value,
-            "issue_key": issue_key.stable_id(),
-            "pr_number": pr_number,
-            "session_key": session_key.stable_id(),
-            "agent": rework.agent_type,
-            "rework_cycle": rework.rework_cycle,
-            **self._session_identity_launch_metadata(
-                agent_config,
-                extra_provider_args=None,
-            ),
-        })
-        # Rework is a coding retry attempt; clear interrupted retry guard.
-        self._clear_interrupted_retry_guard_label(
-            issue_number=issue_number,
-            mode="coding",
-            context="launch_clear_interrupted_guard_rework",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=issue_number,
-            context="launch_clear_reset_retry_pending_rework",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=issue_number,
-            context="launch_clear_reset_retry_scratch_pending_rework",
-        )
-
-        logger.info(
-            "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
-            run.run_id,
-            session_name,
-            issue_number,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-        logger.info(
-            "[launch] Rework session paths: issue=%s pr=%s worktree=%s branch=%s",
-            issue_number,
-            pr_number,
-            worktree_path,
-            branch_name,
-        )
-        logger.info(
-            "[launch] Claude project dir: session=%s path=%s exists=%s",
-            session_name,
-            claude_project_dir,
-            claude_project_dir.exists(),
-        )
-
-        # Check if rebase failed (rework branch couldn't be updated to latest main)
-        existing_work: str | None = None
-        if worktree_info.rebase_failed:
-            existing_work = (
-                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-                "The code is out of date. You should resolve the conflicts by running: "
-                "git fetch origin main && git rebase origin/main. "
-                "If conflicts occur, resolve them and continue with: git rebase --continue. "
-                "This is critical to ensure tests pass with the latest code."
-            )
-            logger.warning("[launch] Rebase failed for rework - agent will need to resolve merge conflicts")
-
-        # Copy reviewer feedback from review session to rework session (for local cache)
-        self._copy_review_feedback_to_rework(worktree_path, pr_number, run.run_dir)
-
-        # Add reviewer feedback to the prompt so agent knows what to fix
-        # Checks local file first (within cache window), falls back to GitHub API
-        reviewer_feedback = self._format_reviewer_feedback(pr_number, run_dir=run.run_dir)
-        if reviewer_feedback:
-            if existing_work:
-                existing_work = f"{existing_work}\n\n{reviewer_feedback}"
-            else:
-                existing_work = reviewer_feedback
-            logger.info("[launch] Including reviewer feedback in rework session prompt")
-
-            # Save feedback for diagnostics (per-cycle file)
-            self._session_output.save_review_feedback(
-                worktree_path=worktree_path,
-                cycle=rework.rework_cycle,
-                feedback=reviewer_feedback,
-                pr_number=pr_number,
-            )
-
-        # Build command
-        rendered_prompt = agent_config.render_initial_prompt(
-            issue_number=issue_number,
-            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
-            worktree=worktree_path,
-            pr_number=pr_number,
-            existing_work=existing_work,
-        )
-        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-        base_command = agent_config.get_command(
-            issue_number=issue_number,
-            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
-            worktree=worktree_path,
-            pr_number=pr_number,
-            existing_work=existing_work,
-            task_kind=TaskKind.REWORK.value,
-        )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(rework.agent_type, run_dir=run.run_dir.name)
-        self._session_output.update_manifest(
-            run.run_dir,
-            {
-                "completion_path": completion_path,
-                "session_prompt_path": prompt_path,
-            },
-        )
-        env_exports = self._build_session_env(
-            completion_path=completion_path,
-            session_id=run.session_name,
-            agent_label=rework.agent_type,
-            issue_number=issue_number,
-            run_dir=run.run_dir,
-            worktree_path=worktree_path,
-        )
-        command = f"{env_exports} && {base_command}"
-        logger.info(
-            "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
-            issue_number,
-            pr_number,
-            session_name,
-            worktree_path,
-            completion_path,
-            command,
-        )
-
-        # Create session
-        session_created = self._create_session(session_name, command, worktree_path, f"Rework #{issue_number}")
-        logger.info(
-            "[launch] Rework session create result: issue=%s pr=%s session=%s created=%s",
-            issue_number,
-            pr_number,
-            session_name,
-            session_created,
-        )
-
-
-        # Create issue object for session tracking
-        rework_issue = Issue(
-            number=issue_number,
-            title=f"Rework #{pr_number}",
-            labels=[rework.agent_type],
-        )
-
-        # Create session with domain identity (REWORK task type)
-        session = Session(
-            key=session_key,
-            issue=rework_issue,
-            agent_config=agent_config,
-            terminal_id=session_name,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            completion_path=completion_path,
-            agent_label=rework.agent_type,
-            pr_number=pr_number,
-            rework_cycle=rework.rework_cycle,
-        )
-
-        log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
-        logger.info("Launched rework session for issue #%d (cycle %d)", issue_number, rework.rework_cycle)
-
-        # Emit event
-        full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(make_run_scoped_event(EventName.REWORK_STARTED, {
-            "issue_number": issue_number,
-            "pr_number": pr_number,
-            "session_name": session_name,
-            "rework_cycle": rework.rework_cycle,
-            "run_id": run.run_id,
-            "run_dir": str(run.run_dir),
-            "completion_path": completion_path,
-            "completion_path_absolute": str(full_completion_path),
-            "session_prompt_path": prompt_path,
-        }))
-
-        # Update rework cycle label
-        self._update_rework_cycle_label(pr_number, issue_number, issue_key, rework.rework_cycle)
-
-        # Remove needs-rework label
-        self._apply_actions([
-            RemoveLabelAction(
-                issue_number=pr_number,
-                label=self._lm.needs_rework,
-                reason="rework started",
-            ),
-        ], context="rework_remove_needs_rework")
-        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "issue_key": issue_key.stable_id(),
-            "removed": [self._lm.needs_rework],
-        }))
-
-        return LaunchResult(session, True)
-
-    def _find_review_feedback_file(
-        self,
-        worktree_path: Path,
-        pr_number: int,
-    ) -> Path | None:
-        """Find the reviewer feedback file from the most recent review session.
-
-        Looks for review-{pr_number}__* directories and returns the path to
-        reviewer-feedback.json from the most recent one (if it exists).
-
-        Args:
-            worktree_path: Path to the worktree.
-            pr_number: The PR number to find feedback for.
-
-        Returns:
-            Path to the feedback file, or None if not found.
-        """
-        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
-        if not sessions_dir.exists():
-            return None
-
-        # Find all review session directories for this PR
-        review_prefix = f"review-{pr_number}__"
-        review_dirs = sorted(
-            [d for d in sessions_dir.iterdir() if d.is_dir() and d.name.startswith(review_prefix)],
-            key=lambda d: d.name,
-            reverse=True,  # Most recent first (timestamp suffix)
-        )
-
-        for review_dir in review_dirs:
-            feedback_file = review_dir / "reviewer-feedback.json"
-            if feedback_file.exists():
-                return feedback_file
-
-        return None
-
-    def _copy_review_feedback_to_rework(
-        self,
-        worktree_path: Path,
-        pr_number: int,
-        rework_run_dir: Path,
-    ) -> Path | None:
-        """Copy reviewer feedback from review session to rework session.
-
-        Finds the most recent review session's feedback file and copies it
-        to the rework session's run directory.
-
-        Args:
-            worktree_path: Path to the worktree.
-            pr_number: The PR number to find feedback for.
-            rework_run_dir: Path to the rework session's run directory.
-
-        Returns:
-            Path to the copied feedback file, or None if not found/failed.
-        """
-        source_file = self._find_review_feedback_file(worktree_path, pr_number)
-        if not source_file:
-            logger.debug(
-                "[launch] No review feedback file found for PR #%s in worktree %s",
-                pr_number, worktree_path
-            )
-            return None
-
-        dest_file = rework_run_dir / "reviewer-feedback.json"
-        try:
-            import shutil
-            shutil.copy2(source_file, dest_file)
-            logger.info(
-                "[launch] Copied reviewer feedback for PR #%s: %s -> %s",
-                pr_number, source_file, dest_file
-            )
-            return dest_file
-        except Exception as e:
-            logger.warning(
-                "[launch] Failed to copy reviewer feedback for PR #%s: %s",
-                pr_number, e
-            )
-            return None
-
-    def _read_local_reviewer_feedback(self, run_dir: Path) -> str | None:
-        """Read reviewer feedback from local file if within cache window.
-
-        Args:
-            run_dir: Path to the session's run directory.
-
-        Returns:
-            The review_issues text if found and within cache window, None otherwise.
-        """
-        feedback_file = run_dir / "reviewer-feedback.json"
-        if not feedback_file.exists():
-            return None
-
-        try:
-            import json
-            from datetime import datetime, timezone
-            data = json.loads(feedback_file.read_text())
-            timestamp_str = data.get("timestamp")
-            review_issues = data.get("review_issues")
-
-            if not timestamp_str or not review_issues:
-                return None
-
-            # Check if within cache window
-            cache_minutes = self.config.reviewer_feedback_cache_minutes
-            if cache_minutes < 0:
-                # Cache disabled
-                return None
-
-            feedback_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            age_minutes = (datetime.now(timezone.utc) - feedback_time).total_seconds() / 60
-
-            if age_minutes <= cache_minutes:
-                logger.info(
-                    "[launch] Using local reviewer feedback (age: %.1f min, cache window: %d min)",
-                    age_minutes, cache_minutes
-                )
-                return review_issues
-            else:
-                logger.debug(
-                    "[launch] Local feedback too old (age: %.1f min, cache window: %d min), will fetch from GitHub",
-                    age_minutes, cache_minutes
-                )
-                return None
-
-        except Exception as e:
-            logger.warning("[launch] Failed to read local reviewer feedback: %s", e)
-            return None
-
-    def _format_reviewer_feedback(
-        self,
-        pr_number: int,
-        run_dir: Path | None = None,
-    ) -> str | None:
-        """Extract and format reviewer feedback for rework prompt.
-
-        First checks for local feedback file (if run_dir provided and within
-        cache window), then falls back to fetching from GitHub API.
-
-        Uses retry with backoff when fetching from GitHub to handle eventual
-        consistency - since we're in a rework flow, we expect reviews to exist.
-
-        Args:
-            pr_number: The PR number to get reviews for.
-            run_dir: Optional path to the session's run directory for local cache.
-
-        Returns:
-            Formatted feedback string, or None if no actionable feedback found.
-        """
-        # Try local file first (if run_dir provided)
-        if run_dir:
-            local_feedback = self._read_local_reviewer_feedback(run_dir)
-            if local_feedback:
-                # Format local feedback
-                return f"REVIEWER FEEDBACK (address these issues):\n\n{local_feedback}"
-
-        # Fall back to GitHub API with retry for eventual consistency
-        backoff_delays = [1.0, 2.0, 4.0]
-        feedback_reviews = []
-
-        for attempt, delay in enumerate(backoff_delays):
-            try:
-                reviews = self.repository_host.get_pr_reviews(pr_number)
-            except Exception as e:
-                logger.warning("Failed to fetch PR reviews for PR #%s: %s", pr_number, e)
-                return None
-
-            # Filter to reviews with actionable feedback
-            feedback_reviews = [
-                r for r in reviews
-                if r.get("state") in (ReviewState.CHANGES_REQUESTED.value, ReviewState.COMMENTED.value)
-                and r.get("body", "").strip()
-            ]
-
-            if feedback_reviews:
-                if attempt > 0:
-                    logger.info(
-                        "[launch] Found reviewer feedback after %d retry attempt(s) for PR #%s",
-                        attempt, pr_number
-                    )
-                break
-
-            # No feedback found yet - wait and retry for eventual consistency
-            if attempt < len(backoff_delays) - 1:
-                logger.debug(
-                    "[launch] No reviewer feedback found for PR #%s, retrying in %.1fs (attempt %d/%d)",
-                    pr_number, delay, attempt + 1, len(backoff_delays)
-                )
-                time.sleep(delay)
-
-        if not feedback_reviews:
-            logger.info(
-                "[launch] No reviewer feedback found for PR #%s after %d attempts",
-                pr_number, len(backoff_delays)
-            )
-            return None
-
-        lines = ["REVIEWER FEEDBACK (address these issues):"]
-        for review in feedback_reviews:
-            reviewer = review.get("user", {}).get("login", "reviewer")
-            state = review.get("state", "")
-            body = review.get("body", "").strip()
-            lines.append(f"\n[{reviewer} - {state}]")
-            lines.append(body)
-
-        return "\n".join(lines)
+        return launch_rework_flow(rework, active_sessions, deps)
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""
@@ -1956,39 +1370,6 @@ class SessionLauncher:
         ], context="provider_unavailable")
         return LaunchResult(None, False, f"Provider unavailable: {provider}")
 
-    def _check_rework_conflicts(
-        self,
-        session_name: str,
-        active_sessions: list[Session],
-        issue_number: int,
-    ) -> Optional["LaunchResult"]:
-        if any(s.terminal_id == session_name for s in active_sessions):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
-        if self._session_exists(session_name):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
-        return None
-
-    def _resolve_rework_pr(self, rework: PendingRework, issue_number: int) -> tuple[int, str]:
-        """Resolve PR number and branch for a rework session.
-
-        Uses the scanner-provided pr_number when available, falling back
-        to searching for PRs by issue number.
-        """
-        if rework.pr_number:
-            pr_info = self.repository_host.get_pr(rework.pr_number)
-            if pr_info:
-                return pr_info.number, pr_info.branch or f"{issue_number}-rework"
-        return self._resolve_rework_pr_details(issue_number)
-
-    def _resolve_rework_pr_details(self, issue_number: int) -> tuple[int, str]:
-        prs = self.repository_host.get_prs_for_issue(issue_number)
-        if not prs:
-            return issue_number, f"{issue_number}-rework"
-        pr = prs[0]
-        return pr.number, pr.branch
-
     def _trigger_issue_session_state_transitions(
         self,
         issue: "IssueProtocol",
@@ -2033,792 +1414,3 @@ class SessionLauncher:
         if review_machine.state == ReviewState.PENDING.value:
             logger.debug(f"[STATE_MACHINE] PR #{pr_number}: PENDING -> IN_REVIEW")
             review_machine.start_review()
-
-    def _update_rework_cycle_label(
-        self, pr_number: int, issue_number: int, issue_key: IssueKey, cycle: int,
-    ) -> None:
-        """Update the rework cycle label on a PR."""
-        actions: list[Action] = []
-        removed: list[str] = []
-        for i in range(1, cycle):
-            label = self._lm.rework_cycle(i)
-            removed.append(label)
-            actions.append(RemoveLabelAction(
-                issue_number=pr_number,
-                label=label,
-                reason="rework cycle update",
-            ))
-        added_label = self._lm.rework_cycle(cycle)
-        actions.append(AddLabelAction(
-            issue_number=pr_number,
-            label=added_label,
-            reason="rework cycle update",
-        ))
-        self._apply_actions(actions, context="rework_cycle_label")
-        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "issue_key": issue_key.stable_id(),
-            "added": [added_label],
-            "removed": removed,
-        }))
-
-
-def _run_session_analysis(run_dir: Path) -> None:
-    """Run the session analyzer and write analysis.json (best-effort)."""
-    from .session_analyzer import analyze, write_analysis
-    from ..domain.run_manifest import RunManifest
-
-    try:
-        manifest = RunManifest.load(run_dir)
-        analysis = analyze(manifest)
-        write_analysis(run_dir, analysis)
-        logger.info("[ANALYSIS] %s — %s", run_dir.name, analysis.headline[:80])
-    except FileNotFoundError:
-        logger.debug("[ANALYSIS] No manifest in %s — skipping analysis", run_dir.name)
-    except Exception:
-        logger.warning("[ANALYSIS] Failed to analyze %s", run_dir.name, exc_info=True)
-
-
-def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
-    session: Session,
-    status: SessionStatus,
-    state: "OrchestratorState",
-    completion_handler: "CompletionHandler",
-    action_applier: "ActionApplier",
-    observer: "SessionObserver",
-    worktree_manager: Optional[WorktreeManager],
-    kill_session_fn: Callable[[str], None],
-    config: Config,
-    session_output: SessionOutput,
-    pr_url_hint: Optional[str] = None,
-    processing_errors: Optional[list[str]] = None,
-    diagnostic_path: Optional[str] = None,
-    validation_error: Optional[str] = None,
-    validation_error_file: Optional[str] = None,
-    review_exchange_completed: bool = False,
-    review_exchange_halted: bool = False,
-    blocked_label: Optional[str] = None,
-    blocked_reason: Optional[str] = None,
-    completion_detail: Optional[dict[str, Any]] = None,
-    claim_manager: Optional["ClaimManager"] = None,
-    events: Optional[EventSink] = None,
-) -> None:
-    """Handle session completion - moved from Orchestrator per method table.
-
-    Complexity is inherent - this processes validation retries, completion,
-    actions, observer cleanup, claim release, history, and failure tracking.
-    These are sequential steps that share the session context.
-
-    Args:
-        session: The completed session
-        status: The session status
-        state: Orchestrator state (active_sessions, session_history, etc.)
-        completion_handler: For processing completion
-        action_applier: For applying actions
-        observer: For cleanup
-        worktree_manager: For worktree removal
-        kill_session_fn: Function to kill terminal session
-        session_output: For session artifact management
-        config: Configuration
-        pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
-        processing_errors: Errors from completion processor (push failed, PR creation failed, etc.)
-        diagnostic_path: Path to detailed failure diagnostic file (in worktree)
-        validation_error: Validation error message (for retry prompt)
-        validation_error_file: Path to validation error file (for retry prompt)
-        claim_manager: Optional ClaimManager for releasing claims on completion
-        events: Optional EventSink for emitting claim events
-    """
-    from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
-
-    name = session.terminal_id
-    entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
-    log_transition(entity, session.issue.number, "ACTIVE", status.value.upper(), f"runtime={session.runtime_minutes}min")
-
-    # Remove by session name, NOT issue number - multiple sessions can share an issue number
-    state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
-
-    # Handle validation retry - queue for re-launch instead of normal completion
-    if status == SessionStatus.NEEDS_VALIDATION_RETRY:
-        logger.info(
-            "[COMPLETION] Issue #%d needs validation retry (attempt %d), queueing for re-launch",
-            session.issue.number,
-            session.validation_retry_count + 1,
-        )
-        completion_handler.mark_session_retry(session, reason="validation_retry")
-        state.pending_validation_retries.append(PendingValidationRetry(
-            issue_number=session.issue.number,
-            issue_title=session.issue.title,
-            agent_label=session.agent_label or "",
-            worktree_path=str(session.worktree_path),
-            branch_name=session.branch_name,
-            original_prompt=session.original_prompt,
-            validation_error=validation_error or "",
-            validation_error_file=validation_error_file,
-            retry_count=session.validation_retry_count,
-            validation_cmd=config.validation_cmd if hasattr(config, 'validation_cmd') else None,
-        ))
-        # Kill the terminal session but don't cleanup worktree (agent will continue there)
-        kill_session_fn(session.terminal_id)
-        return  # Skip normal completion processing
-
-    # Process completion through CompletionHandler (includes policy decisions)
-    if status == SessionStatus.COMPLETED:
-        state.completed_today.append(session.issue.number)
-    result = completion_handler.process_completion(
-        session, status, pr_url_hint=pr_url_hint,
-        processing_errors=processing_errors,
-        diagnostic_path=diagnostic_path,
-        review_exchange_completed=review_exchange_completed,
-        review_exchange_halted=review_exchange_halted,
-        blocked_label=blocked_label,
-        blocked_reason=blocked_reason,
-        completion_detail=completion_detail,
-    )
-    if session.worktree_path:
-        run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
-        if run_dir:
-            session_output.attach_claude_log(run_dir)
-            _run_session_analysis(run_dir)
-        else:
-            logger.warning(
-                "[%s] No session output dir found - Claude log won't be attached",
-                session.terminal_id,
-            )
-
-    # Apply completion actions (from CompletionHandler policy)
-    if result.actions:
-        logger.info(
-            "[COMPLETION] Applying %d actions for issue #%d status=%s: %s",
-            len(result.actions),
-            session.issue.number,
-            status.value,
-            [type(a).__name__ for a in result.actions],
-        )
-        action_applier.apply_all(list(result.actions))
-    else:
-        logger.warning(
-            "[COMPLETION] No actions generated for issue #%d status=%s",
-            session.issue.number,
-            status.value,
-        )
-
-    # Observer handles session-level cleanup (kill sessions, close tabs)
-    observer.handle_completion(session, status)
-
-    # Release claim if session had one
-    if claim_manager and session.lease_id:
-        try:
-            claim_manager.release_claim(session.issue.number, session.lease_id)
-            logger.info(
-                "[COMPLETION] Released claim for issue #%d: lease_id=%s",
-                session.issue.number,
-                session.lease_id,
-            )
-            if events:
-                events.publish(make_trace_event(
-                    EventName.CLAIM_RELEASED,
-                    {
-                        "issue_number": session.issue.number,
-                        "lease_id": session.lease_id,
-                        "status": status.value,
-                    },
-                ))
-        except Exception as e:
-            logger.warning(
-                "[COMPLETION] Failed to release claim for issue #%d: %s",
-                session.issue.number,
-                e,
-            )
-
-    state.session_history.append(result.history_entry)
-    if result.should_defer_cleanup and result.pending_cleanup:
-        state.pending_cleanups.append(result.pending_cleanup)
-    else:
-        # Record immediate cleanup as a fact for the Planner to handle
-        from ..domain.models import ImmediateCleanup
-        state.immediate_cleanups.append(ImmediateCleanup(
-            issue_number=session.issue.number,
-            terminal_id=session.terminal_id,
-            worktree_path=str(session.worktree_path),
-            reason=status.value,
-        ))
-
-    if result.should_queue_review and result.pr_url and result.pr_number:
-        state.discovered_reviews.append(DiscoveredReview(
-            session.issue.number, result.pr_number, result.pr_url, session.branch_name,
-            agent_label=session.agent_label,
-            issue_key=session.issue.key.stable_id(),
-        ))
-    if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-        state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
-        # Track failed issues to prevent immediate retry (cleared on cache refresh)
-        state.failed_this_cycle.add(session.issue.number)
-        logger.info(
-            "[COMPLETION] Issue #%d added to failed_this_cycle (prevents retry until cache refresh)",
-            session.issue.number,
-        )
-
-        # Surface AI session logs for debugging
-        _surface_failure_context(session, status)
-
-
-def _surface_failure_context(session: Session, status: SessionStatus) -> None:
-    """Surface AI session logs when a session fails.
-
-    Extracts and logs relevant failure context from the AI system's logs
-    to help users understand why a session failed.
-    """
-    try:
-        from ..adapters.session_log.registry import get_log_provider
-        from ..ports.session_log import detect_ai_system_from_command
-
-        # Detect AI system from the command used to launch the session
-        ai_system = detect_ai_system_from_command(session.agent_config.command) or "claude-code"
-        provider = get_log_provider(ai_system)
-
-        # Build diagnostic header
-        diag_lines = [
-            f"## Session Failure Diagnostic for Issue #{session.issue.number}",
-            f"- Status: {status.value}",
-            f"- Agent: {session.agent_label or 'unknown'}",
-            f"- AI System: {ai_system}",
-            f"- Permission Mode: {session.agent_config.permission_mode}",
-            f"- Worktree: {session.worktree_path}",
-            f"- Runtime: {session.runtime_minutes} minutes",
-        ]
-
-        # Check for common misconfigurations
-        if session.agent_config.permission_mode == "default":
-            diag_lines.append("")
-            diag_lines.append("⚠️  WARNING: permission_mode is 'default' - Claude will prompt for permissions!")
-            diag_lines.append("   This causes sessions to hang/fail in non-interactive mode.")
-            diag_lines.append("   FIX: Add 'permission_mode: bypassPermissions' to your agent config in YAML.")
-
-        # Get log path and context
-        log_path = None
-        context = None
-        if provider:
-            log_path = provider.get_log_path(session.worktree_path, session.terminal_id)
-            if log_path:
-                diag_lines.append(f"- Log file: {log_path}")
-                context = provider.get_failure_context(log_path)
-            else:
-                diag_lines.append(f"- Log file: NOT FOUND (check ~/.claude/projects/)")
-
-        if context:
-            diag_lines.append("")
-            diag_lines.append(context)
-        else:
-            diag_lines.append("")
-            diag_lines.append("No detailed failure context available from AI logs.")
-
-        # Add troubleshooting hints
-        diag_lines.append("")
-        diag_lines.append("## Next Steps")
-        diag_lines.append("1. Check the log file above for errors")
-        diag_lines.append("2. Run: grep '[FAILURE_CONTEXT]' ~/.issue-orchestrator.log")
-        diag_lines.append("3. See troubleshooting docs: /troubleshooting skill")
-
-        logger.warning(
-            "[FAILURE_CONTEXT] Issue #%d (%s):\n%s",
-            session.issue.number,
-            status.value,
-            "\n".join(diag_lines),
-        )
-
-    except Exception as e:
-        logger.warning("[FAILURE_CONTEXT] Could not extract failure context for #%d: %s", session.issue.number, e)
-
-
-def orchestrator_launch_review_session(
-    review: PendingReview,
-    state: "OrchestratorState",
-    session_launcher: SessionLauncher,
-    session_restorer: "SessionRestorer",
-) -> Optional[Session]:
-    """Orchestrator wrapper for launching review sessions - moved per method table.
-
-    Args:
-        review: The pending review to launch
-        state: Orchestrator state (active_sessions, pending_reviews)
-        session_launcher: For launching the actual session
-        session_restorer: For restoring orphaned terminals
-
-    Returns:
-        The launched session or None
-    """
-    result = session_launcher.launch_review_session(review, state.active_sessions)
-    # Always remove from pending after attempting launch
-    state.pending_reviews = [r for r in state.pending_reviews if r.pr_number != review.pr_number]
-    if result.success and result.session:
-        _append_unique_active_sessions(state.active_sessions, [result.session])
-    elif result.keep_queued:
-        # Terminal exists but we can't track it - try to restore/adopt it
-        session_name = f"review-{review.pr_number}"
-        restored = session_restorer.restore_sessions(
-            running=[{"issue_number": review.issue_number, "tab_name": session_name, "is_review": True}],
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            _append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
-    return result.session if result.success else None
-
-
-def orchestrator_launch_rework_session(
-    rework: PendingRework,
-    state: "OrchestratorState",
-    session_launcher: SessionLauncher,
-    session_restorer: "SessionRestorer",
-) -> Optional[Session]:
-    """Orchestrator wrapper for launching rework sessions - moved per method table.
-
-    Args:
-        rework: The pending rework to launch
-        state: Orchestrator state (active_sessions, pending_reworks)
-        session_launcher: For launching the actual session
-        session_restorer: For restoring orphaned terminals
-
-    Returns:
-        The launched session or None
-    """
-    result = session_launcher.launch_rework_session(rework, state.active_sessions)
-    # Always remove from pending after attempting launch
-    state.pending_reworks = [r for r in state.pending_reworks if r.issue_key != rework.issue_key]
-    if result.success and result.session:
-        _append_unique_active_sessions(state.active_sessions, [result.session])
-    elif result.keep_queued:
-        # Terminal exists but we can't track it - try to restore/adopt it
-        issue_number = rework.resolve_issue_number()
-        if issue_number is None:
-            logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
-            return None
-        session_name = f"rework-{issue_number}"
-        restored = session_restorer.restore_sessions(
-            running=[{"issue_number": issue_number, "tab_name": session_name, "is_review": False}],
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            _append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
-    return result.session if result.success else None
-
-
-def process_active_sessions(
-    state: "OrchestratorState",
-    observer: "SessionObserver",
-    session_controller: "SessionController",
-    completion_handler: "CompletionHandler",
-    action_applier: "ActionApplier",
-    worktree_manager: Optional[WorktreeManager],
-    kill_session_fn: Callable[[str], None],
-    config: Config,
-) -> None:
-    """Process active sessions - moved from Orchestrator per method table.
-
-    DEPRECATED: Use observe_active_sessions() for the new async completion flow.
-    This function is kept for backwards compatibility during migration.
-
-    Args:
-        state: Orchestrator state (active_sessions)
-        observer: Session observer for checking session status
-        session_controller: For deciding outcome
-        completion_handler: For processing completion
-        action_applier: For applying actions
-        worktree_manager: For worktree cleanup
-        kill_session_fn: Function to kill terminal session
-        config: Configuration
-    """
-    import time
-    from ..observation.observation import SessionObservation
-
-    for session in list(state.active_sessions):
-        session_start = time.monotonic()
-        obs = observer.observe_session(session)
-        if obs.observation == SessionObservation.RUNNING:
-            continue
-        decision = session_controller.decide_outcome(
-            obs, session.worktree_path, session.issue.number,
-            session.issue.title, session.terminal_id, session.completion_path,
-            validation_retry_count=session.validation_retry_count
-        )
-        # Extract pr_url, errors, and diagnostic_path from completion processor result
-        pr_url_hint = None
-        processing_errors = None
-        diagnostic_path = None
-        validation_error = decision.validation_error
-        validation_error_file = decision.validation_error_file
-        review_exchange_completed = False
-        review_exchange_halted = False
-        if decision.processing_result:
-            if decision.processing_result.pr_url:
-                pr_url_hint = decision.processing_result.pr_url
-            if decision.processing_result.errors:
-                processing_errors = decision.processing_result.errors
-            if decision.processing_result.diagnostic_path:
-                diagnostic_path = decision.processing_result.diagnostic_path
-            review_exchange_completed = decision.processing_result.review_exchange_completed
-            review_exchange_halted = decision.processing_result.review_exchange_halted
-        handle_session_completion(
-            session, decision.status, state, completion_handler, action_applier,
-            observer, worktree_manager, kill_session_fn, config,
-            session_output=session_controller.session_output,
-            pr_url_hint=pr_url_hint, processing_errors=processing_errors,
-            diagnostic_path=diagnostic_path,
-            validation_error=validation_error,
-            validation_error_file=str(validation_error_file) if validation_error_file else None,
-            review_exchange_completed=review_exchange_completed,
-            review_exchange_halted=review_exchange_halted,
-            blocked_label=decision.blocked_label,
-            blocked_reason=decision.blocked_reason,
-            completion_detail=decision.completion_detail,
-        )
-        session_elapsed = time.monotonic() - session_start
-        if session_elapsed > 5:
-            logger.warning(
-                "[LOOP] Session handling took %.1fs (session=%s issue=%s observation=%s)",
-                session_elapsed,
-                session.terminal_id,
-                session.issue.number,
-                obs.observation.value,
-            )
-
-
-def _log_observation(session: Session, decision: "ObservationDecision") -> None:
-    logger.info(
-        "[OBSERVE] Session completed: session=%s issue=%d status=%s has_completion=%s",
-        session.terminal_id,
-        session.issue.number,
-        decision.status.value,
-        decision.observed is not None,
-    )
-
-
-def _publish_observation_event(
-    session: Session,
-    decision: "ObservationDecision",
-    events: Optional[EventSink],
-) -> None:
-    if not events:
-        return
-    events.publish(make_trace_event(EventName.OBSERVATION_RESULT, {
-        "issue_number": session.issue.number,
-        "session_name": session.terminal_id,
-        "status": decision.status.value,
-        "has_completion": decision.observed is not None,
-        "recovered_from_timeout": decision.recovered_from_timeout,
-    }))
-
-
-def _remove_active_session(state: "OrchestratorState", session: Session) -> None:
-    state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
-
-
-def _kill_session(kill_session_fn: Callable[[str], None], session: Session) -> None:
-    try:
-        kill_session_fn(session.terminal_id)
-        logger.debug("[OBSERVE] Killed terminal: %s", session.terminal_id)
-    except Exception as exc:
-        logger.warning("[OBSERVE] Failed to kill terminal %s: %s", session.terminal_id, exc)
-
-
-def _release_claim_if_needed(
-    session: Session,
-    decision: "ObservationDecision",
-    claim_manager: Optional["ClaimManager"],
-    events: Optional[EventSink],
-) -> None:
-    if not claim_manager or not session.lease_id:
-        return
-    try:
-        claim_manager.release_claim(session.issue.number, session.lease_id)
-        logger.info(
-            "[OBSERVE] Released claim for issue #%d: lease_id=%s",
-            session.issue.number,
-            session.lease_id,
-        )
-        if events:
-            events.publish(make_trace_event(
-                EventName.CLAIM_RELEASED,
-                {
-                    "issue_number": session.issue.number,
-                    "lease_id": session.lease_id,
-                    "status": decision.status.value,
-                },
-            ))
-    except Exception as exc:
-        logger.warning(
-            "[OBSERVE] Failed to release claim for issue #%d: %s",
-            session.issue.number,
-            exc,
-        )
-
-
-def _update_provider_resilience(
-    decision: "ObservationDecision",
-    provider_resilience: Optional["ProviderResilienceManager"],
-) -> None:
-    if not provider_resilience or not decision.provider_status:
-        return
-    provider = decision.provider_status.provider
-    if decision.provider_status.succeeded:
-        provider_resilience.record_success(provider)
-        return
-    if decision.provider_status.error_type == ProviderErrorType.TRANSIENT:
-        provider_resilience.record_transient_failure(
-            provider,
-            error_summary=decision.provider_status.last_error_summary,
-            attempts=decision.provider_status.attempts,
-        )
-
-
-def _record_observed_completion(
-    state: "OrchestratorState",
-    session: Session,
-    decision: "ObservationDecision",
-) -> None:
-    if decision.observed:
-        state.observed_completions.append(decision.observed)
-        logger.info(
-            "[OBSERVE] Collected completion: issue=%d outcome=%s needs_publish=%s",
-            session.issue.number,
-            decision.observed.outcome,
-            decision.observed.needs_publish,
-        )
-        return
-    from ..domain.models import DiscoveredFailure
-    state.discovered_failures.append(DiscoveredFailure(
-        session.issue.number,
-        session.issue.title,
-        decision.status.value,
-    ))
-    state.failed_this_cycle.add(session.issue.number)
-    logger.warning(
-        "[OBSERVE] No completion record for issue #%d, status=%s",
-        session.issue.number,
-        decision.status.value,
-    )
-
-
-def _warn_if_slow(obs_elapsed: float, session: Session) -> None:
-    if obs_elapsed <= 1.0:
-        return
-    logger.warning(
-        "[OBSERVE] Session observation took %.1fs (session=%s issue=%s) - should be <1s",
-        obs_elapsed,
-        session.terminal_id,
-        session.issue.number,
-    )
-
-
-def _append_unique_active_sessions(
-    active_sessions: list[Session],
-    incoming: list[Session],
-) -> int:
-    """Append sessions while preserving unique terminal identity."""
-    existing_ids = {s.terminal_id for s in active_sessions}
-    added = 0
-    for session in incoming:
-        if session.terminal_id in existing_ids:
-            logger.warning(
-                "[ACTIVE_SESSIONS] Duplicate terminal suppressed: %s (issue=%s)",
-                session.terminal_id,
-                session.issue.number,
-            )
-            continue
-        active_sessions.append(session)
-        existing_ids.add(session.terminal_id)
-        added += 1
-    return added
-
-
-def _observe_active_session(
-    state: "OrchestratorState",
-    session: Session,
-    observer: "SessionObserver",
-    completion_observer: "CompletionObserver",
-    kill_session_fn: Callable[[str], None],
-    claim_manager: Optional["ClaimManager"],
-    events: Optional[EventSink],
-    provider_resilience: Optional["ProviderResilienceManager"],
-) -> None:
-    import time
-    from ..observation.observation import SessionObservation
-
-    obs_start = time.monotonic()
-    obs = observer.observe_session(session)
-    if obs.observation == SessionObservation.RUNNING:
-        return
-
-    decision = completion_observer.observe_completion(session, obs)
-
-    _log_observation(session, decision)
-    _publish_observation_event(session, decision, events)
-    _remove_active_session(state, session)
-    _kill_session(kill_session_fn, session)
-    _release_claim_if_needed(session, decision, claim_manager, events)
-    _update_provider_resilience(decision, provider_resilience)
-    _record_observed_completion(state, session, decision)
-
-    obs_elapsed = time.monotonic() - obs_start
-    _warn_if_slow(obs_elapsed, session)
-
-
-def observe_active_sessions(
-    state: "OrchestratorState",
-    observer: "SessionObserver",
-    completion_observer: "CompletionObserver",
-    kill_session_fn: Callable[[str], None],
-    claim_manager: Optional["ClaimManager"] = None,
-    events: Optional[EventSink] = None,
-    provider_resilience: Optional["ProviderResilienceManager"] = None,
-) -> None:
-    """Observe active sessions and collect completion facts (fast, no I/O-heavy operations).
-
-    This is Phase 1 of the async completion flow:
-    1. Observe each session to detect termination
-    2. For terminated sessions, use CompletionObserver to read completion.json
-    3. Collect ObservedCompletion facts into state.observed_completions
-    4. Remove sessions from active tracking and kill terminals
-
-    The Planner will see observed_completions and:
-    - Plan immediate label updates (remove in-progress, add pr-pending/blocked)
-    - Create PublishJobs for background execution
-
-    Args:
-        state: Orchestrator state (active_sessions, observed_completions)
-        observer: Session observer for checking session status
-        completion_observer: For reading completion.json (no execution)
-        kill_session_fn: Function to kill terminal session
-        claim_manager: Optional ClaimManager for releasing claims
-        events: Optional EventSink for emitting events
-    """
-    for session in list(state.active_sessions):
-        _observe_active_session(
-            state=state,
-            session=session,
-            observer=observer,
-            completion_observer=completion_observer,
-            kill_session_fn=kill_session_fn,
-            claim_manager=claim_manager,
-            events=events,
-            provider_resilience=provider_resilience,
-        )
-
-
-def launch_triage_session(
-    triage: PendingTriageReview,
-    config: Config,
-    launch_session_fn: Callable[[Issue], Optional[Session]],
-) -> None:
-    """Launch triage session - moved from Orchestrator per method table.
-
-    Args:
-        triage: The pending triage review
-        config: Configuration with triage agent settings
-        launch_session_fn: Function to launch issue sessions
-    """
-    agent = config.triage_review_agent
-    if not agent or agent not in config.agents:
-        raise ValueError(f"Invalid triage agent: {agent}")
-    launch_session_fn(Issue(triage.issue_number, triage.title, [agent]))
-
-
-def session_launcher_callback(
-    session_type: "SessionType",
-    number: int,
-    launch_issue_fn: Callable[[int], Optional[Session]],
-    launch_review_fn: Callable[[int], Optional[Session]],
-    launch_rework_fn: Callable[[int], Optional[Session]],
-    launch_triage_fn: Callable[[int], Optional[Session]],
-) -> Optional[Session]:
-    """Session launcher callback - moved per method table."""
-    from .session_manager import SessionType
-    handlers = {
-        SessionType.ISSUE: launch_issue_fn,
-        SessionType.REVIEW: launch_review_fn,
-        SessionType.REWORK: launch_rework_fn,
-        SessionType.TRIAGE: launch_triage_fn,
-    }
-    return handlers.get(session_type, lambda n: None)(number)
-
-
-def restore_running_sessions(
-    running: list["DiscoveredSession"],
-    active_sessions: list[Session],
-    session_restorer: "SessionRestorer",
-) -> None:
-    """Restore running sessions - moved per method table."""
-    restored = session_restorer.restore_sessions(running, active_sessions)
-    _append_unique_active_sessions(active_sessions, restored)
-
-
-def parse_session_ref(
-    session_name: str,
-    operation: str,
-    events: EventSink,
-):
-    """Parse session ref - moved per method table."""
-    from .session_manager import SessionRef
-    try:
-        return SessionRef.from_name(session_name)
-    except ValueError as e:
-        from ..events import EventName
-        from ..ports import make_trace_event
-        events.publish(make_trace_event(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)}))
-        raise
-
-
-def create_session(
-    name: str,
-    cmd: str,
-    wd: Path,
-    title: str | None,
-    session_manager: SessionManager,
-    events: EventSink,
-) -> bool:
-    """Create session - moved per method table."""
-    from .session_manager import SessionContext
-    ref = parse_session_ref(name, "create", events)
-    return session_manager.start(SessionContext(ref=ref, command=cmd, working_dir=wd, title=title))
-
-
-def session_exists(name: str, session_manager: SessionManager, events: EventSink) -> bool:
-    """Check if session exists - moved per method table."""
-    return session_manager.exists(parse_session_ref(name, "exists", events))
-
-
-def kill_session(name: str, session_manager: SessionManager, events: EventSink) -> None:
-    """Kill session - moved per method table."""
-    session_manager.stop(parse_session_ref(name, "kill", events))
-
-
-def get_session_machine(name: str, n: int, timeout: int, state_machines: "StateMachineManager") -> Optional["SessionStateMachine"]:
-    """Get session state machine - moved per method table."""
-    return state_machines.get_session_machine(name, n, timeout)
-
-
-def orchestrator_launch_session(
-    issue: IssueProtocol,
-    state: "OrchestratorState",
-    session_launcher: SessionLauncher,
-) -> Optional[Session]:
-    """Launch session wrapper - moved per method table.
-
-    Args:
-        issue: The issue to launch a session for
-        state: Orchestrator state (active_sessions)
-        session_launcher: For launching the actual session
-
-    Returns:
-        The launched session or None
-    """
-    result = session_launcher.launch_issue_session(issue, state.active_sessions)
-    if result.success and result.session:
-        _append_unique_active_sessions(state.active_sessions, [result.session])
-    return result.session if result.success else None
