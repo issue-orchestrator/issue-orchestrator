@@ -65,7 +65,7 @@ class TerminalRecordingWriter:
         self._clock = time.monotonic if clock is None else clock
         self._started = self._clock() if started_at is None else started_at
         if initial_rows is not None and initial_cols is not None:
-            self.write_resize(rows=initial_rows, cols=initial_cols)
+            self.write_resize(rows=initial_rows, cols=initial_cols, elapsed_ms=0)
 
     @property
     def name(self) -> str:

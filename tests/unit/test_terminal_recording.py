@@ -28,8 +28,9 @@ def test_terminal_recording_writer_flushes_events_immediately(tmp_path) -> None:
 
 def test_terminal_recording_writer_records_initial_geometry_first(tmp_path) -> None:
     recording_path = tmp_path / "terminal-recording.jsonl"
+    clock = IncrementingClock(now=100.0, step_seconds=0.002)
 
-    writer = TerminalRecordingWriter(recording_path, initial_rows=40, initial_cols=120)
+    writer = TerminalRecordingWriter(recording_path, initial_rows=40, initial_cols=120, clock=clock)
     writer.write_output(b"hello\n")
     writer.close()
 
