@@ -277,6 +277,13 @@ class EventName(str, Enum):
     PUBLISH_JOB_SUCCEEDED = "publish_job.succeeded"  # Job completed successfully
     PUBLISH_JOB_FAILED = "publish_job.failed"  # Job failed
 
+    # Synchronous completion processor publish outcome (push or PR create).
+    # Emitted with ``stage`` = "push_branch" | "create_pr" and a human-readable
+    # ``error`` string so the timeline can surface the actual cause of a
+    # "Push or PR creation failed" card without the operator having to crack
+    # open failure-diagnostic-*.json.
+    PUBLISH_FAILED = "publish.failed"
+
     # =========================================================================
     # Resolver (identity resolution)
     # =========================================================================

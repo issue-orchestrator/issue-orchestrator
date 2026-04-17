@@ -1336,6 +1336,40 @@ class TestCompletionProcessorGitActions:
         assert "Orchestrator Processing Failed" in comment
         assert "Push failed" in comment
 
+    def test_push_failure_emits_publish_failed_event(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        """On push failure a publish.failed trace event carries the real error."""
+        mock_git_adapter.push.return_value = PushResult(
+            success=False,
+            branch="issue-123",
+            remote="origin",
+            message="git command timed out: pre-push hook stuck",
+            retryable=False,
+        )
+        sink = InMemoryEventSink()
+        processor.set_event_emitter(sink, EventContext())
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        processor.process(worktree, issue_number=123, issue_title="Test")
+
+        publish_failed = [
+            event
+            for event in sink.events
+            if str(event.name) == str(EventName.PUBLISH_FAILED)
+        ]
+        assert len(publish_failed) == 1
+        payload = publish_failed[0].data
+        assert payload["stage"] == "push_branch"
+        assert "pre-push hook stuck" in payload["error"]
+        assert payload["branch"] == "issue-123"
+        assert payload["issue_number"] == 123
+
     def test_push_non_fast_forward_retries_after_rebase(
         self, processor, mock_git_adapter, worktree_with_completion
     ):

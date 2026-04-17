@@ -246,6 +246,43 @@ class CompletionProcessor:
             )
         )
 
+    def _emit_publish_failed(
+        self,
+        *,
+        issue_number: int,
+        stage: str,
+        error: str,
+        retryable: bool | None = None,
+        branch: str | None = None,
+    ) -> None:
+        """Surface the actual cause of a publish failure on the timeline.
+
+        Without this event the timeline's only breadcrumb is a generic
+        ``agent.failed — "Session ended without PR or status update"``; the
+        real error (push hook timeout, non-fast-forward, PR collision, etc.)
+        lives in ``failure-diagnostic-*.json`` on disk and the card's
+        ``blocked_summary`` only says "Push or PR creation failed". Emitting
+        here routes the diagnostic to the UI and to any consumer of the SSE
+        stream.
+        """
+        if self._trace_events is None or self._event_context is None:
+            return
+        payload: dict[str, Any] = {
+            "issue_number": issue_number,
+            "stage": stage,
+            "error": error[:500],  # cap so SSE payloads stay small
+        }
+        if retryable is not None:
+            payload["retryable"] = retryable
+        if branch:
+            payload["branch"] = branch
+        self._trace_events.publish(
+            make_trace_event(
+                EventName.PUBLISH_FAILED,
+                self._event_context.enrich(payload),
+            )
+        )
+
     def _emit_review_started(
         self,
         *,
@@ -875,6 +912,12 @@ class CompletionProcessor:
                 "exception_type": type(e).__name__,
                 "traceback": traceback.format_exc(),
             })
+            if action in {RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR}:
+                self._emit_publish_failed(
+                    issue_number=issue_number,
+                    stage=action.value,
+                    error=str(e),
+                )
             return None
         finally:
             action_duration = time.monotonic() - action_start
@@ -1068,6 +1111,13 @@ class CompletionProcessor:
             "remote": result.remote,
         })
         logger.error("Push failed for #%d: %s", issue_number, result.message)
+        self._emit_publish_failed(
+            issue_number=issue_number,
+            stage=ERROR_PREFIX_PUSH,
+            error=result.message,
+            retryable=result.retryable,
+            branch=result.branch,
+        )
         return self._ActionResult(halt=True)
 
     def _attempt_rebase_and_retry_push(
