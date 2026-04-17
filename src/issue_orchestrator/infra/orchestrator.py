@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
-    from ..control.planner import Plan
+    from ..control.planner_types import Plan
     from ..control.session_manager import SessionRef, SessionType
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun

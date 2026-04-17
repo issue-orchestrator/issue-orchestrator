@@ -8,7 +8,6 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 
 import logging
 import os
-import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -16,15 +15,15 @@ from ...infra.config import Config
 from ...ports.pull_request_tracker import PRInfo
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
+from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
-    GitHubHttpError,
-    GitHubTransportError,
-    resolve_github_token,
 )
+from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
+from .adapter_cache import GitHubAdapterCacheSupport
 from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
@@ -105,7 +104,7 @@ class GitHubAdapter:
         # Use injected cache or create one with config-based TTL
         cache_ttl = float(max(0, int(getattr(config, "github_cache_ttl_seconds", 0)))) if config else 0.0
         self._cache = cache if cache is not None else GitHubCache(default_ttl=cache_ttl)
-        self._cache_enabled = cache_ttl > 0
+        self._adapter_cache = GitHubAdapterCacheSupport(self._cache, label_cache_enabled=cache_ttl > 0)
 
         # Use injected verification service or create one with default budget
         # IMPORTANT: Inject the service to preserve circuit breaker state across calls
@@ -132,10 +131,7 @@ class GitHubAdapter:
 
     def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
         """Update cached labels for an issue."""
-        if not self._cache_enabled:
-            return
-        self._cache.set_issue_labels(issue_number, list(labels))
-        self._update_pr_cache_labels(issue_number, labels)
+        self._adapter_cache.update_label_cache(issue_number, labels)
 
     def invalidate_label_cache(self, issue_number: int) -> None:
         """Invalidate cached labels for an issue.
@@ -143,8 +139,7 @@ class GitHubAdapter:
         Call this after any write operation that modifies labels.
         Per architecture: explicit invalidation rules for cache.
         """
-        self._cache.invalidate_issue_labels(issue_number)
-        logger.debug("Invalidated label cache for issue %d", issue_number)
+        self._adapter_cache.invalidate_label_cache(issue_number)
 
     def invalidate_pr_cache(self, issue_number: int | None = None, branch: str | None = None) -> None:
         """Invalidate cached PR info.
@@ -153,64 +148,7 @@ class GitHubAdapter:
             issue_number: Invalidate PR cache for this issue.
             branch: Invalidate PR cache for this branch.
         """
-        if issue_number is not None:
-            self._cache.invalidate_pr_by_issue(issue_number)
-            logger.debug("Invalidated PR cache for issue %d", issue_number)
-        if branch is not None:
-            self._cache.invalidate_pr_by_branch(branch)
-            logger.debug("Invalidated PR cache for branch %s", branch)
-
-    def _update_pr_cache_labels(self, issue_number: int, labels: list[str]) -> None:
-        """Update labels on a cached PR."""
-        cached = self._cache.get_pr_by_issue(issue_number)
-        if not cached:
-            return
-        cached["labels"] = list(labels)
-        branch = cached.get("branch")
-        self._cache.set_pr_by_issue(issue_number, cached, branch=branch)
-
-    def _cache_pr_info(self, pr_info: PRInfo) -> None:
-        """Cache PR info by issue number and branch."""
-        issue_number = self._extract_issue_number(pr_info.branch, pr_info.title)
-        pr_data = {
-            "number": pr_info.number,
-            "branch": pr_info.branch,
-            "title": pr_info.title,
-            "labels": list(pr_info.labels) if pr_info.labels else [],
-            "url": pr_info.url,
-            "body": pr_info.body,
-            "state": pr_info.state,
-            "issue_number": issue_number,
-        }
-        if issue_number is not None:
-            self._cache.set_pr_by_issue(issue_number, pr_data, branch=pr_info.branch)
-        elif pr_info.branch:
-            self._cache.set_pr_by_branch(pr_info.branch, pr_data)
-
-    def _pr_info_from_cache(self, cached: dict[str, Any]) -> PRInfo | None:
-        """Convert cached PR data back to PRInfo."""
-        if not cached:
-            return None
-        return PRInfo(
-            number=cached.get("number", 0),
-            title=cached.get("title", ""),
-            url=cached.get("url", ""),
-            branch=cached.get("branch", ""),
-            body=cached.get("body", ""),
-            state=cached.get("state", "open"),
-            labels=cached.get("labels", []),
-        )
-
-    def _extract_issue_number(self, branch: str | None, title: str | None) -> int | None:
-        if branch:
-            match = re.match(r"^(\d+)-", branch)
-            if match:
-                return int(match.group(1))
-        if title:
-            match = re.match(r"^#(\d+):", title)
-            if match:
-                return int(match.group(1))
-        return None
+        self._adapter_cache.invalidate_pr_cache(issue_number=issue_number, branch=branch)
 
     def _verify_write(self, description: str, predicate, detail_fn=None, issue_number: int | None = None) -> None:
         """Verify a write operation completed successfully.
@@ -513,9 +451,7 @@ class GitHubAdapter:
 
     def _get_cached_labels(self, issue_number: int) -> list[str] | None:
         """Get cached labels for an issue, or None if not cached/stale."""
-        if not self._cache_enabled:
-            return None
-        return self._cache.get_issue_labels(issue_number)
+        return self._adapter_cache.get_cached_labels(issue_number)
 
     def _get_issue_labels_cached(self, issue_number: int) -> list[str]:
         with gh_audit.context(
@@ -730,17 +666,15 @@ class GitHubAdapter:
         """
         try:
             # Check cache first
-            cached = self._cache.get_pr_by_branch(branch)
-            if cached:
-                pr_info = self._pr_info_from_cache(cached)
-                if pr_info and (state == "all" or pr_info.state.lower() == state.lower()):
-                    return [pr_info]
+            cached_pr = self._adapter_cache.get_cached_pr_for_branch(branch, state)
+            if cached_pr:
+                return [cached_pr]
             # Fetch from API
             output = self._client.get_prs_for_branch(branch, state=state)
             if isinstance(output, list):
                 prs = [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
                 for pr_info in prs:
-                    self._cache_pr_info(pr_info)
+                    self._adapter_cache.cache_pr_info(pr_info)
                 return prs
             return []
         except GitHubHttpError as e:
@@ -800,11 +734,9 @@ class GitHubAdapter:
         """
         try:
             # Check cache first
-            cached = self._cache.get_pr_by_issue(issue_number)
-            if cached:
-                pr_info = self._pr_info_from_cache(cached)
-                if pr_info and (state == "all" or pr_info.state.lower() == state.lower()):
-                    return [pr_info]
+            cached_pr = self._adapter_cache.get_cached_pr_for_issue(issue_number, state)
+            if cached_pr:
+                return [cached_pr]
             # Fetch from API
             with gh_audit.context(
                 reason=gh_audit.AuditReason.GH_READ,
@@ -818,7 +750,7 @@ class GitHubAdapter:
                 if pr_info:
                     pr_infos.append(pr_info)
             for pr_info in pr_infos:
-                self._cache_pr_info(pr_info)
+                self._adapter_cache.cache_pr_info(pr_info)
             return pr_infos
         except GitHubHttpError as e:
             logger.error("Failed to get PRs for issue %s: %s", issue_number, e)
@@ -919,7 +851,7 @@ class GitHubAdapter:
                 draft=draft,
             )
             # Cache the dry-run PR so get_prs_for_issue() doesn't hit GitHub API
-            self._cache_pr_info(pr_info)
+            self._adapter_cache.cache_pr_info(pr_info)
             return pr_info
 
         # First, check if a PR already exists for this branch
@@ -927,7 +859,7 @@ class GitHubAdapter:
         if existing_prs:
             existing_pr = existing_prs[0]
             logger.info(f"PR already exists for branch {head}: #{existing_pr.number}")
-            self._cache_pr_info(existing_pr)
+            self._adapter_cache.cache_pr_info(existing_pr)
             return existing_pr
 
         try:
@@ -936,7 +868,7 @@ class GitHubAdapter:
             if isinstance(output, dict):
                 pr_info = self._pr_info_from_api(output)
                 logger.info("Created PR #%s: %s", pr_info.number, pr_info.title)
-                self._cache_pr_info(pr_info)
+                self._adapter_cache.cache_pr_info(pr_info)
                 last_pr: PRInfo | None = pr_info
 
                 def _check() -> bool:
@@ -963,7 +895,7 @@ class GitHubAdapter:
             output = self._client.set_pr_draft(pr_number, draft)
             if isinstance(output, dict):
                 pr_info = self._pr_info_from_api(output)
-                self._cache_pr_info(pr_info)
+                self._adapter_cache.cache_pr_info(pr_info)
         except GitHubHttpError as e:
             logger.error("Failed to update PR #%s draft=%s: %s", pr_number, draft, e)
             raise
