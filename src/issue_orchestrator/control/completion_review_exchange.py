@@ -12,12 +12,13 @@ from .review_publish_pipeline import resolve_review_publish_pipeline
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+    from .review_exchange_loop import ReviewExchangeOutcome
 
 logger = logging.getLogger(__name__)
 
 ReviewStartedEmitter = Callable[..., None]
 ReviewOutcomeEmitter = Callable[..., None]
-RunReviewExchangeLoop = Callable[..., Any]
+RunReviewExchangeLoop = Callable[..., "ReviewExchangeOutcome"]
 
 
 class CompletionReviewExchange:
@@ -49,9 +50,9 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
-    ) -> tuple[Any, str | None, Any | None, bool, bool]:
+    ) -> tuple[Any, str | None, ReviewExchangeOutcome | None, bool, bool]:
         exchange_mode: str | None = None
-        exchange_result: Any | None = None
+        exchange_result: ReviewExchangeOutcome | None = None
         review_exchange_completed = False
 
         if RequestedAction.CREATE_PR in requested_actions:
@@ -102,7 +103,7 @@ class CompletionReviewExchange:
     def missing_review_exchange_outcome(
         self,
         exchange_mode: str | None,
-        exchange_result: Any | None,
+        exchange_result: ReviewExchangeOutcome | None,
     ) -> bool:
         return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
 
@@ -118,7 +119,7 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
-    ) -> tuple[str | None, Any | None, bool]:
+    ) -> tuple[str | None, ReviewExchangeOutcome | None, bool]:
         try:
             exchange_mode = self.resolve_review_exchange_mode(agent_label)
         except ValueError as exc:
@@ -165,14 +166,14 @@ class CompletionReviewExchange:
         self,
         *,
         exchange_mode: str,
-        existing_outcome: Any,
+        existing_outcome: ReviewExchangeOutcome,
         issue_number: int,
         session_name: str | None,
         worktree: Path,
         reviewer_label: str | None,
         errors: list[str],
         actions_taken: list[str],
-    ) -> tuple[str, Any, bool]:
+    ) -> tuple[str, ReviewExchangeOutcome, bool]:
         review_run_dir = self.resolve_required_review_run_dir(
             exchange_outcome=existing_outcome,
             worktree=worktree,
@@ -228,7 +229,7 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
-    ) -> tuple[str, Any, bool]:
+    ) -> tuple[str, ReviewExchangeOutcome, bool]:
         review_started_run_dir: Path | None = None
 
         def _on_review_exchange_started(started_run_dir: Path) -> None:
@@ -301,7 +302,7 @@ class CompletionReviewExchange:
     def resolve_required_review_run_dir(
         self,
         *,
-        exchange_outcome: Any | None,
+        exchange_outcome: ReviewExchangeOutcome | None,
         worktree: Path,
         session_name: str | None,
         issue_number: int,
@@ -322,7 +323,7 @@ class CompletionReviewExchange:
         *,
         worktree: Path,
         session_name: str | None,
-        exchange_result: Any,
+        exchange_result: ReviewExchangeOutcome,
     ) -> None:
         if not exchange_result.summary:
             return
@@ -348,7 +349,7 @@ class CompletionReviewExchange:
     def resolve_review_exchange_run_dir(
         self,
         *,
-        exchange_outcome: Any | None,
+        exchange_outcome: ReviewExchangeOutcome | None,
         worktree: Path,
         session_name: str | None,
     ) -> Path | None:
@@ -372,7 +373,7 @@ class CompletionReviewExchange:
         session_name: str | None,
         *,
         require_validation: bool,
-    ) -> Any | None:
+    ) -> ReviewExchangeOutcome | None:
         if not session_name:
             return None
         cached = self._session_output.load_review_exchange_summary(worktree, session_name)
