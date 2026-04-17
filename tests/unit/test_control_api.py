@@ -169,6 +169,22 @@ class TestRouteRegistration:
 
         assert counts == Counter({path: 1 for path in shutdown_paths})
 
+    def test_control_issue_routes_are_registered_once(self) -> None:
+        issue_paths = {
+            "/api/preflight-push",
+            "/api/issues/{issue_number}/resume",
+            "/api/issues/{issue_number}/debug-session",
+            "/api/issues/{issue_number}/retry",
+            "/api/issues/{issue_number}/dismiss",
+        }
+        counts = Counter(
+            route.path
+            for route in control_app.routes
+            if route.path in issue_paths
+        )
+
+        assert counts == Counter({path: 1 for path in issue_paths})
+
     def test_extracted_control_route_families_are_registered_once(self) -> None:
         extracted_paths = {
             "/control/goal_pilot/runs",
