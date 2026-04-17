@@ -4,6 +4,8 @@ Issue-Orchestrator takes GitHub issues, runs AI agents on them with guardrails, 
 
 AI agents are excellent at executing bounded tasks, but they optimize for completion, not long-term system health. Issue-Orchestrator provides the structure: enforced validation, automated code review, architecture boundary checks, and isolated worktrees — so agents can work in parallel while you stay in control.
 
+> **Evaluator quick-start:** see **[EVALUATION.md](EVALUATION.md)** for a one-screen proof bundle (test count, ADRs, architecture enforcement, benchmark artifact path, authorship, and limitations).
+>
 > **Evaluating the engineering?** Read [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md) for the design thinking, then [Evaluating the System](docs/journeys/evaluating.md) for architecture decisions and where to read code.
 >
 > **Evaluating it as applied AI?** Start with [Applied AI Evaluation](docs/journeys/applied-ai.md), then run the [Portfolio Benchmark](docs/journeys/benchmarking.md) for a shareable proof bundle.
@@ -96,7 +98,7 @@ See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/q
 
 **Async E2E Test Runner** — Background test execution with progress tracking, resumable runs, flake detection, quarantine support, and signal scoring. Survives orchestrator restarts. See [E2E documentation](docs/user/e2e.md).
 
-**Goal Pilot** *(experimental, opt-in)* — An agentic layer that takes high-level goals and breaks them into orchestrator actions. Constrained by the same safety guarantees as the core. See [user guide](docs/user/goal_pilot.md) and [design document](docs/design/goal-pilot.md).
+**Goal Pilot** *(planned)* — A designed-but-not-yet-implemented agentic layer that would take high-level goals and break them into orchestrator actions, constrained by the same safety guarantees as the core. See [user guide](docs/user/goal_pilot.md) and [design document](docs/design/goal-pilot.md).
 
 ## Who it's for
 
@@ -105,9 +107,9 @@ See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/q
 
 ## Project status
 
-**Beta** — Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner and Goal Pilot are newer and still maturing. APIs may change.
+**Beta** — Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner is newer and still maturing. Goal Pilot is a planned feature, not yet implemented. APIs may change.
 
-~100K lines of Python, 4500+ automated tests, 24 architecture decision records.
+~100K lines of Python, 5,500+ automated tests, 24 architecture decision records. For a one-screen evaluator summary, see [EVALUATION.md](EVALUATION.md).
 
 For guidance on what is stable and where to read code, see [Evaluating the System](docs/journeys/evaluating.md).
 
