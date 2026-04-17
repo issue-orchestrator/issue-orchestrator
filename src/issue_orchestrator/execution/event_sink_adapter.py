@@ -26,6 +26,10 @@ class PluggyEventSink:
     - Wraps a pluggy PluginManager
     - Forwards TraceEvents to on_trace_event hooks
     - Swallows all exceptions (fire-and-forget semantics)
+    - Serialises concurrent publishers with a lock so downstream listeners
+      (SSE subscriber list, in-memory stores) can assume single-threaded
+      hook dispatch. The review-exchange background thread publishes
+      ``review.started`` concurrently with the main tick.
     """
 
     def __init__(self, plugin_manager: "pluggy.PluginManager"):
@@ -35,21 +39,25 @@ class PluggyEventSink:
             plugin_manager: A pluggy PluginManager with hooks registered.
                            This should already have on_trace_event hookspec.
         """
+        import threading
+
         self._pm = plugin_manager
+        self._lock = threading.Lock()
 
     def publish(self, event: TraceEvent) -> None:
         """Emit a trace event to all registered plugins.
 
         This method:
         - Never raises exceptions
-        - Never blocks the caller
+        - Never blocks the caller for long (held only across hook dispatch)
         - Logs warnings on failure but doesn't propagate them
 
         Args:
             event: The trace event to publish
         """
         try:
-            self._pm.hook.on_trace_event(event=event.name, data=event.data)
+            with self._lock:
+                self._pm.hook.on_trace_event(event=event.name, data=event.data)
         except Exception as e:
             # Fire-and-forget: log but don't raise
             logger.warning("Failed to publish event %s: %s", event.name, e)

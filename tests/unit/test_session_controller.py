@@ -71,6 +71,10 @@ class MockCompletionProcessor:
         self.process_result = MagicMock()
         self.process_result.success = True
         self.process_result.pr_url = "https://github.com/test/repo/pull/1"
+        # MagicMock attributes are truthy by default; pin the async-related
+        # field so existing tests still exercise the synchronous completion
+        # path. Tests for the deferred branch override this explicitly.
+        self.process_result.review_exchange_deferred = False
 
     def read_completion_record(self, worktree_path: Path, completion_path: str | None = None) -> CompletionRecord | None:
         return self.completion_record
@@ -170,6 +174,48 @@ class TestSessionControllerTerminated:
         assert decision.status == SessionStatus.COMPLETED
         assert decision.completion_processed
         assert not decision.recovered_from_timeout
+
+    def test_deferred_review_exchange_keeps_session_running(self):
+        """When process() defers for async review exchange, session stays active."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        # Background exchange is running — the processor reports deferred so the
+        # session controller must not emit processing_completed, must not advance
+        # status, and must leave completion_processed=False so the next tick
+        # re-enters the pipeline.
+        processor.process_result.review_exchange_deferred = True
+        event_sink = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=event_sink,
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=Path("/tmp/test"),
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.RUNNING
+        assert decision.completion_processed is False
+        assert decision.processing_result is processor.process_result
+        # No processing.completed event should have fired — the work isn't done.
+        emitted = {getattr(e, "event", None) for e in event_sink.events}
+        processing_completed_events = {
+            name for name in emitted if name and "processing_completed" in str(name)
+        }
+        assert not processing_completed_events, (
+            f"unexpected processing_completed emission: {emitted}"
+        )
 
     def test_terminated_with_blocked_record_is_blocked(self):
         """Session that exits with blocked outcome = BLOCKED."""

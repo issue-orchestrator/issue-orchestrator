@@ -223,6 +223,8 @@ class EventSink(Protocol):
     Contract:
         - publish() must not raise exceptions (fire-and-forget)
         - publish() must not block the caller
+        - publish() must be thread-safe — the review-exchange background
+          worker and the main tick can both emit concurrently
         - Events may be dropped if sinks are unavailable
     """
 

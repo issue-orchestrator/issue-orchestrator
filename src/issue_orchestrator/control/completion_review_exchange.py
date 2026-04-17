@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain.models import CompletionRecord, RequestedAction
+from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.session_output import SessionOutput
+from .background_job_supervisor import BackgroundJobSupervisor
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
 if TYPE_CHECKING:
@@ -21,6 +23,17 @@ ReviewOutcomeEmitter = Callable[..., None]
 RunReviewExchangeLoop = Callable[..., "ReviewExchangeOutcome"]
 
 
+def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
+    """Stable job identity for a per-issue review exchange.
+
+    Using (issue_number, session_name) keeps retries on the same coding run
+    collapsed onto a single background thread while still letting a fresh
+    coding run (new session_name) start its own exchange.
+    """
+    base = f"review-exchange:{issue_number}"
+    return f"{base}:{session_name}" if session_name else base
+
+
 class CompletionReviewExchange:
     """Owns review-exchange mode selection, caching, execution, and artifacts."""
 
@@ -31,11 +44,23 @@ class CompletionReviewExchange:
         session_output: SessionOutput,
         emit_review_started: ReviewStartedEmitter,
         emit_review_outcome: ReviewOutcomeEmitter,
+        job_supervisor: BackgroundJobSupervisor | None = None,
     ) -> None:
         self._config = config
         self._session_output = session_output
         self._emit_review_started = emit_review_started
         self._emit_review_outcome = emit_review_outcome
+        # Supervisor injection is REQUIRED for the async failure path to work:
+        # ``take_failure`` only returns values that ``tick()`` has populated,
+        # and ``tick()`` must be called from the orchestrator's main loop.
+        # Tests that exercise the async path inject a real supervisor and
+        # drive ``tick()`` themselves. Tests that don't care about async pass
+        # nothing — we default to a supervisor wrapping NullBackgroundJobRunner
+        # so ``submit``/``is_running`` return no-op values and the failure
+        # queue is always empty (no need to tick).
+        self._job_supervisor = job_supervisor or BackgroundJobSupervisor(
+            NullBackgroundJobRunner()
+        )
 
     def prepare_review_exchange(
         self,
@@ -50,7 +75,14 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
-    ) -> tuple[Any, str | None, ReviewExchangeOutcome | None, bool, bool]:
+    ) -> tuple[Any, str | None, ReviewExchangeOutcome | None, bool, bool, bool]:
+        """Resolve mode, run/poll review exchange, and report status.
+
+        Returns (plan, exchange_mode, exchange_result, review_exchange_completed,
+        exchange_halt, deferred). ``deferred=True`` means the exchange is
+        running in the background and completion processing must retry on a
+        later tick — the caller MUST NOT proceed to push/PR creation.
+        """
         exchange_mode: str | None = None
         exchange_result: ReviewExchangeOutcome | None = None
         review_exchange_completed = False
@@ -61,14 +93,26 @@ class CompletionReviewExchange:
             except ValueError as exc:
                 errors.append(f"review_exchange: {exc}")
                 pipeline = resolve_review_publish_pipeline(None)
-                return pipeline.plan(requested_actions), None, None, False, True
+                return pipeline.plan(requested_actions), None, None, False, True, False
 
         pipeline = resolve_review_publish_pipeline(exchange_mode)
         plan = pipeline.plan(requested_actions)
         if not plan.run_review_exchange_before_publish:
-            return plan, exchange_mode, exchange_result, review_exchange_completed, False
+            return (
+                plan,
+                exchange_mode,
+                exchange_result,
+                review_exchange_completed,
+                False,
+                False,
+            )
 
-        exchange_mode, exchange_result, exchange_halt = self.run_review_exchange_if_needed(
+        (
+            exchange_mode,
+            exchange_result,
+            exchange_halt,
+            deferred,
+        ) = self.run_review_exchange_if_needed(
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
@@ -83,7 +127,14 @@ class CompletionReviewExchange:
         )
         if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
             review_exchange_completed = True
-        return plan, exchange_mode, exchange_result, review_exchange_completed, exchange_halt
+        return (
+            plan,
+            exchange_mode,
+            exchange_result,
+            review_exchange_completed,
+            exchange_halt,
+            deferred,
+        )
 
     def resolve_create_pr_exchange_mode(
         self,
@@ -119,14 +170,23 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
-    ) -> tuple[str | None, ReviewExchangeOutcome | None, bool]:
+    ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool]:
+        """Return (exchange_mode, outcome, halt, deferred).
+
+        ``deferred=True`` means the exchange is running asynchronously; the
+        caller must stop processing this completion record and retry on a
+        later tick. ``outcome`` is populated only when the exchange has
+        finished — from the on-disk cache of a prior background run, or
+        from an inline run when no background runner is wired (tests, dev
+        environments).
+        """
         try:
             exchange_mode = self.resolve_review_exchange_mode(agent_label)
         except ValueError as exc:
             errors.append(f"review_exchange: {exc}")
-            return None, None, True
+            return None, None, True, False
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
-            return exchange_mode, None, False
+            return exchange_mode, None, False, False
         reviewer_label = self.resolve_reviewer_label(agent_label) if agent_label else None
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
@@ -137,7 +197,7 @@ class CompletionReviewExchange:
             require_validation=require_validation,
         )
         if existing_outcome:
-            return self._handle_cached_review_exchange_outcome(
+            mode, outcome, halt = self._handle_cached_review_exchange_outcome(
                 exchange_mode=exchange_mode,
                 existing_outcome=existing_outcome,
                 issue_number=issue_number,
@@ -147,8 +207,61 @@ class CompletionReviewExchange:
                 errors=errors,
                 actions_taken=actions_taken,
             )
+            return mode, outcome, halt, False
+
+        job_id = _review_exchange_job_id(issue_number, session_name)
+
+        # If a previous background attempt raised, the supervisor recorded
+        # it. Surface that as a terminal halt rather than spawning another
+        # attempt — otherwise a crashing job would forkbomb the tick loop
+        # at one resubmit per iteration forever.
+        failure = self._job_supervisor.take_failure(job_id)
+        if failure is not None:
+            reason = (
+                f"review_exchange: background job raised: {failure.error}"
+            )
+            errors.append(reason)
+            logger.error(
+                "[REVIEW_EXCHANGE] background job failed; halting issue=%d job_id=%s",
+                issue_number,
+                job_id,
+                exc_info=(type(failure.error), failure.error, None),
+            )
+            return exchange_mode, None, True, False
+
+        if self._job_supervisor.is_running(job_id):
+            logger.info(
+                "[REVIEW_EXCHANGE] job still running issue=%d job_id=%s — deferring",
+                issue_number,
+                job_id,
+            )
+            return exchange_mode, None, False, True
+
         logger.info("Review exchange mode selected: %s", exchange_mode)
-        return self._run_fresh_review_exchange(
+        submitted = self._submit_background_review_exchange(
+            job_id=job_id,
+            exchange_mode=exchange_mode,
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            reviewer_label=reviewer_label,
+            initial_validation_record_path=initial_validation_record_path,
+            run_review_exchange_loop=run_review_exchange_loop,
+        )
+        if submitted:
+            # Deferred: the exchange is now running off the main tick. A
+            # subsequent tick will re-enter this path, find summary.json via
+            # load_existing_review_exchange_outcome, and resume publish.
+            return exchange_mode, None, False, True
+
+        # No background runner wired — fall back to the legacy synchronous
+        # path so tests and dev environments without a job runner still work.
+        logger.debug(
+            "[REVIEW_EXCHANGE] no background runner; running exchange inline"
+        )
+        mode, outcome, halt = self._run_fresh_review_exchange(
             exchange_mode=exchange_mode,
             worktree=worktree,
             issue_number=issue_number,
@@ -161,6 +274,77 @@ class CompletionReviewExchange:
             actions_taken=actions_taken,
             run_review_exchange_loop=run_review_exchange_loop,
         )
+        return mode, outcome, halt, False
+
+    def _submit_background_review_exchange(
+        self,
+        *,
+        job_id: str,
+        exchange_mode: str,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        reviewer_label: str | None,
+        initial_validation_record_path: Path | None,
+        run_review_exchange_loop: RunReviewExchangeLoop,
+    ) -> bool:
+        """Start the review exchange in a background job; return True if accepted.
+
+        The background closure mirrors ``_run_fresh_review_exchange`` up to the
+        point of emitting the *started* event and handing off to
+        ``run_review_exchange_loop``. The loop writes ``summary.json`` when it
+        finishes, which is the signal the next tick uses to resume processing.
+        """
+
+        def _job() -> None:
+            review_started_run_dir: Path | None = None
+
+            def _on_review_exchange_started(started_run_dir: Path) -> None:
+                nonlocal review_started_run_dir
+                review_started_run_dir = started_run_dir
+                self._emit_review_started(
+                    issue_number=issue_number,
+                    reviewer_label=reviewer_label,
+                    exchange_mode=exchange_mode,
+                    run_dir=started_run_dir,
+                )
+
+            try:
+                outcome = run_review_exchange_loop(
+                    worktree=worktree,
+                    issue_number=issue_number,
+                    issue_title=issue_title,
+                    session_name=session_name,
+                    agent_label=agent_label,
+                    initial_validation_record_path=initial_validation_record_path,
+                    on_started=_on_review_exchange_started,
+                )
+            except Exception:
+                logger.exception(
+                    "[REVIEW_EXCHANGE] background job failed: issue=%d job_id=%s",
+                    issue_number,
+                    job_id,
+                )
+                raise
+
+            # Persist the summary so the next tick can observe completion.
+            # resolve_required_review_run_dir + store_review_exchange_summary
+            # together write the same marker as the synchronous path would.
+            if review_started_run_dir is None:
+                review_started_run_dir = self.resolve_review_exchange_run_dir(
+                    exchange_outcome=outcome,
+                    worktree=worktree,
+                    session_name=session_name,
+                )
+            self.store_review_exchange_summary(
+                worktree=worktree,
+                session_name=session_name,
+                exchange_result=outcome,
+            )
+
+        return self._job_supervisor.submit(job_id, _job)
 
     def _handle_cached_review_exchange_outcome(
         self,

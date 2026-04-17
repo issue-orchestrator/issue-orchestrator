@@ -240,7 +240,37 @@ class Orchestrator:
 
     async def startup(self) -> None:
         self.start_publish_executor()
+        self._sweep_orphan_atomic_write_tempfiles()
         await self._startup_manager.run_startup(self.state)
+
+    def _sweep_orphan_atomic_write_tempfiles(self) -> None:
+        """Remove partial tempfiles left by a prior ``kill -9`` mid-rename.
+
+        ``_atomic_write_json`` cleans up on both success and expected failure
+        paths; only an external kill between ``mkstemp`` and ``os.replace``
+        leaves ``.summary.json.XXXX.tmp`` style dotfiles behind. Clearing
+        them at startup keeps per-run directories tidy without any hot-path
+        cost during normal operation.
+        """
+        # Local import keeps the control->infra boundary clean: this module
+        # already imports orchestrator_support from control, so one more
+        # control-side helper is acceptable.
+        from ..control.review_exchange_loop import sweep_atomic_write_tempfiles
+
+        sessions_root = self.config.repo_root / ".issue-orchestrator" / "sessions"
+        try:
+            removed = sweep_atomic_write_tempfiles(sessions_root)
+        except Exception:
+            logger.exception(
+                "[STARTUP] Orphan tempfile sweep failed under %s", sessions_root
+            )
+            return
+        if removed:
+            logger.info(
+                "[STARTUP] Removed %d orphaned atomic-write tempfile(s) under %s",
+                removed,
+                sessions_root,
+            )
 
     def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
@@ -250,6 +280,13 @@ class Orchestrator:
             self._last_tick_time = time.time()
             self.deps.provider_resilience.close_expired()
             self.deps.services.state_health_check()
+            # Drain any background-job completions BEFORE the planning phase
+            # decides next-step actions. That way a failed review-exchange
+            # job is observable to the planner (via recorded failure) in the
+            # same tick instead of causing another resubmit.
+            supervisor = self.deps.services.background_job_supervisor
+            if supervisor is not None:
+                supervisor.tick()
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,
@@ -716,6 +753,10 @@ class Orchestrator:
         logger.info("[SHUTDOWN] Waiting for background publish jobs to complete...")
         self.shutdown_publish_executor(wait=True, timeout=60.0)
 
+        # Wait for background review-exchange threads so daemon-thread kill
+        # doesn't leave half-written summary.json / round-NNN.json files.
+        self._drain_background_jobs()
+
         # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
         goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
@@ -723,6 +764,35 @@ class Orchestrator:
             close = getattr(goal_pilot_store, "close", None)
             if callable(close):
                 close()
+
+    def _drain_background_jobs(self, timeout: float = 60.0) -> None:
+        """Block shutdown until review-exchange background threads finish.
+
+        Without this, daemon-thread termination on process exit can strand
+        ``summary.json`` / ``round-NNN.json`` mid-write. We duck-type on the
+        optional ``wait_until_idle`` method so this module stays free of
+        ``execution/`` imports; the thread-backed adapter supplies it, and
+        a purely synchronous adapter simply doesn't.
+        """
+        supervisor = self.deps.services.background_job_supervisor
+        if supervisor is None:
+            return
+        wait_until_idle = getattr(supervisor, "wait_until_idle", None)
+        if not callable(wait_until_idle):
+            return
+        logger.info(
+            "[SHUTDOWN] Waiting up to %.1fs for background job threads…",
+            timeout,
+        )
+        idle = wait_until_idle(timeout=timeout)
+        if not idle:
+            logger.warning(
+                "[SHUTDOWN] Background jobs still running after timeout; "
+                "daemon threads will be terminated on exit"
+            )
+        # Drain any failures that landed during shutdown so they are
+        # visible in logs rather than lost.
+        supervisor.tick()
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
