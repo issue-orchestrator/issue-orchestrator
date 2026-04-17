@@ -210,6 +210,7 @@ def observe_active_sessions(
         kill_session_fn: Function to kill terminal session
         claim_manager: Optional ClaimManager for releasing claims
         events: Optional EventSink for emitting events
+        provider_resilience: Optional provider resilience manager for failure tracking
     """
     for session in list(state.active_sessions):
         _observe_active_session(
