@@ -1,5 +1,7 @@
 """Dry-run presentation and analysis helpers for the CLI."""
 
+from __future__ import annotations
+
 import argparse
 from typing import TYPE_CHECKING, Any
 
@@ -7,11 +9,14 @@ from rich.console import Console
 from rich.table import Table
 
 if TYPE_CHECKING:
+    from ..control.scheduler import Scheduler
+    from ..infra.analysis import IssueState, OrphanBranchState
     from ..infra.config import Config
+    from ..ports.issue import Issue
 
 console = Console()
 
-__all__ = ["run_dry_run"]
+__all__ = ["format_orphan_action", "format_orphan_issue_info", "run_dry_run"]
 
 
 def run_dry_run(args: argparse.Namespace, config: "Config") -> int:
@@ -26,7 +31,7 @@ def run_dry_run(args: argparse.Namespace, config: "Config") -> int:
     scheduler = Scheduler(config)
     github = create_repository_host(config.repo, config=config) if config.repo else None
     working_copy = GitWorkingCopy()
-    all_issues = []
+    all_issues: list[Issue] = []
 
     milestones = config.get_filter_milestones()
     if not milestones:
@@ -68,7 +73,7 @@ def run_dry_run(args: argparse.Namespace, config: "Config") -> int:
     return 0
 
 
-def _print_dry_run_table(states: list[Any]) -> None:
+def _print_dry_run_table(states: list[IssueState]) -> None:
     """Print the issues table for dry-run mode."""
     table = Table(title="All Matching Issues")
     table.add_column("#", style="cyan")
@@ -117,7 +122,10 @@ def _print_dry_run_table(states: list[Any]) -> None:
 
 
 def _print_dry_run_summary(
-    states: list[Any], all_issues: list[Any], scheduler: Any, config: "Config"
+    states: list[IssueState],
+    all_issues: list[Issue],
+    scheduler: Scheduler,
+    config: Config,
 ) -> None:
     """Print summary statistics for dry-run mode."""
     available, _ = scheduler.get_available_issues(all_issues, check_dependencies=False)
@@ -151,7 +159,7 @@ def _print_dry_run_summary(
 
 
 def _print_orphan_branches(
-    states: list[Any], config: "Config", github: Any, working_copy: Any
+    states: list[IssueState], config: Config, github: Any, working_copy: Any
 ) -> None:
     """Print orphan branches analysis for dry-run mode."""
     from ..infra.analysis import analyze_orphan_branches, extract_issue_branches
@@ -190,8 +198,8 @@ def _print_orphan_branches(
     orphan_table.add_column("Action", style="yellow")
 
     for orphan in orphan_states:
-        issue_info = _format_orphan_issue_info(orphan)
-        action = _format_orphan_action(orphan)
+        issue_info = format_orphan_issue_info(orphan)
+        action = format_orphan_action(orphan)
         orphan_table.add_row(
             str(orphan.issue_number),
             orphan.branch_name[:30] + ("..." if len(orphan.branch_name) > 30 else ""),
@@ -209,7 +217,7 @@ def _print_orphan_branches(
     )
     if resume_count > 0:
         console.print(
-            f"\n[dim]To resume work on open issues, add in-progress label:[/dim]"
+            "\n[dim]To resume work on open issues, add in-progress label:[/dim]"
         )
         from ..control.label_manager import LabelManager
 
@@ -218,11 +226,11 @@ def _print_orphan_branches(
             f"[dim]  gh issue edit # --add-label {label_manager.in_progress}[/dim]"
         )
     if delete_count > 0:
-        console.print(f"\n[dim]To clean up stale branches:[/dim]")
-        console.print(f"[dim]  git push origin --delete <branch-name>[/dim]")
+        console.print("\n[dim]To clean up stale branches:[/dim]")
+        console.print("[dim]  git push origin --delete <branch-name>[/dim]")
 
 
-def _format_orphan_issue_info(orphan: Any) -> str:
+def format_orphan_issue_info(orphan: OrphanBranchState) -> str:
     """Format issue info for orphan branch display."""
     if orphan.issue_title:
         title_short = orphan.issue_title[:25] + (
@@ -236,7 +244,7 @@ def _format_orphan_issue_info(orphan: Any) -> str:
     return "[dim]not found[/dim]"
 
 
-def _format_orphan_action(orphan: Any) -> str:
+def format_orphan_action(orphan: OrphanBranchState) -> str:
     """Format suggested action for orphan branch display."""
     action_styles = {
         "resume-work": "[green]resume[/green]",
