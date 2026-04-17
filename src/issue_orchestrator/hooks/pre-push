@@ -26,7 +26,11 @@ fi
 
 if [ -z "$PYTHON_BIN" ]; then
     echo "ERROR: Python not found; cannot run dirty-tree guard." >&2
-    echo "Hint: the orchestrator should set ISSUE_ORCHESTRATOR_PYTHON." >&2
+    echo "  - If the orchestrator invoked this push: bootstrap should export" >&2
+    echo "    ISSUE_ORCHESTRATOR_PYTHON. Restart the orchestrator from a shell" >&2
+    echo "    where it can find its own venv." >&2
+    echo "  - If you ran 'git push' yourself: install python3, or activate the" >&2
+    echo "    orchestrator's .venv before pushing." >&2
     exit 1
 fi
 

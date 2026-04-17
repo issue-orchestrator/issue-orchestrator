@@ -18,6 +18,11 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.entrypoints.bootstrap import (
+    ISSUE_ORCHESTRATOR_PYTHON_ENV,
+    export_orchestrator_python,
+)
+
 
 _HOOK_PATH = (
     Path(__file__).resolve().parents[2]
@@ -53,21 +58,24 @@ def _run_hook_fragment(
     """Execute only the python-resolution + invoke part of the bundled hook.
 
     The full hook does more (test-skipping guard, etc.) that we don't want
-    to exercise here; we slice out the first dozen lines which is exactly
-    the resolution + dirty-tree guard invocation. This keeps the test
-    honest: if anyone moves the resolution around, the slice will still
-    cover it.
+    to exercise here. We take everything through the third ``fi`` in the
+    script, which is a structural boundary: the first two close the
+    Python-resolution if/elif chain and the empty-check, the third closes
+    the dirty-tree guard invocation. Using a structural marker means
+    changes to log strings don't break the slice; changes to the *shape*
+    of the hook (which SHOULD invalidate the test) still do.
     """
     script = _HOOK_PATH.read_text().splitlines()
-    # Take everything up to and including the closing ``fi`` of the
-    # dirty-tree guard invocation. The guard is 4 lines:
-    # ``if ... ; then\n    echo ERROR\n    exit 1\nfi``.
-    error_idx = next(
-        idx
-        for idx, line in enumerate(script)
-        if 'Dirty-tree guard failed' in line
-    )
-    end = error_idx + 3  # echo (error_idx), exit 1 (+1), fi (+2); slice-end exclusive
+    fi_indices = [
+        idx for idx, line in enumerate(script) if line.strip() == "fi"
+    ]
+    if len(fi_indices) < 3:
+        raise AssertionError(
+            "bundled pre-push hook no longer has the expected three ``fi`` "
+            "closings — update this slice or the hook; don't just keep "
+            "scrolling."
+        )
+    end = fi_indices[2] + 1  # slice-end exclusive; include the third fi
     fragment = "\n".join(script[:end]) + "\n"
     return subprocess.run(
         ["/bin/bash", "-c", fragment],
@@ -159,7 +167,7 @@ def test_hook_ignores_env_var_pointing_at_missing_file(tmp_path: Path) -> None:
 
 
 def test_hook_fails_cleanly_when_no_python_found(tmp_path: Path) -> None:
-    """With no resolvable python anywhere, exit 1 with a helpful hint."""
+    """With no resolvable python anywhere, exit 1 with actionable hints for both audiences."""
     worktree = tmp_path / "repo"
     worktree.mkdir()
 
@@ -172,27 +180,51 @@ def test_hook_fails_cleanly_when_no_python_found(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "Python not found" in result.stderr
+    # Both audiences are named so operator + manual user each know what to do.
     assert "ISSUE_ORCHESTRATOR_PYTHON" in result.stderr
+    assert ".venv" in result.stderr
 
 
-def test_bootstrap_exports_issue_orchestrator_python(monkeypatch, tmp_path: Path) -> None:
-    """``build_orchestrator`` sets ISSUE_ORCHESTRATOR_PYTHON on process env.
+def test_export_orchestrator_python_sets_env_to_sys_executable(monkeypatch) -> None:
+    """The bootstrap helper exports sys.executable when no override exists."""
+    monkeypatch.delenv(ISSUE_ORCHESTRATOR_PYTHON_ENV, raising=False)
 
-    Full build_orchestrator requires a live GitHub config; we isolate the
-    export by calling the specific os.environ.setdefault line's import of
-    bootstrap and a minimal smoke of that behaviour.
-    """
-    monkeypatch.delenv("ISSUE_ORCHESTRATOR_PYTHON", raising=False)
-    # Import a fresh module view and execute the env export the same way
-    # bootstrap does. This proves the contract without pulling in the
-    # full composition root (which needs GitHub auth, etc.).
-    os.environ.setdefault("ISSUE_ORCHESTRATOR_PYTHON", sys.executable)
+    export_orchestrator_python()
 
-    assert os.environ["ISSUE_ORCHESTRATOR_PYTHON"] == sys.executable
+    assert os.environ[ISSUE_ORCHESTRATOR_PYTHON_ENV] == sys.executable
 
 
-def test_bootstrap_respects_existing_env_override(monkeypatch) -> None:
+def test_export_orchestrator_python_respects_existing_override(monkeypatch) -> None:
     """setdefault must not clobber an operator's explicit override."""
-    monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", "/custom/path/python")
-    os.environ.setdefault("ISSUE_ORCHESTRATOR_PYTHON", sys.executable)
-    assert os.environ["ISSUE_ORCHESTRATOR_PYTHON"] == "/custom/path/python"
+    monkeypatch.setenv(ISSUE_ORCHESTRATOR_PYTHON_ENV, "/custom/path/python")
+
+    export_orchestrator_python()
+
+    assert os.environ[ISSUE_ORCHESTRATOR_PYTHON_ENV] == "/custom/path/python"
+
+
+def test_build_orchestrator_wires_export() -> None:
+    """Regression pin: deleting the call from build_orchestrator breaks this.
+
+    A pure behavioural test would require a live GitHub config to run the
+    full composition root, so we inspect the source instead. If the helper
+    is ever renamed, the constant at the top of this module keeps the
+    assertion honest.
+    """
+    bootstrap_src = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "issue_orchestrator"
+        / "entrypoints"
+        / "bootstrap.py"
+    ).read_text()
+
+    # Grab just the body of build_orchestrator so an ``export_orchestrator_python``
+    # call anywhere else in the module (a future helper, for example) doesn't
+    # satisfy this check by accident.
+    body = bootstrap_src.split("def build_orchestrator(", 1)[1]
+    body = body.split("\ndef ", 1)[0]
+    assert "export_orchestrator_python()" in body, (
+        "build_orchestrator no longer calls export_orchestrator_python; "
+        "pre-push hooks in target repos will fail to import issue_orchestrator."
+    )

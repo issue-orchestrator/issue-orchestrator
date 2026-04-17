@@ -17,6 +17,7 @@ Principle: "No Nulls in Orchestrator"
 
 import logging
 import os
+import sys
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -96,6 +97,25 @@ if TYPE_CHECKING:
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
+
+
+ISSUE_ORCHESTRATOR_PYTHON_ENV = "ISSUE_ORCHESTRATOR_PYTHON"
+
+
+def export_orchestrator_python() -> None:
+    """Publish the orchestrator's interpreter path for child subprocesses.
+
+    The pre-push hook installed in every target-repo worktree calls a helper
+    from the ``issue_orchestrator`` package, but a Kotlin/Node/etc. target
+    has no venv where the package is importable. This exports
+    ``ISSUE_ORCHESTRATOR_PYTHON=sys.executable`` so any subprocess the
+    orchestrator spawns (``git push`` and its hooks, most importantly) can
+    resolve a Python that *can* import us.
+
+    Uses ``setdefault`` so operator overrides (tests, dev envs that point
+    at a different interpreter) are never clobbered.
+    """
+    os.environ.setdefault(ISSUE_ORCHESTRATOR_PYTHON_ENV, sys.executable)
 
 
 def _resolve_repo(config: Config) -> str | None:
@@ -482,17 +502,12 @@ def build_orchestrator(
     # Make repo root visible to terminal plugins.
     os.environ[f"{ENV_PREFIX}REPO_ROOT"] = str(config.repo_root)
 
-    # Contract for pre-push.orchestrator running inside target-repo worktrees:
-    # those hooks need to import ``issue_orchestrator`` to run prepush_check,
-    # but a Kotlin/Node/etc. repo has no venv where the package is installed.
-    # The orchestrator is always the active importer of this package, so
-    # ``sys.executable`` is the authoritative interpreter — export it once
-    # here and every subprocess (git push included) inherits the path. The
-    # hook reads ``$ISSUE_ORCHESTRATOR_PYTHON`` and prefers it over ambient
-    # ``.venv/bin/python`` / ``command -v python3`` lookups. setdefault means
-    # explicit overrides (tests, dev environments) still win.
-    import sys as _sys
-    os.environ.setdefault("ISSUE_ORCHESTRATOR_PYTHON", _sys.executable)
+    # TODO(env-scope): if a future use-case needs a *different* Python for
+    # a specific subprocess (e.g. an adapter that must invoke a target
+    # repo's own interpreter), consider narrowing this global export to a
+    # per-subprocess env injection at the git/push call site. For now one
+    # global export covers every consumer cleanly.
+    export_orchestrator_python()
 
     # Create the pluggy plugin manager and register SSE plugin
     pm = create_plugin_manager(
