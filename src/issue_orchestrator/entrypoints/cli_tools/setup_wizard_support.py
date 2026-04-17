@@ -6,8 +6,9 @@ import getpass
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
+from ...ports import RepositoryHost
 from ..setup_wizard_common import (
     FileCollector,
     detect_repo as detect_repo,
@@ -90,10 +91,22 @@ class DetectedState:
     prompt_candidates: list[Path] = field(default_factory=list)
 
 
-RunGit = Callable[..., tuple[bool, str]]
+RunGit = Callable[[list[str]], tuple[bool, str]]
 ProviderLister = Callable[[], list[str]]
-ProviderGetter = Callable[[str], Any]
-RepositoryHostFactory = Callable[[str], Any]
+ProviderGetter = Callable[[str], "SetupProvider"]
+RepositoryHostFactory = Callable[[str], RepositoryHost]
+
+
+class SetupProvider(Protocol):
+    def is_available(self) -> bool:
+        """Return whether this provider can run on the current machine."""
+        ...
+
+
+class DetectRepoFn(Protocol):
+    def __call__(self, *, cwd: Path | None = None) -> str | None:
+        """Detect the repository slug for a working directory."""
+        ...
 
 
 def check_prerequisites(
@@ -135,7 +148,7 @@ def check_prerequisites(
 
 def scan_existing_repo(
     path: Path | None,
-    detect_repo_func: Callable[..., str | None],
+    detect_repo_func: DetectRepoFn,
     fetch_github_labels_func: Callable[[str], list[str]],
     find_existing_config_func: Callable[[Path], tuple[Path | None, dict | None]],
     find_prompt_candidates_func: Callable[[Path], list[Path]],
