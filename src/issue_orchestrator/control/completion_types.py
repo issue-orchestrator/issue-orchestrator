@@ -2,6 +2,10 @@
 
 from dataclasses import dataclass
 
+ERROR_PREFIX_PUSH = "push_branch"
+ERROR_PREFIX_CREATE_PR = "create_pr"
+ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
+
 
 @dataclass
 class ProcessingResult:
