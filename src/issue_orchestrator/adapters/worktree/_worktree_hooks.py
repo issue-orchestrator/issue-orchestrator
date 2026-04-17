@@ -7,6 +7,10 @@ import os
 import shutil
 from pathlib import Path
 
+from ...infra.repo_hardening import (
+    MANAGED_PRE_PUSH_MARKER,
+    quarantine_managed_hook_file,
+)
 from ._worktree_git import _git_run
 
 logger = logging.getLogger(__name__)
@@ -94,6 +98,11 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     dst_hook = hooks_dir / "pre-push"
     orchestrator_hook = pre_push_hook if pre_push_hook else HOOKS_DIR / "pre-push"
 
+    # Self-heal: if a previous install left a corrupt pre-push.project (contains
+    # the managed wrapper marker), quarantine it before writing new hooks.
+    # Otherwise the chained wrapper would exec it and forkbomb the push.
+    quarantine_managed_hook_file(hooks_dir / "pre-push.project")
+
     if project_hook.exists() and project_hook.is_file():
         _install_chained_hook(hooks_dir, dst_hook, project_hook, orchestrator_hook)
     elif orchestrator_hook.exists():
@@ -103,10 +112,44 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
 
 
 def _resolve_project_pre_push_hook(gitdir: Path, custom_hooks_path: str | None) -> Path:
+    """Locate the repo's real pre-push hook (the project's own logic).
+
+    When the main repo has been hardened, its ``pre-push`` file is our managed
+    wrapper and the repo's original hook lives at ``pre-push.project`` next to
+    it. Returning the wrapper here would cause the worktree-level wrapper to
+    chain to the repo wrapper, which then chains to its own sibling
+    ``pre-push.project`` — which at the worktree level resolves back to a copy
+    of the repo wrapper. That is the recursion we must not create.
+    """
     main_git_dir = gitdir.parent.parent
     if custom_hooks_path:
-        return main_git_dir.parent / custom_hooks_path / "pre-push"
-    return main_git_dir / "hooks" / "pre-push"
+        base = main_git_dir.parent / custom_hooks_path
+    else:
+        base = main_git_dir / "hooks"
+
+    candidate = base / "pre-push"
+    if candidate.exists() and _is_managed_pre_push(candidate):
+        real_project_hook = base / "pre-push.project"
+        if real_project_hook.exists():
+            logger.debug(
+                "Repo pre-push is managed wrapper; using %s as project hook",
+                real_project_hook,
+            )
+            return real_project_hook
+        # Managed wrapper, no underlying project hook: nothing to chain.
+        logger.debug(
+            "Repo pre-push is managed wrapper with no sibling pre-push.project; "
+            "skipping project-hook chain in worktree"
+        )
+        return candidate.with_name("pre-push.__missing__")
+    return candidate
+
+
+def _is_managed_pre_push(path: Path) -> bool:
+    try:
+        return MANAGED_PRE_PUSH_MARKER in path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _install_chained_hook(
@@ -116,8 +159,19 @@ def _install_chained_hook(
     orchestrator_hook: Path,
 ) -> None:
     project_hook_copy = hooks_dir / "pre-push.project"
-    shutil.copy2(project_hook, project_hook_copy)
-    project_hook_copy.chmod(0o755)
+
+    # Defense in depth: if the resolved source hook is itself the managed
+    # wrapper (should be filtered earlier by _resolve_project_pre_push_hook),
+    # refuse to install it as a project hook. That would recreate the
+    # forkbomb we are fixing.
+    if _is_managed_pre_push(project_hook):
+        logger.warning(
+            "Refusing to install managed wrapper as pre-push.project: %s",
+            project_hook,
+        )
+    else:
+        shutil.copy2(project_hook, project_hook_copy)
+        project_hook_copy.chmod(0o755)
 
     wrapper_content = _chained_hook_script()
     dst_hook.write_text(wrapper_content)
@@ -132,38 +186,48 @@ def _install_chained_hook(
 
 
 def _chained_hook_script() -> str:
-    return """#!/bin/bash
+    managed_marker = MANAGED_PRE_PUSH_MARKER
+    return f"""#!/bin/bash
 # Chained pre-push hook: runs project hook first, then orchestrator hook
 set -e
 
 HOOKS_DIR="$(dirname "$0")"
 AUDIT_LOG="$HOOKS_DIR/pre-push.log"
+MANAGED_MARKER='{managed_marker}'
 
 # Audit logging function
-audit() {
+audit() {{
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$AUDIT_LOG"
     echo "[orchestrator] $1"
-}
+}}
 
 total_start=$(date +%s)
 audit "Pre-push hook started (commit: $(git rev-parse --short HEAD))"
 
 # Run project's pre-push hook first (lint, tests, etc.)
 # Skip if ORCHESTRATOR_SKIP_PROJECT_HOOK=1 (used by e2e tests)
-if [ "${ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}" = "1" ]; then
+if [ "${{ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}}" = "1" ]; then
     audit "Skipping project hook (ORCHESTRATOR_SKIP_PROJECT_HOOK=1)"
+elif [ -x "$HOOKS_DIR/pre-push.project" ] && grep -qF "$MANAGED_MARKER" "$HOOKS_DIR/pre-push.project" 2>/dev/null; then
+    # Recursion guard: pre-push.project contains the managed wrapper marker,
+    # meaning a prior install copied this wrapper (or the repo wrapper) into
+    # it. Executing it would forkbomb the push. Refuse and fail loudly so the
+    # broken state is visible.
+    audit "Refusing to exec managed wrapper as project hook (recursion guard): $HOOKS_DIR/pre-push.project"
+    echo "pre-push: pre-push.project is the managed wrapper (corruption); refusing to recurse. Reinstall worktree hooks." >&2
+    exit 1
 elif [ -x "$HOOKS_DIR/pre-push.project" ]; then
     audit "Running project pre-push hook..."
     project_start=$(date +%s)
     if "$HOOKS_DIR/pre-push.project" "$@"; then
         project_end=$(date +%s)
         project_duration=$((project_end - project_start))
-        audit "Project hook PASSED (duration=${project_duration}s)"
+        audit "Project hook PASSED (duration=${{project_duration}}s)"
     else
         project_exit=$?
         project_end=$(date +%s)
         project_duration=$((project_end - project_start))
-        audit "Project hook FAILED (exit ${project_exit} duration=${project_duration}s)"
+        audit "Project hook FAILED (exit ${{project_exit}} duration=${{project_duration}}s)"
         exit 1
     fi
 else
@@ -177,12 +241,12 @@ if [ -x "$HOOKS_DIR/pre-push.orchestrator" ]; then
     if "$HOOKS_DIR/pre-push.orchestrator" "$@"; then
         orch_end=$(date +%s)
         orch_duration=$((orch_end - orch_start))
-        audit "Orchestrator hook PASSED (duration=${orch_duration}s)"
+        audit "Orchestrator hook PASSED (duration=${{orch_duration}}s)"
     else
         orch_exit=$?
         orch_end=$(date +%s)
         orch_duration=$((orch_end - orch_start))
-        audit "Orchestrator hook FAILED (exit ${orch_exit} duration=${orch_duration}s)"
+        audit "Orchestrator hook FAILED (exit ${{orch_exit}} duration=${{orch_duration}}s)"
         exit 1
     fi
 else
@@ -191,5 +255,5 @@ fi
 
 total_end=$(date +%s)
 total_duration=$((total_end - total_start))
-audit "Pre-push hook completed successfully (total_duration=${total_duration}s)"
+audit "Pre-push hook completed successfully (total_duration=${{total_duration}}s)"
 """

@@ -11,10 +11,12 @@ import pytest
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_hardening import (
+    MANAGED_PRE_PUSH_MARKER,
     _render_repo_pre_push_hook,
     _render_helper_script,
     harden_repo,
     inspect_repo_hardening,
+    quarantine_managed_hook_file,
     RepoHardeningError,
 )
 
@@ -184,6 +186,78 @@ def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
     rendered = _render_repo_pre_push_hook(verify_script, repo_root)
 
     assert 'VERIFY_SCRIPT="$REPO_ROOT/scripts/gates/verify-pr.sh"' in rendered
+
+
+def test_managed_pre_push_hook_contains_recursion_guard() -> None:
+    repo_root = Path("/tmp/example-repo")
+    rendered = _render_repo_pre_push_hook(
+        repo_root / "scripts" / "verify-pr.sh", repo_root
+    )
+
+    assert MANAGED_PRE_PUSH_MARKER in rendered
+    assert "grep -qF \"$MANAGED_MARKER\" \"$PROJECT_HOOK\"" in rendered
+    assert "managed-marker-detected" in rendered
+    # Syntax-check the rendered script.
+    result = subprocess.run(
+        ["bash", "-n"], input=rendered, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_harden_repo_quarantines_corrupt_project_hook(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ".githooks"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    hooks_dir = repo / ".githooks"
+    hooks_dir.mkdir()
+    corrupt = hooks_dir / "pre-push.project"
+    # A prior bug (or manual mis-copy) left the managed wrapper masquerading as
+    # the project hook. If left alone, the installed wrapper would exec this
+    # file and recurse forever.
+    corrupt.write_text(
+        f"#!/usr/bin/env bash\n# {MANAGED_PRE_PUSH_MARKER}\n"
+        f'"$HOOK_DIR/pre-push.project" "$@"\n'
+    )
+    corrupt.chmod(0o755)
+
+    result = harden_repo(_make_config(repo))
+
+    assert not corrupt.exists(), "corrupt pre-push.project must be renamed aside"
+    quarantined = list(hooks_dir.glob("pre-push.project.quarantined-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0] in result.quarantined_files
+    # Fresh install still produces a managed wrapper at pre-push.
+    assert MANAGED_PRE_PUSH_MARKER in result.pre_push_hook.read_text()
+
+
+def test_quarantine_managed_hook_file_is_noop_when_not_managed(tmp_path: Path) -> None:
+    target = tmp_path / "pre-push.project"
+    target.write_text("#!/usr/bin/env bash\necho real project hook\n")
+    result = quarantine_managed_hook_file(target)
+    assert result is None
+    assert target.exists(), "benign files must not be quarantined"
+
+
+def test_quarantine_managed_hook_file_handles_existing_collision(tmp_path: Path) -> None:
+    target = tmp_path / "pre-push.project"
+    target.write_text(f"# {MANAGED_PRE_PUSH_MARKER}\n")
+    # Simulate a prior quarantine that collides (same timestamp, same minute).
+    # quarantine helper must still succeed without overwriting the prior file.
+    target_sibling = tmp_path / "pre-push.project.quarantined-20260417T054301Z"
+    target_sibling.write_text("prior quarantine\n")
+
+    first = quarantine_managed_hook_file(target)
+    assert first is not None
+    assert first.exists()
+    assert target_sibling.read_text() == "prior quarantine\n"
+    assert not target.exists()
 
 
 def test_harden_repo_refreshes_drifted_agent_hook_files(tmp_path: Path) -> None:
