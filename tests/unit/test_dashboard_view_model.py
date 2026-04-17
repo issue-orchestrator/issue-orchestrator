@@ -339,6 +339,7 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert queued_col["count"] == 0
     assert all(item["issue_number"] != 4072 for item in queued_col["items"])
     assert any(item["issue_number"] == 4072 for item in view_model.awaiting_merge_items)
+    assert view_model.scope_summary["in_scope_total"] == 1
 
 
 def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
@@ -368,6 +369,7 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
 
     assert any(item["issue_number"] == 4057 for item in view_model.awaiting_merge_items)
     assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    assert view_model.scope_summary["in_scope_total"] == 1
 
 
 def test_completed_history_without_pr_url_does_not_enter_completed_lane():

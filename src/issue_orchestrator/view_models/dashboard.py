@@ -1455,12 +1455,15 @@ def build_dashboard_view_model(
     }
     if config:
         milestones = config.get_filter_milestones()
-        in_scope_total = (
-            len(backlog_items)
-            + len(queue_items)
-            + len(active_items)
-            + len(blocked_items)
-            + len(completed_items)
+        in_scope_total = len(
+            _issue_numbers(
+                backlog_items
+                + queue_items
+                + active_items
+                + blocked_items
+                + awaiting_merge_items
+                + completed_items
+            )
         )
         scope_summary = {
             "repo_open_total": queue_total,
