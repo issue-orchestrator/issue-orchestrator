@@ -93,7 +93,6 @@ if TYPE_CHECKING:
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..ports.e2e_issue_tracker import E2EIssueTracker
-    from ..ports.background_job import BackgroundJobRunner
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -291,7 +290,6 @@ def _create_completion_components(
     command_runner: LocalCommandRunner,
     provider_resilience: ProviderResilienceManager | None = None,
     label_manager: "LabelManager | None" = None,
-    background_job_runner: "BackgroundJobRunner | None" = None,
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
@@ -310,7 +308,6 @@ def _create_completion_components(
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         config=config,
-        background_job_runner=background_job_runner,
         background_job_supervisor=background_job_supervisor,
     ) if github else None
 
@@ -617,7 +614,6 @@ def build_orchestrator(
     completion_processor, session_controller_instance = _create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
         label_manager=label_manager,
-        background_job_runner=background_job_runner,
         background_job_supervisor=background_job_supervisor,
     )
 

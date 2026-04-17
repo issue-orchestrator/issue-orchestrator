@@ -34,7 +34,6 @@ from ..domain.models import (
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink
-from ..ports.background_job import BackgroundJobRunner
 from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -97,7 +96,6 @@ class CompletionProcessor:
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
         config: "Config | None" = None,
-        background_job_runner: "BackgroundJobRunner | None" = None,
         background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     ):
         """Initialize the processor with required adapters.
@@ -110,11 +108,12 @@ class CompletionProcessor:
             event_bus: Optional EventBus for emitting processing events.
             label_config: Optional mapping of label names (e.g., {"blocked": "blocked"}).
             publish_gate: Optional PublishGate for validating before publish actions.
-            background_job_runner: Optional runner used to execute long-running
-                review-exchange work off the main orchestrator tick. When
-                omitted the processor falls back to running the exchange
-                inline — fine for tests, but will freeze the main loop in
-                production.
+            background_job_supervisor: Owns failure-handling for the
+                background runner. When omitted the processor uses a private
+                supervisor wrapping :class:`NullBackgroundJobRunner` so the
+                inline-execution path still works for tests; production MUST
+                pass the shared supervisor from bootstrap so
+                ``Orchestrator.tick`` drains its completions.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
@@ -141,7 +140,6 @@ class CompletionProcessor:
             session_output=session_output,
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
-            job_runner=background_job_runner,
             job_supervisor=background_job_supervisor,
         )
         self._record_validator = CompletionRecordValidator(

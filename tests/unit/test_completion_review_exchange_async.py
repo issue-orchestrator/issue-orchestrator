@@ -148,6 +148,10 @@ def _build(
     started_events: list[dict[str, Any]],
     outcome_events: list[dict[str, Any]],
 ) -> tuple[CompletionReviewExchange, _FakeSessionOutput]:
+    from issue_orchestrator.control.background_job_supervisor import (
+        BackgroundJobSupervisor,
+    )
+
     session_output = _FakeSessionOutput(tmp_path)
 
     def _on_started(**kwargs: Any) -> None:
@@ -156,12 +160,16 @@ def _build(
     def _on_outcome(**kwargs: Any) -> None:
         outcome_events.append(kwargs)
 
+    # Tests driving the async path wrap the fake runner in a real supervisor
+    # — matching the production contract. Nothing calls supervisor.tick in
+    # these tests because the fake runner doesn't raise; when failure paths
+    # need testing, tests call `supervisor.tick()` themselves.
     review = CompletionReviewExchange(
         config=_make_config(tmp_path),
         session_output=session_output,  # type: ignore[arg-type]
         emit_review_started=_on_started,
         emit_review_outcome=_on_outcome,
-        job_runner=job_runner,
+        job_supervisor=BackgroundJobSupervisor(job_runner),  # type: ignore[arg-type]
     )
     return review, session_output
 

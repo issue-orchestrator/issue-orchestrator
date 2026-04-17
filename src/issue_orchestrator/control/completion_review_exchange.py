@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain.models import CompletionRecord, RequestedAction
-from ..ports.background_job import BackgroundJobRunner, NullBackgroundJobRunner
+from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.session_output import SessionOutput
 from .background_job_supervisor import BackgroundJobSupervisor
 from .review_publish_pipeline import resolve_review_publish_pipeline
@@ -44,24 +44,23 @@ class CompletionReviewExchange:
         session_output: SessionOutput,
         emit_review_started: ReviewStartedEmitter,
         emit_review_outcome: ReviewOutcomeEmitter,
-        job_runner: BackgroundJobRunner | None = None,
         job_supervisor: BackgroundJobSupervisor | None = None,
     ) -> None:
         self._config = config
         self._session_output = session_output
         self._emit_review_started = emit_review_started
         self._emit_review_outcome = emit_review_outcome
-        # The supervisor owns failure-handling for the background runner. We
-        # accept either a prebuilt supervisor (preferred; the composition
-        # root wires one and shares it with the tick) or a bare runner, in
-        # which case we wrap it in a private supervisor so the raw surface
-        # still has failure capture — but callers of ``tick`` must then
-        # reach the same instance, so injection is strongly preferred.
-        if job_supervisor is not None:
-            self._job_supervisor = job_supervisor
-        else:
-            runner: BackgroundJobRunner = job_runner or NullBackgroundJobRunner()
-            self._job_supervisor = BackgroundJobSupervisor(runner)
+        # Supervisor injection is REQUIRED for the async failure path to work:
+        # ``take_failure`` only returns values that ``tick()`` has populated,
+        # and ``tick()`` must be called from the orchestrator's main loop.
+        # Tests that exercise the async path inject a real supervisor and
+        # drive ``tick()`` themselves. Tests that don't care about async pass
+        # nothing — we default to a supervisor wrapping NullBackgroundJobRunner
+        # so ``submit``/``is_running`` return no-op values and the failure
+        # queue is always empty (no need to tick).
+        self._job_supervisor = job_supervisor or BackgroundJobSupervisor(
+            NullBackgroundJobRunner()
+        )
 
     def prepare_review_exchange(
         self,

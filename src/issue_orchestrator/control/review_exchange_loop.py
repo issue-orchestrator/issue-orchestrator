@@ -1321,6 +1321,10 @@ def _write_prompt(exchange_dir: Path, round_index: int, role: str, prompt_text: 
     return prompt_path
 
 
+_ATOMIC_WRITE_TMP_PREFIX = "."
+_ATOMIC_WRITE_TMP_SUFFIX = ".tmp"
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON atomically so mid-write polls never see a torn file.
 
@@ -1330,11 +1334,17 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     and raise :class:`json.JSONDecodeError`. Write to a sibling temp file on
     the same filesystem and rename — the rename is atomic on POSIX, so any
     reader sees either the pre-write content or the full new content.
+
+    Orphaned tempfiles from a ``kill -9`` between ``mkstemp`` and
+    ``os.replace`` are cleaned up by
+    :func:`sweep_atomic_write_tempfiles` at orchestrator startup.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(payload, indent=2)
     fd, tmp_path_str = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        prefix=f"{_ATOMIC_WRITE_TMP_PREFIX}{path.name}.",
+        suffix=_ATOMIC_WRITE_TMP_SUFFIX,
+        dir=str(path.parent),
     )
     try:
         with os.fdopen(fd, "w") as fh:
@@ -1348,6 +1358,36 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def sweep_atomic_write_tempfiles(exchange_dirs_root: Path) -> int:
+    """Remove orphaned ``_atomic_write_json`` tempfiles under *exchange_dirs_root*.
+
+    ``_atomic_write_json`` normally self-cleans in both success (rename) and
+    failure (explicit unlink) paths. The one case where it can't: an external
+    ``kill -9`` between ``mkstemp`` and ``os.replace``. Those tempfiles
+    accumulate silently in per-run ``review-exchange/`` directories. Runs
+    once at orchestrator startup; O(tempfiles found), not O(all files).
+    Returns the number of tempfiles removed, for logging.
+    """
+    if not exchange_dirs_root.exists():
+        return 0
+    removed = 0
+    for tmp_path in exchange_dirs_root.rglob(
+        f"{_ATOMIC_WRITE_TMP_PREFIX}*{_ATOMIC_WRITE_TMP_SUFFIX}"
+    ):
+        # Belt and suspenders: only touch files whose surrounding dir looks
+        # like a review-exchange run dir. Prevents an overly-broad root from
+        # nuking unrelated dotfiles.
+        if tmp_path.parent.name != "review-exchange":
+            continue
+        try:
+            tmp_path.unlink()
+            removed += 1
+        except OSError:
+            # Next startup will retry; don't block boot on sweep failures.
+            continue
+    return removed
 
 
 def _write_round_log(

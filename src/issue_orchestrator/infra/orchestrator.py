@@ -240,7 +240,37 @@ class Orchestrator:
 
     async def startup(self) -> None:
         self.start_publish_executor()
+        self._sweep_orphan_atomic_write_tempfiles()
         await self._startup_manager.run_startup(self.state)
+
+    def _sweep_orphan_atomic_write_tempfiles(self) -> None:
+        """Remove partial tempfiles left by a prior ``kill -9`` mid-rename.
+
+        ``_atomic_write_json`` cleans up on both success and expected failure
+        paths; only an external kill between ``mkstemp`` and ``os.replace``
+        leaves ``.summary.json.XXXX.tmp`` style dotfiles behind. Clearing
+        them at startup keeps per-run directories tidy without any hot-path
+        cost during normal operation.
+        """
+        # Local import keeps the control->infra boundary clean: this module
+        # already imports orchestrator_support from control, so one more
+        # control-side helper is acceptable.
+        from ..control.review_exchange_loop import sweep_atomic_write_tempfiles
+
+        sessions_root = self.config.repo_root / ".issue-orchestrator" / "sessions"
+        try:
+            removed = sweep_atomic_write_tempfiles(sessions_root)
+        except Exception:
+            logger.exception(
+                "[STARTUP] Orphan tempfile sweep failed under %s", sessions_root
+            )
+            return
+        if removed:
+            logger.info(
+                "[STARTUP] Removed %d orphaned atomic-write tempfile(s) under %s",
+                removed,
+                sessions_root,
+            )
 
     def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
