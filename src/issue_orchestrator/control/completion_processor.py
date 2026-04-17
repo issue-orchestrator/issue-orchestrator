@@ -581,7 +581,7 @@ class CompletionProcessor:
             preserved_completion_path=preserved_completion_path,
             emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment,
-            cleanup_completion_record=self._cleanup_completion_record,
+            cleanup_completion_record_fn=self._cleanup_completion_record,
         )
 
     def _read_and_validate_record(

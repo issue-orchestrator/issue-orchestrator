@@ -47,7 +47,7 @@ def build_processing_result(
     preserved_completion_path: str | None,
     emit_completion_event: EmitCompletionEvent,
     post_issue_comment: PostIssueComment,
-    cleanup_completion_record: Callable[[Path, str | None, int], None],
+    cleanup_completion_record_fn: Callable[[Path, str | None, int], None],
 ) -> ProcessingResult:
     """Build final processing result and handle completion diagnostics."""
     success = len(errors) == 0 or (
@@ -114,7 +114,7 @@ def build_processing_result(
         )
         post_issue_comment(issue_number, comment, context="processing failure")
 
-    cleanup_completion_record(worktree, completion_path, issue_number)
+    cleanup_completion_record_fn(worktree, completion_path, issue_number)
 
     review_exchange_halted = any(error.startswith("review_exchange:") for error in errors)
 
