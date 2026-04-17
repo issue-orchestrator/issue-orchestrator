@@ -71,6 +71,7 @@ from ..execution.worktree_adapter import GitWorktreeManager
 from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
+from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..ports.e2e_issue_tracker import E2EIssueTracker
+    from ..ports.background_job import BackgroundJobRunner
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +290,7 @@ def _create_completion_components(
     command_runner: LocalCommandRunner,
     provider_resilience: ProviderResilienceManager | None = None,
     label_manager: "LabelManager | None" = None,
+    background_job_runner: "BackgroundJobRunner | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -305,6 +308,7 @@ def _create_completion_components(
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         config=config,
+        background_job_runner=background_job_runner,
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -596,10 +600,14 @@ def build_orchestrator(
     # Create state machine manager
     state_machine_manager = StateMachineManager(config=config)
 
+    # Background job runner keeps long review-exchange work off the main tick.
+    background_job_runner = ThreadBackgroundJobRunner()
+
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
         label_manager=label_manager,
+        background_job_runner=background_job_runner,
     )
 
     # Create async completion components (observer + executor)

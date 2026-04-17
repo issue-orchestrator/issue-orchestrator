@@ -34,6 +34,7 @@ from ..domain.models import (
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink
+from ..ports.background_job import BackgroundJobRunner
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
@@ -95,6 +96,7 @@ class CompletionProcessor:
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
         config: "Config | None" = None,
+        background_job_runner: "BackgroundJobRunner | None" = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -106,6 +108,11 @@ class CompletionProcessor:
             event_bus: Optional EventBus for emitting processing events.
             label_config: Optional mapping of label names (e.g., {"blocked": "blocked"}).
             publish_gate: Optional PublishGate for validating before publish actions.
+            background_job_runner: Optional runner used to execute long-running
+                review-exchange work off the main orchestrator tick. When
+                omitted the processor falls back to running the exchange
+                inline — fine for tests, but will freeze the main loop in
+                production.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
@@ -132,6 +139,7 @@ class CompletionProcessor:
             session_output=session_output,
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
+            job_runner=background_job_runner,
         )
         self._record_validator = CompletionRecordValidator(
             config=config,
@@ -497,7 +505,7 @@ class CompletionProcessor:
         )
 
         # Execute requested actions in order
-        branch, pr_url, review_exchange_completed = self._execute_actions(
+        branch, pr_url, review_exchange_completed, deferred = self._execute_actions(
             worktree=worktree,
             record=record,
             issue_number=issue_number,
@@ -510,6 +518,22 @@ class CompletionProcessor:
             errors=errors,
             error_details=error_details,
         )
+
+        if deferred:
+            # Review exchange is running in the background. Leave the completion
+            # record on disk so the next observation re-enters this pipeline,
+            # and skip result artifacts / cleanup that would imply completion.
+            logger.info(
+                "Completion deferred (review exchange running): issue=%d session=%s",
+                issue_number,
+                session_name,
+            )
+            return ProcessingResult(
+                success=True,
+                message="Review exchange running in background; will resume on next tick",
+                completion_record_path=None,
+                review_exchange_deferred=True,
+            )
 
         # Write reviewer feedback to session run directory for rework sessions to use
         # This is only relevant for review sessions (pr_number provided) with feedback
@@ -712,11 +736,13 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
-    ) -> tuple[str | None, str | None, bool]:
+    ) -> tuple[str | None, str | None, bool, bool]:
         """Execute all requested actions from completion record.
 
         Returns:
-            Tuple of (final_branch, pr_url, review_exchange_completed).
+            Tuple of (final_branch, pr_url, review_exchange_completed, deferred).
+            When ``deferred`` is True the review exchange is running in the
+            background — callers must NOT treat the completion as finished.
         """
         pr_url: str | None = None
         requested_actions = tuple(record.requested_actions)
@@ -726,6 +752,7 @@ class CompletionProcessor:
             exchange_result,
             review_exchange_completed,
             should_halt,
+            deferred,
         ) = self._review_exchange.prepare_review_exchange(
             requested_actions=requested_actions,
             worktree=worktree,
@@ -738,10 +765,12 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
         )
+        if deferred:
+            return branch, pr_url, review_exchange_completed, True
         if should_halt:
-            return branch, pr_url, review_exchange_completed
+            return branch, pr_url, review_exchange_completed, False
 
-        return self._execute_planned_actions(
+        branch, pr_url, review_exchange_completed = self._execute_planned_actions(
             plan=plan,
             worktree=worktree,
             record=record,
@@ -758,6 +787,7 @@ class CompletionProcessor:
             exchange_result=exchange_result,
             review_exchange_completed=review_exchange_completed,
         )
+        return branch, pr_url, review_exchange_completed, False
 
     def _execute_planned_actions(
         self,

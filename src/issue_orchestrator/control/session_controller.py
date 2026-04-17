@@ -193,6 +193,18 @@ class SessionController:
             pr_number=pr_number,
             completion_path=completion_path,
         )
+        if result.review_exchange_deferred:
+            # Exchange is running in a background thread. Keep the session
+            # active so the next tick re-observes, re-enters the pipeline, and
+            # resumes publish once the summary is visible. We deliberately do
+            # NOT emit processing_completed here — the record is still pending.
+            return SessionDecision(
+                status=SessionStatus.RUNNING,
+                processing_result=result,
+                completion_processed=False,
+                recovered_from_timeout=recovered,
+                reason="Review exchange running in background; awaiting completion",
+            )
         self._emit_processing_completed_event(worktree_path, issue_number, session_name, run_dir, result)
 
         # Map outcome to status
