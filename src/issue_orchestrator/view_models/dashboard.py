@@ -486,7 +486,6 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
 def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multiple state sources
     state,
     config,
-    queue_page: int,
     seen_issues: set[int],
     pending_numbers: dict[str, set[int]],
     *,
@@ -503,10 +502,8 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     queue_total = len(queue_issues)
     dependency_info = get_issue_dependencies(queue_issues, config)
 
-    start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
-    end_idx = start_idx + QUEUE_PAGE_SIZE
     queued_position = 0
-    for issue in queue_issues[start_idx:end_idx]:
+    for issue in queue_issues:
         if issue.number in seen_issues:
             continue
         seen_issues.add(issue.number)
@@ -689,6 +686,28 @@ def _normalize_status_reason(reason: str | None) -> str | None:
 def _sort_by_issue_number(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deterministic default ordering for dashboard issue lists."""
     return sorted(items, key=lambda item: int(item.get("issue_number", 0)))
+
+
+def _issue_number_value(item: dict[str, Any]) -> int | None:
+    raw = item.get("issue_number")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return None
+
+
+def _queue_ordered_page(
+    queue_items: list[dict[str, Any]],
+    queue_order: dict[int, int],
+    queue_page: int,
+) -> list[dict[str, Any]]:
+    ordered_items = sorted(
+        queue_items,
+        key=lambda item: queue_order.get(_issue_number_value(item) or -1, len(queue_order)),
+    )
+    page_items, _, _ = _paginate(ordered_items, queue_page, QUEUE_PAGE_SIZE)
+    return _sort_by_issue_number(page_items)
 
 
 def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1002,6 +1021,7 @@ def _build_awaiting_merge_items(
 
 def _build_flow_columns(
     queue_items: list[dict[str, Any]],
+    queue_preview_items: list[dict[str, Any]],
     active_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
     awaiting_merge_items: list[dict[str, Any]],
@@ -1010,12 +1030,16 @@ def _build_flow_columns(
     # Exclude merge-pending items from the queued column (they appear in awaiting-merge)
     awaiting_numbers = {item.get("issue_number") for item in awaiting_merge_items}
     queued_only = [item for item in queue_items if item.get("issue_number") not in awaiting_numbers]
+    queued_preview_only = [
+        item for item in queue_preview_items
+        if item.get("issue_number") not in awaiting_numbers
+    ]
     return [
         {
             "id": "queued",
             "title": "Queued",
             "count": len(queued_only),
-            "items": [_compact_card(item, "queued") for item in queued_only[:12]],
+            "items": [_compact_card(item, "queued") for item in queued_preview_only[:12]],
             "expandable": True,
         },
         {
@@ -1292,8 +1316,14 @@ def build_dashboard_view_model(
         pending_numbers = _pending_issue_numbers(state)
         active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
         queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
-            state, config, queue_page, seen_issues, pending_numbers, lm=lm,
+            state, config, seen_issues, pending_numbers, lm=lm,
         )
+        queue_order = {
+            issue_number: index
+            for index, item in enumerate(queue_items)
+            for issue_number in [_issue_number_value(item)]
+            if issue_number is not None
+        }
         backlog_items = _build_backlog_items(state, config, lm=lm)
         blocked_items.extend(queue_blocked)
         history_items, history_blocked = _build_history_items(state, config)
@@ -1326,6 +1356,7 @@ def build_dashboard_view_model(
             awaiting_merge_items=awaiting_merge_items,
             completed_items=completed_items,
         )
+        queue_preview_items = _queue_ordered_page(queue_items, queue_order, queue_page)
 
         queue_items = _sort_by_issue_number(queue_items)
         blocked_items = _sort_by_issue_number(blocked_items)
@@ -1341,7 +1372,12 @@ def build_dashboard_view_model(
             completed_items,
         )
         flow_columns = _build_flow_columns(
-            queue_items, active_items, blocked_items, awaiting_merge_items, completed_items
+            queue_items,
+            queue_preview_items,
+            active_items,
+            blocked_items,
+            awaiting_merge_items,
+            completed_items,
         )
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
@@ -1419,9 +1455,19 @@ def build_dashboard_view_model(
     }
     if config:
         milestones = config.get_filter_milestones()
+        in_scope_total = len(
+            _issue_numbers(
+                backlog_items
+                + queue_items
+                + active_items
+                + blocked_items
+                + awaiting_merge_items
+                + completed_items
+            )
+        )
         scope_summary = {
             "repo_open_total": queue_total,
-            "in_scope_total": len(backlog_items),
+            "in_scope_total": in_scope_total,
             "filter_label": config.filtering.label or "",
             "filter_milestones": milestones,
             "exclude_labels": list(config.filtering.exclude_labels),
