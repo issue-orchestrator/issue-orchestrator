@@ -441,14 +441,14 @@ class TestLaunchResultKeepQueued:
 
     def test_launch_result_keep_queued_default_false(self):
         """By default, keep_queued should be False."""
-        from issue_orchestrator.control.session_launcher import LaunchResult
+        from issue_orchestrator.control.session_launch_types import LaunchResult
 
         result = LaunchResult(session=None, success=False, reason="Some error")
         assert result.keep_queued is False
 
     def test_launch_result_keep_queued_set_true(self):
         """keep_queued should be settable to True."""
-        from issue_orchestrator.control.session_launcher import LaunchResult
+        from issue_orchestrator.control.session_launch_types import LaunchResult
 
         result = LaunchResult(session=None, success=False, reason="Terminal already running", keep_queued=True)
         assert result.keep_queued is True
@@ -461,7 +461,7 @@ class TestLaunchResultKeepQueued:
         remove the review from pending_reviews, preventing the scanner from
         re-discovering it on the next tick.
         """
-        from issue_orchestrator.control.session_launcher import LaunchResult
+        from issue_orchestrator.control.session_launch_types import LaunchResult
 
         # Simulating what happens when terminal already running
         result = LaunchResult(

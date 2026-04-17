@@ -6,12 +6,9 @@ from typing import Any
 
 from ..types import Check
 from ...config import Config
-from ....adapters.github.http_client import (
-    GitHubAuthError,
-    GitHubHttpClient,
-    GitHubHttpConfig,
-    resolve_github_token,
-)
+from ....adapters.github.errors import GitHubAuthError
+from ....adapters.github.http_client import GitHubHttpClient, GitHubHttpConfig
+from ....adapters.github.tokens import resolve_github_token
 from ....adapters.github.repo import get_repo_from_git, GitRepoError
 
 
