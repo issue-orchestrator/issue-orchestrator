@@ -355,9 +355,6 @@ function renderSessionTranscript(issueNumber, runDir, payload) {
     // prettifier; we just render it as a scrollable monospace block and
     // disable the emulator-only controls so the toolbar stops lying about
     // what Play/Jump-to-latest would do.
-    const existing = sessionReplayState && sessionReplayState.mode === 'transcript'
-        ? sessionReplayState
-        : null;
     sessionReplayState = {
         issueNumber,
         runDir,
@@ -392,7 +389,6 @@ function renderSessionTranscript(issueNumber, runDir, payload) {
     } else {
         pre.scrollTop = preservedScrollTop;
     }
-    void existing;  // existing-state reference kept for potential future diffing
     const hint = document.querySelector('.session-replay-hint');
     if (hint) {
         hint.textContent = 'Codex JSON-stream recording rendered as a transcript. Replay controls disabled for this format.';
