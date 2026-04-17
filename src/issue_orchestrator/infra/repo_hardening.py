@@ -406,18 +406,17 @@ def _render_helper_script(source_path: Path) -> str:
 
 def _render_repo_pre_push_hook(verify_script: Path, repo_root: Path) -> str:
     verify_rel = verify_script.relative_to(repo_root)
-    managed_marker = MANAGED_PRE_PUSH_MARKER
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
-# {managed_marker}
+# {MANAGED_PRE_PUSH_MARKER}
 
 HOOK_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOG_FILE="$HOOK_DIR/pre-push.log"
 PROJECT_HOOK="$HOOK_DIR/pre-push.project"
 VERIFY_SCRIPT="$REPO_ROOT/{verify_rel.as_posix()}"
-MANAGED_MARKER='{managed_marker}'
+MANAGED_MARKER='{MANAGED_PRE_PUSH_MARKER}'
 
 log() {{
   printf "%s %s\\n" "$(date -Iseconds)" "$1" >> "$LOG_FILE"
@@ -428,6 +427,13 @@ log "repo-pre-push-started"
 # Recursion guard: never exec pre-push.project if it contains the managed
 # marker. That means it is a copy of this wrapper (corruption) and executing
 # it would forkbomb the push.
+#
+# MAIN-REPO POLICY: log + skip the project hook, continue to verify-pr.
+# Stranding the operator (unable to push from the main checkout) is worse
+# than pushing with the repo's lint/test gate temporarily bypassed — they
+# can still run verify-pr, and doctor will flag the corruption for repair.
+# The worktree wrapper takes the opposite stance (hard-fail) because
+# worktrees are disposable — see _chained_hook_script in _worktree_hooks.py.
 if [ -x "$PROJECT_HOOK" ] && grep -qF "$MANAGED_MARKER" "$PROJECT_HOOK" 2>/dev/null; then
   log "project-hook-skipped reason=managed-marker-detected path=$PROJECT_HOOK"
   echo "pre-push: refusing to exec managed wrapper as project hook: $PROJECT_HOOK" >&2

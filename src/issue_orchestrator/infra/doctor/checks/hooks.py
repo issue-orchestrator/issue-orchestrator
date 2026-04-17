@@ -476,7 +476,13 @@ def check_worktree_hook_corruption(config: Config) -> list[Check]:
 
 
 def _iter_project_hook_candidates(repo_root: Path) -> list[Path]:
-    """Enumerate pre-push.project files across main-repo and worktree hooks dirs."""
+    """Enumerate pre-push.project files across main-repo and worktree hooks dirs.
+
+    Cost is O(worktrees): one directory read plus one stat per worktree. Fine
+    for doctor's current call frequency (startup + manual/UI-triggered); if
+    doctor ever moves to a hot-path polling cadence this is the hot-spot to
+    cache.
+    """
     candidates: list[Path] = []
     gitdir = _resolve_gitdir(repo_root)
     if gitdir is None:

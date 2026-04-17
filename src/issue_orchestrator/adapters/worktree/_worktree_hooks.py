@@ -103,7 +103,7 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     # Otherwise the chained wrapper would exec it and forkbomb the push.
     quarantine_managed_hook_file(hooks_dir / "pre-push.project")
 
-    if project_hook.exists() and project_hook.is_file():
+    if project_hook is not None and project_hook.is_file():
         _install_chained_hook(hooks_dir, dst_hook, project_hook, orchestrator_hook)
     elif orchestrator_hook.exists():
         shutil.copy2(orchestrator_hook, dst_hook)
@@ -111,7 +111,9 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
         logger.info("Installed orchestrator pre-push hook")
 
 
-def _resolve_project_pre_push_hook(gitdir: Path, custom_hooks_path: str | None) -> Path:
+def _resolve_project_pre_push_hook(
+    gitdir: Path, custom_hooks_path: str | None
+) -> Path | None:
     """Locate the repo's real pre-push hook (the project's own logic).
 
     When the main repo has been hardened, its ``pre-push`` file is our managed
@@ -120,6 +122,11 @@ def _resolve_project_pre_push_hook(gitdir: Path, custom_hooks_path: str | None) 
     chain to the repo wrapper, which then chains to its own sibling
     ``pre-push.project`` — which at the worktree level resolves back to a copy
     of the repo wrapper. That is the recursion we must not create.
+
+    Returns ``None`` when there is no project hook to chain to (either the
+    main-repo hook is the managed wrapper with no sibling original, or no
+    pre-push exists at all). Callers must treat ``None`` as "install only the
+    orchestrator hook".
     """
     main_git_dir = gitdir.parent.parent
     if custom_hooks_path:
@@ -128,7 +135,9 @@ def _resolve_project_pre_push_hook(gitdir: Path, custom_hooks_path: str | None) 
         base = main_git_dir / "hooks"
 
     candidate = base / "pre-push"
-    if candidate.exists() and _is_managed_pre_push(candidate):
+    if not candidate.exists():
+        return None
+    if _is_managed_pre_push(candidate):
         real_project_hook = base / "pre-push.project"
         if real_project_hook.exists():
             logger.debug(
@@ -141,7 +150,7 @@ def _resolve_project_pre_push_hook(gitdir: Path, custom_hooks_path: str | None) 
             "Repo pre-push is managed wrapper with no sibling pre-push.project; "
             "skipping project-hook chain in worktree"
         )
-        return candidate.with_name("pre-push.__missing__")
+        return None
     return candidate
 
 
@@ -158,20 +167,22 @@ def _install_chained_hook(
     project_hook: Path,
     orchestrator_hook: Path,
 ) -> None:
-    project_hook_copy = hooks_dir / "pre-push.project"
-
-    # Defense in depth: if the resolved source hook is itself the managed
-    # wrapper (should be filtered earlier by _resolve_project_pre_push_hook),
-    # refuse to install it as a project hook. That would recreate the
-    # forkbomb we are fixing.
+    # Fail fast: reaching here with a managed source hook means
+    # _resolve_project_pre_push_hook's filter was bypassed (e.g. a caller
+    # supplied an explicit project_hook). Silently skipping the copy would
+    # change push semantics without a trace — the worktree would run the
+    # orchestrator chain but never the repo's own lint/test gate. A loud
+    # error from worktree creation is the right failure mode.
     if _is_managed_pre_push(project_hook):
-        logger.warning(
-            "Refusing to install managed wrapper as pre-push.project: %s",
-            project_hook,
+        raise RuntimeError(
+            "Refusing to install managed wrapper as pre-push.project: "
+            f"{project_hook}. Resolve the main-repo hooks corruption first "
+            "(see 'issue-orchestrator doctor')."
         )
-    else:
-        shutil.copy2(project_hook, project_hook_copy)
-        project_hook_copy.chmod(0o755)
+
+    project_hook_copy = hooks_dir / "pre-push.project"
+    shutil.copy2(project_hook, project_hook_copy)
+    project_hook_copy.chmod(0o755)
 
     wrapper_content = _chained_hook_script()
     dst_hook.write_text(wrapper_content)
@@ -211,8 +222,14 @@ if [ "${{ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}}" = "1" ]; then
 elif [ -x "$HOOKS_DIR/pre-push.project" ] && grep -qF "$MANAGED_MARKER" "$HOOKS_DIR/pre-push.project" 2>/dev/null; then
     # Recursion guard: pre-push.project contains the managed wrapper marker,
     # meaning a prior install copied this wrapper (or the repo wrapper) into
-    # it. Executing it would forkbomb the push. Refuse and fail loudly so the
-    # broken state is visible.
+    # it. Executing it would forkbomb the push.
+    #
+    # WORKTREE POLICY: hard-fail the push. A worktree is disposable — the
+    # operator can reinstall hooks with `make worktree-setup` or by recreating
+    # the worktree — so failing loudly here is safer than running only the
+    # orchestrator chain and silently dropping the repo's lint/test gate.
+    # (The main-repo wrapper takes a different stance — see
+    # _render_repo_pre_push_hook in repo_hardening.py.)
     audit "Refusing to exec managed wrapper as project hook (recursion guard): $HOOKS_DIR/pre-push.project"
     echo "pre-push: pre-push.project is the managed wrapper (corruption); refusing to recurse. Reinstall worktree hooks." >&2
     exit 1

@@ -102,7 +102,7 @@ def test_resolve_project_pre_push_hook_skips_managed_wrapper(tmp_path: Path) -> 
     assert resolved.read_text() == _make_real_project_hook()
 
 
-def test_resolve_returns_missing_path_when_managed_wrapper_has_no_project_sibling(
+def test_resolve_returns_none_when_managed_wrapper_has_no_project_sibling(
     tmp_path: Path,
 ) -> None:
     main_repo, _, _ = _init_main_repo_with_worktree(tmp_path)
@@ -112,8 +112,16 @@ def test_resolve_returns_missing_path_when_managed_wrapper_has_no_project_siblin
 
     resolved = _resolve_project_pre_push_hook(gitdir, ".githooks")
 
-    assert not resolved.exists()
-    assert resolved.name == "pre-push.__missing__"
+    assert resolved is None
+
+
+def test_resolve_returns_none_when_no_pre_push_exists(tmp_path: Path) -> None:
+    main_repo, _, _ = _init_main_repo_with_worktree(tmp_path)
+    (main_repo / ".githooks" / "pre-push").unlink()
+    (main_repo / ".githooks" / "pre-push.project").unlink()
+    gitdir = main_repo / ".git" / "worktrees" / "wt-feature"
+
+    assert _resolve_project_pre_push_hook(gitdir, ".githooks") is None
 
 
 def test_install_hooks_in_hardened_worktree_does_not_recurse(tmp_path: Path) -> None:
@@ -151,7 +159,7 @@ def test_install_hooks_quarantines_pre_existing_corrupt_project_hook(
     assert MANAGED_PRE_PUSH_MARKER in quarantined[0].read_text()
 
 
-def test_install_chained_hook_refuses_managed_wrapper_as_project_hook(
+def test_install_chained_hook_raises_on_managed_wrapper_as_project_hook(
     tmp_path: Path,
 ) -> None:
     hooks_dir = tmp_path / "hooks"
@@ -163,16 +171,18 @@ def test_install_chained_hook_refuses_managed_wrapper_as_project_hook(
     orchestrator_hook.write_text("#!/usr/bin/env bash\nexit 0\n")
     orchestrator_hook.chmod(0o755)
 
-    _install_chained_hook(
-        hooks_dir,
-        hooks_dir / "pre-push",
-        bogus_project_hook,
-        orchestrator_hook,
-    )
+    with pytest.raises(RuntimeError, match="Refusing to install managed wrapper"):
+        _install_chained_hook(
+            hooks_dir,
+            hooks_dir / "pre-push",
+            bogus_project_hook,
+            orchestrator_hook,
+        )
 
-    # Chained wrapper installed, but no pre-push.project copy of the managed
-    # wrapper — the installer refused.
-    assert (hooks_dir / "pre-push").exists()
+    # The installer refused before writing anything — silently running only
+    # the orchestrator chain (and dropping the repo's lint/test gate) would
+    # be a worse failure than worktree creation erroring loudly.
+    assert not (hooks_dir / "pre-push").exists()
     assert not (hooks_dir / "pre-push.project").exists()
 
 
