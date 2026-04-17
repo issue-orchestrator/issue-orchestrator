@@ -5,8 +5,20 @@
 set -e
 
 # Enforce dirty-tree policy from YAML before any push-time checks.
+#
+# Python resolution for the orchestrator helper module. The orchestrator is
+# the only legitimate invoker of this push (agents are blocked from pushing
+# directly), and it exports ISSUE_ORCHESTRATOR_PYTHON pointing at the
+# interpreter where the ``issue_orchestrator`` package is importable.
+# Preferring that over ambient lookups lets the hook work in any target
+# repo (Kotlin, Node, pure-data, etc.) without the target having to install
+# the orchestrator package into its own venv. The legacy lookups stay as
+# fallbacks so a human running ``git push`` standalone in an orchestrator
+# checkout still works.
 PYTHON_BIN=""
-if [ -x ".venv/bin/python" ]; then
+if [ -n "${ISSUE_ORCHESTRATOR_PYTHON:-}" ] && [ -x "$ISSUE_ORCHESTRATOR_PYTHON" ]; then
+    PYTHON_BIN="$ISSUE_ORCHESTRATOR_PYTHON"
+elif [ -x ".venv/bin/python" ]; then
     PYTHON_BIN=".venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
@@ -14,6 +26,11 @@ fi
 
 if [ -z "$PYTHON_BIN" ]; then
     echo "ERROR: Python not found; cannot run dirty-tree guard." >&2
+    echo "  - If the orchestrator invoked this push: bootstrap should export" >&2
+    echo "    ISSUE_ORCHESTRATOR_PYTHON. Restart the orchestrator from a shell" >&2
+    echo "    where it can find its own venv." >&2
+    echo "  - If you ran 'git push' yourself: install python3, or activate the" >&2
+    echo "    orchestrator's .venv before pushing." >&2
     exit 1
 fi
 
