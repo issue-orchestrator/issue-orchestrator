@@ -65,7 +65,7 @@ from .completion_types import (
     ProcessingResult,
 )
 from ..ports.pull_request_tracker import PRInfo
-from ..ports.working_copy import PushResult, RebaseResult
+from ..ports.working_copy import PushResult
 
 logger = logging.getLogger(__name__)
 
