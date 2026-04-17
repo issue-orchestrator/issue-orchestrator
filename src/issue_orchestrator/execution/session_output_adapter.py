@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import shutil
 import threading
 import uuid
@@ -25,28 +24,30 @@ from ..infra.terminal_cleaning import (
     dedupe_consecutive_lines,
     is_spinner_fragment,
 )
-from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME, append_output_event
+from ..infra.terminal_recording import append_output_event
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
     ValidationRecord,
     ValidationState,
 )
+from . import session_output_log_artifacts as log_artifacts
+from .session_output_log_artifacts import SessionLogArtifacts
 
 logger = logging.getLogger(__name__)
 
 # Directory and file names
 SESSION_OUTPUT_DIR = "sessions"
-TERMINAL_RECORDING_NAME = TERMINAL_RECORDING_FILENAME
-LEGACY_UI_LOG_NAME = "ui-session.log"
-PANE_LOG_NAME = "pane.log"
+TERMINAL_RECORDING_NAME = log_artifacts.TERMINAL_RECORDING_NAME
+LEGACY_UI_LOG_NAME = log_artifacts.LEGACY_UI_LOG_NAME
+PANE_LOG_NAME = log_artifacts.PANE_LOG_NAME
 MANIFEST_NAME = "manifest.json"
 LATEST_NAME = "latest.json"
 INDEX_NAME = "index.json"
 ROOT_LATEST_NAME = "session-latest.json"
-ORCHESTRATOR_TAIL_NAME = "orchestrator-tail.log"
-CLAUDE_SESSION_PATH_NAME = "claude-session.path"
-CLAUDE_SESSION_LOG_NAME = "claude-session.jsonl"
+ORCHESTRATOR_TAIL_NAME = log_artifacts.ORCHESTRATOR_TAIL_NAME
+CLAUDE_SESSION_PATH_NAME = log_artifacts.CLAUDE_SESSION_PATH_NAME
+CLAUDE_SESSION_LOG_NAME = log_artifacts.CLAUDE_SESSION_LOG_NAME
 
 # Validation artifact names
 VALIDATION_RECORD_NAME = "validation-record.json"
@@ -79,6 +80,19 @@ class FileSystemSessionOutput:
 
     def __init__(self) -> None:
         self._io_lock = threading.RLock()
+        self._log_artifacts = SessionLogArtifacts(
+            find_run_dir=lambda worktree_path, session_name: self.find_run_dir(
+                worktree_path,
+                session_name=session_name,
+            ),
+            read_manifest=self.read_manifest,
+            update_manifest=self.update_manifest,
+            write_text=lambda path, content: self._write_text(path, content),
+            ensure_symlink=lambda symlink_path, target: self._ensure_symlink(
+                symlink_path,
+                target,
+            ),
+        )
 
     # -------------------------------------------------------------------------
     # Run Lifecycle
@@ -252,11 +266,14 @@ class FileSystemSessionOutput:
                 # Run directory vanished between listing and stat.
                 continue
 
-        runs = [run for run, _mtime in sorted(
-            runs_with_mtime,
-            key=lambda item: item[1],
-            reverse=True,
-        )]
+        runs = [
+            run
+            for run, _mtime in sorted(
+                runs_with_mtime,
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ]
 
         removed: list[Path] = []
         for run_dir in runs[keep:]:
@@ -300,7 +317,9 @@ class FileSystemSessionOutput:
                 manifest = self.read_manifest(Path(run_dir))
                 if manifest:
                     run_info = {**run_info}  # Copy to avoid mutating index
-                    run_info["status"] = self._derive_run_status(manifest, Path(run_dir))
+                    run_info["status"] = self._derive_run_status(
+                        manifest, Path(run_dir)
+                    )
                     run_info["ended_at"] = manifest.get("ended_at")
                     run_info["outcome"] = manifest.get("outcome")
                     run_info["validation_passed"] = manifest.get("validation_passed")
@@ -388,7 +407,9 @@ class FileSystemSessionOutput:
         try:
             return ValidationRecord.from_dict(data)
         except (KeyError, TypeError) as e:
-            logger.warning("Failed to parse validation record at %s: %s", record_path, e)
+            logger.warning(
+                "Failed to parse validation record at %s: %s", record_path, e
+            )
             return None
 
     def write_validation_output(
@@ -434,7 +455,9 @@ class FileSystemSessionOutput:
 
         self._write_json(state_path, data)
         logger.info(
-            "Wrote validation state to %s (retry_count=%d)", state_path, state.retry_count
+            "Wrote validation state to %s (retry_count=%d)",
+            state_path,
+            state.retry_count,
         )
         return state_path
 
@@ -570,7 +593,9 @@ Timestamp: {self._now_iso()}
             try:
                 shutil.copy2(validation_record_path, stored_validation)
             except OSError:
-                logger.debug("Failed to copy validation record to %s", stored_validation)
+                logger.debug(
+                    "Failed to copy validation record to %s", stored_validation
+                )
                 stored_validation = None
 
         updates = {
@@ -616,11 +641,7 @@ Timestamp: {self._now_iso()}
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        all_candidates = sorted(
-            d
-            for d in base_dir.iterdir()
-            if d.is_dir()
-        )
+        all_candidates = sorted(d for d in base_dir.iterdir() if d.is_dir())
         if not all_candidates:
             return None
 
@@ -628,7 +649,11 @@ Timestamp: {self._now_iso()}
             for run_dir in candidates:
                 manifest = self.read_manifest(run_dir) or {}
                 manifest_dir = manifest.get("review_exchange_dir")
-                exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+                exchange_dir = (
+                    Path(manifest_dir)
+                    if manifest_dir
+                    else run_dir / REVIEW_EXCHANGE_DIR_NAME
+                )
                 summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
                 if not summary_path.exists():
                     continue
@@ -640,7 +665,9 @@ Timestamp: {self._now_iso()}
                     summary=summary,
                     exchange_dir=exchange_dir,
                     summary_path=summary_path,
-                    validation_record_path=validation_path if validation_path.exists() else None,
+                    validation_record_path=validation_path
+                    if validation_path.exists()
+                    else None,
                 )
         return None
 
@@ -715,11 +742,13 @@ Timestamp: {self._now_iso()}
             try:
                 # Extract cycle number from filename (cycle-N.md)
                 cycle = int(path.stem.split("-")[1])
-                result.append({
-                    "cycle": cycle,
-                    "path": str(path),
-                    "content": path.read_text(),
-                })
+                result.append(
+                    {
+                        "cycle": cycle,
+                        "path": str(path),
+                        "content": path.read_text(),
+                    }
+                )
             except (ValueError, IndexError):
                 logger.warning("[session_output] Invalid feedback filename: %s", path)
         return result
@@ -807,7 +836,9 @@ Timestamp: {self._now_iso()}
         transcript_path = exchange_dir / REVIEW_EXCHANGE_TRANSCRIPT_NAME
         with self._io_lock:
             transcript_path.touch(exist_ok=True)
-            self.update_manifest(run_dir, {"review_exchange_transcript_path": str(transcript_path)})
+            self.update_manifest(
+                run_dir, {"review_exchange_transcript_path": str(transcript_path)}
+            )
         return transcript_path
 
     # -------------------------------------------------------------------------
@@ -820,40 +851,18 @@ Timestamp: {self._now_iso()}
         session_name: str,
     ) -> Path | None:
         """Get the canonical session artifact path for a session."""
-        run_dir = self.find_run_dir(worktree_path, session_name=session_name)
-        if not run_dir:
-            return None
-        return self._find_log_in_run_dir(run_dir)
+        return self._log_artifacts.get_log_path(worktree_path, session_name)
 
     def get_log_path_for_run_dir(self, run_dir: Path) -> Path | None:
         """Get the canonical session artifact path for a known run directory."""
-        return self._find_log_in_run_dir(run_dir)
+        return self._log_artifacts.get_log_path_for_run_dir(run_dir)
 
     def attach_claude_log(
         self,
         run_dir: Path,
     ) -> Path | None:
         """Find and attach Claude log to run directory."""
-        log_path, session_id = self._select_claude_log_for_run(run_dir)
-        if not log_path:
-            return None
-
-        if not session_id:
-            session_id = log_path.stem
-
-        updates = {
-            "claude_log_path": str(log_path),
-            "claude_session_id": session_id,
-        }
-        self.update_manifest(run_dir, updates)
-
-        try:
-            self._write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
-        except OSError:
-            return log_path
-
-        self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
-        return log_path
+        return self._log_artifacts.attach_claude_log(run_dir)
 
     def write_orchestrator_tail(  # noqa: C901
         self,
@@ -864,68 +873,13 @@ Timestamp: {self._now_iso()}
         max_lines: int = 400,
     ) -> Path | None:
         """Write filtered orchestrator log tail to run directory."""
-        if not log_path.exists():
-            return None
-
-        # Get run_id and started_at from manifest
-        run_id = None
-        started_at = None
-        manifest = self.read_manifest(run_dir)
-        if manifest:
-            run_id = manifest.get("run_id")
-            started_at = manifest.get("started_at")
-
-        try:
-            lines = log_path.read_text(errors="ignore").splitlines()
-        except OSError:
-            return None
-
-        if not lines:
-            return None
-
-        issue_patterns = (
-            re.compile(rf"\[issue-{issue_number}\]"),
-            re.compile(rf"\bissue={issue_number}\b"),
-            re.compile(rf"\bissue_number={issue_number}\b"),
-            re.compile(rf"\bissue_key=[^\s:]+:{issue_number}\b"),
-            re.compile(rf"\bissue-{issue_number}\b"),
-            re.compile(rf"/issues/{issue_number}\b"),
+        return self._log_artifacts.write_orchestrator_tail(
+            run_dir,
+            log_path,
+            issue_number,
+            session_name,
+            max_lines=max_lines,
         )
-        session_patterns = (
-            re.compile(rf"\bsession={re.escape(session_name)}\b"),
-            re.compile(rf"\bsession_id={re.escape(session_name)}\b"),
-        )
-
-        # Try to find session start by run_id marker
-        segment = lines
-        found_marker = False
-        if run_id:
-            marker = f"run_id={run_id}"
-            for idx in range(len(lines) - 1, -1, -1):
-                if "SESSION_RUN_START" in lines[idx] and marker in lines[idx]:
-                    segment = lines[idx:]
-                    found_marker = True
-                    break
-
-        # Fallback: filter by timestamp if marker not found
-        if not found_marker and started_at:
-            segment = self._filter_lines_by_timestamp(lines, started_at)
-
-        scoped = []
-        for line in segment[-2000:]:
-            if any(pattern.search(line) for pattern in session_patterns):
-                scoped.append(line)
-                continue
-            if any(pattern.search(line) for pattern in issue_patterns):
-                scoped.append(line)
-        if not scoped:
-            return None
-
-        tail_lines = scoped[-max_lines:]
-        tail_path = run_dir / ORCHESTRATOR_TAIL_NAME
-        self._write_text(tail_path, "\n".join(tail_lines))
-        self.update_manifest(run_dir, {"orchestrator_tail": str(tail_path)})
-        return tail_path
 
     # -------------------------------------------------------------------------
     # Private Helpers
@@ -1046,7 +1000,9 @@ Timestamp: {self._now_iso()}
         if not index or "runs" not in index:
             return
         removed_set = {str(p) for p in removed}
-        index["runs"] = [r for r in index["runs"] if r.get("run_dir") not in removed_set]
+        index["runs"] = [
+            r for r in index["runs"] if r.get("run_dir") not in removed_set
+        ]
         self._write_json(index_path, index)
 
     def _refresh_latest(self, worktree_path: Path) -> None:
@@ -1070,128 +1026,10 @@ Timestamp: {self._now_iso()}
             if session_name:
                 self._ensure_symlink(base_dir / session_name, latest_run)
 
-    def _select_claude_log_for_run(
-        self, run_dir: Path
-    ) -> tuple[Path | None, str | None]:
-        manifest = self.read_manifest(run_dir) or {}
-        claude_dir = manifest.get("claude_log_dir")
-        if not claude_dir:
-            return None, None
-
-        log_dir = Path(claude_dir)
-        if not log_dir.exists():
-            return None, None
-
-        candidates = list(log_dir.glob("*.jsonl"))
-        if not candidates:
-            return None, None
-
-        started_at = manifest.get("started_at")
-        parsed_candidates: list[tuple[Path, float, str | None]] = []
-
-        for path in candidates:
-            timestamp, session_id = self._read_claude_log_metadata(path)
-            score = path.stat().st_mtime
-            if timestamp:
-                score = timestamp.timestamp()
-            parsed_candidates.append((path, score, session_id))
-
-        if started_at:
-            try:
-                started_dt = datetime.fromisoformat(started_at)
-                started_ts = started_dt.timestamp()
-                tolerance_s = 5.0
-                after_start = [
-                    (path, score - started_ts, session_id)
-                    for path, score, session_id in parsed_candidates
-                    if score - started_ts >= -tolerance_s
-                ]
-                if after_start:
-                    after_start.sort(key=lambda item: item[1])
-                    selected = after_start[0]
-                    return selected[0], selected[2]
-            except (ValueError, OSError):
-                pass
-
-        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-        return candidates[0], None
-
     def attach_claude_log_for_run(self, run_dir: Path) -> Path | None:
         """Attach the canonical Claude JSONL artifact for a run and return its path."""
         with self._io_lock:
-            log_path, session_id = self._select_claude_log_for_run(run_dir)
-            if not log_path:
-                return None
-            self.update_manifest(
-                run_dir,
-                {
-                    "claude_log_path": str(log_path),
-                    "claude_session_id": session_id or log_path.stem,
-                },
-            )
-            try:
-                self._write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
-            except OSError:
-                return log_path
-            self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
-            return log_path
-
-    @staticmethod
-    def _read_claude_log_metadata(log_path: Path) -> tuple[datetime | None, str | None]:
-        try:
-            with log_path.open("r") as handle:
-                for idx, line in enumerate(handle):
-                    if idx > 50:
-                        break
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    timestamp = payload.get("timestamp")
-                    session_id = payload.get("sessionId") or payload.get("session_id")
-                    if timestamp:
-                        parsed = FileSystemSessionOutput._parse_iso_timestamp(timestamp)
-                        return parsed, session_id
-                    if session_id:
-                        return None, session_id
-        except OSError:
-            return None, None
-        return None, None
-
-    @staticmethod
-    def _parse_iso_timestamp(value: str) -> datetime | None:
-        try:
-            if value.endswith("Z"):
-                value = value.replace("Z", "+00:00")
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _filter_lines_by_timestamp(lines: list[str], started_at: str) -> list[str]:
-        """Filter log lines to only those after the given ISO timestamp."""
-        try:
-            start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-            start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-        except (ValueError, AttributeError):
-            return lines
-
-        timestamp_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
-
-        result = []
-        for line in lines:
-            match = timestamp_pattern.match(line)
-            if match:
-                line_ts = match.group(1)
-                if line_ts >= start_str:
-                    result.append(line)
-            elif result:
-                result.append(line)
-
-        return result if result else lines
+            return self._log_artifacts.attach_claude_log_for_run(run_dir)
 
     # -------------------------------------------------------------------------
     # Utility Methods (for finding run dirs by issue, etc.)
@@ -1258,17 +1096,10 @@ Timestamp: {self._now_iso()}
         Returns:
             Path to Claude log, or None if not found
         """
-        run_dir = self.find_run_dir(worktree_path, session_name)
-        if not run_dir:
-            return None
-
-        # Check if already attached
-        manifest = self.read_manifest(run_dir) or {}
-        existing = manifest.get("claude_log_path")
-        if existing:
-            return Path(existing)
-
-        return self.attach_claude_log(run_dir)
+        return self._log_artifacts.ensure_claude_log_attached(
+            worktree_path,
+            session_name=session_name,
+        )
 
     def find_latest_session_log_path(self, worktree_path: Path) -> Path | None:
         """Find the most recently updated session log in a worktree.
@@ -1279,22 +1110,7 @@ Timestamp: {self._now_iso()}
         Returns:
             Path to session log, or None if not found
         """
-        run_dir = self.find_run_dir(worktree_path)
-        if not run_dir:
-            return None
-        return self._find_log_in_run_dir(run_dir)
-
-    def _find_log_in_run_dir(self, run_dir: Path) -> Path | None:
-        """Find the best log file in a run directory.
-
-        Prefer the canonical terminal recording, falling back to legacy logs.
-        """
-        for filename in (TERMINAL_RECORDING_NAME, LEGACY_UI_LOG_NAME, PANE_LOG_NAME):
-            candidate = run_dir / filename
-            if candidate.exists() and candidate.stat().st_size > 0:
-                return candidate
-
-        return None
+        return self._log_artifacts.find_latest_session_log_path(worktree_path)
 
     @staticmethod
     def _ensure_manifest_artifact(
@@ -1403,7 +1219,9 @@ Timestamp: {self._now_iso()}
             content_type="text/plain",
         )
 
-    def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:
+    def _bootstrap_manifest_identity(
+        self, run_dir: Path, manifest: dict[str, Any]
+    ) -> None:
         """Fill required manifest identity fields for standalone or legacy paths."""
         run_name = run_dir.name
         terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
@@ -1432,9 +1250,11 @@ Timestamp: {self._now_iso()}
         if not terminal_recording_path.exists():
             terminal_recording_path.write_text("", encoding="utf-8")
 
+
 # -----------------------------------------------------------------------------
 # Module-level utility functions
 # -----------------------------------------------------------------------------
+
 
 def find_run_dir_for_issue(
     worktree_bases: list[Path],
