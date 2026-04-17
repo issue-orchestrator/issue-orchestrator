@@ -300,7 +300,7 @@ class TestSetupWizardEndpoints:
         assert "checks" in data
         assert "git" in data["checks"]
         assert "github_auth" in data["checks"]
-        assert "claude" in data["checks"]
+        assert "ai_provider_clis" in data["checks"]
 
     def test_validate_endpoint_exists(self, tmp_path: Path) -> None:
         """POST /control/repos/validate endpoint exists."""

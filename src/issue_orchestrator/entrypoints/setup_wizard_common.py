@@ -760,6 +760,77 @@ def _probe_cli_version(executable: str, *, fallback: str) -> str:
     return fallback
 
 
+def _provider_cli_display(provider_name: str, executable: str) -> str:
+    if executable == provider_name:
+        return provider_name
+    return f"{provider_name} via {executable}"
+
+
+def _provider_cli_detail(detail: str, provider_name: str, executable: str) -> str:
+    if executable == provider_name:
+        return detail
+    return f"{detail} (executable: {executable})"
+
+
+def build_any_ai_provider_check() -> dict[str, Any]:
+    """Check whether at least one registered AI provider CLI is available."""
+    from issue_orchestrator.agent_runner import get_provider, list_providers
+
+    providers = list_providers()
+    available: list[str] = []
+    for provider_name in providers:
+        provider = get_provider(provider_name)
+        executable = getattr(provider, "executable", provider_name)
+        if provider.is_available():
+            available.append(_provider_cli_display(provider_name, executable))
+
+    if available:
+        return {
+            "ok": True,
+            "detail": "Available: " + ", ".join(available),
+        }
+    return {
+        "ok": False,
+        "detail": "No AI provider CLIs found. Install one of: " + ", ".join(providers),
+    }
+
+
+def _build_provider_agent_check(
+    *,
+    label: str,
+    provider_name: str,
+    seen_executables: set[str],
+) -> dict[str, Any] | None:
+    from issue_orchestrator.agent_runner import get_provider
+
+    try:
+        provider = get_provider(provider_name)
+    except ValueError:
+        return {
+            "name": f"{provider_name} CLI",
+            "ok": False,
+            "detail": f"Unknown provider configured for {label}: {provider_name}",
+        }
+
+    executable = getattr(provider, "executable", provider_name)
+    if executable in seen_executables:
+        return None
+    seen_executables.add(executable)
+    if not provider.is_available():
+        return {
+            "name": f"{provider_name} CLI",
+            "ok": False,
+            "detail": f"Expected executable '{executable}' not found on PATH",
+        }
+    path = shutil.which(executable) or executable
+    detail = provider.check_version() or path
+    return {
+        "name": f"{provider_name} CLI",
+        "ok": True,
+        "detail": _provider_cli_detail(detail, provider_name, executable),
+    }
+
+
 def build_agent_checks(config: "Config | None") -> list[dict[str, Any]]:
     """Check agent CLI availability for the supplied config."""
     if config is None:
@@ -772,6 +843,20 @@ def build_agent_checks(config: "Config | None") -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     seen_executables: set[str] = set()
     for label, agent_config in config.agents.items():
+        provider_name = getattr(agent_config, "provider", None)
+        default_agent = getattr(config, "default_agent", None)
+        if provider_name is None and default_agent is not None:
+            provider_name = getattr(default_agent, "provider", None)
+        if provider_name:
+            check = _build_provider_agent_check(
+                label=label,
+                provider_name=provider_name,
+                seen_executables=seen_executables,
+            )
+            if check:
+                checks.append(check)
+            continue
+
         command = getattr(agent_config, "command", None) or ""
         executable = command.strip().split()[0] if command.strip() else ""
         if not executable:
@@ -826,6 +911,7 @@ __all__ = [
     "FileCollector",
     "PlannedWrite",
     "build_agent_checks",
+    "build_any_ai_provider_check",
     "build_code_review_prompt_text",
     "build_github_auth_check",
     "build_starter_prompt_text",

@@ -150,9 +150,15 @@ def check_ai_provider_clis() -> list[Check]:
         if provider.is_available():
             version = provider.check_version()
             version_info = f" ({version})" if version else ""
-            available_providers.append(f"{name}{version_info}")
+            executable = getattr(provider, "executable", name)
+            provider_label = name if executable == name else f"{name} via {executable}"
+            available_providers.append(f"{provider_label}{version_info}")
         else:
-            missing_providers.append(name)
+            executable = getattr(provider, "executable", name)
+            provider_label = name
+            if executable != name:
+                provider_label = f"{name} (expected executable: {executable})"
+            missing_providers.append(provider_label)
 
     if available_providers:
         checks.append(Check(
