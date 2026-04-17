@@ -168,6 +168,13 @@ class Config:
     flow_api_budget: str = "medium"  # low | medium | high
     flow_attention_priority: str = "strict"  # strict | normal
 
+    # Dashboard shows "Orchestrator tick stalled" when the main loop has not
+    # completed a tick in this many seconds. Busy orchestrators with a heavy
+    # process_active_sessions sweep may legitimately take >60s; operators
+    # should tune to their local tick budget. Keep a generous floor so a
+    # single slow tick doesn't false-positive the banner.
+    tick_stall_threshold_seconds: int = 60
+
     # Multi-instance support (for multi-orchestrator coordination)
     instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
     session_no_output_seconds: int = 120  # Emit session_no_output after this many seconds idle

@@ -1256,6 +1256,15 @@ class OrchestratorState:
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
     issue_last_refreshed_at: dict[int, float] = field(default_factory=dict)  # issue_number -> epoch seconds
+    # Main-loop heartbeat — populated by run_tick. These let the view model
+    # distinguish "refresh is old because GitHub hasn't been polled" from
+    # "refresh is old because the main loop is stuck". A monotonically
+    # increasing last_tick_completed_at is the authoritative signal that
+    # the orchestrator is alive; a never-completed last_tick_started_at
+    # alongside a stale completion time points to a phase that is blocking.
+    last_tick_started_at: float = 0.0  # Epoch seconds; 0 if no tick has started
+    last_tick_completed_at: float = 0.0  # Epoch seconds; 0 if no tick has completed
+    current_tick_phase: str = ""  # Non-empty only while a tick is mid-flight
 
 
 @dataclass

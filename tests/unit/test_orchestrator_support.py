@@ -1817,3 +1817,67 @@ def test_record_issue_refreshes_updates_ui_freshness_map():
 
     assert state.issue_refresh_timestamps == {4057: 1234.5, 4058: 1234.5}
     assert state.issue_last_refreshed_at == {4057: 1234.5, 4058: 1234.5}
+
+class TestRunTickHeartbeat:
+    '''Heartbeat fields populated by run_tick must reflect tick lifecycle.'''
+
+    def test_successful_tick_updates_completion_timestamp(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        assert sample_orchestrator_state.last_tick_started_at > 0
+        assert sample_orchestrator_state.last_tick_completed_at > 0
+        assert (
+            sample_orchestrator_state.last_tick_completed_at
+            >= sample_orchestrator_state.last_tick_started_at
+        )
+        # Phase cleared back to empty after a successful tick.
+        assert sample_orchestrator_state.current_tick_phase == ''
+
+    def test_tick_exception_leaves_phase_set_so_stale_reason_diagnoses_stall(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        '''A raising phase must leave last_tick_completed_at stale AND expose the
+        phase on OrchestratorState. The dashboard turns that combination into
+        the actionable 'Orchestrator tick stalled' banner — if we wrote a
+        completion timestamp in a finally: block we would hide the outage
+        from the UI.
+        '''
+        def boom() -> None:
+            raise RuntimeError('active sessions exploded')
+
+        sample_orchestrator_state.last_tick_completed_at = 0.0
+
+        with pytest.raises(RuntimeError, match='active sessions exploded'):
+            run_tick(
+                loop_iteration=1,
+                event_context=sample_event_context,
+                inflight_stable_ids={},
+                state=sample_orchestrator_state,
+                events=mock_event_sink,
+                shutdown_requested=False,
+                process_active_sessions_fn=boom,
+                check_health_fn=Mock(return_value=HealthDecision.ok()),
+                run_planning_cycle_fn=Mock(),
+                emit_heartbeat_fn=Mock(),
+            )
+
+        # Started was written before boom ran; phase is still the one that
+        # raised. last_tick_completed_at was never updated, so the dashboard
+        # age-based stall check will fire on the next refresh.
+        assert sample_orchestrator_state.last_tick_started_at > 0
+        assert sample_orchestrator_state.last_tick_completed_at == 0.0
+        assert sample_orchestrator_state.current_tick_phase == 'active_sessions'
+

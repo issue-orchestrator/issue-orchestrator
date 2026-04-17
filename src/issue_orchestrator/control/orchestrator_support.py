@@ -1103,6 +1103,9 @@ def run_tick(
     loop_iteration += 1
     event_context.tick_id = loop_iteration
 
+    state.last_tick_started_at = time.time()
+    state.current_tick_phase = "starting"
+
     # Prune expired inflight IDs
     now = time.monotonic()
     expired = [sid for sid, exp in inflight_stable_ids.items() if exp < now]
@@ -1133,8 +1136,11 @@ def run_tick(
             EventName.TICK_COMPLETED,
             event_context.enrich({"idle": True, "reason": "shutdown_requested"}),
         ))
+        state.current_tick_phase = ""
+        state.last_tick_completed_at = time.time()
         return loop_iteration, False
 
+    state.current_tick_phase = "active_sessions"
     active_start = time.monotonic()
     process_active_sessions_fn()
     active_elapsed = time.monotonic() - active_start
@@ -1156,6 +1162,7 @@ def run_tick(
         and bool(state.queue_refresh_requested)
     )
     if health_decision.can_proceed or refresh_while_paused:
+        state.current_tick_phase = "planning"
         plan_start = time.monotonic()
         run_planning_cycle_fn()
         plan_elapsed = time.monotonic() - plan_start
@@ -1168,6 +1175,7 @@ def run_tick(
             event_context.enrich({"reason": health_decision.reason}),
         ))
 
+    state.current_tick_phase = "heartbeat"
     emit_heartbeat_fn()
 
     # Emit tick.completed
@@ -1181,4 +1189,6 @@ def run_tick(
     tick_elapsed = time.monotonic() - tick_start
     if tick_elapsed > 10:
         logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
+    state.current_tick_phase = ""
+    state.last_tick_completed_at = time.time()
     return loop_iteration, True

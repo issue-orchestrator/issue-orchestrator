@@ -47,6 +47,46 @@ from ..infra.run_audit import write_run_audit
 logger = logging.getLogger(__name__)
 
 
+_PUBLISH_STAGE_LABELS = {
+    "push_branch": "Push",
+    "create_pr": "PR creation",
+}
+
+# Maximum length of the blocked-card status-reason line. Cards render the
+# reason inline; anything longer wraps ugly or truncates without ellipsis
+# depending on the surface. Kept near the body-column width used by the
+# dashboard templates so tweaks to layout have one obvious knob to turn.
+_PUBLISH_FAILURE_SUMMARY_CHAR_CAP = 160
+
+
+def _summarize_publish_failure(critical_errors: list[str]) -> str:
+    """Build a card-friendly summary from raw publish error strings.
+
+    Input strings look like ``push_branch: Push failed: git command timed out: ...``
+    or ``create_pr: <exc>`` — we strip the stage prefix, collapse to one line,
+    and cap length so it renders inside a card without overflowing. Falls back
+    to the legacy generic text if the shape is unexpected (so the card still
+    says *something* if the prefix convention ever changes).
+    """
+    if not critical_errors:
+        return "Push or PR creation failed"
+    raw = critical_errors[0].strip()
+    stage_prefix, sep, remainder = raw.partition(":")
+    stage_label = _PUBLISH_STAGE_LABELS.get(stage_prefix.strip())
+    if sep and stage_label:
+        message = remainder.strip()
+    else:
+        message = raw
+    message = " ".join(message.split())  # collapse whitespace/newlines
+    if not message:
+        return "Push or PR creation failed"
+    prefix = f"{stage_label} failed: " if stage_label else ""
+    available = _PUBLISH_FAILURE_SUMMARY_CHAR_CAP - len(prefix)
+    if len(message) > available:
+        message = message[: available - 1].rstrip() + "…"
+    return f"{prefix}{message}"
+
+
 class RunAuditTrigger(str, Enum):
     """How a run audit was requested."""
 
@@ -203,7 +243,7 @@ class CompletionHandler:
                 session.issue.number,
             )
             history_status = SessionStatus.FAILED
-            history_status_reason = "Push or PR creation failed"
+            history_status_reason = _summarize_publish_failure(critical_errors)
         elif status == SessionStatus.COMPLETED and review_exchange_halted:
             logger.info(
                 "[COMPLETION] Review exchange halted - using FAILED for history/trace: issue=%d",
