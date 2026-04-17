@@ -21,6 +21,10 @@
     --accent-purple: #a371f7;
     --focus-ring: rgba(88, 166, 255, 0.4);
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    --bg-tertiary: var(--bg-card-hover);
+    --primary-color: var(--accent-blue);
+    --success-color: var(--accent-green);
+    --error-color: var(--accent-red);
 }
 
 [data-theme="light"] {
