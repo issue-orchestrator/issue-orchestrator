@@ -14,10 +14,21 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, Session, SessionHistoryEntry
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 
 
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "templates"
+STATIC_JS_DIR = (
+    Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js"
+)
+
+
+def read_dashboard_js_bundle() -> str:
+    return "\n".join(
+        (STATIC_JS_DIR / "dashboard" / chunk).read_text(encoding="utf-8")
+        for chunk in DASHBOARD_JS_CHUNKS
+    )
 
 
 @pytest.fixture
@@ -98,9 +109,34 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     assert "milestones=M7" in soup.select_one(".scope-summary").text
 
 
+def test_dashboard_renders_manifest_js_chunks_in_order(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    script_sources = [
+        script.get("src")
+        for script in soup.find_all("script")
+        if script.get("src")
+    ]
+    expected_chunks = [
+        f"/static/js/dashboard/{chunk}"
+        for chunk in DASHBOARD_JS_CHUNKS
+    ]
+    chunk_start = script_sources.index(expected_chunks[0])
+    assert script_sources[chunk_start : chunk_start + len(expected_chunks)] == expected_chunks
+    assert script_sources[chunk_start - 1] == "/static/vendor/xterm/addon-fit.js"
+    assert script_sources[chunk_start + len(expected_chunks)] == "/static/js/dashboard.js"
+
+
 def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():
-    js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
-    source = js_path.read_text(encoding="utf-8")
+    source = read_dashboard_js_bundle()
     assert "const hasTerminal = card.state_label === 'running' ? 'true' : 'false';" in source
     assert "data-has-terminal" in source
     assert "class=\"card-kill-btn\"" not in source
@@ -109,8 +145,7 @@ def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():
 
 
 def test_dashboard_js_switch_tab_shows_loading_state():
-    js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
-    source = js_path.read_text(encoding="utf-8")
+    source = read_dashboard_js_bundle()
     assert "tab-nav-pending" in source
     assert "is-loading" in source
     assert "aria-busy" in source

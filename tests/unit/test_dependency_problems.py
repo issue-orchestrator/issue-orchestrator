@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.domain.models import DependencyProblem, Issue, OrchestratorState
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 
 
 class TestDependencyProblem:
@@ -113,7 +114,10 @@ class TestClientEventHandlers:
         base_path = Path(__file__).parent.parent.parent / "src/issue_orchestrator"
         template_content = (base_path / "templates/dashboard.html").read_text()
         row_content = (base_path / "templates/issue_row.html").read_text()
-        js_content = (base_path / "static/js/dashboard.js").read_text()
+        js_content = "\n".join(
+            (base_path / "static/js/dashboard" / chunk).read_text()
+            for chunk in DASHBOARD_JS_CHUNKS
+        )
         return template_content + row_content + js_content
 
     def test_has_dependency_blocked_handler(self, dashboard_html):

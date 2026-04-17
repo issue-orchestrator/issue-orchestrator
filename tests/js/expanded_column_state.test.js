@@ -35,7 +35,7 @@ test('getExpandedItemsFromViewModel filters queued items already shown in awaiti
 
 test('dashboard refresh keeps server column count instead of preview length', () => {
     const dashboardJs = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard.js'),
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/core.js'),
         'utf8',
     );
 

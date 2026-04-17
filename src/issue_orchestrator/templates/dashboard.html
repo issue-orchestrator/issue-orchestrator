@@ -567,6 +567,9 @@
     <script src="/static/js/ui_action_contract.js"></script>
     <script src="/static/vendor/xterm/xterm.js"></script>
     <script src="/static/vendor/xterm/addon-fit.js"></script>
+    {% for chunk in dashboard_js_chunks %}
+    <script src="/static/js/dashboard/{{ chunk }}"></script>
+    {% endfor %}
     <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

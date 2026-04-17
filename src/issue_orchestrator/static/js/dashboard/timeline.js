@@ -1,0 +1,468 @@
+function renderTimeline(container, events, phaseToc = [], cycles = []) {
+    if (!events || events.length === 0) {
+        container.innerHTML = '<div class="timeline-empty">No timeline events recorded yet.</div>';
+        return;
+    }
+
+    const groups = [];
+    for (const event of events) {
+        const phase = event.phase || 'system';
+        let group = groups[groups.length - 1];
+        if (!group || group.phase !== phase) {
+            group = { phase, events: [] };
+            groups.push(group);
+        }
+        group.events.push(event);
+    }
+
+    const cycleHtml = cycles.length > 0
+        ? `<div class=\"timeline-loop-list\">${cycles.map(c => `
+            <div class=\"timeline-loop-item\">
+                <div class=\"timeline-loop-title\">Cycle ${c.cycle}</div>
+                <div class=\"timeline-loop-phases\">${(c.phases || []).map(formatPhaseLabel).join(' → ')}</div>
+                <div class=\"timeline-loop-status\">${formatStatus(c.status)}</div>
+            </div>
+        `).join('')}</div>`
+        : '';
+
+    const tocHtml = phaseToc.length > 0
+        ? `<div class=\"timeline-toc\">${phaseToc.map(item => `<span class=\"timeline-toc-item\">${escapeHtml(item.label || item.phase || '')}</span>`).join('')}</div>`
+        : '';
+
+    const continuumHtml = groups.map(group => {
+        const phaseLabel = formatPhaseLabel(group.phase);
+        const items = group.events.map(evt => {
+            const stepLabel = formatStepLabel(evt.step);
+            const summary = evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : '';
+            const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
+            const artifacts = renderTimelineArtifacts(evt.artifacts || []);
+            const actions = renderTimelineEventActions(evt.actions || []);
+            // E2E test events carry issue_affordances — render as clickable links
+            // that open the issue detail drawer routed to the explicit
+            // /api/e2e-run/{run_id}/issue-detail/{N} endpoint (no base-repo
+            // fallback). Each affordance is {issue_number, run_id, label?, branch_name?}.
+            // When a compact label is present we show "label (N)" and put
+            // the full branch name in the title attribute for hover;
+            // otherwise fall back to bare "#N".
+            const issueLinks = (Array.isArray(evt.issue_affordances) && evt.issue_affordances.length > 0)
+                ? `<div class="timeline-issue-links">Issues: ${evt.issue_affordances.map(a => {
+                    const text = a.label
+                        ? `${escapeHtml(a.label)} (${a.issue_number})`
+                        : `#${a.issue_number}`;
+                    const title = a.branch_name
+                        ? ` title="${escapeAttr(a.branch_name)}"`
+                        : '';
+                    return `<a href="#"${title} onclick="event.preventDefault(); openIssueDetail(${a.issue_number}, null, {e2eRunId: ${a.run_id}})">${text}</a>`;
+                  }).join(' ')}</div>`
+                : '';
+            // Surface pytest longrepr on failed/error e2e.test_completed
+            // rows so users can see WHY a test failed without leaving
+            // the run drawer. The e2e worker truncates at 4000 chars,
+            // so the <pre> is bounded. Expanded by default on
+            // failed rows; collapsed for everything else to keep the
+            // timeline scannable.
+            // Render the inline failure block ONLY on the terminal row
+            // (e2e.test_completed). Both test_started and test_completed
+            // share the same nodeid, so if the backend ever broadens the
+            // backfill to attach longrepr to test_started rows too, this
+            // guard prevents the failure from being rendered twice.
+            const isTerminalTestEvent = evt.event === 'e2e.test_completed';
+            const failureDetail = (isTerminalTestEvent && evt.longrepr && (evt.outcome === 'failed' || evt.status === 'error'))
+                ? `<details class="timeline-failure-detail" open>
+                        <summary class="timeline-failure-summary">Failure: ${escapeHtml((String(evt.longrepr).split('\\n').pop() || 'Test failed').trim())}</summary>
+                        <pre class="timeline-failure-longrepr">${escapeHtml(String(evt.longrepr))}</pre>
+                    </details>`
+                : '';
+            const children = (evt.children && evt.children.length > 0)
+                ? renderTimelineChildren(evt.children)
+                : '';
+            return `
+                <div class="timeline-event ${evt.status || ''}">
+                    <div class="timeline-event-header">
+                        <span class="timeline-step">${escapeHtml(stepLabel)}</span>
+                        <span class="timeline-status">${formatStatus(evt.status)}</span>
+                    </div>
+                    ${actions}
+                    ${time}
+                    ${summary}
+                    ${failureDetail}
+                    ${issueLinks}
+                    ${artifacts}
+                    ${children}
+                </div>
+            `;
+        }).join('');
+        return `
+            <div class="timeline-group">
+                <div class="timeline-group-header">${escapeHtml(phaseLabel)}</div>
+                <div class="timeline-group-body">${items}</div>
+            </div>
+        `;
+    }).join('');
+
+    const affordanceHint = '<div class="timeline-actions-hint">Use the ⋯ button on any event for actions and diagnostics.</div>';
+    container.innerHTML = `${tocHtml}${cycleHtml}${affordanceHint}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
+    if (!container.dataset.timelineBound) {
+        container.addEventListener('click', (event) => {
+            const target = event.target.closest('.timeline-artifact');
+            if (target && target.dataset.path) {
+                openPath(target.dataset.path);
+            }
+            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-more-item');
+            if (actionTarget && actionTarget.dataset.action) {
+                try {
+                    const action = JSON.parse(actionTarget.dataset.action);
+                    runTimelineEventAction(action);
+                } catch (err) {
+                    console.error('Failed to parse timeline action:', err);
+                    showToast('Unable to execute timeline action', 'error');
+                }
+            }
+        });
+        container.dataset.timelineBound = 'true';
+    }
+}
+
+function renderTimelineArtifacts(artifacts) {
+    if (!artifacts || artifacts.length === 0) return '';
+    const items = artifacts.map(artifact => {
+        const label = escapeHtml(artifact.label || artifact.type || 'Artifact');
+        const value = artifact.value || '';
+        if (value.startsWith('http://') || value.startsWith('https://')) {
+            return `<a class="timeline-artifact" href="${escapeAttr(value)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        }
+        return `<button class="timeline-artifact" type="button" data-path="${escapeAttr(value)}">${label}</button>`;
+    }).join('');
+    return `<div class="timeline-artifacts">${items}</div>`;
+}
+
+function renderTimelineChildren(children) {
+    if (!children || children.length === 0) return '';
+
+    // Group children by phase for visual separation (same as main timeline)
+    const groups = [];
+    for (const child of children) {
+        const phase = child.phase || 'system';
+        let group = groups[groups.length - 1];
+        if (!group || group.phase !== phase) {
+            group = { phase, events: [] };
+            groups.push(group);
+        }
+        group.events.push(child);
+    }
+
+    const groupsHtml = groups.map(group => {
+        const phaseLabel = formatPhaseLabel(group.phase);
+        const items = group.events.map(evt => {
+            const stepLabel = formatStepLabel(evt.step);
+            const summary = evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : '';
+            const detail = evt.detail ? `<div class="timeline-detail">${escapeHtml(evt.detail)}</div>` : '';
+            const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
+            const artifacts = renderTimelineArtifacts(evt.artifacts || []);
+            const actions = renderTimelineEventActions(evt.actions || []);
+            return `
+                <div class="timeline-event ${evt.status || ''}">
+                    <div class="timeline-event-header">
+                        <span class="timeline-step">${escapeHtml(stepLabel)}</span>
+                        <span class="timeline-status">${formatStatus(evt.status)}</span>
+                    </div>
+                    ${actions}
+                    ${time}
+                    ${summary}
+                    ${detail}
+                    ${artifacts}
+                </div>
+            `;
+        }).join('');
+        return `
+            <div class="timeline-group">
+                <div class="timeline-group-header">${escapeHtml(phaseLabel)}</div>
+                <div class="timeline-group-body">${items}</div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <details class="timeline-children">
+            <summary class="timeline-children-toggle">${children.length} orchestrator event${children.length !== 1 ? 's' : ''}</summary>
+            <div class="timeline-children-list"><div class="timeline-continuum">${groupsHtml}</div></div>
+        </details>
+    `;
+}
+
+function renderTimelineEventActions(actions) {
+    if (!actions || actions.length === 0) return '';
+    const renderBtn = (action, label, cssClass = 'timeline-action-btn') => {
+        const payload = escapeAttr(JSON.stringify(action));
+        return `<button type="button" class="${cssClass}" data-action="${payload}">${escapeHtml(label)}</button>`;
+    };
+    const items = actions.map(action => ({
+        action,
+        label: _timelineActionShortLabel(action),
+    }));
+    const primaryTypes = [
+        'open_validation_failure',
+        'open_agent_log',
+        'open_review_feedback',
+        'open_review_transcript',
+    ];
+    const primary = [];
+    const used = new Set();
+    for (const type of primaryTypes) {
+        const item = items.find(candidate => String(candidate.action?.type || '') === type);
+        if (!item) continue;
+        primary.push(item);
+        used.add(item);
+    }
+    const secondary = items.filter(item => !used.has(item));
+
+    let html = '<div class="timeline-event-menu-items">';
+    for (const item of primary) {
+        html += renderBtn(item.action, item.label);
+    }
+    if (secondary.length > 0) {
+        html += '<details class="timeline-more-menu">';
+        html += '<summary class="timeline-more-trigger">More ▾</summary>';
+        html += '<div class="timeline-more-items">';
+        for (const item of secondary) {
+            html += renderBtn(item.action, item.label, 'timeline-more-item');
+        }
+        html += '</div></details>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function _timelineActionShortLabel(action) {
+    if (!action) return 'Action';
+    const type = String(action.type || '');
+    const label = String(action.label || '').trim();
+    if (type === 'open_agent_log') return 'Session Recording';
+    if (type === 'open_review_transcript') return 'Review Transcript';
+    if (type === 'open_validation_failure') return 'Validation Details';
+    if (type === 'view_claude_log') return 'Claude Log';
+    if (type === 'open_review_feedback') return 'Review Feedback';
+    if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
+    if (type === 'open_session_diagnostics') return label || 'Diagnostics';
+    if (type === 'show_actions_error') return 'What is missing?';
+    if (type === 'open_path') {
+        const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
+        if (/^completion$/i.test(normalized)) return 'Completion Record';
+        if (/^validation$/i.test(normalized)) return 'Validation Record';
+        if (/^run dir$/i.test(normalized)) return 'Run Directory';
+        return normalized || 'Path';
+    }
+    return label || 'Action';
+}
+
+function closeTimelineEventMenus(exceptMenu = null) {
+    document.querySelectorAll('.timeline-event-menu[open]').forEach(menu => {
+        if (exceptMenu && menu === exceptMenu) return;
+        menu.removeAttribute('open');
+    });
+    document.querySelectorAll('.timeline-more-menu[open]').forEach(menu => {
+        menu.removeAttribute('open');
+    });
+}
+
+function runTimelineEventAction(action) {
+    if (!action || !action.type) return;
+    if (action.type === 'open_path' && action.path) {
+        openPath(action.path);
+        return;
+    }
+    if (action.type === 'open_url' && action.url) {
+        window.open(action.url, '_blank', 'noopener,noreferrer');
+        return;
+    }
+    if (action.type === 'open_review_feedback' && action.issue_number) {
+        openReviewFeedback(action.issue_number, action);
+        return;
+    }
+    if (action.type === 'open_validation_failure' && action.issue_number) {
+        openValidationFailure(action.issue_number, action.run_dir || null, 'inline');
+        return;
+    }
+    if (action.type === 'open_review_transcript' && action.issue_number) {
+        openReviewTranscript(action.issue_number, action.run_dir || null, action);
+        return;
+    }
+    if (action.type === 'open_agent_log' && action.issue_number) {
+        const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Session Recording';
+        openAgentLogAction(action.issue_number, action.run_dir || null, label, 'toast', action);
+        return;
+    }
+    if (action.type === 'copy_agent_log' && action.issue_number) {
+        copyAgentLogAction(action.issue_number, action.run_dir || null);
+        return;
+    }
+    if (action.type === 'view_claude_log' && action.issue_number) {
+        viewClaudeLog(action.issue_number, action.run_dir || null);
+        return;
+    }
+    if (action.type === 'open_orchestrator_log' && action.issue_number) {
+        openFilteredOrchestratorLog(action.issue_number, action.run_dir || null);
+        return;
+    }
+    if (action.type === 'open_session_diagnostics' && action.issue_number) {
+        openSessionManifest(action.issue_number, action.run_dir || null);
+        return;
+    }
+    if (action.type === 'show_actions_error') {
+        const rawMessages = Array.isArray(action.error_messages) ? action.error_messages : [];
+        const normalized = rawMessages
+            .filter(msg => typeof msg === 'string' && msg.trim().length > 0)
+            .map(msg => msg.trim());
+        const fallback = typeof action.error_message === 'string' ? action.error_message.trim() : '';
+        if (normalized.length === 0 && fallback) normalized.push(fallback);
+        if (normalized.length === 0) {
+            showToast('No missing artifact details available', 'warning');
+            return;
+        }
+        const issueSuffix = action.issue_number ? ` #${action.issue_number}` : '';
+        const lines = normalized.map(msg => `<li>${escapeHtml(msg)}</li>`).join('');
+        openModal(`What is missing${issueSuffix}`, `<ul class="diag-actions-list">${lines}</ul>`);
+        return;
+    }
+    showToast(`Unsupported timeline action: ${action.type}`, 'error');
+}
+
+function formatPhaseLabel(phase) {
+    return phase.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+}
+
+function formatStepLabel(step) {
+    return step.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+}
+
+function formatTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return timestamp;
+    return date.toLocaleString();
+}
+
+function formatJourneyHeaderTimestamp(timestamp, fallback = '') {
+    if (!timestamp) return fallback;
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return fallback || timestamp;
+    return date.toLocaleString();
+}
+
+function formatJourneyStepTimestamp(timestamp, fallback = '') {
+    if (!timestamp) return fallback;
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return fallback || timestamp;
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+        && date.getMonth() === now.getMonth()
+        && date.getDate() === now.getDate();
+    if (sameDay) return date.toLocaleTimeString();
+    return date.toLocaleString();
+}
+
+function openPhaseDetails() {
+    if (currentPhaseData && currentPhaseData.run_dir) {
+        // Open the session manifest modal with this specific run
+        openSessionManifest(currentPhaseIssue, currentPhaseData.run_dir);
+        closePhaseModal();
+    }
+}
+
+function getStatusClass(status) {
+    if (status === 'completed') return 'success';
+    if (status === 'in_progress') return 'in-progress';
+    if (['validation_failed', 'blocked', 'timeout'].includes(status)) return 'failed';
+    return '';
+}
+
+function formatStatus(status) {
+    const labels = {
+        'completed': 'Completed',
+        'in_progress': 'In Progress',
+        'validation_failed': 'Validation Failed',
+        'blocked': 'Blocked',
+        'timeout': 'Timed Out',
+    };
+    return labels[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function calculateDuration(startedAt, endedAt) {
+    if (!startedAt) return null;
+    const start = new Date(startedAt);
+    const end = endedAt ? new Date(endedAt) : new Date();
+    const diffMs = end - start;
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 60) return `${diffMins}m`;
+    const hours = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    return `${hours}h ${mins}m`;
+}
+
+function handlePhaseClick(e, issueNumber, phaseName) {
+    e.stopPropagation();
+    openPhaseModal(issueNumber, phaseName);
+}
+
+function renderBlockedList() {
+    if (blockedIssuesData.length === 0) {
+        blockedList.innerHTML = '<div class="blocked-empty">No blocked issues found</div>';
+        blockedSelectAll.checked = false;
+        blockedSelectAll.disabled = true;
+        updateBlockedButton();
+        return;
+    }
+
+    blockedSelectAll.disabled = false;
+    const needsHumanCount = blockedIssuesData.filter(i => i.needs_human).length;
+
+    let html = '';
+    for (const issue of blockedIssuesData) {
+        const labelClass = issue.needs_human ? 'needs-human' : '';
+        const reason = issue.failure_reason || issue.blocking_label;
+        const hasWorktree = !!issue.worktree_path;
+        const hasCompletion = issue.has_completion;
+        html += `
+            <div class="blocked-item-container" id="blocked-container-${issue.issue_number}">
+                <div class="blocked-item">
+                    <input type="checkbox"
+                           id="blocked-${issue.issue_number}"
+                           data-issue="${issue.issue_number}"
+                           data-needs-human="${issue.needs_human}"
+                           ${issue.needs_human ? '' : 'checked'}
+                           onchange="updateBlockedSelection()">
+                    <div class="blocked-item-content">
+                        <div class="blocked-item-header">
+                            <a href="${issue.issue_url}" target="_blank" class="blocked-item-num">#${issue.issue_number}</a>
+                            <span class="blocked-item-label ${labelClass}">${issue.blocking_label}</span>
+                        </div>
+                        <div class="blocked-item-title">${escapeHtml(issue.title)}</div>
+                        ${reason ? `<div class="blocked-item-reason">${escapeHtml(reason)}</div>` : ''}
+                        ${hasWorktree ? `<div class="blocked-item-worktree">${escapeHtml(issue.worktree_path)}</div>` : ''}
+                    </div>
+                    <div class="blocked-item-actions">
+                        ${hasWorktree ? `<button class="copy-path-btn" onclick="copyWorktreePath('${escapeHtml(issue.worktree_path)}', event)" title="Copy worktree path">Copy Path</button>` : ''}
+                        ${hasWorktree ? `<button class="debug-btn" onclick="launchDebugSession(${issue.issue_number}, event)" title="Launch interactive debug session">Launch Debug</button>` : ''}
+                        ${hasCompletion ? `<button class="resume-btn" onclick="resumeIssue(${issue.issue_number}, event)" title="Process completion and continue flow">Resume</button>` : ''}
+                        <button class="diagnose-btn" onclick="toggleDiagnosis(${issue.issue_number}, event)">Diagnose</button>
+                    </div>
+                </div>
+                <div class="diagnosis-panel" id="diagnosis-${issue.issue_number}">
+                    <div class="diagnosis-loading">Loading diagnosis...</div>
+                </div>
+            </div>
+        `;
+    }
+    blockedList.innerHTML = html;
+
+    // Show warning if there are needs-human issues
+    if (needsHumanCount > 0) {
+        blockedWarning.style.display = 'flex';
+        blockedWarningText.textContent = `${needsHumanCount} issue${needsHumanCount > 1 ? 's' : ''} marked 'needs-human' - review before retrying`;
+    } else {
+        blockedWarning.style.display = 'none';
+    }
+
+    updateBlockedSelection();
+}
+
