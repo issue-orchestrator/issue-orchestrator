@@ -2923,7 +2923,7 @@ class TestReworkEscalation:
 
         # Create a snapshot with a discovered escalation
         from issue_orchestrator.domain.models import OrchestratorState, DiscoveredEscalation
-        from issue_orchestrator.control.planner import OrchestratorSnapshot
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
 
         state = OrchestratorState()
 

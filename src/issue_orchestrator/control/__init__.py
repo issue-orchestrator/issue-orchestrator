@@ -84,7 +84,8 @@ from .reconciliation import (
 )
 from .session_controller import SessionController, SessionDecision
 from .goal_pilot import GoalPilot
-from .planner import Planner, Plan, OrchestratorSnapshot, SkippedItem
+from .planner import Planner
+from .planner_types import Plan, OrchestratorSnapshot, SkippedItem
 from .orchestrator_deps import OrchestratorDeps
 
 __all__ = [
