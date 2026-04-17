@@ -57,15 +57,14 @@ from .completion_result_artifacts import (
     write_reviewer_feedback_file,
 )
 from .completion_review_exchange import CompletionReviewExchange
-from .completion_types import ProcessingResult
+from .completion_types import (
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUBLISH_BLOCKED,
+    ERROR_PREFIX_PUSH,
+    ProcessingResult,
+)
 
 logger = logging.getLogger(__name__)
-
-# Error prefixes for critical failures (used by completion_handler to detect blocking errors)
-# Keep in sync with completion_handler.py's critical error detection
-ERROR_PREFIX_PUSH = "push_branch"
-ERROR_PREFIX_CREATE_PR = "create_pr"
-ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
 
 if TYPE_CHECKING:
     from ..infra.config import Config

@@ -10,7 +10,7 @@ from issue_orchestrator.control.completion_action_planner import (
     CompletionActionPlanner,
     critical_processing_errors,
 )
-from issue_orchestrator.control.completion_processor import (
+from issue_orchestrator.control.completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUSH,
 )

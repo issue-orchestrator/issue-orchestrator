@@ -12,7 +12,7 @@ from ..domain.triage_manifest import TriageManifest
 from ..infra.config import Config
 from ..ports import RepositoryHost
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
-from .completion_processor import (
+from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
@@ -675,6 +675,8 @@ class CompletionActionPlanner:
                     expected=expected,
                 ),
             ]
+        # Review/rework BLOCKED completions do not map to issue-blocking labels;
+        # their parent workflows own any PR/review state transitions.
         return []
 
     def _generate_review_exchange_halted_actions(
