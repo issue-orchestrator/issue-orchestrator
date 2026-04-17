@@ -294,7 +294,7 @@ class TestSessionCompletionClaimRelease:
 
     def test_completion_releases_claim(self, mock_claim_manager, mock_events):
         """Session completion releases the claim."""
-        from issue_orchestrator.control.session_launcher import handle_session_completion
+        from issue_orchestrator.control.session_completion import handle_session_completion
         from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
 
         # Create a session with a lease_id
@@ -362,7 +362,7 @@ class TestSessionCompletionClaimRelease:
         self, mock_claim_manager, mock_events
     ):
         """Session without lease_id doesn't try to release."""
-        from issue_orchestrator.control.session_launcher import handle_session_completion
+        from issue_orchestrator.control.session_completion import handle_session_completion
         from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
 
         # Create session WITHOUT lease_id

@@ -1,0 +1,158 @@
+"""Completion record loading and worktree validation."""
+
+import json
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction, sanitize_agent_label
+from ..infra.runtime_artifacts import (
+    filter_runtime_managed_dirty_paths,
+    is_runtime_managed_dirty_path,
+)
+
+if TYPE_CHECKING:
+    from ..infra.config import Config
+
+logger = logging.getLogger(__name__)
+_DIRTY_FILES_REASON_LIMIT = 8
+
+
+class CompletionValidationGitAdapter(Protocol):
+    def get_current_branch(self, worktree: Path) -> str | None: ...
+    def has_uncommitted_changes(self, worktree: Path) -> bool: ...
+    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
+    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]: ...
+
+
+class CompletionRecordValidator:
+    """Loads completion records and validates publish preconditions."""
+
+    def __init__(
+        self,
+        *,
+        config: "Config | None",
+        git_adapter: CompletionValidationGitAdapter,
+    ) -> None:
+        self._config = config
+        self._git_adapter = git_adapter
+
+    def read_completion_record(
+        self, worktree: Path, completion_path: str | None = None
+    ) -> CompletionRecord | None:
+        """Read and validate a completion record from a worktree."""
+        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+
+        if not record_path.exists():
+            logger.info("No completion record found at %s", record_path)
+            return None
+
+        try:
+            with open(record_path) as f:
+                data = json.load(f)
+            record = CompletionRecord.from_dict(data)
+            logger.info(
+                "Read completion record: outcome=%s session=%s path=%s",
+                record.outcome.value,
+                record.session_id,
+                record_path,
+            )
+            return record
+        except json.JSONDecodeError as exc:
+            logger.error("Invalid JSON in completion record: %s", exc)
+            return None
+        except ValueError as exc:
+            logger.error("Invalid completion record: %s", exc)
+            return None
+
+    def resolve_agent_label_from_completion_path(
+        self, completion_path: str | None
+    ) -> tuple[str | None, str | None]:
+        if completion_path is None or self._config is None:
+            return None, None
+        filename = Path(completion_path).name
+        if not (filename.startswith("completion-") and filename.endswith(".json")):
+            return None, None
+        safe_name = filename[len("completion-"):-len(".json")]
+        matches = [
+            label
+            for label in self._config.agents.keys()
+            if sanitize_agent_label(label) == safe_name
+        ]
+        if not matches:
+            return None, None
+        if len(matches) > 1:
+            return (
+                None,
+                "Multiple agent labels map to completion file "
+                f"{filename}: {', '.join(matches)}",
+            )
+        return matches[0], None
+
+    def validate_worktree_state(
+        self, worktree: Path, record: CompletionRecord
+    ) -> tuple[bool, str]:
+        """Validate worktree state before executing requested publish actions."""
+        branch = self._git_adapter.get_current_branch(worktree)
+        if not branch:
+            return False, "Could not determine current branch"
+
+        if RequestedAction.PUSH_BRANCH in record.requested_actions:
+            if branch in ("main", "master"):
+                return False, f"Cannot push: on protected branch '{branch}'"
+
+            ok, reason = self.check_dirty_policy(worktree)
+            if not ok:
+                return False, reason
+
+        return True, ""
+
+    def check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+        """Apply validation.pre_push_dirty_check policy before push actions."""
+        mode = (
+            self._config.validation.pre_push_dirty_check
+            if self._config is not None
+            else "off"
+        )
+
+        if mode == "off":
+            return True, ""
+        list_mode = mode
+        if mode == "tracked":
+            dirty = self._git_adapter.has_tracked_changes(worktree, include_staged=True)
+        elif mode == "unstaged":
+            dirty = self._git_adapter.has_tracked_changes(worktree, include_staged=False)
+        elif mode == "all":
+            dirty = self._git_adapter.has_uncommitted_changes(worktree)
+        else:
+            return False, (
+                "Invalid validation.pre_push_dirty_check value: "
+                f"{mode!r} (expected tracked|unstaged|all|off)"
+            )
+
+        if dirty:
+            dirty_files = self._git_adapter.list_dirty_files(worktree, list_mode)
+            blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
+            if dirty_files and not blocking_files:
+                logger.info(
+                    "Dirty-check ignored runtime-only files for %s: %s",
+                    worktree,
+                    ", ".join(dirty_files),
+                )
+                return True, ""
+            reason = (
+                "Working tree is dirty; commit/add/stash before pushing. "
+                "Override with validation.pre_push_dirty_check."
+            )
+            if blocking_files:
+                preview = ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])
+                remaining = len(blocking_files) - _DIRTY_FILES_REASON_LIMIT
+                suffix = f" (+{remaining} more)" if remaining > 0 else ""
+                reason = f"{reason} Dirty files: {preview}{suffix}."
+            return False, reason
+
+        return True, ""
+
+    @staticmethod
+    def is_ignored_dirty_path(path: str) -> bool:
+        return is_runtime_managed_dirty_path(path)

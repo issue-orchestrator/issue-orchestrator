@@ -1868,7 +1868,7 @@ def test_cleanup_failure_posts_diagnostic_comment(
 
     with patch.object(CompletionProcessor, "cleanup_record", return_value=False):
         with patch(
-            "issue_orchestrator.control.completion_processor.write_issue_diagnostic"
+            "issue_orchestrator.control.completion_failure_reporting.write_issue_diagnostic"
         ) as mock_write:
             mock_write.return_value = DiagnosticReference(
                 worktree_name="worktree",
