@@ -42,8 +42,13 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
         if (statusEl) statusEl.textContent = msg;
         return;
     }
+    const inTranscriptMode = sessionReplayState && sessionReplayState.mode === 'transcript';
     const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, effectiveRunDir, {
-        offset: sessionReplayState ? sessionReplayState.events.length : 0,
+        // Transcript mode re-renders from the full recording each time — there
+        // is no per-event replay, so we always ask for the whole stream.
+        offset: inTranscriptMode
+            ? 0
+            : (sessionReplayState ? sessionReplayState.events.length : 0),
         limit: 0,
         round_index: sessionReplayState && sessionReplayState.recordingContext
             ? sessionReplayState.recordingContext.round_index
@@ -62,6 +67,10 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     }
 
     if (!sessionReplayState || sessionReplayState.issueNumber !== issueNumber || sessionReplayState.runDir !== effectiveRunDir) {
+        return;
+    }
+    if ((data.render_mode || 'terminal') === 'transcript') {
+        renderSessionTranscript(issueNumber, effectiveRunDir, data);
         return;
     }
     const incomingEvents = Array.isArray(data.events) ? data.events : [];
@@ -291,6 +300,11 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
 
 function initializeSessionReplay(issueNumber, runDir, payload) {
     destroySessionReplay();
+    const renderMode = (payload && payload.render_mode) || 'terminal';
+    if (renderMode === 'transcript') {
+        renderSessionTranscript(issueNumber, runDir, payload);
+        return;
+    }
     const events = Array.isArray(payload.events) ? payload.events : [];
     const initialGeometry = resolveSessionReplayInitialGeometry(payload, events);
     sessionReplayState = {
@@ -314,6 +328,54 @@ function initializeSessionReplay(issueNumber, runDir, payload) {
     if (!terminalHost) return;
     createSessionReplayTerminal();
     replaySessionToIndex(events.length);
+}
+
+function renderSessionTranscript(issueNumber, runDir, payload) {
+    // Codex ``exec --json`` captures a JSON event stream to the PTY; a terminal
+    // emulator replay of those bytes renders as raw JSON envelopes (the
+    // "Reviewer Session Recording" complaint). The backend dispatches on
+    // format and pre-computes a human-facing transcript via the session-log
+    // prettifier; we just render it as a scrollable monospace block and
+    // disable the emulator-only controls so the toolbar stops lying about
+    // what Play/Jump-to-latest would do.
+    sessionReplayState = {
+        issueNumber,
+        runDir,
+        mode: 'transcript',
+    };
+    logFollow = false;
+    const pathEl = document.getElementById('sessionReplayPath');
+    if (pathEl) pathEl.textContent = payload.recording_path || '';
+    const terminalHost = document.getElementById('sessionReplayTerminal');
+    if (!terminalHost) return;
+    const lines = Array.isArray(payload.transcript_lines) ? payload.transcript_lines : [];
+    const pre = document.createElement('pre');
+    pre.className = 'session-replay-transcript';
+    pre.textContent = lines.length
+        ? lines.join('\n')
+        : '(no transcript content — the underlying recording was empty)';
+    terminalHost.innerHTML = '';
+    terminalHost.appendChild(pre);
+    const hint = document.querySelector('.session-replay-hint');
+    if (hint) {
+        hint.textContent = 'Codex JSON-stream recording rendered as a transcript. Replay controls disabled for this format.';
+    }
+    for (const buttonId of ['sessionReplayRestart', 'sessionReplayPlayPause', 'sessionReplayJumpLive']) {
+        const button = document.getElementById(buttonId);
+        if (button) button.disabled = true;
+    }
+    const seek = document.getElementById('sessionReplaySeek');
+    if (seek) seek.disabled = true;
+    const speed = document.getElementById('sessionReplaySpeed');
+    if (speed) speed.disabled = true;
+    const follow = document.getElementById('logFollowToggle');
+    if (follow) follow.disabled = true;
+    const status = document.getElementById('sessionReplayStatus');
+    if (status) status.textContent = 'Transcript view';
+    const progress = document.getElementById('sessionReplayProgressText');
+    if (progress) progress.textContent = `${lines.length} line(s)`;
+    const clock = document.getElementById('sessionReplayClock');
+    if (clock) clock.textContent = '';
 }
 
 function resolveSessionReplayInitialGeometry(payload, events) {

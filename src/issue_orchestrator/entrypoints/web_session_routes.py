@@ -17,6 +17,10 @@ from ..execution.review_exchange_transcript import (
 )
 from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.claude_jsonl import claude_jsonl_entry_preview_lines
+from ..infra.session_log_prettify import (
+    extract_codex_transcript,
+    prettify_session_log,
+)
 from ..infra.terminal_recording import first_terminal_geometry, iter_terminal_recording
 from .timeline_presentation import _format_phase_name, _phase_status_icon, _positive_int
 from .web_session_context import (
@@ -96,6 +100,15 @@ def serve_terminal_recording(
                 truncated = True
             else:
                 events = events[:limit]
+
+        # Dispatch render mode by captured format. Codex ``exec --json``
+        # writes a JSON event stream to the PTY; feeding that to an xterm
+        # emulator renders gibberish (the "Reviewer Session Recording"
+        # complaint). Detect the format and return a transcript instead.
+        # Claude TUI sessions stay on the emulator path — their colors and
+        # prompts only make sense in a real terminal.
+        render_mode, transcript_lines = _render_mode_for_recording(all_events)
+
         return JSONResponse(
             {
                 "issue_number": issue_number,
@@ -106,6 +119,8 @@ def serve_terminal_recording(
                 "offset": offset,
                 "truncated": truncated,
                 "events": events,
+                "render_mode": render_mode,
+                "transcript_lines": transcript_lines,
             }
         )
     except Exception as exc:
@@ -149,6 +164,66 @@ def build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path | 
         "provider_stderr": _stream_file_observation(provider_stderr),
         "claude_log": _stream_file_observation(claude_log),
     }
+
+
+_CODEX_SNIFF_DECODED_CHARS = 4096
+
+
+def _render_mode_for_recording(
+    events: list[dict[str, Any]],
+) -> tuple[str, list[str] | None]:
+    """Choose how the UI should render this terminal recording.
+
+    Returns ``("terminal", None)`` for the current xterm-emulator path
+    (Claude TUI, raw PTY) and ``("transcript", lines)`` for Codex JSON
+    streams where the emulator would render envelope JSON as-is. The
+    detection sniffs the first few base64-decoded output chunks and
+    commits to ``transcript`` only when they look like codex events —
+    same structural-commit rule the PR-C prettifier uses, for consistency.
+    """
+    decoded = _decode_output_preview(events, _CODEX_SNIFF_DECODED_CHARS)
+    if decoded is None:
+        return "terminal", None
+    preview_lines = decoded.splitlines()
+    if extract_codex_transcript(preview_lines) is None:
+        return "terminal", None
+    # Commit to transcript mode: run the FULL decoded content through
+    # the prettifier so the UI gets an agent-message + command-execution
+    # transcript instead of raw JSON envelopes.
+    full_decoded = _decode_output_preview(events, None) or ""
+    transcript = prettify_session_log(full_decoded.splitlines())
+    return "transcript", transcript
+
+
+def _decode_output_preview(
+    events: list[dict[str, Any]],
+    char_limit: int | None,
+) -> str | None:
+    """Base64-decode ``output`` chunks up to ``char_limit`` characters.
+
+    Returns ``None`` when no decodable output is present. ``char_limit=None``
+    means decode everything (used for the final render); a small limit is
+    cheap enough to run on every request for the format detection.
+    """
+    chunks: list[str] = []
+    total = 0
+    for event in events:
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            continue
+        try:
+            chunk = base64.b64decode(data_b64).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        chunks.append(chunk)
+        total += len(chunk)
+        if char_limit is not None and total >= char_limit:
+            break
+    if not chunks:
+        return None
+    return "".join(chunks)
 
 
 def _terminal_recording_initial_geometry(path: Path) -> dict[str, int] | None:
