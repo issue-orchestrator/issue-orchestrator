@@ -216,7 +216,7 @@ class TestCreateTriageReviewPrompt:
 class TestDetectRepo:
     """Test the detect_repo function."""
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.run_git")
     def test_detect_https_url(self, mock_run_git):
         """Test detecting repo from HTTPS URL."""
         mock_run_git.return_value = (True, "https://github.com/owner/repo.git")
@@ -225,7 +225,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.run_git")
     def test_detect_ssh_url(self, mock_run_git):
         """Test detecting repo from SSH URL."""
         mock_run_git.return_value = (True, "git@github.com:owner/repo.git")
@@ -234,7 +234,16 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.run_git")
+    def test_detect_ssh_url_with_scheme(self, mock_run_git):
+        """Test detecting repo from SSH URL with explicit scheme."""
+        mock_run_git.return_value = (True, "ssh://git@github.com/owner/repo.git")
+
+        repo = detect_repo()
+
+        assert repo == "owner/repo"
+
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.run_git")
     def test_detect_https_without_git_suffix(self, mock_run_git):
         """Test detecting repo from HTTPS URL without .git suffix."""
         mock_run_git.return_value = (True, "https://github.com/owner/repo")
@@ -243,7 +252,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.run_git")
     def test_returns_none_on_failure(self, mock_run_git):
         """Test that None is returned when git command fails."""
         mock_run_git.return_value = (False, "")
@@ -252,7 +261,7 @@ class TestDetectRepo:
 
         assert repo is None
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.run_git")
     def test_returns_none_for_non_github(self, mock_run_git):
         """Test that None is returned for non-GitHub remotes."""
         mock_run_git.return_value = (True, "https://gitlab.com/owner/repo.git")
@@ -267,7 +276,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
+    @patch("issue_orchestrator.execution.providers.resolve_github_token")
     @patch("shutil.which")
     def test_all_prerequisites_met(self, mock_which, mock_token, mock_subprocess, mock_git):
         """Test when all prerequisites are met."""
@@ -286,7 +295,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
+    @patch("issue_orchestrator.execution.providers.resolve_github_token")
     def test_missing_git(self, mock_token, mock_subprocess, mock_git):
         """Test when git is missing."""
         mock_git.return_value = (False, "")
@@ -300,7 +309,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
+    @patch("issue_orchestrator.execution.providers.resolve_github_token")
     def test_github_not_authenticated(self, mock_token, mock_subprocess, mock_git):
         """Test when GitHub token is missing."""
         mock_git.return_value = (True, "git version 2.40.0")
@@ -315,7 +324,7 @@ class TestCheckPrerequisites:
 class TestFetchGithubLabels:
     """Test the fetch_github_labels function."""
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.get_repository_host")
     def test_fetches_labels(self, mock_client_factory):
         """Test successful label fetching."""
         mock_client = Mock()
@@ -326,7 +335,7 @@ class TestFetchGithubLabels:
 
         assert labels == ["bug", "agent:web"]
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.get_repository_host")
     def test_returns_empty_on_failure(self, mock_client_factory):
         """Test that empty list is returned on failure."""
         mock_client_factory.side_effect = RuntimeError("boom")
@@ -335,7 +344,7 @@ class TestFetchGithubLabels:
 
         assert labels == []
 
-    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
+    @patch("issue_orchestrator.entrypoints.setup_wizard_common.get_repository_host")
     def test_returns_empty_on_invalid_payload(self, mock_client_factory):
         """Test that empty list is returned for invalid payload."""
         mock_client = Mock()
