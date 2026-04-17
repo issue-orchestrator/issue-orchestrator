@@ -7073,6 +7073,14 @@ class TestStaticFilesSecurity:
         assert response.status_code == 200
         assert "text/css" in response.headers.get("content-type", "")
 
+    def test_valid_dashboard_css_chunk_served(self):
+        """Dashboard CSS imports should resolve through static serving."""
+        client = TestClient(app)
+        response = client.get("/static/css/dashboard/base.css")
+        assert response.status_code == 200
+        assert "text/css" in response.headers.get("content-type", "")
+        assert ":root {" in response.text
+
     def test_valid_js_file_served(self):
         """Valid JS files should be served correctly."""
         client = TestClient(app)

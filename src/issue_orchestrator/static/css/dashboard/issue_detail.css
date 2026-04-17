@@ -1,0 +1,373 @@
+.issue-detail-drawer {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: min(560px, 92vw);
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    transform: translateX(100%);
+    transition: transform 180ms ease;
+    /*
+     * Sits ABOVE .modal-overlay (z-index: 30) so that clicking an issue
+     * affordance from inside the E2E run drawer opens a usable drawer
+     * on top of the run modal. Closing the drawer returns the user to
+     * the run modal without reopening anything.
+     */
+    z-index: 35;
+    display: flex;
+    flex-direction: column;
+}
+
+/*
+ * When the issue-detail drawer is open, any modal dialog opened FROM
+ * within it (session-replay via #modalOverlay, timeline focus via
+ * #timelineModal, validation-failure, review-transcript, etc.) must
+ * render above the drawer so it is reachable. Default-elevate every
+ * .modal-overlay above the drawer and list the exceptions below.
+ *
+ * Exception: #e2eDiagnosisModal is the run drawer the user launched
+ * the issue drawer FROM — it must stay BELOW the issue drawer so the
+ * user returns to it when the drawer is closed. The ID selector
+ * outranks .modal-overlay in CSS specificity, so this override wins.
+ *
+ * If a new modal is added that ALSO serves as a drawer launcher
+ * rather than a drill-down dialog, add it to the exception list.
+ */
+:root:has(#issueDetailDrawer.visible) .modal-overlay.visible {
+    z-index: 45;
+}
+:root:has(#issueDetailDrawer.visible) #e2eDiagnosisModal.visible {
+    z-index: 30;
+}
+
+.timeline-failure-detail {
+    margin: 6px 0 4px;
+    padding: 6px 8px;
+    background: rgba(200, 60, 60, 0.08);
+    border-left: 3px solid var(--danger, #e57878);
+    border-radius: 3px;
+}
+.timeline-failure-summary {
+    cursor: pointer;
+    color: var(--danger, #e57878);
+    font-weight: 500;
+    font-size: 12px;
+}
+.timeline-failure-longrepr {
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--text-primary, #d7e2ef);
+    font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+    border-radius: 3px;
+}
+.issue-detail-drawer.visible {
+    transform: translateX(0);
+}
+.issue-detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.issue-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+/* Issue story: status explanation */
+.issue-detail-status {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    border-left: 3px solid transparent;
+}
+.issue-detail-status.status-running { border-left-color: var(--accent, #4a9eff); }
+.issue-detail-status.status-blocked { border-left-color: var(--danger, #e55); }
+.issue-detail-status.status-done { border-left-color: var(--success, #5a5); }
+.issue-detail-status.status-queued { border-left-color: var(--text-muted, #888); }
+
+.issue-detail-validation {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-panel-soft) 74%, transparent);
+    border-left: 3px solid var(--danger, #e55);
+}
+.issue-detail-validation-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.issue-detail-validation-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+}
+.issue-detail-validation-reason {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+.issue-detail-validation-tests {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 4px;
+    color: var(--text);
+    font-size: 12px;
+}
+.issue-detail-validation-tests li {
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.issue-detail-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    padding: 8px 12px 0;
+    margin: 0;
+}
+
+/* Issue story: journey steps */
+.issue-detail-journey {
+    padding: 10px 12px;
+    overflow: auto;
+    flex: 1;
+}
+.journey-step {
+    display: grid;
+    grid-template-columns: minmax(72px, max-content) minmax(0, 1fr);
+    column-gap: 10px;
+    padding: 5px 0;
+    font-size: 12px;
+    border-bottom: 1px solid rgba(128,128,128,0.08);
+    align-items: start;
+}
+.journey-step:last-child { border-bottom: none; }
+.journey-time {
+    color: var(--text-muted);
+    white-space: nowrap;
+    min-width: 72px;
+    font-variant-numeric: tabular-nums;
+}
+.journey-main {
+    min-width: 0;
+}
+.journey-summary-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 6px;
+}
+.journey-narrative {
+    color: var(--text);
+    flex: 1 1 320px;
+    min-width: 220px;
+}
+.journey-action {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--accent, #4a9eff);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    opacity: 0.7;
+}
+.journey-step:hover .journey-action { opacity: 1; }
+.journey-action:hover { background: var(--accent, #4a9eff); color: #fff; border-color: var(--accent, #4a9eff); }
+.journey-detail {
+    width: 100%;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    margin-top: 2px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.journey-step.status-failed .journey-narrative,
+.journey-step.status-blocked .journey-narrative { color: var(--danger, #e55); }
+.journey-step.status-completed .journey-narrative { color: var(--success, #5a5); }
+.journey-empty { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
+.journey-filter {
+    display: flex;
+    gap: 4px;
+    padding: 4px 0 8px;
+}
+.journey-filter-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.journey-filter-btn.active {
+    background: var(--accent, #4a9eff);
+    color: #fff;
+    border-color: var(--accent, #4a9eff);
+}
+.journey-filter-btn:hover:not(.active) { color: var(--text); border-color: var(--text-muted); }
+.journey-copy-btn { margin-left: auto; }
+.journey-filter-separator {
+    width: 1px;
+    background: var(--border);
+    margin: 2px 4px;
+}
+.journey-day-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    padding: 8px 0 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Journey cycles — collapsible groups */
+.journey-cycle { margin-bottom: 2px; position: relative; }
+.journey-cycle-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    position: relative;
+}
+.journey-cycle-header:hover { background: rgba(128,128,128,0.08); }
+.journey-cycle-toggle { width: 12px; font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.journey-cycle-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
+.journey-cycle-agent { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.journey-cycle-retries { font-size: 10px; color: var(--warn, #f0b24f); white-space: nowrap; }
+.journey-cycle-outcome { font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.journey-cycle-outcome.outcome-failed { color: var(--danger, #e55); }
+.journey-cycle-outcome.outcome-success { color: var(--ok, #46c37b); }
+.journey-cycle-outcome.outcome-warning { color: var(--warn, #f0b24f); }
+.journey-cycle-time { font-size: 11px; color: var(--text-muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.journey-cycle-artifacts-btn { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+.journey-cycle-body { padding-left: 20px; }
+.journey-cycle-body.collapsed { display: none; }
+.journey-phase-group {
+    margin-left: 8px;
+    padding-left: 10px;
+    border-left: 1px solid rgba(128, 128, 128, 0.28);
+}
+.journey-phase-header {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin: 8px 0 4px;
+}
+.journey-phase-header:first-child {
+    margin-top: 0;
+}
+
+.journey-artifact-popover {
+    position: absolute;
+    right: 8px;
+    top: 100%;
+    background: var(--bg-panel, #172435);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    z-index: 100;
+    min-width: 180px;
+}
+.journey-artifact-popover a {
+    display: block;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text);
+    text-decoration: none;
+}
+.journey-artifact-popover a:hover { background: rgba(128,128,128,0.08); }
+
+/* Issue story: collapsible sections */
+.issue-detail-section {
+    border-top: 1px solid var(--border);
+}
+.issue-detail-section summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+    user-select: none;
+}
+.issue-detail-section summary:hover { color: var(--text); }
+.issue-detail-section > div {
+    padding: 0 12px 10px;
+    max-height: 300px;
+    overflow: auto;
+}
+.prev-cycle-card {
+    padding: 8px;
+    margin-bottom: 6px;
+    background: rgba(128,128,128,0.06);
+    border-radius: 4px;
+    font-size: 12px;
+}
+.prev-cycle-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+.prev-cycle-outcome { font-weight: 500; }
+.prev-cycle-outcome.completed { color: var(--success, #5a5); }
+.prev-cycle-outcome.failed { color: var(--danger, #e55); }
+
+.column-empty,
+.empty-state {
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 8px;
+}
+
+.startup-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.startup-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border, #333);
+    border-top-color: var(--accent, #58a6ff);
+    border-radius: 50%;
+    animation: startup-spin 0.8s linear infinite;
+}
+
+@keyframes startup-spin {
+    to { transform: rotate(360deg); }
+}
+
