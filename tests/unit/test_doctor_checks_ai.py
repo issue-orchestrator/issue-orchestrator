@@ -57,3 +57,57 @@ def test_check_ai_keys_reports_unknown_provider():
         c.name == "AI Provider Keys (Unknown Providers)" and "mystery-ai" in c.detail
         for c in checks
     )
+
+
+class _FakeProvider:
+    def __init__(
+        self,
+        name: str,
+        executable: str,
+        available: bool = True,
+        version: str | None = None,
+    ):
+        self.name = name
+        self.executable = executable
+        self._available = available
+        self._version = version
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def check_version(self) -> str | None:
+        return self._version
+
+
+def test_check_ai_provider_clis_reports_actual_executable(monkeypatch):
+    providers = {
+        "claude-code": _FakeProvider(
+            "claude-code",
+            "claude",
+            version="2.1.112 (Claude Code)",
+        ),
+        "codex": _FakeProvider("codex", "codex", available=False),
+    }
+    monkeypatch.setattr("issue_orchestrator.agent_runner.list_providers", lambda: list(providers))
+    monkeypatch.setattr("issue_orchestrator.agent_runner.get_provider", providers.__getitem__)
+
+    checks = ai_checks.check_ai_provider_clis()
+
+    available = next(check for check in checks if check.name == "AI Provider CLIs")
+    missing = next(check for check in checks if check.name == "AI Provider CLIs (Missing)")
+    assert available.status == "ok"
+    assert "claude-code via claude (2.1.112 (Claude Code))" in available.detail
+    assert missing.detail == "Not installed: codex"
+
+
+def test_check_ai_provider_clis_reports_expected_executable_when_missing(monkeypatch):
+    providers = {
+        "claude-code": _FakeProvider("claude-code", "claude", available=False),
+    }
+    monkeypatch.setattr("issue_orchestrator.agent_runner.list_providers", lambda: list(providers))
+    monkeypatch.setattr("issue_orchestrator.agent_runner.get_provider", providers.__getitem__)
+
+    checks = ai_checks.check_ai_provider_clis()
+
+    missing = next(check for check in checks if check.name == "AI Provider CLIs (Missing)")
+    assert missing.detail == "Not installed: claude-code (expected executable: claude)"
