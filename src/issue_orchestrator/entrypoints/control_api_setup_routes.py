@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,6 +14,7 @@ from .control_api_setup_support import ControlApiSetupDependency
 from .setup_wizard_common import (
     FileCollector,
     build_agent_checks,
+    build_any_ai_provider_check,
     build_github_auth_check,
     detect_repo,
     find_existing_default_config,
@@ -154,14 +154,11 @@ async def setup_prereqs(
         "detail": output if ok else "Not found",
     }
 
-    claude_path = shutil.which("claude")
-    checks["claude"] = {
-        "ok": bool(claude_path),
-        "detail": claude_path or "Not found on PATH",
-    }
-
+    checks["ai_provider_clis"] = build_any_ai_provider_check()
     checks["github_auth"] = build_github_auth_check(config)
     agent_checks = build_agent_checks(config)
+    for agent_check in agent_checks:
+        checks[f"agent:{agent_check.get('name', 'Agent CLI')}"] = agent_check
     all_ok = all(c.get("ok", False) for c in checks.values()) and all(
         c.get("ok", False) for c in agent_checks
     )
