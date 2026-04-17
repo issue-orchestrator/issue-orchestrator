@@ -30,16 +30,11 @@ from ..domain.models import (
     CompletionRecord,
     RequestedAction,
     COMPLETION_RECORD_PATH,
-    sanitize_agent_label,
 )
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
-from ..infra.runtime_artifacts import (
-    filter_runtime_managed_dirty_paths,
-    is_runtime_managed_dirty_path,
-)
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
@@ -50,21 +45,26 @@ from .completion_pr_collision import (
     maybe_switch_branch_for_pr_collision,
 )
 from .completion_failure_reporting import (
-    build_cleanup_failure_comment,
     build_gate_failure_comment,
     build_processing_failure_comment,
-    write_failure_diagnostic,
+)
+from .completion_record_validation import CompletionRecordValidator
+from .completion_result_artifacts import (
+    build_pr_body,
+    build_processing_result,
+    cleanup_completion_record,
+    preserve_completion_record,
+    write_reviewer_feedback_file,
 )
 from .completion_review_exchange import CompletionReviewExchange
+from .completion_types import (
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUBLISH_BLOCKED,
+    ERROR_PREFIX_PUSH,
+    ProcessingResult,
+)
 
 logger = logging.getLogger(__name__)
-
-# Error prefixes for critical failures (used by completion_handler to detect blocking errors)
-# Keep in sync with completion_handler.py's critical error detection
-ERROR_PREFIX_PUSH = "push_branch"
-ERROR_PREFIX_CREATE_PR = "create_pr"
-ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
-_DIRTY_FILES_REASON_LIMIT = 8
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -114,22 +114,6 @@ class GitAdapter(Protocol):
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
     def list_dirty_files(self, worktree: Path, mode: str) -> list[str]: ...
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
-
-
-@dataclass
-class ProcessingResult:
-    """Result of processing a completion record."""
-
-    success: bool
-    message: str
-    pr_url: str | None = None
-    actions_taken: list[str] | None = None
-    errors: list[str] | None = None
-    diagnostic_path: str | None = None  # Path to detailed failure diagnostics
-    completion_record_path: str | None = None  # Run-scoped preserved completion artifact
-    review_exchange_completed: bool = False
-    review_exchange_halted: bool = False
-
 
 class CompletionProcessor:
     """Process agent completion records and execute requested actions.
@@ -191,6 +175,10 @@ class CompletionProcessor:
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
         )
+        self._record_validator = CompletionRecordValidator(
+            config=config,
+            git_adapter=git_adapter,
+        )
 
     def _emit(
         self,
@@ -250,145 +238,26 @@ class CompletionProcessor:
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None
     ) -> CompletionRecord | None:
-        """Read and validate a completion record from a worktree.
-
-        Args:
-            worktree: Path to the worktree directory.
-            completion_path: Relative path to completion file. If None, uses legacy path.
-
-        Returns:
-            The validated CompletionRecord, or None if not found/invalid.
-        """
-        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-
-        if not record_path.exists():
-            logger.info("No completion record found at %s", record_path)
-            return None
-
-        try:
-            with open(record_path) as f:
-                data = json.load(f)
-            record = CompletionRecord.from_dict(data)
-            logger.info(
-                "Read completion record: outcome=%s session=%s path=%s",
-                record.outcome.value,
-                record.session_id,
-                record_path,
-            )
-            return record
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in completion record: {e}")
-            return None
-        except ValueError as e:
-            logger.error(f"Invalid completion record: {e}")
-            return None
+        return self._record_validator.read_completion_record(worktree, completion_path)
 
     def _resolve_agent_label_from_completion_path(
         self, completion_path: str | None
     ) -> tuple[str | None, str | None]:
-        if completion_path is None or self._config is None:
-            return None, None
-        filename = Path(completion_path).name
-        if not (filename.startswith("completion-") and filename.endswith(".json")):
-            return None, None
-        safe_name = filename[len("completion-"):-len(".json")]
-        matches = [
-            label
-            for label in self._config.agents.keys()
-            if sanitize_agent_label(label) == safe_name
-        ]
-        if not matches:
-            return None, None
-        if len(matches) > 1:
-            return (
-                None,
-                "Multiple agent labels map to completion file "
-                f"{filename}: {', '.join(matches)}",
-            )
-        return matches[0], None
+        return self._record_validator.resolve_agent_label_from_completion_path(
+            completion_path
+        )
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
     ) -> tuple[bool, str]:
-        """Validate worktree state before executing actions.
-
-        This is a policy check - even if the agent requested actions,
-        we verify the worktree is in a valid state.
-
-        Args:
-            worktree: Path to the worktree.
-            record: The completion record to validate against.
-
-        Returns:
-            Tuple of (is_valid, reason_if_invalid).
-        """
-        # Get current branch
-        branch = self.git_adapter.get_current_branch(worktree)
-        if not branch:
-            return False, "Could not determine current branch"
-
-        # For push operations, verify we're not on main
-        if RequestedAction.PUSH_BRANCH in record.requested_actions:
-            if branch in ("main", "master"):
-                return False, f"Cannot push: on protected branch '{branch}'"
-
-        # Enforce dirty-tree policy from YAML if push is requested
-        if RequestedAction.PUSH_BRANCH in record.requested_actions:
-            ok, reason = self._check_dirty_policy(worktree)
-            if not ok:
-                return False, reason
-
-        return True, ""
+        return self._record_validator.validate_worktree_state(worktree, record)
 
     def _check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
-        """Apply validation.pre_push_dirty_check policy before push actions."""
-        mode = (
-            self._config.validation.pre_push_dirty_check
-            if self._config is not None
-            else "off"
-        )
-
-        if mode == "off":
-            return True, ""
-        list_mode = mode
-        if mode == "tracked":
-            dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=True)
-        elif mode == "unstaged":
-            dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=False)
-        elif mode == "all":
-            dirty = self.git_adapter.has_uncommitted_changes(worktree)
-        else:
-            return False, (
-                "Invalid validation.pre_push_dirty_check value: "
-                f"{mode!r} (expected tracked|unstaged|all|off)"
-            )
-
-        if dirty:
-            dirty_files = self.git_adapter.list_dirty_files(worktree, list_mode)
-            blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
-            if dirty_files and not blocking_files:
-                logger.info(
-                    "Dirty-check ignored runtime-only files for %s: %s",
-                    worktree,
-                    ", ".join(dirty_files),
-                )
-                return True, ""
-            reason = (
-                "Working tree is dirty; commit/add/stash before pushing. "
-                "Override with validation.pre_push_dirty_check."
-            )
-            if blocking_files:
-                preview = ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])
-                remaining = len(blocking_files) - _DIRTY_FILES_REASON_LIMIT
-                suffix = f" (+{remaining} more)" if remaining > 0 else ""
-                reason = f"{reason} Dirty files: {preview}{suffix}."
-            return False, reason
-
-        return True, ""
+        return self._record_validator.check_dirty_policy(worktree)
 
     @staticmethod
     def _is_ignored_dirty_path(path: str) -> bool:
-        return is_runtime_managed_dirty_path(path)
+        return CompletionRecordValidator.is_ignored_dirty_path(path)
 
     def _emit_review_comment_added(
         self,
@@ -662,7 +531,8 @@ class CompletionProcessor:
                     errors=[agent_error],
                 )
 
-        preserved_completion_path = self._preserve_completion_record(
+        preserved_completion_path = preserve_completion_record(
+            session_output=self.session_output,
             worktree=worktree,
             completion_path=completion_path,
             session_name=session_name,
@@ -688,11 +558,12 @@ class CompletionProcessor:
         if pr_number and record.review_issues and session_name:
             run_dir = self.session_output.find_run_dir(worktree, session_name)
             if run_dir:
-                self._write_reviewer_feedback_file(run_dir, pr_number, record.review_issues)
+                write_reviewer_feedback_file(run_dir, pr_number, record.review_issues)
 
         # Build and return result
         total_duration = time.monotonic() - start_time
-        return self._build_processing_result(
+        return build_processing_result(
+            session_output=self.session_output,
             worktree=worktree,
             record=record,
             session_name=session_name,
@@ -707,6 +578,9 @@ class CompletionProcessor:
             total_duration=total_duration,
             completion_path=completion_path,
             preserved_completion_path=preserved_completion_path,
+            emit_completion_event=self._emit,
+            post_issue_comment=self._add_issue_comment,
+            cleanup_completion_record_fn=self._cleanup_completion_record,
         )
 
     def _read_and_validate_record(
@@ -1297,7 +1171,7 @@ class CompletionProcessor:
 
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
-        pr_body = self._build_pr_body(record, issue_number)
+        pr_body = build_pr_body(record, issue_number)
         exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
             exchange_mode=exchange_mode,
             agent_label=agent_label,
@@ -1454,25 +1328,6 @@ class CompletionProcessor:
             run_dir=run_dir,
         )
 
-    @staticmethod
-    def _run_dir_from_completion_path(
-        worktree: Path,
-        completion_path: str | None,
-    ) -> Path | None:
-        if not completion_path:
-            return None
-        parts = Path(completion_path).parts
-        try:
-            sessions_idx = parts.index("sessions")
-        except ValueError:
-            return None
-        if sessions_idx + 1 >= len(parts):
-            return None
-        run_dir = worktree.joinpath(*parts[:sessions_idx + 2])
-        if not run_dir.exists() or not run_dir.is_dir():
-            return None
-        return run_dir
-
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         return self._review_exchange.resolve_review_exchange_mode(agent_label)
 
@@ -1519,199 +1374,19 @@ class CompletionProcessor:
         elif record.pr_labels and is_dry_run_pr:
             logger.info("[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number)
 
-    def _build_processing_result(
-        self,
-        *,
-        worktree: Path,
-        record: CompletionRecord,
-        session_name: str | None,
-        issue_number: int,
-        issue_title: str,
-        branch: str | None,
-        pr_url: str | None,
-        review_exchange_completed: bool,
-        actions_taken: list[str],
-        errors: list[str],
-        error_details: list[dict[str, Any]],
-        total_duration: float,
-        completion_path: str | None,
-        preserved_completion_path: str | None,
-    ) -> ProcessingResult:
-        """Build final processing result and handle cleanup."""
-        # Determine overall success
-        success = len(errors) == 0 or (
-            # Partial success if we at least completed the main work
-            RequestedAction.PUSH_BRANCH in record.requested_actions
-            and "Pushed branch to remote" in actions_taken
-        )
-        if any(error.startswith("review_exchange:") for error in errors):
-            success = False
-        logger.info(
-            "Completion result: issue=%s success=%s actions=%s errors=%s pr_url=%s",
-            issue_number,
-            success,
-            actions_taken,
-            errors,
-            pr_url,
-        )
-        logger.info(
-            "Completion processing duration: issue=%s elapsed=%.2fs",
-            issue_number,
-            total_duration,
-        )
-
-        # Build result message and emit events
-        diagnostic_path: str | None = None
-        if success:
-            message = f"Processed {record.outcome.value}: {', '.join(actions_taken)}"
-            self._emit(
-                SessionEvent.COMPLETED,
-                issue_number,
-                {
-                    "outcome": record.outcome.value,
-                    "actions_taken": actions_taken,
-                    "pr_url": pr_url,
-                },
-            )
-        else:
-            message = f"Processing failed: {'; '.join(errors)}"
-            self._emit(
-                SessionEvent.FAILED,
-                issue_number,
-                {
-                    "outcome": record.outcome.value,
-                    "actions_taken": actions_taken,
-                    "errors": errors,
-                },
-            )
-            # Write detailed failure diagnostics to worktree
-            diagnostic_path = write_failure_diagnostic(
-                session_output=self.session_output,
-                worktree=worktree,
-                session_name=session_name,
-                issue_number=issue_number,
-                issue_title=issue_title,
-                branch=branch,
-                outcome=record.outcome.value,
-                requested_actions=[a.value for a in record.requested_actions],
-                actions_taken=actions_taken,
-                errors=errors,
-                error_details=error_details,
-                duration_seconds=total_duration,
-            )
-            comment = build_processing_failure_comment(
-                errors=errors,
-                actions_taken=actions_taken,
-                diagnostic_path=diagnostic_path,
-            )
-            self._add_issue_comment(issue_number, comment, context="processing failure")
-
-        # Clean up the completion record after processing to prevent re-processing
-        self._cleanup_completion_record(worktree, completion_path, issue_number)
-
-        review_exchange_halted = any(
-            error.startswith("review_exchange:")
-            for error in errors
-        )
-
-        return ProcessingResult(
-            success=success,
-            message=message,
-            pr_url=pr_url,
-            actions_taken=actions_taken if actions_taken else None,
-            diagnostic_path=diagnostic_path,
-            completion_record_path=preserved_completion_path,
-            errors=errors if errors else None,
-            review_exchange_completed=review_exchange_completed,
-            review_exchange_halted=review_exchange_halted,
-        )
-
-    def _preserve_completion_record(
-        self,
-        *,
-        worktree: Path,
-        completion_path: str | None,
-        session_name: str | None,
-    ) -> str | None:
-        """Persist a run-scoped completion copy before cleanup for timeline/audit use."""
-        source_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-        if not source_path.exists():
-            return None
-
-        run_dir = self._run_dir_from_completion_path(worktree, completion_path)
-        if run_dir is None:
-            resolved_session_name = session_name or self.session_output.session_name_from_path(completion_path)
-            if not resolved_session_name:
-                return None
-            run_dir = self.session_output.find_run_dir(worktree, resolved_session_name)
-        if not run_dir:
-            return None
-
-        target_path = run_dir / "completion-record.json"
-        try:
-            shutil.copy2(source_path, target_path)
-            self.session_output.update_manifest(run_dir, {"completion_record_path": str(target_path)})
-            return str(target_path)
-        except Exception:
-            logger.exception("Failed to preserve completion record for run_dir=%s", run_dir)
-            return None
-
     def _cleanup_completion_record(
         self,
         worktree: Path,
         completion_path: str | None,
         issue_number: int,
     ) -> None:
-        """Clean up the completion record after processing."""
-        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-        existed_before = record_path.exists()
-        cleanup_ok = self.cleanup_record(worktree, completion_path)
-        exists_after = record_path.exists()
-        logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
-                      issue_number, record_path, existed_before, exists_after)
-        if existed_before and exists_after and not cleanup_ok:
-            comment = build_cleanup_failure_comment(
-                issue_number=issue_number,
-                worktree=worktree,
-                record_path=record_path,
-            )
-            self._add_issue_comment(issue_number, comment, context="cleanup warning")
-
-    def _build_pr_body(self, record: CompletionRecord, issue_number: int) -> str:
-        """Build the PR body from the completion record.
-
-        Args:
-            record: The completion record.
-            issue_number: The issue number to link.
-
-        Returns:
-            The formatted PR body.
-        """
-        parts = [
-            f"Closes #{issue_number}",
-            "",
-        ]
-
-        if record.implementation:
-            parts.extend([
-                "## Implementation",
-                record.implementation,
-                "",
-            ])
-
-        if record.problems:
-            parts.extend([
-                "## Problems Encountered",
-                record.problems,
-                "",
-            ])
-
-        parts.extend([
-            "---",
-            "*Generated by issue-orchestrator*",
-        ])
-
-        return "\n".join(parts)
+        cleanup_completion_record(
+            worktree=worktree,
+            completion_path=completion_path,
+            issue_number=issue_number,
+            cleanup_record=self.cleanup_record,
+            post_issue_comment=self._add_issue_comment,
+        )
 
     def _is_non_fast_forward(self, message: str) -> bool:
         lower = message.lower()
@@ -1724,53 +1399,6 @@ class CompletionProcessor:
                 "stale info",
             )
         )
-
-    def _write_reviewer_feedback_file(
-        self,
-        run_dir: Path,
-        pr_number: int,
-        review_issues: str,
-    ) -> Path | None:
-        """Write reviewer feedback to the review session's run directory.
-
-        This enables the "local cache" pattern: when a rework session starts shortly
-        after a review completes, it can read the feedback from the review session's
-        run directory instead of fetching from GitHub (which may have eventual
-        consistency delays).
-
-        The file is written to: {run_dir}/reviewer-feedback.json
-
-        Args:
-            run_dir: Path to the review session's run directory.
-            pr_number: The PR number being reviewed.
-            review_issues: The reviewer's feedback text (from reviewer-done --issues).
-
-        Returns:
-            Path to the written file, or None if writing failed.
-        """
-        feedback_file = run_dir / "reviewer-feedback.json"
-
-        feedback_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "pr_number": pr_number,
-            "review_issues": review_issues,
-        }
-
-        try:
-            feedback_file.write_text(json.dumps(feedback_data, indent=2))
-            logger.info(
-                "[REVIEW_FEEDBACK] Wrote reviewer feedback for PR #%d: %s",
-                pr_number,
-                feedback_file,
-            )
-            return feedback_file
-        except Exception as e:
-            logger.warning(
-                "[REVIEW_FEEDBACK] Failed to write feedback file for PR #%d: %s",
-                pr_number,
-                e,
-            )
-            return None
 
     def cleanup_record(self, worktree: Path, completion_path: str | None = None) -> bool:
         """Remove the completion record after processing.
