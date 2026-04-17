@@ -12,6 +12,8 @@ from unittest.mock import Mock, MagicMock
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.planner import (
     Planner,
+)
+from issue_orchestrator.control.planner_types import (
     Plan,
     OrchestratorSnapshot,
     SkippedItem,
