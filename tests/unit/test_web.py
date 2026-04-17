@@ -7088,6 +7088,14 @@ class TestStaticFilesSecurity:
         assert response.status_code == 200
         assert "javascript" in response.headers.get("content-type", "")
 
+    def test_valid_dashboard_js_chunk_served(self):
+        """Dashboard JS chunks should resolve through static serving."""
+        client = TestClient(app)
+        response = client.get("/static/js/dashboard/kanban_columns.js")
+        assert response.status_code == 200
+        assert "javascript" in response.headers.get("content-type", "")
+        assert "function renderCompactCards" in response.text
+
 
 class TestIssueAuditEndpoint:
     """Tests for explicit issue audit refresh endpoint."""

@@ -18,6 +18,33 @@ from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 
 
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "templates"
+STATIC_JS_DIR = (
+    Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js"
+)
+DASHBOARD_JS_CHUNKS = [
+    "core.js",
+    "session_replay.js",
+    "session_dialogs.js",
+    "controls_refresh.js",
+    "kanban_columns.js",
+    "issue_metadata.js",
+    "issue_menus.js",
+    "issue_detail_modals.js",
+    "issue_detail_drawer.js",
+    "timeline.js",
+    "diagnostics_actions.js",
+    "shell_actions.js",
+    "e2e_runtime.js",
+    "e2e_triage.js",
+    "e2e_run_view.js",
+]
+
+
+def read_dashboard_js_bundle() -> str:
+    return "\n".join(
+        (STATIC_JS_DIR / "dashboard" / chunk).read_text(encoding="utf-8")
+        for chunk in DASHBOARD_JS_CHUNKS
+    )
 
 
 @pytest.fixture
@@ -99,8 +126,7 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
 
 
 def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():
-    js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
-    source = js_path.read_text(encoding="utf-8")
+    source = read_dashboard_js_bundle()
     assert "const hasTerminal = card.state_label === 'running' ? 'true' : 'false';" in source
     assert "data-has-terminal" in source
     assert "class=\"card-kill-btn\"" not in source
@@ -109,8 +135,7 @@ def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():
 
 
 def test_dashboard_js_switch_tab_shows_loading_state():
-    js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
-    source = js_path.read_text(encoding="utf-8")
+    source = read_dashboard_js_bundle()
     assert "tab-nav-pending" in source
     assert "is-loading" in source
     assert "aria-busy" in source
