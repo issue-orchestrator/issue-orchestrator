@@ -37,7 +37,8 @@ from issue_orchestrator.control.actions import (
     LaunchSessionAction,
     SessionType,
 )
-from issue_orchestrator.control.planner import Planner, OrchestratorSnapshot
+from issue_orchestrator.control.planner import Planner
+from issue_orchestrator.control.planner_types import OrchestratorSnapshot
 from issue_orchestrator.control.completion_handler import CompletionHandler, SessionStatus
 from issue_orchestrator.control.session_completion import handle_session_completion
 from issue_orchestrator.control.scheduler import Scheduler
