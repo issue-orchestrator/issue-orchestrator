@@ -206,14 +206,6 @@ function showRunTestDetail(nodeid) {
     content.innerHTML = html;
 }
 
-// Helper to escape HTML
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 async function rerunTest(nodeid) {
     try {
         const res = await fetch('/control/e2e/start', {
@@ -463,23 +455,6 @@ function toggleE2ESubIssues(issueId, event) {
     const isExpanded = container.style.display !== 'none';
     container.style.display = isExpanded ? 'none' : 'block';
     button.setAttribute('aria-expanded', !isExpanded);
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Escape for use in HTML attributes (handles quotes unlike escapeHtml)
-function escapeAttr(text) {
-    if (!text) return '';
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
 }
 
 function toggleAllTriageItems(checked) {
@@ -751,4 +726,3 @@ function closeQuarantineModal() {
 // ============================================================================
 // Unified Run View - Replaces separate Triage and Details modals
 // ============================================================================
-

@@ -14,6 +14,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, Session, SessionHistoryEntry
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 
 
@@ -21,23 +22,6 @@ TEMPLATE_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator
 STATIC_JS_DIR = (
     Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js"
 )
-DASHBOARD_JS_CHUNKS = [
-    "core.js",
-    "session_replay.js",
-    "session_dialogs.js",
-    "controls_refresh.js",
-    "kanban_columns.js",
-    "issue_metadata.js",
-    "issue_menus.js",
-    "issue_detail_modals.js",
-    "issue_detail_drawer.js",
-    "timeline.js",
-    "diagnostics_actions.js",
-    "shell_actions.js",
-    "e2e_runtime.js",
-    "e2e_triage.js",
-    "e2e_run_view.js",
-]
 
 
 def read_dashboard_js_bundle() -> str:
@@ -123,6 +107,32 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     column_ids = [col["data-column"] for col in columns]
     assert column_ids == ["queued", "running", "blocked", "awaiting-merge", "completed"]
     assert "milestones=M7" in soup.select_one(".scope-summary").text
+
+
+def test_dashboard_renders_manifest_js_chunks_in_order(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    script_sources = [
+        script.get("src")
+        for script in soup.find_all("script")
+        if script.get("src")
+    ]
+    expected_chunks = [
+        f"/static/js/dashboard/{chunk}"
+        for chunk in DASHBOARD_JS_CHUNKS
+    ]
+    chunk_start = script_sources.index(expected_chunks[0])
+    assert script_sources[chunk_start : chunk_start + len(expected_chunks)] == expected_chunks
+    assert script_sources[chunk_start - 1] == "/static/vendor/xterm/addon-fit.js"
+    assert script_sources[chunk_start + len(expected_chunks)] == "/static/js/dashboard.js"
 
 
 def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():

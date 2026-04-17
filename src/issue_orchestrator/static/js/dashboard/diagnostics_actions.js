@@ -1,9 +1,3 @@
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 function toggleSelectAllBlocked() {
     const checkboxes = blockedList.querySelectorAll('input[type="checkbox"]');
     const isChecked = blockedSelectAll.checked;
@@ -590,4 +584,3 @@ function stopLiveLogPoller() {
     }
     liveLogIssue = null;
 }
-

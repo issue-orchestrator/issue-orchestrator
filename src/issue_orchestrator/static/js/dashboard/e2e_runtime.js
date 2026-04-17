@@ -462,13 +462,6 @@ function renderE2EDiagnosis(diagnosis) {
     content.innerHTML = html;
 }
 
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 function closeE2EDiagnosisModal() {
     document.getElementById('e2eDiagnosisModal').classList.remove('visible');
 }

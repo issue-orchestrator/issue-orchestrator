@@ -4,6 +4,23 @@ function hideSettingsMenu() {
     if (menu) menu.classList.remove('visible');
 }
 
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+function escapeAttr(text) {
+    if (text === null || text === undefined) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 let terminalBackend = 'tmux';
 let clientCapabilities = {
     focus_session: false,
@@ -560,4 +577,3 @@ async function postVisibility(visibleIssueNumbers) {
         console.error('Failed to post visibility hint:', err);
     }
 }
-

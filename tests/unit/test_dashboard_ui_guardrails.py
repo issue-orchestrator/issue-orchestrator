@@ -3,27 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DASHBOARD_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
 DASHBOARD_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard"
-DASHBOARD_JS_CHUNKS = [
-    "core.js",
-    "session_replay.js",
-    "session_dialogs.js",
-    "controls_refresh.js",
-    "kanban_columns.js",
-    "issue_metadata.js",
-    "issue_menus.js",
-    "issue_detail_modals.js",
-    "issue_detail_drawer.js",
-    "timeline.js",
-    "diagnostics_actions.js",
-    "shell_actions.js",
-    "e2e_runtime.js",
-    "e2e_triage.js",
-    "e2e_run_view.js",
-]
 DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
 DASHBOARD_CSS = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard.css"
@@ -142,11 +127,8 @@ def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     idx_xterm_css = html.find('/static/vendor/xterm/xterm.css')
     idx_xterm_js = html.find('/static/vendor/xterm/xterm.js')
     idx_xterm_fit = html.find('/static/vendor/xterm/addon-fit.js')
+    idx_chunk_loop = html.find("{% for chunk in dashboard_js_chunks %}")
     idx_dashboard = html.find('/static/js/dashboard.js')
-    chunk_indexes = [
-        html.find(f'/static/js/dashboard/{chunk}')
-        for chunk in DASHBOARD_JS_CHUNKS
-    ]
     assert idx_issue_row != -1
     assert idx_expanded != -1
     assert idx_compact != -1
@@ -154,8 +136,8 @@ def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     assert idx_xterm_css != -1
     assert idx_xterm_js != -1
     assert idx_xterm_fit != -1
+    assert idx_chunk_loop != -1
     assert idx_dashboard != -1
-    assert all(idx != -1 for idx in chunk_indexes)
     assert idx_issue_row < idx_dashboard
     assert idx_expanded < idx_dashboard
     assert idx_compact < idx_dashboard
@@ -163,9 +145,7 @@ def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     assert idx_xterm_css < idx_dashboard
     assert idx_xterm_js < idx_dashboard
     assert idx_xterm_fit < idx_dashboard
-    assert idx_xterm_fit < chunk_indexes[0]
-    assert chunk_indexes == sorted(chunk_indexes)
-    assert chunk_indexes[-1] < idx_dashboard
+    assert idx_xterm_fit < idx_chunk_loop < idx_dashboard
 
 
 def test_compact_cards_use_fingerprint_delta_path() -> None:
