@@ -8,6 +8,24 @@ now extracts a human-readable reason from the underlying error strings.
 from __future__ import annotations
 
 from issue_orchestrator.control.completion_handler import _summarize_publish_failure
+from issue_orchestrator.control.completion_types import (
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUSH,
+)
+from issue_orchestrator.domain.models import RequestedAction
+
+
+def test_stage_prefixes_match_requested_action_values() -> None:
+    """publish.failed payloads stage = RequestedAction.value.
+
+    The push-branch / create-PR failure paths report the stage via two
+    different source strings today (ERROR_PREFIX_* on the non-exception
+    path, action.value on the exception path). They MUST agree — downstream
+    consumers dispatch on ``stage`` and would silently break if the two
+    diverged.
+    """
+    assert ERROR_PREFIX_PUSH == RequestedAction.PUSH_BRANCH.value
+    assert ERROR_PREFIX_CREATE_PR == RequestedAction.CREATE_PR.value
 
 
 def test_push_failure_surfaces_underlying_error() -> None:

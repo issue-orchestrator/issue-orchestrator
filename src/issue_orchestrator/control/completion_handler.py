@@ -52,6 +52,12 @@ _PUBLISH_STAGE_LABELS = {
     "create_pr": "PR creation",
 }
 
+# Maximum length of the blocked-card status-reason line. Cards render the
+# reason inline; anything longer wraps ugly or truncates without ellipsis
+# depending on the surface. Kept near the body-column width used by the
+# dashboard templates so tweaks to layout have one obvious knob to turn.
+_PUBLISH_FAILURE_SUMMARY_CHAR_CAP = 160
+
 
 def _summarize_publish_failure(critical_errors: list[str]) -> str:
     """Build a card-friendly summary from raw publish error strings.
@@ -75,7 +81,7 @@ def _summarize_publish_failure(critical_errors: list[str]) -> str:
     if not message:
         return "Push or PR creation failed"
     prefix = f"{stage_label} failed: " if stage_label else ""
-    available = 160 - len(prefix)
+    available = _PUBLISH_FAILURE_SUMMARY_CHAR_CAP - len(prefix)
     if len(message) > available:
         message = message[: available - 1].rstrip() + "…"
     return f"{prefix}{message}"

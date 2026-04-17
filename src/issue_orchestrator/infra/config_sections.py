@@ -565,6 +565,9 @@ def load_observability_section(config: "Config", observability_section: dict) ->
         )
     config.session_output_retention_tier = tier
     config.stale_escalation_ticks = observability_section.get("stale_escalation_ticks", 0)
+    config.tick_stall_threshold_seconds = int(
+        observability_section.get("tick_stall_threshold_seconds", 60)
+    )
 
     # Comment headings
     headings_data = observability_section.get("comment_headings", {})

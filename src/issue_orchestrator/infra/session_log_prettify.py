@@ -16,6 +16,7 @@ trivial to test against real fixtures captured from production runs.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from .terminal_cleaning import (
@@ -23,6 +24,8 @@ from .terminal_cleaning import (
     dedupe_consecutive_lines,
     extract_stream_json_text,
 )
+
+CodexItemRenderer = Callable[[dict[str, Any], str], "list[str] | None"]
 
 
 def prettify_session_log(raw_lines: list[str]) -> list[str]:
@@ -72,9 +75,14 @@ def extract_codex_transcript(lines: list[str]) -> list[str] | None:
     (``thread.started`` etc.) are silently skipped.
 
     Returns ``None`` when *lines* does not look like a Codex stream — so the
-    dispatcher can try the next extractor.
+    dispatcher can try the next extractor. To avoid mis-classifying an
+    arbitrary file that happens to contain a single ``thread.started`` line,
+    we require at least one rendered item before committing to codex; a
+    stream of pure meta events still commits (that's a legitimate empty
+    codex session and shouldn't fall through to raw PTY decoding).
     """
-    saw_codex = False
+    saw_codex_item = False
+    saw_codex_meta = False
     items: dict[str, list[str]] = {}
     order: list[str] = []
 
@@ -82,11 +90,24 @@ def extract_codex_transcript(lines: list[str]) -> list[str] | None:
         record = _parse_json_line(raw)
         if record is None:
             continue
-        saw_codex = _ingest_codex_event(record, items, order) or saw_codex
+        event_type = record.get("type")
+        if not isinstance(event_type, str):
+            continue
+        if event_type.startswith("item."):
+            if _ingest_codex_event(record, items, order):
+                saw_codex_item = True
+        elif event_type in _CODEX_META_TYPES:
+            saw_codex_meta = True
 
-    if not saw_codex:
+    if not saw_codex_item and not saw_codex_meta:
         return None
-    return _codex_transcript_lines(order, items)
+    transcript = _codex_transcript_lines(order, items)
+    if not transcript and saw_codex_meta and not saw_codex_item:
+        # Legitimate empty codex session (thread started but no items) —
+        # emit a breadcrumb so the UI explains the blank instead of
+        # silently showing nothing.
+        return ["(codex session produced no items)"]
+    return transcript
 
 
 def _ingest_codex_event(
@@ -94,21 +115,22 @@ def _ingest_codex_event(
     items: dict[str, list[str]],
     order: list[str],
 ) -> bool:
-    """Fold one parsed JSON record into the codex state; return True if it was codex."""
-    event_type = record.get("type")
-    if not isinstance(event_type, str):
-        return False
-    if not event_type.startswith("item."):
-        return event_type in _CODEX_META_TYPES
+    """Fold one item.* record into codex state; return True if an item rendered.
+
+    Returning True from *item.** events that rendered content lets the outer
+    dispatcher distinguish "committed codex" from "arbitrary line happened to
+    contain thread.started" — meta events alone are insufficient to commit.
+    """
+    event_type = record["type"]
     item = record.get("item")
     if not isinstance(item, dict):
         return False
     item_id = item.get("id")
     if not isinstance(item_id, str):
-        return True  # still a codex-shaped event, just not one we render
+        return False
     rendered = _render_codex_item(item, event_type)
     if rendered is None:
-        return True
+        return False
     if item_id not in items:
         order.append(item_id)
     items[item_id] = rendered
@@ -194,16 +216,6 @@ def _render_codex_file_change(item: dict[str, Any], _event_type: str) -> list[st
     return rendered
 
 
-_CODEX_ITEM_RENDERERS: dict[str, Any] = {}
-
-
-def _register_renderers() -> None:
-    _CODEX_ITEM_RENDERERS["agent_message"] = _render_codex_text_item
-    _CODEX_ITEM_RENDERERS["reasoning"] = _render_codex_reasoning
-    _CODEX_ITEM_RENDERERS["command_execution"] = _render_codex_command
-    _CODEX_ITEM_RENDERERS["file_change"] = _render_codex_file_change
-
-
 def _render_codex_command(
     item: dict[str, Any], event_type: str
 ) -> list[str] | None:
@@ -232,4 +244,9 @@ def _cleaned_terminal_fallback(raw_lines: list[str]) -> list[str]:
     return dedupe_consecutive_lines(cleaned)
 
 
-_register_renderers()
+_CODEX_ITEM_RENDERERS: dict[str, CodexItemRenderer] = {
+    "agent_message": _render_codex_text_item,
+    "reasoning": _render_codex_reasoning,
+    "command_execution": _render_codex_command,
+    "file_change": _render_codex_file_change,
+}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -310,12 +310,34 @@ def test_view_model_includes_refresh_freshness_metadata():
     assert "calls_per_minute" in gh_usage
 
 
-def test_stale_reason_blames_orchestrator_stall_when_tick_is_overdue():
+_FROZEN_NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _freeze_dashboard_clock(monkeypatch) -> None:
+    """Pin ``datetime.now`` inside the dashboard view model.
+
+    The view model computes its own ``now_ts`` at call time, so without a
+    fixed reference a stop-the-world pause between the test's setup clock
+    and the view-model's clock can push a "healthy" case past the stall
+    threshold. Pinning both to the same instant removes the flake.
+    """
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003 — signature compat
+            return _FROZEN_NOW
+
+    monkeypatch.setattr(
+        "issue_orchestrator.view_models.dashboard.datetime", _FrozenDatetime
+    )
+
+
+def test_stale_reason_blames_orchestrator_stall_when_tick_is_overdue(monkeypatch):
     """When the main loop hasn't completed a tick in >60s, say so (not the generic)."""
+    _freeze_dashboard_clock(monkeypatch)
     config = _make_config()
     config.flow_refresh_stale_seconds = 60
     issue = Issue(number=42, title="Blocked card", labels=["agent:web"])
-    now = datetime.now().timestamp()
+    now = _FROZEN_NOW.timestamp()
     state = OrchestratorState(
         startup_status="complete",
         cached_queue_issues=[issue],
@@ -347,12 +369,13 @@ def test_stale_reason_blames_orchestrator_stall_when_tick_is_overdue():
     assert "stale threshold" not in card["stale_reason"]
 
 
-def test_stale_reason_uses_threshold_text_when_tick_is_healthy():
+def test_stale_reason_uses_threshold_text_when_tick_is_healthy(monkeypatch):
     """If the loop ticked recently, fall back to the legacy threshold message."""
+    _freeze_dashboard_clock(monkeypatch)
     config = _make_config()
     config.flow_refresh_stale_seconds = 60
     issue = Issue(number=43, title="Stale but healthy orchestrator", labels=["agent:web"])
-    now = datetime.now().timestamp()
+    now = _FROZEN_NOW.timestamp()
     state = OrchestratorState(
         startup_status="complete",
         cached_queue_issues=[issue],
@@ -375,6 +398,38 @@ def test_stale_reason_uses_threshold_text_when_tick_is_healthy():
     assert card["is_stale"] is True
     assert "stale threshold" in card["stale_reason"]
     assert "Orchestrator tick stalled" not in card["stale_reason"]
+
+
+def test_stale_reason_respects_configured_stall_threshold(monkeypatch):
+    """Operators can loosen the stall-banner trigger via config."""
+    _freeze_dashboard_clock(monkeypatch)
+    config = _make_config()
+    config.flow_refresh_stale_seconds = 60
+    config.tick_stall_threshold_seconds = 300  # tolerate 5-minute ticks
+    issue = Issue(number=44, title="Busy but not stalled", labels=["agent:web"])
+    now = _FROZEN_NOW.timestamp()
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    state.queue_last_refresh_at = now - 600
+    state.last_tick_completed_at = now - 120  # 2 min since last tick
+    state.current_tick_phase = "active_sessions"
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    card = queued_col["items"][0]
+    # Configured threshold is 300s and tick is only 120s old — no stall banner.
+    assert "Orchestrator tick stalled" not in card["stale_reason"]
+    assert "stale threshold" in card["stale_reason"]
 
 
 def test_pr_pending_issue_not_shown_in_queued_flow_column():

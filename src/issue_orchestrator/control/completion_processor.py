@@ -266,6 +266,17 @@ class CompletionProcessor:
         stream.
         """
         if self._trace_events is None or self._event_context is None:
+            # The whole point of this emitter is to close an observability
+            # gap — if we're silently no-op'ing in production we want at
+            # least a DEBUG breadcrumb naming the drop so operators can
+            # audit it rather than wonder why the timeline is blank.
+            logger.debug(
+                "publish.failed not emitted (no event sink wired): "
+                "issue=%d stage=%s error=%r",
+                issue_number,
+                stage,
+                error[:120],
+            )
             return
         payload: dict[str, Any] = {
             "issue_number": issue_number,
@@ -1257,6 +1268,21 @@ class CompletionProcessor:
                 review_exchange_completed=review_exchange_completed,
             )
 
+        # PR creation returned None without raising — route through the same
+        # observability channel as the exception path. Today all known
+        # failure modes inside create_pr_with_collision_handling raise, so
+        # this is defense-in-depth against a future refactor that ever
+        # returns None (previously that silently yielded
+        # "Push or PR creation failed" with no diagnostics).
+        reason = "PR creation returned no result"
+        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
+        logger.error("PR creation returned None for #%d: %s", issue_number, reason)
+        self._emit_publish_failed(
+            issue_number=issue_number,
+            stage=ERROR_PREFIX_CREATE_PR,
+            error=reason,
+            branch=branch,
+        )
         return self._ActionResult(branch=branch)
 
     def _reuse_existing_pr_if_available(

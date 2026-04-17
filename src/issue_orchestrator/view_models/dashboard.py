@@ -286,7 +286,7 @@ def _format_age_seconds(seconds: float | int | None) -> str:
     return f"{int(seconds // 86400)}d"
 
 
-_TICK_STALL_SECONDS = 60  # A tick that hasn't completed in 60s is "stalled"
+_TICK_STALL_FLOOR_SECONDS = 5  # Floor so a misconfiguration can't false-positive every tick
 
 
 def _refresh_meta_for_issue(state, config, issue_number: int, now_ts: float) -> dict[str, Any]:
@@ -295,6 +295,10 @@ def _refresh_meta_for_issue(state, config, issue_number: int, now_ts: float) -> 
     last_refreshed_at = per_issue or fallback
     age_seconds = (now_ts - last_refreshed_at) if last_refreshed_at else None
     stale_threshold = max(60, int(getattr(config, "flow_refresh_stale_seconds", 900)))
+    tick_stall_threshold = max(
+        _TICK_STALL_FLOOR_SECONDS,
+        int(getattr(config, "tick_stall_threshold_seconds", 60)),
+    )
     is_stale = age_seconds is None or age_seconds > stale_threshold
     freshness_label = f"{_format_age_seconds(age_seconds)} ago" if age_seconds is not None else "never refreshed"
     stale_reason = _stale_reason_for(
@@ -302,6 +306,7 @@ def _refresh_meta_for_issue(state, config, issue_number: int, now_ts: float) -> 
         age_seconds=age_seconds,
         is_stale=is_stale,
         stale_threshold=stale_threshold,
+        tick_stall_threshold=tick_stall_threshold,
         now_ts=now_ts,
     )
     return {
@@ -319,6 +324,7 @@ def _stale_reason_for(
     age_seconds: float | None,
     is_stale: bool,
     stale_threshold: int,
+    tick_stall_threshold: int,
     now_ts: float,
 ) -> str:
     """Explain staleness using the orchestrator heartbeat when possible.
@@ -332,7 +338,7 @@ def _stale_reason_for(
     """
     if age_seconds is None:
         return "Not refreshed from GitHub yet"
-    tick_stall_reason = _tick_stall_reason(state, now_ts)
+    tick_stall_reason = _tick_stall_reason(state, now_ts, tick_stall_threshold)
     if tick_stall_reason:
         return tick_stall_reason
     if is_stale:
@@ -340,14 +346,14 @@ def _stale_reason_for(
     return ""
 
 
-def _tick_stall_reason(state, now_ts: float) -> str:
+def _tick_stall_reason(state, now_ts: float, threshold_seconds: int) -> str:
     last_completed = getattr(state, "last_tick_completed_at", 0.0) or 0.0
     last_started = getattr(state, "last_tick_started_at", 0.0) or 0.0
     if last_completed <= 0 and last_started <= 0:
         return ""  # orchestrator hasn't reported a heartbeat yet
     reference = last_completed if last_completed > 0 else last_started
     tick_age = now_ts - reference
-    if tick_age <= _TICK_STALL_SECONDS:
+    if tick_age <= threshold_seconds:
         return ""
     phase = (getattr(state, "current_tick_phase", "") or "").strip() or "idle"
     age_label = _format_age_seconds(tick_age)

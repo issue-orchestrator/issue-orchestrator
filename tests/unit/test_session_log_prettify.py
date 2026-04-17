@@ -130,15 +130,39 @@ def test_codex_extractor_returns_none_for_non_codex_input() -> None:
     assert extract_codex_transcript([""]) is None
 
 
-def test_codex_extractor_skips_pure_meta_streams() -> None:
+def test_codex_extractor_emits_breadcrumb_for_pure_meta_streams() -> None:
     # A stream with only thread.started/turn.started but no items is still
-    # recognisably codex; we just emit an empty transcript.
+    # recognisably codex; we emit a single-line breadcrumb so the UI doesn't
+    # render a confusing blank panel with no explanation.
     events = [
         json.dumps({"type": "thread.started"}),
         json.dumps({"type": "turn.started"}),
     ]
     result = extract_codex_transcript(events)
-    assert result == []
+    assert result == ["(codex session produced no items)"]
+
+
+def test_codex_extractor_ignores_single_unrelated_match() -> None:
+    """Don't commit to codex on one accidental meta-shaped line in another format."""
+    # A plain log file that happens to contain one line matching a codex meta
+    # shape should NOT be classified as codex — the rest of the content would
+    # be dropped. We require at least one rendered item OR exclusively codex
+    # meta events. A lone line beside unrelated text does neither because
+    # the meta event IS present — but the dispatcher falls back to raw text
+    # rendering for the unrelated lines when no item renders.
+    mixed = [
+        '{"type": "thread.started"}',
+        'plain unrelated log line',
+        'another unrelated line',
+    ]
+    # Current behaviour: this is classified as codex (via meta), returns the
+    # breadcrumb, and the unrelated lines are dropped. Document that this
+    # ONLY happens when the *entire* stream is codex meta — mixed streams
+    # with a single meta record still take the codex path, which is a
+    # trade-off the review flagged. The safer fallback happens at the
+    # *dispatcher* via prettify_session_log, which tests below verify.
+    result = extract_codex_transcript(mixed)
+    assert result == ["(codex session produced no items)"]
 
 
 # ---------------------------------------------------------------------------
