@@ -47,7 +47,6 @@ _TOP_LEVEL_SECTION_KEYS = (
     "validation", "provider_resilience", "ui", "observability", "timeline", "security", "filtering",
     "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
     "ai_systems", "retry",
-    "triage", "scheduling", "e2e", "milestones", "state", "config", "claims", "hooks",
     "sqlite_backup",
 )
 

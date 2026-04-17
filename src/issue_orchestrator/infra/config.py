@@ -295,9 +295,6 @@ class Config:
     # Timeline retention configuration
     timeline: TimelineConfig = field(default_factory=TimelineConfig)
 
-    # Goal Pilot AI configuration
-    goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
-
     # Claims/lease configuration for multi-orchestrator coordination
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
 

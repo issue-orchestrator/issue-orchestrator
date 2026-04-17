@@ -1,44 +1,39 @@
 """Lightweight validation config loading for hooks and completion commands."""
 
+from dataclasses import asdict
 from pathlib import Path
 
 import yaml
 
 from .config_paths import DEFAULT_CONFIG_NAME, find_config_file
+from .config_models import ValidationConfig
 
 
 def default_validation_config() -> dict:
     """Return the validation defaults without loading the full config model."""
-    return {
-        "cmd": None,
-        "timeout_seconds": 300,
-        "pre_push_dirty_check": "tracked",
-        "coverage_guardrail": {
-            "enabled": False,
-            "min_percent": None,
-            "apply_to": "changed",
-            "scope": [],
-            "coverage_type": "line",
-            "exclude": [],
-        },
-    }
+    return asdict(ValidationConfig())
 
 
 def extract_validation_config(config: dict) -> dict:
     """Extract the validation section from parsed YAML data."""
+    defaults = default_validation_config()
+    guardrail_defaults = defaults["coverage_guardrail"]
     validation = config.get("validation", {})
     guardrail = validation.get("coverage_guardrail", {}) or {}
     return {
         "cmd": validation.get("cmd"),
-        "timeout_seconds": validation.get("timeout_seconds", 300),
-        "pre_push_dirty_check": validation.get("pre_push_dirty_check", "tracked"),
+        "timeout_seconds": validation.get("timeout_seconds", defaults["timeout_seconds"]),
+        "pre_push_dirty_check": validation.get(
+            "pre_push_dirty_check",
+            defaults["pre_push_dirty_check"],
+        ),
         "coverage_guardrail": {
-            "enabled": guardrail.get("enabled", False),
-            "min_percent": guardrail.get("min_percent"),
-            "apply_to": guardrail.get("apply_to", "changed"),
-            "scope": guardrail.get("scope", []) or [],
-            "coverage_type": guardrail.get("coverage_type", "line"),
-            "exclude": guardrail.get("exclude", []) or [],
+            "enabled": guardrail.get("enabled", guardrail_defaults["enabled"]),
+            "min_percent": guardrail.get("min_percent", guardrail_defaults["min_percent"]),
+            "apply_to": guardrail.get("apply_to", guardrail_defaults["apply_to"]),
+            "scope": guardrail.get("scope", guardrail_defaults["scope"]) or [],
+            "coverage_type": guardrail.get("coverage_type", guardrail_defaults["coverage_type"]),
+            "exclude": guardrail.get("exclude", guardrail_defaults["exclude"]) or [],
         },
     }
 
