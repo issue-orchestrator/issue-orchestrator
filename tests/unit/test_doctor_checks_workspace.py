@@ -68,6 +68,12 @@ def test_agent_scripts_report_missing_configured_provider_cli(
     monkeypatch,
     tmp_path: Path,
 ):
+    monkeypatch.setenv("NVM_BIN", "/Users/test/.nvm/versions/node/v24.11.1/bin")
+    monkeypatch.setenv("PATH", "/Users/test/.nvm/versions/node/v24.11.1/bin:/usr/bin:/bin")
+    monkeypatch.setattr(
+        "issue_orchestrator.infra.provider_cli_diagnostics._find_executable_outside_path",
+        lambda executable: [Path("/Users/test/.nvm/versions/node/v24.14.1/bin/claude")],
+    )
     config = Config()
     config.agents = {
         "agent:backend": AgentConfig(
@@ -83,7 +89,12 @@ def test_agent_scripts_report_missing_configured_provider_cli(
     check = _agent_scripts_check(config)
 
     assert check.status == "error"
-    assert check.detail == "Missing: agent:backend: claude-code (expected executable: claude)"
+    assert check.detail == (
+        "Missing: agent:backend: claude-code (expected executable: claude); "
+        "executable 'claude' not found on PATH; "
+        "NVM_BIN=/Users/test/.nvm/versions/node/v24.11.1/bin; "
+        "found outside PATH: /Users/test/.nvm/versions/node/v24.14.1/bin/claude"
+    )
 
 
 def test_agent_scripts_use_default_agent_provider(monkeypatch, tmp_path: Path):

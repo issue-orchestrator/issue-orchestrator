@@ -604,6 +604,49 @@ class TestSetupWizardSharedHelpers:
             "detail": "Unknown provider configured for agent:backend: mystery-ai",
         }]
 
+    def test_build_agent_checks_reports_provider_path_context(self, monkeypatch):
+        """Missing provider CLIs should include enough PATH/NVM context to debug."""
+
+        class Provider:
+            name = "claude-code"
+            executable = "claude"
+
+            def is_available(self):
+                return False
+
+        monkeypatch.setattr(
+            "issue_orchestrator.agent_runner.get_provider",
+            lambda name: Provider(),
+        )
+        monkeypatch.setenv("NVM_BIN", "/Users/test/.nvm/versions/node/v24.11.1/bin")
+        monkeypatch.setenv("PATH", "/Users/test/.nvm/versions/node/v24.11.1/bin:/usr/bin:/bin")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.provider_cli_diagnostics._find_executable_outside_path",
+            lambda executable: [Path("/Users/test/.nvm/versions/node/v24.14.1/bin/claude")],
+        )
+        config = SimpleNamespace(
+            agents={
+                "agent:backend": SimpleNamespace(
+                    provider="claude-code",
+                    command="legacy-missing-claude-command",
+                ),
+            },
+            default_agent=None,
+        )
+
+        checks = build_agent_checks(config)
+
+        assert checks == [{
+            "name": "claude-code CLI",
+            "ok": False,
+            "detail": (
+                "claude-code (expected executable: claude); "
+                "executable 'claude' not found on PATH; "
+                "NVM_BIN=/Users/test/.nvm/versions/node/v24.11.1/bin; "
+                "found outside PATH: /Users/test/.nvm/versions/node/v24.14.1/bin/claude"
+            ),
+        }]
+
 
 class TestScanExistingRepo:
     """Test the scan_existing_repo function."""

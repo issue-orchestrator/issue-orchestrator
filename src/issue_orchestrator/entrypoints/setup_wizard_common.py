@@ -816,6 +816,8 @@ def _build_provider_agent_check(
 ) -> dict[str, Any] | None:
     from issue_orchestrator.agent_runner import get_provider
 
+    from ..infra.provider_cli_diagnostics import provider_cli_missing_detail
+
     try:
         provider = get_provider(provider_name)
     except ValueError:
@@ -833,7 +835,7 @@ def _build_provider_agent_check(
         return {
             "name": f"{provider_name} CLI",
             "ok": False,
-            "detail": f"Expected executable '{executable}' not found on PATH",
+            "detail": provider_cli_missing_detail(provider_name, executable),
         }
     path = shutil.which(executable) or executable
     detail = provider.check_version() or path

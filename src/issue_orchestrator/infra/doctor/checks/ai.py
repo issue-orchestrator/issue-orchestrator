@@ -3,6 +3,7 @@
 from ..types import Check
 from ...config import Config
 from ...hooks.hooks import AiAgentType
+from ...provider_cli_diagnostics import provider_cli_display, provider_cli_missing_detail
 
 
 # AI systems that authenticate via their own CLI - no API key needed
@@ -151,14 +152,11 @@ def check_ai_provider_clis() -> list[Check]:
             version = provider.check_version()
             version_info = f" ({version})" if version else ""
             executable = getattr(provider, "executable", name)
-            provider_label = name if executable == name else f"{name} via {executable}"
+            provider_label = provider_cli_display(name, executable)
             available_providers.append(f"{provider_label}{version_info}")
         else:
             executable = getattr(provider, "executable", name)
-            provider_label = name
-            if executable != name:
-                provider_label = f"{name} (expected executable: {executable})"
-            missing_providers.append(provider_label)
+            missing_providers.append(provider_cli_missing_detail(name, executable))
 
     if available_providers:
         checks.append(Check(

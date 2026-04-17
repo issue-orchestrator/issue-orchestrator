@@ -15,6 +15,8 @@ Key safety properties:
 from __future__ import annotations
 
 import logging
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +30,7 @@ from issue_orchestrator.execution.agent_runner_env import build_filtered_env
 from issue_orchestrator.execution.agent_runner_types import AgentResult, AgentSpec
 
 logger = logging.getLogger(__name__)
+_PROCESS_GROUP_WAIT_SECONDS = 5
 
 
 def _tee_stream(
@@ -139,7 +142,29 @@ class SubprocessAgentRunner(BaseAgentRunner):
 
     def _terminate_popen(self, process: subprocess.Popen) -> None:
         """Terminate a Popen process via process-group kill."""
-        self._terminate_process_group(process.pid)
+        if process.poll() is not None:
+            return
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            return
+
+        try:
+            process.wait(timeout=_PROCESS_GROUP_WAIT_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+        logger.warning("Agent did not terminate gracefully, using SIGKILL")
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            return
+        try:
+            process.wait(timeout=_PROCESS_GROUP_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:

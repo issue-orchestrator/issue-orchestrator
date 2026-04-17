@@ -356,7 +356,9 @@ class TestAgentDoneAvailability:
 
     def test_agent_done_help_works(self, isolated_env):
         """Verify agent-done --help works."""
-        result = run_in_isolation(isolated_env, "agent-done --help")
+        # Full validation runs this alongside xdist, pyright, and web tests;
+        # keep the availability check from failing due to transient CPU starvation.
+        result = run_in_isolation(isolated_env, "agent-done --help", timeout=120)
 
         assert result.returncode == 0
         assert "usage" in result.stdout.lower() or "completed" in result.stdout.lower()

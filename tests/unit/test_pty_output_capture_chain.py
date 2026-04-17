@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import sys
 import textwrap
-import time
 from pathlib import Path
 
 import pexpect
@@ -37,21 +36,13 @@ from issue_orchestrator.infra.terminal_cleaning import CleaningLogWriter
 
 
 def _wait_for_exit(child: pexpect.spawn, timeout: float = 10.0) -> None:
-    """Wait for pexpect child to exit, draining output."""
-    deadline = time.monotonic() + timeout
-    while child.isalive():
-        assert time.monotonic() < deadline, "child did not exit in time"
-        try:
-            child.read_nonblocking(size=4096, timeout=0.1)
-        except pexpect.TIMEOUT:
-            pass
-        except pexpect.EOF:
-            break
-    # Drain any remaining buffered data after exit.
+    """Wait for pexpect child to exit, draining output through EOF."""
     try:
-        child.read_nonblocking(size=4096, timeout=0.5)
-    except (pexpect.TIMEOUT, pexpect.EOF):
-        pass
+        child.expect(pexpect.EOF, timeout=timeout)
+    except pexpect.TIMEOUT as exc:
+        child.close(force=True)
+        raise AssertionError("child did not exit in time") from exc
+    child.close()
 
 
 def _shell_quote(script: str) -> str:

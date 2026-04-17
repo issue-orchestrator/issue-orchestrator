@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ..types import Check
 from ...config import Config
+from ...provider_cli_diagnostics import provider_cli_missing_detail
 from ....ports.command_runner import CommandRunner
 
 
@@ -80,10 +81,7 @@ def _provider_script_problem(agent_name: str, provider_name: str) -> str | None:
         return None
 
     executable = getattr(provider, "executable", provider_name)
-    detail = provider_name
-    if executable != provider_name:
-        detail = f"{provider_name} (expected executable: {executable})"
-    return f"{agent_name}: {detail}"
+    return f"{agent_name}: {provider_cli_missing_detail(provider_name, executable)}"
 
 
 def _legacy_script_problem(agent_name: str, command: str) -> str | None:
