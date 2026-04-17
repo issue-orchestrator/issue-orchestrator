@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -41,6 +43,7 @@ def serve_terminal_recording(
     limit: int = 200,
     round_index: int | None = None,
     session_role: str | None = None,
+    since_hash: str | None = None,
 ) -> JSONResponse:
     """Shared implementation for terminal recording endpoints."""
     if not run_dir:
@@ -92,6 +95,45 @@ def serve_terminal_recording(
     try:
         all_events = list(iter_terminal_recording(recording_path))
         total_events = len(all_events)
+
+        # Dispatch render mode by captured format. Codex ``exec --json``
+        # writes a JSON event stream to the PTY; feeding that to an xterm
+        # emulator renders gibberish (the "Reviewer Session Recording"
+        # complaint). Detect the format and return a transcript instead.
+        # Claude TUI sessions stay on the emulator path — their colors and
+        # prompts only make sense in a real terminal.
+        dispatch = _render_mode_for_recording(all_events)
+
+        # Transcript mode receives ``since_hash`` for incremental refresh:
+        # when the recording hasn't grown since the caller's previous fetch,
+        # we skip retransmitting the whole transcript. This keeps a long
+        # codex session with the modal open from costing O(N²) bytes over
+        # the wire as the user polls.
+        if dispatch.mode == "transcript":
+            if since_hash and since_hash == dispatch.transcript_hash:
+                return JSONResponse(
+                    {
+                        "issue_number": issue_number,
+                        "recording_path": str(recording_path),
+                        "render_mode": dispatch.mode,
+                        "transcript_hash": dispatch.transcript_hash,
+                        "unchanged": True,
+                    }
+                )
+            return JSONResponse(
+                {
+                    "issue_number": issue_number,
+                    "recording_path": str(recording_path),
+                    "render_mode": dispatch.mode,
+                    "transcript_lines": dispatch.transcript_lines,
+                    "transcript_hash": dispatch.transcript_hash,
+                    # Terminal-only fields deliberately omitted in transcript
+                    # mode — the emulator view never consumes them, and for
+                    # large codex recordings ``events`` would add megabytes
+                    # of unused bytes to each response.
+                }
+            )
+
         events = all_events[offset:] if offset > 0 else all_events
         truncated = False
         if limit > 0 and len(events) > limit:
@@ -100,14 +142,6 @@ def serve_terminal_recording(
                 truncated = True
             else:
                 events = events[:limit]
-
-        # Dispatch render mode by captured format. Codex ``exec --json``
-        # writes a JSON event stream to the PTY; feeding that to an xterm
-        # emulator renders gibberish (the "Reviewer Session Recording"
-        # complaint). Detect the format and return a transcript instead.
-        # Claude TUI sessions stay on the emulator path — their colors and
-        # prompts only make sense in a real terminal.
-        render_mode, transcript_lines = _render_mode_for_recording(all_events)
 
         return JSONResponse(
             {
@@ -119,8 +153,7 @@ def serve_terminal_recording(
                 "offset": offset,
                 "truncated": truncated,
                 "events": events,
-                "render_mode": render_mode,
-                "transcript_lines": transcript_lines,
+                "render_mode": dispatch.mode,
             }
         )
     except Exception as exc:
@@ -136,6 +169,7 @@ async def get_terminal_recording(
     run_dir: str | None = None,
     round_index: int | None = None,
     session_role: str | None = None,
+    since_hash: str | None = None,
 ) -> JSONResponse:
     """Return the canonical raw terminal recording for a run."""
     if orchestrator is None:
@@ -147,6 +181,7 @@ async def get_terminal_recording(
         limit,
         round_index,
         session_role,
+        since_hash,
     )
 
 
@@ -166,47 +201,70 @@ def build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path | 
     }
 
 
-_CODEX_SNIFF_DECODED_CHARS = 4096
+RenderMode = Literal["terminal", "transcript"]
+
+
+@dataclass(frozen=True)
+class RecordingRenderDispatch:
+    """Typed result of format-detecting a terminal recording.
+
+    ``mode`` is a :obj:`Literal` so both Python call sites and the JS
+    frontend can validate against a small fixed set. ``transcript_lines``
+    and ``transcript_hash`` are populated only when ``mode == "transcript"``;
+    in terminal mode they are ``None``. The hash is a stable fingerprint
+    of the transcript content so the frontend can short-circuit redundant
+    refreshes over the wire.
+    """
+
+    mode: RenderMode
+    transcript_lines: list[str] | None
+    transcript_hash: str | None
 
 
 def _render_mode_for_recording(
     events: list[dict[str, Any]],
-) -> tuple[str, list[str] | None]:
+) -> RecordingRenderDispatch:
     """Choose how the UI should render this terminal recording.
 
-    Returns ``("terminal", None)`` for the current xterm-emulator path
-    (Claude TUI, raw PTY) and ``("transcript", lines)`` for Codex JSON
-    streams where the emulator would render envelope JSON as-is. The
-    detection sniffs the first few base64-decoded output chunks and
-    commits to ``transcript`` only when they look like codex events —
-    same structural-commit rule the PR-C prettifier uses, for consistency.
+    Terminal mode covers the existing xterm-emulator path (Claude TUI,
+    raw PTY). Transcript mode handles Codex JSON streams where the
+    emulator would render envelope JSON as-is.
+
+    Detection decodes the first *complete* output line and runs it
+    through the codex extractor — line-scoped rather than char-count-
+    scoped so a single large ``agent_message`` (reviewer prose can
+    easily exceed several KB) can't straddle the sniff boundary and
+    cause a format mis-classification.
     """
-    decoded = _decode_output_preview(events, _CODEX_SNIFF_DECODED_CHARS)
-    if decoded is None:
-        return "terminal", None
-    preview_lines = decoded.splitlines()
-    if extract_codex_transcript(preview_lines) is None:
-        return "terminal", None
-    # Commit to transcript mode: run the FULL decoded content through
-    # the prettifier so the UI gets an agent-message + command-execution
+    first_line = _first_complete_decoded_line(events)
+    if first_line is None:
+        return RecordingRenderDispatch(
+            mode="terminal", transcript_lines=None, transcript_hash=None
+        )
+    if extract_codex_transcript([first_line]) is None:
+        return RecordingRenderDispatch(
+            mode="terminal", transcript_lines=None, transcript_hash=None
+        )
+    # Commit to transcript mode: run the FULL decoded content through the
+    # prettifier so the UI gets an agent-message + command-execution
     # transcript instead of raw JSON envelopes.
-    full_decoded = _decode_output_preview(events, None) or ""
+    full_decoded = _decode_all_output(events)
     transcript = prettify_session_log(full_decoded.splitlines())
-    return "transcript", transcript
+    digest = hashlib.sha256("\n".join(transcript).encode("utf-8")).hexdigest()
+    return RecordingRenderDispatch(
+        mode="transcript", transcript_lines=transcript, transcript_hash=digest
+    )
 
 
-def _decode_output_preview(
-    events: list[dict[str, Any]],
-    char_limit: int | None,
-) -> str | None:
-    """Base64-decode ``output`` chunks up to ``char_limit`` characters.
+def _first_complete_decoded_line(events: list[dict[str, Any]]) -> str | None:
+    """Decode output chunks until one complete ``\\n``-terminated line emerges.
 
-    Returns ``None`` when no decodable output is present. ``char_limit=None``
-    means decode everything (used for the final render); a small limit is
-    cheap enough to run on every request for the format detection.
+    Codex emits one JSON event per line, so the first complete line is
+    sufficient to classify the format — regardless of how large that line
+    is. Returns ``None`` when no output or no complete line is present.
     """
-    chunks: list[str] = []
-    total = 0
+    buffer = ""
+    saw_output = False
     for event in events:
         if event.get("event_type") != "output":
             continue
@@ -217,12 +275,31 @@ def _decode_output_preview(
             chunk = base64.b64decode(data_b64).decode("utf-8", errors="ignore")
         except Exception:
             continue
-        chunks.append(chunk)
-        total += len(chunk)
-        if char_limit is not None and total >= char_limit:
-            break
-    if not chunks:
-        return None
+        saw_output = True
+        buffer += chunk
+        newline = buffer.find("\n")
+        if newline >= 0:
+            return buffer[:newline]
+    # No newline ever arrived — treat the whole buffer as one line only if
+    # we actually saw output; otherwise the caller should fall back to
+    # terminal mode (nothing to sniff).
+    if saw_output and buffer:
+        return buffer
+    return None
+
+
+def _decode_all_output(events: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for event in events:
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            continue
+        try:
+            chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+        except Exception:
+            continue
     return "".join(chunks)
 
 

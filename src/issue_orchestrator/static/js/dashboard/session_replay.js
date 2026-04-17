@@ -44,8 +44,10 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     }
     const inTranscriptMode = sessionReplayState && sessionReplayState.mode === 'transcript';
     const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, effectiveRunDir, {
-        // Transcript mode re-renders from the full recording each time — there
-        // is no per-event replay, so we always ask for the whole stream.
+        // Transcript mode carries the last transcript_hash so the backend
+        // can short-circuit when the recording hasn't grown — no bytes on
+        // the wire for a long codex session that's idle. Terminal mode
+        // keeps the existing offset-based incremental fetch.
         offset: inTranscriptMode
             ? 0
             : (sessionReplayState ? sessionReplayState.events.length : 0),
@@ -56,6 +58,7 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
         session_role: sessionReplayState && sessionReplayState.recordingContext
             ? sessionReplayState.recordingContext.session_role
             : null,
+        since_hash: inTranscriptMode ? (sessionReplayState.transcriptHash || '') : '',
     });
     const res = await fetch(request.endpoint, { method: request.method });
     const data = await res.json().catch(() => ({}));
@@ -69,7 +72,11 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     if (!sessionReplayState || sessionReplayState.issueNumber !== issueNumber || sessionReplayState.runDir !== effectiveRunDir) {
         return;
     }
-    if ((data.render_mode || 'terminal') === 'transcript') {
+    if (data.unchanged) {
+        // Recording hasn't grown since our last fetch; nothing to do.
+        return;
+    }
+    if (resolveRenderMode(data) === 'transcript') {
         renderSessionTranscript(issueNumber, effectiveRunDir, data);
         return;
     }
@@ -298,9 +305,19 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
     }
 }
 
+const VALID_RENDER_MODES = new Set(['terminal', 'transcript']);
+
+function resolveRenderMode(payload) {
+    // Whitelist the mode coming off the wire so a backend typo doesn't
+    // silently fall through to the emulator with a transcript payload
+    // (or vice-versa).
+    const raw = payload && payload.render_mode;
+    return VALID_RENDER_MODES.has(raw) ? raw : 'terminal';
+}
+
 function initializeSessionReplay(issueNumber, runDir, payload) {
     destroySessionReplay();
-    const renderMode = (payload && payload.render_mode) || 'terminal';
+    const renderMode = resolveRenderMode(payload);
     if (renderMode === 'transcript') {
         renderSessionTranscript(issueNumber, runDir, payload);
         return;
@@ -338,10 +355,14 @@ function renderSessionTranscript(issueNumber, runDir, payload) {
     // prettifier; we just render it as a scrollable monospace block and
     // disable the emulator-only controls so the toolbar stops lying about
     // what Play/Jump-to-latest would do.
+    const existing = sessionReplayState && sessionReplayState.mode === 'transcript'
+        ? sessionReplayState
+        : null;
     sessionReplayState = {
         issueNumber,
         runDir,
         mode: 'transcript',
+        transcriptHash: payload.transcript_hash || null,
     };
     logFollow = false;
     const pathEl = document.getElementById('sessionReplayPath');
@@ -349,6 +370,16 @@ function renderSessionTranscript(issueNumber, runDir, payload) {
     const terminalHost = document.getElementById('sessionReplayTerminal');
     if (!terminalHost) return;
     const lines = Array.isArray(payload.transcript_lines) ? payload.transcript_lines : [];
+
+    // Preserve the user's scroll offset across incremental refreshes. If the
+    // viewer was at the bottom (e.g. first open or follow-like behaviour),
+    // snap to the new bottom so newly-appended content is visible.
+    const existingPre = terminalHost.querySelector('pre.session-replay-transcript');
+    const wasAtBottom = existingPre
+        ? (existingPre.scrollTop + existingPre.clientHeight >= existingPre.scrollHeight - 4)
+        : true;
+    const preservedScrollTop = existingPre ? existingPre.scrollTop : 0;
+
     const pre = document.createElement('pre');
     pre.className = 'session-replay-transcript';
     pre.textContent = lines.length
@@ -356,6 +387,12 @@ function renderSessionTranscript(issueNumber, runDir, payload) {
         : '(no transcript content — the underlying recording was empty)';
     terminalHost.innerHTML = '';
     terminalHost.appendChild(pre);
+    if (wasAtBottom) {
+        pre.scrollTop = pre.scrollHeight;
+    } else {
+        pre.scrollTop = preservedScrollTop;
+    }
+    void existing;  // existing-state reference kept for potential future diffing
     const hint = document.querySelector('.session-replay-hint');
     if (hint) {
         hint.textContent = 'Codex JSON-stream recording rendered as a transcript. Replay controls disabled for this format.';

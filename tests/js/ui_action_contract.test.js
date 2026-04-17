@@ -67,3 +67,24 @@ test('buildTerminalRecordingRequest includes review phase scoping params', () =>
     );
     assert.equal(req.method, 'GET');
 });
+
+test('buildTerminalRecordingRequest passes since_hash when provided (transcript short-circuit)', () => {
+    const req = uiActionContract.buildTerminalRecordingRequest(4057, '/tmp/run', {
+        offset: 0,
+        limit: 0,
+        since_hash: 'abc123',
+    });
+    assert.equal(
+        req.endpoint,
+        '/api/session/terminal-recording/4057?run_dir=%2Ftmp%2Frun&offset=0&limit=0&since_hash=abc123',
+    );
+});
+
+test('buildTerminalRecordingRequest omits since_hash when empty', () => {
+    const req = uiActionContract.buildTerminalRecordingRequest(4057, '/tmp/run', {
+        offset: 0,
+        limit: 0,
+        since_hash: '',
+    });
+    assert.ok(!req.endpoint.includes('since_hash'), `since_hash should not appear: ${req.endpoint}`);
+});
