@@ -34,7 +34,7 @@ if TYPE_CHECKING:
         TriageFacts,
         CleanupFacts,
     )
-    from .planner import OrchestratorSnapshot
+    from .planner_types import OrchestratorSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ class FactGatherer:
         Returns:
             Immutable snapshot of orchestrator state for Planner
         """
-        from .planner import OrchestratorSnapshot
+        from .planner_types import OrchestratorSnapshot
 
         return OrchestratorSnapshot(
             issues=tuple(issues),
