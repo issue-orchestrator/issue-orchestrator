@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
 from issue_orchestrator.infra.ai_gate_state import AiGateState, AiGateResult
-from issue_orchestrator.infra.repo_hardening import harden_repo
+from issue_orchestrator.infra.repo_hardening import (
+    MANAGED_PRE_PUSH_MARKER,
+    harden_repo,
+)
 from issue_orchestrator.domain.models import AgentConfig
 
 
@@ -590,3 +593,76 @@ class TestAiGate:
         assert result.expandable["ran"] is True
         assert "cached failure" in result.expandable["triggered_by"]
         assert "claude-code" in result.expandable["triggered_by"]
+
+
+def test_check_worktree_hook_corruption_clean_repo_reports_ok(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+
+    checks = hook_checks.check_worktree_hook_corruption(config)
+
+    assert len(checks) == 1
+    assert checks[0].name == "Pre-push Hook Corruption"
+    assert checks[0].status == "ok"
+
+
+def test_check_worktree_hook_corruption_flags_managed_project_hook(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    hooks_dir = tmp_path / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    corrupt = hooks_dir / "pre-push.project"
+    corrupt.write_text(f"#!/usr/bin/env bash\n# {MANAGED_PRE_PUSH_MARKER}\n")
+    corrupt.chmod(0o755)
+    config = Config(repo_root=tmp_path)
+
+    checks = hook_checks.check_worktree_hook_corruption(config)
+
+    assert len(checks) == 1
+    assert checks[0].status == "error"
+    assert "pre-push.project" in checks[0].detail
+    assert "harden-repo" in checks[0].detail
+
+
+def test_check_worktree_hook_corruption_scans_worktree_hook_dirs(tmp_path):
+    main_repo = tmp_path / "main"
+    main_repo.mkdir()
+    subprocess.run(["git", "init"], cwd=main_repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=main_repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "T"],
+        cwd=main_repo,
+        check=True,
+        capture_output=True,
+    )
+    (main_repo / "file").write_text("seed\n")
+    subprocess.run(
+        ["git", "add", "file"], cwd=main_repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "seed"],
+        cwd=main_repo,
+        check=True,
+        capture_output=True,
+    )
+    worktree_path = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", str(worktree_path), "-b", "feature"],
+        cwd=main_repo,
+        check=True,
+        capture_output=True,
+    )
+    wt_hooks = main_repo / ".git" / "worktrees" / "wt" / "hooks"
+    wt_hooks.mkdir(parents=True, exist_ok=True)
+    (wt_hooks / "pre-push.project").write_text(f"# {MANAGED_PRE_PUSH_MARKER}\n")
+
+    config = Config(repo_root=main_repo)
+
+    checks = hook_checks.check_worktree_hook_corruption(config)
+
+    assert checks[0].status == "error"
+    assert "worktrees/wt/hooks/pre-push.project" in checks[0].detail

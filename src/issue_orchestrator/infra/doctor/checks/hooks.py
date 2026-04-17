@@ -2,12 +2,16 @@
 
 from collections.abc import Mapping
 import logging
+from pathlib import Path
 
 from ..types import Check
 from ...config import Config
 from ...hooks.hooks import get_adapter
 from ...ai_gate_state import load_ai_gate_state, save_ai_gate_state
-from ...repo_hardening import inspect_repo_hardening
+from ...repo_hardening import (
+    MANAGED_PRE_PUSH_MARKER,
+    inspect_repo_hardening,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -428,3 +432,100 @@ def _managed_agent_names(status) -> list[str]:
         for agent_name, agent_status in sorted(status.agent_hooks.items())
         if agent_status.installed
     ]
+
+
+def check_worktree_hook_corruption(config: Config) -> list[Check]:
+    """Detect ``pre-push.project`` files that contain the managed wrapper marker.
+
+    A ``pre-push.project`` whose content is our managed wrapper is corrupt: the
+    parent ``pre-push`` wrapper executes it by path, which recurses into the
+    same file and forkbombs the push. The runtime recursion guards now block
+    execution, but the doctor surface still flags the broken file so an
+    operator repairs (or reinstalls) the hooks.
+    """
+    corrupt: list[Path] = []
+    for candidate in _iter_project_hook_candidates(config.repo_root):
+        try:
+            content = candidate.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if MANAGED_PRE_PUSH_MARKER in content:
+            corrupt.append(candidate)
+
+    if not corrupt:
+        return [
+            Check(
+                name="Pre-push Hook Corruption",
+                status="ok",
+                detail="No recursive pre-push.project files detected",
+            )
+        ]
+
+    rel_paths = ", ".join(_display_path(config.repo_root, p) for p in corrupt)
+    return [
+        Check(
+            name="Pre-push Hook Corruption",
+            status="error",
+            detail=(
+                f"Corrupt pre-push.project detected ({len(corrupt)}): {rel_paths}. "
+                "Contains the managed wrapper marker; executing it would recurse. "
+                "Run 'issue-orchestrator harden-repo' or delete/rename the files."
+            ),
+        )
+    ]
+
+
+def _iter_project_hook_candidates(repo_root: Path) -> list[Path]:
+    """Enumerate pre-push.project files across main-repo and worktree hooks dirs.
+
+    Cost is O(worktrees): one directory read plus one stat per worktree. Fine
+    for doctor's current call frequency (startup + manual/UI-triggered); if
+    doctor ever moves to a hot-path polling cadence this is the hot-spot to
+    cache.
+    """
+    candidates: list[Path] = []
+    gitdir = _resolve_gitdir(repo_root)
+    if gitdir is None:
+        return candidates
+
+    main_hook_dirs = [gitdir / "hooks"]
+    configured = repo_root / ".githooks"
+    if configured.is_dir():
+        main_hook_dirs.append(configured)
+
+    for hooks_dir in main_hook_dirs:
+        project_hook = hooks_dir / "pre-push.project"
+        if project_hook.is_file():
+            candidates.append(project_hook)
+
+    worktrees_root = gitdir / "worktrees"
+    if worktrees_root.is_dir():
+        for worktree_entry in worktrees_root.iterdir():
+            project_hook = worktree_entry / "hooks" / "pre-push.project"
+            if project_hook.is_file():
+                candidates.append(project_hook)
+    return candidates
+
+
+def _resolve_gitdir(repo_root: Path) -> Path | None:
+    git_path = repo_root / ".git"
+    if git_path.is_dir():
+        return git_path
+    if git_path.is_file():
+        try:
+            content = git_path.read_text().strip()
+        except OSError:
+            return None
+        if content.startswith("gitdir:"):
+            gitdir = Path(content.split(":", 1)[1].strip())
+            if not gitdir.is_absolute():
+                gitdir = (repo_root / gitdir).resolve()
+            return gitdir
+    return None
+
+
+def _display_path(repo_root: Path, candidate: Path) -> str:
+    try:
+        return str(candidate.relative_to(repo_root))
+    except ValueError:
+        return str(candidate)

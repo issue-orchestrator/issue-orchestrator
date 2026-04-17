@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import shlex
 import shutil
@@ -10,6 +12,8 @@ import shutil
 from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
 from .config import Config
 from .hooks.hooks import detect_agents_from_config, get_adapter, install_hooks_for_config
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HOOKS_PATH = ".githooks"
 MANAGED_PRE_PUSH_MARKER = "Managed by issue-orchestrator harden-repo: pre-push"
@@ -75,6 +79,7 @@ class RepoHardeningInstallResult:
     helper_script: Path
     installed_files: list[Path] = field(default_factory=list)
     preserved_files: list[Path] = field(default_factory=list)
+    quarantined_files: list[Path] = field(default_factory=list)
     agent_hook_files: dict[str, list[Path]] = field(default_factory=dict)
 
 
@@ -317,6 +322,8 @@ def _install_repo_pre_push_hook(
     pre_push_hook.parent.mkdir(parents=True, exist_ok=True)
     project_hook = pre_push_hook.parent / "pre-push.project"
 
+    quarantine_managed_hook_file(project_hook, result.quarantined_files)
+
     if pre_push_hook.exists():
         current = _safe_read_text(pre_push_hook)
         if MANAGED_PRE_PUSH_MARKER not in current:
@@ -326,6 +333,47 @@ def _install_repo_pre_push_hook(
 
     rendered = _render_repo_pre_push_hook(verify_script, result.repo_root)
     _write_executable_file(pre_push_hook, rendered, result)
+
+
+def quarantine_managed_hook_file(
+    target: Path,
+    quarantined: list[Path] | None = None,
+) -> Path | None:
+    """Rename *target* aside if it contains the managed pre-push marker.
+
+    A ``pre-push.project`` that itself contains the managed wrapper marker is
+    corruption: the wrapper executes ``pre-push.project`` by path, so if that
+    path resolves to the wrapper itself the push forkbombs. Any file whose role
+    is "non-managed delegate" but whose content is the managed wrapper is, by
+    definition, corrupt — rename it out of the way so it can never run.
+
+    Returns the new path when a file was quarantined, else ``None``. Appends to
+    *quarantined* when provided (for install-result reporting).
+    """
+    if not target.exists():
+        return None
+    content = _safe_read_text(target)
+    if MANAGED_PRE_PUSH_MARKER not in content:
+        return None
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    quarantine_path = target.with_name(f"{target.name}.quarantined-{timestamp}")
+    # Defensive: if the timestamp collides with an existing file, suffix a counter.
+    counter = 1
+    while quarantine_path.exists():
+        quarantine_path = target.with_name(
+            f"{target.name}.quarantined-{timestamp}-{counter}"
+        )
+        counter += 1
+    target.rename(quarantine_path)
+    logger.warning(
+        "Quarantined corrupt hook file: %s -> %s (contained managed wrapper marker; "
+        "would have caused pre-push recursion)",
+        target,
+        quarantine_path,
+    )
+    if quarantined is not None:
+        quarantined.append(quarantine_path)
+    return quarantine_path
 
 
 def _render_verify_pr_script(validation_cmd: str) -> str:
@@ -368,6 +416,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOG_FILE="$HOOK_DIR/pre-push.log"
 PROJECT_HOOK="$HOOK_DIR/pre-push.project"
 VERIFY_SCRIPT="$REPO_ROOT/{verify_rel.as_posix()}"
+MANAGED_MARKER='{MANAGED_PRE_PUSH_MARKER}'
 
 log() {{
   printf "%s %s\\n" "$(date -Iseconds)" "$1" >> "$LOG_FILE"
@@ -375,7 +424,20 @@ log() {{
 
 log "repo-pre-push-started"
 
-if [ -x "$PROJECT_HOOK" ]; then
+# Recursion guard: never exec pre-push.project if it contains the managed
+# marker. That means it is a copy of this wrapper (corruption) and executing
+# it would forkbomb the push.
+#
+# MAIN-REPO POLICY: log + skip the project hook, continue to verify-pr.
+# Stranding the operator (unable to push from the main checkout) is worse
+# than pushing with the repo's lint/test gate temporarily bypassed — they
+# can still run verify-pr, and doctor will flag the corruption for repair.
+# The worktree wrapper takes the opposite stance (hard-fail) because
+# worktrees are disposable — see _chained_hook_script in _worktree_hooks.py.
+if [ -x "$PROJECT_HOOK" ] && grep -qF "$MANAGED_MARKER" "$PROJECT_HOOK" 2>/dev/null; then
+  log "project-hook-skipped reason=managed-marker-detected path=$PROJECT_HOOK"
+  echo "pre-push: refusing to exec managed wrapper as project hook: $PROJECT_HOOK" >&2
+elif [ -x "$PROJECT_HOOK" ]; then
   log "project-hook-starting"
   if "$PROJECT_HOOK" "$@"; then
     log "project-hook exit=0"

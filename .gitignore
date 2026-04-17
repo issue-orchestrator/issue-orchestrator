@@ -55,6 +55,10 @@ Thumbs.db
 .issue-orchestrator/state/
 .issue-orchestrator/session.log
 .issue-orchestrator/pane.log
+# Pre-push hook audit logs (written by managed wrappers during every push).
+# .githooks/ itself is tracked — only the runtime log file is noise.
+.githooks/pre-push.log
+.githooks/*.log
 .issue-orchestrator/session-identity-*.json
 .issue-orchestrator/failure-diagnostic-*.json
 .issue-orchestrator/logs/
