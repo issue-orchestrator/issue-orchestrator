@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..execution.manifest_accessor import ArtifactNotFoundError, ManifestAccessor, RunIdentity
-from ..infra.terminal_cleaning import extract_stream_json_text
+from ..infra.session_log_prettify import prettify_session_log
 from .web_session_context import WebOrchestratorDependency, resolve_issue_session_context
 from .web_session_routes import (
     build_ui_log_stream_observation as _build_ui_log_stream_observation,
@@ -122,11 +122,11 @@ async def get_agent_ui_log(
         else:
             all_lines = _preview_lines_from_claude_jsonl(log_path)
 
-        stream_json_lines = extract_stream_json_text(all_lines)
-        if stream_json_lines is not None:
-            all_lines = stream_json_lines
-
-        all_lines = [line for line in all_lines if line.strip()]
+        # Dispatch to the per-provider prettifier so Codex / Claude / raw PTY
+        # all reach the UI as clean readable text rather than envelope JSON.
+        # The prettifier owns blank-line handling (it keeps section breaks
+        # between codex items) — don't filter those out here.
+        all_lines = prettify_session_log(all_lines)
         total_lines = len(all_lines)
 
         if offset > 0:
