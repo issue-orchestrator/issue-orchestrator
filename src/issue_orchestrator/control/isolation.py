@@ -58,7 +58,10 @@ GRADLE_USER_HOME_ENV = "GRADLE_USER_HOME"
 
 
 def get_gradle_user_home(worktree: Path) -> Path:
-    """Return the per-worktree Gradle user home used by orchestrated commands."""
+    """Return the per-worktree Gradle user home used by orchestrated commands.
+
+    Gradle creates this directory lazily on first use.
+    """
     return worktree / RUNTIME_TOOL_HOME_DIR / "gradle"
 
 
@@ -72,15 +75,18 @@ def build_runtime_tool_env(
     Gradle daemons are scoped by ``GRADLE_USER_HOME``. Without a per-worktree
     value, concurrent sessions share the user's daemon registry, so a
     ``gradle --stop`` in one worktree can terminate validation in another.
+
+    The isolated value intentionally overrides any caller-provided
+    ``GRADLE_USER_HOME`` so orchestrator-managed runs remain reproducible.
     """
     env = dict(os.environ if base_env is None else base_env)
     env[GRADLE_USER_HOME_ENV] = str(get_gradle_user_home(worktree))
     return env
 
 
-def build_runtime_tool_env_assignments(worktree: Path) -> str:
-    """Build shell assignment text for runtime tool-home isolation."""
-    return f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"
+def build_runtime_tool_env_assignments(worktree: Path) -> list[str]:
+    """Build shell assignment texts for runtime tool-home isolation."""
+    return [f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"]
 
 
 def get_orchestrator_socket_path() -> str:

@@ -4,9 +4,14 @@ from pathlib import Path
 import base64
 import json
 
+from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV, get_gradle_user_home
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.events import EventName
-from issue_orchestrator.execution.review_exchange_local_loop import _run_exchange_rounds, _run_phase
+from issue_orchestrator.execution.review_exchange_local_loop import (
+    _build_session_env,
+    _run_exchange_rounds,
+    _run_phase,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -158,3 +163,21 @@ def test_run_phase_uses_round_scoped_phase_directory(monkeypatch, tmp_path: Path
     )
 
     assert captured["phase_dir"] == exchange_dir / "round-002" / "reviewer"
+
+
+def test_local_loop_session_env_includes_per_worktree_gradle_home(tmp_path: Path) -> None:
+    """Persistent review exchange sessions should use the worktree-local Gradle registry."""
+    worktree = tmp_path / "worktree"
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+
+    env = _build_session_env(
+        worktree_path=worktree,
+        run_dir=run_dir,
+        role="reviewer",
+        agent_label="agent:reviewer",
+        issue_number=4057,
+        session_name="review-exchange-1",
+        web_port=None,
+    )
+
+    assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))

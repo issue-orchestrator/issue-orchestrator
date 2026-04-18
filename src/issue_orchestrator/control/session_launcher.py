@@ -320,6 +320,7 @@ class SessionLauncher:
         """
         orch_bin = Path(sys.executable).parent
         orch_src = Path(__file__).resolve().parents[2]
+        runtime_tool_assignments = " ".join(build_runtime_tool_env_assignments(worktree_path))
         config_exports = ""
         if self.config.config_path is not None:
             config_name = self.config.config_path.name
@@ -338,7 +339,7 @@ class SessionLauncher:
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
             f" {ENV_PREFIX}WORKTREE='{worktree_path}'"
-            f" {build_runtime_tool_env_assignments(worktree_path)}"
+            f" {runtime_tool_assignments}"
             f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
             f' PATH="{orch_bin}:$PATH"'
         )

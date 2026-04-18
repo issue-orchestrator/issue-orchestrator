@@ -106,15 +106,15 @@ class TestRuntimeToolEnv:
         assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))
 
     def test_build_runtime_tool_env_assignments_quotes_spaces(self):
-        """Shell assignment should be safe for paths containing spaces."""
+        """Shell assignments should be safe for paths containing spaces."""
         worktree = Path("/path/with spaces/worktree")
 
-        assignment = build_runtime_tool_env_assignments(worktree)
+        assignments = build_runtime_tool_env_assignments(worktree)
 
-        assert assignment == (
+        assert assignments == [
             f"{GRADLE_USER_HOME_ENV}="
             "'/path/with spaces/worktree/.issue-orchestrator/tool-homes/gradle'"
-        )
+        ]
 
 
 class TestBuildGitSafeCommands:
