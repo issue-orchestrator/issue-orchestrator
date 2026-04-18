@@ -63,6 +63,7 @@ class RunScopedEventPayload(TypedDict):
     pr_url: NotRequired[str | None]
     rework_cycle: NotRequired[int]
     review_exchange_mode: NotRequired[str]
+    cached: NotRequired[bool]
 
 
 class SessionStartedEventPayload(RunScopedEventPayload):

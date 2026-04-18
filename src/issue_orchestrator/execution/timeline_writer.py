@@ -147,7 +147,15 @@ def _enrich_round_completed(data: dict[str, Any]) -> str | None:
     return f"Review round {ri} completed{suffix}"
 
 
+def _enrich_review_started(data: dict[str, Any]) -> str | None:
+    if data.get("cached"):
+        return "Review result reused from prior run (no new review needed)"
+    return None
+
+
 def _enrich_review_approved(data: dict[str, Any]) -> str | None:
+    if data.get("cached"):
+        return "Review approval reused from prior run (code unchanged since approval)"
     rounds = data.get("rounds")
     return f"Review approved after {rounds} rounds" if isinstance(rounds, int) and rounds > 1 else None
 
@@ -163,6 +171,8 @@ def _enrich_review_rework_completed(data: dict[str, Any]) -> str | None:
 
 
 def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
+    if data.get("cached"):
+        return "Prior review requested changes (replayed from earlier run)"
     rounds = data.get("rounds")
     return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
 
@@ -178,6 +188,7 @@ def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
 
 
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
+    "review.started": _enrich_review_started,
     "review_exchange.round_started": _enrich_round_started,
     "review_exchange.round_completed": _enrich_round_completed,
     "review.rework_started": _enrich_review_rework_started,

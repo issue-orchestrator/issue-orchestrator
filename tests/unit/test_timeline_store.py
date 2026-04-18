@@ -517,6 +517,47 @@ class TestNarrativeEnrichment:
         )
         assert narrative == "Review approved"
 
+    def test_review_approved_cached_replay_overrides_round_count(self) -> None:
+        # Regression: when the approval is a cached replay from a prior
+        # orchestrator run, the "approved after N rounds" narrative
+        # misleads viewers into thinking N rounds happened in this run.
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_APPROVED,
+            {"rounds": 2, "cached": True},
+        )
+        assert "reused" in narrative.lower()
+        assert "rounds" not in narrative
+
+    def _make_run_dir_with_recording(self, tmp_path, name: str) -> str:
+        run_dir = tmp_path / name
+        run_dir.mkdir()
+        (run_dir / "terminal-recording.jsonl").write_text("")
+        return str(run_dir)
+
+    def test_review_started_cached_replay_uses_replay_narrative(self, tmp_path) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_STARTED,
+            {
+                "cached": True,
+                "run_dir": self._make_run_dir_with_recording(tmp_path, "prior-review-run"),
+            },
+        )
+        assert "reused" in narrative.lower()
+
+    def test_review_started_fresh_uses_default_narrative(self, tmp_path) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_STARTED,
+            {"run_dir": self._make_run_dir_with_recording(tmp_path, "current-review-run")},
+        )
+        assert narrative == "Code review started"
+
+    def test_changes_requested_cached_replay_uses_replay_narrative(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_CHANGES_REQUESTED,
+            {"rounds": 3, "cached": True},
+        )
+        assert "replayed" in narrative.lower() or "reused" in narrative.lower()
+
     def test_pr_created_includes_pr_number(self) -> None:
         narrative = self._write_and_get_narrative(
             EventName.ISSUE_PR_CREATED,
@@ -556,6 +597,96 @@ class TestNarrativeEnrichment:
         from issue_orchestrator.execution.timeline_writer import _enrich_narrative
         result = _enrich_narrative("Code review started", "review.started", {"issue_number": 42})
         assert result == "Code review started"
+
+
+def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(tmp_path: Path) -> None:
+    # Regression for issue #228: when publish/validation failed after a real
+    # review exchange, the orchestrator restarted coding from scratch; the
+    # replayed review.approved carried the prior run's ``rounds`` field with
+    # ``run_dir`` pointing at the original (now-stale) review-exchange
+    # session. The writer's default enricher then produced "Review approved
+    # after 2 rounds" for a run in which zero rounds actually happened.
+    #
+    # This test drives the real writer with the event shape that caused the
+    # bug and asserts the fresh vs cached approvals tell different stories.
+    run_dir = tmp_path / "20260417-053813Z__review-exchange-228"
+    run_dir.mkdir()
+    (run_dir / "terminal-recording.jsonl").write_text("")
+    run_dir_str = str(run_dir)
+
+    store = RecordingTimelineStore()
+    writer = DefaultTimelineWriter(store)
+
+    issue_number = 228
+    shared_base: dict[str, object] = {
+        "issue_number": issue_number,
+        "run_dir": run_dir_str,
+        "agent": "agent:reviewer",
+        "task": "review",
+        "review_exchange_mode": "via-local-loop",
+    }
+
+    # --- Fresh review exchange (first orchestrator run) ---
+    writer.record(TraceEvent(EventName.REVIEW_STARTED, dict(shared_base)))
+    writer.record(
+        TraceEvent(
+            EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+            {**shared_base, "round_index": 1},
+        )
+    )
+    writer.record(
+        TraceEvent(
+            EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
+            {**shared_base, "round_index": 1, "reviewer_response_type": "changes_requested"},
+        )
+    )
+    writer.record(
+        TraceEvent(
+            EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+            {**shared_base, "round_index": 2},
+        )
+    )
+    writer.record(
+        TraceEvent(
+            EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
+            {**shared_base, "round_index": 2, "reviewer_response_type": "ok"},
+        )
+    )
+    writer.record(
+        TraceEvent(EventName.REVIEW_EXCHANGE_COMPLETED, {**shared_base, "rounds": 2})
+    )
+    writer.record(
+        TraceEvent(EventName.REVIEW_APPROVED, {**shared_base, "rounds": 2, "summary": "Looks good."})
+    )
+
+    # --- Cache replay after publish/validation failure restarted coding ---
+    writer.record(
+        TraceEvent(EventName.REVIEW_STARTED, {**shared_base, "cached": True})
+    )
+    writer.record(
+        TraceEvent(
+            EventName.REVIEW_APPROVED,
+            {**shared_base, "rounds": 2, "cached": True, "summary": "Looks good."},
+        )
+    )
+
+    approved_records = [r for r in store.records if r.event == "review.approved"]
+    assert len(approved_records) == 2
+    fresh_narrative = approved_records[0].data["narrative"]
+    cached_narrative = approved_records[1].data["narrative"]
+    assert fresh_narrative == "Review approved after 2 rounds"
+    assert "reused" in cached_narrative.lower()
+    assert "after 2 rounds" not in cached_narrative
+
+    review_started_records = [r for r in store.records if r.event == "review.started"]
+    assert len(review_started_records) == 2
+    assert review_started_records[0].data.get("narrative") == "Code review started"
+    assert "reused" in review_started_records[1].data.get("narrative", "").lower()
+
+    # The cached flag must survive from emission into the stored record so
+    # downstream consumers (UI, SSE) can key off it.
+    assert approved_records[1].data.get("cached") is True
+    assert review_started_records[1].data.get("cached") is True
 
 
 def test_timeline_event_preserves_review_exchange_round_fields() -> None:

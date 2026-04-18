@@ -295,8 +295,15 @@ class CompletionProcessor:
         reviewer_label: str | None,
         exchange_mode: str,
         run_dir: Path,
+        cached: bool = False,
     ) -> None:
-        """Emit trace event when local review exchange starts."""
+        """Emit trace event when local review exchange starts.
+
+        When ``cached`` is True, the event represents a replay of a prior
+        approval (no new reviewer was launched in this run); ``run_dir``
+        then points at the original review-exchange session and is tagged
+        so the timeline narrative does not claim a fresh review started.
+        """
         if self._trace_events is None or self._event_context is None:
             return
         payload: RunScopedEventPayload = {
@@ -307,6 +314,8 @@ class CompletionProcessor:
             "run_id": str(self._event_context.run_id),
             "run_dir": str(run_dir),
         }
+        if cached:
+            payload["cached"] = True
         self._trace_events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, payload))
 
     def _emit_review_outcome(
@@ -319,8 +328,15 @@ class CompletionProcessor:
         rounds: int | None,
         summary: str,
         run_dir: Path | None = None,
+        cached: bool = False,
     ) -> None:
-        """Emit review terminal event from local exchange outcome."""
+        """Emit review terminal event from local exchange outcome.
+
+        When ``cached`` is True, the approval/changes-requested event is
+        a replay of a prior exchange (rounds happened in an earlier run).
+        The ``cached`` flag is forwarded to the timeline narrative enricher
+        so the event is narrated as a replay rather than a fresh review.
+        """
         if self._trace_events is None or self._event_context is None:
             return
         payload = {
@@ -333,6 +349,8 @@ class CompletionProcessor:
         }
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
+        if cached:
+            payload["cached"] = True
         event_name = EventName.REVIEW_APPROVED if approved else EventName.REVIEW_CHANGES_REQUESTED
         self._trace_events.publish(
             make_trace_event(
