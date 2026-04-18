@@ -19,9 +19,13 @@ from pathlib import Path
 from .agent_done import (
     AgentStatus,
     FileSystemSessionOutput,
+    RUNTIME_COMPLETION_OUTCOME,
+    RUNTIME_COMPLETION_RECORD,
+    STATUS_TO_ACTIONS,
     build_completion_record,
     find_worktree_root,
     get_issue_number,
+    get_session_id,
     load_validation_cmd,
     run_preflight_push_check,
     run_validation,
@@ -31,6 +35,13 @@ from .agent_done import (
     write_error_completion,
     write_marker_file,
     record_validation_artifacts,
+)
+from .dirty_retry_budget import (
+    build_completion_record_for_escalation,
+    build_escalation_payload,
+    is_budget_exhausted,
+    record_rejection,
+    reset_rejection_counter,
 )
 from ...infra.env import get_env
 from ...infra.logging_config import issue_log
@@ -205,6 +216,25 @@ def main() -> None:  # noqa: C901, PLR0912
 
     worktree_root = find_worktree_root()
 
+    # The retry budget (#5949) only applies under orchestrator-managed
+    # sessions. Standalone dev invocations have per-call session ids
+    # (``standalone-<timestamp>``) so the counter never reaches the
+    # escalation threshold anyway, but gating explicitly avoids surprising
+    # a developer whose workflow is to deliberately rerun ``coding-done``
+    # against a dirty tree during testing.
+    #
+    # Two env vars, two eras: ``ISSUE_ORCHESTRATOR_SESSION_ID``
+    # (via ``get_env("SESSION_ID")`` — the ``get_env`` helper adds the
+    # ``ISSUE_ORCHESTRATOR_`` prefix) is the current contract;
+    # ``ORCHESTRATOR_SESSION_ID`` is the legacy form still accepted for
+    # compatibility. Short-circuit OR means the current form wins when
+    # both are set — the hypothetical "both set but disagree" case
+    # favours the current contract, which is the behaviour the agent
+    # prompts emit.
+    under_orchestrator = bool(
+        get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID")
+    )
+
     # 2. Check for dirty files (coding agents must commit everything)
     dirty_files = check_dirty_files()
     if dirty_files:
@@ -223,7 +253,52 @@ def main() -> None:  # noqa: C901, PLR0912
         if issue_number:
             logger.info(issue_log(issue_number, "coding-done outcome: status=%s dirty_files=%d"), status, len(dirty_files))
 
+        if under_orchestrator:
+            session_id = get_session_id()
+            count = record_rejection(worktree_root, session_id)
+            if is_budget_exhausted(count):
+                # Fabricate a ``needs_human`` completion on the agent's
+                # behalf and trigger the orchestrator to observe it.
+                # Without this the session would continue retrying
+                # until the 90-minute session-level timeout fires.
+                payload = build_escalation_payload(
+                    session_id=session_id,
+                    dirty_files=dirty_files,
+                    count=count,
+                )
+                escalation_record = build_completion_record_for_escalation(
+                    payload,
+                    completion_record_cls=RUNTIME_COMPLETION_RECORD,
+                    completion_outcome_cls=RUNTIME_COMPLETION_OUTCOME,
+                    status_to_actions=STATUS_TO_ACTIONS,
+                    needs_human_status=AgentStatus.NEEDS_HUMAN,
+                )
+                write_completion_record(escalation_record)
+                write_marker_file("needs_human")
+                reset_rejection_counter(worktree_root, session_id)
+
+                print(f"\n{'='*60}")
+                print(
+                    f"⚠️  Auto-escalated to needs_human after {count} "
+                    f"dirty-tree rejections."
+                )
+                print(
+                    "The orchestrator will route this to a human. Session "
+                    "will now exit cleanly rather than burn to the 90-minute "
+                    "timeout."
+                )
+                print(f"{'='*60}")
+
+                trigger_orchestrator_resume(verbose=False)
+                sys.exit(0)
+
         sys.exit(1)
+
+    # Dirty check passed — if a prior rejection left a non-zero counter
+    # the agent has demonstrated recovery, so clear it. Subsequent
+    # rejections start from scratch rather than continuing the streak.
+    if under_orchestrator:
+        reset_rejection_counter(worktree_root, get_session_id())
 
     # 3. Run validation if configured
     #    Always run validation so the agent gets immediate feedback on failures.
