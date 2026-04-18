@@ -569,6 +569,152 @@ class TestClaudeCodeAdapter:
         decision = evaluate_command("gh pr view 123")
         assert decision.allowed
 
+    # ---- Dirty-tree workaround blocks (#5949) ----------------------
+    #
+    # Each test pins one agent workaround observed in live sessions.
+    # The ``escalate`` assertion verifies the reason text names
+    # ``coding-done needs_human`` so the agent has a documented next
+    # step — without that, a blocked agent just hunts for another
+    # workaround.
+
+    def test_hook_blocks_cat_redirect_to_git_info_exclude(self, adapter, temp_project):
+        """The exact bash pattern from the tixmeup-243 incident."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command(
+            "cat >> .git/info/exclude <<'EOF'\nsrc/\nEOF"
+        )
+        assert not decision.allowed
+        assert "info/exclude" in decision.reason
+        assert "coding-done needs_human" in decision.reason
+
+    def test_hook_blocks_echo_to_worktree_info_exclude(self, adapter, temp_project):
+        """Linked-worktree form (``.git/worktrees/<name>/info/exclude``)
+        is how Claude Code renders the path in its prompt — must also
+        match."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command(
+            "echo 'src/' >> /path/to/.git/worktrees/tixmeup-243/info/exclude"
+        )
+        assert not decision.allowed
+        assert "info/exclude" in decision.reason
+
+    def test_hook_blocks_append_to_gitignore(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo '.issue-orchestrator/' >> .gitignore")
+        assert not decision.allowed
+        assert ".gitignore" in decision.reason
+        assert "coding-done needs_human" in decision.reason
+
+    def test_hook_blocks_overwrite_gitignore(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' > .gitignore")
+        assert not decision.allowed
+        # Escalation-suffix invariant: every blocked reason must tell
+        # the agent its valid next step.
+        assert "coding-done needs_human" in decision.reason
+
+    def test_hook_blocks_append_to_subdirectory_gitignore(
+        self, adapter, temp_project
+    ):
+        """Arbitrary-path form — subdirectory ``.gitignore`` files are
+        just as guard-hiding as the top-level one, and an agent running
+        from any subdirectory can write to them."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'build/' >> subdir/.gitignore")
+        assert not decision.allowed
+        assert "gitignore" in decision.reason.lower()
+
+    def test_hook_blocks_append_to_absolute_path_gitignore(
+        self, adapter, temp_project
+    ):
+        """Absolute paths are another easy evasion of a path-literal
+        regex — pin that the broadened pattern catches them."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command(
+            "echo 'src/' >> /workspace/project/.gitignore"
+        )
+        assert not decision.allowed
+
+    def test_hook_blocks_tee_append_to_gitignore(self, adapter, temp_project):
+        """``tee -a`` is the idiomatic "append to file from stdin"
+        alternative to shell redirection — agents routing around the
+        ``>``/``>>`` rule reach for this next."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' | tee -a .gitignore")
+        assert not decision.allowed
+        assert "coding-done needs_human" in decision.reason
+
+    def test_hook_blocks_tee_overwrite_gitignore(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' | tee .gitignore")
+        assert not decision.allowed
+
+    def test_hook_blocks_tee_with_long_append_flag(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' | tee --append .gitignore")
+        assert not decision.allowed
+
+    def test_hook_blocks_sed_in_place_gitignore(self, adapter, temp_project):
+        """``sed -i`` routes around the redirect-operator rule — must
+        also be blocked so the agent can't swap tools to evade."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("sed -i '/^src\\//d' .gitignore")
+        assert not decision.allowed
+        assert ".gitignore" in decision.reason
+
+    def test_hook_blocks_sed_in_place_gitignore_flag_order(
+        self, adapter, temp_project
+    ):
+        """``sed -e '...' -i ...`` — the ``-i`` flag after a preceding
+        expression flag. Must still match, otherwise flag reordering is
+        a trivial evasion."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("sed -e '/^src\\//d' -i '' .gitignore")
+        assert not decision.allowed
+        assert ".gitignore" in decision.reason
+
+    def test_hook_blocks_sed_in_place_gitignore_bsd_backup_suffix(
+        self, adapter, temp_project
+    ):
+        """BSD/macOS ``sed -i.bak`` form takes a backup-suffix argument
+        appended to the ``-i`` token. ``-i\\S*`` in the regex handles
+        this; pin it so a refactor doesn't accidentally narrow to
+        bare ``-i``."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("sed -i.bak '/^src/d' .gitignore")
+        assert not decision.allowed
+
+    def test_hook_blocks_update_index_assume_unchanged(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command(
+            "git update-index --assume-unchanged src/planted.py"
+        )
+        assert not decision.allowed
+        assert "assume-unchanged" in decision.reason
+
+    def test_hook_blocks_update_index_skip_worktree(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("git update-index --skip-worktree src/planted.py")
+        assert not decision.allowed
+        assert "skip-worktree" in decision.reason
+
+    def test_hook_allows_reading_gitignore(self, adapter, temp_project):
+        """Reading ``.gitignore`` is legitimate (agents may want to
+        understand what's currently ignored). Only writes are blocked."""
+        adapter.install_hooks(temp_project)
+        assert evaluate_command("cat .gitignore").allowed
+        assert evaluate_command("grep '^src/' .gitignore").allowed
+        assert evaluate_command("less .gitignore").allowed
+
+    def test_hook_allows_check_ignore_and_ls_files(self, adapter, temp_project):
+        """Observation commands that inspect ignore/index state without
+        mutating must remain available — otherwise agents lose the
+        ability to reason about dirty state they're trying to resolve."""
+        adapter.install_hooks(temp_project)
+        assert evaluate_command("git check-ignore foo/bar").allowed
+        assert evaluate_command("git ls-files -v").allowed
+        assert evaluate_command("git status --porcelain").allowed
+
 
 class TestCursorAdapter:
     """Tests for CursorAdapter."""
