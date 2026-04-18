@@ -1,4 +1,16 @@
-"""Shared hook policy for blocking no-verify and restricted commands."""
+"""Shared hook policy for blocking no-verify and restricted commands.
+
+Also blocks the specific workarounds agents reach for when the
+``coding-done`` dirty-tree guard rejects them: editing
+``.git/info/exclude``, appending to ``.gitignore``, and marking tracked
+files ``--assume-unchanged`` / ``--skip-worktree``. Each of these
+*hides* dirtiness from the guard rather than resolving it; all four
+were observed on live sessions (see #5949). Claude Code's native
+sensitive-file gate blocks the ``.git/info/exclude`` edit interactively
+and hangs the session for the full 90-minute timeout; this hook fires
+before that gate so the agent gets a fail-fast rejection with a clear
+next step instead.
+"""
 
 from __future__ import annotations
 
@@ -90,6 +102,16 @@ def evaluate_command(command: str, cwd: Path | None = None) -> HookDecision:
     if is_dry_run_no_verify_push(command) and _allow_flag_present(cwd):
         return HookDecision(True, "")
 
+    # All reasons for dirty-tree-workaround rejections share the same
+    # escalation instruction: this is the ONLY valid action when the
+    # agent genuinely cannot clean the tree. If we leave this out, the
+    # agent sees "BLOCKED" with no next step and resorts to novel
+    # workarounds we haven't thought to ban yet.
+    dirty_workaround_suffix = (
+        " If the dirty tree is legitimately unresolvable, escalate with "
+        "`coding-done needs_human --question ...`. Do NOT hide files."
+    )
+
     patterns = [
         (
             re.compile(r"git\s+(commit|push).*--no-verify"),
@@ -115,6 +137,58 @@ def evaluate_command(command: str, cwd: Path | None = None) -> HookDecision:
         (
             re.compile(r"gh\s+api\s+.*pulls/[0-9]+/merge"),
             "BLOCKED: Agents cannot merge PRs via API. Only humans can merge.",
+        ),
+        # ---- Dirty-tree workaround blocks (#5949 item 1) ----------------
+        #
+        # ``.git/info/exclude`` — the per-worktree exclude file. Any
+        # mention of this path in a bash command is an attempt to hide
+        # untracked files from the dirty-tree guard; agents have no
+        # legitimate reason to read or write it. The regex also matches
+        # the linked-worktree form ``.git/worktrees/<name>/info/exclude``
+        # so the tixmeup-243 workaround pattern is caught verbatim.
+        (
+            re.compile(r"\.git/(worktrees/[^/\s]+/)?info/exclude\b"),
+            (
+                "BLOCKED: editing .git/info/exclude hides untracked files "
+                "from the dirty-tree guard." + dirty_workaround_suffix
+            ),
+        ),
+        # ``.gitignore`` writes via shell redirection. Reading
+        # (``cat .gitignore``, ``grep pattern .gitignore``) remains
+        # allowed — only the destructive/append forms are blocked.
+        # ``sed -i`` on ``.gitignore`` is caught by a sibling pattern
+        # below so the agent can't route around the redirect rule.
+        (
+            re.compile(r">>?\s*(\./)?\.gitignore\b"),
+            (
+                "BLOCKED: writing to .gitignore to hide files is not "
+                "allowed from an agent session." + dirty_workaround_suffix
+            ),
+        ),
+        (
+            # ``\b`` is a word boundary between word and non-word chars;
+            # since both spaces and leading ``.`` / ``-`` are non-word,
+            # we instead anchor with explicit whitespace or line-end.
+            re.compile(r"sed\s+-i\b[^\n]*\s\.gitignore(?:\s|$)"),
+            (
+                "BLOCKED: editing .gitignore in place to hide files is "
+                "not allowed from an agent session." + dirty_workaround_suffix
+            ),
+        ),
+        # ``git update-index --assume-unchanged`` / ``--skip-worktree``
+        # mark tracked files invisible to ``git status`` without
+        # committing them. Both are guard-hiding and neither has a
+        # legitimate agent use case; ``git ls-files -v`` for observation
+        # is unaffected because it doesn't mutate the index.
+        (
+            re.compile(
+                r"git\s+update-index\b[^\n]*(?:--assume-unchanged|--skip-worktree)(?:\s|$)"
+            ),
+            (
+                "BLOCKED: `git update-index --assume-unchanged` and "
+                "`--skip-worktree` hide tracked files from the dirty-tree "
+                "guard." + dirty_workaround_suffix
+            ),
         ),
     ]
 
