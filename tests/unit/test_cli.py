@@ -17,7 +17,6 @@ from issue_orchestrator.entrypoints.cli import (
     cmd_output,
     cmd_pause,
     cmd_resume,
-    cmd_next,
     cmd_harden_repo,
     cmd_test_reset,
     main,
@@ -582,27 +581,59 @@ class TestCmdOutput:
 class TestCmdPauseResume:
     """Tests for pause and resume commands."""
 
-    def test_cmd_pause(self):
-        """Verify pause command returns successfully."""
-        args = argparse.Namespace()
-        result = cmd_pause(args)
-        assert result == 0
+    def test_cmd_pause_success(self):
+        """Verify pause posts to /api/pause and returns 0."""
+        with patch("httpx.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_post.return_value = mock_response
 
-    def test_cmd_resume(self):
-        """Verify resume command returns successfully."""
-        args = argparse.Namespace()
-        result = cmd_resume(args)
-        assert result == 0
+            args = argparse.Namespace(port=8080)
+            result = cmd_pause(args)
 
+            assert result == 0
+            mock_post.assert_called_once_with(
+                "http://localhost:8080/api/pause", timeout=5.0
+            )
 
-class TestCmdNext:
-    """Tests for the next command."""
+    def test_cmd_pause_connection_error(self):
+        """Verify pause handles connection error."""
+        with patch("httpx.post") as mock_post:
+            import httpx
 
-    def test_cmd_next(self):
-        """Verify next command returns successfully."""
-        args = argparse.Namespace(issue_number=789)
-        result = cmd_next(args)
-        assert result == 0
+            mock_post.side_effect = httpx.ConnectError("Connection failed")
+
+            args = argparse.Namespace(port=8080)
+            result = cmd_pause(args)
+
+            assert result == 1
+
+    def test_cmd_resume_success(self):
+        """Verify resume posts to /api/resume and returns 0."""
+        with patch("httpx.post") as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_post.return_value = mock_response
+
+            args = argparse.Namespace(port=8080)
+            result = cmd_resume(args)
+
+            assert result == 0
+            mock_post.assert_called_once_with(
+                "http://localhost:8080/api/resume", timeout=5.0
+            )
+
+    def test_cmd_resume_connection_error(self):
+        """Verify resume handles connection error."""
+        with patch("httpx.post") as mock_post:
+            import httpx
+
+            mock_post.side_effect = httpx.ConnectError("Connection failed")
+
+            args = argparse.Namespace(port=8080)
+            result = cmd_resume(args)
+
+            assert result == 1
 
 
 class TestCmdTestReset:

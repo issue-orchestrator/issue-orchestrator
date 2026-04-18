@@ -26,7 +26,6 @@ class CLICommandHandlers:
     resume: CommandHandler
     refresh: CommandHandler
     restart: CommandHandler
-    next: CommandHandler
     setup: CommandHandler
     init: CommandHandler
     test_reset: CommandHandler
@@ -221,9 +220,21 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
     output_parser.set_defaults(func=handlers.output)
 
     pause_parser = subparsers.add_parser("pause", help="Pause the orchestrator")
+    pause_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port of running orchestrator (default: 8080)",
+    )
     pause_parser.set_defaults(func=handlers.pause)
 
     resume_parser = subparsers.add_parser("resume", help="Resume the orchestrator")
+    resume_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port of running orchestrator (default: 8080)",
+    )
     resume_parser.set_defaults(func=handlers.resume)
 
     refresh_parser = subparsers.add_parser(
@@ -251,12 +262,6 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
         "--debug", action="store_true", help="Enable debug logging"
     )
     restart_parser.set_defaults(func=handlers.restart)
-
-    next_parser = subparsers.add_parser("next", help="Prioritize an issue")
-    next_parser.add_argument(
-        "issue_number", type=int, help="GitHub issue number to prioritize"
-    )
-    next_parser.set_defaults(func=handlers.next)
 
 
 def _register_setup_commands(subparsers, handlers: CLICommandHandlers) -> None:
