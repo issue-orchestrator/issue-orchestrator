@@ -52,6 +52,10 @@ def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEval
 
     # Wire up the scheduler from the planner
     orch.scheduler = orch.deps.planner.scheduler
+    if getattr(orch.scheduler, "dependency_evaluator", None) is None:
+        orch.scheduler.dependency_evaluator = dep_eval
+    if getattr(orch.deps.planner, "dependency_evaluator", None) is None:
+        orch.deps.planner.dependency_evaluator = orch.scheduler.dependency_evaluator
 
     # Wire up action_applier's session_launcher callback
     orch.deps.action_applier.session_launcher = orch.session_launcher_callback

@@ -107,7 +107,7 @@ class Planner:
         """
         self.config = config
         self.scheduler = scheduler
-        self.dependency_evaluator = dependency_evaluator
+        self.dependency_evaluator = self._align_dependency_evaluator(dependency_evaluator)
         self.review_workflow = review_workflow
         self.rework_workflow = rework_workflow
         self.triage_workflow = triage_workflow
@@ -120,6 +120,21 @@ class Planner:
         self._last_queue_decisions: dict[int, str] = {}
         self._last_queue_summary_logged_at: float = 0.0
         self._queue_summary_interval_seconds = 60.0
+
+    def _align_dependency_evaluator(
+        self,
+        dependency_evaluator: Optional[DependencyEvaluator],
+    ) -> Optional[DependencyEvaluator]:
+        """Keep planner and scheduler dependency gating wired to one evaluator."""
+        scheduler_evaluator = self.scheduler.dependency_evaluator
+        if dependency_evaluator is None:
+            return scheduler_evaluator
+        if scheduler_evaluator is None:
+            self.scheduler.dependency_evaluator = dependency_evaluator
+            return dependency_evaluator
+        if scheduler_evaluator is not dependency_evaluator:
+            raise ValueError("Planner and Scheduler dependency evaluators must be the same instance")
+        return dependency_evaluator
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
