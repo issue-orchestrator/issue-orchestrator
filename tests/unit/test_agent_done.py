@@ -690,13 +690,24 @@ class TestWriteMarkerFile:
 
 
 class TestCheckDirtyFiles:
-    """Test check_dirty_files excludes orchestrator runtime artifacts."""
+    """Test check_dirty_files excludes orchestrator runtime artifacts.
 
-    def test_excludes_issue_orchestrator_paths(self):
-        """Orchestrator session logs are excluded from dirty check."""
+    Two filter categories apply:
+
+    - Runtime metadata (``.issue-orchestrator/`` sessions/backups,
+      ``.claude/``): always filtered regardless of tracked/untracked.
+    - Orchestrator-planted source
+      (``src/issue_orchestrator/entrypoints/cli_tools/``): filtered **only**
+      when git reports the path as untracked (status ``??``). A tracked
+      modification in the orchestrator's own repo is a legitimate
+      developer edit and must still fire the guard.
+    """
+
+    def test_excludes_runtime_metadata(self):
+        """Session logs and .claude/ settings are excluded regardless of status."""
         porcelain = (
             "?? .issue-orchestrator/sessions/20260303__coder-81/ui-session.log\n"
-            "?? .issue-orchestrator/sessions/20260303__coder-81/manifest.json\n"
+            " M .claude/settings.json\n"
             " M src/app.py\n"
         )
         with patch("subprocess.run") as mock_run:
@@ -711,17 +722,59 @@ class TestCheckDirtyFiles:
             result = check_dirty_files()
         assert len(result) == 2
 
-    def test_excludes_worktree_setup_cli_tools_paths(self):
-        """Setup-synced cli_tools should not block coding-done."""
+    def test_excludes_untracked_planted_cli_tools(self):
+        """Untracked sync_cli_tools plantings must not block coding-done."""
         porcelain = (
-            " M src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py\n"
-            " M src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py\n"
+            "?? src/issue_orchestrator/entrypoints/cli_tools/coding_done.py\n"
+            "?? src/issue_orchestrator/entrypoints/cli_tools/reviewer_done.py\n"
             " M src/app.py\n"
         )
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=porcelain)
             result = check_dirty_files()
         assert result == ["M src/app.py"]
+
+    def test_excludes_untracked_summary_src_dir(self):
+        """``?? src/`` is the porcelain summary form git emits when an
+        entire untracked subtree is collapsed to its topmost dir. In a
+        foreign repo this is exactly how the planted ``cli_tools/`` tree
+        shows up — the prior substring-based filter silently missed it.
+        """
+        porcelain = "?? src/\n"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=porcelain)
+            result = check_dirty_files()
+        assert result == []
+
+    def test_keeps_tracked_modified_planted_cli_tools(self):
+        """Tracked modifications to the same cli_tools files are legitimate
+        developer edits in the orchestrator's own repo and must still fire
+        the dirty-tree guard.
+        """
+        porcelain = (
+            " M src/issue_orchestrator/entrypoints/cli_tools/coding_done.py\n"
+            "M  src/issue_orchestrator/entrypoints/cli_tools/reviewer_done.py\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=porcelain)
+            result = check_dirty_files()
+        assert result == [
+            "M src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+            "M  src/issue_orchestrator/entrypoints/cli_tools/reviewer_done.py",
+        ]
+
+    def test_uses_untracked_files_all_flag(self):
+        """Porcelain must request per-file untracked listing so the planted
+        subtree doesn't get collapsed to ``?? src/`` and evade per-file
+        filters elsewhere.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="")
+            check_dirty_files()
+        args = mock_run.call_args[0][0]
+        assert args[:2] == ["git", "status"]
+        assert "--porcelain" in args
+        assert "--untracked-files=all" in args
 
     def test_clean_tree_returns_empty(self):
         with patch("subprocess.run") as mock_run:
