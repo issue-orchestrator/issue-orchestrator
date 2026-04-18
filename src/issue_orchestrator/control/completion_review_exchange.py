@@ -369,6 +369,7 @@ class CompletionReviewExchange:
             reviewer_label=reviewer_label,
             exchange_mode=exchange_mode,
             run_dir=review_run_dir,
+            cached=True,
         )
         if existing_outcome.status == "ok":
             actions_taken.append("Review exchange passed (cached)")
@@ -385,6 +386,7 @@ class CompletionReviewExchange:
                 rounds=getattr(existing_outcome, "rounds", None),
                 summary=reviewer_summary,
                 run_dir=review_run_dir,
+                cached=True,
             )
             return exchange_mode, existing_outcome, False
         self._emit_review_outcome(
@@ -395,6 +397,7 @@ class CompletionReviewExchange:
             rounds=getattr(existing_outcome, "rounds", None),
             summary=f"Review exchange halted: {existing_outcome.reason}",
             run_dir=review_run_dir,
+            cached=True,
         )
         errors.append(f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})")
         return exchange_mode, existing_outcome, True

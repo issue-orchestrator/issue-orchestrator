@@ -737,6 +737,8 @@ class TestReviewExchangeExecution:
             },
             config=config,
         )
+        sink = InMemoryEventSink()
+        processor.set_event_emitter(sink, EventContext())
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[
@@ -785,6 +787,99 @@ class TestReviewExchangeExecution:
 
         assert result.success is True
         assert result.review_exchange_completed is True
+        # Cache-replay must be tagged so the timeline narrates it as a
+        # replay rather than claiming a fresh 2-round review happened
+        # in this run (issue #228 regression).
+        review_started = sink.last_event(str(EventName.REVIEW_STARTED))
+        review_approved = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert review_started is not None
+        assert review_approved is not None
+        assert review_started.data.get("cached") is True
+        assert review_approved.data.get("cached") is True
+
+    def test_cached_exchange_non_ok_status_emits_cached_changes_requested(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        monkeypatch,
+    ) -> None:
+        # Symmetric to test_exchange_uses_cached_summary_after_restart but for
+        # the non-ok branch: if a prior run persisted a changes_requested
+        # outcome, the replay must also be tagged cached=True so the timeline
+        # narrates it as a replay rather than a fresh reviewer verdict.
+        config = self._make_config(tmp_path)
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        sink = InMemoryEventSink()
+        processor.set_event_emitter(sink, EventContext())
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        (exchange_dir / "summary.json").write_text(
+            json.dumps({
+                "completed_rounds": 3,
+                "status": "changes_requested",
+                "response_text": "Still three open comments.",
+                "timestamp": "2026-02-01T00:00:00Z",
+            })
+        )
+        (run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
+        completion_path = (
+            ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
+            "completion-coder.json"
+        )
+        completion_file = worktree / completion_path
+        completion_file.parent.mkdir(parents=True, exist_ok=True)
+        completion_file.write_text(json.dumps(record.to_dict()))
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            side_effect=AssertionError("exchange should not re-run on cache hit")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+            completion_path=completion_path,
+        )
+
+        assert result.success is False
+        review_started = sink.last_event(str(EventName.REVIEW_STARTED))
+        review_changes = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert review_started is not None
+        assert review_changes is not None
+        assert review_started.data.get("cached") is True
+        assert review_changes.data.get("cached") is True
+        # Fresh review.approved must not be emitted on the non-ok cache path.
+        assert sink.last_event(str(EventName.REVIEW_APPROVED)) is None
 
     def test_cached_exchange_requires_validation_record(
         self,
