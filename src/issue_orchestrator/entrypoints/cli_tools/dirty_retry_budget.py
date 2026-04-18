@@ -34,6 +34,8 @@ rejection vs. the session-level timeout.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -84,14 +86,45 @@ def _load(worktree: Path) -> dict[str, int]:
 
 
 def _save(worktree: Path, counters: dict[str, int]) -> None:
+    """Persist ``counters`` atomically.
+
+    Atomicity matters even though ``coding-done`` is single-threaded:
+    a future reader (an orchestrator introspection path, a diagnostic
+    tool, concurrent sessions in a shared worktree) must never observe
+    a torn JSON file. The fallback on torn reads is "treat as empty",
+    which would silently reset the counter mid-session — the worst
+    case for the budget's integrity: the agent gets an extra retry it
+    hasn't earned.
+
+    Write to a tempfile on the same filesystem and ``os.replace`` into
+    place; the rename is atomic on POSIX.
+    """
     path = _counter_path(worktree)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if counters:
-        path.write_text(json.dumps(counters, indent=2, sort_keys=True) + "\n")
-    else:
+    if not counters:
         # Empty dict → delete file so stale ``.issue-orchestrator/`` state
         # doesn't accumulate after happy-path completions.
         path.unlink(missing_ok=True)
+        return
+
+    encoded = json.dumps(counters, indent=2, sort_keys=True) + "\n"
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(encoded)
+        os.replace(tmp_path_str, path)
+    except Exception:
+        # Only clean up on failure; the successful path has already
+        # renamed the tempfile out of existence.
+        try:
+            os.unlink(tmp_path_str)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def record_rejection(worktree: Path, session_id: str) -> int:
@@ -123,6 +156,31 @@ def is_budget_exhausted(count: int) -> bool:
     return count >= DIRTY_REJECTION_BUDGET
 
 
+# Lines of the dirty-file list to include verbatim in escalation
+# previews before collapsing the tail to "... and N more". Shared
+# between the plain-text ``context`` and the Markdown ``comment_body``
+# so a future edit to one cannot drift the other.
+_DIRTY_PREVIEW_LIMIT = 20
+
+
+def _render_dirty_preview(
+    dirty_files: list[str], *, indent: str, tail_prefix: str
+) -> str:
+    """Return a preview of up to ``_DIRTY_PREVIEW_LIMIT`` dirty lines.
+
+    ``indent`` is prepended to each shown line; ``tail_prefix`` leads
+    the "and N more" sentinel. Keeping both forms on one helper means
+    plain-text and Markdown previews stay consistent on limit and
+    formatting.
+    """
+    shown = dirty_files[:_DIRTY_PREVIEW_LIMIT]
+    body = "\n".join(f"{indent}{line}" for line in shown)
+    remaining = len(dirty_files) - len(shown)
+    if remaining > 0:
+        body += f"\n{tail_prefix}and {remaining} more"
+    return body
+
+
 def build_escalation_payload(
     *, session_id: str, dirty_files: list[str], count: int
 ) -> EscalationRecord:
@@ -133,10 +191,12 @@ def build_escalation_payload(
     that *explicit* so a reviewing human doesn't mistake this for the
     agent's own judgement call.
     """
-    preview_count = 20
-    preview = "\n".join(f"  {line}" for line in dirty_files[:preview_count])
-    if len(dirty_files) > preview_count:
-        preview += f"\n  ... and {len(dirty_files) - preview_count} more"
+    context_preview = _render_dirty_preview(
+        dirty_files, indent="  ", tail_prefix="  ... "
+    )
+    body_preview = _render_dirty_preview(
+        dirty_files, indent="", tail_prefix="... "
+    )
 
     question = (
         f"Auto-escalated by coding-done: the working tree stayed dirty "
@@ -145,7 +205,7 @@ def build_escalation_payload(
         f"whether they should be committed, gitignored at the project "
         f"level, or investigated for a deeper problem."
     )
-    context = f"Dirty files ({len(dirty_files)}):\n{preview}"
+    context = f"Dirty files ({len(dirty_files)}):\n{context_preview}"
     summary = (
         f"Auto-escalated to needs_human after {count} dirty-tree rejections"
     )
@@ -156,14 +216,7 @@ def build_escalation_payload(
         f"it, so the orchestrator is escalating to a human rather than "
         f"letting the session burn to the 90-minute timeout.\n\n"
         f"**Dirty files ({len(dirty_files)}):**\n\n"
-        f"```\n"
-        + "\n".join(dirty_files[:preview_count])
-        + (
-            f"\n... and {len(dirty_files) - preview_count} more"
-            if len(dirty_files) > preview_count
-            else ""
-        )
-        + "\n```\n"
+        f"```\n{body_preview}\n```\n"
     )
 
     return EscalationRecord(

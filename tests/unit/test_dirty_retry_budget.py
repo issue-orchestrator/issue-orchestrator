@@ -73,6 +73,28 @@ class TestRecordRejection:
 
         assert record_rejection(worktree, "sess-a") == 1
 
+    def test_saved_file_is_valid_json(self, worktree: Path) -> None:
+        """Atomic write (tempfile + rename) must still land a well-formed
+        JSON file on disk — the rename is only atomic if the tempfile
+        contents are complete before the swap."""
+        record_rejection(worktree, "sess-a")
+        record_rejection(worktree, "sess-b")
+
+        raw = (worktree / COUNTER_RELATIVE_PATH).read_text()
+        assert json.loads(raw) == {"sess-a": 1, "sess-b": 1}
+
+    def test_atomic_write_leaves_no_tempfile_on_success(
+        self, worktree: Path
+    ) -> None:
+        """After a normal write, only the canonical counter file
+        should remain in the runtime-metadata dir. An abandoned tempfile
+        would accumulate over a long-lived session."""
+        record_rejection(worktree, "sess-a")
+
+        parent = (worktree / COUNTER_RELATIVE_PATH).parent
+        files = sorted(p.name for p in parent.iterdir())
+        assert files == [COUNTER_RELATIVE_PATH.name]
+
 
 class TestResetRejectionCounter:
     def test_clears_only_the_named_session(self, worktree: Path) -> None:
@@ -151,8 +173,11 @@ class TestEscalationPayload:
         # is still reported numerically so the human knows the scale.
         assert "50" in payload.context
         assert "... and 30 more" in payload.context
-        # Body is Markdown, must not embed the full list either.
-        assert payload.comment_body.count("file_") <= 22
+        # The body has 20 preview entries, each containing ``file_``
+        # exactly once; no other ``file_`` appears in the template.
+        # Tight equality pins the preview-limit constant rather than
+        # allowing it to drift unnoticed.
+        assert payload.comment_body.count("file_") == 20
 
     def test_short_dirty_file_list_is_not_truncated(self) -> None:
         payload = build_escalation_payload(
@@ -163,6 +188,53 @@ class TestEscalationPayload:
 
         assert "more" not in payload.context
         assert "a.py" in payload.context and "b.py" in payload.context
+
+
+class TestPostEscalationReinvocation:
+    """Semantics of calling ``coding-done`` again after an escalation.
+
+    The ``coding-done`` main path resets the counter immediately after
+    writing the needs_human record. A subsequent invocation should
+    therefore start from a fresh counter (new rejection streak), not
+    continue the prior one. This documents the chosen semantic
+    (concern #4 on the review for #5953): re-invocation restarts the
+    budget rather than immediately re-escalating.
+    """
+
+    def test_post_escalation_counter_starts_fresh(self, worktree: Path) -> None:
+        session_id = "sess-a"
+        # First rejection streak → budget exhaustion.
+        assert record_rejection(worktree, session_id) == 1
+        assert record_rejection(worktree, session_id) == 2
+        assert is_budget_exhausted(2)
+
+        # ``coding_done`` resets the counter in the escalation path
+        # immediately after writing the needs_human record.
+        reset_rejection_counter(worktree, session_id)
+
+        # Next dirty call starts a fresh streak; must not see the
+        # prior count.
+        assert record_rejection(worktree, session_id) == 1
+        assert not is_budget_exhausted(1)
+
+    def test_post_escalation_eventual_re_escalation(
+        self, worktree: Path
+    ) -> None:
+        """If the tree stays dirty and the agent keeps retrying after
+        an escalation, the counter does re-exhaust — same orchestrator
+        escalation fires again. Not catastrophic; each escalation
+        writes a new completion record (``write_completion_record``
+        adds numeric suffixes on collision), so no completion is lost.
+        """
+        session_id = "sess-a"
+        record_rejection(worktree, session_id)
+        record_rejection(worktree, session_id)
+        reset_rejection_counter(worktree, session_id)
+
+        # Replay the streak.
+        record_rejection(worktree, session_id)
+        assert record_rejection(worktree, session_id) == 2
+        assert is_budget_exhausted(2)
 
 
 class TestBuildCompletionRecordForEscalation:

@@ -222,6 +222,15 @@ def main() -> None:  # noqa: C901, PLR0912
     # escalation threshold anyway, but gating explicitly avoids surprising
     # a developer whose workflow is to deliberately rerun ``coding-done``
     # against a dirty tree during testing.
+    #
+    # Two env vars, two eras: ``ISSUE_ORCHESTRATOR_SESSION_ID``
+    # (via ``get_env("SESSION_ID")`` — the ``get_env`` helper adds the
+    # ``ISSUE_ORCHESTRATOR_`` prefix) is the current contract;
+    # ``ORCHESTRATOR_SESSION_ID`` is the legacy form still accepted for
+    # compatibility. Short-circuit OR means the current form wins when
+    # both are set — the hypothetical "both set but disagree" case
+    # favours the current contract, which is the behaviour the agent
+    # prompts emit.
     under_orchestrator = bool(
         get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID")
     )
