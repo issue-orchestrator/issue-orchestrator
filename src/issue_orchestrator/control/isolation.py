@@ -10,7 +10,10 @@ allow them to perform privileged operations (push, merge, API calls).
 """
 
 import logging
+import os
+import shlex
 from pathlib import Path
+from typing import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,35 @@ GIT_SAFE_ENV = {
     "GIT_TERMINAL_PROMPT": "0",  # Disable interactive prompts
     "GIT_ASKPASS": "/usr/bin/false",  # Fail any credential requests
 }
+
+RUNTIME_TOOL_HOME_DIR = ".issue-orchestrator/tool-homes"
+GRADLE_USER_HOME_ENV = "GRADLE_USER_HOME"
+
+
+def get_gradle_user_home(worktree: Path) -> Path:
+    """Return the per-worktree Gradle user home used by orchestrated commands."""
+    return worktree / RUNTIME_TOOL_HOME_DIR / "gradle"
+
+
+def build_runtime_tool_env(
+    worktree: Path,
+    *,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build an environment with tool homes isolated to the worktree.
+
+    Gradle daemons are scoped by ``GRADLE_USER_HOME``. Without a per-worktree
+    value, concurrent sessions share the user's daemon registry, so a
+    ``gradle --stop`` in one worktree can terminate validation in another.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    env[GRADLE_USER_HOME_ENV] = str(get_gradle_user_home(worktree))
+    return env
+
+
+def build_runtime_tool_env_assignments(worktree: Path) -> str:
+    """Build shell assignment text for runtime tool-home isolation."""
+    return f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"
 
 
 def get_orchestrator_socket_path() -> str:

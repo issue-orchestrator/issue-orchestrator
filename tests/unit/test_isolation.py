@@ -9,7 +9,11 @@ from unittest.mock import patch
 from issue_orchestrator.control.isolation import (
     FORBIDDEN_ENV_VARS,
     GIT_SAFE_ENV,
+    GRADLE_USER_HOME_ENV,
     get_forbidden_env_vars,
+    get_gradle_user_home,
+    build_runtime_tool_env,
+    build_runtime_tool_env_assignments,
     build_env_unset_commands,
     build_git_safe_commands,
     build_home_isolation_command,
@@ -74,6 +78,43 @@ class TestGitSafeEnv:
     def test_git_askpass_set(self):
         """Test that GIT_ASKPASS is set to /usr/bin/false."""
         assert GIT_SAFE_ENV["GIT_ASKPASS"] == "/usr/bin/false"
+
+
+class TestRuntimeToolEnv:
+    """Tests for runtime tool-home isolation."""
+
+    def test_gradle_user_home_is_under_worktree_runtime_dir(self):
+        """Gradle daemon state should be scoped to the worktree."""
+        worktree = Path("/path/to/worktree")
+
+        assert get_gradle_user_home(worktree) == (
+            worktree / ".issue-orchestrator" / "tool-homes" / "gradle"
+        )
+
+    def test_build_runtime_tool_env_preserves_base_and_overrides_gradle_home(self):
+        """Tool env should preserve existing variables while isolating Gradle."""
+        worktree = Path("/path/to/worktree")
+        env = build_runtime_tool_env(
+            worktree,
+            base_env={
+                "PATH": "/bin",
+                GRADLE_USER_HOME_ENV: "/shared/gradle",
+            },
+        )
+
+        assert env["PATH"] == "/bin"
+        assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))
+
+    def test_build_runtime_tool_env_assignments_quotes_spaces(self):
+        """Shell assignment should be safe for paths containing spaces."""
+        worktree = Path("/path/with spaces/worktree")
+
+        assignment = build_runtime_tool_env_assignments(worktree)
+
+        assert assignment == (
+            f"{GRADLE_USER_HOME_ENV}="
+            "'/path/with spaces/worktree/.issue-orchestrator/tool-homes/gradle'"
+        )
 
 
 class TestBuildGitSafeCommands:

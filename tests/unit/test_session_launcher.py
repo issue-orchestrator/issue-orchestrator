@@ -27,6 +27,7 @@ from issue_orchestrator.control.session_launcher import (
     detect_existing_work,
     log_transition,
 )
+from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
     orchestrator_launch_session,
@@ -224,7 +225,7 @@ class MockCommandRunner:
         timeout_seconds: int | None = None,
         shell: bool = False,
     ) -> CommandResult:
-        self.run_calls.append({"command": command, "cwd": cwd, "shell": shell})
+        self.run_calls.append({"command": command, "cwd": cwd, "env": env, "shell": shell})
         if self._result_index < len(self.results):
             result = self.results[self._result_index]
             self._result_index += 1
@@ -2112,6 +2113,29 @@ class TestEnvironmentIsolation:
         # Verify command doesn't contain HOME override
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "export HOME=" not in command or "HOME=" not in command.split("&&")[0]
+
+    def test_issue_session_exports_per_worktree_gradle_user_home(self, launcher_bundle, sample_issue):
+        """Agent Gradle commands should use the worktree-local daemon registry."""
+        launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert f"{GRADLE_USER_HOME_ENV}=" in command
+        assert ".issue-orchestrator/tool-homes/gradle" in command
+
+    def test_setup_commands_use_per_worktree_gradle_user_home(
+        self,
+        launcher_bundle,
+        sample_issue,
+        mock_command_runner,
+    ):
+        """Setup commands should share the session's isolated Gradle home."""
+        launcher_bundle.launcher.config.setup_worktree = ["./gradlew tasks"]
+
+        launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        env = mock_command_runner.run_calls[0]["env"]
+        assert env is not None
+        assert env[GRADLE_USER_HOME_ENV].endswith(".issue-orchestrator/tool-homes/gradle")
 
 
 class TestValidationOutputDir:

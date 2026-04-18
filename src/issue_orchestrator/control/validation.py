@@ -19,6 +19,7 @@ from typing import Optional
 from ..infra.emit import emit_event
 from ..ports import CommandRunner, CommandResult, WorkingCopy
 from ..ports.session_output import ValidationRecord
+from .isolation import build_runtime_tool_env
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,7 @@ class ValidationRunner:
                 command,
                 shell=True,
                 cwd=cwd,
+                env=build_runtime_tool_env(self.store.worktree),
                 timeout_seconds=timeout_seconds,
             )
         except Exception as exc:

@@ -22,6 +22,7 @@ from issue_orchestrator.control.validation import (
     AgentGateResult,
     VALIDATION_SCHEMA_VERSION,
 )
+from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 
 
 class TestValidationRecord:
@@ -298,6 +299,32 @@ class TestValidationRunner:
         )
 
         assert not (output_dir / "validation-record.json").exists()
+
+    def test_run_uses_per_worktree_gradle_user_home(self, store, temp_worktree, session_output_dir):
+        """Validation should not share Gradle daemons with other worktrees."""
+        class RecordingRunner:
+            def __init__(self):
+                self.kwargs = {}
+
+            def run(self, *args, **kwargs):
+                self.kwargs = kwargs
+                return CommandResult(returncode=0, stdout="", stderr="", timed_out=False)
+
+        command_runner = RecordingRunner()
+        runner = ValidationRunner(store, command_runner)
+
+        runner.run(
+            suite="agent_gate",
+            head_sha="gradlehome123",
+            command="./gradlew test",
+            timeout_seconds=10,
+            session_output_dir=session_output_dir,
+        )
+
+        env = command_runner.kwargs["env"]
+        assert env[GRADLE_USER_HOME_ENV] == str(
+            temp_worktree / ".issue-orchestrator" / "tool-homes" / "gradle"
+        )
 
 
 class TestValidationCache:

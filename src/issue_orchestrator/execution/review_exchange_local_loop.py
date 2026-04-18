@@ -47,6 +47,7 @@ from ..control.review_exchange_loop import (
     _write_round_log,
     _write_summary,
 )
+from ..control.isolation import build_runtime_tool_env
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,8 @@ def _build_session_env(
     }
     if web_port is not None:
         overrides["ORCHESTRATOR_API_PORT"] = str(web_port)
+
+    overrides.update(build_runtime_tool_env(worktree_path, base_env={}))
 
     # Ensure orchestrator binaries (coding-done, reviewer-done) are on PATH
     orch_bin = str(Path(sys.executable).parent)
