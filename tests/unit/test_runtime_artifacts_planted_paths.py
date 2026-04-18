@@ -110,6 +110,7 @@ def test_runtime_metadata_filter_still_strips_its_targets() -> None:
     """Regression: adding the planted filter must not break existing behaviour."""
     dirty = [
         ".issue-orchestrator/session-latest.json",
+        ".issue-orchestrator/tool-homes/gradle/daemon/9.4.0/registry.bin",
         ".claude/settings.json",
         "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
         "docs/README.md",

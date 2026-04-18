@@ -70,6 +70,7 @@ from .session_worktree_diagnostics import (
     write_worktree_diagnostic,
 )
 from .transition_log import log_transition
+from .isolation import build_runtime_tool_env, build_runtime_tool_env_assignments
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +320,7 @@ class SessionLauncher:
         """
         orch_bin = Path(sys.executable).parent
         orch_src = Path(__file__).resolve().parents[2]
+        runtime_tool_assignments = " ".join(build_runtime_tool_env_assignments(worktree_path))
         config_exports = ""
         if self.config.config_path is not None:
             config_name = self.config.config_path.name
@@ -337,6 +339,7 @@ class SessionLauncher:
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
             f" {ENV_PREFIX}WORKTREE='{worktree_path}'"
+            f" {runtime_tool_assignments}"
             f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
             f' PATH="{orch_bin}:$PATH"'
         )
@@ -1277,6 +1280,7 @@ class SessionLauncher:
                 cmd,
                 shell=True,
                 cwd=worktree_path,
+                env=build_runtime_tool_env(worktree_path),
             )
             if result.timed_out:
                 logger.error("[launch] Setup command timed out: %s", cmd)

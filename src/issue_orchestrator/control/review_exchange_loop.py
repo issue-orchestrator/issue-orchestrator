@@ -23,6 +23,7 @@ from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
 from ..ports import EventSink,  make_trace_event
 from ..events import EventName, EventContext
+from .isolation import build_runtime_tool_env
 
 logger = logging.getLogger(__name__)
 _CODER_PROTOCOL_RETRY_LIMIT = 2
@@ -820,6 +821,7 @@ def _run_agent_round(
     response_file.unlink(missing_ok=True)
     env_overrides = _build_env_overrides(
         run_dir,
+        worktree_path=worktree_path,
         role=role,
         agent_label=agent_label,
         web_port=web_port,
@@ -951,6 +953,7 @@ def _append_session_log(
 def _build_env_overrides(
     run_dir: Path,
     *,
+    worktree_path: Path,
     role: str,
     agent_label: str,
     web_port: int | None,
@@ -967,6 +970,7 @@ def _build_env_overrides(
         "ORCHESTRATOR_ISSUE_NUMBER": str(issue_number),
         "ORCHESTRATOR_SESSION_ID": session_name,
     }
+    env.update(build_runtime_tool_env(worktree_path, base_env={}))
     if web_port is not None:
         env["ORCHESTRATOR_API_PORT"] = str(web_port)
     return env

@@ -107,6 +107,7 @@ cat $RUN_DIR/orchestrator-tail.log | tail -50
 | Orchestrator won't start | Lock file exists | Check `.issue-orchestrator/locks/` |
 | GitHub API errors | Rate limiting | Check `gh api rate_limit` |
 | Session artifacts missing | Run dir not created | Check manifest.json exists in run dir |
+| Gradle daemons linger after worktree removal | Gradle daemons are host processes, even when their per-worktree registry is gone | Usually wait for Gradle idle timeout; inspect with `pgrep -fl GradleDaemon` before stopping matching processes |
 
 ---
 

@@ -13,6 +13,7 @@ import pytest
 
 from issue_orchestrator.control.review_exchange_loop import (
     REVIEW_RESPONSE_FILENAME,
+    _build_env_overrides,
     _is_interactive_provider,
     _parse_exchange_response,
     _resolve_provider,
@@ -20,6 +21,7 @@ from issue_orchestrator.control.review_exchange_loop import (
     _run_interactive_round,
     run_review_exchange_loop,
 )
+from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV, get_gradle_user_home
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -40,6 +42,24 @@ def _write_response_file(spec, json_text: str) -> None:
     if response_path:
         Path(response_path).parent.mkdir(parents=True, exist_ok=True)
         Path(response_path).write_text(json_text, encoding="utf-8")
+
+
+def test_review_exchange_env_overrides_include_per_worktree_gradle_home(tmp_path: Path) -> None:
+    """Review exchange agent runner env should use the worktree-local Gradle registry."""
+    worktree = tmp_path / "worktree"
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+
+    env = _build_env_overrides(
+        run_dir,
+        worktree_path=worktree,
+        role="reviewer",
+        agent_label="agent:reviewer",
+        web_port=None,
+        issue_number=4057,
+        session_name="review-exchange-1",
+    )
+
+    assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))
 
 
 def test_agent_round_returns_error_on_nonzero_exit(tmp_path: Path) -> None:
