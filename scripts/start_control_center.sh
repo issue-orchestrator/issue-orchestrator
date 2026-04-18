@@ -126,6 +126,28 @@ git_pull() {
   fi
 }
 
+create_cc_snapshot() {
+  # Freeze ${ROOT_DIR}/src into a snapshot dir, then prepend it to
+  # PYTHONPATH so every ``coding-done``/``reviewer-done``/hook invocation
+  # (from the CC and every agent subprocess that inherits its env) reads
+  # the frozen copy instead of whatever the base repo happens to be on
+  # right now. Without this, a base-repo branch switch after CC launch
+  # silently changes what every agent imports — the root cause of the
+  # tixmeup-243 stale-code incident that motivated issue #5950.
+  #
+  # ``stop_all_orchestrators`` has already killed every live CC, so all
+  # existing snapshot dirs are orphans safe to remove — the Python
+  # helper does both (clean + create) in one call.
+  echo "=== Creating frozen source snapshot ==="
+  local snapshot_pythonpath_entry
+  snapshot_pythonpath_entry=$(
+    "${VENV_PATH}/bin/python" -m issue_orchestrator.infra.cc_snapshot \
+      create --root "${ROOT_DIR}"
+  )
+  export SNAPSHOT_PYTHONPATH_ENTRY="${snapshot_pythonpath_entry}"
+  echo "  PYTHONPATH entry: ${SNAPSHOT_PYTHONPATH_ENTRY}"
+}
+
 ensure_venv() {
   if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
     echo "Creating venv at ${VENV_PATH}"
@@ -259,6 +281,7 @@ fi
 
 ensure_venv
 ensure_deps
+create_cc_snapshot
 ensure_port_free
 show_startup_info
 
@@ -266,4 +289,13 @@ show_startup_info
 # IO_DEV disables static file caching so CSS/JS changes are visible immediately
 export IO_DEV=1
 export ISSUE_ORCHESTRATOR_CC_REPO_ROOT="${ROOT_DIR}"
+# Prepend the frozen snapshot to PYTHONPATH. Python consults PYTHONPATH
+# before site-packages, so every ``import issue_orchestrator`` — in the
+# CC and in every subprocess that inherits this env (``coding-done``,
+# agent tmux sessions, pre-push hooks, validate runners) — resolves to
+# the frozen copy rather than the editable install's mutable target.
+# This is the behaviour that makes the CC immune to base-repo branch
+# drift mid-run (see issue #5950).
+export PYTHONPATH="${SNAPSHOT_PYTHONPATH_ENTRY}${PYTHONPATH:+:${PYTHONPATH}}"
+export ISSUE_ORCHESTRATOR_CC_SNAPSHOT="${SNAPSHOT_PYTHONPATH_ENTRY}"
 exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"

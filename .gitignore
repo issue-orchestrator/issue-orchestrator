@@ -46,6 +46,11 @@ coverage/
 .DS_Store
 Thumbs.db
 
+# Frozen source snapshot written by scripts/start_control_center.sh at
+# CC launch to immunise the serving path against base-repo branch drift
+# (see src/issue_orchestrator/infra/cc_snapshot.py). Ephemeral per-run.
+.control-center-snapshot/
+
 # Project specific - local state files
 .issue-orchestrator/validation/
 .issue-orchestrator/completion.json
