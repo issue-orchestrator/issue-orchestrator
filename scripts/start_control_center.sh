@@ -126,6 +126,41 @@ git_pull() {
   fi
 }
 
+create_cc_snapshot() {
+  # ORDERING INVARIANT — this MUST run after ``stop_all_orchestrators``
+  # and before ``exec``. ``clean`` inside the Python helper skips
+  # snapshot dirs whose ``cc.pid`` marker references a live process,
+  # but a snapshot created here without its marker yet would be a
+  # momentary orphan; because we always follow ``stop_all_orchestrators``
+  # the window is closed. If this call is ever reordered, a concurrent
+  # launch could race and delete a live CC's snapshot.
+  #
+  # Freezes ${ROOT_DIR}/src into a snapshot dir, then prepends it to
+  # PYTHONPATH so every ``coding-done``/``reviewer-done``/hook invocation
+  # (from the CC and every agent subprocess that inherits its env) reads
+  # the frozen copy instead of whatever the base repo happens to be on
+  # right now. Without this, a base-repo branch switch after CC launch
+  # silently changes what every agent imports — the root cause of the
+  # tixmeup-243 stale-code incident that motivated issue #5950.
+  echo "=== Creating frozen source snapshot ==="
+  local snapshot_pythonpath_entry
+  snapshot_pythonpath_entry=$(
+    "${VENV_PATH}/bin/python" -m issue_orchestrator.infra.cc_snapshot \
+      create --root "${ROOT_DIR}"
+  )
+  export SNAPSHOT_PYTHONPATH_ENTRY="${snapshot_pythonpath_entry}"
+  echo "  PYTHONPATH entry: ${SNAPSHOT_PYTHONPATH_ENTRY}"
+
+  # Claim ownership of this snapshot dir with our own PID. After
+  # ``exec`` below, the process replacing this shell keeps the same
+  # PID, so the marker remains valid for the full CC lifetime — a
+  # future ``clean`` call will then refuse to delete this dir while
+  # the CC is alive.
+  local snapshot_dir
+  snapshot_dir="$(dirname "${SNAPSHOT_PYTHONPATH_ENTRY}")"
+  echo "$$" > "${snapshot_dir}/cc.pid"
+}
+
 ensure_venv() {
   if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
     echo "Creating venv at ${VENV_PATH}"
@@ -259,6 +294,7 @@ fi
 
 ensure_venv
 ensure_deps
+create_cc_snapshot
 ensure_port_free
 show_startup_info
 
@@ -266,4 +302,19 @@ show_startup_info
 # IO_DEV disables static file caching so CSS/JS changes are visible immediately
 export IO_DEV=1
 export ISSUE_ORCHESTRATOR_CC_REPO_ROOT="${ROOT_DIR}"
+# Prepend the frozen snapshot to PYTHONPATH. Python consults PYTHONPATH
+# before site-packages, so every ``import issue_orchestrator`` — in the
+# CC and in every subprocess that inherits this env (``coding-done``,
+# agent tmux sessions, pre-push hooks, validate runners) — resolves to
+# the frozen copy rather than the editable install's mutable target.
+# This is the behaviour that makes the CC immune to base-repo branch
+# drift mid-run (see issue #5950).
+export PYTHONPATH="${SNAPSHOT_PYTHONPATH_ENTRY}${PYTHONPATH:+:${PYTHONPATH}}"
+# ``PYTHONPATH`` does the actual import-path work; ``ISSUE_ORCHESTRATOR_CC_SNAPSHOT``
+# is the observability companion — the CC logs it on startup and the
+# value is inspected by operators / tests to confirm the freeze landed.
+# Kept separate because a future change to ``PYTHONPATH`` composition
+# (extra prefixes, cache dirs) shouldn't pollute the observability
+# contract.
+export ISSUE_ORCHESTRATOR_CC_SNAPSHOT="${SNAPSHOT_PYTHONPATH_ENTRY}"
 exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"
