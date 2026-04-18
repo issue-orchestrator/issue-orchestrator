@@ -95,8 +95,125 @@ def _allow_flag_present(start_dir: Path) -> bool:
         search_dir = search_dir.parent
 
 
+# Shared suffix appended to every dirty-tree-workaround rejection
+# reason. Must tell the agent exactly what to do next — without this,
+# a blocked agent just cycles through novel workarounds we haven't
+# banned yet, which is the whole failure mode this hook exists to
+# prevent. Treat as a load-bearing invariant; every new dirty-tree
+# workaround pattern MUST use this suffix.
+_DIRTY_WORKAROUND_SUFFIX = (
+    " If the dirty tree is legitimately unresolvable, escalate with "
+    "`coding-done needs_human --question ...`. Do NOT hide files."
+)
+
+# Static policy: dirty-tree-workaround patterns. Module-level so the
+# regex compilation is amortised across calls and so the policy is
+# visibly a single-source-of-truth list, not a per-call decision.
+_DIRTY_WORKAROUND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # ``.git/info/exclude`` and its linked-worktree form. Any mention
+    # of this path in a bash command is an attempt to hide untracked
+    # files from the dirty-tree guard; agents have no legitimate
+    # reason to read or write it.
+    (
+        re.compile(r"\.git/(worktrees/[^/\s]+/)?info/exclude\b"),
+        "BLOCKED: editing .git/info/exclude hides untracked files "
+        "from the dirty-tree guard." + _DIRTY_WORKAROUND_SUFFIX,
+    ),
+    # Shell redirection (``>`` / ``>>``) to *any* ``.gitignore`` —
+    # subdirectory forms and absolute paths included. Reading
+    # (``cat``/``grep``/``less``/``head``) and observation commands
+    # (``git check-ignore``/``ls-files``/``status``) remain allowed
+    # because they don't match this pattern.
+    (
+        re.compile(r">>?\s*(\S*/)?\.gitignore\b"),
+        "BLOCKED: writing to .gitignore to hide files is not "
+        "allowed from an agent session." + _DIRTY_WORKAROUND_SUFFIX,
+    ),
+    # ``tee`` is the other common "append to file" shell idiom. Any
+    # ``tee`` where ``.gitignore`` appears as an argument is a write
+    # attempt regardless of flags (``-a``, ``--append``, or plain
+    # overwrite).
+    (
+        re.compile(r"(?:^|[;&|\s])tee\b[^\n|;&]*\s(\S*/)?\.gitignore\b"),
+        "BLOCKED: writing to .gitignore via `tee` to hide files is not "
+        "allowed from an agent session." + _DIRTY_WORKAROUND_SUFFIX,
+    ),
+    # ``sed -i`` on ``.gitignore``, flag- and token-order tolerant.
+    # GNU's bare ``-i``, BSD/macOS's ``-i ''``, and ``-i.bak`` backup-
+    # suffix form all begin with the literal ``-i`` token. Agents also
+    # commonly pass ``-e '<expr>'`` before ``-i``; the bounded lazy
+    # match ``[^|;&\n]*?`` lets arbitrary intervening tokens appear
+    # while staying inside a single shell command (not crossing pipes,
+    # command separators, or newlines into unrelated commands).
+    (
+        re.compile(
+            r"sed\b[^|;&\n]*?\s-i\S*[^|;&\n]*?\s(?:\S*/)?\.gitignore(?:\s|$)"
+        ),
+        "BLOCKED: editing .gitignore in place to hide files is "
+        "not allowed from an agent session." + _DIRTY_WORKAROUND_SUFFIX,
+    ),
+    # ``git update-index --assume-unchanged`` / ``--skip-worktree``
+    # mark tracked files invisible to ``git status`` without a commit.
+    # Both are guard-hiding; ``git ls-files -v`` (observation) is
+    # unaffected because it doesn't mutate the index.
+    (
+        re.compile(
+            r"git\s+update-index\b[^\n]*(?:--assume-unchanged|--skip-worktree)(?:\s|$)"
+        ),
+        "BLOCKED: `git update-index --assume-unchanged` and "
+        "`--skip-worktree` hide tracked files from the dirty-tree "
+        "guard." + _DIRTY_WORKAROUND_SUFFIX,
+    ),
+]
+
+_STATIC_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"git\s+(commit|push).*--no-verify"),
+        "BLOCKED: --no-verify is forbidden. Pre-push hooks must run.",
+    ),
+    (re.compile(r"git\s+--no-verify"), "BLOCKED: --no-verify is forbidden."),
+    (
+        re.compile(r"git\s+commit.*\s-n\s"),
+        "BLOCKED: -n (--no-verify) is forbidden.",
+    ),
+    (
+        re.compile(r"git\s+-c\s+core\.hooksPath=/dev/null"),
+        "BLOCKED: Disabling hooks via core.hooksPath is forbidden.",
+    ),
+    (
+        re.compile(r"git\s+config\b[^\n]*\bcore\.hooksPath\b[^\n]*/dev/null\b"),
+        "BLOCKED: Disabling hooks via core.hooksPath=/dev/null is forbidden.",
+    ),
+    (
+        re.compile(r"gh\s+pr\s+merge"),
+        "BLOCKED: Agents cannot merge PRs. Only humans can merge.",
+    ),
+    (
+        re.compile(r"gh\s+api\s+.*pulls/[0-9]+/merge"),
+        "BLOCKED: Agents cannot merge PRs via API. Only humans can merge.",
+    ),
+    *_DIRTY_WORKAROUND_PATTERNS,
+]
+
+
 def evaluate_command(command: str, cwd: Path | None = None) -> HookDecision:
-    """Evaluate a command string and return allow/deny decision."""
+    """Evaluate a command string and return allow/deny decision.
+
+    Blocks three categories of forbidden bash commands:
+
+    1. Git-guardrail bypass: ``--no-verify``, ``core.hooksPath=/dev/null``.
+    2. GitHub action boundary: ``gh pr merge``, merge via ``gh api``.
+    3. ``coding-done`` dirty-tree-guard workarounds: edits to
+       ``.git/info/exclude``, writes to ``.gitignore`` (shell
+       redirection, ``tee``, or ``sed -i``), and
+       ``git update-index --assume-unchanged`` / ``--skip-worktree``.
+
+    Category 3 exists because Claude Code's native sensitive-file gate
+    blocks the underlying edits *interactively* and silently hangs the
+    session for 90 minutes; firing this hook first converts the hang
+    into a fail-fast rejection with a clear next step (the shared
+    escalation suffix — see ``_DIRTY_WORKAROUND_SUFFIX``).
+    """
     if not command:
         return HookDecision(True, "")
 
@@ -105,97 +222,7 @@ def evaluate_command(command: str, cwd: Path | None = None) -> HookDecision:
     if is_dry_run_no_verify_push(command) and _allow_flag_present(cwd):
         return HookDecision(True, "")
 
-    # All reasons for dirty-tree-workaround rejections share the same
-    # escalation instruction: this is the ONLY valid action when the
-    # agent genuinely cannot clean the tree. If we leave this out, the
-    # agent sees "BLOCKED" with no next step and resorts to novel
-    # workarounds we haven't thought to ban yet.
-    dirty_workaround_suffix = (
-        " If the dirty tree is legitimately unresolvable, escalate with "
-        "`coding-done needs_human --question ...`. Do NOT hide files."
-    )
-
-    patterns = [
-        (
-            re.compile(r"git\s+(commit|push).*--no-verify"),
-            "BLOCKED: --no-verify is forbidden. Pre-push hooks must run.",
-        ),
-        (re.compile(r"git\s+--no-verify"), "BLOCKED: --no-verify is forbidden."),
-        (
-            re.compile(r"git\s+commit.*\s-n\s"),
-            "BLOCKED: -n (--no-verify) is forbidden.",
-        ),
-        (
-            re.compile(r"git\s+-c\s+core\.hooksPath=/dev/null"),
-            "BLOCKED: Disabling hooks via core.hooksPath is forbidden.",
-        ),
-        (
-            re.compile(r"git\s+config\b[^\n]*\bcore\.hooksPath\b[^\n]*/dev/null\b"),
-            "BLOCKED: Disabling hooks via core.hooksPath=/dev/null is forbidden.",
-        ),
-        (
-            re.compile(r"gh\s+pr\s+merge"),
-            "BLOCKED: Agents cannot merge PRs. Only humans can merge.",
-        ),
-        (
-            re.compile(r"gh\s+api\s+.*pulls/[0-9]+/merge"),
-            "BLOCKED: Agents cannot merge PRs via API. Only humans can merge.",
-        ),
-        # ---- Dirty-tree workaround blocks (#5949 item 1) ----------------
-        #
-        # ``.git/info/exclude`` — the per-worktree exclude file. Any
-        # mention of this path in a bash command is an attempt to hide
-        # untracked files from the dirty-tree guard; agents have no
-        # legitimate reason to read or write it. The regex also matches
-        # the linked-worktree form ``.git/worktrees/<name>/info/exclude``
-        # so the tixmeup-243 workaround pattern is caught verbatim.
-        (
-            re.compile(r"\.git/(worktrees/[^/\s]+/)?info/exclude\b"),
-            (
-                "BLOCKED: editing .git/info/exclude hides untracked files "
-                "from the dirty-tree guard." + dirty_workaround_suffix
-            ),
-        ),
-        # ``.gitignore`` writes via shell redirection. Reading
-        # (``cat .gitignore``, ``grep pattern .gitignore``) remains
-        # allowed — only the destructive/append forms are blocked.
-        # ``sed -i`` on ``.gitignore`` is caught by a sibling pattern
-        # below so the agent can't route around the redirect rule.
-        (
-            re.compile(r">>?\s*(\./)?\.gitignore\b"),
-            (
-                "BLOCKED: writing to .gitignore to hide files is not "
-                "allowed from an agent session." + dirty_workaround_suffix
-            ),
-        ),
-        (
-            # ``\b`` is a word boundary between word and non-word chars;
-            # since both spaces and leading ``.`` / ``-`` are non-word,
-            # we instead anchor with explicit whitespace or line-end.
-            re.compile(r"sed\s+-i\b[^\n]*\s\.gitignore(?:\s|$)"),
-            (
-                "BLOCKED: editing .gitignore in place to hide files is "
-                "not allowed from an agent session." + dirty_workaround_suffix
-            ),
-        ),
-        # ``git update-index --assume-unchanged`` / ``--skip-worktree``
-        # mark tracked files invisible to ``git status`` without
-        # committing them. Both are guard-hiding and neither has a
-        # legitimate agent use case; ``git ls-files -v`` for observation
-        # is unaffected because it doesn't mutate the index.
-        (
-            re.compile(
-                r"git\s+update-index\b[^\n]*(?:--assume-unchanged|--skip-worktree)(?:\s|$)"
-            ),
-            (
-                "BLOCKED: `git update-index --assume-unchanged` and "
-                "`--skip-worktree` hide tracked files from the dirty-tree "
-                "guard." + dirty_workaround_suffix
-            ),
-        ),
-    ]
-
-    for pattern, reason in patterns:
+    for pattern, reason in _STATIC_PATTERNS:
         if pattern.search(command):
             return HookDecision(False, reason)
 

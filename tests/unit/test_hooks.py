@@ -609,6 +609,50 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         decision = evaluate_command("echo 'src/' > .gitignore")
         assert not decision.allowed
+        # Escalation-suffix invariant: every blocked reason must tell
+        # the agent its valid next step.
+        assert "coding-done needs_human" in decision.reason
+
+    def test_hook_blocks_append_to_subdirectory_gitignore(
+        self, adapter, temp_project
+    ):
+        """Arbitrary-path form — subdirectory ``.gitignore`` files are
+        just as guard-hiding as the top-level one, and an agent running
+        from any subdirectory can write to them."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'build/' >> subdir/.gitignore")
+        assert not decision.allowed
+        assert "gitignore" in decision.reason.lower()
+
+    def test_hook_blocks_append_to_absolute_path_gitignore(
+        self, adapter, temp_project
+    ):
+        """Absolute paths are another easy evasion of a path-literal
+        regex — pin that the broadened pattern catches them."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command(
+            "echo 'src/' >> /workspace/project/.gitignore"
+        )
+        assert not decision.allowed
+
+    def test_hook_blocks_tee_append_to_gitignore(self, adapter, temp_project):
+        """``tee -a`` is the idiomatic "append to file from stdin"
+        alternative to shell redirection — agents routing around the
+        ``>``/``>>`` rule reach for this next."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' | tee -a .gitignore")
+        assert not decision.allowed
+        assert "coding-done needs_human" in decision.reason
+
+    def test_hook_blocks_tee_overwrite_gitignore(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' | tee .gitignore")
+        assert not decision.allowed
+
+    def test_hook_blocks_tee_with_long_append_flag(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("echo 'src/' | tee --append .gitignore")
+        assert not decision.allowed
 
     def test_hook_blocks_sed_in_place_gitignore(self, adapter, temp_project):
         """``sed -i`` routes around the redirect-operator rule — must
@@ -617,6 +661,28 @@ class TestClaudeCodeAdapter:
         decision = evaluate_command("sed -i '/^src\\//d' .gitignore")
         assert not decision.allowed
         assert ".gitignore" in decision.reason
+
+    def test_hook_blocks_sed_in_place_gitignore_flag_order(
+        self, adapter, temp_project
+    ):
+        """``sed -e '...' -i ...`` — the ``-i`` flag after a preceding
+        expression flag. Must still match, otherwise flag reordering is
+        a trivial evasion."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("sed -e '/^src\\//d' -i '' .gitignore")
+        assert not decision.allowed
+        assert ".gitignore" in decision.reason
+
+    def test_hook_blocks_sed_in_place_gitignore_bsd_backup_suffix(
+        self, adapter, temp_project
+    ):
+        """BSD/macOS ``sed -i.bak`` form takes a backup-suffix argument
+        appended to the ``-i`` token. ``-i\\S*`` in the regex handles
+        this; pin it so a refactor doesn't accidentally narrow to
+        bare ``-i``."""
+        adapter.install_hooks(temp_project)
+        decision = evaluate_command("sed -i.bak '/^src/d' .gitignore")
+        assert not decision.allowed
 
     def test_hook_blocks_update_index_assume_unchanged(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
