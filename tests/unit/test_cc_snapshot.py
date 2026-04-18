@@ -98,6 +98,51 @@ class TestCleanSnapshots:
         """Fresh repo — nothing to clean, must not raise."""
         assert clean_snapshots(tmp_path) == []
 
+    def test_skips_snapshot_owned_by_live_pid(self, repo: Path) -> None:
+        """Second line of defence: if a stray ``clean`` fires while a
+        CC is running, the live CC's snapshot must not be torn out
+        from under it. The shell script writes the CC's PID into
+        ``cc.pid`` after creation; ``clean`` honours it.
+        """
+        import os
+
+        live = create_snapshot(repo, now=1.0)
+        dead = create_snapshot(repo, now=2.0)
+        # Our own PID is unambiguously live.
+        (live / "cc.pid").write_text(f"{os.getpid()}\n")
+        # A PID that was never in use: 1 is init, but 0 / negative /
+        # out-of-range PIDs are safer stand-ins. We pick a very high
+        # PID that is astronomically unlikely to exist.
+        (dead / "cc.pid").write_text("999999999\n")
+
+        removed = clean_snapshots(repo)
+
+        assert live.exists(), "live-PID snapshot must survive cleanup"
+        assert not dead.exists(), "dead-PID snapshot must be removed"
+        assert removed == [dead]
+
+    def test_missing_pid_marker_treated_as_orphan(self, repo: Path) -> None:
+        """Historical behaviour: a snapshot dir without a PID marker
+        is orphaned (created by a previous version of the script, or
+        by a CC that crashed before exec). Clean it."""
+        orphan = create_snapshot(repo, now=1.0)
+        assert not (orphan / "cc.pid").exists()
+
+        removed = clean_snapshots(repo)
+
+        assert removed == [orphan]
+
+    def test_malformed_pid_marker_treated_as_orphan(self, repo: Path) -> None:
+        """Corruption or external tampering of ``cc.pid`` must fall
+        through to cleanup — otherwise a single bad write to the marker
+        could lock a snapshot dir undeletable forever."""
+        bad = create_snapshot(repo, now=1.0)
+        (bad / "cc.pid").write_text("not-a-number\n")
+
+        removed = clean_snapshots(repo)
+
+        assert removed == [bad]
+
 
 class TestCli:
     """Integration-adjacent: exercise the ``python -m`` contract the

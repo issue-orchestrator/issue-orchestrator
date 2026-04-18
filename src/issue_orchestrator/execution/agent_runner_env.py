@@ -45,6 +45,28 @@ GIT_SAFE_ENV: dict[str, str] = {
     "GIT_ASKPASS": "/usr/bin/false",  # Fail any credential requests
 }
 
+# Environment variables that must ALWAYS propagate, even in allowlist
+# (passthrough_vars) mode. These encode CC-launch-time invariants that
+# subprocesses depend on being correct regardless of what any individual
+# agent spec chooses to pass through explicitly.
+#
+# Losing any of these silently breaks the serving path — the failure
+# mode is catastrophic (stale code imports, hooks unable to find
+# Python) with no log signal — so they are enforced centrally rather
+# than trusted to every caller to remember.
+ALWAYS_PASSTHROUGH_ENV_VARS: list[str] = [
+    # Frozen-snapshot import path set by scripts/start_control_center.sh
+    # at CC launch (#5950). Dropping it regresses to the editable
+    # install and reintroduces base-repo branch drift into every agent
+    # subprocess. See src/issue_orchestrator/infra/cc_snapshot.py.
+    "PYTHONPATH",
+    "ISSUE_ORCHESTRATOR_CC_SNAPSHOT",
+    # Hook Python resolution for foreign target repos (#5944). Required
+    # by pre-push hook scripts that live outside the venv and cannot
+    # otherwise find the orchestrator's interpreter.
+    "ISSUE_ORCHESTRATOR_PYTHON",
+]
+
 
 def build_filtered_env(
     *,
@@ -88,8 +110,13 @@ def build_filtered_env(
 
     # Build the base environment
     if passthrough_vars is not None:
-        # Allowlist mode: only specified vars pass through
-        env = {k: v for k, v in base_env.items() if k in passthrough_vars}
+        # Allowlist mode: only specified vars pass through, PLUS the
+        # always-passthrough set (snapshot PYTHONPATH, ISSUE_ORCHESTRATOR_PYTHON, …).
+        # See ALWAYS_PASSTHROUGH_ENV_VARS for the rationale — these are
+        # CC-launch-time invariants that must not be lost to an
+        # allowlist a caller forgot to update.
+        allowed = set(passthrough_vars) | set(ALWAYS_PASSTHROUGH_ENV_VARS)
+        env = {k: v for k, v in base_env.items() if k in allowed}
     else:
         # Denylist mode: all vars pass except scrubbed ones
         scrub_set = set(scrub_vars)
