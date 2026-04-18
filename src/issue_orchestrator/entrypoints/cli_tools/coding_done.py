@@ -34,16 +34,14 @@ from .agent_done import (
 )
 from ...infra.env import get_env
 from ...infra.logging_config import issue_log
+from ...infra.runtime_artifacts import (
+    is_orchestrator_untracked_planted,
+    is_runtime_managed_dirty_path,
+)
 
 import logging
 
 logger = logging.getLogger(__name__)
-
-WORKTREE_SETUP_DIRTY_CHECK_PREFIXES: tuple[str, ...] = (
-    ".issue-orchestrator/",
-    ".claude/",
-    "src/issue_orchestrator/entrypoints/cli_tools/",
-)
 
 CODING_STATUSES = [
     AgentStatus.COMPLETED,
@@ -53,32 +51,51 @@ CODING_STATUSES = [
 
 
 def check_dirty_files() -> list[str]:
-    """Check for uncommitted files in the working tree.
+    """Return dirty porcelain lines the agent is responsible for.
 
-    Returns list of dirty file paths, or empty list if clean.
-    Excludes infrastructure paths that are modified by session setup,
-    not by agent work:
-    - ``.issue-orchestrator/`` — runtime artifacts (session logs, manifests)
-    - ``.claude/`` — Claude Code settings modified during session init
+    Filters two categories:
+
+    - Runtime metadata under ``.issue-orchestrator/`` and ``.claude/`` —
+      always ignored, never source.
+    - Orchestrator-planted sync targets under
+      ``src/issue_orchestrator/entrypoints/cli_tools/`` — ignored **only
+      when untracked**. A tracked modification in the orchestrator's own
+      repo remains a legitimate developer edit and still counts as dirty.
+
+    Uses ``--untracked-files=all`` so git lists each untracked file
+    individually rather than summarising a subtree to its topmost
+    untracked directory (``?? src/``). The summary form silently broke
+    the prior prefix filter — ``src/`` doesn't match
+    ``src/issue_orchestrator/entrypoints/cli_tools/``.
     """
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode != 0:
             return []  # Can't determine — don't block
-        lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
-        # Filter out infrastructure artifacts created by session setup.
-        # The porcelain format is "XY path" — extract the path portion.
-        return [
-            line for line in lines
-            if not any(prefix in line for prefix in WORKTREE_SETUP_DIRTY_CHECK_PREFIXES)
-        ]
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return []  # Can't determine — don't block
+
+    dirty: list[str] = []
+    for line in result.stdout.splitlines():
+        if len(line) < 4 or not line.strip():
+            continue
+        # Parse status from the raw line — porcelain reserves columns 0-1
+        # for the two-char XY code and a single-space separator at col 2.
+        # Display uses the stripped form.
+        status_code = line[:2]
+        path = line[3:]
+        is_untracked = status_code == "??"
+        if is_runtime_managed_dirty_path(path):
+            continue
+        if is_untracked and is_orchestrator_untracked_planted(path):
+            continue
+        dirty.append(line.strip())
+    return dirty
 
 
 def build_parser() -> argparse.ArgumentParser:

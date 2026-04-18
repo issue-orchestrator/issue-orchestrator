@@ -202,6 +202,8 @@ class GitWorkingCopy:
         Returns:
             Sorted unique file paths. Returns empty list on error.
         """
+        from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
+
         try:
             files: set[str] = set()
 
@@ -217,7 +219,15 @@ class GitWorkingCopy:
                     worktree,
                     ["ls-files", "--others", "--exclude-standard", "-z"],
                 )
-                files.update(self._list_paths_from_nul_output(untracked.stdout))
+                untracked_paths = self._list_paths_from_nul_output(untracked.stdout)
+                # ``sync_cli_tools`` plants files into every worktree. In a
+                # foreign repo they appear here as untracked and must not
+                # count as dirty. The filter is scoped to this untracked
+                # branch so tracked-modified versions of the same paths in
+                # the orchestrator's own repo (picked up above via
+                # ``diff --name-only``) still fire the guard.
+                untracked_paths = filter_orchestrator_untracked_planted(untracked_paths)
+                files.update(untracked_paths)
 
             return sorted(files)
         except GitError:

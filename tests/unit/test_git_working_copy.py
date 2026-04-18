@@ -286,6 +286,52 @@ class TestListDirtyFiles:
 
             assert files == []
 
+    def test_list_dirty_files_all_mode_filters_untracked_planted(
+        self, git_wc, worktree_path
+    ):
+        """Untracked orchestrator-planted paths are filtered in all-mode.
+
+        ``sync_cli_tools`` copies cli_tools into every worktree. In a foreign
+        target repo they appear here as untracked and must not fire the
+        dirty-tree guard — otherwise coding-done fails in every worktree.
+        """
+        planted = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(
+                    returncode=0,
+                    stdout=f"new-real-file.txt\0{planted}\0",
+                    stderr="",
+                ),
+            ]
+
+            files = git_wc.list_dirty_files(worktree_path, "all")
+
+            assert files == ["new-real-file.txt"]
+
+    def test_list_dirty_files_tracked_mode_keeps_planted_modifications(
+        self, git_wc, worktree_path
+    ):
+        """Tracked modifications to planted paths survive the filter.
+
+        In the orchestrator's own repo these paths are tracked source —
+        a developer edit is legitimate and must still fire the guard. The
+        filter applies only to the untracked-enumeration branch, which is
+        never consulted in tracked-mode.
+        """
+        planted = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=f"{planted}\0", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ]
+
+            files = git_wc.list_dirty_files(worktree_path, "tracked")
+
+            assert files == [planted]
+
 
 class TestGetCommitsAheadOfMain:
     """Tests for get_commits_ahead_of_main method."""
