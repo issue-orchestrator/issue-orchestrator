@@ -84,9 +84,15 @@ def check_dirty_files() -> list[str]:
     for line in result.stdout.splitlines():
         if len(line) < 4 or not line.strip():
             continue
-        # Parse status from the raw line — porcelain reserves columns 0-1
-        # for the two-char XY code and a single-space separator at col 2.
-        # Display uses the stripped form.
+        # Porcelain reserves columns 0-1 for the two-char XY status code
+        # and col 2 for a space separator; line[3:] is the path. The only
+        # status class that affects filtering here is ``??`` (untracked) —
+        # planted-path filtering is gated on it explicitly below. Every
+        # other code (``M ``, `` M``, ``A ``, ``R ``, ``C ``, ``U ``, …)
+        # represents a real tracked change and is reported as dirty with
+        # no rename-target parsing applied. Rename lines carry their
+        # ``old -> new`` form verbatim into the output; callers display
+        # but do not re-parse them.
         status_code = line[:2]
         path = line[3:]
         is_untracked = status_code == "??"

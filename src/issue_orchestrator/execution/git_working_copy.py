@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ..adapters.git.git_cli import GitCLI
 from ..execution.command_runner import LocalCommandRunner
+from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.git import Git, GitError, GitResult
 from ..ports.working_copy import (
     CommitInfo,
@@ -202,8 +203,6 @@ class GitWorkingCopy:
         Returns:
             Sorted unique file paths. Returns empty list on error.
         """
-        from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
-
         try:
             files: set[str] = set()
 

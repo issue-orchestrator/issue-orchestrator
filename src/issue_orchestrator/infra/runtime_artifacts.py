@@ -33,8 +33,16 @@ RUNTIME_DIRTY_IGNORE_EXACT: frozenset[str] = frozenset({
 })
 
 RUNTIME_DIRTY_IGNORE_PREFIXES: tuple[str, ...] = (
-    ".issue-orchestrator/backups/",
-    ".issue-orchestrator/sessions/",
+    # Covers runtime artefacts git may surface from within the worktree:
+    # sessions/, backups/, diagnostics/, plus anything ad-hoc the
+    # orchestrator writes at the root (e.g. ``control-center.log``) that
+    # hasn't (yet) been promoted into .gitignore. Broader than strictly
+    # needed for subdirs already gitignored, but mirrors the historical
+    # substring filter so every guard surface agrees on what counts as
+    # runtime metadata — tracked ``config/*.yaml`` edits in the
+    # orchestrator's own repo still slip past this filter, matching
+    # long-standing behaviour.
+    ".issue-orchestrator/",
     ".claude/",
 )
 
@@ -74,10 +82,17 @@ def is_orchestrator_untracked_planted(path: str) -> bool:
     Accepts both individual-file paths
     (``src/issue_orchestrator/entrypoints/cli_tools/coding_done.py``)
     and the directory-summary form git emits when ``status --porcelain``
-    collapses an entirely-untracked tree. A bare ``src/`` entry matches
-    because a known planted prefix starts with it (and, being in the
-    untracked list, can only mean the planted subtree is the lone
-    untracked content under ``src/``).
+    collapses an entirely-untracked subtree to its topmost directory
+    (``src/``, ``src/issue_orchestrator/``).
+
+    **Summary-form is defense-in-depth, not the hot path.** Every current
+    caller avoids the collapse: ``check_dirty_files`` passes
+    ``--untracked-files=all`` and ``GitWorkingCopy.list_dirty_files``
+    enumerates with ``ls-files --others``. The summary branch exists so
+    a future caller that forgets the flag and takes git's default
+    (``--untracked-files=normal``) still gets the right answer. Do not
+    remove it under the assumption that per-file input is always
+    available.
     """
     normalized = path.replace("\\", "/")
     if not normalized:
