@@ -556,7 +556,8 @@ class TestNarrativeEnrichment:
             EventName.REVIEW_CHANGES_REQUESTED,
             {"rounds": 3, "cached": True},
         )
-        assert "replayed" in narrative.lower() or "reused" in narrative.lower()
+        assert "reused" in narrative.lower()
+        assert "round 3" not in narrative.lower()
 
     def test_pr_created_includes_pr_number(self) -> None:
         narrative = self._write_and_get_narrative(

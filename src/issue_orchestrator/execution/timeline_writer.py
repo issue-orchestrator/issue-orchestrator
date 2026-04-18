@@ -172,7 +172,7 @@ def _enrich_review_rework_completed(data: dict[str, Any]) -> str | None:
 
 def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Prior review requested changes (replayed from earlier run)"
+        return "Changes-requested verdict reused from prior run (rework still pending)"
     rounds = data.get("rounds")
     return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
 
