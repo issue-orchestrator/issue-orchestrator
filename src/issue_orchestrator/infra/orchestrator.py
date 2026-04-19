@@ -33,7 +33,6 @@ from ..ports.issue import Issue
 from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
-from ..control.dependency_evaluator import DependencyEvaluator
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
@@ -103,12 +102,7 @@ class Orchestrator:
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
         # If deps is constructed, all dependencies are present.
-        dep_eval = DependencyEvaluator(
-            self.deps.repository_host,
-            self.deps.events,
-            foundation_milestone=self.config.foundation_milestone,
-        )
-        init_orchestrator_components(self, dep_eval)
+        init_orchestrator_components(self)
 
     @property
     def event_hub(self) -> EventHub:
@@ -182,7 +176,7 @@ class Orchestrator:
             self.deps.manifest_downloader,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
-            self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
+            self._get_review_machine, self._refresh_issue, self.scheduler.dependency_evaluator,
             claim_manager=self.deps.claim_manager,
             provider_resilience=self.deps.provider_resilience,
             remove_session_machine=self.deps.state_machine_manager.remove_session_machine,

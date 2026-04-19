@@ -11,6 +11,7 @@ from issue_orchestrator.entrypoints.bootstrap import (
     build_orchestrator,
     build_orchestrator_for_testing,
     _check_github_token_scopes,
+    _create_planner,
 )
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -358,6 +359,47 @@ class TestBuildOrchestratorForTesting:
             )
 
             assert orch.deps.planner is not None
+
+    def test_build_orchestrator_for_testing_wires_dependency_evaluator_to_default_planner(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Default planner and scheduler share dependency gating."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                planner=None,
+            )
+
+            assert orch.scheduler.dependency_evaluator is not None
+            assert orch.deps.planner.dependency_evaluator is orch.scheduler.dependency_evaluator
+
+    def test_build_orchestrator_for_testing_wires_dependency_evaluator_to_session_launcher(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Launch-time CAS dependency checks use the scheduler evaluator."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                planner=None,
+            )
+
+            assert orch._session_launcher._dependency_evaluator is orch.scheduler.dependency_evaluator  # noqa: SLF001
+
+    def test_create_planner_wires_dependency_evaluator_to_scheduler(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Production planner factory enables scheduler dependency gating."""
+        planner, scheduler, dependency_evaluator, _label_sync = _create_planner(
+            config=minimal_config,
+            github=mock_github,
+            events=NullEventSink(),
+        )
+
+        assert dependency_evaluator is not None
+        assert scheduler.dependency_evaluator is dependency_evaluator
+        assert planner.dependency_evaluator is dependency_evaluator
 
     def test_build_orchestrator_for_testing_with_custom_session_manager(
         self, minimal_config: Config, mock_github: MagicMock

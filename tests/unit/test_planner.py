@@ -19,6 +19,7 @@ from issue_orchestrator.control.planner_types import (
     SkippedItem,
 )
 from issue_orchestrator.control.scheduler import Scheduler
+from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.control.actions import ActionType, LaunchSessionAction, SessionType
 from issue_orchestrator.domain.models import (
     Issue,
@@ -109,6 +110,20 @@ def make_snapshot(
         paused=paused,
         **kwargs,
     )
+
+
+class StaticIssueChecker:
+    """Issue state checker for dependency-gating planner tests."""
+
+    def __init__(self, states: dict[int, str], milestone: str | None = "M1"):
+        self.states = states
+        self.milestone = milestone
+
+    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        return self.states.get(issue_number)
+
+    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        return self.milestone
 
 
 class TestPlanEmpty:
@@ -404,6 +419,99 @@ class TestPlanHelpers:
         assert item.item_type == "issue"
         assert item.number == 42
         assert "blocked" in item.reason
+
+
+class TestPlannerDependencyGating:
+    """Regression coverage for planner/scheduler dependency wiring."""
+
+    def test_planner_dependency_evaluator_blocks_unsatisfied_dependency(self):
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({100: "open"}),
+            events=Mock(),
+        )
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        planner = Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        snapshot = make_snapshot(
+            issues=[
+                make_issue(
+                    2,
+                    title="Dependent issue",
+                    body="Depends-on: #100",
+                    milestone="M1",
+                ),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        assert plan.actions_of_type(ActionType.LAUNCH_SESSION) == []
+        assert plan.skipped == (
+            SkippedItem(
+                item_type="issue",
+                number=2,
+                reason="dependency: Blocked - waiting on: #100",
+            ),
+        )
+        assert scheduler.dependency_evaluator is evaluator
+
+    def test_planner_rejects_dependency_evaluator_without_scheduler_wiring(self):
+        config = make_config()
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({100: "open"}),
+            events=Mock(),
+        )
+        scheduler = Scheduler(config)
+
+        with pytest.raises(ValueError, match="Scheduler dependency evaluator is required"):
+            Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        assert scheduler.dependency_evaluator is None
+
+    def test_planner_uses_scheduler_dependency_evaluator_when_not_passed_directly(self):
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({100: "open"}),
+            events=Mock(),
+        )
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            issues=[
+                make_issue(
+                    2,
+                    title="Dependent issue",
+                    body="Depends-on: #100",
+                    milestone="M1",
+                ),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        assert plan.actions_of_type(ActionType.LAUNCH_SESSION) == []
+        assert planner.dependency_evaluator is evaluator
+
+    def test_planner_rejects_mismatched_scheduler_dependency_evaluator(self):
+        config = make_config()
+        scheduler_evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({100: "open"}),
+            events=Mock(),
+        )
+        planner_evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({100: "open"}),
+            events=Mock(),
+        )
+        scheduler = Scheduler(config, dependency_evaluator=scheduler_evaluator)
+
+        with pytest.raises(ValueError, match="dependency evaluators"):
+            Planner(
+                config=config,
+                scheduler=scheduler,
+                dependency_evaluator=planner_evaluator,
+            )
 
 
 class TestExplainSkip:

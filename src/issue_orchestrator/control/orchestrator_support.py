@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from .session_manager import SessionManager
     from .fact_gatherer import FactGatherer
     from .state_machine_manager import StateMachineManager
-    from .dependency_evaluator import DependencyEvaluator
     from .health_gate import HealthGate, HealthDecision
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.issue import Issue
@@ -41,7 +40,7 @@ from ..domain.models import (
 logger = logging.getLogger(__name__)
 
 
-def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEvaluator") -> None:
+def init_orchestrator_components(orch: "Orchestrator") -> None:
     """Initialize orchestrator components - moved per method table.
 
     This is the core logic from Orchestrator.__post_init__.

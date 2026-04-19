@@ -249,8 +249,6 @@ def _create_planner(
     label_manager: "LabelManager | None" = None,
 ) -> tuple[Planner, Scheduler, DependencyEvaluator | None, LabelSync | None]:
     """Create planner and supporting control plane components."""
-    scheduler = Scheduler(config=config)
-
     issue_resolver = None
     if github and config.repo:
         issue_resolver = GitHubIssueResolver(
@@ -266,6 +264,8 @@ def _create_planner(
         repo=config.repo,
         foundation_milestone=config.foundation_milestone,
     ) if github else None
+
+    scheduler = Scheduler(config=config, dependency_evaluator=dependency_evaluator)
 
     label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager) if github else None
 
@@ -827,12 +827,14 @@ def build_orchestrator_for_testing(
     from ..control.label_manager import LabelManager as _LabelManager
     label_manager = _LabelManager(config)
 
+    default_label_sync = None
+
     # Create default planner if not provided
     if planner is None:
-        scheduler = Scheduler(config=config)
-        planner = Planner(
+        planner, _scheduler, _dependency_evaluator, default_label_sync = _create_planner(
             config=config,
-            scheduler=scheduler,
+            github=github,
+            events=events,
             provider_resilience=provider_resilience,
             label_manager=label_manager,
         )
@@ -941,7 +943,7 @@ def build_orchestrator_for_testing(
     )
 
     # Create LabelSync for testing
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager)
+    label_sync = default_label_sync or LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager)
 
     # Create EventHub for testing
     event_hub = EventHub()
