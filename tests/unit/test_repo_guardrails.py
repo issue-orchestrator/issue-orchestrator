@@ -11,6 +11,9 @@ import pytest
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_guardrails import (
+    LEGACY_MANAGED_HELPER_MARKER,
+    LEGACY_MANAGED_PRE_PUSH_MARKER,
+    LEGACY_MANAGED_VERIFY_MARKER,
     MANAGED_PRE_PUSH_MARKER,
     _render_repo_pre_push_hook,
     _render_helper_script,
@@ -124,6 +127,74 @@ def test_setup_repo_guardrails_preserves_existing_pre_push_hook(tmp_path: Path) 
     assert "scripts/verify-pr.sh" in result.pre_push_hook.read_text()
 
 
+def test_inspect_repo_guardrails_recognizes_legacy_markers(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ".githooks"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    hooks_dir = repo / ".githooks"
+    hooks_dir.mkdir()
+    pre_push = hooks_dir / "pre-push"
+    pre_push.write_text(
+        f"#!/usr/bin/env bash\n# {LEGACY_MANAGED_PRE_PUSH_MARKER}\n"
+        "scripts/verify-pr.sh\n"
+    )
+    pre_push.chmod(0o755)
+    verify_script = repo / "scripts" / "verify-pr.sh"
+    verify_script.parent.mkdir(parents=True)
+    verify_script.write_text(f"#!/usr/bin/env bash\n# {LEGACY_MANAGED_VERIFY_MARKER}\n")
+    helper_script = repo / "scripts" / "agent-hooks" / "block_no_verify.py"
+    helper_script.parent.mkdir(parents=True)
+    helper_script.write_text(f"#!/usr/bin/env python3\n# {LEGACY_MANAGED_HELPER_MARKER}\n")
+
+    status = inspect_repo_guardrails(repo)
+
+    assert status.pre_push_managed
+    assert status.verify_managed
+    assert status.helper_managed
+
+
+def test_setup_repo_guardrails_migrates_legacy_wrapper_without_overwriting_project_hook(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ".githooks"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    hooks_dir = repo / ".githooks"
+    hooks_dir.mkdir()
+    pre_push = hooks_dir / "pre-push"
+    pre_push.write_text(
+        f"#!/usr/bin/env bash\n# {LEGACY_MANAGED_PRE_PUSH_MARKER}\n"
+        "scripts/verify-pr.sh\n"
+    )
+    pre_push.chmod(0o755)
+    project_hook = hooks_dir / "pre-push.project"
+    original_project_hook = "#!/usr/bin/env bash\necho original-project-hook\n"
+    project_hook.write_text(original_project_hook)
+    project_hook.chmod(0o755)
+
+    result = setup_repo_guardrails(_make_config(repo))
+
+    assert project_hook.read_text() == original_project_hook
+    assert project_hook not in result.preserved_files
+    migrated_pre_push = result.pre_push_hook.read_text()
+    assert MANAGED_PRE_PUSH_MARKER in migrated_pre_push
+    assert f"# {LEGACY_MANAGED_PRE_PUSH_MARKER}" not in migrated_pre_push
+
+
 def test_setup_repo_guardrails_recovers_from_external_existing_hooks_path(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -195,7 +266,8 @@ def test_managed_pre_push_hook_contains_recursion_guard() -> None:
     )
 
     assert MANAGED_PRE_PUSH_MARKER in rendered
-    assert "grep -qF \"$MANAGED_MARKER\" \"$PROJECT_HOOK\"" in rendered
+    assert LEGACY_MANAGED_PRE_PUSH_MARKER in rendered
+    assert "is_managed_wrapper" in rendered
     assert "managed-marker-detected" in rendered
     # Syntax-check the rendered script.
     result = subprocess.run(
@@ -243,6 +315,18 @@ def test_quarantine_managed_hook_file_is_noop_when_not_managed(tmp_path: Path) -
     result = quarantine_managed_hook_file(target)
     assert result is None
     assert target.exists(), "benign files must not be quarantined"
+
+
+def test_quarantine_managed_hook_file_handles_legacy_marker(tmp_path: Path) -> None:
+    target = tmp_path / "pre-push.project"
+    target.write_text(f"# {LEGACY_MANAGED_PRE_PUSH_MARKER}\n")
+
+    result = quarantine_managed_hook_file(target)
+
+    assert result is not None
+    assert result.exists()
+    assert LEGACY_MANAGED_PRE_PUSH_MARKER in result.read_text()
+    assert not target.exists()
 
 
 def test_quarantine_managed_hook_file_handles_existing_collision(tmp_path: Path) -> None:

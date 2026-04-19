@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 from ...infra.repo_guardrails import (
+    LEGACY_MANAGED_PRE_PUSH_MARKER,
     MANAGED_PRE_PUSH_MARKER,
     quarantine_managed_hook_file,
 )
@@ -156,9 +157,13 @@ def _resolve_project_pre_push_hook(
 
 def _is_managed_pre_push(path: Path) -> bool:
     try:
-        return MANAGED_PRE_PUSH_MARKER in path.read_text()
+        content = path.read_text()
     except (OSError, UnicodeDecodeError):
         return False
+    return (
+        MANAGED_PRE_PUSH_MARKER in content
+        or LEGACY_MANAGED_PRE_PUSH_MARKER in content
+    )
 
 
 def _install_chained_hook(
@@ -198,6 +203,7 @@ def _install_chained_hook(
 
 def _chained_hook_script() -> str:
     managed_marker = MANAGED_PRE_PUSH_MARKER
+    legacy_managed_marker = LEGACY_MANAGED_PRE_PUSH_MARKER
     return f"""#!/bin/bash
 # Chained pre-push hook: runs project hook first, then orchestrator hook
 set -e
@@ -205,6 +211,7 @@ set -e
 HOOKS_DIR="$(dirname "$0")"
 AUDIT_LOG="$HOOKS_DIR/pre-push.log"
 MANAGED_MARKER='{managed_marker}'
+LEGACY_MANAGED_MARKER='{legacy_managed_marker}'
 
 # Audit logging function
 audit() {{
@@ -215,11 +222,15 @@ audit() {{
 total_start=$(date +%s)
 audit "Pre-push hook started (commit: $(git rev-parse --short HEAD))"
 
+is_managed_wrapper() {{
+    grep -qF "$MANAGED_MARKER" "$1" 2>/dev/null || grep -qF "$LEGACY_MANAGED_MARKER" "$1" 2>/dev/null
+}}
+
 # Run project's pre-push hook first (lint, tests, etc.)
 # Skip if ORCHESTRATOR_SKIP_PROJECT_HOOK=1 (used by e2e tests)
 if [ "${{ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}}" = "1" ]; then
     audit "Skipping project hook (ORCHESTRATOR_SKIP_PROJECT_HOOK=1)"
-elif [ -x "$HOOKS_DIR/pre-push.project" ] && grep -qF "$MANAGED_MARKER" "$HOOKS_DIR/pre-push.project" 2>/dev/null; then
+elif [ -x "$HOOKS_DIR/pre-push.project" ] && is_managed_wrapper "$HOOKS_DIR/pre-push.project"; then
     # Recursion guard: pre-push.project contains the managed wrapper marker,
     # meaning a prior install copied this wrapper (or the repo wrapper) into
     # it. Executing it would forkbomb the push.

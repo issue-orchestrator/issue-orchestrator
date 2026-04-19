@@ -21,6 +21,14 @@ MANAGED_VERIFY_MARKER = "Managed by issue-orchestrator setup-guardrails: verify-
 MANAGED_HELPER_MARKER = (
     "Managed by issue-orchestrator setup-guardrails: block-no-verify helper"
 )
+LEGACY_MANAGED_PRE_PUSH_MARKER = "Managed by issue-orchestrator harden-repo: pre-push"
+LEGACY_MANAGED_VERIFY_MARKER = "Managed by issue-orchestrator harden-repo: verify-pr"
+LEGACY_MANAGED_HELPER_MARKER = (
+    "Managed by issue-orchestrator harden-repo: block-no-verify helper"
+)
+MANAGED_PRE_PUSH_MARKERS = (MANAGED_PRE_PUSH_MARKER, LEGACY_MANAGED_PRE_PUSH_MARKER)
+MANAGED_VERIFY_MARKERS = (MANAGED_VERIFY_MARKER, LEGACY_MANAGED_VERIFY_MARKER)
+MANAGED_HELPER_MARKERS = (MANAGED_HELPER_MARKER, LEGACY_MANAGED_HELPER_MARKER)
 VERIFY_PR_RELATIVE_PATH = Path("scripts/verify-pr.sh")
 HELPER_RELATIVE_PATH = Path("scripts/agent-hooks/block_no_verify.py")
 
@@ -115,14 +123,20 @@ def inspect_repo_guardrails(
         helper_script=helper_script,
         pre_push_exists=pre_push_hook.exists(),
         pre_push_executable=_is_executable(pre_push_hook),
-        pre_push_managed=MANAGED_PRE_PUSH_MARKER in pre_push_content,
+        pre_push_managed=_contains_managed_marker(
+            pre_push_content, MANAGED_PRE_PUSH_MARKERS
+        ),
         pre_push_calls_verify="scripts/verify-pr.sh" in pre_push_content,
         verify_exists=verify_script.exists(),
         verify_executable=_is_executable(verify_script),
-        verify_managed=MANAGED_VERIFY_MARKER in verify_content,
+        verify_managed=_contains_managed_marker(
+            verify_content, MANAGED_VERIFY_MARKERS
+        ),
         helper_exists=helper_script.exists(),
         helper_executable=_is_executable(helper_script),
-        helper_managed=MANAGED_HELPER_MARKER in helper_content,
+        helper_managed=_contains_managed_marker(
+            helper_content, MANAGED_HELPER_MARKERS
+        ),
         agent_hooks=agent_hooks,
     )
 
@@ -326,7 +340,7 @@ def _install_repo_pre_push_hook(
 
     if pre_push_hook.exists():
         current = _safe_read_text(pre_push_hook)
-        if MANAGED_PRE_PUSH_MARKER not in current:
+        if not _contains_managed_marker(current, MANAGED_PRE_PUSH_MARKERS):
             shutil.copy2(pre_push_hook, project_hook)
             project_hook.chmod(0o755)
             result.preserved_files.append(project_hook)
@@ -353,7 +367,7 @@ def quarantine_managed_hook_file(
     if not target.exists():
         return None
     content = _safe_read_text(target)
-    if MANAGED_PRE_PUSH_MARKER not in content:
+    if not _contains_managed_marker(content, MANAGED_PRE_PUSH_MARKERS):
         return None
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     quarantine_path = target.with_name(f"{target.name}.quarantined-{timestamp}")
@@ -417,12 +431,17 @@ LOG_FILE="$HOOK_DIR/pre-push.log"
 PROJECT_HOOK="$HOOK_DIR/pre-push.project"
 VERIFY_SCRIPT="$REPO_ROOT/{verify_rel.as_posix()}"
 MANAGED_MARKER='{MANAGED_PRE_PUSH_MARKER}'
+LEGACY_MANAGED_MARKER='{LEGACY_MANAGED_PRE_PUSH_MARKER}'
 
 log() {{
   printf "%s %s\\n" "$(date -Iseconds)" "$1" >> "$LOG_FILE"
 }}
 
 log "repo-pre-push-started"
+
+is_managed_wrapper() {{
+  grep -qF "$MANAGED_MARKER" "$1" 2>/dev/null || grep -qF "$LEGACY_MANAGED_MARKER" "$1" 2>/dev/null
+}}
 
 # Recursion guard: never exec pre-push.project if it contains the managed
 # marker. That means it is a copy of this wrapper (corruption) and executing
@@ -434,7 +453,7 @@ log "repo-pre-push-started"
 # can still run verify-pr, and doctor will flag the corruption for repair.
 # The worktree wrapper takes the opposite stance (hard-fail) because
 # worktrees are disposable — see _chained_hook_script in _worktree_hooks.py.
-if [ -x "$PROJECT_HOOK" ] && grep -qF "$MANAGED_MARKER" "$PROJECT_HOOK" 2>/dev/null; then
+if [ -x "$PROJECT_HOOK" ] && is_managed_wrapper "$PROJECT_HOOK"; then
   log "project-hook-skipped reason=managed-marker-detected path=$PROJECT_HOOK"
   echo "pre-push: refusing to exec managed wrapper as project hook: $PROJECT_HOOK" >&2
 elif [ -x "$PROJECT_HOOK" ]; then
@@ -486,6 +505,10 @@ def _safe_read_text(path: Path) -> str:
         return path.read_text()
     except OSError:
         return ""
+
+
+def _contains_managed_marker(content: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in content for marker in markers)
 
 
 def _is_executable(path: Path) -> bool:
