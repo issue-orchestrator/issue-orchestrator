@@ -62,6 +62,69 @@ def test_upsert_rejects_closed_issue_even_when_filters_match():
     assert state.cached_queue_issues == []
 
 
+def test_replace_from_refresh_warns_on_non_empty_to_empty_drop(caplog):
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    state = OrchestratorState(
+        cached_queue_issues=[Issue(number=1, title="A", labels=["agent:web"])]
+    )
+    cache = QueueCache(config, state)
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="issue_orchestrator.control.queue_cache"):
+        cache.replace_from_refresh([])
+
+    assert state.cached_queue_issues == []
+    assert any(
+        "dropping in-memory queue from 1 to 0" in r.message for r in caplog.records
+    ), caplog.text
+
+
+def test_replace_from_refresh_silent_on_cold_start():
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    state = OrchestratorState()
+    cache = QueueCache(config, state)
+
+    import logging
+    logger = logging.getLogger("issue_orchestrator.control.queue_cache")
+    captured: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: captured.append(record.getMessage())
+    handler.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        cache.replace_from_refresh([])
+    finally:
+        logger.removeHandler(handler)
+
+    assert captured == []
+
+
+def test_replace_from_refresh_silent_when_populated():
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    state = OrchestratorState(
+        cached_queue_issues=[Issue(number=1, title="A", labels=["agent:web"])]
+    )
+    cache = QueueCache(config, state)
+
+    import logging
+    logger = logging.getLogger("issue_orchestrator.control.queue_cache")
+    captured: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: captured.append(record.getMessage())
+    handler.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        cache.replace_from_refresh([Issue(number=2, title="B", labels=["agent:web"])])
+    finally:
+        logger.removeHandler(handler)
+
+    assert captured == []
+    assert [i.number for i in state.cached_queue_issues] == [2]
+
+
 def test_replace_from_refresh_filters_excluded_history_issue():
     config = _make_config()
     config.filtering.label = "agent:web"

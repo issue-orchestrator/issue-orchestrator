@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Sequence
@@ -14,6 +16,8 @@ from ..infra.sqlite_connection import open_sqlite
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS queue_issues (
@@ -112,7 +116,19 @@ class QueueCacheStore:
             watermark: Delta sync watermark (ISO timestamp).
             repo: Repository identifier stored with each issue row.
         """
+        new_count = len(issues)
         with self._transaction() as tx:
+            prior_count = tx.execute("SELECT COUNT(*) FROM queue_issues").fetchone()[0]
+            if prior_count > 0 and new_count == 0:
+                # Wiping persisted queue cache is suspicious — a following warm
+                # restart will have no issues to hydrate from and, if the
+                # watermark survives, will delta-sync against a stale baseline.
+                logger.warning(
+                    "[QUEUE_CACHE] save_snapshot wiping persisted queue: "
+                    "prior=%d new=0 watermark=%s repo=%s\nstack:\n%s",
+                    prior_count, watermark, repo,
+                    "".join(traceback.format_stack(limit=8)),
+                )
             tx.execute("DELETE FROM queue_issues")
             for issue in issues:
                 tx.execute(
@@ -142,5 +158,12 @@ class QueueCacheStore:
     def clear(self) -> None:
         """Delete all cached data."""
         with self._transaction() as tx:
+            prior_count = tx.execute("SELECT COUNT(*) FROM queue_issues").fetchone()[0]
+            if prior_count > 0:
+                logger.warning(
+                    "[QUEUE_CACHE] clear() wiping %d persisted queue issues\nstack:\n%s",
+                    prior_count,
+                    "".join(traceback.format_stack(limit=8)),
+                )
             tx.execute("DELETE FROM queue_issues")
             tx.execute("DELETE FROM meta")
