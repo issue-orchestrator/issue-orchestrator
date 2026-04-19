@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
 from issue_orchestrator.infra.ai_gate_state import AiGateState, AiGateResult
-from issue_orchestrator.infra.repo_hardening import (
+from issue_orchestrator.infra.repo_guardrails import (
     MANAGED_PRE_PUSH_MARKER,
-    harden_repo,
+    setup_repo_guardrails,
 )
 from issue_orchestrator.domain.models import AgentConfig
 
@@ -26,31 +26,31 @@ def test_check_hook_verification_no_agents_reports_ai_agent_check():
     )
 
 
-def test_check_repo_hardening_warns_when_not_installed(tmp_path):
+def test_check_repo_guardrails_warns_when_not_installed(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
     config.validation.cmd = "make validate-pr"
 
-    checks = hook_checks.check_repo_hardening(config)
+    checks = hook_checks.check_repo_guardrails(config)
 
     assert checks == [
         hook_checks.Check(
             name="Repo Guardrails",
             status="warning",
-            detail="Not installed. Run 'issue-orchestrator harden-repo'.",
+            detail="Not installed. Run 'issue-orchestrator setup-guardrails'.",
         )
     ]
 
 
-def test_check_repo_hardening_reports_ok_after_install(tmp_path):
+def test_check_repo_guardrails_reports_ok_after_install(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
     config.validation.cmd = "make validate-pr"
     config.agents = {}
 
-    harden_repo(config)
+    setup_repo_guardrails(config)
 
-    checks = hook_checks.check_repo_hardening(config)
+    checks = hook_checks.check_repo_guardrails(config)
 
     assert len(checks) == 1
     assert checks[0].name == "Repo Guardrails"
@@ -58,7 +58,7 @@ def test_check_repo_hardening_reports_ok_after_install(tmp_path):
     assert "scripts/verify-pr.sh" in checks[0].detail
 
 
-def test_check_repo_hardening_reports_managed_ai_hooks_after_install(tmp_path):
+def test_check_repo_guardrails_reports_managed_ai_hooks_after_install(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
     config.validation.cmd = "make validate-pr"
@@ -69,16 +69,16 @@ def test_check_repo_hardening_reports_managed_ai_hooks_after_install(tmp_path):
         )
     }
 
-    harden_repo(config)
+    setup_repo_guardrails(config)
 
-    checks = hook_checks.check_repo_hardening(config)
+    checks = hook_checks.check_repo_guardrails(config)
 
     assert len(checks) == 1
     assert checks[0].status == "ok"
     assert "managed AI hooks: claude-code" in checks[0].detail
 
 
-def test_check_repo_hardening_reports_drifted_managed_ai_hook(tmp_path):
+def test_check_repo_guardrails_reports_drifted_managed_ai_hook(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
     config.validation.cmd = "make validate-pr"
@@ -89,12 +89,12 @@ def test_check_repo_hardening_reports_drifted_managed_ai_hook(tmp_path):
         )
     }
 
-    harden_repo(config)
+    setup_repo_guardrails(config)
     drifted_hook = tmp_path / ".claude" / "hooks" / "block-no-verify.sh"
     drifted_hook.write_text("#!/usr/bin/env bash\necho drifted\n")
     drifted_hook.chmod(0o755)
 
-    checks = hook_checks.check_repo_hardening(config)
+    checks = hook_checks.check_repo_guardrails(config)
 
     assert len(checks) == 1
     assert checks[0].status == "error"
@@ -620,7 +620,7 @@ def test_check_worktree_hook_corruption_flags_managed_project_hook(tmp_path):
     assert len(checks) == 1
     assert checks[0].status == "error"
     assert "pre-push.project" in checks[0].detail
-    assert "harden-repo" in checks[0].detail
+    assert "setup-guardrails" in checks[0].detail
 
 
 def test_check_worktree_hook_corruption_scans_worktree_hook_dirs(tmp_path):

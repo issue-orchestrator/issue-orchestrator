@@ -1,6 +1,6 @@
 """Regression tests for worktree pre-push hook installation.
 
-These tests cover the interaction between the repo-level ``harden-repo``
+These tests cover the interaction between the repo-level ``setup-guardrails``
 pre-push wrapper and the per-worktree hook installer. The specific bug this
 guards against: the repo wrapper running ``pre-push.project`` by path, while
 the worktree installer copies the repo wrapper *into* that path — yielding
@@ -22,7 +22,10 @@ from issue_orchestrator.adapters.worktree._worktree_hooks import (
     _resolve_project_pre_push_hook,
     install_hooks,
 )
-from issue_orchestrator.infra.repo_hardening import MANAGED_PRE_PUSH_MARKER
+from issue_orchestrator.infra.repo_guardrails import (
+    LEGACY_MANAGED_PRE_PUSH_MARKER,
+    MANAGED_PRE_PUSH_MARKER,
+)
 
 
 def _make_managed_wrapper() -> str:
@@ -33,12 +36,20 @@ def _make_managed_wrapper() -> str:
     )
 
 
+def _make_legacy_managed_wrapper() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        f"# {LEGACY_MANAGED_PRE_PUSH_MARKER}\n"
+        '"$HOOK_DIR/pre-push.project" "$@"\n'
+    )
+
+
 def _make_real_project_hook() -> str:
     return "#!/usr/bin/env bash\necho real-project-hook\nexit 0\n"
 
 
 def _init_main_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Initialise a bare-ish main repo with a pre-hardened .githooks/ and a worktree.
+    """Initialise a bare-ish main repo with a guardrailed .githooks/ and a worktree.
 
     Returns (main_repo_root, worktree_path, worktree_hooks_dir).
     """
@@ -65,7 +76,7 @@ def _init_main_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
         ["git", "commit", "-m", "seed"], cwd=main_repo, check=True, capture_output=True
     )
 
-    # Simulate a hardened repo: .githooks/pre-push is the managed wrapper, and
+    # Simulate a guardrailed repo: .githooks/pre-push is the managed wrapper, and
     # .githooks/pre-push.project holds the real project hook (what a user
     # actually wants to run on pre-push).
     githooks = main_repo / ".githooks"
@@ -102,6 +113,19 @@ def test_resolve_project_pre_push_hook_skips_managed_wrapper(tmp_path: Path) -> 
     assert resolved.read_text() == _make_real_project_hook()
 
 
+def test_resolve_project_pre_push_hook_skips_legacy_managed_wrapper(
+    tmp_path: Path,
+) -> None:
+    main_repo, _, _ = _init_main_repo_with_worktree(tmp_path)
+    (main_repo / ".githooks" / "pre-push").write_text(_make_legacy_managed_wrapper())
+    gitdir = main_repo / ".git" / "worktrees" / "wt-feature"
+
+    resolved = _resolve_project_pre_push_hook(gitdir, ".githooks")
+
+    assert resolved == main_repo / ".githooks" / "pre-push.project"
+    assert resolved.read_text() == _make_real_project_hook()
+
+
 def test_resolve_returns_none_when_managed_wrapper_has_no_project_sibling(
     tmp_path: Path,
 ) -> None:
@@ -124,7 +148,7 @@ def test_resolve_returns_none_when_no_pre_push_exists(tmp_path: Path) -> None:
     assert _resolve_project_pre_push_hook(gitdir, ".githooks") is None
 
 
-def test_install_hooks_in_hardened_worktree_does_not_recurse(tmp_path: Path) -> None:
+def test_install_hooks_in_guardrailed_worktree_does_not_recurse(tmp_path: Path) -> None:
     main_repo, worktree_path, worktree_hooks = _init_main_repo_with_worktree(tmp_path)
 
     install_hooks(worktree_path)
@@ -200,6 +224,29 @@ def test_chained_wrapper_refuses_managed_project_hook(harness: Path) -> None:
     (hooks_dir / "pre-push").write_text(_chained_hook_script())
     (hooks_dir / "pre-push").chmod(0o755)
     (hooks_dir / "pre-push.project").write_text(_make_managed_wrapper())
+    (hooks_dir / "pre-push.project").chmod(0o755)
+
+    result = subprocess.run(
+        [str(hooks_dir / "pre-push")],
+        cwd=harness,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": os.environ.get("PATH", "")},
+        timeout=10,
+    )
+
+    assert result.returncode != 0, "wrapper must refuse to exec managed project hook"
+    assert "refusing to recurse" in result.stderr.lower()
+    audit_log = (hooks_dir / "pre-push.log").read_text()
+    assert "recursion guard" in audit_log.lower()
+
+
+def test_chained_wrapper_refuses_legacy_managed_project_hook(harness: Path) -> None:
+    hooks_dir = harness / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "pre-push").write_text(_chained_hook_script())
+    (hooks_dir / "pre-push").chmod(0o755)
+    (hooks_dir / "pre-push.project").write_text(_make_legacy_managed_wrapper())
     (hooks_dir / "pre-push.project").chmod(0o755)
 
     result = subprocess.run(

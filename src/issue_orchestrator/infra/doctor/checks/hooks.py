@@ -8,9 +8,9 @@ from ..types import Check
 from ...config import Config
 from ...hooks.hooks import get_adapter
 from ...ai_gate_state import load_ai_gate_state, save_ai_gate_state
-from ...repo_hardening import (
+from ...repo_guardrails import (
     MANAGED_PRE_PUSH_MARKER,
-    inspect_repo_hardening,
+    inspect_repo_guardrails,
 )
 
 logger = logging.getLogger(__name__)
@@ -311,8 +311,8 @@ def check_hook_verification(config: Config) -> list[Check]:
     return checks
 
 
-def check_repo_hardening(config: Config) -> list[Check]:
-    """Check repo-local pre-push hardening state."""
+def check_repo_guardrails(config: Config) -> list[Check]:
+    """Check repo-local pre-push guardrail state."""
     if not config.validation.cmd:
         return [
             Check(
@@ -322,14 +322,14 @@ def check_repo_hardening(config: Config) -> list[Check]:
             )
         ]
 
-    status = inspect_repo_hardening(config.repo_root, config=config)
+    status = inspect_repo_guardrails(config.repo_root, config=config)
 
     if not status.pre_push_exists and not status.verify_exists:
         return [
             Check(
                 name="Repo Guardrails",
                 status="warning",
-                detail="Not installed. Run 'issue-orchestrator harden-repo'.",
+                detail="Not installed. Run 'issue-orchestrator setup-guardrails'.",
             )
         ]
 
@@ -341,7 +341,8 @@ def check_repo_hardening(config: Config) -> list[Check]:
             Check(
                 name="Repo Guardrails",
                 status="error",
-                detail="; ".join(problems) + ". Run 'issue-orchestrator harden-repo'.",
+                detail="; ".join(problems)
+                + ". Run 'issue-orchestrator setup-guardrails'.",
             )
         ]
 
@@ -469,7 +470,7 @@ def check_worktree_hook_corruption(config: Config) -> list[Check]:
             detail=(
                 f"Corrupt pre-push.project detected ({len(corrupt)}): {rel_paths}. "
                 "Contains the managed wrapper marker; executing it would recurse. "
-                "Run 'issue-orchestrator harden-repo' or delete/rename the files."
+                "Run 'issue-orchestrator setup-guardrails' or delete/rename the files."
             ),
         )
     ]

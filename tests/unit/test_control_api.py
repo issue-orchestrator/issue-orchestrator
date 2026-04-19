@@ -37,7 +37,7 @@ from issue_orchestrator.entrypoints import control_api_shutdown_state
 from issue_orchestrator.execution.control_center_actions import ActionResult, ControlCenterActions
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra.repo_hardening import RepoHardeningError
+from issue_orchestrator.infra.repo_guardrails import RepoGuardrailsError
 from issue_orchestrator.infra.supervisor import (
     DefaultSupervisorOps,
     MultiInstanceStatus,

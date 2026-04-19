@@ -1257,20 +1257,20 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     _apply_changes(file_collector, repo_name, prompter)
 
     install_hooks_now = False
-    harden_repo_now = False
+    setup_repo_guardrails_now = False
 
     if (config.get("validation") or {}).get("cmd"):
-        harden_repo_now = prompter.yes_no(
+        setup_repo_guardrails_now = prompter.yes_no(
             "\nInstall repo-local guardrails and AI agent hooks now? (recommended)",
             default=True,
         )
-        if harden_repo_now:
+        if setup_repo_guardrails_now:
             try:
                 from ...infra.config import Config
-                from ...infra.repo_hardening import harden_repo
+                from ...infra.repo_guardrails import setup_repo_guardrails
 
                 temp_config = Config.load(output_path)
-                result = harden_repo(temp_config, target_root=target_path)
+                result = setup_repo_guardrails(temp_config, target_root=target_path)
                 prompter.print("\nRepo guardrails installed:")
                 prompter.print(f"  ✓ Hooks path: {result.hooks_path_config}")
                 prompter.print(f"  ✓ {result.pre_push_hook.relative_to(target_path)}")
@@ -1282,9 +1282,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
                                 f"  ✓ {agent_name}: {path.relative_to(target_path)}"
                             )
             except Exception as exc:
-                prompter.print(f"\n⚠ Repo hardening failed: {exc}")
+                prompter.print(f"\n⚠ Repo guardrail setup failed: {exc}")
                 prompter.print(
-                    "  You can retry later with: issue-orchestrator harden-repo"
+                    "  You can retry later with: issue-orchestrator setup-guardrails"
                 )
     else:
         install_hooks_now = prompter.yes_no(
@@ -1312,8 +1312,8 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
                     "  You can retry later with: issue-orchestrator setup-hooks"
                 )
         prompter.print(
-            "\nRepo-local pre-push hardening skipped: configure validation.cmd first, "
-            "then run 'issue-orchestrator harden-repo'."
+            "\nRepo-local pre-push guardrails skipped: configure validation.cmd first, "
+            "then run 'issue-orchestrator setup-guardrails'."
         )
 
     # AI provider key setup
@@ -1361,16 +1361,16 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
 
     prompter.print("\n  3. Run: issue-orchestrator start")
 
-    if not harden_repo_now and (config.get("validation") or {}).get("cmd"):
+    if not setup_repo_guardrails_now and (config.get("validation") or {}).get("cmd"):
         prompter.print(
-            "\n  4. Install repo guardrails + AI hooks (recommended): issue-orchestrator harden-repo"
+            "\n  4. Install repo guardrails + AI hooks (recommended): issue-orchestrator setup-guardrails"
         )
     elif not install_hooks_now:
         prompter.print(
             "\n  4. Install AI agent hooks (recommended): issue-orchestrator setup-hooks"
         )
         prompter.print(
-            "  5. Harden repo guardrails (recommended): issue-orchestrator harden-repo"
+            "  5. Set up repo guardrails (recommended): issue-orchestrator setup-guardrails"
         )
 
     prompter.print("\n  Advanced features (enable in config later):")

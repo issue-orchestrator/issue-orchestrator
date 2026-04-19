@@ -62,7 +62,7 @@ def run_doctor(
     result.checks.extend(workspace.check_working_directory(runner))
     result.checks.extend(workspace.check_hook_dependencies(Path.cwd()))
     result.checks.extend(hooks.check_hook_verification(config))
-    result.checks.extend(hooks.check_repo_hardening(config))
+    result.checks.extend(hooks.check_repo_guardrails(config))
     result.checks.extend(hooks.check_worktree_hook_corruption(config))
     result.checks.extend(workspace.check_agents(config))
 

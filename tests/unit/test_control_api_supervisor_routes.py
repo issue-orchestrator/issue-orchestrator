@@ -373,7 +373,7 @@ class TestActionEndpointMapping:
         assert response.json()["overall"] == "ok"
         mock_control_actions.doctor_cmd.execute.assert_awaited_once()
 
-    def test_repair_guardrails_runs_harden_repo(
+    def test_repair_guardrails_runs_setup_repo_guardrails(
         self,
         supervisor_client: TestClient,
         tmp_path: Path,
@@ -404,9 +404,9 @@ class TestActionEndpointMapping:
         )
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api_orchestrator_routes.harden_repo",
+            "issue_orchestrator.entrypoints.control_api_orchestrator_routes.setup_repo_guardrails",
             return_value=result,
-        ) as harden_mock:
+        ) as setup_guardrails_mock:
             response = supervisor_client.post(
                 "/control/orchestrator/guardrails/repair",
                 json={"repo_root": str(tmp_path), "config_name": "default"},
@@ -426,10 +426,10 @@ class TestActionEndpointMapping:
             "claude-code": [".claude/hooks/block-no-verify.sh"]
         }
         assert "Review and commit changed files" in data["message"]
-        harden_mock.assert_called_once()
-        harden_config = harden_mock.call_args.args[0]
-        assert harden_config.repo == "owner/repo"
-        assert harden_mock.call_args.kwargs["target_root"] == repo_root
+        setup_guardrails_mock.assert_called_once()
+        guardrails_config = setup_guardrails_mock.call_args.args[0]
+        assert guardrails_config.repo == "owner/repo"
+        assert setup_guardrails_mock.call_args.kwargs["target_root"] == repo_root
 
     def test_repair_guardrails_rejects_invalid_config_name(
         self,
@@ -458,7 +458,7 @@ class TestActionEndpointMapping:
         assert response.json()["error"] == "config_not_found"
         assert response.json()["config_name"] == "missing.yaml"
 
-    def test_repair_guardrails_reports_hardening_errors(
+    def test_repair_guardrails_reports_guardrails_errors(
         self,
         supervisor_client: TestClient,
         tmp_path: Path,
@@ -468,8 +468,8 @@ class TestActionEndpointMapping:
         (config_dir / "default.yaml").write_text("validation:\n  cmd: pytest\n", encoding="utf-8")
 
         with patch(
-            "issue_orchestrator.entrypoints.control_api_orchestrator_routes.harden_repo",
-            side_effect=RepoHardeningError("validation.cmd is not configured"),
+            "issue_orchestrator.entrypoints.control_api_orchestrator_routes.setup_repo_guardrails",
+            side_effect=RepoGuardrailsError("validation.cmd is not configured"),
         ):
             response = supervisor_client.post(
                 "/control/orchestrator/guardrails/repair",

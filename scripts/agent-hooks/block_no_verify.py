@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Managed by issue-orchestrator harden-repo: block-no-verify helper
+# Managed by issue-orchestrator setup-guardrails: block-no-verify helper
 
 """Shared hook policy for blocking no-verify and restricted commands.
 
