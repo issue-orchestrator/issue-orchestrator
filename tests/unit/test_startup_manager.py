@@ -919,26 +919,22 @@ class TestStartupGitHubCallBudget:
         assert mock_repository_host.list_issues_delta.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_warm_start_empty_cache_with_watermark(
+    async def test_warm_start_empty_cache_with_watermark_forces_full_scan(
         self, mock_config, mock_events, mock_runner, mock_repository_host,
-        mock_action_applier, mock_issue_branches_fn,
+        mock_action_applier, mock_issue_branches_fn, caplog,
     ):
-        """Empty cached issue list + valid watermark is still a warm start.
+        """Empty cached issues + valid watermark is a corrupt state.
 
-        An empty queue is a valid cached state (no eligible issues). Should
-        use delta sync (list_issues_delta), not fall back to full scan.
+        If an earlier run wiped persisted issues but left the watermark, a
+        delta sync from that watermark would miss every issue whose GitHub
+        state did not change afterwards — silently stranding them. Force a
+        cold full scan and log a warning so the trail is visible.
         """
         mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
 
         mock_store = MagicMock()
-        mock_store.load_issues.return_value = []  # Empty but valid cache
+        mock_store.load_issues.return_value = []  # Empty despite watermark
         mock_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
-
-        # Delta sync returns one new issue
-        mock_repository_host.list_issues_delta.return_value = (
-            [Issue(number=5, title="New Issue", labels=["agent:test"])],
-            "2025-01-01T00:00:01Z",
-        )
 
         update_queue_fn = MagicMock()
         sm = StartupManager(
@@ -952,9 +948,12 @@ class TestStartupGitHubCallBudget:
             queue_cache_store=mock_store,
         )
 
-        await sm.run_startup(OrchestratorState())
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="issue_orchestrator.control.startup_manager"):
+            await sm.run_startup(OrchestratorState())
 
-        # Should use delta sync, NOT fall back to full scan
-        assert mock_repository_host.list_issues.call_count == 0
-        assert mock_repository_host.list_issues_delta.call_count == 1
-        update_queue_fn.assert_not_called()
+        assert mock_repository_host.list_issues_delta.call_count == 0
+        update_queue_fn.assert_called_once()
+        assert any(
+            "Queue cache inconsistency" in r.message for r in caplog.records
+        ), caplog.text

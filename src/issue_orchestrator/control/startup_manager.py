@@ -668,7 +668,19 @@ class StartupManager:
         cached_issues = store.load_issues(self.config.repo or "")
         cached_watermark = store.load_watermark()
 
-        if cached_watermark:
+        if cached_watermark and not cached_issues:
+            # Corrupt/partial persisted state: watermark exists but no issues were
+            # loaded. A delta sync from the stale watermark would only pull issues
+            # updated since then, stranding any issues whose labels/state never
+            # changed afterwards. Force a cold full scan to rebuild from GitHub.
+            logger.warning(
+                "[STARTUP] Queue cache inconsistency: watermark=%s but 0 cached issues; "
+                "forcing cold full scan to avoid stranding unchanged issues",
+                cached_watermark,
+            )
+            state.startup_message = "Rebuilding queue cache..."
+            self._update_queue_cache()
+        elif cached_watermark:
             # Warm start: load from SQLite, then delta sync from GitHub
             state.startup_message = "Syncing queue changes from GitHub..."
             logger.info(

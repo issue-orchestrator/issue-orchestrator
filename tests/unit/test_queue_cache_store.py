@@ -150,6 +150,52 @@ class TestClear:
         assert store.load_watermark() is None
 
 
+class TestWipeLogging:
+    """Wipes of a non-empty persisted queue leave a trail for diagnosis."""
+
+    def test_save_snapshot_logs_warning_when_wiping_non_empty(
+        self, store: QueueCacheStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        store.save_snapshot([_issue(1), _issue(2)], "w1", repo="r")
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="issue_orchestrator.execution.queue_cache_store"):
+            store.save_snapshot([], "w2", repo="r")
+        assert any("wiping persisted queue" in r.message for r in caplog.records), caplog.text
+        assert any("prior=2" in r.message for r in caplog.records), caplog.text
+
+    def test_save_snapshot_silent_when_empty_to_empty(
+        self, store: QueueCacheStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level("WARNING", logger="issue_orchestrator.execution.queue_cache_store"):
+            store.save_snapshot([], None, repo="r")
+        assert not any("wiping persisted queue" in r.message for r in caplog.records)
+
+    def test_save_snapshot_silent_when_writing_issues(
+        self, store: QueueCacheStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        store.save_snapshot([_issue(1)], "w1", repo="r")
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="issue_orchestrator.execution.queue_cache_store"):
+            store.save_snapshot([_issue(2)], "w2", repo="r")
+        assert not any("wiping persisted queue" in r.message for r in caplog.records)
+
+    def test_clear_logs_warning_when_wiping_non_empty(
+        self, store: QueueCacheStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        store.save_snapshot([_issue(1), _issue(2), _issue(3)], "w1", repo="r")
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="issue_orchestrator.execution.queue_cache_store"):
+            store.clear()
+        assert any("clear() wiping 3 persisted" in r.message for r in caplog.records), caplog.text
+
+    def test_clear_silent_when_already_empty(
+        self, store: QueueCacheStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level("WARNING", logger="issue_orchestrator.execution.queue_cache_store"):
+            store.clear()
+        assert not any("clear() wiping" in r.message for r in caplog.records)
+
+
 class TestLabelSerialization:
     """Edge cases for label JSON serialization."""
 

@@ -8,13 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import logging
 import time
+import traceback
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..domain.models import OrchestratorState
     from ..ports.issue import Issue
+
+logger = logging.getLogger(__name__)
 
 
 class QueueMutationStatus(str, Enum):
@@ -46,7 +50,19 @@ class QueueCache:
 
     def replace_from_refresh(self, issues: list["Issue"]) -> list["Issue"]:
         """Replace queue from fetched issues using canonical eligibility policy."""
+        prior_count = len(self._state.cached_queue_issues)
         queue = [issue for issue in issues if self.evaluate_issue(issue) == QueueMutationStatus.ACCEPTED]
+        if prior_count > 0 and not queue:
+            rejected = len(issues) - len(queue)
+            active_count = len(self._state.active_sessions)
+            history_count = len(self._state.session_history)
+            logger.warning(
+                "[QUEUE_CACHE] replace_from_refresh dropping in-memory queue from %d to 0 "
+                "(fetched=%d, rejected_by_eligibility=%d, active_sessions=%d, session_history=%d); "
+                "downstream save_snapshot will wipe persisted cache\nstack:\n%s",
+                prior_count, len(issues), rejected, active_count, history_count,
+                "".join(traceback.format_stack(limit=10)),
+            )
         self._state.cached_queue_issues = queue
         self.prune_refresh_timestamps()
         return queue
