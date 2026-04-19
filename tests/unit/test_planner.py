@@ -426,11 +426,11 @@ class TestPlannerDependencyGating:
 
     def test_planner_dependency_evaluator_blocks_unsatisfied_dependency(self):
         config = make_config(max_concurrent_sessions=1)
-        scheduler = Scheduler(config)
         evaluator = DependencyEvaluator(
             issue_checker=StaticIssueChecker({100: "open"}),
             events=Mock(),
         )
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
         planner = Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
 
         snapshot = make_snapshot(
@@ -455,6 +455,19 @@ class TestPlannerDependencyGating:
             ),
         )
         assert scheduler.dependency_evaluator is evaluator
+
+    def test_planner_rejects_dependency_evaluator_without_scheduler_wiring(self):
+        config = make_config()
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({100: "open"}),
+            events=Mock(),
+        )
+        scheduler = Scheduler(config)
+
+        with pytest.raises(ValueError, match="Scheduler dependency evaluator is required"):
+            Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        assert scheduler.dependency_evaluator is None
 
     def test_planner_uses_scheduler_dependency_evaluator_when_not_passed_directly(self):
         config = make_config(max_concurrent_sessions=1)

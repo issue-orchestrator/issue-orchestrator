@@ -827,12 +827,14 @@ def build_orchestrator_for_testing(
     from ..control.label_manager import LabelManager as _LabelManager
     label_manager = _LabelManager(config)
 
+    default_label_sync = None
+
     # Create default planner if not provided
     if planner is None:
-        scheduler = Scheduler(config=config)
-        planner = Planner(
+        planner, _scheduler, _dependency_evaluator, default_label_sync = _create_planner(
             config=config,
-            scheduler=scheduler,
+            github=github,
+            events=events,
             provider_resilience=provider_resilience,
             label_manager=label_manager,
         )
@@ -941,7 +943,7 @@ def build_orchestrator_for_testing(
     )
 
     # Create LabelSync for testing
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager)
+    label_sync = default_label_sync or LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager)
 
     # Create EventHub for testing
     event_hub = EventHub()

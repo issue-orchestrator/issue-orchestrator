@@ -125,13 +125,12 @@ class Planner:
         self,
         dependency_evaluator: Optional[DependencyEvaluator],
     ) -> Optional[DependencyEvaluator]:
-        """Keep planner and scheduler dependency gating wired to one evaluator."""
+        """Read scheduler dependency gating configuration and fail on drift."""
         scheduler_evaluator = self.scheduler.dependency_evaluator
         if dependency_evaluator is None:
             return scheduler_evaluator
         if scheduler_evaluator is None:
-            self.scheduler.dependency_evaluator = dependency_evaluator
-            return dependency_evaluator
+            raise ValueError("Scheduler dependency evaluator is required when Planner dependency evaluator is provided")
         if scheduler_evaluator is not dependency_evaluator:
             raise ValueError("Planner and Scheduler dependency evaluators must be the same instance")
         return dependency_evaluator
