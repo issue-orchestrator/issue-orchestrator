@@ -40,7 +40,7 @@ filtering:
 ```
 
 **Q7: What are the guardrails, and which ones do I need to set up?**
-A: The guardrails are the repo's safety hooks that prevent unsafe operations (for example, bypassing validation or pushing without completing). For a target repo, run `issue-orchestrator harden-repo`: it installs the repo-local pre-push gate plus the configured AI-agent hooks. If Control Center Doctor reports a **Repo Guardrails** failure, click **Repair Guardrails** to run the same flow from the UI. Keep `security.enforce_hooks` enabled so worktrees still get the orchestrator-side wrapper hooks. For details, see [Guardrails & Safety Model](../../docs/design/guardrails.md) and [Hook Enforcement](../architecture/hooks.md).
+A: The guardrails are the repo's safety hooks that prevent unsafe operations (for example, bypassing validation or pushing without completing). For a target repo, run `issue-orchestrator setup-guardrails`: it installs the repo-local pre-push gate plus the configured AI-agent hooks. If Control Center Doctor reports a **Repo Guardrails** failure, click **Repair Guardrails** to run the same flow from the UI. Keep `security.enforce_hooks` enabled so worktrees still get the orchestrator-side wrapper hooks. For details, see [Guardrails & Safety Model](../../docs/design/guardrails.md) and [Hook Enforcement](../architecture/hooks.md).
 
 **Q8: What GitHub token does `issue-orchestrator` use, and what permissions does it need?**
 A: `issue-orchestrator` resolves GitHub auth in two modes:

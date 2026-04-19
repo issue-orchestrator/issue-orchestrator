@@ -399,7 +399,7 @@ def cmd_harden_repo(args: argparse.Namespace) -> int:
     """Install repo-local guardrails and AI agent hook wiring."""
     from ..infra.repo_hardening import RepoHardeningError, harden_repo
 
-    console.print("[bold cyan]Hardening Repository Guardrails[/bold cyan]\n")
+    console.print("[bold cyan]Setting Up Repository Guardrails[/bold cyan]\n")
 
     try:
         config = cli_support.load_config(args)
@@ -457,7 +457,7 @@ def cmd_harden_repo(args: argparse.Namespace) -> int:
             "\n[yellow]![/yellow] No AI agent hooks were installed (no supported agents detected)."
         )
 
-    console.print("\n[bold green]Repository hardened.[/bold green]")
+    console.print("\n[bold green]Repository guardrails installed.[/bold green]")
     console.print(
         "[dim]Run 'issue-orchestrator doctor' to verify the guardrails end-to-end.[/dim]"
     )

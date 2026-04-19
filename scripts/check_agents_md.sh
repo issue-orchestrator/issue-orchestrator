@@ -45,7 +45,11 @@ while IFS= read -r agents_file; do
             ((errors++))
         fi
     fi
-done < <(find . -name "AGENTS.md" -not -path "./.git/*" -not -path "./.claude/*")
+done < <(
+    find . \
+        \( -path "./.git" -o -path "./.claude" -o -path "./.control-center-snapshot" \) -prune \
+        -o -name "AGENTS.md" -print
+)
 
 # Check 2: Find CLAUDE.md files that are not symlinks (excluding .claude/)
 echo "Checking for CLAUDE.md files that are not symlinks..."
@@ -59,7 +63,11 @@ while IFS= read -r claude_file; do
         echo -e "${RED}ERROR:${NC} $claude_file is not a symlink (should symlink to AGENTS.md)"
         ((errors++))
     fi
-done < <(find . -name "CLAUDE.md" -not -path "./.git/*")
+done < <(
+    find . \
+        \( -path "./.git" -o -path "./.control-center-snapshot" \) -prune \
+        -o -name "CLAUDE.md" -print
+)
 
 echo
 if [[ $errors -eq 0 ]]; then

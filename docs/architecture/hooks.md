@@ -43,8 +43,8 @@ flowchart TB
 
 ### Repo Guardrails (local development)
 
-These are repo-local hooks installed by `issue-orchestrator harden-repo`.
-Control Center uses the same hardening flow when Doctor reports repairable
+These are repo-local hooks installed by `issue-orchestrator setup-guardrails`.
+Control Center uses the same guardrail setup flow when Doctor reports repairable
 repo-guardrail drift, so users can repair managed files from the Doctor modal
 instead of switching to a terminal.
 
@@ -67,7 +67,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 
 ### Target Project Hooks (project-specific)
 
-These are installed and refreshed in the target project by `issue-orchestrator harden-repo`. `setup-hooks` still exists as the hook-only fallback when you intentionally are not managing repo-local pre-push guardrails yet.
+These are installed and refreshed in the target project by `issue-orchestrator setup-guardrails`. `harden-repo` remains a compatibility alias. `setup-hooks` still exists as the hook-only fallback when you intentionally are not managing repo-local pre-push guardrails yet.
 
 | Hook | Type | Location | Purpose | Critical? |
 |------|------|----------|---------|-----------|

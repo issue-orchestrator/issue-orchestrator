@@ -1,6 +1,7 @@
 """Tests for CLI module."""
 
 import argparse
+from dataclasses import fields
 import inspect
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ from issue_orchestrator.entrypoints.cli import (
     _run_test_setup,
     _load_config,
 )
+from issue_orchestrator.entrypoints.cli_parser import CLICommandHandlers, build_parser
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 
@@ -291,6 +293,38 @@ class TestCmdStatus:
 
 
 class TestCmdHardenRepo:
+    def test_setup_guardrails_command_dispatches_to_repo_hardening(self):
+        def noop(_args):
+            return 0
+
+        def guardrails(_args):
+            return 42
+
+        handler_kwargs = {field.name: noop for field in fields(CLICommandHandlers)}
+        handler_kwargs["harden_repo"] = guardrails
+        parser = build_parser(CLICommandHandlers(**handler_kwargs))
+
+        args = parser.parse_args(
+            [
+                "setup-guardrails",
+                "--target",
+                "repo",
+                "--hooks-dir",
+                ".githooks",
+                "--validation-cmd",
+                "make validate",
+            ]
+        )
+        alias_args = parser.parse_args(["harden-repo"])
+
+        assert args.command == "setup-guardrails"
+        assert args.func is guardrails
+        assert args.target == "repo"
+        assert args.hooks_dir == ".githooks"
+        assert args.validation_cmd == "make validate"
+        assert alias_args.command == "harden-repo"
+        assert alias_args.func is guardrails
+
     def test_cmd_harden_repo_installs_guardrails(self, tmp_path, monkeypatch):
         subprocess_repo = tmp_path / "repo"
         subprocess_repo.mkdir()

@@ -343,32 +343,33 @@ def _register_hook_commands(subparsers, handlers: CLICommandHandlers) -> None:
     )
     setup_hooks_parser.set_defaults(func=handlers.setup_hooks)
 
-    harden_repo_parser = subparsers.add_parser(
-        "harden-repo",
-        help="Install repo-local pre-push guardrails and AI agent hooks",
+    setup_guardrails_parser = subparsers.add_parser(
+        "setup-guardrails",
+        aliases=["harden-repo"],
+        help="Install repo-local guardrails and AI agent hooks",
     )
-    harden_repo_parser.add_argument(
+    setup_guardrails_parser.add_argument(
         "--target",
         type=str,
         default=None,
         help="Target project directory (default: repo_root from config)",
     )
-    harden_repo_parser.add_argument(
+    setup_guardrails_parser.add_argument(
         "--hooks-dir",
         type=str,
         default=None,
         help="Repo-local hooks directory to use for core.hooksPath (default: existing value or .githooks)",
     )
-    harden_repo_parser.add_argument(
+    setup_guardrails_parser.add_argument(
         "--validation-cmd",
         type=str,
         default=None,
         help="Override validation.cmd when generating scripts/verify-pr.sh",
     )
-    harden_repo_parser.add_argument(
+    setup_guardrails_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
-    harden_repo_parser.set_defaults(func=handlers.harden_repo)
+    setup_guardrails_parser.set_defaults(func=handlers.harden_repo)
 
 
 def _register_auth_commands(subparsers, handlers: CLICommandHandlers) -> None:

@@ -32,13 +32,13 @@ The wizard asks about your repo, agents, validation, and review preferences. If 
 
 The wizard creates `.issue-orchestrator/config/default.yaml`. You can also write this by hand — see [Configuration](../user/configuration.md) for a minimal starter config.
 
-## 3. Harden the repo
+## 3. Set Up Repo Guardrails
 
 ```bash
-issue-orchestrator harden-repo
+issue-orchestrator setup-guardrails
 ```
 
-This installs the repo-local pre-push gate plus the configured AI-agent hooks, and rerunning it refreshes those managed hook files if they drift. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. If Control Center blocks startup because the **Repo Guardrails** Doctor check failed, use **Repair Guardrails** in the Doctor modal; it runs the same hardening flow. See [Guardrails](../design/guardrails.md) for why this matters.
+This installs the repo-local pre-push gate plus the configured AI-agent hooks, and rerunning it refreshes those managed hook files if they drift. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. If Control Center blocks startup because the **Repo Guardrails** Doctor check failed, use **Repair Guardrails** in the Doctor modal; it runs the same guardrail setup flow. See [Guardrails](../design/guardrails.md) for why this matters. `harden-repo` remains available as a compatibility alias.
 
 ## 4. Label a GitHub issue
 

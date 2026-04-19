@@ -37,7 +37,7 @@ def test_check_repo_hardening_warns_when_not_installed(tmp_path):
         hook_checks.Check(
             name="Repo Guardrails",
             status="warning",
-            detail="Not installed. Run 'issue-orchestrator harden-repo'.",
+            detail="Not installed. Run 'issue-orchestrator setup-guardrails'.",
         )
     ]
 
@@ -620,7 +620,7 @@ def test_check_worktree_hook_corruption_flags_managed_project_hook(tmp_path):
     assert len(checks) == 1
     assert checks[0].status == "error"
     assert "pre-push.project" in checks[0].detail
-    assert "harden-repo" in checks[0].detail
+    assert "setup-guardrails" in checks[0].detail
 
 
 def test_check_worktree_hook_corruption_scans_worktree_hook_dirs(tmp_path):

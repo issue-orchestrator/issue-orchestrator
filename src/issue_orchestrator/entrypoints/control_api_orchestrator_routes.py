@@ -795,7 +795,7 @@ async def control_repair_guardrails(
     request: Request,
     deps: ControlApiOrchestratorDependency,
 ) -> JSONResponse:
-    """Repair repo-local guardrails by running the standard harden-repo flow."""
+    """Repair repo-local guardrails by running the standard setup-guardrails flow."""
     try:
         body = await request.json()
     except json.JSONDecodeError:

@@ -329,7 +329,7 @@ def check_repo_hardening(config: Config) -> list[Check]:
             Check(
                 name="Repo Guardrails",
                 status="warning",
-                detail="Not installed. Run 'issue-orchestrator harden-repo'.",
+                detail="Not installed. Run 'issue-orchestrator setup-guardrails'.",
             )
         ]
 
@@ -341,7 +341,8 @@ def check_repo_hardening(config: Config) -> list[Check]:
             Check(
                 name="Repo Guardrails",
                 status="error",
-                detail="; ".join(problems) + ". Run 'issue-orchestrator harden-repo'.",
+                detail="; ".join(problems)
+                + ". Run 'issue-orchestrator setup-guardrails'.",
             )
         ]
 
@@ -469,7 +470,7 @@ def check_worktree_hook_corruption(config: Config) -> list[Check]:
             detail=(
                 f"Corrupt pre-push.project detected ({len(corrupt)}): {rel_paths}. "
                 "Contains the managed wrapper marker; executing it would recurse. "
-                "Run 'issue-orchestrator harden-repo' or delete/rename the files."
+                "Run 'issue-orchestrator setup-guardrails' or delete/rename the files."
             ),
         )
     ]
