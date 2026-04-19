@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import subprocess
@@ -1382,6 +1383,19 @@ class TestInstallHooks:
         assert not (hooks_dir / "pre-push.project").exists()
         assert not (hooks_dir / "pre-push.orchestrator").exists()
 
+        # Regression: the bundled hook ships with an ``@@ORCHESTRATOR_PYTHON@@``
+        # placeholder; install must substitute it with the orchestrator's
+        # interpreter path so the hook does not depend on env-var
+        # propagation (which broke pushes in target repos with no .venv —
+        # see the issue-307 failure that motivated this).
+        installed = pre_push.read_text()
+        assert "@@ORCHESTRATOR_PYTHON@@" not in installed, (
+            "Install must substitute @@ORCHESTRATOR_PYTHON@@ placeholder"
+        )
+        assert sys.executable in installed, (
+            f"Install should bake sys.executable={sys.executable} into the hook"
+        )
+
     def test_install_hooks_chains_with_project_hook(self, tmp_path):
         """Test that hooks are chained when project has a pre-push hook."""
         # Setup fake git structure
@@ -1424,11 +1438,16 @@ class TestInstallHooks:
         
         # Verify project hook was copied correctly
         assert "Project hook" in pre_push_project.read_text()
-        
+
         # Verify all hooks are executable
         assert pre_push.stat().st_mode & 0o111, "Wrapper should be executable"
         assert pre_push_project.stat().st_mode & 0o111, "Project hook should be executable"
         assert pre_push_orchestrator.stat().st_mode & 0o111, "Orchestrator hook should be executable"
+
+        # Regression: see test_install_hooks_no_project_hook for context.
+        installed = pre_push_orchestrator.read_text()
+        assert "@@ORCHESTRATOR_PYTHON@@" not in installed
+        assert sys.executable in installed
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_install_hooks_with_custom_hooks_path(self, mock_run, tmp_path):

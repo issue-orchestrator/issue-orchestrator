@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from ...infra.repo_guardrails import (
@@ -18,6 +19,29 @@ logger = logging.getLogger(__name__)
 
 # Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
+
+# Placeholder in the bundled pre-push template that we substitute with the
+# orchestrator's interpreter path at install time. See the comment in
+# ``hooks/pre-push`` for why baking the path beats env-var propagation.
+ORCHESTRATOR_PYTHON_PLACEHOLDER = "@@ORCHESTRATOR_PYTHON@@"
+
+
+def _render_orchestrator_pre_push(template_path: Path) -> str:
+    """Read the bundled pre-push template and substitute the Python placeholder.
+
+    Substituting at install time means the worktree hook works even if
+    ``ISSUE_ORCHESTRATOR_PYTHON`` is missing from the orchestrator process's
+    environment when ``git push`` runs (the original failure mode for
+    target repos with no local ``.venv``).
+    """
+    content = template_path.read_text()
+    return content.replace(ORCHESTRATOR_PYTHON_PLACEHOLDER, sys.executable)
+
+
+def _install_orchestrator_pre_push(src: Path, dst: Path) -> None:
+    """Install the orchestrator pre-push hook with placeholder substitution."""
+    dst.write_text(_render_orchestrator_pre_push(src))
+    dst.chmod(0o755)
 
 
 def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> None:
@@ -107,8 +131,7 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     if project_hook is not None and project_hook.is_file():
         _install_chained_hook(hooks_dir, dst_hook, project_hook, orchestrator_hook)
     elif orchestrator_hook.exists():
-        shutil.copy2(orchestrator_hook, dst_hook)
-        dst_hook.chmod(0o755)
+        _install_orchestrator_pre_push(orchestrator_hook, dst_hook)
         logger.info("Installed orchestrator pre-push hook")
 
 
@@ -195,8 +218,7 @@ def _install_chained_hook(
 
     if orchestrator_hook.exists():
         orch_hook_copy = hooks_dir / "pre-push.orchestrator"
-        shutil.copy2(orchestrator_hook, orch_hook_copy)
-        orch_hook_copy.chmod(0o755)
+        _install_orchestrator_pre_push(orchestrator_hook, orch_hook_copy)
 
     logger.info("Installed chained pre-push hooks (project + orchestrator)")
 
