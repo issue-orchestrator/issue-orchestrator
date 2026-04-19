@@ -1,6 +1,6 @@
 """Regression tests for worktree pre-push hook installation.
 
-These tests cover the interaction between the repo-level ``harden-repo``
+These tests cover the interaction between the repo-level ``setup-guardrails``
 pre-push wrapper and the per-worktree hook installer. The specific bug this
 guards against: the repo wrapper running ``pre-push.project`` by path, while
 the worktree installer copies the repo wrapper *into* that path — yielding
@@ -22,7 +22,7 @@ from issue_orchestrator.adapters.worktree._worktree_hooks import (
     _resolve_project_pre_push_hook,
     install_hooks,
 )
-from issue_orchestrator.infra.repo_hardening import MANAGED_PRE_PUSH_MARKER
+from issue_orchestrator.infra.repo_guardrails import MANAGED_PRE_PUSH_MARKER
 
 
 def _make_managed_wrapper() -> str:
@@ -38,7 +38,7 @@ def _make_real_project_hook() -> str:
 
 
 def _init_main_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Initialise a bare-ish main repo with a pre-hardened .githooks/ and a worktree.
+    """Initialise a bare-ish main repo with a guardrailed .githooks/ and a worktree.
 
     Returns (main_repo_root, worktree_path, worktree_hooks_dir).
     """
@@ -65,7 +65,7 @@ def _init_main_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
         ["git", "commit", "-m", "seed"], cwd=main_repo, check=True, capture_output=True
     )
 
-    # Simulate a hardened repo: .githooks/pre-push is the managed wrapper, and
+    # Simulate a guardrailed repo: .githooks/pre-push is the managed wrapper, and
     # .githooks/pre-push.project holds the real project hook (what a user
     # actually wants to run on pre-push).
     githooks = main_repo / ".githooks"
@@ -124,7 +124,7 @@ def test_resolve_returns_none_when_no_pre_push_exists(tmp_path: Path) -> None:
     assert _resolve_project_pre_push_hook(gitdir, ".githooks") is None
 
 
-def test_install_hooks_in_hardened_worktree_does_not_recurse(tmp_path: Path) -> None:
+def test_install_hooks_in_guardrailed_worktree_does_not_recurse(tmp_path: Path) -> None:
     main_repo, worktree_path, worktree_hooks = _init_main_repo_with_worktree(tmp_path)
 
     install_hooks(worktree_path)

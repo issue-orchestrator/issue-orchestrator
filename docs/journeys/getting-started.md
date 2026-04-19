@@ -38,7 +38,7 @@ The wizard creates `.issue-orchestrator/config/default.yaml`. You can also write
 issue-orchestrator setup-guardrails
 ```
 
-This installs the repo-local pre-push gate plus the configured AI-agent hooks, and rerunning it refreshes those managed hook files if they drift. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. If Control Center blocks startup because the **Repo Guardrails** Doctor check failed, use **Repair Guardrails** in the Doctor modal; it runs the same guardrail setup flow. See [Guardrails](../design/guardrails.md) for why this matters. `harden-repo` remains available as a compatibility alias.
+This installs the repo-local pre-push gate plus the configured AI-agent hooks, and rerunning it refreshes those managed hook files if they drift. It prevents agent bypasses like `git push --no-verify` and gives `doctor` something concrete to verify. If Control Center blocks startup because the **Repo Guardrails** Doctor check failed, use **Repair Guardrails** in the Doctor modal; it runs the same guardrail setup flow. See [Guardrails](../design/guardrails.md) for why this matters.
 
 ## 4. Label a GitHub issue
 
@@ -58,7 +58,7 @@ Open `http://localhost:8080` to watch the dashboard. You'll see your issue move 
 issue-orchestrator doctor
 ```
 
-Doctor checks GitHub connectivity, token permissions, config validity, AI hook installation, and repo hardening state.
+Doctor checks GitHub connectivity, token permissions, config validity, AI hook installation, and repo guardrails state.
 
 ## What happens under the hood
 

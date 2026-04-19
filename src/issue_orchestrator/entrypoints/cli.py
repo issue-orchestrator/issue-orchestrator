@@ -14,7 +14,7 @@ from rich.console import Console
 from ..infra.logging_config import setup_logging
 from .cli_auth_commands import cmd_auth, cmd_keys
 from .cli_dry_run import run_dry_run as _run_dry_run
-from .cli_hook_commands import cmd_harden_repo, cmd_setup_hooks, cmd_verify
+from .cli_hook_commands import cmd_setup_guardrails, cmd_setup_hooks, cmd_verify
 from .cli_parser import CLICommandHandlers, build_parser
 from .cli_queue_commands import cmd_audit
 from .cli_support import (
@@ -893,7 +893,7 @@ def main() -> int:
             audit=cmd_audit,
             verify=cmd_verify,
             setup_hooks=cmd_setup_hooks,
-            harden_repo=cmd_harden_repo,
+            setup_guardrails=cmd_setup_guardrails,
             auth=cmd_auth,
             keys=cmd_keys,
             doctor=cmd_doctor,

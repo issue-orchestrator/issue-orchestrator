@@ -7,7 +7,7 @@ import os
 import shutil
 from pathlib import Path
 
-from ...infra.repo_hardening import (
+from ...infra.repo_guardrails import (
     MANAGED_PRE_PUSH_MARKER,
     quarantine_managed_hook_file,
 )
@@ -116,7 +116,7 @@ def _resolve_project_pre_push_hook(
 ) -> Path | None:
     """Locate the repo's real pre-push hook (the project's own logic).
 
-    When the main repo has been hardened, its ``pre-push`` file is our managed
+    When the main repo has guardrails installed, its ``pre-push`` file is our managed
     wrapper and the repo's original hook lives at ``pre-push.project`` next to
     it. Returning the wrapper here would cause the worktree-level wrapper to
     chain to the repo wrapper, which then chains to its own sibling
@@ -229,7 +229,7 @@ elif [ -x "$HOOKS_DIR/pre-push.project" ] && grep -qF "$MANAGED_MARKER" "$HOOKS_
     # the worktree — so failing loudly here is safer than running only the
     # orchestrator chain and silently dropping the repo's lint/test gate.
     # (The main-repo wrapper takes a different stance — see
-    # _render_repo_pre_push_hook in repo_hardening.py.)
+    # _render_repo_pre_push_hook in repo_guardrails.py.)
     audit "Refusing to exec managed wrapper as project hook (recursion guard): $HOOKS_DIR/pre-push.project"
     echo "pre-push: pre-push.project is the managed wrapper (corruption); refusing to recurse. Reinstall worktree hooks." >&2
     exit 1

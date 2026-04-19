@@ -1,4 +1,4 @@
-"""Hook, verification, and repository hardening CLI command handlers."""
+"""Hook, verification, and repository guardrail CLI command handlers."""
 
 import argparse
 import shutil
@@ -395,9 +395,9 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
     return 0
 
 
-def cmd_harden_repo(args: argparse.Namespace) -> int:
+def cmd_setup_guardrails(args: argparse.Namespace) -> int:
     """Install repo-local guardrails and AI agent hook wiring."""
-    from ..infra.repo_hardening import RepoHardeningError, harden_repo
+    from ..infra.repo_guardrails import RepoGuardrailsError, setup_repo_guardrails
 
     console.print("[bold cyan]Setting Up Repository Guardrails[/bold cyan]\n")
 
@@ -417,13 +417,13 @@ def cmd_harden_repo(args: argparse.Namespace) -> int:
     hooks_path = getattr(args, "hooks_dir", None)
 
     try:
-        result = harden_repo(
+        result = setup_repo_guardrails(
             config,
             target_root=target_root,
             validation_cmd=validation_cmd,
             hooks_path=hooks_path,
         )
-    except RepoHardeningError as exc:
+    except RepoGuardrailsError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         return 1
 

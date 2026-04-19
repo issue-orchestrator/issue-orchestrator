@@ -16,18 +16,18 @@ from .hooks.hooks import detect_agents_from_config, get_adapter, install_hooks_f
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOOKS_PATH = ".githooks"
-MANAGED_PRE_PUSH_MARKER = "Managed by issue-orchestrator harden-repo: pre-push"
-MANAGED_VERIFY_MARKER = "Managed by issue-orchestrator harden-repo: verify-pr"
+MANAGED_PRE_PUSH_MARKER = "Managed by issue-orchestrator setup-guardrails: pre-push"
+MANAGED_VERIFY_MARKER = "Managed by issue-orchestrator setup-guardrails: verify-pr"
 MANAGED_HELPER_MARKER = (
-    "Managed by issue-orchestrator harden-repo: block-no-verify helper"
+    "Managed by issue-orchestrator setup-guardrails: block-no-verify helper"
 )
 VERIFY_PR_RELATIVE_PATH = Path("scripts/verify-pr.sh")
 HELPER_RELATIVE_PATH = Path("scripts/agent-hooks/block_no_verify.py")
 
 
 @dataclass
-class RepoHardeningStatus:
-    """Observed hardening state for a repository."""
+class RepoGuardrailsStatus:
+    """Observed guardrail state for a repository."""
 
     repo_root: Path
     hooks_path_config: str | None
@@ -60,7 +60,7 @@ class ManagedAgentHookFileStatus:
 
 @dataclass
 class AgentHookStatus:
-    """Observed hardening state for one configured AI agent."""
+    """Observed guardrail state for one configured AI agent."""
 
     agent_type: str
     installed: bool
@@ -68,8 +68,8 @@ class AgentHookStatus:
 
 
 @dataclass
-class RepoHardeningInstallResult:
-    """Files written while hardening a repository."""
+class RepoGuardrailsInstallResult:
+    """Files written while setting up repository guardrails."""
 
     repo_root: Path
     hooks_path_config: str
@@ -83,16 +83,16 @@ class RepoHardeningInstallResult:
     agent_hook_files: dict[str, list[Path]] = field(default_factory=dict)
 
 
-class RepoHardeningError(RuntimeError):
-    """Raised when repo hardening cannot be applied safely."""
+class RepoGuardrailsError(RuntimeError):
+    """Raised when repo guardrails cannot be applied safely."""
 
 
-def inspect_repo_hardening(
+def inspect_repo_guardrails(
     repo_root: Path,
     *,
     config: Config | None = None,
-) -> RepoHardeningStatus:
-    """Return the current repo-hardening status for *repo_root*."""
+) -> RepoGuardrailsStatus:
+    """Return the current repo guardrail status for *repo_root*."""
     repo_root = repo_root.resolve()
     hooks_path_config = _get_local_hooks_path(repo_root)
     hooks_dir = _resolve_active_hooks_dir(repo_root, hooks_path_config)
@@ -106,7 +106,7 @@ def inspect_repo_hardening(
     helper_content = _safe_read_text(helper_script)
     agent_hooks = _inspect_agent_hooks(config, repo_root) if config is not None else {}
 
-    return RepoHardeningStatus(
+    return RepoGuardrailsStatus(
         repo_root=repo_root,
         hooks_path_config=hooks_path_config,
         hooks_dir=hooks_dir,
@@ -127,20 +127,20 @@ def inspect_repo_hardening(
     )
 
 
-def harden_repo(
+def setup_repo_guardrails(
     config: Config,
     *,
     target_root: Path | None = None,
     validation_cmd: str | None = None,
     hooks_path: str | None = None,
-) -> RepoHardeningInstallResult:
+) -> RepoGuardrailsInstallResult:
     """Install repo-level guardrails and agent hooks for a target repository."""
     repo_root = (target_root or config.repo_root).resolve()
     git = _new_git_cli()
     local_hooks_path = _get_local_hooks_path(repo_root, git)
     resolved_validation_cmd = (validation_cmd or config.validation.cmd or "").strip()
     if not resolved_validation_cmd:
-        raise RepoHardeningError(
+        raise RepoGuardrailsError(
             "validation.cmd is not configured. Set it in YAML or pass --validation-cmd."
         )
 
@@ -154,7 +154,7 @@ def harden_repo(
 
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    result = RepoHardeningInstallResult(
+    result = RepoGuardrailsInstallResult(
         repo_root=repo_root,
         hooks_path_config=hooks_path_value,
         hooks_dir=hooks_dir,
@@ -188,7 +188,7 @@ def _resolve_repo_hooks_dir(
     if local_hooks_path_value:
         try:
             return _resolve_hooks_dir_value(repo_root, local_hooks_path_value)
-        except RepoHardeningError:
+        except RepoGuardrailsError:
             # Recover from inherited worktree/common-config drift by resetting to
             # the managed repo-local hooks path instead of preserving it.
             pass
@@ -206,7 +206,7 @@ def _resolve_hooks_dir_value(repo_root: Path, hooks_path_value: str) -> tuple[st
     try:
         resolved.relative_to(repo_root)
     except ValueError as exc:
-        raise RepoHardeningError(
+        raise RepoGuardrailsError(
             "core.hooksPath must resolve inside the repository. "
             f"Current value: {hooks_path_value}"
         ) from exc
@@ -289,7 +289,7 @@ def _set_local_hooks_path(
         check=False,
     )
     if result.returncode != 0:
-        raise RepoHardeningError(
+        raise RepoGuardrailsError(
             f"Failed to set core.hooksPath to {hooks_path}: {(result.stderr or '').strip()}"
         )
 
@@ -297,7 +297,7 @@ def _set_local_hooks_path(
 def _install_verify_script(
     verify_script: Path,
     validation_cmd: str,
-    result: RepoHardeningInstallResult,
+    result: RepoGuardrailsInstallResult,
 ) -> None:
     verify_script.parent.mkdir(parents=True, exist_ok=True)
     rendered = _render_verify_pr_script(validation_cmd)
@@ -306,7 +306,7 @@ def _install_verify_script(
 
 def _install_helper_script(
     helper_script: Path,
-    result: RepoHardeningInstallResult,
+    result: RepoGuardrailsInstallResult,
 ) -> None:
     helper_script.parent.mkdir(parents=True, exist_ok=True)
     source_path = Path(__file__).parent / "hooks" / "block_no_verify.py"
@@ -317,7 +317,7 @@ def _install_helper_script(
 def _install_repo_pre_push_hook(
     pre_push_hook: Path,
     verify_script: Path,
-    result: RepoHardeningInstallResult,
+    result: RepoGuardrailsInstallResult,
 ) -> None:
     pre_push_hook.parent.mkdir(parents=True, exist_ok=True)
     project_hook = pre_push_hook.parent / "pre-push.project"
@@ -472,7 +472,7 @@ log "repo-pre-push-completed"
 def _write_executable_file(
     path: Path,
     content: str,
-    result: RepoHardeningInstallResult,
+    result: RepoGuardrailsInstallResult,
 ) -> None:
     path.write_text(content)
     path.chmod(0o755)

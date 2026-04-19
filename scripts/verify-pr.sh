@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Managed by issue-orchestrator harden-repo: verify-pr
+# Managed by issue-orchestrator setup-guardrails: verify-pr
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"

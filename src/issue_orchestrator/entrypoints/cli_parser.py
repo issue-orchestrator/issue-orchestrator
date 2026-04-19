@@ -33,7 +33,7 @@ class CLICommandHandlers:
     audit: CommandHandler
     verify: CommandHandler
     setup_hooks: CommandHandler
-    harden_repo: CommandHandler
+    setup_guardrails: CommandHandler
     auth: CommandHandler
     keys: CommandHandler
     doctor: CommandHandler
@@ -345,7 +345,6 @@ def _register_hook_commands(subparsers, handlers: CLICommandHandlers) -> None:
 
     setup_guardrails_parser = subparsers.add_parser(
         "setup-guardrails",
-        aliases=["harden-repo"],
         help="Install repo-local guardrails and AI agent hooks",
     )
     setup_guardrails_parser.add_argument(
@@ -369,7 +368,7 @@ def _register_hook_commands(subparsers, handlers: CLICommandHandlers) -> None:
     setup_guardrails_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
-    setup_guardrails_parser.set_defaults(func=handlers.harden_repo)
+    setup_guardrails_parser.set_defaults(func=handlers.setup_guardrails)
 
 
 def _register_auth_commands(subparsers, handlers: CLICommandHandlers) -> None:

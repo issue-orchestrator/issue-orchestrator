@@ -25,7 +25,11 @@ from ..execution.control_center_runtime import (
     is_shutdown_complete,
 )
 from ..infra.config import Config, get_config_path
-from ..infra.repo_hardening import RepoHardeningError, RepoHardeningInstallResult, harden_repo
+from ..infra.repo_guardrails import (
+    RepoGuardrailsError,
+    RepoGuardrailsInstallResult,
+    setup_repo_guardrails,
+)
 from ..infra.supervisor import MultiInstanceStatus, SupervisorOps
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependency,
@@ -61,7 +65,7 @@ def _repo_relative_path(repo_root: Path, path: Path) -> str:
         return str(path)
 
 
-def _serialize_hardening_result(result: RepoHardeningInstallResult) -> dict[str, object]:
+def _serialize_guardrails_result(result: RepoGuardrailsInstallResult) -> dict[str, object]:
     repo_root = result.repo_root
     return {
         "status": "repaired",
@@ -822,8 +826,8 @@ async def control_repair_guardrails(
 
     try:
         config = Config.load(config_path)
-        result = harden_repo(config, target_root=repo_root)
-    except RepoHardeningError as exc:
+        result = setup_repo_guardrails(config, target_root=repo_root)
+    except RepoGuardrailsError as exc:
         return JSONResponse(
             {
                 "error": "repair_failed",
@@ -833,7 +837,7 @@ async def control_repair_guardrails(
             status_code=400,
         )
 
-    payload = _serialize_hardening_result(result)
+    payload = _serialize_guardrails_result(result)
     payload["config_name"] = config_name
     payload["message"] = (
         "Repo guardrails repaired. Review and commit changed files if this updated "

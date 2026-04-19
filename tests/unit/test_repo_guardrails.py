@@ -1,4 +1,4 @@
-"""Tests for repo-level hardening installation."""
+"""Tests for repo-level guardrail installation."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import pytest
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra.repo_hardening import (
+from issue_orchestrator.infra.repo_guardrails import (
     MANAGED_PRE_PUSH_MARKER,
     _render_repo_pre_push_hook,
     _render_helper_script,
-    harden_repo,
-    inspect_repo_hardening,
+    setup_repo_guardrails,
+    inspect_repo_guardrails,
     quarantine_managed_hook_file,
-    RepoHardeningError,
+    RepoGuardrailsError,
 )
 
 
@@ -49,13 +49,13 @@ def _make_config(repo: Path) -> Config:
     return config
 
 
-def test_harden_repo_installs_repo_guardrails_and_agent_hooks(tmp_path: Path) -> None:
+def test_setup_repo_guardrails_installs_repo_guardrails_and_agent_hooks(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
 
     config = _make_config(repo)
-    result = harden_repo(config)
+    result = setup_repo_guardrails(config)
 
     hooks_path = subprocess.run(
         ["git", "config", "--local", "--get", "core.hooksPath"],
@@ -86,7 +86,7 @@ def test_harden_repo_installs_repo_guardrails_and_agent_hooks(tmp_path: Path) ->
     assert hook_result.returncode == 2
     assert "BLOCKED" in hook_result.stderr
 
-    status = inspect_repo_hardening(repo, config=config)
+    status = inspect_repo_guardrails(repo, config=config)
     assert status.pre_push_managed
     assert status.pre_push_calls_verify
     assert status.verify_managed
@@ -99,7 +99,7 @@ def test_harden_repo_installs_repo_guardrails_and_agent_hooks(tmp_path: Path) ->
     )
 
 
-def test_harden_repo_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
+def test_setup_repo_guardrails_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -116,7 +116,7 @@ def test_harden_repo_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
     original_hook.write_text("#!/usr/bin/env bash\necho original-hook\n")
     original_hook.chmod(0o755)
 
-    result = harden_repo(_make_config(repo))
+    result = setup_repo_guardrails(_make_config(repo))
 
     preserved = hooks_dir / "pre-push.project"
     assert preserved in result.preserved_files
@@ -124,7 +124,7 @@ def test_harden_repo_preserves_existing_pre_push_hook(tmp_path: Path) -> None:
     assert "scripts/verify-pr.sh" in result.pre_push_hook.read_text()
 
 
-def test_harden_repo_recovers_from_external_existing_hooks_path(tmp_path: Path) -> None:
+def test_setup_repo_guardrails_recovers_from_external_existing_hooks_path(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -139,7 +139,7 @@ def test_harden_repo_recovers_from_external_existing_hooks_path(tmp_path: Path) 
     )
 
     config = _make_config(repo)
-    result = harden_repo(config)
+    result = setup_repo_guardrails(config)
 
     hooks_path = subprocess.run(
         ["git", "config", "--local", "--get", "core.hooksPath"],
@@ -156,7 +156,7 @@ def test_harden_repo_recovers_from_external_existing_hooks_path(tmp_path: Path) 
     assert result.helper_script.exists()
 
 
-def test_harden_repo_rejects_explicit_external_hooks_path(tmp_path: Path) -> None:
+def test_setup_repo_guardrails_rejects_explicit_external_hooks_path(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -165,10 +165,10 @@ def test_harden_repo_rejects_explicit_external_hooks_path(tmp_path: Path) -> Non
     external_hooks.mkdir()
 
     with pytest.raises(
-        RepoHardeningError,
+        RepoGuardrailsError,
         match="core.hooksPath must resolve inside the repository",
     ):
-        harden_repo(_make_config(repo), hooks_path=str(external_hooks))
+        setup_repo_guardrails(_make_config(repo), hooks_path=str(external_hooks))
 
 
 def test_checked_in_helper_matches_generated_output() -> None:
@@ -204,7 +204,7 @@ def test_managed_pre_push_hook_contains_recursion_guard() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_harden_repo_quarantines_corrupt_project_hook(tmp_path: Path) -> None:
+def test_setup_repo_guardrails_quarantines_corrupt_project_hook(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -227,7 +227,7 @@ def test_harden_repo_quarantines_corrupt_project_hook(tmp_path: Path) -> None:
     )
     corrupt.chmod(0o755)
 
-    result = harden_repo(_make_config(repo))
+    result = setup_repo_guardrails(_make_config(repo))
 
     assert not corrupt.exists(), "corrupt pre-push.project must be renamed aside"
     quarantined = list(hooks_dir.glob("pre-push.project.quarantined-*"))
@@ -260,27 +260,27 @@ def test_quarantine_managed_hook_file_handles_existing_collision(tmp_path: Path)
     assert not target.exists()
 
 
-def test_harden_repo_refreshes_drifted_agent_hook_files(tmp_path: Path) -> None:
+def test_setup_repo_guardrails_refreshes_drifted_agent_hook_files(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
 
     config = _make_config(repo)
-    harden_repo(config)
+    setup_repo_guardrails(config)
 
     hook_path = repo / ".claude" / "hooks" / "block-no-verify.sh"
     hook_path.write_text("#!/usr/bin/env bash\necho drifted\n")
     hook_path.chmod(0o755)
 
-    status_before = inspect_repo_hardening(repo, config=config)
+    status_before = inspect_repo_guardrails(repo, config=config)
     assert (
         status_before.agent_hooks["claude-code"].managed_files[0].matches_template
         is False
     )
 
-    harden_repo(config)
+    setup_repo_guardrails(config)
 
-    status_after = inspect_repo_hardening(repo, config=config)
+    status_after = inspect_repo_guardrails(repo, config=config)
     assert (
         status_after.agent_hooks["claude-code"].managed_files[0].matches_template
         is True

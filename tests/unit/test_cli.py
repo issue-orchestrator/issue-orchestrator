@@ -18,7 +18,7 @@ from issue_orchestrator.entrypoints.cli import (
     cmd_output,
     cmd_pause,
     cmd_resume,
-    cmd_harden_repo,
+    cmd_setup_guardrails,
     cmd_test_reset,
     main,
     setup_logging,
@@ -292,8 +292,8 @@ class TestCmdStatus:
             assert result == 0  # Status returns 0 even without config
 
 
-class TestCmdHardenRepo:
-    def test_setup_guardrails_command_dispatches_to_repo_hardening(self):
+class TestCmdSetupGuardrails:
+    def test_setup_guardrails_command_dispatches_to_repo_guardrails(self):
         def noop(_args):
             return 0
 
@@ -301,7 +301,7 @@ class TestCmdHardenRepo:
             return 42
 
         handler_kwargs = {field.name: noop for field in fields(CLICommandHandlers)}
-        handler_kwargs["harden_repo"] = guardrails
+        handler_kwargs["setup_guardrails"] = guardrails
         parser = build_parser(CLICommandHandlers(**handler_kwargs))
 
         args = parser.parse_args(
@@ -315,17 +315,15 @@ class TestCmdHardenRepo:
                 "make validate",
             ]
         )
-        alias_args = parser.parse_args(["harden-repo"])
-
         assert args.command == "setup-guardrails"
         assert args.func is guardrails
         assert args.target == "repo"
         assert args.hooks_dir == ".githooks"
         assert args.validation_cmd == "make validate"
-        assert alias_args.command == "harden-repo"
-        assert alias_args.func is guardrails
+        with pytest.raises(SystemExit):
+            parser.parse_args(["harden-repo"])
 
-    def test_cmd_harden_repo_installs_guardrails(self, tmp_path, monkeypatch):
+    def test_cmd_setup_guardrails_installs_guardrails(self, tmp_path, monkeypatch):
         subprocess_repo = tmp_path / "repo"
         subprocess_repo.mkdir()
         import subprocess
@@ -354,13 +352,13 @@ class TestCmdHardenRepo:
             config=None,
         )
 
-        result = cmd_harden_repo(args)
+        result = cmd_setup_guardrails(args)
 
         assert result == 0
         assert (subprocess_repo / ".githooks" / "pre-push").exists()
         assert (subprocess_repo / "scripts" / "verify-pr.sh").exists()
 
-    def test_cmd_harden_repo_requires_validation_cmd(self, tmp_path, monkeypatch):
+    def test_cmd_setup_guardrails_requires_validation_cmd(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
         import subprocess
@@ -381,7 +379,7 @@ class TestCmdHardenRepo:
             config=None,
         )
 
-        result = cmd_harden_repo(args)
+        result = cmd_setup_guardrails(args)
 
         assert result == 1
 

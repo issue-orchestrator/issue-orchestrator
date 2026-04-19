@@ -67,7 +67,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 
 ### Target Project Hooks (project-specific)
 
-These are installed and refreshed in the target project by `issue-orchestrator setup-guardrails`. `harden-repo` remains a compatibility alias. `setup-hooks` still exists as the hook-only fallback when you intentionally are not managing repo-local pre-push guardrails yet.
+These are installed and refreshed in the target project by `issue-orchestrator setup-guardrails`. `setup-hooks` still exists as the hook-only command when you intentionally are not managing repo-local pre-push guardrails yet.
 
 | Hook | Type | Location | Purpose | Critical? |
 |------|------|----------|---------|-----------|
