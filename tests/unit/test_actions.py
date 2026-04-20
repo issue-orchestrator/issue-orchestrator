@@ -168,14 +168,15 @@ class TestActionDataclasses:
             pr_number=318,
             pr_url="https://github.com/test/repo/pull/318",
             status="merged",
-            status_reason="PR merged; awaiting merge reconciled",
             source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
         )
 
         assert action.action_type == ActionType.RECONCILE_HISTORY_ENTRY
         assert action.issue_number == 228
         assert action.pr_number == 318
         assert action.status == "merged"
+        assert action.reason == "PR merged; awaiting merge reconciled"
 
     def test_actions_are_frozen(self):
         """Test that actions are immutable."""

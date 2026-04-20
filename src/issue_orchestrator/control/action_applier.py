@@ -38,6 +38,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import Session
+from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
@@ -907,24 +908,36 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         if self.history_owner is None:
             return ActionResult.fail(action, "Session history owner is not configured")
 
-        mutation = self.history_owner.reconcile_awaiting_merge(
+        outcome = self.history_owner.reconcile_awaiting_merge(
             issue_number=action.issue_number,
             pr_url=action.pr_url,
             status=action.status,
-            status_reason=action.status_reason,
+            status_reason=action.reason,
         )
-        if mutation is None:
-            logger.info(
-                "Awaiting-merge history reconciliation no-op: issue=%d pr=%d status=%s",
-                action.issue_number,
-                action.pr_number,
-                action.status,
-            )
+        if not isinstance(outcome, HistoryReconciliationMutation):
+            if outcome.reason == "missing":
+                logger.warning(
+                    "Awaiting-merge history reconciliation missing entry: issue=%d pr=%d pr_url=%s status=%s",
+                    action.issue_number,
+                    action.pr_number,
+                    action.pr_url,
+                    action.status,
+                )
+            else:
+                logger.info(
+                    "Awaiting-merge history reconciliation no-op: issue=%d pr=%d current_status=%s status=%s",
+                    action.issue_number,
+                    action.pr_number,
+                    outcome.current_status,
+                    action.status,
+                )
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
                 status=action.status,
+                noop_reason=outcome.reason,
+                current_status=outcome.current_status,
                 no_op=True,
             )
 
@@ -935,9 +948,9 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 "issue_key": action.issue_key or str(action.issue_number),
                 "pr_number": action.pr_number,
                 "pr_url": action.pr_url,
-                "previous_status": mutation.previous_status,
-                "status": mutation.status,
-                "status_reason": mutation.status_reason,
+                "previous_status": outcome.previous_status,
+                "status": outcome.status,
+                "status_reason": outcome.status_reason,
                 "source": action.source,
             },
         ))
@@ -945,8 +958,8 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             action,
             issue_number=action.issue_number,
             pr_number=action.pr_number,
-            previous_status=mutation.previous_status,
-            status=mutation.status,
+            previous_status=outcome.previous_status,
+            status=outcome.status,
         )
 
     def _apply_queue_review(self, action: Action) -> ActionResult:

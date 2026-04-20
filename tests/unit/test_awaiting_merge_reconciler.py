@@ -217,8 +217,8 @@ def test_second_reconcile_pass_on_terminal_entry_is_noop() -> None:
         pr_number=318,
         pr_url=entry.pr_url or "",
         status=first_result.reconciliations[0].status,
-        status_reason=first_result.reconciliations[0].status_reason,
         source=first_result.reconciliations[0].source,
+        reason=first_result.reconciliations[0].status_reason,
     )
     events = InMemoryEventSink()
     applier = ActionApplier(

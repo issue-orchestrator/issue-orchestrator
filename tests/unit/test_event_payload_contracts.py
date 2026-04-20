@@ -184,9 +184,9 @@ def test_history_reconciled_event_payload_shape():
         pr_number=318,
         pr_url="https://github.com/owner/repo/pull/318",
         status="merged",
-        status_reason="PR merged; awaiting merge reconciled",
         source="pull_request",
         issue_key="M1-228",
+        reason="PR merged; awaiting merge reconciled",
     ))
 
     matches = events.get_events_by_name(EventName.HISTORY_RECONCILED)

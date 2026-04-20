@@ -255,9 +255,9 @@ class TestReconcileHistoryEntryAction:
             pr_number=318,
             pr_url="https://github.com/test/repo/pull/318",
             status="merged",
-            status_reason="PR merged; awaiting merge reconciled",
             source="pull_request",
             issue_key="M1-228",
+            reason="PR merged; awaiting merge reconciled",
         )
 
         result = applier.apply(action)
@@ -279,14 +279,72 @@ class TestReconcileHistoryEntryAction:
             pr_number=318,
             pr_url="https://github.com/test/repo/pull/318",
             status="closed",
-            status_reason="PR closed; awaiting merge reconciled",
             source="pull_request",
+            reason="PR closed; awaiting merge reconciled",
         )
 
         result = applier.apply(action)
 
         assert not result.success
         assert result.error == "Session history owner is not configured"
+
+    def test_reconcile_history_entry_noops_without_event_when_latest_match_terminal(
+        self,
+        applier,
+        mock_events,
+    ):
+        """An already-terminal latest history entry is idempotent and quiet."""
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="merged",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="PR merged; awaiting merge reconciled",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert result.details["no_op"] is True
+        assert result.details["noop_reason"] == "not_reconcilable"
+        assert result.details["current_status"] == "merged"
+        event_names = [call.args[0].name for call in mock_events.publish.call_args_list]
+        assert EventName.HISTORY_RECONCILED.value not in event_names
+
+    def test_reconcile_history_entry_warns_when_matching_history_entry_missing(
+        self,
+        applier,
+        caplog,
+    ):
+        """A missing history entry is a visible no-op, not a silent idempotency path."""
+        applier.history_owner = SessionHistoryOwner([])
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="closed",
+            source="pull_request",
+            reason="PR closed; awaiting merge reconciled",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = applier.apply(action)
+
+        assert result.success
+        assert result.details["no_op"] is True
+        assert result.details["noop_reason"] == "missing"
+        assert "history reconciliation missing entry" in caplog.text
 
 
 class TestSyncLabelsAction:

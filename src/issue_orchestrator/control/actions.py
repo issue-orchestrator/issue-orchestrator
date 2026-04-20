@@ -268,13 +268,15 @@ class CleanupSessionAction(Action):
 
 @dataclass(frozen=True)
 class ReconcileHistoryEntryAction(Action):
-    """Reconcile a completed history entry into a terminal PR/issue status."""
+    """Reconcile a completed history entry into a terminal PR/issue status.
+
+    The inherited ``reason`` is the status reason persisted to history.
+    """
 
     issue_number: int = 0
     pr_number: int = 0
     pr_url: str = ""
     status: AwaitingMergeTerminalStatus = "closed"
-    status_reason: str = ""
     source: AwaitingMergeReconciliationSource = "pull_request"
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.RECONCILE_HISTORY_ENTRY, init=False)

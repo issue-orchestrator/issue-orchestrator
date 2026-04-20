@@ -329,7 +329,6 @@ class Planner:
                 pr_number=reconciliation.pr_number,
                 pr_url=reconciliation.pr_url,
                 status=reconciliation.status,
-                status_reason=reconciliation.status_reason,
                 source=reconciliation.source,
                 issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
                 reason=reconciliation.status_reason,

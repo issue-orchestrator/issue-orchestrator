@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import MutableSequence
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
 
 from ..domain.models import (
     AwaitingMergeTerminalStatus,
@@ -24,6 +25,24 @@ class HistoryReconciliationMutation:
     status_reason: str
 
 
+HistoryReconciliationNoopReason: TypeAlias = Literal["missing", "not_reconcilable"]
+
+
+@dataclass(frozen=True)
+class HistoryReconciliationNoop:
+    """Details of a history reconciliation no-op."""
+
+    issue_number: int
+    pr_url: str
+    reason: HistoryReconciliationNoopReason
+    current_status: SessionHistoryStatus | None = None
+
+
+HistoryReconciliationResult: TypeAlias = (
+    HistoryReconciliationMutation | HistoryReconciliationNoop
+)
+
+
 @dataclass
 class SessionHistoryOwner:
     """Owns controlled mutations of session history entries."""
@@ -37,11 +56,22 @@ class SessionHistoryOwner:
         pr_url: str,
         status: AwaitingMergeTerminalStatus,
         status_reason: str,
-    ) -> HistoryReconciliationMutation | None:
+    ) -> HistoryReconciliationResult:
         """Mark the latest matching awaiting-merge history entry terminal."""
-        entry = self._find_reconcilable_entry(issue_number, pr_url)
+        entry = self._find_latest_matching_entry(issue_number, pr_url)
         if entry is None:
-            return None
+            return HistoryReconciliationNoop(
+                issue_number=issue_number,
+                pr_url=pr_url,
+                reason="missing",
+            )
+        if entry.status not in RECONCILABLE_HISTORY_STATUSES:
+            return HistoryReconciliationNoop(
+                issue_number=issue_number,
+                pr_url=pr_url,
+                reason="not_reconcilable",
+                current_status=entry.status,
+            )
 
         previous_status = entry.status
         entry.status = status
@@ -54,17 +84,17 @@ class SessionHistoryOwner:
             status_reason=status_reason,
         )
 
-    def _find_reconcilable_entry(
+    def _find_latest_matching_entry(
         self,
         issue_number: int,
         pr_url: str,
     ) -> SessionHistoryEntry | None:
+        # The newest matching entry is canonical; do not fall back to older
+        # duplicate PR history once the latest matching row is terminal.
         for entry in reversed(self.session_history):
             if entry.issue_number != issue_number:
                 continue
             if entry.pr_url != pr_url:
                 continue
-            if entry.status not in RECONCILABLE_HISTORY_STATUSES:
-                return None
             return entry
         return None

@@ -763,7 +763,7 @@ class TestPlanAwaitingMergeReconciliations:
         assert action.pr_number == 318
         assert action.pr_url == "https://github.com/test/repo/pull/318"
         assert action.status == "merged"
-        assert action.status_reason == "PR merged; awaiting merge reconciled"
+        assert action.reason == "PR merged; awaiting merge reconciled"
         assert action.source == "pull_request"
         assert action.issue_key == "M1-228"
 
