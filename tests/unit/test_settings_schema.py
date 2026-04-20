@@ -330,6 +330,33 @@ class TestApplyTo:
         assert cfg2.review_enabled is True
         assert cfg2.code_review_agent == "agent:rev"
 
+    def test_round_trip_preserves_path_typed_values(self, tmp_path):
+        """String settings forms should not erase Path-typed config values."""
+        cfg = Config()
+        cfg.repo_root = (tmp_path / "repo").resolve()
+        cfg.worktree_base = (tmp_path / "worktrees").resolve()
+
+        tabs = from_config(cfg)
+        tabs["concurrency"] = tabs["concurrency"].model_copy(update={"max_concurrent_sessions": 2})
+        apply_to(tabs, cfg)
+
+        assert cfg.max_concurrent_sessions == 2
+        assert cfg.worktree_base == (tmp_path / "worktrees").resolve()
+        assert isinstance(cfg.worktree_base, Path)
+
+    def test_path_typed_values_resolve_relative_to_repo_root(self, tmp_path):
+        """Path-like settings should follow Config.load relative path semantics."""
+        cfg = Config()
+        cfg.repo_root = (tmp_path / "repo").resolve()
+        cfg.worktree_base = (tmp_path / "worktrees").resolve()
+
+        tabs = from_config(cfg)
+        tabs["advanced"] = tabs["advanced"].model_copy(update={"worktree_base": "../new-worktrees"})
+        apply_to(tabs, cfg)
+
+        assert cfg.worktree_base == (tmp_path / "new-worktrees").resolve()
+        assert isinstance(cfg.worktree_base, Path)
+
     def test_restart_required_detection(self):
         """apply_to should return True when restart-required fields change."""
         cfg = Config()

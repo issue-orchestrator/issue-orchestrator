@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .config_paths import resolve_relative_path
+
 
 # Doctor check type constants - used in json_schema_extra["doctor_check"]
 DOCTOR_CHECK_PATH_EXISTS = "path_exists"
@@ -104,10 +106,13 @@ def apply_tabs_to_config(tab_definitions: list[dict[str, Any]], tabs: dict[str, 
                 value = [s.strip() for s in value.split("\n") if s.strip()] if value else []
 
             # Check restart requirement before applying.
+            old = _get_nested_attr(config, config_attr)
             if extra.get("restart_required"):
-                old = _get_nested_attr(config, config_attr)
                 if str(old) != str(value):
                     restart = True
+
+            if isinstance(old, Path) and isinstance(value, str):
+                value = resolve_relative_path(value, config.repo_root)
 
             _set_nested_attr(config, config_attr, value)
     return restart
