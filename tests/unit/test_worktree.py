@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import subprocess
@@ -1352,8 +1353,12 @@ class TestInstallHooks:
         # Should not raise, just return
         install_hooks(worktree_path)
 
-    def test_install_hooks_no_project_hook(self, tmp_path):
+    def test_install_hooks_no_project_hook(self, tmp_path, monkeypatch):
         """Test installing hooks when project has no pre-push hook."""
+        # Clear any ambient operator override so the expected baked path is
+        # sys.executable (not whatever the caller's shell has configured).
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_PYTHON", raising=False)
+
         # Setup fake git structure
         main_repo = tmp_path / "main_repo"
         main_repo.mkdir()
@@ -1362,19 +1367,17 @@ class TestInstallHooks:
         main_hooks = main_git / "hooks"
         main_hooks.mkdir()
         # No pre-push hook in main repo
-        
+
         worktrees_dir = main_git / "worktrees" / "test-worktree"
         worktrees_dir.mkdir(parents=True)
         hooks_dir = worktrees_dir / "hooks"
-        
+
         worktree_path = tmp_path / "worktree"
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
-        
-        # Create a fake orchestrator hook
-        
+
         install_hooks(worktree_path)
-        
+
         # Should have installed orchestrator's hook directly (no chaining)
         pre_push = hooks_dir / "pre-push"
         assert pre_push.exists()
@@ -1382,8 +1385,22 @@ class TestInstallHooks:
         assert not (hooks_dir / "pre-push.project").exists()
         assert not (hooks_dir / "pre-push.orchestrator").exists()
 
-    def test_install_hooks_chains_with_project_hook(self, tmp_path):
+        # Regression: the bundled hook ships with an ``@@ORCHESTRATOR_PYTHON@@``
+        # placeholder; install must substitute it with the orchestrator's
+        # interpreter path so the hook does not depend on env-var
+        # propagation (which broke pushes in target repos with no .venv —
+        # see the issue-307 failure that motivated this).
+        installed = pre_push.read_text()
+        assert "@@ORCHESTRATOR_PYTHON@@" not in installed, (
+            "Install must substitute @@ORCHESTRATOR_PYTHON@@ placeholder"
+        )
+        assert sys.executable in installed, (
+            f"Install should bake sys.executable={sys.executable} into the hook"
+        )
+
+    def test_install_hooks_chains_with_project_hook(self, tmp_path, monkeypatch):
         """Test that hooks are chained when project has a pre-push hook."""
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_PYTHON", raising=False)
         # Setup fake git structure
         main_repo = tmp_path / "main_repo"
         main_repo.mkdir()
@@ -1424,11 +1441,16 @@ class TestInstallHooks:
         
         # Verify project hook was copied correctly
         assert "Project hook" in pre_push_project.read_text()
-        
+
         # Verify all hooks are executable
         assert pre_push.stat().st_mode & 0o111, "Wrapper should be executable"
         assert pre_push_project.stat().st_mode & 0o111, "Project hook should be executable"
         assert pre_push_orchestrator.stat().st_mode & 0o111, "Orchestrator hook should be executable"
+
+        # Regression: see test_install_hooks_no_project_hook for context.
+        installed = pre_push_orchestrator.read_text()
+        assert "@@ORCHESTRATOR_PYTHON@@" not in installed
+        assert sys.executable in installed
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_install_hooks_with_custom_hooks_path(self, mock_run, tmp_path):
@@ -1493,6 +1515,92 @@ class TestInstallHooks:
 
         # Verify project hook was copied from custom hooks path
         assert "Custom hooks path hook" in pre_push_project.read_text()
+
+    def test_baked_python_honors_env_override(self, tmp_path, monkeypatch):
+        """Render path respects ISSUE_ORCHESTRATOR_PYTHON when it is valid.
+
+        The reviewer flagged that unconditionally baking ``sys.executable``
+        conflicted with the rest of the resolution contract: an operator or
+        test that set ``ISSUE_ORCHESTRATOR_PYTHON`` to a specific interpreter
+        would be overridden by the install step, defeating the override in
+        the exact failure mode the PR was designed for (env var not reaching
+        the later push).
+        """
+        from issue_orchestrator.adapters.worktree._worktree_hooks import (
+            HOOKS_DIR,
+            _render_orchestrator_pre_push,
+        )
+
+        # Fake interpreter that exists and is executable.
+        override = tmp_path / "fake-python"
+        override.write_text("#!/bin/bash\nexec /usr/bin/true\n")
+        override.chmod(0o755)
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", str(override))
+
+        rendered = _render_orchestrator_pre_push(HOOKS_DIR / "pre-push")
+
+        assert str(override) in rendered, (
+            "Rendered hook should bake the operator override, not sys.executable"
+        )
+
+    def test_baked_python_ignores_invalid_env_override(self, tmp_path, monkeypatch):
+        """Invalid override (missing file) falls back to sys.executable."""
+        from issue_orchestrator.adapters.worktree._worktree_hooks import (
+            HOOKS_DIR,
+            _render_orchestrator_pre_push,
+        )
+
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", str(tmp_path / "does-not-exist"))
+
+        rendered = _render_orchestrator_pre_push(HOOKS_DIR / "pre-push")
+
+        assert sys.executable in rendered
+
+    def test_baked_python_shell_quotes_metacharacters(self, tmp_path, monkeypatch):
+        """Interpreter paths with shell metacharacters round-trip safely.
+
+        A raw string-replace inside a double-quoted shell context would let
+        ``$``, backticks, or quotes expand or break the hook. The renderer
+        must shell-quote the substitution so the rendered hook parses back
+        to the exact installed path when executed.
+        """
+        import subprocess
+
+        from issue_orchestrator.adapters.worktree._worktree_hooks import (
+            HOOKS_DIR,
+            _render_orchestrator_pre_push,
+        )
+
+        # Path containing every shell metacharacter we care about.
+        mean_dir = tmp_path / "with $dollars `ticks` 'single' and spaces"
+        mean_dir.mkdir()
+        override = mean_dir / "python"
+        override.write_text('#!/bin/bash\necho "ran: $0"\n')
+        override.chmod(0o755)
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", str(override))
+
+        rendered = _render_orchestrator_pre_push(HOOKS_DIR / "pre-push")
+
+        # Extract the resolution block and ask bash to evaluate PYTHON_BIN
+        # exactly as the hook would, using an unset runtime env var so the
+        # baked path branch is exercised.
+        probe = tmp_path / "probe.sh"
+        probe.write_text(
+            "unset ISSUE_ORCHESTRATOR_PYTHON\n"
+            + rendered.split("if ! ")[0]  # everything up to the hook body
+            + 'printf "%s" "$PYTHON_BIN"\n'
+        )
+        result = subprocess.run(
+            ["bash", str(probe)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout == str(override), (
+            f"Shell-evaluated PYTHON_BIN={result.stdout!r} should equal the "
+            f"installed path {str(override)!r}; render likely failed to quote "
+            f"metacharacters. Hook excerpt:\n{rendered}"
+        )
 
 
 class TestInstallClaudeSettings:

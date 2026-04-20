@@ -8,16 +8,31 @@ set -e
 #
 # Python resolution for the orchestrator helper module. The orchestrator is
 # the only legitimate invoker of this push (agents are blocked from pushing
-# directly), and it exports ISSUE_ORCHESTRATOR_PYTHON pointing at the
-# interpreter where the ``issue_orchestrator`` package is importable.
-# Preferring that over ambient lookups lets the hook work in any target
-# repo (Kotlin, Node, pure-data, etc.) without the target having to install
-# the orchestrator package into its own venv. The legacy lookups stay as
-# fallbacks so a human running ``git push`` standalone in an orchestrator
-# checkout still works.
+# directly). Resolution order:
+#   1. ISSUE_ORCHESTRATOR_PYTHON env var — preferred when the orchestrator
+#      process exports it (overrides for tests/dev envs).
+#   2. The orchestrator interpreter path baked in at install time by
+#      ``adapters/worktree/_worktree_hooks.install_hooks`` — see the second
+#      ``elif`` below. Baking the path in removes reliance on env-var
+#      propagation across subprocess boundaries, which is the failure mode
+#      that left target repos (Kotlin/Node/etc. with no local ``.venv``)
+#      falling through to a system ``python3`` that does not have
+#      ``issue_orchestrator`` installed.
+#   3-4. Ambient ``.venv/bin/python`` / system ``python3`` — last-resort
+#      fallbacks for humans pushing manually from an orchestrator checkout.
+#
+# If the bake-in step was skipped (hook copied raw from the source tree),
+# the placeholder is not a real path; ``-x`` fails and we fall through.
+#
+# NOTE: the placeholder is NOT surrounded by quotes in this template.
+# The installer substitutes it with a ``shlex.quote``'d literal so paths
+# containing spaces, ``$``, backticks, or other metacharacters round-trip
+# correctly. Adding quotes here would double-quote the substituted value.
 PYTHON_BIN=""
 if [ -n "${ISSUE_ORCHESTRATOR_PYTHON:-}" ] && [ -x "$ISSUE_ORCHESTRATOR_PYTHON" ]; then
     PYTHON_BIN="$ISSUE_ORCHESTRATOR_PYTHON"
+elif [ -x @@ORCHESTRATOR_PYTHON@@ ]; then
+    PYTHON_BIN=@@ORCHESTRATOR_PYTHON@@
 elif [ -x ".venv/bin/python" ]; then
     PYTHON_BIN=".venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
