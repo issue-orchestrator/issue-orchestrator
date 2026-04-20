@@ -22,7 +22,11 @@ from issue_orchestrator.view_models.dashboard import (
     _normalize_status_reason,
     build_dashboard_view_model,
 )
-from issue_orchestrator.view_models.dashboard_flow import apply_lane_precedence, exclude_flow_overlaps
+from issue_orchestrator.view_models.dashboard_flow import (
+    apply_lane_precedence,
+    build_awaiting_merge_items,
+    exclude_flow_overlaps,
+)
 from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
@@ -497,6 +501,35 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     assert awaiting_card["github_title"] == "Open PR on GitHub"
     assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
     assert view_model.scope_summary["in_scope_total"] == 1
+
+
+def test_build_awaiting_merge_items_dedupes_union_preferring_pr_link():
+    queue_item = {
+        "issue_number": 280,
+        "title": "Queue card",
+        "status": "queue",
+        "url": "https://github.com/test/repo/issues/280",
+        "issue_url": "https://github.com/test/repo/issues/280",
+        "pr_url": "",
+        "merge_pending": True,
+    }
+    history_item = {
+        "issue_number": 280,
+        "title": "History card",
+        "status": "completed",
+        "url": "https://github.com/test/repo/pull/327",
+        "issue_url": "https://github.com/test/repo/issues/280",
+        "pr_url": "https://github.com/test/repo/pull/327",
+        "merge_pending": True,
+    }
+
+    result = build_awaiting_merge_items(
+        queue_items=[queue_item],
+        blocked_items=[],
+        history_items=[history_item],
+    )
+
+    assert result == [history_item]
 
 
 def test_awaiting_merge_dedupes_queue_and_history_preferring_pr_link():

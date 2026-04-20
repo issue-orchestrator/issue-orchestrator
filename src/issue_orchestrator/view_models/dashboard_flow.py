@@ -118,41 +118,6 @@ def _exclude_issue_numbers(
     return filtered
 
 
-def _lane_item_preference(item: dict[str, Any]) -> tuple[bool, bool, bool]:
-    pr_url = bool(item.get("pr_url"))
-    return (
-        pr_url,
-        pr_url and item.get("url") == item.get("pr_url"),
-        item.get("status") == "completed",
-    )
-
-
-def _dedupe_issue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse non-running lane items to one card per issue.
-
-    The queue and history sources can describe the same awaiting-merge issue.
-    Prefer the richer PR-backed item so the visible card opens the PR instead
-    of falling back to the issue link.
-    """
-
-    deduped: list[dict[str, Any]] = []
-    positions: dict[int, int] = {}
-    for item in items:
-        issue_number = _issue_number(item)
-        if issue_number is None:
-            deduped.append(item)
-            continue
-        existing_position = positions.get(issue_number)
-        if existing_position is None:
-            positions[issue_number] = len(deduped)
-            deduped.append(item)
-            continue
-        existing_item = deduped[existing_position]
-        if _lane_item_preference(item) > _lane_item_preference(existing_item):
-            deduped[existing_position] = item
-    return deduped
-
-
 def apply_lane_precedence(
     queue_items: list[dict[str, Any]],
     active_items: list[dict[str, Any]],
@@ -166,28 +131,47 @@ def apply_lane_precedence(
     running > blocked > awaiting-merge > queued > completed
     """
     active_numbers = _issue_numbers(active_items)
-    blocked_filtered = _dedupe_issue_items(
-        _exclude_issue_numbers(blocked_items, active_numbers)
-    )
+    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
     blocked_numbers = _issue_numbers(blocked_filtered)
 
-    awaiting_filtered = _dedupe_issue_items(
-        _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
-    )
+    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
     awaiting_numbers = _issue_numbers(awaiting_filtered)
 
-    queue_filtered = _dedupe_issue_items(
-        _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
-    )
+    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
     queue_numbers = _issue_numbers(queue_filtered)
 
-    completed_filtered = _dedupe_issue_items(
-        _exclude_issue_numbers(
-            completed_items,
-            active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
-        )
+    completed_filtered = _exclude_issue_numbers(
+        completed_items,
+        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
     )
     return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
+
+
+def _awaiting_merge_preference(item: dict[str, Any]) -> tuple[bool, bool]:
+    """Rank duplicate awaiting-merge sources by visible card usefulness."""
+    return (bool(item.get("pr_url")), item.get("status") == "completed")
+
+
+def _dedupe_awaiting_merge_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    positions: dict[int, int] = {}
+    for item in items:
+        issue_number = _issue_number(item)
+        if issue_number is None:
+            deduped.append(item)
+            continue
+
+        existing_position = positions.get(issue_number)
+        if existing_position is None:
+            positions[issue_number] = len(deduped)
+            deduped.append(item)
+            continue
+
+        existing_item = deduped[existing_position]
+        if _awaiting_merge_preference(item) > _awaiting_merge_preference(existing_item):
+            deduped[existing_position] = item
+
+    return deduped
 
 
 def build_awaiting_merge_items(
@@ -196,10 +180,11 @@ def build_awaiting_merge_items(
     history_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Items with PRs ready to merge, drawn from all lifecycle stages."""
-    return [
-        item for item in queue_items + blocked_items + history_items
+    return _dedupe_awaiting_merge_items([
+        item
+        for item in queue_items + blocked_items + history_items
         if item.get("merge_pending")
-    ]
+    ])
 
 
 def build_flow_columns(
