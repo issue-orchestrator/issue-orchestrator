@@ -109,6 +109,24 @@ function applyOptimisticRequeue(issueNumbers, sourceColumns) {
 
 // ── Kanban column expand/collapse ──
 
+function buildCompactGithubLink(card) {
+    const prUrl = String(card.pr_url || '');
+    const githubUrl = String(card.github_url || card.issue_url || '');
+    if (!githubUrl) return '';
+
+    const isPrLink = Boolean(prUrl && githubUrl === prUrl);
+    const label = String(card.github_label || (isPrLink ? 'PR ↗' : '↗'));
+    const title = String(card.github_title || (isPrLink ? 'Open PR on GitHub' : 'Open issue on GitHub'));
+    const ariaLabel = String(
+        card.github_aria_label
+        || (isPrLink
+            ? `Open PR for issue #${card.issue_number} on GitHub`
+            : `Open issue #${card.issue_number} on GitHub`),
+    );
+    const extraClass = isPrLink ? ' card-pr-link' : '';
+    return `<a class="card-gh${extraClass}" href="${escapeAttr(githubUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(title)}" aria-label="${escapeAttr(ariaLabel)}">${escapeHtml(label)}</a>`;
+}
+
 function renderCompactCardHtml(card) {
     const n = card.issue_number;
     const cardId = String(card.card_id || `issue-${n}`);
@@ -119,9 +137,7 @@ function renderCompactCardHtml(card) {
     const staleBadge = card.is_stale
         ? '<span class="badge badge-stale" title="Data may be stale">stale</span>'
         : '';
-    const ghLink = card.issue_url
-        ? `<a class="card-gh" href="${card.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>`
-        : '';
+    const ghLink = buildCompactGithubLink(card);
     const hasTerminal = card.state_label === 'running' ? 'true' : 'false';
     const action = card.state_label === 'running' ? 'focus' : 'open';
     const menuButton = `<button class="card-menu-btn"
@@ -331,6 +347,12 @@ async function loadExpandedColumn(columnId, options = {}) {
                 const detailDiv = detailText
                     ? `<div class="${detailClass}">${escapeHtml(String(detailText))}</div>`
                     : '';
+                const issueLink = item.issue_url
+                    ? `<a class="card-gh card-issue-link" href="${escapeAttr(String(item.issue_url))}" target="_blank" rel="noopener noreferrer" title="Open issue #${n} on GitHub" aria-label="Open issue #${n} on GitHub">↗</a>`
+                    : '';
+                const prLink = item.pr_url
+                    ? `<a class="card-action-btn card-pr-link" href="${escapeAttr(String(item.pr_url))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();" title="Open PR for issue #${n} on GitHub" aria-label="Open PR for issue #${n} on GitHub">PR ↗</a>`
+                    : '';
                 return `
                 <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
                     <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
@@ -352,8 +374,8 @@ async function loadExpandedColumn(columnId, options = {}) {
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
                         ${columnId === 'completed' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'completed', this);event.stopPropagation();" title="Requeue issue #${n} for another run">Retry</button>` : ''}
-                    ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
-                        ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
+                        ${issueLink}
+                        ${prLink}
                         <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
                     </div>
                 </div>`;
@@ -780,7 +802,7 @@ function bulkOpenPRs() {
     const cards = Array.from(col.querySelectorAll('.expanded-card'))
         .filter(card => card.querySelector('.card-checkbox:checked'));
     cards.forEach(card => {
-        const link = card.querySelector('.card-gh');
+        const link = card.querySelector('.card-pr-link');
         if (link && link.href) window.open(link.href, '_blank');
     });
 }
