@@ -832,11 +832,12 @@ def test_ai_gate_production_path_works():
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
+    inner_timeout = xdist_timeout(120)
     result = subprocess.run(
         [
             sys.executable, "-c",
             "from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter; "
-            f"import pathlib; s, m = ClaudeCodeAdapter().test_ai_gate(pathlib.Path('{project_root}'), timeout=xdist_timeout(120)); "
+            f"import pathlib; s, m = ClaudeCodeAdapter().test_ai_gate(pathlib.Path('{project_root}'), timeout={inner_timeout}); "
             "print(f'{s}|{m}')",
         ],
         capture_output=True, text=True, env=env, timeout=xdist_timeout(180),
