@@ -407,6 +407,13 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         ".timeline-detail-action", has_text="Event Details",
     ).first
     expect(details_action).to_be_visible(timeout=5000)
+    action_payload = details_action.get_attribute("data-action") or ""
+    assert "detail_id" in action_payload, (
+        f"event details action should reference a compact lookup id: {action_payload!r}"
+    )
+    assert _TEST_4057_NODEID not in action_payload, (
+        "event details action should not duplicate the full event payload in data-action"
+    )
     details_action.click()
     event_detail_modal = page.locator("#modalOverlay.visible")
     expect(event_detail_modal).to_be_visible(timeout=5000)

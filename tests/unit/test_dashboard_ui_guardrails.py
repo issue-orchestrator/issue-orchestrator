@@ -671,9 +671,16 @@ def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
 def test_timeline_events_pass_detail_context_to_action_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
-    assert "renderTimelineEventActions(evt.actions || [], evt)" in body
+    actions_body = _function_body(js, "renderTimelineEventActions")
+    assert "const detailIds = []" in body
+    assert "renderTimelineEventActions(evt.actions || [], evt, detailIds)" in body
+    assert "renderTimelineChildren(evt.children, detailIds)" in body
+    assert "_clearTimelineEventDetails(container)" in body
     assert "openTimelineEventDetails" in js
     assert "show_event_details" in js
+    assert "timelineEventDetailsById" in js
+    assert "detail_id: _registerTimelineEventDetails(eventDetail, detailIds)" in actions_body
+    assert "event: _timelineEventDetailsPayload(eventDetail)" not in actions_body
     assert "timeline-event-detail-overlay" in js
     assert "timeline-event-detail-overlay" in _read_dashboard_css_bundle()
 
