@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Callable, Literal
 from urllib.parse import urlparse
 
 from ..domain.models import (
+    AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
+    DiscoveredAwaitingMergeReconciliation,
     RECONCILABLE_HISTORY_STATUSES,
     TERMINAL_AWAITING_MERGE_HISTORY_STATUSES,
 )
@@ -33,34 +35,38 @@ ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
 
 @dataclass(frozen=True)
 class AwaitingMergeReconciliationResult:
-    """Summary of awaiting-merge reconciliation work."""
+    """Summary of awaiting-merge reconciliation discovery work."""
 
     checked: int = 0
-    reconciled: int = 0
+    discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
+    reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
 
 
 @dataclass
 class AwaitingMergeReconciler:
-    """Owns lifecycle cleanup for history-backed awaiting-merge cards."""
+    """Discovers lifecycle cleanup facts for history-backed awaiting-merge cards."""
 
     repository_host: RepositoryHost
     clock: Callable[[], float] = time.time
     history_limit: int = AWAITING_MERGE_HISTORY_LIMIT
 
-    def reconcile(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
-        """Reconcile completed history entries that still point at PRs."""
+    def discover(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
+        """Discover completed history entries that should become terminal."""
         checked = 0
-        reconciled = 0
+        discovered = 0
         still_pending = 0
         skipped = 0
+        reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
 
         for entry in self._awaiting_merge_entries(state):
             checked += 1
-            outcome = self._reconcile_entry(state, entry)
+            outcome, reconciliation = self._discover_entry(state, entry)
             if outcome == "terminal":
-                reconciled += 1
+                discovered += 1
+                if reconciliation is not None:
+                    reconciliations.append(reconciliation)
             elif outcome == "still_pending":
                 still_pending += 1
             else:
@@ -68,9 +74,10 @@ class AwaitingMergeReconciler:
 
         return AwaitingMergeReconciliationResult(
             checked=checked,
-            reconciled=reconciled,
+            discovered=discovered,
             still_pending=still_pending,
             skipped=skipped,
+            reconciliations=tuple(reconciliations),
         )
 
     def _awaiting_merge_entries(
@@ -85,11 +92,11 @@ class AwaitingMergeReconciler:
             if entry.status in RECONCILABLE_HISTORY_STATUSES and bool(entry.pr_url)
         ]
 
-    def _reconcile_entry(
+    def _discover_entry(
         self,
         state: OrchestratorState,
         entry: SessionHistoryEntry,
-    ) -> ReconciliationOutcome:
+    ) -> tuple[ReconciliationOutcome, DiscoveredAwaitingMergeReconciliation | None]:
         pr_number = pr_number_from_url(entry.pr_url or "")
         if pr_number is None:
             logger.warning(
@@ -97,31 +104,41 @@ class AwaitingMergeReconciler:
                 entry.issue_number,
                 entry.pr_url,
             )
-            return "skipped"
+            return "skipped", None
 
         pr = self._get_pr(entry.issue_number, pr_number)
         if pr is not None:
             pr_state = _normalized_state(pr.state)
             if pr_state in TERMINAL_AWAITING_MERGE_HISTORY_STATUSES:
-                _mark_terminal(entry, pr_state, _pr_terminal_reason(pr_state))
-                return "terminal"
+                return "terminal", _reconciliation_fact(
+                    entry=entry,
+                    pr_number=pr_number,
+                    status=pr_state,
+                    reason=_pr_terminal_reason(pr_state),
+                    source="pull_request",
+                )
 
         issue = self._get_issue(entry.issue_number)
         if issue is None:
             # An open PR still means "awaiting merge"; only bump issue freshness
             # after a confirmed issue refresh.
             if pr is not None:
-                return "still_pending"
-            return "skipped"
+                return "still_pending", None
+            return "skipped", None
 
         record_issue_refreshes(state, {entry.issue_number}, self.clock())
         if _normalized_state(issue.state) == "closed":
-            _mark_terminal(entry, "closed", "Issue closed; awaiting merge reconciled")
-            return "terminal"
+            return "terminal", _reconciliation_fact(
+                entry=entry,
+                pr_number=pr_number,
+                status="closed",
+                reason="Issue closed; awaiting merge reconciled",
+                source="issue",
+            )
 
         if pr is None:
-            return "skipped"
-        return "still_pending"
+            return "skipped", None
+        return "still_pending", None
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
         try:
@@ -159,13 +176,22 @@ def pr_number_from_url(pr_url: str) -> int | None:
     return None
 
 
-def _mark_terminal(
+def _reconciliation_fact(
+    *,
     entry: SessionHistoryEntry,
+    pr_number: int,
     status: AwaitingMergeTerminalStatus,
     reason: str,
-) -> None:
-    entry.status = status
-    entry.status_reason = reason
+    source: AwaitingMergeReconciliationSource,
+) -> DiscoveredAwaitingMergeReconciliation:
+    return DiscoveredAwaitingMergeReconciliation(
+        issue_number=entry.issue_number,
+        pr_number=pr_number,
+        pr_url=entry.pr_url or "",
+        status=status,
+        status_reason=reason,
+        source=source,
+    )
 
 
 def _pr_terminal_reason(status: AwaitingMergeTerminalStatus) -> str:

@@ -187,6 +187,14 @@ def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     assert idx_xterm_fit < idx_chunk_loop < idx_dashboard
 
 
+def test_dashboard_refreshes_on_history_reconciled_sse() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "wireEventListeners")
+
+    assert "'history.reconciled'" in body
+    assert "refreshViewModel({ reloadOnListChange: true })" in body
+
+
 def test_compact_cards_use_fingerprint_delta_path() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderCompactCards")

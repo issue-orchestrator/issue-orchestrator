@@ -16,6 +16,7 @@ from issue_orchestrator.domain.models import (
     PendingRework,
     PendingCleanup,
     PendingTriageReview,
+    DiscoveredAwaitingMergeReconciliation,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -119,6 +120,27 @@ class TestFactGathererCreateSnapshot:
 
         assert len(snapshot.pending_reviews) == 1
         assert snapshot.pending_reviews[0].pr_number == 10
+
+    def test_create_snapshot_includes_awaiting_merge_reconciliation_facts(
+        self,
+        fact_gatherer,
+        sample_state,
+        sample_issues,
+    ):
+        """Snapshot carries awaiting-merge reconciliation facts to the planner."""
+        fact = DiscoveredAwaitingMergeReconciliation(
+            issue_number=1,
+            pr_number=10,
+            pr_url="https://github.com/owner/repo/pull/10",
+            status="merged",
+            status_reason="PR merged; awaiting merge reconciled",
+            source="pull_request",
+        )
+        sample_state.discovered_awaiting_merge_reconciliations = [fact]
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.discovered_awaiting_merge_reconciliations == (fact,)
 
     def test_create_snapshot_with_priority_queue(
         self, fact_gatherer, sample_state, sample_issues

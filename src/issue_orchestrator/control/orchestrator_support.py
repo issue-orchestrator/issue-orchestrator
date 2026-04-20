@@ -48,6 +48,7 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
     Helpers are exposed via @cached_property on Orchestrator - no fields set here.
     """
     from ..observation.observer import SessionObserver
+    from .session_history import SessionHistoryOwner
 
     # Wire up the scheduler from the planner
     orch.scheduler = orch.deps.planner.scheduler
@@ -65,6 +66,7 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
             None,
         )
     )
+    orch.deps.action_applier.history_owner = SessionHistoryOwner(orch.state.session_history)
 
     # Create observer (still created here as it depends on runtime orchestrator state)
     orch.observer = SessionObserver(
@@ -161,7 +163,14 @@ class OrchestratorSupport:
         )
 
     def clear_discovered_facts(self) -> None:
-        for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures", "immediate_cleanups"):
+        for attr in (
+            "discovered_reviews",
+            "discovered_awaiting_merge_reconciliations",
+            "discovered_reworks",
+            "discovered_escalations",
+            "discovered_failures",
+            "immediate_cleanups",
+        ):
             getattr(self.state, attr).clear()
 
     def emit_heartbeat_if_needed(self) -> None:
@@ -433,6 +442,7 @@ def pause_issue_for_reconciliation(
 def clear_discovered_facts(state: "OrchestratorState") -> None:
     """Clear discovered facts from state - moved per method table."""
     state.discovered_reviews.clear()
+    state.discovered_awaiting_merge_reconciliations.clear()
     state.discovered_reworks.clear()
     state.discovered_escalations.clear()
     state.discovered_failures.clear()

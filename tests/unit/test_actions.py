@@ -15,6 +15,7 @@ from issue_orchestrator.control.actions import (
     LaunchSessionAction,
     StopSessionAction,
     EscalateToHumanAction,
+    ReconcileHistoryEntryAction,
 )
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.session_manager import SessionManager, SessionRef, SessionType
@@ -159,6 +160,23 @@ class TestActionDataclasses:
         assert action.action_type == ActionType.LAUNCH_SESSION
         assert action.session_type == SessionType.ISSUE
         assert action.number == 123
+
+    def test_reconcile_history_entry_action(self):
+        """Test ReconcileHistoryEntryAction creation."""
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        assert action.action_type == ActionType.RECONCILE_HISTORY_ENTRY
+        assert action.issue_number == 228
+        assert action.pr_number == 318
+        assert action.status == "merged"
+        assert action.reason == "PR merged; awaiting merge reconciled"
 
     def test_actions_are_frozen(self):
         """Test that actions are immutable."""

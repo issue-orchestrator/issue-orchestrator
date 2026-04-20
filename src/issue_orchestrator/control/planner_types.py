@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 from ..domain.models import (
     CleanupFacts,
+    DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
     DiscoveredReview,
@@ -44,6 +45,9 @@ class OrchestratorSnapshot:
     max_issues_to_start: Optional[int] = None
     # Discovered facts for Planner-centric queue management
     discovered_reviews: tuple[DiscoveredReview, ...] = field(default_factory=tuple)
+    discovered_awaiting_merge_reconciliations: tuple[
+        DiscoveredAwaitingMergeReconciliation, ...
+    ] = field(default_factory=tuple)
     discovered_reworks: tuple[DiscoveredRework, ...] = field(default_factory=tuple)
     discovered_escalations: tuple[DiscoveredEscalation, ...] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
@@ -77,6 +81,9 @@ class OrchestratorSnapshot:
         state: "OrchestratorState",
         max_issues_to_start: Optional[int] = None,
         discovered_reviews: Sequence[DiscoveredReview] = (),
+        discovered_awaiting_merge_reconciliations: Sequence[
+            DiscoveredAwaitingMergeReconciliation
+        ] = (),
         discovered_reworks: Sequence[DiscoveredRework] = (),
         discovered_escalations: Sequence[DiscoveredEscalation] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
@@ -93,6 +100,8 @@ class OrchestratorSnapshot:
             state: Mutable orchestrator state object
             max_issues_to_start: Optional limit on issues to start this session
             discovered_reviews: Reviews discovered from session completions/scans
+            discovered_awaiting_merge_reconciliations: Awaiting-merge history
+                transitions discovered from scans
             discovered_reworks: Reworks discovered from scans
             discovered_escalations: Escalations discovered from scans
             discovered_failures: Failures discovered from session completions (for triage)
@@ -113,6 +122,9 @@ class OrchestratorSnapshot:
             issues_started_count=state.issues_started_count,
             max_issues_to_start=max_issues_to_start,
             discovered_reviews=tuple(discovered_reviews),
+            discovered_awaiting_merge_reconciliations=tuple(
+                discovered_awaiting_merge_reconciliations
+            ),
             discovered_reworks=tuple(discovered_reworks),
             discovered_escalations=tuple(discovered_escalations),
             discovered_failures=tuple(discovered_failures),

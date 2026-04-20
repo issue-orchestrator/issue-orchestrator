@@ -59,6 +59,7 @@ from .actions import (
     CreateTriageIssueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
+    ReconcileHistoryEntryAction,
     SessionType,
 )
 from .reconciliation import build_expected_for_mutation
@@ -203,6 +204,10 @@ class Planner:
         cleanup_actions = self._plan_cleanups(snapshot)
         actions.extend(cleanup_actions)
 
+        # 1h. Reconcile recovered awaiting-merge history entries
+        history_reconciliation_actions = self._plan_awaiting_merge_reconciliations(snapshot)
+        actions.extend(history_reconciliation_actions)
+
         # === PHASE 2: Session launch actions (consume capacity) ===
 
         # Calculate available capacity
@@ -308,6 +313,26 @@ class Planner:
                     logger.debug("Planner: no code_review_agent - skipping review queue for PR #%d", review.pr_number)
             else:
                 logger.debug("Planner: PR #%d already queued, skipping", review.pr_number)
+
+        return actions
+
+    def _plan_awaiting_merge_reconciliations(
+        self,
+        snapshot: OrchestratorSnapshot,
+    ) -> list[Action]:
+        """Plan history status transitions discovered by awaiting-merge scans."""
+        actions: list[Action] = []
+
+        for reconciliation in snapshot.discovered_awaiting_merge_reconciliations:
+            actions.append(ReconcileHistoryEntryAction(
+                issue_number=reconciliation.issue_number,
+                pr_number=reconciliation.pr_number,
+                pr_url=reconciliation.pr_url,
+                status=reconciliation.status,
+                source=reconciliation.source,
+                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
+                reason=reconciliation.status_reason,
+            ))
 
         return actions
 

@@ -164,11 +164,12 @@ class GitHubWorkflow:
         issue_branches = self.pr_scanner.load_issue_branches()
         self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
         self.scan_needs_rework_prs(state, issue_branches=issue_branches)
-        result = AwaitingMergeReconciler(self.repository_host).reconcile(state)
-        if result.reconciled:
+        result = AwaitingMergeReconciler(self.repository_host).discover(state)
+        state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
+        if result.discovered:
             logger.info(
-                "Reconciled %d awaiting-merge history entries",
-                result.reconciled,
+                "Discovered %d awaiting-merge history reconciliations",
+                result.discovered,
             )
 
     def update_dependency_problems(

@@ -376,6 +376,7 @@ SessionHistoryStatus: TypeAlias = Literal[
     "timed_out",
 ]
 AwaitingMergeTerminalStatus: TypeAlias = Literal["merged", "closed"]
+AwaitingMergeReconciliationSource: TypeAlias = Literal["pull_request", "issue"]
 RECONCILABLE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset({"completed"})
 TERMINAL_AWAITING_MERGE_HISTORY_STATUSES: frozenset[AwaitingMergeTerminalStatus] = frozenset(
     {"merged", "closed"}
@@ -805,6 +806,23 @@ class DiscoveredReview:
     pr_url: str
     branch_name: str
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
+    issue_key: str = ""  # stable_id; falls back to str(issue_number) when empty
+
+
+@dataclass(frozen=True)
+class DiscoveredAwaitingMergeReconciliation:
+    """A history-backed awaiting-merge transition discovered by repository scans.
+
+    This is a fact. The Planner decides whether to emit a history reconciliation
+    action, and the ActionApplier performs the actual history mutation.
+    """
+
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    status: AwaitingMergeTerminalStatus
+    status_reason: str
+    source: AwaitingMergeReconciliationSource
     issue_key: str = ""  # stable_id; falls back to str(issue_number) when empty
 
 
@@ -1278,6 +1296,7 @@ class OrchestratorState:
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies (to migrate: dict[IssueKey, ...])
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
+    discovered_awaiting_merge_reconciliations: list[DiscoveredAwaitingMergeReconciliation] = field(default_factory=list)  # Awaiting-merge history transitions from scans
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage

@@ -49,6 +49,7 @@ from issue_orchestrator.domain.models import (
     PendingRework,
     PendingTriageReview,
     PendingCleanup,
+    DiscoveredAwaitingMergeReconciliation,
     DiscoveredReview,
     DiscoveredRework,
     DiscoveredEscalation,
@@ -653,6 +654,16 @@ class TestClearDiscoveredFacts:
         sample_orchestrator_state.discovered_reviews = [
             DiscoveredReview(issue_number=1, pr_number=100, pr_url="url", branch_name="branch")
         ]
+        sample_orchestrator_state.discovered_awaiting_merge_reconciliations = [
+            DiscoveredAwaitingMergeReconciliation(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                status="merged",
+                status_reason="PR merged; awaiting merge reconciled",
+                source="pull_request",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
         ]
@@ -667,6 +678,7 @@ class TestClearDiscoveredFacts:
 
         # All lists should be empty
         assert len(sample_orchestrator_state.discovered_reviews) == 0
+        assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1082,6 +1094,16 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         sample_orchestrator_state.discovered_reviews = [
             DiscoveredReview(issue_number=1, pr_number=100, pr_url="url", branch_name="br")
         ]
+        sample_orchestrator_state.discovered_awaiting_merge_reconciliations = [
+            DiscoveredAwaitingMergeReconciliation(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                status="closed",
+                status_reason="PR closed; awaiting merge reconciled",
+                source="pull_request",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
         ]
@@ -1098,6 +1120,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         support.clear_discovered_facts()
 
         assert len(sample_orchestrator_state.discovered_reviews) == 0
+        assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1880,4 +1903,3 @@ class TestRunTickHeartbeat:
         assert sample_orchestrator_state.last_tick_started_at > 0
         assert sample_orchestrator_state.last_tick_completed_at == 0.0
         assert sample_orchestrator_state.current_tick_phase == 'active_sessions'
-

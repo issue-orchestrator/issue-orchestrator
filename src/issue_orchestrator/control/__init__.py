@@ -50,8 +50,10 @@ from .actions import (
     QueueTriageAction,
     EscalateToHumanAction,
     AddCommentAction,
+    ReconcileHistoryEntryAction,
 )
 from .action_applier import ActionApplier
+from .session_history import SessionHistoryOwner
 from .validation import (
     ValidationRecord,
     ValidationRecordStore,
@@ -124,7 +126,9 @@ __all__ = [
     "QueueTriageAction",
     "EscalateToHumanAction",
     "AddCommentAction",
+    "ReconcileHistoryEntryAction",
     "ActionApplier",
+    "SessionHistoryOwner",
     # Validation
     "ValidationRecord",
     "ValidationRecordStore",

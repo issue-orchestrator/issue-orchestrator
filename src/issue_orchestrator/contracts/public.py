@@ -7,7 +7,7 @@ These contracts are intentionally minimal and stable:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -84,6 +84,17 @@ class PersistentStalePayload(ContractBase):
     threshold: int
 
 
+class HistoryReconciledPayload(ContractBase):
+    issue_number: int
+    issue_key: str
+    pr_number: int
+    pr_url: str
+    previous_status: Literal["completed"]
+    status: Literal["merged", "closed"]
+    status_reason: str
+    source: Literal["pull_request", "issue"]
+
+
 class StartupCompletePayload(ContractBase):
     elapsed_seconds: float
 
@@ -134,6 +145,7 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.stale.in_progress_detected": StaleDetectedPayload,
     "sse.stale.in_progress_cleared": StaleClearedPayload,
     "sse.stale.persistent_detected": PersistentStalePayload,
+    "sse.history.reconciled": HistoryReconciledPayload,
     "sse.startup_complete": StartupCompletePayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
     "timeline.issue": TimelineIssueContract,

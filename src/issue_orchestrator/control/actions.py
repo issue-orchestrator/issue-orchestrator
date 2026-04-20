@@ -24,6 +24,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
+from ..domain.models import (
+    AwaitingMergeReconciliationSource,
+    AwaitingMergeTerminalStatus,
+)
 from .session_manager import SessionType
 
 if TYPE_CHECKING:
@@ -64,6 +68,9 @@ class ActionType(Enum):
 
     # Cleanup operations
     CLEANUP_SESSION = "cleanup_session"
+
+    # History operations
+    RECONCILE_HISTORY_ENTRY = "reconcile_history_entry"
 
 
 @dataclass(frozen=True)
@@ -257,6 +264,22 @@ class CleanupSessionAction(Action):
     close_tabs: bool = True
     remove_worktrees: bool = True
     action_type: ActionType = field(default=ActionType.CLEANUP_SESSION, init=False)
+
+
+@dataclass(frozen=True)
+class ReconcileHistoryEntryAction(Action):
+    """Reconcile a completed history entry into a terminal PR/issue status.
+
+    The inherited ``reason`` is the status reason persisted to history.
+    """
+
+    issue_number: int = 0
+    pr_number: int = 0
+    pr_url: str = ""
+    status: AwaitingMergeTerminalStatus = "closed"
+    source: AwaitingMergeReconciliationSource = "pull_request"
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    action_type: ActionType = field(default=ActionType.RECONCILE_HISTORY_ENTRY, init=False)
 
 
 # Action result types
