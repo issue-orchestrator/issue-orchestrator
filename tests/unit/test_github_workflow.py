@@ -29,6 +29,9 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
         discovered_reviews=[],
         discovered_reworks=[],
         discovered_escalations=[],
+        session_history=[],
+        issue_refresh_timestamps={},
+        issue_last_refreshed_at={},
     )
 
     workflow.scan_pending_pr_work(state)

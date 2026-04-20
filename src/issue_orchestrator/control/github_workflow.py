@@ -25,6 +25,7 @@ from ..infra.config import Config
 from ..events import EventName, EventContext
 from ..domain.models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
 from ..ports import EventSink, make_trace_event, RepositoryHost
+from .awaiting_merge_reconciler import AwaitingMergeReconciler
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,12 @@ class GitHubWorkflow:
         issue_branches = self.pr_scanner.load_issue_branches()
         self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
         self.scan_needs_rework_prs(state, issue_branches=issue_branches)
+        result = AwaitingMergeReconciler(self.repository_host).reconcile(state)
+        if result.reconciled:
+            logger.info(
+                "Reconciled %d awaiting-merge history entries",
+                result.reconciled,
+            )
 
     def update_dependency_problems(
         self,

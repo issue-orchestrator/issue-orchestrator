@@ -503,6 +503,123 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
+def test_merged_history_with_pr_url_does_not_route_to_awaiting_merge():
+    config = _make_config()
+    pr_url = "https://github.com/test/repo/pull/4124"
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Provider circuit breaker dashboard",
+                agent_type="agent:backend",
+                status="merged",
+                runtime_minutes=12,
+                pr_url=pr_url,
+                status_reason="PR merged; awaiting merge reconciled",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    awaiting_column = next(
+        col for col in view_model.flow_columns if col["id"] == "awaiting-merge"
+    )
+    assert all(item["issue_number"] != 4057 for item in view_model.awaiting_merge_items)
+    assert all(item["issue_number"] != 4057 for item in awaiting_column["items"])
+    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    history_item = next(
+        item for item in view_model.history_items if item["issue_number"] == 4057
+    )
+    assert history_item["status"] == "merged"
+    assert history_item["detail_label"] == "Merged"
+    assert history_item["merge_pending"] is False
+    assert history_item["pr_url"] == pr_url
+    assert view_model.scope_summary["in_scope_total"] == 0
+
+
+def test_closed_history_with_pr_url_does_not_route_to_awaiting_merge():
+    config = _make_config()
+    pr_url = "https://github.com/test/repo/pull/4124"
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Provider circuit breaker dashboard",
+                agent_type="agent:backend",
+                status="closed",
+                runtime_minutes=12,
+                pr_url=pr_url,
+                status_reason="Issue closed; awaiting merge reconciled",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    awaiting_column = next(
+        col for col in view_model.flow_columns if col["id"] == "awaiting-merge"
+    )
+    assert all(item["issue_number"] != 4057 for item in view_model.awaiting_merge_items)
+    assert all(item["issue_number"] != 4057 for item in awaiting_column["items"])
+    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    history_item = next(
+        item for item in view_model.history_items if item["issue_number"] == 4057
+    )
+    assert history_item["status"] == "closed"
+    assert history_item["detail_label"] == "Closed"
+    assert history_item["merge_pending"] is False
+    assert history_item["pr_url"] == pr_url
+    assert view_model.scope_summary["in_scope_total"] == 0
+
+
+def test_validation_failed_history_routes_to_blocked_lane():
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4058,
+                title="Validation gate failure",
+                agent_type="agent:backend",
+                status="validation_failed",
+                runtime_minutes=12,
+                status_reason="Validation failed after session completion",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    blocked_item = next(item for item in view_model.blocked_items if item["issue_number"] == 4058)
+    assert blocked_item["status"] == "validation_failed"
+    assert blocked_item["detail_label"] == "Validation Failed"
+    assert blocked_item["flow_stage"] == "blocked"
+
+
 def test_build_awaiting_merge_items_dedupes_union_preferring_pr_link():
     queue_item = {
         "issue_number": 280,

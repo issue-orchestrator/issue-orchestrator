@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from issue_orchestrator.domain.models import SessionHistoryEntry
+from issue_orchestrator.entrypoints.web_issue_detail_routes import _determine_issue_flow_stage
 from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION
 from issue_orchestrator.view_models.issue_detail import (
     IssueStoryContext,
@@ -105,6 +109,32 @@ def test_status_explanation_blocked_publish_failed_no_matching_event() -> None:
 def test_status_explanation_awaiting_merge() -> None:
     ctx = _ctx(flow_stage="awaiting_merge", pr_number=4124)
     assert _build_status_explanation(ctx, []) == "PR #4124 approved — ready to merge"
+
+
+def test_issue_detail_flow_stage_treats_reconciled_pr_history_as_done() -> None:
+    state = SimpleNamespace(
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4124,
+                title="Add cache coalescing",
+                agent_type="agent:claude",
+                status="merged",
+                runtime_minutes=12,
+                pr_url="https://github.com/org/repo/pull/4124",
+            )
+        ]
+    )
+
+    assert (
+        _determine_issue_flow_stage(
+            4124,
+            (),
+            None,
+            state,
+            "https://github.com/org/repo/pull/4124",
+        )
+        == "done"
+    )
 
 
 def test_journey_cycles_require_logical_semantics() -> None:

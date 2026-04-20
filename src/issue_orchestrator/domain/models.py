@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Literal, Optional, TYPE_CHECKING, TypeAlias
 
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # pyright: ignore[reportUnusedImport] (re-exported)
@@ -365,6 +365,44 @@ class IssueStatus(Enum):
     COMPLETED = "completed"
 
 
+SessionHistoryStatus: TypeAlias = Literal[
+    "completed",
+    "merged",
+    "closed",
+    "failed",
+    "validation_failed",
+    "blocked",
+    "needs_human",
+    "timed_out",
+]
+AwaitingMergeTerminalStatus: TypeAlias = Literal["merged", "closed"]
+RECONCILABLE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset({"completed"})
+TERMINAL_AWAITING_MERGE_HISTORY_STATUSES: frozenset[AwaitingMergeTerminalStatus] = frozenset(
+    {"merged", "closed"}
+)
+DONE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset(
+    {"completed", "merged", "closed"}
+)
+BLOCKED_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset(
+    {"blocked", "needs_human", "failed", "validation_failed", "timed_out"}
+)
+
+
+def session_history_status_from_session_status(status: SessionStatus) -> SessionHistoryStatus:
+    """Convert a session status into a persisted history status."""
+    history_statuses: dict[SessionStatus, SessionHistoryStatus] = {
+        SessionStatus.COMPLETED: "completed",
+        SessionStatus.BLOCKED: "blocked",
+        SessionStatus.NEEDS_HUMAN: "needs_human",
+        SessionStatus.FAILED: "failed",
+        SessionStatus.VALIDATION_FAILED: "validation_failed",
+        SessionStatus.TIMED_OUT: "timed_out",
+    }
+    if status not in history_statuses:
+        raise ValueError(f"Session status {status.value!r} is not a history status")
+    return history_statuses[status]
+
+
 @dataclass
 class Issue:
     """A GitHub issue.
@@ -708,7 +746,7 @@ class SessionHistoryEntry:
     issue_number: int
     title: str
     agent_type: str
-    status: str  # "completed", "failed", "blocked", "needs_human", "timed_out"
+    status: SessionHistoryStatus
     runtime_minutes: int
     pr_url: Optional[str] = None  # Set if PR was created
     status_reason: Optional[str] = None  # Human-readable explanation of status

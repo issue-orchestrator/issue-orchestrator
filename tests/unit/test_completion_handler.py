@@ -207,6 +207,19 @@ class TestHistoryEntryCreation:
         assert "30" in result.history_entry.status_reason
         assert "timeout" in result.history_entry.status_reason.lower()
 
+    def test_validation_failed_session_records_validation_failure(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Validation-failed sessions keep their terminal history status."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.VALIDATION_FAILED)
+
+        assert result.history_entry.status == "validation_failed"
+        assert "validation" in result.history_entry.status_reason.lower()
+
     def test_blocked_session_records_blocked_reason(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

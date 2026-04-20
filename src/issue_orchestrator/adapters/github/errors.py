@@ -2,8 +2,10 @@
 
 from typing import Any
 
+from ...ports.repository_host import RepositoryHostError
 
-class GitHubHttpError(Exception):
+
+class GitHubHttpError(RepositoryHostError):
     """Raised when a GitHub HTTP request fails."""
 
     def __init__(
@@ -38,7 +40,7 @@ class GitHubHttpError(Exception):
         return self.failure_type == FailureType.ISSUE_LOCAL
 
 
-class GitHubTransportError(Exception):
+class GitHubTransportError(RepositoryHostError):
     """Raised when a GitHub request fails before an HTTP response."""
 
     def __init__(

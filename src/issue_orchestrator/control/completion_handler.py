@@ -30,7 +30,13 @@ from ..domain.run_manifest import RunManifest
 from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
-from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
+from ..domain.models import (
+    Session,
+    SessionStatus,
+    SessionHistoryEntry,
+    PendingCleanup,
+    session_history_status_from_session_status,
+)
 from ..domain.session_key import TaskKind
 from ..ports import EventSink,  make_trace_event, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
@@ -607,6 +613,7 @@ class CompletionHandler:
             SessionStatus.NEEDS_HUMAN: "Agent requested human input",
             SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
             SessionStatus.FAILED: "Session ended without PR or status update",
+            SessionStatus.VALIDATION_FAILED: "Validation failed after session completion",
         }
         if status == SessionStatus.COMPLETED and pr_url:
             status_reasons[SessionStatus.COMPLETED] = "PR created successfully"
@@ -616,7 +623,7 @@ class CompletionHandler:
             issue_number=session.issue.number,
             title=session.issue.title,
             agent_type=session.issue.agent_type or "unknown",
-            status=status.value,
+            status=session_history_status_from_session_status(status),
             runtime_minutes=session.runtime_minutes,
             pr_url=pr_url,
             status_reason=status_reason,

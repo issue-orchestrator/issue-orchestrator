@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from ..domain.issue_key import IssueKey
 
 
+class RepositoryHostError(Exception):
+    """Base exception for repository host access failures."""
+
+
 class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
     """Combined protocol for all repository operations.
 
