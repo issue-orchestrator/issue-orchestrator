@@ -23,11 +23,16 @@ set -e
 #
 # If the bake-in step was skipped (hook copied raw from the source tree),
 # the placeholder is not a real path; ``-x`` fails and we fall through.
+#
+# NOTE: the placeholder is NOT surrounded by quotes in this template.
+# The installer substitutes it with a ``shlex.quote``'d literal so paths
+# containing spaces, ``$``, backticks, or other metacharacters round-trip
+# correctly. Adding quotes here would double-quote the substituted value.
 PYTHON_BIN=""
 if [ -n "${ISSUE_ORCHESTRATOR_PYTHON:-}" ] && [ -x "$ISSUE_ORCHESTRATOR_PYTHON" ]; then
     PYTHON_BIN="$ISSUE_ORCHESTRATOR_PYTHON"
-elif [ -x "@@ORCHESTRATOR_PYTHON@@" ]; then
-    PYTHON_BIN="@@ORCHESTRATOR_PYTHON@@"
+elif [ -x @@ORCHESTRATOR_PYTHON@@ ]; then
+    PYTHON_BIN=@@ORCHESTRATOR_PYTHON@@
 elif [ -x ".venv/bin/python" ]; then
     PYTHON_BIN=".venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
