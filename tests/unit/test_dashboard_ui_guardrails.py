@@ -465,6 +465,7 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
     assert "setMenuVisible(menuAgentLog, !isCompactCardMenu && !isBlockedHistory);" in body
     assert "setMenuVisible(menuPR, Boolean(prUrl || row.dataset.issueUrl));" in body
     assert "menuPR.textContent = prUrl ? 'Open PR ↗' : 'Open Issue ↗';" in body
+    assert "setMenuVisible(menuIssue, Boolean(prUrl && row.dataset.issueUrl));" in body
 
 
 def test_context_menu_includes_reset_retry_from_scratch_label() -> None:
@@ -493,6 +494,26 @@ def test_context_menu_open_action_prefers_pr_then_issue_url() -> None:
     js = _read(DASHBOARD_JS)
     assert "const targetUrl = currentRow.dataset.prUrl || currentRow.dataset.issueUrl;" in js
     assert "window.open(targetUrl, '_blank');" in js
+    assert "menuIssue?.addEventListener('click'" in js
+    assert "window.open(currentRow.dataset.issueUrl, '_blank');" in js
+
+
+def test_compact_card_primary_github_link_uses_view_model_fields() -> None:
+    js = _read(DASHBOARD_JS)
+    render_body = _function_body(js, "renderCompactCardHtml")
+    helper_body = _function_body(js, "buildCompactGithubLink")
+    assert "const ghLink = buildCompactGithubLink(card);" in render_body
+    assert "card.github_url" in helper_body
+    assert "card.github_label" in helper_body
+    assert "'PR ↗'" in helper_body
+    assert "card-pr-link" in helper_body
+
+
+def test_bulk_open_prs_uses_pr_links_not_issue_links() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "bulkOpenPRs")
+    assert "card.querySelector('.card-pr-link')" in body
+    assert "card.querySelector('.card-gh')" not in body
 
 
 def test_embedded_back_hidden_when_column_expanded() -> None:

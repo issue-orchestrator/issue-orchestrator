@@ -165,8 +165,13 @@
                                         <span class="stale-dot" title="{{ card.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
                                         {% endif %}
                                         <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">&#x27F3;</button>
-                                        {% if card.issue_url %}
-                                        <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>
+                                        {% if card.github_url %}
+                                        <a class="card-gh{% if card.pr_url and card.github_url == card.pr_url %} card-pr-link{% endif %}"
+                                           href="{{ card.github_url | e }}"
+                                           target="_blank"
+                                           rel="noopener noreferrer"
+                                           title="{{ (card.github_title or 'Open in GitHub') | e }}"
+                                           aria-label="{{ (card.github_aria_label or 'Open in GitHub') | e }}">{{ card.github_label or '&#x2197;' }}</a>
                                         {% endif %}
                                         <button class="card-menu-btn"
                                                 data-issue="{{ card.issue_number }}"
@@ -546,6 +551,7 @@
         <button id="menuAgentLog" class="context-menu-item" role="menuitem">View Agent Session Log</button>
         <button id="menuPrompt" class="context-menu-item" role="menuitem">View Agent Prompt</button>
         <button id="menuPR" class="context-menu-item" role="menuitem">Open PR ↗</button>
+        <button id="menuIssue" class="context-menu-item" role="menuitem" style="display:none;">Open Issue ↗</button>
         <button id="menuKill" class="context-menu-item danger" role="menuitem">Cancel / Terminate</button>
         <div id="menuDepsDivider" class="context-menu-divider" style="display:none;"></div>
         <div id="menuDepsLabel" class="context-menu-label" style="display:none;">Dependencies</div>

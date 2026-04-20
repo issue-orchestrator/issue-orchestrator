@@ -169,6 +169,13 @@ body.column-focus-mode .column-expanded {
     font-size: 15px;
     transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
+.card-head-actions .card-gh.card-pr-link {
+    width: auto;
+    min-width: 44px;
+    padding: 0 7px;
+    gap: 3px;
+    font-size: 12px;
+}
 .card-gh:hover {
     color: var(--accent);
     border-color: var(--accent);
@@ -417,4 +424,3 @@ body.column-focus-mode .column-expanded {
     text-overflow: ellipsis;
     max-width: 100%;
 }
-

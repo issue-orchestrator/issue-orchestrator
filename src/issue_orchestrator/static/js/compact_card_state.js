@@ -23,6 +23,11 @@
         const stale = Boolean(card?.is_stale);
         const staleReason = card?.stale_reason ?? '';
         const issueUrl = card?.issue_url ?? '';
+        const prUrl = card?.pr_url ?? '';
+        const githubUrl = card?.github_url ?? '';
+        const githubLabel = card?.github_label ?? '';
+        const githubTitle = card?.github_title ?? '';
+        const githubAriaLabel = card?.github_aria_label ?? '';
         const labels = normalizeLabels(card?.orchestrator_labels).join(',');
         return [
             cardId,
@@ -35,6 +40,11 @@
             stale,
             staleReason,
             issueUrl,
+            prUrl,
+            githubUrl,
+            githubLabel,
+            githubTitle,
+            githubAriaLabel,
             labels,
         ].join('|');
     }

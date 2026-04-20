@@ -6,6 +6,7 @@ const menuAgentLog = document.getElementById('menuAgentLog');
 const menuPrompt = document.getElementById('menuPrompt');
 const menuKill = document.getElementById('menuKill');
 const menuPR = document.getElementById('menuPR');
+const menuIssue = document.getElementById('menuIssue');
 const menuUnblock = document.getElementById('menuUnblock');
 const menuResetRetry = document.getElementById('menuResetRetry');
 const menuResetRetryScratch = document.getElementById('menuResetRetryScratch');
@@ -20,7 +21,7 @@ const contextMenuEnabled = Boolean(contextMenu);
 
 // Add keyboard support to all context menu items
 if (contextMenuEnabled) {
-    [menuFocus, menuRevealWorktree, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry]
+    [menuFocus, menuRevealWorktree, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuIssue, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry]
         .filter(Boolean)
         .forEach(addKeyboardSupport);
 }
@@ -64,6 +65,7 @@ function showContextMenu(e, row) {
     if (menuPR) {
         menuPR.textContent = prUrl ? 'Open PR ↗' : 'Open Issue ↗';
     }
+    setMenuVisible(menuIssue, Boolean(prUrl && row.dataset.issueUrl));
 
     const agentType = row.dataset.agent;
     setMenuVisible(menuPrompt, Boolean(agentType));
@@ -114,6 +116,7 @@ function showContextMenu(e, row) {
         menuAgentLog,
         menuPrompt,
         menuPR,
+        menuIssue,
         menuKill,
     ].some((el) => el && el.style.display !== 'none');
 
@@ -304,6 +307,14 @@ if (contextMenuEnabled) {
             if (targetUrl) {
                 window.open(targetUrl, '_blank');
             }
+        }
+    });
+
+    menuIssue?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow?.dataset?.issueUrl) {
+            window.open(currentRow.dataset.issueUrl, '_blank');
         }
     });
 

@@ -10,12 +10,25 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
     summary_text = item.get("queue_wait_reason") or (f"Summary: {blocked}" if blocked else "")
+    issue_number = item.get("issue_number")
+    issue_url = item.get("issue_url") or item.get("url") or ""
+    pr_url = item.get("pr_url") or ""
+    resolved_state_label = state_label or item.get("status", "")
+    primary_is_pr = resolved_state_label == "awaiting merge" and bool(pr_url)
+    github_url = pr_url if primary_is_pr else issue_url
+    github_label = "PR ↗" if primary_is_pr else "↗"
+    github_title = "Open PR on GitHub" if primary_is_pr else "Open issue on GitHub"
+    github_aria_label = (
+        f"Open PR for issue #{issue_number} on GitHub"
+        if primary_is_pr
+        else f"Open issue #{issue_number} on GitHub"
+    )
     return {
-        "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
-        "issue_number": item.get("issue_number"),
+        "card_id": item.get("card_id") or f"issue-{issue_number}",
+        "issue_number": issue_number,
         "title": item.get("title", ""),
         "agent_type": item.get("agent_type", ""),
-        "state_label": state_label or item.get("status", ""),
+        "state_label": resolved_state_label,
         "phase": phase,
         "phase_age": phase_age,
         "summary": summary_text,
@@ -24,9 +37,14 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "badges": [],
         "orchestrator_labels": item.get("orchestrator_labels", []),
         "focus_action": "focus",
-        "issue_url": item.get("issue_url") or item.get("url") or "",
+        "issue_url": issue_url,
+        "pr_url": pr_url,
+        "github_url": github_url,
+        "github_label": github_label,
+        "github_title": github_title,
+        "github_aria_label": github_aria_label,
         "focus_hint": "Focus issue",
-        "github_hint": "Open in GitHub",
+        "github_hint": github_title,
         "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
         "is_stale": bool(item.get("is_stale", False)),
         "stale_reason": item.get("stale_reason", ""),

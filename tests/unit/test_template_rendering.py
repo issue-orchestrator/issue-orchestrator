@@ -227,6 +227,14 @@ def test_kanban_completed_column_session_scoped(jinja_env):
     assert awaiting_merge_col is not None
     assert "expandable" in awaiting_merge_col.get("class", [])
     assert awaiting_merge_col.select_one(".count").text.strip() == "1"
+    pr_link = awaiting_merge_col.select_one(".card-head-actions .card-gh.card-pr-link")
+    assert pr_link is not None
+    assert pr_link.get("href") == "https://example.test/pr/7"
+    assert pr_link.text.strip() == "PR ↗"
+    assert pr_link.get("title") == "Open PR on GitHub"
+    menu_btn = awaiting_merge_col.select_one(".card-menu-btn")
+    assert menu_btn is not None
+    assert menu_btn.get("data-pr-url") == "https://example.test/pr/7"
 
 
 def test_status_badge_shows_running(jinja_env):

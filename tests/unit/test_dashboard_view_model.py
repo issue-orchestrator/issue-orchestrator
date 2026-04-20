@@ -489,6 +489,12 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     )
 
     assert any(item["issue_number"] == 4057 for item in view_model.awaiting_merge_items)
+    awaiting_column = next(col for col in view_model.flow_columns if col["id"] == "awaiting-merge")
+    awaiting_card = next(item for item in awaiting_column["items"] if item["issue_number"] == 4057)
+    assert awaiting_card["pr_url"] == "https://github.com/test/repo/pull/4124"
+    assert awaiting_card["github_url"] == "https://github.com/test/repo/pull/4124"
+    assert awaiting_card["github_label"] == "PR ↗"
+    assert awaiting_card["github_title"] == "Open PR on GitHub"
     assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
     assert view_model.scope_summary["in_scope_total"] == 1
 
