@@ -14,6 +14,8 @@ Requires: Claude CLI installed and authenticated (skips otherwise).
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import shlex
 import shutil
@@ -26,6 +28,32 @@ import pytest
 
 from issue_orchestrator.execution.agent_runner import AgentRunner
 from issue_orchestrator.execution.agent_runner_types import AgentSpec
+
+
+def _decoded_output(path: Path) -> str:
+    """Decode the base64-JSONL terminal recording into raw stdout text.
+
+    ``AgentRunner`` records session output as JSONL events with the payload
+    base64-encoded under ``data_b64``. Assertions over the live process
+    stdout must decode those payloads; substring checks against the raw
+    JSONL bytes would silently miss matches.
+    """
+    if not path.exists():
+        return ""
+    chunks: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if isinstance(data_b64, str) and data_b64:
+            chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+    return "".join(chunks)
 
 # ---------------------------------------------------------------------------
 # Markers / skip conditions
@@ -125,9 +153,9 @@ class TestLiveAgentChain:
             f"log:\n{log_path.read_text() if log_path.exists() else '<missing>'}"
         )
 
-        log_content = log_path.read_text()
-        assert "PTY_DIRECT_TEST_OK" in log_content, (
-            f"Claude output not in log. Content:\n{log_content}"
+        decoded = _decoded_output(log_path)
+        assert "PTY_DIRECT_TEST_OK" in decoded, (
+            f"Claude output not in decoded log. Decoded content:\n{decoded}"
         )
 
     # ------------------------------------------------------------------
@@ -166,14 +194,15 @@ class TestLiveAgentChain:
         )
 
         result = AgentRunner().run(spec)
-        log_content = log_path.read_text() if log_path.exists() else "<missing>"
+        raw_log = log_path.read_text() if log_path.exists() else "<missing>"
+        decoded = _decoded_output(log_path)
 
         assert result.exit_code == 0, (
-            f"exit_code={result.exit_code}, log:\n{log_content}"
+            f"exit_code={result.exit_code}, log:\n{raw_log}"
         )
 
-        assert "FULL_CHAIN_P_TEST_OK" in log_content, (
-            f"Claude output not in log. Content:\n{log_content}"
+        assert "FULL_CHAIN_P_TEST_OK" in decoded, (
+            f"Claude output not in decoded log. Decoded content:\n{decoded}"
         )
 
     # ------------------------------------------------------------------
@@ -279,21 +308,24 @@ class TestLiveAgentChain:
         assert result_holder, "Watcher thread never completed"
         result = result_holder[0]
 
-        log_content = log_path.read_text() if log_path.exists() else "<missing>"
+        raw_log = log_path.read_text() if log_path.exists() else "<missing>"
+        decoded = _decoded_output(log_path)
 
         # Must have produced some output
-        assert len(log_content) > 0, (
+        assert len(raw_log) > 0, (
             f"Log is empty — likely stuck at startup. "
-            f"Content:\n{log_content}"
+            f"Content:\n{raw_log}"
         )
 
-        # Must NOT contain raw bun internals
-        assert "/$bunfs/" not in log_content, (
-            f"Log contains bun runtime internals:\n{log_content}"
+        # Must NOT contain raw bun internals (check decoded stdout, not the
+        # JSONL wrapper — base64 would mask the marker either way, but the
+        # intent is to check what the agent actually emitted).
+        assert "/$bunfs/" not in decoded, (
+            f"Log contains bun runtime internals:\n{decoded}"
         )
 
         # Should exit cleanly
         assert result.exit_code == 0, (
             f"exit_code={result.exit_code}, timed_out={result.timed_out}. "
-            f"Log:\n{log_content}"
+            f"Log:\n{raw_log}"
         )
