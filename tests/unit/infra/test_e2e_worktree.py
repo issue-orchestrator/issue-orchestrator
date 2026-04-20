@@ -9,6 +9,7 @@ from unittest.mock import patch
 from issue_orchestrator.infra.e2e_worktree import (
     ensure_e2e_worktree,
     get_e2e_worktree_path,
+    _sync_venv,
 )
 
 FAKE_SHA = "abc123deadbeef"
@@ -80,9 +81,9 @@ class TestEnsureE2EWorktree:
         assert str(expected_wt) in cmd
         assert FAKE_SHA in cmd
 
-        # uv sync should also be called
+        # A minimal pytest venv should also be prepared for repos without pyproject.toml.
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
-        assert len(uv_calls) == 1
+        assert len(uv_calls) == 2
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_updates_worktree_when_exists(self, mock_run, repo_root: Path):
@@ -112,9 +113,9 @@ class TestEnsureE2EWorktree:
         assert "--exclude=.issue-orchestrator/state/timeline.sqlite*" in clean_cmd
         assert "--exclude=.issue-orchestrator/sessions" in clean_cmd
 
-        # uv sync
+        # Minimal pytest venv
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
-        assert len(uv_calls) == 1
+        assert len(uv_calls) == 2
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_recovers_on_checkout_failure(self, mock_run, repo_root: Path):
@@ -140,7 +141,7 @@ class TestEnsureE2EWorktree:
                      if c[0][0][:2] == ["git", "worktree"] and "add" in c[0][0]]
         assert len(add_calls) == 1
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
-        assert len(uv_calls) == 1
+        assert len(uv_calls) == 2
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_recovery_removes_stale_non_worktree_directory(self, mock_run, repo_root: Path):
@@ -168,7 +169,7 @@ class TestEnsureE2EWorktree:
                      if c[0][0][:2] == ["git", "worktree"] and "add" in c[0][0]]
         assert len(add_calls) == 1
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
-        assert len(uv_calls) == 1
+        assert len(uv_calls) == 2
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_raises_on_git_failure(self, mock_run, repo_root: Path):
@@ -192,6 +193,9 @@ class TestEnsureE2EWorktree:
     def test_uv_sync_uses_frozen_all_extras(self, mock_run, repo_root: Path):
         """Verify uv sync is called with --frozen --all-extras."""
         mock_run.side_effect = _make_mock_run()
+        worktree_path = get_e2e_worktree_path(repo_root)
+        worktree_path.mkdir()
+        (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
 
         ensure_e2e_worktree(repo_root)
 
@@ -199,5 +203,24 @@ class TestEnsureE2EWorktree:
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
         assert len(uv_calls) == 1
         cmd = uv_calls[0][0][0]
+        assert "sync" in cmd
         assert "--frozen" in cmd
         assert "--all-extras" in cmd
+
+    @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
+    def test_no_pyproject_creates_minimal_pytest_venv(self, mock_run, tmp_path: Path):
+        """Non-Python repos still get enough Python tooling to run pytest wrappers."""
+        mock_run.return_value = subprocess.CompletedProcess(["uv"], 0)
+
+        _sync_venv(tmp_path)
+
+        commands = [c[0][0] for c in mock_run.call_args_list]
+        assert commands[0] == ["uv", "venv", ".venv"]
+        assert commands[1] == [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(tmp_path / ".venv" / "bin" / "python"),
+            "pytest>=8.0",
+        ]

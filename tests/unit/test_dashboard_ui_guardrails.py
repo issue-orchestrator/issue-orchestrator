@@ -68,6 +68,45 @@ def test_dashboard_css_entrypoint_imports_split_stylesheets() -> None:
     assert ".issue-detail-drawer" in _read_dashboard_css_bundle()
 
 
+def test_toast_severity_variants_have_css_rules() -> None:
+    css = _read_dashboard_css_bundle()
+
+    for severity in ("info", "success", "warning", "error"):
+        assert re.search(rf"#toast\.{severity}\s*\{{[^}}]*border-color:", css, re.DOTALL)
+        assert re.search(rf"#toast\.{severity}\s*\{{[^}}]*background:", css, re.DOTALL)
+
+
+def test_show_toast_uses_module_timer_and_click_dismiss() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "showToast")
+
+    assert "let toastTimer = null;" in js
+    assert "window.dashboardToastTimer" not in js
+    assert "toast.addEventListener('click'" in body
+    assert "clearTimeout(toastTimer)" in body
+    assert "hideToast(toast)" in body
+
+
+def test_show_toast_normalizes_supported_severities() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "normalizeToastType")
+
+    assert "if (type === true) return 'error';" in body
+    assert "if (type === false || type === null || type === undefined) return 'info';" in body
+    assert "['error', 'warning', 'success', 'info'].includes(type)" in body
+
+
+def test_start_e2e_errors_use_explicit_error_toasts() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "startE2E")
+
+    assert "showToast('Failed to stop running E2E', 'error')" in body
+    assert "showToast(data.detail || data.error || 'Failed to start E2E', 'error')" in body
+    assert "showToast('Failed to start E2E: ' + err.message, 'error')" in body
+    assert "showToast(data.detail || data.error || 'Failed to start E2E', true)" not in body
+    assert "showToast('Failed to start E2E: ' + err.message, true)" not in body
+
+
 def test_unblock_paths_use_unblock_api() -> None:
     contract_js = _read(UI_ACTION_CONTRACT_JS)
     assert "/api/unblock-retry" in contract_js

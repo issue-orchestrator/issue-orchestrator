@@ -101,13 +101,37 @@ async function clearHistory() {
 }
 
 // Toast notification
-function showToast(message, isError = false) {
+let toastTimer = null;
+
+function hideToast(toast) {
+    toast.classList.remove('visible');
+}
+
+function normalizeToastType(type) {
+    if (type === true) return 'error';
+    if (type === false || type === null || type === undefined) return 'info';
+    if (['error', 'warning', 'success', 'info'].includes(type)) return type;
+    return 'info';
+}
+
+function showToast(message, type = false) {
     const toast = document.getElementById('toast');
     if (!toast) return;
+    if (!toast.dataset.dismissBound) {
+        toast.addEventListener('click', () => {
+            clearTimeout(toastTimer);
+            hideToast(toast);
+        });
+        toast.dataset.dismissBound = 'true';
+    }
+    const toastType = normalizeToastType(type);
     toast.textContent = message;
-    toast.classList.toggle('error', isError);
+    toast.classList.remove('info', 'success', 'warning', 'error', 'visible');
+    toast.classList.add(toastType);
     toast.classList.add('visible');
-    setTimeout(() => toast.classList.remove('visible'), 2500);
+    clearTimeout(toastTimer);
+    const duration = toastType === 'error' ? 7000 : 3000;
+    toastTimer = setTimeout(() => hideToast(toast), duration);
 }
 
 /**

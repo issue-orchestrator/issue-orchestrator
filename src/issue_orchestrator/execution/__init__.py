@@ -1,94 +1,75 @@
-"""Execution layer - adapters that talk to external systems.
+# pyright: reportUnsupportedDunderAll=false
+# Lazy __getattr__ exports are runtime-resolved; pyright cannot see them in __all__.
+"""Execution layer adapters and storage implementations."""
 
-This package contains adapters that execute actions against external systems.
-These are the "Adapters" in the architecture.
+from importlib import import_module
+from typing import Any
 
-Architecture principle:
-- Components that OBSERVE are named Observers (observation/)
-- Components that DECIDE are named Controllers (control/)
-- Components that ACT are named Adapters (execution/)
+_EXPORTS = {
+    "PluginManager": (".manager", "PluginManager"),
+    "create_plugin_manager": (".manager", "create_plugin_manager"),
+    "BUILTIN_PLUGINS": (".manager", "BUILTIN_PLUGINS"),
+    "PluggyEventSink": (".event_sink_adapter", "PluggyEventSink"),
+    "CompositeEventSink": (".event_sink_adapter", "CompositeEventSink"),
+    "LoggingEventSink": (".event_sink_adapter", "LoggingEventSink"),
+    "PluggySessionRunner": (".session_runner_adapter", "PluggySessionRunner"),
+    "SubprocessPlugin": (".terminal_subprocess", "SubprocessPlugin"),
+    "LifecycleSSEPlugin": (".lifecycle_sse", "LifecycleSSEPlugin"),
+    "GitHubAdapter": ("..adapters.github.github_adapter", "GitHubAdapter"),
+    "GitHubIssue": ("..adapters.github.github_issue", "GitHubIssue"),
+    "GitHubIssueResolver": ("..adapters.github.issue_resolver", "GitHubIssueResolver"),
+    "GitWorkingCopy": (".git_working_copy", "GitWorkingCopy"),
+    "LocalCommandRunner": (".command_runner", "LocalCommandRunner"),
+    "JsonSessionStore": (".json_store", "JsonSessionStore"),
+    "FileSystemSessionOutput": (".session_output_adapter", "FileSystemSessionOutput"),
+    "SqliteGoalPilotStore": (".goal_pilot_store", "SqliteGoalPilotStore"),
+    "SQLiteProviderCircuitStore": (".provider_circuit_store", "SQLiteProviderCircuitStore"),
+    "QueueCacheStore": (".queue_cache_store", "QueueCacheStore"),
+    "TimelineEventSink": (".timeline_event_sink", "TimelineEventSink"),
+    "DefaultTimelineReader": (".timeline_reader", "DefaultTimelineReader"),
+    "SqliteTimelineStore": (".timeline_store", "SqliteTimelineStore"),
+    "TimelineStoreConfig": (".timeline_store", "TimelineStoreConfig"),
+    "DefaultTimelineWriter": (".timeline_writer", "DefaultTimelineWriter"),
+}
 
-The execution layer:
-- Talks to external systems (GitHub, git, terminals)
-- Executes actions requested by the control plane
-- Does NOT make policy decisions
-- Returns facts/results to the caller
-
-Includes a plugin architecture using pluggy for external integrations:
-- Terminal plugins (tmux, etc.)
-- Platform adapters (GitHub, GitLab, etc.)
-- State storage plugins (JSON, SQLite, etc.)
-
-Usage:
-    from issue_orchestrator.execution import PluginManager, GitHubAdapter
-
-    # Plugin manager for terminal operations
-    pm = PluginManager(terminal_plugin="tmux")
-    pm.create_session(42, "claude ...", "/path/to/worktree", "Issue title")
-
-    # Direct adapter usage
-    adapter = GitHubAdapter("owner/repo")
-    issues = adapter.list_issues(labels=["bug"])
-"""
-
-from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
-from .terminal_subprocess import SubprocessPlugin
-from ..adapters.github.github_adapter import GitHubAdapter
-from ..adapters.github.github_issue import GitHubIssue
-from .git_working_copy import GitWorkingCopy
-from .json_store import JsonSessionStore
-from .lifecycle_sse import LifecycleSSEPlugin
-from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
-from .session_runner_adapter import PluggySessionRunner
-from ..adapters.github.issue_resolver import GitHubIssueResolver
-from .command_runner import LocalCommandRunner
-from .session_output_adapter import FileSystemSessionOutput
-from .goal_pilot_store import SqliteGoalPilotStore
-from .provider_circuit_store import SQLiteProviderCircuitStore
-from .queue_cache_store import QueueCacheStore
-from .timeline_event_sink import TimelineEventSink
-from .timeline_reader import DefaultTimelineReader
-from .timeline_store import SqliteTimelineStore, TimelineStoreConfig
-from .timeline_writer import DefaultTimelineWriter
-
-__all__ = [
-    # Main interface (internal, used by composition root)
+__all__ = (
     "PluginManager",
     "create_plugin_manager",
     "BUILTIN_PLUGINS",
-    # Port adapters (for DI into orchestrator)
     "PluggyEventSink",
     "CompositeEventSink",
     "LoggingEventSink",
     "PluggySessionRunner",
-    # Built-in plugins (for direct import if needed)
     "SubprocessPlugin",
-    # Lifecycle plugins
     "LifecycleSSEPlugin",
-    # Platform adapters
     "GitHubAdapter",
-    # Issue implementation (Issue Protocol -> GitHubIssue)
     "GitHubIssue",
-    # Issue resolvers (IssueKey -> backing-store handle)
     "GitHubIssueResolver",
-    # Local VCS adapters
     "GitWorkingCopy",
-    # Local command runner
     "LocalCommandRunner",
-    # Session stores
     "JsonSessionStore",
-    # Session output
     "FileSystemSessionOutput",
-    # Goal pilot store
     "SqliteGoalPilotStore",
-    # Provider circuit store
     "SQLiteProviderCircuitStore",
-    # Queue cache store
     "QueueCacheStore",
-    # Timeline storage
     "TimelineEventSink",
     "DefaultTimelineReader",
     "SqliteTimelineStore",
     "TimelineStoreConfig",
     "DefaultTimelineWriter",
-]
+)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    value = getattr(import_module(module_name, __name__), attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *__all__])
