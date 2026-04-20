@@ -41,6 +41,7 @@ from ..domain.models import Session
 
 if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
+    from .session_history import SessionHistoryOwner
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
@@ -62,6 +63,7 @@ from .actions import (
     CreateTriageIssueAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
+    ReconcileHistoryEntryAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 
@@ -159,6 +161,8 @@ class ActionApplier:
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
     on_worktree_removed: Optional[Callable[[str], int]] = None
+    # Owner for controlled in-memory history mutations.
+    history_owner: Optional["SessionHistoryOwner"] = None
     _active_label_mutation_stats: _LabelMutationStats | None = field(
         default=None, init=False, repr=False
     )
@@ -230,6 +234,8 @@ class ActionApplier:
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
             # Comments
             ActionType.ADD_COMMENT: self._apply_add_comment,
+            # History operations
+            ActionType.RECONCILE_HISTORY_ENTRY: self._apply_reconcile_history_entry,
         }
 
         handler = handlers.get(action.action_type)
@@ -892,6 +898,55 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "error": result.error,
                 },
             )
+        )
+
+    def _apply_reconcile_history_entry(self, action: Action) -> ActionResult:
+        """Reconcile a session history entry through the history owner."""
+        assert isinstance(action, ReconcileHistoryEntryAction)
+
+        if self.history_owner is None:
+            return ActionResult.fail(action, "Session history owner is not configured")
+
+        mutation = self.history_owner.reconcile_awaiting_merge(
+            issue_number=action.issue_number,
+            pr_url=action.pr_url,
+            status=action.status,
+            status_reason=action.status_reason,
+        )
+        if mutation is None:
+            logger.info(
+                "Awaiting-merge history reconciliation no-op: issue=%d pr=%d status=%s",
+                action.issue_number,
+                action.pr_number,
+                action.status,
+            )
+            return ActionResult.ok(
+                action,
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+                status=action.status,
+                no_op=True,
+            )
+
+        self.events.publish(make_trace_event(
+            EventName.HISTORY_RECONCILED,
+            {
+                "issue_number": action.issue_number,
+                "issue_key": action.issue_key or str(action.issue_number),
+                "pr_number": action.pr_number,
+                "pr_url": action.pr_url,
+                "previous_status": mutation.previous_status,
+                "status": mutation.status,
+                "status_reason": mutation.status_reason,
+                "source": action.source,
+            },
+        ))
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+            previous_status=mutation.previous_status,
+            status=mutation.status,
         )
 
     def _apply_queue_review(self, action: Action) -> ActionResult:

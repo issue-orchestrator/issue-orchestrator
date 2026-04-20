@@ -208,6 +208,7 @@ async function toggleExcluded() {
         const refreshEvents = [
             'session.started',
             'session.completed',
+            'history.reconciled',
             'orchestrator.paused',
             'orchestrator.resumed',
             'startup_complete',

@@ -152,6 +152,9 @@ class FactGatherer:
             issues_started_count=state.issues_started_count,
             max_issues_to_start=self.config.filtering.max_to_start if self.config.filtering.max_to_start > 0 else None,
             discovered_reviews=tuple(state.discovered_reviews),
+            discovered_awaiting_merge_reconciliations=tuple(
+                state.discovered_awaiting_merge_reconciliations
+            ),
             discovered_reworks=tuple(state.discovered_reworks),
             discovered_escalations=tuple(state.discovered_escalations),
             discovered_failures=tuple(state.discovered_failures),

@@ -21,9 +21,11 @@ from issue_orchestrator.control.actions import (
     CreateTriageIssueAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
+    ReconcileHistoryEntryAction,
 )
+from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
-from issue_orchestrator.domain.models import Issue, Session, AgentConfig
+from issue_orchestrator.domain.models import Issue, Session, AgentConfig, SessionHistoryEntry
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.claim_manager import ClaimManager
 
@@ -231,6 +233,60 @@ class TestRemoveLabelAction:
         assert result.success
         assert result.details["no_op"] is True
         mock_labels.remove_label.assert_not_called()
+
+
+class TestReconcileHistoryEntryAction:
+    """Tests for RECONCILE_HISTORY_ENTRY action."""
+
+    def test_reconcile_history_entry_mutates_history_and_emits_event(self, applier, mock_events):
+        """History reconciliation is applied through the history owner."""
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            status_reason="PR merged; awaiting merge reconciled",
+            source="pull_request",
+            issue_key="M1-228",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert entry.status == "merged"
+        assert entry.status_reason == "PR merged; awaiting merge reconciled"
+        event = mock_events.publish.call_args_list[-2].args[0]
+        assert event.name == EventName.HISTORY_RECONCILED.value
+        assert event.data["issue_number"] == 228
+        assert event.data["issue_key"] == "M1-228"
+        assert event.data["previous_status"] == "completed"
+        assert event.data["status"] == "merged"
+
+    def test_reconcile_history_entry_requires_history_owner(self, applier):
+        """Applying a history reconciliation without an owner fails loudly."""
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="closed",
+            status_reason="PR closed; awaiting merge reconciled",
+            source="pull_request",
+        )
+
+        result = applier.apply(action)
+
+        assert not result.success
+        assert result.error == "Session history owner is not configured"
 
 
 class TestSyncLabelsAction:
@@ -939,6 +995,7 @@ class TestClaimGateAudit:
     # - QUEUE_REWORK / QUEUE_TRIAGE: local state operations
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
     # - CLEANUP_SESSION: post-completion cleanup
+    # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR / CLOSE_ISSUE: not implemented in action_applier
     EXEMPT_ACTIONS = {
         ActionType.LAUNCH_SESSION,
@@ -949,6 +1006,7 @@ class TestClaimGateAudit:
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
         ActionType.CLEANUP_SESSION,
+        ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,
         ActionType.CLOSE_ISSUE,
     }

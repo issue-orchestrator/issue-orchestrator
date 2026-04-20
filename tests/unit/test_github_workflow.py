@@ -27,6 +27,7 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
         pending_reworks=[],
         active_sessions=[],
         discovered_reviews=[],
+        discovered_awaiting_merge_reconciliations=[],
         discovered_reworks=[],
         discovered_escalations=[],
         session_history=[],

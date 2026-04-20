@@ -5,20 +5,24 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
+from issue_orchestrator.control.action_applier import ActionApplier
+from issue_orchestrator.control.actions import ReconcileHistoryEntryAction
 from issue_orchestrator.control.orchestrator_support import (
     detect_stale_in_progress,
     emit_queue_changes,
     track_stale_ticks,
 )
+from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.contracts.public import (
     DependencyBlockedPayload,
     DependencyUnblockedPayload,
+    HistoryReconciledPayload,
     PersistentStalePayload,
     QueueChangedPayload,
     StaleClearedPayload,
     StaleDetectedPayload,
 )
-from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.domain.models import Issue, OrchestratorState, SessionHistoryEntry
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.infra.config import Config
 from tests.conftest import MockEventSink
@@ -155,3 +159,43 @@ def test_stale_persistent_detected_payload_shape():
     assert payload["threshold"] == 2
     assert {"schema", "run_id", "tick_id"}.issubset(payload.keys())
     PersistentStalePayload.model_validate(payload)
+
+
+def test_history_reconciled_event_payload_shape():
+    events = MockEventSink()
+    entry = SessionHistoryEntry(
+        issue_number=228,
+        title="Shared cache read misses",
+        agent_type="agent:backend",
+        status="completed",
+        runtime_minutes=0,
+        pr_url="https://github.com/owner/repo/pull/318",
+        status_reason="Recovered awaiting merge state on startup",
+    )
+    applier = ActionApplier(
+        labels=MagicMock(),
+        sessions=MagicMock(),
+        events=events,
+        history_owner=SessionHistoryOwner([entry]),
+    )
+
+    applier.apply(ReconcileHistoryEntryAction(
+        issue_number=228,
+        pr_number=318,
+        pr_url="https://github.com/owner/repo/pull/318",
+        status="merged",
+        status_reason="PR merged; awaiting merge reconciled",
+        source="pull_request",
+        issue_key="M1-228",
+    ))
+
+    matches = events.get_events_by_name(EventName.HISTORY_RECONCILED)
+    assert len(matches) == 1
+    payload = matches[0].data
+    assert payload["issue_number"] == 228
+    assert payload["issue_key"] == "M1-228"
+    assert payload["pr_number"] == 318
+    assert payload["previous_status"] == "completed"
+    assert payload["status"] == "merged"
+    assert payload["source"] == "pull_request"
+    HistoryReconciledPayload.model_validate(payload)

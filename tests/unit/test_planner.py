@@ -20,7 +20,12 @@ from issue_orchestrator.control.planner_types import (
 )
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
-from issue_orchestrator.control.actions import ActionType, LaunchSessionAction, SessionType
+from issue_orchestrator.control.actions import (
+    ActionType,
+    LaunchSessionAction,
+    ReconcileHistoryEntryAction,
+    SessionType,
+)
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -31,6 +36,7 @@ from issue_orchestrator.domain.models import (
     AgentConfig,
     CompletionRecord,
     CompletionOutcome,
+    DiscoveredAwaitingMergeReconciliation,
     RequestedAction,
     ObservedCompletion,
     SessionIdentity,
@@ -724,6 +730,42 @@ class TestPlanDiscoveredReviews:
         assert action.expected is not None
         # Should forbid the pause label
         assert "io:needs-reconcile" in action.expected.forbidden_labels
+
+
+class TestPlanAwaitingMergeReconciliations:
+    """Tests for planning awaiting-merge history reconciliation facts."""
+
+    def test_plans_history_reconciliation_action(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        discovered = DiscoveredAwaitingMergeReconciliation(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            status_reason="PR merged; awaiting merge reconciled",
+            source="pull_request",
+            issue_key="M1-228",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_reconciliations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        actions = plan.actions_of_type(ActionType.RECONCILE_HISTORY_ENTRY)
+        assert len(actions) == 1
+        action = actions[0]
+        assert isinstance(action, ReconcileHistoryEntryAction)
+        assert action.issue_number == 228
+        assert action.pr_number == 318
+        assert action.pr_url == "https://github.com/test/repo/pull/318"
+        assert action.status == "merged"
+        assert action.status_reason == "PR merged; awaiting merge reconciled"
+        assert action.source == "pull_request"
+        assert action.issue_key == "M1-228"
 
 
 class TestPlanTriageIssueCreation:
@@ -2230,6 +2272,14 @@ class TestSnapshotFromState:
         state.pending_triage_reviews = [triage]
 
         discovered_review = DiscoveredReview(issue_number=10, pr_number=110, pr_url="url", branch_name="b")
+        discovered_awaiting_merge_reconciliation = DiscoveredAwaitingMergeReconciliation(
+            issue_number=10,
+            pr_number=110,
+            pr_url="url",
+            status="merged",
+            status_reason="PR merged; awaiting merge reconciled",
+            source="pull_request",
+        )
         discovered_rework = DiscoveredRework(issue_number=11, pr_number=111, branch_name="b", agent_type="a", rework_cycle=1)
         discovered_escalation = DiscoveredEscalation(issue_number=12, pr_number=112, rework_cycle=5)
         discovered_failure = DiscoveredFailure(issue_number=13, issue_title="F", failure_reason="failed")
@@ -2241,6 +2291,9 @@ class TestSnapshotFromState:
             state=state,
             max_issues_to_start=10,
             discovered_reviews=[discovered_review],
+            discovered_awaiting_merge_reconciliations=[
+                discovered_awaiting_merge_reconciliation
+            ],
             discovered_reworks=[discovered_rework],
             discovered_escalations=[discovered_escalation],
             discovered_failures=[discovered_failure],
@@ -2258,6 +2311,7 @@ class TestSnapshotFromState:
         assert len(snapshot.pending_reworks) == 1
         assert len(snapshot.pending_triage) == 1
         assert len(snapshot.discovered_reviews) == 1
+        assert len(snapshot.discovered_awaiting_merge_reconciliations) == 1
         assert len(snapshot.discovered_reworks) == 1
         assert len(snapshot.discovered_escalations) == 1
         assert len(snapshot.discovered_failures) == 1

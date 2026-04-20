@@ -1,0 +1,58 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "issue_key": {
+      "title": "Issue Key",
+      "type": "string"
+    },
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "pr_number": {
+      "title": "Pr Number",
+      "type": "integer"
+    },
+    "pr_url": {
+      "title": "Pr Url",
+      "type": "string"
+    },
+    "previous_status": {
+      "const": "completed",
+      "title": "Previous Status",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "pull_request",
+        "issue"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "merged",
+        "closed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "status_reason": {
+      "title": "Status Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "issue_number",
+    "issue_key",
+    "pr_number",
+    "pr_url",
+    "previous_status",
+    "status",
+    "status_reason",
+    "source"
+  ],
+  "title": "HistoryReconciledPayload",
+  "type": "object"
+}

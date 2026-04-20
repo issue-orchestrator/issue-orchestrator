@@ -217,6 +217,7 @@ class EventName(str, Enum):
     RECONCILIATION_WARNING = "reconciliation.warning"
     RECONCILIATION_REQUIRED = "reconciliation.required"  # Drift detected, action blocked
     ISSUE_PAUSED_RECONCILE = "issue.paused_reconcile"  # Issue paused due to drift
+    HISTORY_RECONCILED = "history.reconciled"
 
     # =========================================================================
     # Queue projection (UI-specific, consider moving to projection layer)
