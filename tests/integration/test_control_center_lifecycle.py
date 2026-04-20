@@ -297,7 +297,7 @@ def _wait_for_status(
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(xdist_timeout(120))
 class TestControlCenterLifecycle:
     """Test the full Control Center → Orchestrator lifecycle."""
 
@@ -569,7 +569,7 @@ class TestControlCenterLifecycle:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(xdist_timeout(60))
 class TestControlCenterStatusConsistency:
     """Test that status reporting is consistent across all interfaces."""
 
