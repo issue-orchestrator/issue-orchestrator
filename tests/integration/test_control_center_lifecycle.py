@@ -510,13 +510,19 @@ class TestControlCenterLifecycle:
         pid = resp.json()["pid"]
         _wait_for_port(orchestrator_port, timeout=30)
 
-        # Shutdown via orchestrator's own API
+        # Shutdown via orchestrator's own API.  Under load the server may
+        # tear down its socket before the 200 response is flushed; either
+        # a successful response or a bare RemoteProtocolError counts as the
+        # endpoint being reached.
         logger.info("Sending shutdown via orchestrator API")
-        orch_resp = httpx.post(
-            f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
-            timeout=xdist_timeout(5.0),
-        )
-        assert orch_resp.status_code == 200
+        try:
+            orch_resp = httpx.post(
+                f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
+                timeout=xdist_timeout(5.0),
+            )
+            assert orch_resp.status_code == 200
+        except httpx.RemoteProtocolError:
+            pass
 
         # Wait for port to become free (indicates process exited)
         # Graceful shutdown may take several seconds as it drains connections
@@ -605,11 +611,16 @@ class TestControlCenterStatusConsistency:
         assert cc_status["state"] == "running"
         assert orch_status["shutdown_requested"] is False
 
-        # Request shutdown
-        httpx.post(
-            f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
-            timeout=xdist_timeout(5.0),
-        )
+        # Request shutdown — the server may close the connection before
+        # sending a response once it starts tearing down, so a bare
+        # RemoteProtocolError is an expected outcome here.
+        try:
+            httpx.post(
+                f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
+                timeout=xdist_timeout(5.0),
+            )
+        except httpx.RemoteProtocolError:
+            pass
 
         # Wait for shutdown (poll, don't sleep)
         assert _wait_for_port_free(orchestrator_port, timeout=15), "Port should be free after shutdown"

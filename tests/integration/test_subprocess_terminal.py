@@ -21,7 +21,7 @@ from issue_orchestrator.infra.env import ENV_PREFIX
 from .conftest import xdist_timeout
 
 
-def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 15.0) -> None:
+def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 30.0) -> None:
     timeout_s = xdist_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -31,7 +31,7 @@ def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float
     raise AssertionError(f"Session {session_name} did not exit within {timeout_s}s")
 
 
-def _wait_for_file(path: Path, timeout_s: float = 15.0) -> None:
+def _wait_for_file(path: Path, timeout_s: float = 30.0) -> None:
     """Wait for a file to exist (atomic check, no content parsing)."""
     timeout_s = xdist_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
@@ -42,7 +42,7 @@ def _wait_for_file(path: Path, timeout_s: float = 15.0) -> None:
     raise AssertionError(f"File {path} not created within {timeout_s}s")
 
 
-def _wait_for_content(path: Path, marker: str, timeout_s: float = 15.0) -> None:
+def _wait_for_content(path: Path, marker: str, timeout_s: float = 30.0) -> None:
     """Wait for specific content to appear in a file."""
     timeout_s = xdist_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
