@@ -222,3 +222,13 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert "buildDashboardUrlFromBase(repo.dashboard_url, options)" in script
     assert "Boolean(repo.dashboard_url)" in script
     assert "http://127.0.0.1:${port}" not in template
+
+
+def test_control_center_uses_packaged_brand_assets() -> None:
+    """Header logo and favicon should be package-static assets."""
+    source_root = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
+    template = (source_root / "templates" / "control_center.html").read_text(encoding="utf-8")
+
+    assert '<link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">' in template
+    assert '<img class="sidebar-logo-icon" src="/static/brand/logo.svg"' in template
+    assert "/favicon.ico" not in template

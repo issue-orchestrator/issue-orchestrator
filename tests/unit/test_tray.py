@@ -1,5 +1,7 @@
 """Unit tests for the system tray icon module."""
 
+# ruff: noqa: SLF001
+
 from __future__ import annotations
 
 import os
@@ -32,6 +34,19 @@ _skip_no_pil = pytest.mark.skipif(
 )
 
 
+def test_default_brand_assets_are_packaged() -> None:
+    """Runtime brand assets should be package-owned files."""
+    from issue_orchestrator.entrypoints.brand_assets import (
+        LOGO_SVG_BYTES,
+        LOGO_SVG_PATH,
+        TRAY_ICON_PNG_PATH,
+    )
+
+    assert LOGO_SVG_BYTES.startswith(b"<svg")
+    assert LOGO_SVG_PATH.is_file()
+    assert TRAY_ICON_PNG_PATH.is_file()
+
+
 @_skip_no_pil
 class TestLoadIcon:
     """Tests for _load_icon()."""
@@ -44,7 +59,7 @@ class TestLoadIcon:
         png_path.write_bytes(b"fake-png")
 
         with (
-            patch.object(tray, "_ASSETS_DIR", tmp_path),
+            patch.object(tray, "TRAY_ICON_PNG_PATH", png_path),
             patch("PIL.Image.open") as mock_open,
         ):
             result = tray._load_icon()
@@ -55,9 +70,10 @@ class TestLoadIcon:
     def test_generates_fallback_when_png_missing(self, tmp_path: Path) -> None:
         """When tray-icon.png is absent, generate a fallback circle."""
         from issue_orchestrator.entrypoints import tray
+        png_path = tmp_path / "tray-icon.png"
 
         with (
-            patch.object(tray, "_ASSETS_DIR", tmp_path),
+            patch.object(tray, "TRAY_ICON_PNG_PATH", png_path),
             patch("PIL.Image.new") as mock_new,
             patch("PIL.ImageDraw.Draw"),
         ):

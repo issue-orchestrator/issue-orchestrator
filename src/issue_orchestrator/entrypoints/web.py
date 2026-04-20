@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost, detect_client_host
+from .brand_assets import read_logo_svg
 from .timeline_presentation import (
     _decorate_timeline_events,
     _is_agent_scoped_event,
@@ -211,15 +212,10 @@ def set_server(server) -> None:
 @app.get("/favicon.ico")
 async def favicon():
     """Serve the logo as favicon."""
-    from fastapi.responses import Response
-
-    logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "logo.svg"
-    if logo_path.exists():
-        return Response(
-            content=logo_path.read_bytes(),
-            media_type="image/svg+xml",
-        )
-    return Response(status_code=204)
+    return Response(
+        content=read_logo_svg(),
+        media_type="image/svg+xml",
+    )
 
 
 @app.get("/api/events")

@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from fastapi import FastAPI, Request, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -60,6 +60,7 @@ from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
+from .brand_assets import read_logo_svg
 from .control_api_goal_pilot_routes import control_goal_pilot_router
 from .control_api_goal_pilot_support import (
     ControlApiGoalPilotDependencies,
@@ -685,15 +686,10 @@ async def shutdown(request: Request) -> JSONResponse:
 @control_app.get("/favicon.ico")
 async def favicon():
     """Serve the logo as favicon."""
-    from fastapi.responses import Response
-
-    logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "logo.svg"
-    if logo_path.exists():
-        return Response(
-            content=logo_path.read_bytes(),
-            media_type="image/svg+xml",
-        )
-    return Response(status_code=204)
+    return Response(
+        content=read_logo_svg(),
+        media_type="image/svg+xml",
+    )
 
 
 @control_app.get("/", response_class=HTMLResponse)

@@ -317,6 +317,9 @@ class TestControlCenterTemplate:
         assert "Close Control Center" in body
         assert 'id="sidebarCloseCC"' in body
         assert 'id="sidebarAppMenuBtn"' in body
+        assert 'href="/static/brand/logo.svg"' in body
+        assert 'src="/static/brand/logo.svg"' in body
+        assert "/favicon.ico" not in body
         assert 'id="shutdownBtn"' not in body
         assert 'id="menuCloseCC"' not in body
         assert 'href="/static/css/control_center.css"' in body
@@ -331,11 +334,22 @@ class TestControlCenterTemplate:
     def test_control_center_static_assets_are_served(self, client_without_orchestrator):
         css_response = client_without_orchestrator.get("/static/css/control_center.css")
         js_response = client_without_orchestrator.get("/static/js/control_center.js")
+        logo_response = client_without_orchestrator.get("/static/brand/logo.svg")
 
         assert css_response.status_code == 200
         assert "--sidebar-width" in css_response.text
         assert js_response.status_code == 200
         assert "start_paused: startPaused" in js_response.text
+        assert logo_response.status_code == 200
+        assert "image/svg+xml" in logo_response.headers.get("content-type", "")
+        assert "<svg" in logo_response.text
+
+    def test_control_center_favicon_uses_packaged_logo(self, client_without_orchestrator):
+        response = client_without_orchestrator.get("/favicon.ico")
+
+        assert response.status_code == 200
+        assert "image/svg+xml" in response.headers.get("content-type", "")
+        assert "<svg" in response.text
 
     def test_control_center_javascript_preserves_start_paused_wiring(self):
         script = CONTROL_CENTER_JS.read_text()
@@ -947,4 +961,3 @@ class TestControlAPIServer:
 
         # Should not raise
         await server.stop()
-

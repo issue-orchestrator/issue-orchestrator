@@ -20,15 +20,14 @@ import urllib.error
 import urllib.request
 import webbrowser
 from urllib.parse import urljoin, urlparse
-from pathlib import Path
 from typing import Any, TYPE_CHECKING, Callable
+
+from .brand_assets import TRAY_ICON_PNG_PATH
 
 if TYPE_CHECKING:
     from PIL import Image
 
 logger = logging.getLogger(__name__)
-
-_ASSETS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "assets"
 
 
 def _process_exists(pid: int) -> bool:
@@ -48,7 +47,7 @@ def _load_icon() -> Image.Image:
     """Load tray icon from assets, falling back to a generated icon."""
     from PIL import Image as PILImage, ImageDraw
 
-    png_path = _ASSETS_DIR / "tray-icon.png"
+    png_path = TRAY_ICON_PNG_PATH
     if png_path.exists():
         return PILImage.open(png_path)
 
