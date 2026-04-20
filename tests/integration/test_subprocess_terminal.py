@@ -18,8 +18,11 @@ pytestmark = pytest.mark.xdist_group("pty")
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.env import ENV_PREFIX
 
+from .conftest import xdist_timeout
+
 
 def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 15.0) -> None:
+    timeout_s = xdist_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if not plugin.session_exists(0, session_name):
@@ -30,6 +33,7 @@ def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float
 
 def _wait_for_file(path: Path, timeout_s: float = 15.0) -> None:
     """Wait for a file to exist (atomic check, no content parsing)."""
+    timeout_s = xdist_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if path.exists():
@@ -40,6 +44,7 @@ def _wait_for_file(path: Path, timeout_s: float = 15.0) -> None:
 
 def _wait_for_content(path: Path, marker: str, timeout_s: float = 15.0) -> None:
     """Wait for specific content to appear in a file."""
+    timeout_s = xdist_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if path.exists():

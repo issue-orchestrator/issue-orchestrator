@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from .conftest import xdist_timeout
+
 # Mark all tests in this module as integration + live.
 # Most classes run hook subprocesses → xdist_group("hooks") to serialise with
 # other hook tests.  Only TestAiGate actually spawns Claude and overrides to
@@ -328,7 +330,7 @@ class TestAiGate:
         from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
-        success, message = adapter.test_ai_gate(test_repo_with_hooks, timeout=120)
+        success, message = adapter.test_ai_gate(test_repo_with_hooks, timeout=xdist_timeout(120))
 
         assert success, f"AI gate test should pass (hooks installed): {message}"
         assert "blocked" in message.lower()
@@ -346,7 +348,7 @@ class TestAiGate:
         from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
-        success, message = adapter.test_ai_gate(test_repo_without_hooks, timeout=120)
+        success, message = adapter.test_ai_gate(test_repo_without_hooks, timeout=xdist_timeout(120))
 
         # This should FAIL because hooks are not installed
         # Claude should be able to run --no-verify without being blocked

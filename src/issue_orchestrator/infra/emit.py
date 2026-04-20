@@ -85,12 +85,3 @@ def _send_to_socket(socket_path: str, event: dict) -> bool:
         return True
     finally:
         sock.close()
-
-
-def get_default_socket_path() -> Path:
-    """Get the default IPC socket path.
-
-    Returns:
-        Path to the default socket location
-    """
-    return Path(f"/tmp/issue-orchestrator-{os.getuid()}.sock")

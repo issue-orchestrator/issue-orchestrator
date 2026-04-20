@@ -12,6 +12,7 @@ from issue_orchestrator.control.isolation import (
     GRADLE_USER_HOME_ENV,
     get_forbidden_env_vars,
     get_gradle_user_home,
+    get_orchestrator_socket_path,
     build_runtime_tool_env,
     build_runtime_tool_env_assignments,
     build_env_unset_commands,
@@ -281,3 +282,24 @@ class TestAllEnvScrubbed:
         """Test returns False when any forbidden var is set."""
         with patch.dict(os.environ, {"GH_TOKEN": "secret"}, clear=True):
             assert all_env_scrubbed() is False
+
+
+class TestOrchestratorSocketPath:
+    """Ensure the socket path is worker-isolated under pytest-xdist (#4391)."""
+
+    def test_default_path_has_no_worker_suffix(self):
+        with patch.dict(os.environ, {}, clear=True):
+            path = get_orchestrator_socket_path()
+        assert path == f"/tmp/issue-orchestrator-{os.getuid()}.sock"
+
+    def test_worker_id_is_embedded_in_path(self):
+        with patch.dict(os.environ, {"PYTEST_XDIST_WORKER": "gw3"}, clear=True):
+            path = get_orchestrator_socket_path()
+        assert path == f"/tmp/issue-orchestrator-{os.getuid()}-gw3.sock"
+
+    def test_distinct_workers_get_distinct_paths(self):
+        with patch.dict(os.environ, {"PYTEST_XDIST_WORKER": "gw0"}, clear=True):
+            path_a = get_orchestrator_socket_path()
+        with patch.dict(os.environ, {"PYTEST_XDIST_WORKER": "gw1"}, clear=True):
+            path_b = get_orchestrator_socket_path()
+        assert path_a != path_b

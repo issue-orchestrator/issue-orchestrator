@@ -94,11 +94,16 @@ def get_orchestrator_socket_path() -> str:
 
     This uses the same default as the EventServer and emit module.
 
+    Under pytest-xdist the path is suffixed with the worker id so concurrent
+    workers do not share a socket file.
+
     Returns:
         Path to the orchestrator IPC socket
     """
     import os
-    return f"/tmp/issue-orchestrator-{os.getuid()}.sock"
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    suffix = f"-{worker}" if worker else ""
+    return f"/tmp/issue-orchestrator-{os.getuid()}{suffix}.sock"
 
 
 def get_forbidden_env_vars() -> list[str]:

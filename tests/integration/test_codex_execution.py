@@ -24,6 +24,8 @@ pytestmark = [
 
 from issue_orchestrator.infra.env import ENV_PREFIX
 
+from .conftest import xdist_timeout
+
 
 def is_codex_available() -> bool:
     """Check if codex CLI is available in PATH."""
@@ -50,7 +52,7 @@ class TestCodexExecution:
             ["codex", "--version"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=xdist_timeout(30),
         )
         assert result.returncode == 0
         # Version output should contain a version number
@@ -62,7 +64,7 @@ class TestCodexExecution:
             ["codex", "exec", "--help"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=xdist_timeout(30),
         )
         assert result.returncode == 0
         assert "non-interactively" in result.stdout.lower()
@@ -103,7 +105,7 @@ class TestCodexExecution:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=xdist_timeout(120),
             cwd=tmp_path,
         )
 
@@ -244,7 +246,7 @@ class TestCodexAgentDoneInvocation:
             ],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=xdist_timeout(180),
             cwd=str(worktree),
             env=env,
         )
@@ -305,7 +307,7 @@ class TestCodexAgentDoneInvocation:
             ],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=xdist_timeout(180),
             cwd=str(tmp_path),
         )
 
