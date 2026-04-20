@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.completion_processor import CompletionProcessor
@@ -39,8 +41,16 @@ from issue_orchestrator.entrypoints.setup_wizard_common import (
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
 
-# Single source of truth for label names — avoids hardcoded string literals.
-_lm = LabelManager(Config())
+@pytest.fixture(scope="module")
+def lm() -> LabelManager:
+    """Module-scoped label manager.
+
+    Deferring construction out of module-import time avoids concurrent
+    ``Config()`` initialization races observed under full-suite xdist runs
+    (see issue #4391).
+    """
+    return LabelManager(Config())
+
 
 _COMPLETION_CMDS = ("coding-done", "reviewer-done")
 _CONTRACT_COMMAND_TIMEOUT_SECONDS = 60
@@ -241,10 +251,12 @@ def test_setup_wizard_generated_prompts_have_valid_completion_commands(tmp_path:
     _assert_commands_are_valid(commands, cwd=tmp_path)
 
 
-def test_control_api_prompt_templates_have_valid_completion_commands(tmp_path: Path) -> None:
+def test_control_api_prompt_templates_have_valid_completion_commands(
+    tmp_path: Path, lm: LabelManager,
+) -> None:
     prompts = [
         build_starter_prompt_text("backend"),
-        build_code_review_prompt_text(_lm.code_review, _lm.code_reviewed),
+        build_code_review_prompt_text(lm.code_review, lm.code_reviewed),
         build_triage_review_prompt_text("triage-review", "triage-reviewed"),
     ]
     commands = _extract_completion_commands("\n".join(prompts))
@@ -309,9 +321,9 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
         assert actions == expected_actions
 
 
-def test_prompt_role_status_contracts() -> None:
+def test_prompt_role_status_contracts(lm: LabelManager) -> None:
     work_prompt = build_starter_prompt_text("backend")
-    review_prompt = build_code_review_prompt_text(_lm.code_review, _lm.code_reviewed)
+    review_prompt = build_code_review_prompt_text(lm.code_review, lm.code_reviewed)
     triage_prompt = build_triage_review_prompt_text("triage-review", "triage-reviewed")
 
     work_statuses = _extract_statuses(_extract_completion_commands(work_prompt))
@@ -323,7 +335,9 @@ def test_prompt_role_status_contracts() -> None:
     assert triage_statuses == {"approved"}
 
 
-def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> None:
+def test_completion_record_drives_expected_review_actions(
+    tmp_path: Path, lm: LabelManager,
+) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     _init_git_repo(worktree)
@@ -349,7 +363,7 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
         pr_adapter=pr_adapter,
         git_adapter=_NoopGitAdapter(),
         session_output=FileSystemSessionOutput(),
-        label_config=_lm.to_label_config_dict(),
+        label_config=lm.to_label_config_dict(),
     )
     controller = SessionController(
         completion_processor=processor,
@@ -371,9 +385,9 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
     )
 
     assert decision.status.name == "COMPLETED"
-    assert (100, _lm.code_reviewed) in label_adapter.added
-    assert (100, _lm.needs_rework) in label_adapter.removed
-    assert any(target == 100 and label == _lm.code_review for target, label in label_adapter.removed)
+    assert (100, lm.code_reviewed) in label_adapter.added
+    assert (100, lm.needs_rework) in label_adapter.removed
+    assert any(target == 100 and label == lm.code_review for target, label in label_adapter.removed)
     assert any(target == 100 for target, _body in pr_adapter.comments)
 
 
@@ -398,7 +412,7 @@ def _apply_label_actions_to_issue(issue: Issue, actions: list[object]) -> Issue:
     return Issue(number=issue.number, title=issue.title, labels=sorted(labels))
 
 
-def test_publish_failure_multi_attempt_contract(tmp_path: Path) -> None:
+def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     _init_git_repo(worktree)
@@ -435,13 +449,13 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path) -> None:
         )
         # Each attempt either adds publish-failed or escalates to needs-human
         assert any(
-            isinstance(action, AddLabelAction) and action.label in (_lm.publish_failed, _lm.needs_human)
+            isinstance(action, AddLabelAction) and action.label in (lm.publish_failed, lm.needs_human)
             for action in result.actions
         )
-        assert any(isinstance(action, RemoveLabelAction) and action.label == _lm.in_progress for action in result.actions)
+        assert any(isinstance(action, RemoveLabelAction) and action.label == lm.in_progress for action in result.actions)
         issue = _apply_label_actions_to_issue(issue, result.actions)
 
-    assert _lm.publish_failed in issue.labels
+    assert lm.publish_failed in issue.labels
 
 
 def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:
