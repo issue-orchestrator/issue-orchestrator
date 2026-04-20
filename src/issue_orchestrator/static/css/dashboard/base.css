@@ -593,6 +593,8 @@ body.tab-nav-pending .dashboard-tabs .tab {
 .timeline-artifact:active,
 .timeline-action-btn:active,
 .timeline-event-menu-trigger:active,
+.timeline-more-trigger:active,
+.timeline-more-item:active,
 .confirm-btn:active {
     transform: scale(0.96);
     transition: transform 0.05s;

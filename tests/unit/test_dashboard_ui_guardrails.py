@@ -661,15 +661,28 @@ def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimelineEventActions")
     assert "primaryTypes" in body
+    assert "timeline-event-menu-trigger" in body
+    assert "Event Details" in body
     assert "timeline-more-menu" in body
     assert "More ▾" in body
     assert "_timelineActionShortLabel" in js
+
+
+def test_timeline_events_pass_detail_context_to_action_menu() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimeline")
+    assert "renderTimelineEventActions(evt.actions || [], evt)" in body
+    assert "openTimelineEventDetails" in js
+    assert "show_event_details" in js
+    assert "timeline-event-detail-overlay" in js
+    assert "timeline-event-detail-overlay" in _read_dashboard_css_bundle()
 
 
 def test_timeline_modal_delegate_handles_more_items() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
     assert ".timeline-action-btn, .timeline-more-item" in body
+    assert "timeline-event-menu-trigger" in body
 
 
 def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:

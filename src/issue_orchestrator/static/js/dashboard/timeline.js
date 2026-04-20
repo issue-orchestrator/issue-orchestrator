@@ -36,7 +36,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             const summary = evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : '';
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
-            const actions = renderTimelineEventActions(evt.actions || []);
+            const actions = renderTimelineEventActions(evt.actions || [], evt);
             // E2E test events carry issue_affordances — render as clickable links
             // that open the issue detail drawer routed to the explicit
             // /api/e2e-run/{run_id}/issue-detail/{N} endpoint (no base-repo
@@ -112,11 +112,22 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             if (actionTarget && actionTarget.dataset.action) {
                 try {
                     const action = JSON.parse(actionTarget.dataset.action);
+                    closeTimelineEventMenus();
                     runTimelineEventAction(action);
                 } catch (err) {
                     console.error('Failed to parse timeline action:', err);
                     showToast('Unable to execute timeline action', 'error');
                 }
+                return;
+            }
+            const menuTrigger = event.target.closest('.timeline-event-menu-trigger');
+            if (menuTrigger) {
+                const ownerMenu = menuTrigger.closest('.timeline-event-menu');
+                closeTimelineEventMenus(ownerMenu);
+                return;
+            }
+            if (!event.target.closest('.timeline-event-menu')) {
+                closeTimelineEventMenus();
             }
         });
         container.dataset.timelineBound = 'true';
@@ -159,7 +170,7 @@ function renderTimelineChildren(children) {
             const detail = evt.detail ? `<div class="timeline-detail">${escapeHtml(evt.detail)}</div>` : '';
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
-            const actions = renderTimelineEventActions(evt.actions || []);
+            const actions = renderTimelineEventActions(evt.actions || [], evt);
             return `
                 <div class="timeline-event ${evt.status || ''}">
                     <div class="timeline-event-header">
@@ -190,13 +201,21 @@ function renderTimelineChildren(children) {
     `;
 }
 
-function renderTimelineEventActions(actions) {
-    if (!actions || actions.length === 0) return '';
+function renderTimelineEventActions(actions, eventDetail = null) {
+    const hasActions = Array.isArray(actions) && actions.length > 0;
+    const detailsAction = eventDetail
+        ? {
+            type: 'show_event_details',
+            label: 'Event Details',
+            event: _timelineEventDetailsPayload(eventDetail),
+        }
+        : null;
+    if (!hasActions && !detailsAction) return '';
     const renderBtn = (action, label, cssClass = 'timeline-action-btn') => {
         const payload = escapeAttr(JSON.stringify(action));
         return `<button type="button" class="${cssClass}" data-action="${payload}">${escapeHtml(label)}</button>`;
     };
-    const items = actions.map(action => ({
+    const items = (actions || []).map(action => ({
         action,
         label: _timelineActionShortLabel(action),
     }));
@@ -216,7 +235,12 @@ function renderTimelineEventActions(actions) {
     }
     const secondary = items.filter(item => !used.has(item));
 
-    let html = '<div class="timeline-event-menu-items">';
+    let html = '<details class="timeline-event-menu">';
+    html += '<summary class="timeline-event-menu-trigger" aria-label="Event actions and details" title="Event actions and details">⋯</summary>';
+    html += '<div class="timeline-event-menu-items">';
+    if (detailsAction) {
+        html += renderBtn(detailsAction, 'Event Details', 'timeline-more-item timeline-detail-action');
+    }
     for (const item of primary) {
         html += renderBtn(item.action, item.label);
     }
@@ -229,14 +253,26 @@ function renderTimelineEventActions(actions) {
         }
         html += '</div></details>';
     }
-    html += '</div>';
+    html += '</div></details>';
     return html;
+}
+
+function _timelineEventDetailsPayload(evt) {
+    if (!evt || typeof evt !== 'object') return {};
+    const payload = {};
+    for (const [key, value] of Object.entries(evt)) {
+        if (key === 'actions') continue;
+        if (value === undefined) continue;
+        payload[key] = value;
+    }
+    return payload;
 }
 
 function _timelineActionShortLabel(action) {
     if (!action) return 'Action';
     const type = String(action.type || '');
     const label = String(action.label || '').trim();
+    if (type === 'show_event_details') return 'Event Details';
     if (type === 'open_agent_log') return 'Session Recording';
     if (type === 'open_review_transcript') return 'Review Transcript';
     if (type === 'open_validation_failure') return 'Validation Details';
@@ -308,6 +344,10 @@ function runTimelineEventAction(action) {
         openSessionManifest(action.issue_number, action.run_dir || null);
         return;
     }
+    if (action.type === 'show_event_details') {
+        openTimelineEventDetails(action.event || {});
+        return;
+    }
     if (action.type === 'show_actions_error') {
         const rawMessages = Array.isArray(action.error_messages) ? action.error_messages : [];
         const normalized = rawMessages
@@ -325,6 +365,66 @@ function runTimelineEventAction(action) {
         return;
     }
     showToast(`Unsupported timeline action: ${action.type}`, 'error');
+}
+
+function openTimelineEventDetails(details) {
+    const eventName = String(details.event || details.step || 'event');
+    const rows = _renderTimelineEventDetailRows(details);
+    const rawJson = escapeHtml(JSON.stringify(details, null, 2));
+    modalOverlay.classList.add('timeline-event-detail-overlay');
+    openModal(`Timeline Event: ${eventName}`, `
+        <div class="timeline-event-detail-modal">
+            ${rows}
+            <details class="timeline-event-raw-json">
+                <summary>Raw event JSON</summary>
+                <pre>${rawJson}</pre>
+            </details>
+        </div>
+    `);
+}
+
+function _renderTimelineEventDetailRows(details) {
+    const preferred = [
+        'event',
+        'step',
+        'status',
+        'phase',
+        'timestamp',
+        'summary',
+        'detail',
+        'nodeid',
+        'outcome',
+        'duration',
+        'issue_number',
+        'run_id',
+        'run_dir',
+    ];
+    const keys = [];
+    for (const key of preferred) {
+        if (Object.prototype.hasOwnProperty.call(details, key)) keys.push(key);
+    }
+    for (const key of Object.keys(details).sort()) {
+        if (!keys.includes(key)) keys.push(key);
+    }
+    if (keys.length === 0) {
+        return '<p class="timeline-event-detail-empty">No event details available.</p>';
+    }
+    const rows = keys.map(key => {
+        const value = _timelineEventDetailValue(details[key]);
+        return `
+            <div class="timeline-event-detail-row">
+                <dt>${escapeHtml(key)}</dt>
+                <dd><pre>${escapeHtml(value)}</pre></dd>
+            </div>
+        `;
+    }).join('');
+    return `<dl class="timeline-event-detail-list">${rows}</dl>`;
+}
+
+function _timelineEventDetailValue(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') return JSON.stringify(value, null, 2);
+    return String(value);
 }
 
 function formatPhaseLabel(phase) {
@@ -465,4 +565,3 @@ function renderBlockedList() {
 
     updateBlockedSelection();
 }
-
