@@ -406,9 +406,6 @@ function _renderTimelineEventDetailRows(details) {
     for (const key of Object.keys(details).sort()) {
         if (!keys.includes(key)) keys.push(key);
     }
-    if (keys.length === 0) {
-        return '<p class="timeline-event-detail-empty">No event details available.</p>';
-    }
     const rows = keys.map(key => {
         const value = _timelineEventDetailValue(details[key]);
         return `
