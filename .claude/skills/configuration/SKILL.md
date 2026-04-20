@@ -34,6 +34,8 @@ The schema drives everything else automatically:
 - **status summaries** — `format_summary()` reads `summary` annotations from schema
 - **docs/user/configuration_reference.md** — regenerate via `generate_config_reference()`
 
+`docs/user/configuration.md` is hand-written onboarding. Update it only when the user-facing setup narrative changes; schema fields drive `docs/user/configuration_reference.md`.
+
 **Also update (when relevant):**
 
 3. **`examples/config.example.yaml`** — Add the option with a sensible default and comment

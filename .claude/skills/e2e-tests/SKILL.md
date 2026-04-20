@@ -38,6 +38,8 @@ e2e:
   survive_restart: true            # Let worker continue if orchestrator restarts
 ```
 
+Only instances whose resolved role is `executor` auto-trigger runs. `reader` and `disabled` instances ignore `auto_run_interval_minutes`.
+
 ## Key Files
 
 | File | Purpose |

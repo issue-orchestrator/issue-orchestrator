@@ -31,6 +31,7 @@ Locate SQLite usage in issue-orchestrator and provide practical, low-maintenance
 ## Repo Notes
 
 - Registered DBs are listed in `src/issue_orchestrator/infra/sqlite_registry.py`.
+- Add new persistent SQLite DBs to `sqlite_registry.py` so doctor checks, startup pragmas, and backups can see them.
 - Startup maintenance applies WAL/FULL pragmas to existing registered DBs and backs them up when `sqlite_backup` is enabled.
 - Most runtime DB owners use `open_sqlite()`; ad hoc `sqlite3.connect()` usage should be intentional and checked.
 - Subprocess registry includes auto-corruption handling; the other DB owners generally surface exceptions and rely on doctor/backup recovery.
