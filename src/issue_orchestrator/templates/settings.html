@@ -462,6 +462,7 @@
         </footer>
     </div>
 
+    <script src="/static/js/embedded_nav.js"></script>
     <script>
         // Schema metadata embedded from server (tab keys and field types)
         const SCHEMA_TABS = {{ tabs_json }};
@@ -480,11 +481,14 @@
             document.documentElement.setAttribute('data-theme', effectiveTheme);
         }
 
-        // Preserve embedded mode when returning to the Dashboard so the
-        // "Back to repositories" affordance survives the Dashboard → Settings → Dashboard round-trip.
-        const settingsIsEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+        // Preserve Control Center embedded context (embedded=1 + theme) on
+        // the round-trip back to the Dashboard. The shared embeddedNav helper
+        // owns this rule; see static/js/embedded_nav.js.
+        if (!window.embeddedNav) {
+            throw new Error('embeddedNav helper not loaded');
+        }
         function dashboardHref() {
-            return settingsIsEmbedded ? '/?embedded=1' : '/';
+            return window.embeddedNav.buildHref('/', window.location.search);
         }
         function cancelSettings() {
             window.location.href = dashboardHref();

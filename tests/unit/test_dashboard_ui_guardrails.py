@@ -591,33 +591,67 @@ def test_embedded_back_controls_share_primary_button_style() -> None:
     assert "color: var(--text);" in css
 
 
-def test_dashboard_settings_nav_preserves_embedded_flag() -> None:
-    # Regression: Dashboard → Settings must carry ?embedded=1 so the round-trip
-    # back to Dashboard keeps the "Back to repositories" affordance.
+SETTINGS_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "settings.html"
+EMBEDDED_NAV_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "embedded_nav.js"
+EMBEDDED_NAV_TEST_JS = ROOT / "tests" / "js" / "embedded_nav.test.js"
+
+
+def test_dashboard_settings_nav_uses_shared_embedded_nav_helper() -> None:
+    # Regression: Dashboard → Settings must go through the shared embeddedNav
+    # helper so ?embedded=1 AND ?theme= are both forwarded. Ad-hoc string
+    # concatenation here previously dropped theme on the round-trip.
     js = _read(DASHBOARD_JS)
-    assert "function withEmbeddedFlag(path)" in js
     assert "function goToSettings()" in js
     body = _function_body(js, "goToSettings")
-    assert "withEmbeddedFlag('/settings')" in body
+    assert "embeddedNav.buildHref('/settings', window.location.search)" in body
+    # Old ad-hoc helper must be gone so we have a single owner of the rule.
+    assert "function withEmbeddedFlag" not in js
     tmpl = _read(DASHBOARD_TEMPLATE)
-    assert "onclick=\"goToSettings()\"" in tmpl
+    assert 'onclick="goToSettings()"' in tmpl
     assert "window.location.href='/settings'" not in tmpl
+    # Shared module must be loaded before the dashboard bundle.
+    assert '<script src="/static/js/embedded_nav.js"></script>' in tmpl
 
 
-SETTINGS_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "settings.html"
-
-
-def test_settings_page_propagates_embedded_flag_on_exits() -> None:
-    # Regression: Settings back-link and Cancel must return to /?embedded=1 when
-    # the page was loaded embedded in the Control Center iframe.
+def test_settings_page_uses_shared_embedded_nav_helper() -> None:
+    # Regression: Settings back-link and Cancel must go through embeddedNav
+    # so the Dashboard round-trip keeps both embedded=1 and theme.
     tmpl = _read(SETTINGS_TEMPLATE)
-    assert "id=\"backToDashboardLink\"" in tmpl
-    assert "id=\"cancelSettingsBtn\"" in tmpl
-    assert "onclick=\"cancelSettings()\"" in tmpl
-    assert "settingsIsEmbedded" in tmpl
-    assert "'/?embedded=1'" in tmpl
-    # Old unconditional hrefs must be gone.
+    assert '<script src="/static/js/embedded_nav.js"></script>' in tmpl
+    assert 'id="backToDashboardLink"' in tmpl
+    assert 'id="cancelSettingsBtn"' in tmpl
+    assert 'onclick="cancelSettings()"' in tmpl
+    assert "window.embeddedNav.buildHref('/', window.location.search)" in tmpl
+    # Old ad-hoc helpers / literals must be gone.
+    assert "settingsIsEmbedded" not in tmpl
+    assert "'/?embedded=1'" not in tmpl
     assert "onclick=\"window.location.href='/'\"" not in tmpl
+
+
+def test_embedded_nav_module_behavior_verified_by_node_test_runner() -> None:
+    # Behavior-level regression: actually exercise buildHref() under Node so
+    # we verify real URL transformations, not just string presence in source.
+    # Fails hard if node is missing — this is a required runtime for the
+    # shared helper's contract tests, not optional infrastructure.
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "node runtime is required to validate embedded_nav.js behavior"
+    assert EMBEDDED_NAV_JS.exists(), f"shared helper missing: {EMBEDDED_NAV_JS}"
+    assert EMBEDDED_NAV_TEST_JS.exists(), f"node test missing: {EMBEDDED_NAV_TEST_JS}"
+
+    result = subprocess.run(
+        [node, "--test", str(EMBEDDED_NAV_TEST_JS)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"node --test failed (exit {result.returncode})\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
 
 
 def test_journey_cycle_labels_use_run_local_numbering() -> None:
