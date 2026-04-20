@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import time
-from typing import Any, Callable
+from typing import Any, Callable, assert_never
 
+from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
 from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
@@ -635,14 +636,28 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     return queue_items, blocked_items, queue_total, seen_issues
 
 
+def _history_status_label(status: SessionHistoryStatus) -> str:
+    match status:
+        case "completed":
+            return "Completed"
+        case "merged":
+            return "Merged"
+        case "closed":
+            return "Closed"
+        case "failed":
+            return "Failed"
+        case "validation_failed":
+            return "Validation Failed"
+        case "blocked":
+            return "Blocked"
+        case "needs_human":
+            return "Needs Human"
+        case "timed_out":
+            return "Timed Out"
+    assert_never(status)
+
+
 def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    status_labels = {
-        "completed": "Completed",
-        "failed": "Failed",
-        "blocked": "Blocked",
-        "needs_human": "Needs Human",
-        "timed_out": "Timed Out",
-    }
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
     for entry in latest_history_entries_by_issue(state.session_history, limit=50):
@@ -653,11 +668,11 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
         status_reason = _normalize_status_reason(getattr(entry, "status_reason", None))
         if not status_reason:
-            status_reason = status_labels.get(entry.status, entry.status)
+            status_reason = _history_status_label(entry.status)
 
-        if entry.status == "completed":
+        if entry.status in DONE_HISTORY_STATUSES:
             flow_stage = "done"
-        elif entry.status in ("blocked", "needs_human", "failed", "timed_out"):
+        elif entry.status in BLOCKED_HISTORY_STATUSES:
             flow_stage = "blocked"
         else:
             flow_stage = "in_progress"
@@ -672,7 +687,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "agent_type": entry.agent_type.replace("agent:", ""),
             "status": entry.status,
             "status_reason": status_reason,
-            "detail_label": status_labels.get(entry.status, entry.status),
+            "detail_label": _history_status_label(entry.status),
             "detail_reason": status_reason,
             "time": _format_history_time(entry),
             "action": "open",
@@ -686,12 +701,16 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage": flow_stage,
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
-            "blocked_summary": status_reason if entry.status != "completed" else None,
+            "blocked_summary": (
+                status_reason
+                if entry.status not in DONE_HISTORY_STATUSES
+                else None
+            ),
             # History records with an open PR belong in Awaiting Merge, not Completed.
             "merge_pending": entry.status == "completed" and bool(entry.pr_url),
             **_refresh_meta(state, config, entry.issue_number),
         }
-        if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
+        if entry.status in BLOCKED_HISTORY_STATUSES:
             blocked_items.append(item)
         else:
             history_items.append(item)

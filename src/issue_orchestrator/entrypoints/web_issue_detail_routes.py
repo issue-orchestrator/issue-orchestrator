@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import IssueDetailPayload
+from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES
 from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..view_models.dashboard import issue_url_for
@@ -555,9 +556,11 @@ def _determine_issue_flow_stage(
 
     for entry in state.session_history:
         if entry.issue_number == issue_number:
-            if entry.status == "completed":
-                return "done" if not pr_url else "awaiting_merge"
-            if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
+            if entry.status in DONE_HISTORY_STATUSES:
+                if entry.status == "completed" and pr_url:
+                    return "awaiting_merge"
+                return "done"
+            if entry.status in BLOCKED_HISTORY_STATUSES:
                 return "blocked"
     return "queued"
 
