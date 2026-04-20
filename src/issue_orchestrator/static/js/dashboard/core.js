@@ -80,6 +80,18 @@ function navigateBackToRepositories() {
 
 // When embedded in CC iframe, hide dashboard header and show embedded header in tab bar
 const isEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+
+// Preserve embedded mode across same-window navigations (e.g. Dashboard → Settings).
+// Without this, Settings loses the flag and the round-trip back to Dashboard drops the
+// "Back to repositories" affordance.
+function withEmbeddedFlag(path) {
+    if (!isEmbedded) return path;
+    return path + (path.includes('?') ? '&' : '?') + 'embedded=1';
+}
+
+function goToSettings() {
+    window.location.href = withEmbeddedFlag('/settings');
+}
 if (isEmbedded) {
     document.addEventListener('DOMContentLoaded', () => {
         // Hide standalone header (dashboard owns the header via tab bar now)

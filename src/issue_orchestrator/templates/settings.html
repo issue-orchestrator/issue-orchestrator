@@ -354,7 +354,7 @@
     <div class="container">
         <header>
             <div class="header-left">
-                <a href="/" class="back-link"><span aria-hidden="true">&#8592;</span> Dashboard</a>
+                <a href="/" id="backToDashboardLink" class="back-link"><span aria-hidden="true">&#8592;</span> Dashboard</a>
                 <h1>Settings</h1>
                 <span class="unsaved-indicator" id="unsavedIndicator">Unsaved changes</span>
             </div>
@@ -456,7 +456,7 @@
                 Changes to ports and worktrees require a restart to take effect.
             </div>
             <div class="header-actions">
-                <button class="btn btn-secondary" onclick="window.location.href='/'">Cancel</button>
+                <button class="btn btn-secondary" id="cancelSettingsBtn" onclick="cancelSettings()">Cancel</button>
                 <button class="btn btn-primary" id="saveBtn2" onclick="saveSettings()" disabled>Save Changes</button>
             </div>
         </footer>
@@ -480,11 +480,23 @@
             document.documentElement.setAttribute('data-theme', effectiveTheme);
         }
 
+        // Preserve embedded mode when returning to the Dashboard so the
+        // "Back to repositories" affordance survives the Dashboard → Settings → Dashboard round-trip.
+        const settingsIsEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+        function dashboardHref() {
+            return settingsIsEmbedded ? '/?embedded=1' : '/';
+        }
+        function cancelSettings() {
+            window.location.href = dashboardHref();
+        }
+
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             applyTheme();
             captureOriginalSettings();
             setupChangeListeners();
+            const backLink = document.getElementById('backToDashboardLink');
+            if (backLink) backLink.setAttribute('href', dashboardHref());
         });
 
         function captureOriginalSettings() {

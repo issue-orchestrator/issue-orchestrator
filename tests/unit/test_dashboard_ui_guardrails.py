@@ -591,6 +591,35 @@ def test_embedded_back_controls_share_primary_button_style() -> None:
     assert "color: var(--text);" in css
 
 
+def test_dashboard_settings_nav_preserves_embedded_flag() -> None:
+    # Regression: Dashboard → Settings must carry ?embedded=1 so the round-trip
+    # back to Dashboard keeps the "Back to repositories" affordance.
+    js = _read(DASHBOARD_JS)
+    assert "function withEmbeddedFlag(path)" in js
+    assert "function goToSettings()" in js
+    body = _function_body(js, "goToSettings")
+    assert "withEmbeddedFlag('/settings')" in body
+    tmpl = _read(DASHBOARD_TEMPLATE)
+    assert "onclick=\"goToSettings()\"" in tmpl
+    assert "window.location.href='/settings'" not in tmpl
+
+
+SETTINGS_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "settings.html"
+
+
+def test_settings_page_propagates_embedded_flag_on_exits() -> None:
+    # Regression: Settings back-link and Cancel must return to /?embedded=1 when
+    # the page was loaded embedded in the Control Center iframe.
+    tmpl = _read(SETTINGS_TEMPLATE)
+    assert "id=\"backToDashboardLink\"" in tmpl
+    assert "id=\"cancelSettingsBtn\"" in tmpl
+    assert "onclick=\"cancelSettings()\"" in tmpl
+    assert "settingsIsEmbedded" in tmpl
+    assert "'/?embedded=1'" in tmpl
+    # Old unconditional hrefs must be gone.
+    assert "onclick=\"window.location.href='/'\"" not in tmpl
+
+
 def test_journey_cycle_labels_use_run_local_numbering() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")

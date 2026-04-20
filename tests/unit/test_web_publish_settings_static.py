@@ -571,6 +571,28 @@ class TestSettingsEndpoints:
         assert response.status_code == 200
         assert "Settings" in response.text
 
+    def test_settings_page_preserves_embedded_flag_on_exits(self):
+        """Regression: the Settings page must propagate ?embedded=1 back to the
+        Dashboard so the round-trip Dashboard → Settings → Dashboard keeps the
+        CC "Back to repositories" affordance visible."""
+        from issue_orchestrator.entrypoints import web
+
+        web._orchestrator = None
+        client = TestClient(app)
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        html = response.text
+        # Back link and Cancel must route through embedded-aware helpers.
+        assert 'id="backToDashboardLink"' in html
+        assert 'id="cancelSettingsBtn"' in html
+        assert 'onclick="cancelSettings()"' in html
+        # Helper must branch on the embedded query param and build the preserving URL.
+        assert "settingsIsEmbedded" in html
+        assert "'/?embedded=1'" in html
+        # The old unconditional exits must be gone.
+        assert "onclick=\"window.location.href='/'\"" not in html
+
     def test_get_settings_filtering_with_milestones(self):
         """GET /api/settings returns milestones as comma-separated string."""
         from issue_orchestrator.entrypoints import web
