@@ -41,6 +41,8 @@ from issue_orchestrator.entrypoints.setup_wizard_common import (
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
 
+from .conftest import xdist_timeout
+
 @pytest.fixture(scope="module")
 def lm() -> LabelManager:
     """Module-scoped label manager.
@@ -53,7 +55,7 @@ def lm() -> LabelManager:
 
 
 _COMPLETION_CMDS = ("coding-done", "reviewer-done")
-_CONTRACT_COMMAND_TIMEOUT_SECONDS = 60
+_CONTRACT_COMMAND_TIMEOUT_SECONDS = xdist_timeout(60)
 
 _FENCED_BLOCK_RE = re.compile(r"```(?:bash)?\n(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`]*(?:coding-done|reviewer-done)[^`]*)`")

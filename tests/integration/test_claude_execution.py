@@ -21,6 +21,8 @@ from uuid import uuid4
 
 from issue_orchestrator.infra.env import ENV_PREFIX
 
+from .conftest import xdist_timeout
+
 ISSUE_4057_PROMPT = """IMPORTANT: This worktree has 54 existing commit(s) from a previous session. Branch: 4057-ui-surface-provider-circuit-breaker-status. Commits:   - 3592261 fix: Improve session log symlink handling in provider_runner
   - 7d3af45 fix: Mark agent-done integration tests as xfail due to provider_runner issue
   - d088aab fix: Mark foreign repo lifecycle tests as xfail due to provider_runner integration issue
@@ -98,7 +100,7 @@ class TestClaudeExecution:
 
     def test_claude_version(self):
         """Verify claude CLI is accessible and responds to --version."""
-        result = _run_claude(["claude", "--version"], timeout=30)
+        result = _run_claude(["claude", "--version"], timeout=xdist_timeout(30))
         assert result.returncode == 0
         assert "claude" in result.stdout.lower() or "Claude" in result.stdout
 
@@ -117,7 +119,7 @@ class TestClaudeExecution:
                 "--print",  # Output response and exit (non-interactive)
                 "What is 2 + 2? Reply with just the number.",
             ],
-            timeout=60,  # Give Claude time to respond
+            timeout=xdist_timeout(60),  # Give Claude time to respond
         )
 
         # Claude should exit successfully
@@ -140,7 +142,7 @@ class TestClaudeExecution:
         # Wrap in zsh -l -c (like TmuxManager.create_session does)
         wrapped_command = f"zsh -l -c '{escaped_command}'"
 
-        result = _run_claude(["bash", "-c", wrapped_command], timeout=60)
+        result = _run_claude(["bash", "-c", wrapped_command], timeout=xdist_timeout(60))
 
         assert result.returncode == 0, f"Command failed: {result.stderr}"
         assert "hello" in result.stdout.lower(), f"Expected 'hello' in output: {result.stdout}"
@@ -166,7 +168,7 @@ class TestClaudeExecution:
                     "--dangerously-skip-permissions",  # Bypass permission prompts
                     f"Read the file at {test_file} and tell me what the title is. Reply with just the title text.",
                 ],
-                timeout=120,
+                timeout=xdist_timeout(120),
             )
 
             assert result.returncode == 0, f"Claude failed: {result.stderr}"
@@ -200,7 +202,7 @@ class TestClaudeExecution:
                     "--dangerously-skip-permissions",
                     f"Read {instruction_file} and confirm you can see 'Agent Instructions' in it. Reply YES or NO.",
                 ],
-                timeout=120,
+                timeout=xdist_timeout(120),
                 cwd=tmpdir,  # Run from the temp directory
             )
 
@@ -240,7 +242,7 @@ class TestClaudeWithEnvironmentIsolation:
                 "--print",
                 "Reply with just the word: working",
             ],
-            timeout=60,
+            timeout=xdist_timeout(60),
             env=clean_env,
         )
 
@@ -275,7 +277,7 @@ class TestClaudeWithEnvironmentIsolation:
             ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=xdist_timeout(60),
             env=clean_env,
         )
 
@@ -312,7 +314,7 @@ class TestShellEscaping:
             ["bash", "-c", wrapped],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=xdist_timeout(5),
         )
 
         assert result.returncode == 0, f"Command failed: {result.stderr}"
@@ -328,7 +330,7 @@ class TestShellEscaping:
             ["bash", "-c", wrapped],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=xdist_timeout(5),
         )
 
         assert result.returncode == 0
@@ -349,7 +351,7 @@ class TestShellEscaping:
             ["bash", "-c", wrapped],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=xdist_timeout(5),
         )
 
         assert result.returncode == 0
@@ -424,7 +426,7 @@ class TestClaudeViaAdapterPath:
             ["bash", "-c", zsh_wrapped],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=xdist_timeout(120),
         )
 
         combined = result.stdout + result.stderr
@@ -545,7 +547,7 @@ class TestClaudeViaAdapterPath:
             ["bash", "-c", zsh_wrapped],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=xdist_timeout(60),
         )
 
         combined = result.stdout + result.stderr
@@ -618,7 +620,7 @@ class TestAgentDoneInvocation:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=xdist_timeout(120),
             cwd=str(worktree),
             env=env,
         )
@@ -672,7 +674,7 @@ class TestAgentDoneInvocation:
                 ["agent-done", "--help"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=xdist_timeout(10),
                 env=env,
             )
 
@@ -732,7 +734,7 @@ class TestAgentDoneInvocation:
             ["bash", "-c", cmd],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=xdist_timeout(10),
             env=env,
             # Start in main_repo to simulate the bug scenario
             cwd=str(main_repo),
@@ -795,7 +797,7 @@ class TestAgentDoneInvocation:
             ["bash", "-c", cmd],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=xdist_timeout(10),
             env=env,
             # cwd is main_repo - this is where the completion command will write
             cwd=str(main_repo),
@@ -834,10 +836,10 @@ def test_ai_gate_production_path_works():
         [
             sys.executable, "-c",
             "from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter; "
-            f"import pathlib; s, m = ClaudeCodeAdapter().test_ai_gate(pathlib.Path('{project_root}'), timeout=120); "
+            f"import pathlib; s, m = ClaudeCodeAdapter().test_ai_gate(pathlib.Path('{project_root}'), timeout=xdist_timeout(120)); "
             "print(f'{s}|{m}')",
         ],
-        capture_output=True, text=True, env=env, timeout=180,
+        capture_output=True, text=True, env=env, timeout=xdist_timeout(180),
     )
     assert result.returncode == 0, f"Gate subprocess failed: {result.stderr}"
     output = result.stdout.strip()

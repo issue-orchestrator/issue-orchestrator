@@ -8,6 +8,22 @@ from typing import Generator
 
 import pytest
 
+
+def xdist_timeout(base_seconds: float) -> float:
+    """Scale a wall-clock timeout so CPU-starved xdist workers have headroom.
+
+    Integration tests that spawn subprocesses or wait for HTTP endpoints can
+    starve for CPU when run alongside 8-16 xdist peers.  Under serial runs the
+    base value is returned unchanged; under xdist the value is tripled so a
+    slow process start does not flake a green test.
+
+    This is a deliberate, conservative multiplier: large enough to absorb
+    realistic scheduling jitter, small enough to keep true hangs visible.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return base_seconds * 3
+    return base_seconds
+
 def _resolve_base_repo_root() -> Path:
     """Resolve the actual base repo root, following worktree references.
 

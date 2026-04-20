@@ -30,6 +30,8 @@ from typing import Generator
 import httpx
 import pytest
 
+from .conftest import xdist_timeout
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,7 +200,7 @@ def cc_client(control_center_port: int) -> Generator[httpx.Client, None, None]:
     """HTTP client for Control Center API."""
     client = httpx.Client(
         base_url=f"http://127.0.0.1:{control_center_port}",
-        timeout=30.0,
+        timeout=xdist_timeout(30.0),
     )
     yield client
     client.close()
@@ -216,6 +218,7 @@ def _find_free_port() -> int:
 
 def _wait_for_port(port: int, timeout: float = 10) -> bool:
     """Wait for a port to become available."""
+    timeout = xdist_timeout(timeout)
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -230,6 +233,7 @@ def _wait_for_port(port: int, timeout: float = 10) -> bool:
 
 def _wait_for_port_free(port: int, timeout: float = 10) -> bool:
     """Wait for a port to become free."""
+    timeout = xdist_timeout(timeout)
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -255,6 +259,7 @@ def _is_process_running(pid: int) -> bool:
 
 def _wait_for_process_dead(pid: int, timeout: float = 10) -> bool:
     """Wait for a process to exit."""
+    timeout = xdist_timeout(timeout)
     start = time.time()
     while time.time() - start < timeout:
         if not _is_process_running(pid):
@@ -270,6 +275,7 @@ def _wait_for_status(
     timeout: float = 10,
 ) -> dict | None:
     """Wait for Control Center to report one of the expected states."""
+    timeout = xdist_timeout(timeout)
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -335,7 +341,7 @@ class TestControlCenterLifecycle:
         # 5. Verify orchestrator API responds
         orch_resp = httpx.get(
             f"http://127.0.0.1:{orchestrator_port}/api/status",
-            timeout=5.0,
+            timeout=xdist_timeout(5.0),
         )
         assert orch_resp.status_code == 200, "Orchestrator API should respond"
         orch_status = orch_resp.json()
@@ -508,7 +514,7 @@ class TestControlCenterLifecycle:
         logger.info("Sending shutdown via orchestrator API")
         orch_resp = httpx.post(
             f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
-            timeout=5.0,
+            timeout=xdist_timeout(5.0),
         )
         assert orch_resp.status_code == 200
 
@@ -592,7 +598,7 @@ class TestControlCenterStatusConsistency:
 
         orch_status = httpx.get(
             f"http://127.0.0.1:{orchestrator_port}/api/status",
-            timeout=5.0,
+            timeout=xdist_timeout(5.0),
         ).json()
 
         # Both should agree on running state
@@ -602,7 +608,7 @@ class TestControlCenterStatusConsistency:
         # Request shutdown
         httpx.post(
             f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
-            timeout=5.0,
+            timeout=xdist_timeout(5.0),
         )
 
         # Wait for shutdown (poll, don't sleep)
