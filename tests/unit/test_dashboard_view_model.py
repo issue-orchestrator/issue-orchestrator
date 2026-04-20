@@ -22,7 +22,11 @@ from issue_orchestrator.view_models.dashboard import (
     _normalize_status_reason,
     build_dashboard_view_model,
 )
-from issue_orchestrator.view_models.dashboard_flow import apply_lane_precedence, exclude_flow_overlaps
+from issue_orchestrator.view_models.dashboard_flow import (
+    apply_lane_precedence,
+    build_awaiting_merge_items,
+    exclude_flow_overlaps,
+)
 from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
@@ -497,6 +501,88 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     assert awaiting_card["github_title"] == "Open PR on GitHub"
     assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
     assert view_model.scope_summary["in_scope_total"] == 1
+
+
+def test_build_awaiting_merge_items_dedupes_union_preferring_pr_link():
+    queue_item = {
+        "issue_number": 280,
+        "title": "Queue card",
+        "status": "queue",
+        "url": "https://github.com/test/repo/issues/280",
+        "issue_url": "https://github.com/test/repo/issues/280",
+        "pr_url": "",
+        "merge_pending": True,
+    }
+    history_item = {
+        "issue_number": 280,
+        "title": "History card",
+        "status": "completed",
+        "url": "https://github.com/test/repo/pull/327",
+        "issue_url": "https://github.com/test/repo/issues/280",
+        "pr_url": "https://github.com/test/repo/pull/327",
+        "merge_pending": True,
+    }
+
+    result = build_awaiting_merge_items(
+        queue_items=[queue_item],
+        blocked_items=[],
+        history_items=[history_item],
+    )
+
+    assert result == [history_item]
+
+
+def test_awaiting_merge_dedupes_queue_and_history_preferring_pr_link():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    pr_url = "https://github.com/test/repo/pull/327"
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[
+            Issue(
+                number=280,
+                title="Click inference",
+                labels=["agent:web", "pr-pending"],
+            ),
+        ],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=280,
+                title="Click inference",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=12,
+                pr_url=pr_url,
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="awaiting-merge",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert [item["issue_number"] for item in view_model.awaiting_merge_items] == [280]
+    assert view_model.awaiting_merge_items[0]["pr_url"] == pr_url
+    assert view_model.awaiting_merge_count == 1
+    assert view_model.queue_count == 0
+    assert view_model.completed_count == 0
+    assert view_model.scope_summary["in_scope_total"] == 1
+
+    awaiting_column = next(
+        col for col in view_model.flow_columns if col["id"] == "awaiting-merge"
+    )
+    assert awaiting_column["count"] == 1
+    assert len(awaiting_column["items"]) == 1
+    awaiting_card = awaiting_column["items"][0]
+    assert awaiting_card["issue_number"] == 280
+    assert awaiting_card["github_url"] == pr_url
+    assert awaiting_card["github_label"] == "PR ↗"
 
 
 def test_completed_history_without_pr_url_does_not_enter_completed_lane():
