@@ -1,0 +1,91 @@
+"""Browser round-trip verifying the Control Center "Back to repositories"
+affordance survives Dashboard → Settings → Dashboard.
+
+The Dashboard decides whether to show #embeddedBack by reading `embedded=1`
+from its URL at load time. The CC loads the iframe with `embedded=1&theme=`
+so that both flags must be propagated forward when the Dashboard navigates
+to /settings and when Settings navigates back. If either hop drops the
+embedded context, the round-trip reload of the Dashboard hides the
+back-to-repositories button and the iframe becomes a dead end.
+
+This test exercises the real shared helper (static/js/embedded_nav.js) in
+a real browser against the real templates so it would fail if the wiring
+ever regressed — the string-level guardrails alone cannot see this.
+"""
+
+from __future__ import annotations
+
+from urllib.parse import parse_qs, urlparse
+
+from playwright.sync_api import Page, expect
+
+
+def _goto(page: Page, base_url: str, path: str) -> None:
+    page.goto(f"{base_url}{path}", wait_until="domcontentloaded")
+
+
+def test_embedded_back_button_survives_settings_round_trip(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    base_url = str(web_server["url"])
+
+    # 1. Dashboard loaded embedded with a theme, like CC does.
+    _goto(page, base_url, "/?embedded=1&theme=dark")
+    embedded_back = page.locator("#embeddedBack")
+    expect(embedded_back).to_be_visible()
+    expect(embedded_back).to_have_attribute("aria-label", "Back to repositories")
+
+    # 2. Open the dashboard actions menu and click Settings. Use a direct
+    #    call to goToSettings() to avoid menu-animation flakiness while still
+    #    exercising the helper that wires the menu click.
+    page.evaluate("goToSettings()")
+    page.wait_for_url("**/settings?**")
+    settings_url = urlparse(page.url)
+    settings_params = parse_qs(settings_url.query)
+    assert settings_params.get("embedded") == ["1"], settings_url.query
+    assert settings_params.get("theme") == ["dark"], settings_url.query
+
+    # 3. Click Cancel to return to the Dashboard the same way a user would.
+    page.locator("#cancelSettingsBtn").click()
+    page.wait_for_url(lambda url: urlparse(url).path == "/" and "embedded=1" in url)
+    dashboard_url = urlparse(page.url)
+    dashboard_params = parse_qs(dashboard_url.query)
+    assert dashboard_params.get("embedded") == ["1"], dashboard_url.query
+    assert dashboard_params.get("theme") == ["dark"], dashboard_url.query
+
+    # 4. And the affordance is back — this is the bug the PR fixes.
+    expect(page.locator("#embeddedBack")).to_be_visible()
+    expect(page.locator("#embeddedBack")).to_have_attribute(
+        "aria-label", "Back to repositories"
+    )
+
+
+def test_back_link_from_settings_also_preserves_embedded_context(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    base_url = str(web_server["url"])
+
+    _goto(page, base_url, "/settings?embedded=1&theme=light")
+
+    # The inline script patches the back-link href on DOMContentLoaded.
+    back_link = page.locator("#backToDashboardLink")
+    expect(back_link).to_have_attribute("href", "/?embedded=1&theme=light")
+
+    back_link.click()
+    page.wait_for_url(lambda url: urlparse(url).path == "/" and "embedded=1" in url)
+    params = parse_qs(urlparse(page.url).query)
+    assert params.get("embedded") == ["1"]
+    assert params.get("theme") == ["light"]
+
+    expect(page.locator("#embeddedBack")).to_be_visible()
+
+
+def test_non_embedded_dashboard_does_not_show_back_affordance(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    # Guardrail on the other direction: loading the Dashboard standalone
+    # (no embedded flag) must NOT show the back-to-repositories button,
+    # so the helper isn't accidentally forcing it on in every context.
+    base_url = str(web_server["url"])
+    _goto(page, base_url, "/")
+    expect(page.locator("#embeddedBack")).to_be_hidden()
