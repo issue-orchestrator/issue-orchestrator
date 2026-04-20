@@ -237,6 +237,47 @@ def test_kanban_completed_column_session_scoped(jinja_env):
     assert menu_btn.get("data-pr-url") == "https://example.test/pr/7"
 
 
+def test_awaiting_merge_template_renders_one_pr_card_when_queue_and_history_overlap(jinja_env):
+    config = make_config()
+    config.agents = {"agent:web": make_agent_config()}
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[
+            Issue(
+                number=280,
+                title="Click inference",
+                labels=["agent:web", "pr-pending"],
+            ),
+        ],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=280,
+                title="Click inference",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=9,
+                pr_url="https://example.test/pr/327",
+            )
+        ],
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    awaiting_merge_col = soup.select_one('[data-column="awaiting-merge"]')
+    assert awaiting_merge_col is not None
+    assert awaiting_merge_col.select_one(".count").text.strip() == "1"
+    cards = awaiting_merge_col.select('.column-cards .issue-card[data-issue="280"]')
+    assert len(cards) == 1
+    pr_link = awaiting_merge_col.select_one(".card-head-actions .card-gh.card-pr-link")
+    assert pr_link is not None
+    assert pr_link.get("href") == "https://example.test/pr/327"
+
+
 def test_status_badge_shows_running(jinja_env):
     config = make_config()
     state = OrchestratorState(startup_status="complete")

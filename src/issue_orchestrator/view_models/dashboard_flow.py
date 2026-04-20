@@ -86,16 +86,23 @@ def exclude_flow_overlaps(
     ]
 
 
+def _issue_number(item: dict[str, Any]) -> int | None:
+    raw = item.get("issue_number")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return None
+
+
 def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
     """Extract numeric issue numbers from card items."""
-    numbers: set[int] = set()
-    for item in items:
-        raw = item.get("issue_number")
-        if isinstance(raw, int):
-            numbers.add(raw)
-        elif isinstance(raw, str) and raw.isdigit():
-            numbers.add(int(raw))
-    return numbers
+    return {
+        issue_number
+        for item in items
+        for issue_number in [_issue_number(item)]
+        if issue_number is not None
+    }
 
 
 def _exclude_issue_numbers(
@@ -105,15 +112,45 @@ def _exclude_issue_numbers(
     """Return items whose issue number is not in excluded_numbers."""
     filtered: list[dict[str, Any]] = []
     for item in items:
-        raw = item.get("issue_number")
-        issue_number: int | None = None
-        if isinstance(raw, int):
-            issue_number = raw
-        elif isinstance(raw, str) and raw.isdigit():
-            issue_number = int(raw)
+        issue_number = _issue_number(item)
         if issue_number is None or issue_number not in excluded_numbers:
             filtered.append(item)
     return filtered
+
+
+def _lane_item_preference(item: dict[str, Any]) -> tuple[bool, bool, bool]:
+    pr_url = bool(item.get("pr_url"))
+    return (
+        pr_url,
+        pr_url and item.get("url") == item.get("pr_url"),
+        item.get("status") == "completed",
+    )
+
+
+def _dedupe_issue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse non-running lane items to one card per issue.
+
+    The queue and history sources can describe the same awaiting-merge issue.
+    Prefer the richer PR-backed item so the visible card opens the PR instead
+    of falling back to the issue link.
+    """
+
+    deduped: list[dict[str, Any]] = []
+    positions: dict[int, int] = {}
+    for item in items:
+        issue_number = _issue_number(item)
+        if issue_number is None:
+            deduped.append(item)
+            continue
+        existing_position = positions.get(issue_number)
+        if existing_position is None:
+            positions[issue_number] = len(deduped)
+            deduped.append(item)
+            continue
+        existing_item = deduped[existing_position]
+        if _lane_item_preference(item) > _lane_item_preference(existing_item):
+            deduped[existing_position] = item
+    return deduped
 
 
 def apply_lane_precedence(
@@ -129,18 +166,26 @@ def apply_lane_precedence(
     running > blocked > awaiting-merge > queued > completed
     """
     active_numbers = _issue_numbers(active_items)
-    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
+    blocked_filtered = _dedupe_issue_items(
+        _exclude_issue_numbers(blocked_items, active_numbers)
+    )
     blocked_numbers = _issue_numbers(blocked_filtered)
 
-    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
+    awaiting_filtered = _dedupe_issue_items(
+        _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
+    )
     awaiting_numbers = _issue_numbers(awaiting_filtered)
 
-    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
+    queue_filtered = _dedupe_issue_items(
+        _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
+    )
     queue_numbers = _issue_numbers(queue_filtered)
 
-    completed_filtered = _exclude_issue_numbers(
-        completed_items,
-        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
+    completed_filtered = _dedupe_issue_items(
+        _exclude_issue_numbers(
+            completed_items,
+            active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
+        )
     )
     return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
 
