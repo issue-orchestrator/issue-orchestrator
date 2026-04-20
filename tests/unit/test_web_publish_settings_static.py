@@ -792,6 +792,22 @@ class TestStaticFilesSecurity:
         assert "javascript" in response.headers.get("content-type", "")
         assert "function renderCompactCards" in response.text
 
+    def test_packaged_brand_logo_served(self):
+        """Brand assets should resolve through package static serving."""
+        client = TestClient(app)
+        response = client.get("/static/brand/logo.svg")
+        assert response.status_code == 200
+        assert "image/svg+xml" in response.headers.get("content-type", "")
+        assert "<svg" in response.text
+
+    def test_favicon_uses_packaged_logo(self):
+        """Legacy favicon route should not depend on repo-root assets."""
+        client = TestClient(app)
+        response = client.get("/favicon.ico")
+        assert response.status_code == 200
+        assert "image/svg+xml" in response.headers.get("content-type", "")
+        assert "<svg" in response.text
+
 
 class TestIssueAuditEndpoint:
     """Tests for explicit issue audit refresh endpoint."""

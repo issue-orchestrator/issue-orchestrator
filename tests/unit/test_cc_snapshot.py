@@ -57,6 +57,19 @@ class TestCreateSnapshot:
         assert frozen.read_text() == "live\n"
         assert not frozen.is_symlink()
 
+    def test_packaged_brand_assets_are_in_src_snapshot(self, repo: Path) -> None:
+        """Runtime UI assets must live under ``src/`` so the frozen CC can serve them."""
+        brand = repo / "src" / "issue_orchestrator" / "static" / "brand"
+        brand.mkdir(parents=True)
+        (brand / "logo.svg").write_text("<svg>logo</svg>\n")
+        (brand / "tray-icon.png").write_bytes(b"png")
+
+        snapshot_dir = create_snapshot(repo)
+
+        frozen_brand = snapshot_dir / "src" / "issue_orchestrator" / "static" / "brand"
+        assert (frozen_brand / "logo.svg").read_text() == "<svg>logo</svg>\n"
+        assert (frozen_brand / "tray-icon.png").read_bytes() == b"png"
+
     def test_fails_fast_when_no_src_tree(self, tmp_path: Path) -> None:
         """Without a ``src/`` tree there is nothing to freeze; caller
         must not silently produce an empty snapshot."""
