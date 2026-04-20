@@ -132,7 +132,7 @@
                     <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem"><span aria-hidden="true">&#x1F504;</span> Refresh from GitHub</button>
                     <button class="settings-menu-item" onclick="openFlowRefreshPrefs()" role="menuitem"><span aria-hidden="true">&#x26A1;</span> Flow refresh preferences</button>
                     <button class="settings-menu-item" onclick="setGitHubUsageHidden(false)" role="menuitem"><span aria-hidden="true">&#x1F4CA;</span> Show GitHub usage</button>
-                    <button class="settings-menu-item" onclick="window.location.href='/settings'" role="menuitem"><span aria-hidden="true">&#x2699;</span> Settings</button>
+                    <button class="settings-menu-item" onclick="goToSettings()" role="menuitem"><span aria-hidden="true">&#x2699;</span> Settings</button>
                 </div>
             </div>
         </nav>
@@ -567,6 +567,7 @@
     <script>
       window.dashboardData = {{ dashboard_data | tojson }};
     </script>
+    <script src="/static/js/embedded_nav.js"></script>
     <script src="/static/js/issue_row_state.js"></script>
     <script src="/static/js/expanded_column_state.js"></script>
     <script src="/static/js/compact_card_state.js"></script>

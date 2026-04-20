@@ -354,7 +354,7 @@
     <div class="container">
         <header>
             <div class="header-left">
-                <a href="/" class="back-link"><span aria-hidden="true">&#8592;</span> Dashboard</a>
+                <a href="/" id="backToDashboardLink" class="back-link"><span aria-hidden="true">&#8592;</span> Dashboard</a>
                 <h1>Settings</h1>
                 <span class="unsaved-indicator" id="unsavedIndicator">Unsaved changes</span>
             </div>
@@ -456,12 +456,13 @@
                 Changes to ports and worktrees require a restart to take effect.
             </div>
             <div class="header-actions">
-                <button class="btn btn-secondary" onclick="window.location.href='/'">Cancel</button>
+                <button class="btn btn-secondary" id="cancelSettingsBtn" onclick="cancelSettings()">Cancel</button>
                 <button class="btn btn-primary" id="saveBtn2" onclick="saveSettings()" disabled>Save Changes</button>
             </div>
         </footer>
     </div>
 
+    <script src="/static/js/embedded_nav.js"></script>
     <script>
         // Schema metadata embedded from server (tab keys and field types)
         const SCHEMA_TABS = {{ tabs_json }};
@@ -472,12 +473,29 @@
         let hasChanges = false;
 
         function applyTheme() {
-            const storedTheme = localStorage.getItem('theme') || 'system';
-            let effectiveTheme = storedTheme;
-            if (storedTheme === 'system') {
-                effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-            }
+            // Delegate to the shared resolver so Settings and Dashboard apply
+            // the same precedence (see static/js/embedded_nav.js). This lets
+            // an embedded Settings page pick up the CC-supplied ?theme= on
+            // direct load instead of falling back to localStorage/system.
+            const effectiveTheme = window.embeddedNav.resolveEffectiveTheme({
+                search: window.location.search,
+                storedTheme: localStorage.getItem('theme'),
+                prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+            });
             document.documentElement.setAttribute('data-theme', effectiveTheme);
+        }
+
+        // Preserve Control Center embedded context (embedded=1 + theme) on
+        // the round-trip back to the Dashboard. The shared embeddedNav helper
+        // owns this rule; see static/js/embedded_nav.js.
+        if (!window.embeddedNav) {
+            throw new Error('embeddedNav helper not loaded');
+        }
+        function dashboardHref() {
+            return window.embeddedNav.buildHref('/', window.location.search);
+        }
+        function cancelSettings() {
+            window.location.href = dashboardHref();
         }
 
         // Initialize on page load
@@ -485,6 +503,8 @@
             applyTheme();
             captureOriginalSettings();
             setupChangeListeners();
+            const backLink = document.getElementById('backToDashboardLink');
+            if (backLink) backLink.setAttribute('href', dashboardHref());
         });
 
         function captureOriginalSettings() {

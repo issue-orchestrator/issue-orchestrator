@@ -64,13 +64,14 @@ if (!uiActionContract) {
 }
 
 function applyDashboardTheme(theme) {
-    // When embedded in CC iframe, honor ?theme= param or postMessage from parent
-    const urlTheme = new URLSearchParams(window.location.search).get('theme');
-    const storedTheme = theme || urlTheme || localStorage.getItem('theme') || 'system';
-    let effectiveTheme = storedTheme;
-    if (storedTheme === 'system') {
-        effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    }
+    // Delegate to the shared resolver so Dashboard and Settings apply the
+    // same precedence (see static/js/embedded_nav.js).
+    const effectiveTheme = window.embeddedNav.resolveEffectiveTheme({
+        override: theme,
+        search: window.location.search,
+        storedTheme: localStorage.getItem('theme'),
+        prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+    });
     document.documentElement.setAttribute('data-theme', effectiveTheme);
 }
 
@@ -80,6 +81,15 @@ function navigateBackToRepositories() {
 
 // When embedded in CC iframe, hide dashboard header and show embedded header in tab bar
 const isEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+
+const embeddedNav = window.embeddedNav;
+if (!embeddedNav) {
+    throw new Error('embeddedNav helper not loaded');
+}
+
+function goToSettings() {
+    window.location.href = embeddedNav.buildHref('/settings', window.location.search);
+}
 if (isEmbedded) {
     document.addEventListener('DOMContentLoaded', () => {
         // Hide standalone header (dashboard owns the header via tab bar now)

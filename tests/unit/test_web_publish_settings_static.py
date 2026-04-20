@@ -571,6 +571,33 @@ class TestSettingsEndpoints:
         assert response.status_code == 200
         assert "Settings" in response.text
 
+    def test_settings_page_propagates_embedded_context_via_shared_helper(self):
+        """Regression: the Settings page must route Cancel/back through the
+        shared embeddedNav helper so the Dashboard round-trip preserves both
+        embedded=1 and theme. The CC iframe is loaded with both params, and
+        because CC and dashboard can live on different ports (different
+        origins), localStorage is not shared — the URL theme is load-bearing.
+        """
+        from issue_orchestrator.entrypoints import web
+
+        web._orchestrator = None
+        client = TestClient(app)
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        html = response.text
+        # Shared helper must be loaded before the inline script.
+        assert '<script src="/static/js/embedded_nav.js"></script>' in html
+        # Back link and Cancel must delegate to the helper.
+        assert 'id="backToDashboardLink"' in html
+        assert 'id="cancelSettingsBtn"' in html
+        assert 'onclick="cancelSettings()"' in html
+        assert "window.embeddedNav.buildHref('/', window.location.search)" in html
+        # Old ad-hoc helpers and literal URLs must be gone.
+        assert "settingsIsEmbedded" not in html
+        assert "'/?embedded=1'" not in html
+        assert "onclick=\"window.location.href='/'\"" not in html
+
     def test_get_settings_filtering_with_milestones(self):
         """GET /api/settings returns milestones as comma-separated string."""
         from issue_orchestrator.entrypoints import web
