@@ -44,4 +44,4 @@ Read these files for context:
 | `IssueTracker` | GitHub issue operations | `GitHubAdapter` (in `adapters/`) |
 | `SessionStore` | Persist session state | `JsonSessionStore` (in `execution/`) |
 
-These are the foundational ports. See `ports/` for the full set (~31 protocols).
+These are the foundational ports. See `ports/` for the full set (~32 protocols).

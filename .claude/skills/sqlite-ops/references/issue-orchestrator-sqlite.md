@@ -49,16 +49,19 @@ Canonical source: `src/issue_orchestrator/infra/sqlite_registry.py`
 ## Connection setup and settings
 
 - JobStore connection setup (`JobStore._get_connection` in `src/issue_orchestrator/control/job_store.py`)
-  - Uses `sqlite3.connect(..., check_same_thread=False, isolation_level=None)`
-  - Applies pragmas via `apply_pragmas` (WAL + FULL + foreign keys)
+  - Uses `open_sqlite(..., check_same_thread=False, isolation_level=None)`
+  - Applies shared pragmas (foreign keys, busy timeout, WAL, FULL)
 
 - E2EDB connection setup (`E2EDB._connect` in `src/issue_orchestrator/infra/e2e_db.py`)
-  - Uses `sqlite3.connect(..., timeout=10.0)`
-  - Applies pragmas via `apply_pragmas` (WAL + FULL + foreign keys)
+  - Uses `open_sqlite(..., timeout=10.0, row_factory=sqlite3.Row)`
+  - Applies shared pragmas (foreign keys, busy timeout, WAL, FULL)
 
 - Subprocess registry connection setup (`_SubprocessRegistry._connect` in `src/issue_orchestrator/execution/terminal_subprocess.py`)
-  - Uses default `sqlite3.connect(self._db_path)`
-  - Applies pragmas via `apply_pragmas` (WAL + FULL + foreign keys)
+  - Uses `open_sqlite(self._db_path)`
+  - Applies shared pragmas (foreign keys, busy timeout, WAL, FULL)
+
+- Other runtime stores (`TimelineStore`, `GoalPilotStore`, `LabelStore`, `ProviderCircuitStore`, `QueueCacheStore`)
+  - Use `open_sqlite()` and inherit the same shared pragmas.
 
 ## Existing corruption handling
 

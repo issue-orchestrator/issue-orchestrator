@@ -67,19 +67,21 @@ Use a hardline merge bar. Do not soften medium-or-higher concerns into an approv
 ## Review Pipeline
 
 ```
-Work Agent creates PR
+Work Agent completes and validation passes
        │
-[Stage 1: Code Review] (per-PR, immediate)
-  Label: needs-code-review → code-reviewed OR needs-rework
+[Review Exchange] (default: via-local-loop)
+  Coder/reviewer alternate locally until approved, max rounds reached, or no-progress limit reached
        │
    ┌───┴───┐
 Approved   Changes Requested
    │            │
-   │       [Rework Loop] (up to max_rework_cycles)
-   │            │
-   │       Back to Code Review
+   │       Back to coder/reviewer exchange
    │
-[Stage 2: Triage Review] (batch, threshold-triggered)
+[Draft-PR Review] (when review.exchange.mode=via-draft-pr)
+  Label: needs-code-review → code-reviewed OR needs-rework
+  Rework loop uses rework-cycle labels up to max_rework_cycles
+       │
+[Triage Review] (batch, threshold-triggered)
   Label: code-reviewed → triage-reviewed
        │
    Manual merge
@@ -97,21 +99,30 @@ Session FAILED/BLOCKED/TIMEOUT
 
 | Method | Purpose |
 |--------|---------|
-| `launch_review_session()` | Launch review agent |
-| `scan_needs_rework_prs()` | Find PRs needing rework |
-| `launch_rework_session()` | Re-launch work agent |
-| `_plan_discovered_failures()` | Queue triage to investigate failures |
+| `control/workflows/review_workflow.py` | Review launch decision policy |
+| `control/workflows/rework_workflow.py` | Rework launch/escalation decision policy |
+| `control/workflows/triage_workflow.py` | Failure/batch triage decision policy |
 | `control/github_workflow.py` | Review/rework discovery and queueing logic |
-| `control/session_launcher.py` | Review and rework session launch paths |
+| `control/session_launcher.py` | Review session launch path and review exchange setup |
+| `control/session_rework_launcher.py` | Rework session launch path |
+| `control/review_exchange_loop.py` | Local coder/reviewer exchange loop |
+| `control/planner.py::_plan_discovered_failures()` | Queue triage to investigate failures |
 | `infra/orchestrator.py` | Runtime facade that delegates to the review workflow helpers |
 
 ## Configuration
 
 ```yaml
 review:
+  enabled: true
   default: "agent:reviewer"
-  code_review_label: "needs-code-review"
-  max_rework_cycles: 2
+  max_rework_cycles: 10
+
+  exchange:
+    mode: "via-local-loop"       # via-local-loop | via-draft-pr | via-mcp | auto
+    loop:
+      max_rounds: 10
+      max_no_progress: 2
+      require_validation: true
 
   # Triage
   triage_review_agent: "agent:triage"

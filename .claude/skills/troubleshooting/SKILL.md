@@ -28,9 +28,12 @@ All session artifacts are centralized in a run directory per session:
 <worktree>/.issue-orchestrator/sessions/
 ├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
 │   ├── manifest.json             # Session metadata
+│   ├── session-identity.json     # Stable issue/PR/role identity
+│   ├── session-prompt.txt        # Rendered prompt sent to the agent
 │   ├── terminal-recording.jsonl  # Terminal output (NDJSON with base64 PTY events)
 │   ├── validation-*.{json,log}   # Validation artifacts
 │   ├── orchestrator-tail.log     # Filtered orch log for this session
+│   ├── review-exchange/          # Local-loop review exchange artifacts, when present
 │   └── claude-session.jsonl      # Symlink to Claude log
 ├── <session_name>                # Symlink to latest run
 ├── latest.json                   # Pointer to most recent run
@@ -101,7 +104,7 @@ cat $RUN_DIR/orchestrator-tail.log | tail -50
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
-| Pre-push hook hangs | Infinite recursion in worktree | Check hook chain, use `GIT_TERMINAL_PROMPT=0` |
+| Pre-push hook hangs | Recursive/corrupt hook chain or credential prompt | Check `pre-push`, `pre-push.project`, and `pre-push.orchestrator`; run `issue-orchestrator doctor`; use `GIT_TERMINAL_PROMPT=0` |
 | Labels not applied | Wrong label_target (issue vs PR) | Check completion_processor logs |
 | Sessions cycling/retry loop | `blocked-failed` label not added | Check `failed_this_cycle` mechanism |
 | Orchestrator won't start | Lock file exists | Check `.issue-orchestrator/locks/` |
@@ -144,20 +147,27 @@ TraceEvent(name, data) --> PluggyEventSink --> on_trace_event hook
 If the pre-push hook hangs in worktrees:
 
 ```bash
+# Run just the dirty-tree guard
+python -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v
+
 # Check if it's a git prompt issue
 GIT_TERMINAL_PROMPT=0 git push
 
 # Check hook chain
 cat .git/hooks/pre-push
+ls -la .git/hooks/pre-push*
 
-# Look for recursive calls
-grep -r "git push" .git/hooks/
+# Look for recursive wrappers or push calls
+grep -r "setup-guardrails: pre-push\\|git push" .git/hooks/
 ```
 
 **Common causes:**
 - Hook calls `git push` which triggers the hook again
 - Hook waits for user input (credential prompt)
+- `pre-push.project` contains the managed wrapper instead of the preserved project hook
 - Hook runs validation that hangs
+
+**Fix:** Run `issue-orchestrator setup-guardrails` in the target repo. If a worktree has stale hooks, let the orchestrator recreate the worktree hooks or remove the worktree-specific hook files and relaunch the session.
 
 ### Stop Hook Issues
 
@@ -244,11 +254,22 @@ rm .issue-orchestrator/locks/*.json
 If state seems wrong:
 
 ```bash
-# View current state
-cat .issue-orchestrator/state/sessions.json | jq
+# Let doctor run SQLite quick checks and backup checks
+issue-orchestrator doctor
+
+# List local state databases
+find .issue-orchestrator/state -maxdepth 1 \( -name "*.sqlite" -o -name "*.db" \) -print
+
+# Check the subprocess session registry
+sqlite3 .issue-orchestrator/state/session_registry.sqlite "PRAGMA quick_check;"
+sqlite3 .issue-orchestrator/state/session_registry.sqlite \
+  "SELECT session_name, issue_number, pid, started_at, is_review FROM sessions;"
 
 # Check for orphaned subprocess sessions
 ps aux | grep -E "claude|issue-orchestrator" | grep -v grep
+
+# Check legacy registry files only when investigating migration issues
+ls -la .issue-orchestrator/state/subprocess_sessions* 2>/dev/null
 ```
 
 ---
@@ -295,8 +316,9 @@ cat $RUN_DIR/manifest.json | jq -r '.claude_log_path'
 
 | File | Purpose |
 |------|---------|
-| `.issue-orchestrator/state/orchestrator.log` | Main orchestrator log |
-| `.issue-orchestrator/state/sessions.json` | Current session state |
+| `.issue-orchestrator/state/logs/orchestrator.log` | Main orchestrator log |
+| `.issue-orchestrator/state/session_registry.sqlite` | Current subprocess session registry |
+| `.issue-orchestrator/state/subprocess_sessions.json` | Legacy subprocess registry, migration fallback only |
 | `.issue-orchestrator/locks/` | Lock files (per instance) |
 | `.issue-orchestrator/config/*.yaml` | Configuration files |
 | `.issue-orchestrator/sessions/latest.json` | Pointer to most recent session run |

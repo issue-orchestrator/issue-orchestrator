@@ -18,9 +18,9 @@ Locate SQLite usage in issue-orchestrator and provide practical, low-maintenance
    - If DB may be open: use `VACUUM INTO` or sqlite3 `.backup` (avoid raw file copy).
    - If DB can be closed: stop app, then copy the DB file (and `-wal`/`-shm` if WAL) or still use `VACUUM INTO` for a clean snapshot.
 4. Suggest durability settings:
-   - WAL mode for concurrency and crash safety.
-   - `PRAGMA synchronous=NORMAL` for performance or `FULL` for max durability.
-   - Periodic checkpoints to avoid WAL bloat.
+   - Repo code should normally use `infra/sqlite_connection.py::open_sqlite()`.
+   - The shared helper applies foreign keys, busy timeout, WAL mode, and `PRAGMA synchronous=FULL`.
+   - Periodic checkpoints may still be needed if WAL files grow unexpectedly.
 5. Corruption response:
    - Run `PRAGMA quick_check` on startup.
    - On failure: move DB to `*.corrupt`, restore latest backup, and surface a clear alert.
@@ -30,8 +30,11 @@ Locate SQLite usage in issue-orchestrator and provide practical, low-maintenance
 
 ## Repo Notes
 
-- JobStore already sets WAL mode on its connection; E2EDB and subprocess registry do not.
-- Subprocess registry includes auto-corruption handling; the others do not.
+- Registered DBs are listed in `src/issue_orchestrator/infra/sqlite_registry.py`.
+- Add new persistent SQLite DBs to `sqlite_registry.py` so doctor checks, startup pragmas, and backups can see them.
+- Startup maintenance applies WAL/FULL pragmas to existing registered DBs and backs them up when `sqlite_backup` is enabled.
+- Most runtime DB owners use `open_sqlite()`; ad hoc `sqlite3.connect()` usage should be intentional and checked.
+- Subprocess registry includes auto-corruption handling; the other DB owners generally surface exceptions and rely on doctor/backup recovery.
 
 ## Resources
 
