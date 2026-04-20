@@ -473,11 +473,15 @@
         let hasChanges = false;
 
         function applyTheme() {
-            const storedTheme = localStorage.getItem('theme') || 'system';
-            let effectiveTheme = storedTheme;
-            if (storedTheme === 'system') {
-                effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-            }
+            // Delegate to the shared resolver so Settings and Dashboard apply
+            // the same precedence (see static/js/embedded_nav.js). This lets
+            // an embedded Settings page pick up the CC-supplied ?theme= on
+            // direct load instead of falling back to localStorage/system.
+            const effectiveTheme = window.embeddedNav.resolveEffectiveTheme({
+                search: window.location.search,
+                storedTheme: localStorage.getItem('theme'),
+                prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+            });
             document.documentElement.setAttribute('data-theme', effectiveTheme);
         }
 

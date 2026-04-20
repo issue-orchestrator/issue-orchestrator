@@ -37,8 +37,26 @@
         return query ? basePath + '?' + query : basePath;
     }
 
+    // Single resolver for the effective theme across Dashboard and Settings.
+    // Precedence: explicit override (postMessage from CC) > ?theme= URL > stored
+    // localStorage preference > 'system'. A 'system' raw value is resolved to
+    // 'dark' or 'light' using the caller-supplied prefersDark flag.
+    //
+    // Kept pure (no DOM / localStorage / matchMedia access) so it can be
+    // verified under Node's test runner alongside buildHref.
+    function resolveEffectiveTheme(opts) {
+        const { override, search, storedTheme, prefersDark } = opts || {};
+        const urlTheme = new URLSearchParams(search || '').get('theme');
+        const raw = override || urlTheme || storedTheme || 'system';
+        if (raw === 'system') {
+            return prefersDark ? 'dark' : 'light';
+        }
+        return raw;
+    }
+
     return {
         EMBEDDED_CONTEXT_PARAMS,
         buildHref,
+        resolveEffectiveTheme,
     };
 });

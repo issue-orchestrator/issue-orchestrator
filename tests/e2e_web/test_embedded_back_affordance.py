@@ -89,3 +89,44 @@ def test_non_embedded_dashboard_does_not_show_back_affordance(
     base_url = str(web_server["url"])
     _goto(page, base_url, "/")
     expect(page.locator("#embeddedBack")).to_be_hidden()
+
+
+def test_settings_applies_url_theme_on_direct_load(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    """Settings must apply ?theme=<value> on load, matching the Dashboard's
+    precedence (url > stored > system). Without this, CC-supplied theme is
+    preserved through navigation but the Settings surface still renders in
+    the user's local theme, leaving a visible inconsistency inside the
+    iframe."""
+    base_url = str(web_server["url"])
+
+    # Ensure localStorage is not pre-populated so the URL is load-bearing.
+    page.goto(base_url, wait_until="domcontentloaded")
+    page.evaluate("localStorage.removeItem('theme')")
+
+    _goto(page, base_url, "/settings?embedded=1&theme=dark")
+    expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+
+    _goto(page, base_url, "/settings?embedded=1&theme=light")
+    expect(page.locator("html")).to_have_attribute("data-theme", "light")
+
+
+def test_settings_theme_survives_round_trip_from_dashboard(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    """Load CC-style iframe URL, go to Settings, and confirm Settings
+    actually renders in the CC-supplied theme — not just that the URL
+    still carries it."""
+    base_url = str(web_server["url"])
+
+    # Clear any prior stored theme so precedence is URL-driven.
+    page.goto(base_url, wait_until="domcontentloaded")
+    page.evaluate("localStorage.removeItem('theme')")
+
+    _goto(page, base_url, "/?embedded=1&theme=dark")
+    expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+
+    page.evaluate("goToSettings()")
+    page.wait_for_url("**/settings?**")
+    expect(page.locator("html")).to_have_attribute("data-theme", "dark")

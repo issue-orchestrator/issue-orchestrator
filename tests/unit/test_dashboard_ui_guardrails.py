@@ -628,6 +628,31 @@ def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     assert "onclick=\"window.location.href='/'\"" not in tmpl
 
 
+def test_theme_resolution_uses_shared_embedded_nav_helper() -> None:
+    # Cross-path rule drift guard: both Dashboard (applyDashboardTheme) and
+    # Settings (applyTheme) must delegate theme resolution to
+    # embeddedNav.resolveEffectiveTheme so the url > stored > system
+    # precedence applies the same way on both surfaces. Previously Settings
+    # ignored ?theme=, which left embedded Settings rendering the user's
+    # local theme instead of the CC-supplied one.
+    js = _read(DASHBOARD_JS)
+    dashboard_body = _function_body(js, "applyDashboardTheme")
+    assert "embeddedNav.resolveEffectiveTheme" in dashboard_body
+    # The inlined ad-hoc precedence must be gone from Dashboard.
+    assert "localStorage.getItem('theme')" in dashboard_body
+    assert "urlTheme" not in dashboard_body
+
+    tmpl = _read(SETTINGS_TEMPLATE)
+    # Rough body extraction — the inline script has `function applyTheme()`.
+    settings_apply_start = tmpl.find("function applyTheme()")
+    assert settings_apply_start != -1, "applyTheme not found in settings.html"
+    settings_apply_end = tmpl.find("\n        }", settings_apply_start)
+    settings_apply = tmpl[settings_apply_start:settings_apply_end]
+    assert "window.embeddedNav.resolveEffectiveTheme" in settings_apply
+    # The old inlined system-only fallback must be gone.
+    assert "storedTheme === 'system'" not in settings_apply
+
+
 def test_embedded_nav_module_behavior_verified_by_node_test_runner() -> None:
     # Behavior-level regression: actually exercise buildHref() under Node so
     # we verify real URL transformations, not just string presence in source.

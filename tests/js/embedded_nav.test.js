@@ -73,3 +73,102 @@ test('buildHref is a pure transformation (no mutation of inputs)', () => {
     embeddedNav.buildHref('/settings', search);
     assert.equal(search, '?embedded=1&theme=dark&tab=e2e');
 });
+
+// resolveEffectiveTheme — shared precedence across Dashboard + Settings.
+
+test('resolveEffectiveTheme prefers explicit override over URL and storage', () => {
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            override: 'light',
+            search: '?theme=dark',
+            storedTheme: 'dark',
+            prefersDark: true,
+        }),
+        'light',
+    );
+});
+
+test('resolveEffectiveTheme prefers URL theme over stored/system', () => {
+    // This is the behavior Settings was missing: CC passes ?theme=dark but
+    // local storage says 'light' → URL must win for embedded consistency.
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '?embedded=1&theme=dark',
+            storedTheme: 'light',
+            prefersDark: false,
+        }),
+        'dark',
+    );
+});
+
+test('resolveEffectiveTheme uses stored theme when URL has no theme', () => {
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '?embedded=1',
+            storedTheme: 'dark',
+            prefersDark: false,
+        }),
+        'dark',
+    );
+});
+
+test('resolveEffectiveTheme resolves "system" to dark when prefersDark', () => {
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '',
+            storedTheme: 'system',
+            prefersDark: true,
+        }),
+        'dark',
+    );
+});
+
+test('resolveEffectiveTheme resolves "system" to light when not prefersDark', () => {
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '',
+            storedTheme: 'system',
+            prefersDark: false,
+        }),
+        'light',
+    );
+});
+
+test('resolveEffectiveTheme falls back to system when nothing is set', () => {
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '',
+            storedTheme: null,
+            prefersDark: true,
+        }),
+        'dark',
+    );
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '',
+            storedTheme: null,
+            prefersDark: false,
+        }),
+        'light',
+    );
+});
+
+test('resolveEffectiveTheme propagates explicit "system" through matchMedia', () => {
+    // An explicit URL theme of 'system' should still honor prefersDark,
+    // not short-circuit back to stored.
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            search: '?theme=system',
+            storedTheme: 'dark',
+            prefersDark: false,
+        }),
+        'light',
+    );
+});
+
+test('resolveEffectiveTheme is robust to missing opts', () => {
+    // No opts at all: treat as fully unspecified → system → depends on prefersDark
+    // (defaults to falsy prefersDark → light).
+    assert.equal(embeddedNav.resolveEffectiveTheme(), 'light');
+    assert.equal(embeddedNav.resolveEffectiveTheme({}), 'light');
+});
