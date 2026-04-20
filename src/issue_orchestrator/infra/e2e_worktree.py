@@ -85,9 +85,38 @@ def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
 
 def _sync_venv(worktree_path: Path) -> None:
     """Ensure the worktree venv is up-to-date (fast when deps unchanged)."""
-    logger.info("Syncing venv in E2E worktree")
+    pyproject = worktree_path / "pyproject.toml"
+
+    if pyproject.exists():
+        logger.info("Syncing project venv in E2E worktree")
+        subprocess.run(
+            ["uv", "sync", "--frozen", "--all-extras"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=True,
+        )
+        return
+
+    logger.info("No pyproject.toml in E2E worktree; preparing minimal pytest venv")
     subprocess.run(
-        ["uv", "sync", "--frozen", "--all-extras"],
+        ["uv", "venv", ".venv"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(worktree_path / ".venv" / "bin" / "python"),
+            "pytest>=8.0",
+        ],
         cwd=worktree_path,
         capture_output=True,
         text=True,

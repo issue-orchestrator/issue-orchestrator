@@ -1,15 +1,18 @@
 """Unit tests for E2E runner manager."""
 
 import json
+import os
 
 import pytest
 import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from issue_orchestrator.infra import e2e_runner
 from issue_orchestrator.infra.e2e_runner import (
     E2ERunnerManager,
     E2EAlreadyRunning,
+    _build_worker_env,
     _resolve_repo_python,
     get_e2e_runner_manager,
     maybe_trigger_e2e,
@@ -23,6 +26,27 @@ def e2e_worktree_path(tmp_path: Path) -> Path:
     wt = tmp_path / "repo-e2e-worktree"
     wt.mkdir()
     return wt
+
+
+def test_build_worker_env_sets_source_root_when_pythonpath_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    env = _build_worker_env()
+
+    source_root = str(Path(e2e_runner.__file__).resolve().parents[2])
+    assert env["PYTHONPATH"] == source_root
+
+
+def test_build_worker_env_prepends_source_root_and_preserves_pythonpath(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = os.pathsep.join(["/tmp/one", "/tmp/two"])
+    monkeypatch.setenv("PYTHONPATH", existing)
+
+    env = _build_worker_env()
+
+    source_root = str(Path(e2e_runner.__file__).resolve().parents[2])
+    assert env["PYTHONPATH"] == os.pathsep.join([source_root, existing])
 
 
 @pytest.fixture(autouse=True)

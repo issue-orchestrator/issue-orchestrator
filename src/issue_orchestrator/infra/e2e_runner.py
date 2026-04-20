@@ -34,6 +34,19 @@ def _resolve_repo_python(repo_root: Path) -> str:
     return sys.executable
 
 
+def _build_worker_env() -> dict[str, str]:
+    """Expose the running orchestrator code to a target repo's E2E venv."""
+    env = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parents[2])
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        source_root
+        if not existing_pythonpath
+        else f"{source_root}{os.pathsep}{existing_pythonpath}"
+    )
+    return env
+
+
 def get_e2e_role(
     e2e_config: "E2EConfig",
     instance_id: str | None = None,
@@ -185,6 +198,7 @@ class E2ERunnerManager:
         proc = subprocess.Popen(
             cmd,
             cwd=worktree_path,
+            env=_build_worker_env(),
             stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -369,6 +383,7 @@ class E2ERunnerManager:
         proc = subprocess.Popen(
             cmd,
             cwd=worktree_path,
+            env=_build_worker_env(),
             stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,

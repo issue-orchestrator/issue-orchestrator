@@ -121,7 +121,7 @@ async function startE2E(forceRestart = false) {
                 body: JSON.stringify({ repo_root: REPO_ROOT, config_name: CONFIG_NAME })
             });
             if (!stopRes.ok) {
-                showToast('Failed to stop running E2E', true);
+                showToast('Failed to stop running E2E', 'error');
                 return;
             }
             // Brief delay to let worker terminate
@@ -164,10 +164,10 @@ async function startE2E(forceRestart = false) {
                 startE2E(true);  // Restart with force flag
             }
         } else {
-            showToast(data.detail || data.error || 'Failed to start E2E', true);
+            showToast(data.detail || data.error || 'Failed to start E2E', 'error');
         }
     } catch (err) {
-        showToast('Failed to start E2E: ' + err.message, true);
+        showToast('Failed to start E2E: ' + err.message, 'error');
     }
 }
 

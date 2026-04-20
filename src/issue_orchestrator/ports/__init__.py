@@ -1,150 +1,122 @@
-"""Port interfaces for the issue orchestrator hexagonal architecture.
+# pyright: reportUnsupportedDunderAll=false
+# Lazy __getattr__ exports are runtime-resolved; pyright cannot see them in __all__.
+"""Port interfaces for the issue orchestrator hexagonal architecture."""
 
-This package contains the protocol definitions (interfaces) that define the
-boundaries between the application core and external adapters. Following the
-ports and adapters (hexagonal architecture) pattern, these protocols allow
-the core business logic to remain independent of external dependencies.
+from importlib import import_module
+from typing import Any
 
-Architecture naming conventions:
-- Components that OBSERVE are named Observers (fact-gathering, non-authoritative)
-- Components that DECIDE are named Controllers (policy, state transitions)
-- Components that ACT are named Adapters (execution, external calls)
+_EXPORTS = {
+    "Issue": (".issue", "Issue"),
+    "IssueTracker": (".issue_tracker", "IssueTracker"),
+    "IssueRepository": (".issue_tracker", "IssueRepository"),
+    "FreshIssueReader": (".fresh_issue_reader", "FreshIssueReader"),
+    "LabelSet": (".label_set", "LabelSet"),
+    "LabelManager": (".label_set", "LabelManager"),
+    "PRInfo": (".pull_request_tracker", "PRInfo"),
+    "PullRequestTracker": (".pull_request_tracker", "PullRequestTracker"),
+    "PRRepository": (".pull_request_tracker", "PRRepository"),
+    "ReviewState": (".pull_request_tracker", "ReviewState"),
+    "SessionStore": (".session_store", "SessionStore"),
+    "WorkingCopy": (".working_copy", "WorkingCopy"),
+    "CommitInfo": (".working_copy", "CommitInfo"),
+    "BranchStatus": (".working_copy", "BranchStatus"),
+    "PushResult": (".working_copy", "PushResult"),
+    "RebaseResult": (".working_copy", "RebaseResult"),
+    "EventSink": (".event_sink", "EventSink"),
+    "TraceEvent": (".event_sink", "TraceEvent"),
+    "NullEventSink": (".event_sink", "NullEventSink"),
+    "InMemoryEventSink": (".event_sink", "InMemoryEventSink"),
+    "make_trace_event": (".event_sink", "make_trace_event"),
+    "make_run_scoped_event": (".event_sink", "make_run_scoped_event"),
+    "SessionRunner": (".session_runner", "SessionRunner"),
+    "NullSessionRunner": (".session_runner", "NullSessionRunner"),
+    "RepositoryHost": (".repository_host", "RepositoryHost"),
+    "IssueResolver": (".issue_resolver", "IssueResolver"),
+    "WorktreeManager": (".worktree_manager", "WorktreeManager"),
+    "WorktreeInfo": (".worktree_manager", "WorktreeInfo"),
+    "WorktreeReuseOptions": (".worktree_manager", "WorktreeReuseOptions"),
+    "CommandRunner": (".command_runner", "CommandRunner"),
+    "CommandResult": (".command_runner", "CommandResult"),
+    "NullCommandRunner": (".command_runner", "NullCommandRunner"),
+    "Git": (".git", "Git"),
+    "GitResult": (".git", "GitResult"),
+    "GitError": (".git", "GitError"),
+    "TerminalObserver": (".terminal_observer", "TerminalObserver"),
+    "NullTerminalObserver": (".terminal_observer", "NullTerminalObserver"),
+    "SessionOutput": (".session_output", "SessionOutput"),
+    "SessionRun": (".session_output", "SessionRun"),
+    "ValidationRecord": (".session_output", "ValidationRecord"),
+    "ValidationState": (".session_output", "ValidationState"),
+    "ManifestDownloader": (".manifest_downloader", "ManifestDownloader"),
+    "NullManifestDownloader": (".manifest_downloader", "NullManifestDownloader"),
+    "GoalPilotStore": (".goal_pilot_store", "GoalPilotStore"),
+    "ProviderCircuitState": (".provider_resilience", "ProviderCircuitState"),
+    "ProviderCircuitStore": (".provider_resilience", "ProviderCircuitStore"),
+    "InMemoryProviderCircuitStore": (".provider_resilience", "InMemoryProviderCircuitStore"),
+    "LabelStore": (".label_store", "LabelStore"),
+    "QueueCacheStore": (".queue_cache_store", "QueueCacheStore"),
+    "TimelineStore": (".timeline_store", "TimelineStore"),
+    "TimelineRecord": (".timeline_store", "TimelineRecord"),
+    "NullTimelineStore": (".timeline_store", "NullTimelineStore"),
+    "TimelineReader": (".timeline_reader", "TimelineReader"),
+    "NullTimelineReader": (".timeline_reader", "NullTimelineReader"),
+    "TimelineWriter": (".timeline_writer", "TimelineWriter"),
+    "NullTimelineWriter": (".timeline_writer", "NullTimelineWriter"),
+    "BackgroundJobRunner": (".background_job", "BackgroundJobRunner"),
+    "CompletedJob": (".background_job", "CompletedJob"),
+    "NullBackgroundJobRunner": (".background_job", "NullBackgroundJobRunner"),
+}
 
-The ports are organized by domain responsibility:
-- IssueRepository: Access to issue data (remote platform)
-- LabelManager: Label management operations (remote platform)
-- PRRepository: Pull request operations (remote platform)
-- WorkingCopy: Local VCS operations (worktree context)
-- SessionStore: Session persistence
-
-Usage:
-    from issue_orchestrator.ports import IssueRepository, LabelManager, WorkingCopy
-
-    def process_issues(repo: IssueRepository, labels: LabelManager):
-        issues = repo.list_issues(state="open")
-        for issue in issues:
-            if not labels.has_label(issue.number, "processed"):
-                # Process issue...
-                labels.add_label(issue.number, "processed")
-"""
-
-from issue_orchestrator.ports.issue import Issue
-from issue_orchestrator.ports.issue_tracker import IssueTracker, IssueRepository
-from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReader
-from issue_orchestrator.ports.label_set import LabelSet, LabelManager
-from issue_orchestrator.ports.pull_request_tracker import PRInfo, PullRequestTracker, PRRepository, ReviewState
-from issue_orchestrator.ports.session_store import SessionStore
-from issue_orchestrator.ports.working_copy import (
-    WorkingCopy,
-    CommitInfo,
-    BranchStatus,
-    PushResult,
-    RebaseResult,
-)
-from issue_orchestrator.ports.event_sink import (
-    EventSink,
-    TraceEvent,
-    NullEventSink,
-    InMemoryEventSink,
-    make_trace_event,
-    make_run_scoped_event,
-)
-from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRunner
-from issue_orchestrator.ports.repository_host import RepositoryHost
-from issue_orchestrator.ports.issue_resolver import IssueResolver
-from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
-from issue_orchestrator.ports.command_runner import CommandRunner, CommandResult, NullCommandRunner
-from issue_orchestrator.ports.git import Git, GitResult, GitError
-from issue_orchestrator.ports.terminal_observer import TerminalObserver, NullTerminalObserver
-from issue_orchestrator.ports.session_output import (
-    SessionOutput,
-    SessionRun,
-    ValidationRecord,
-    ValidationState,
-)
-from issue_orchestrator.ports.manifest_downloader import ManifestDownloader, NullManifestDownloader
-from issue_orchestrator.ports.goal_pilot_store import GoalPilotStore
-from issue_orchestrator.ports.provider_resilience import (
-    ProviderCircuitState,
-    ProviderCircuitStore,
-    InMemoryProviderCircuitStore,
-)
-from issue_orchestrator.ports.label_store import LabelStore
-from issue_orchestrator.ports.queue_cache_store import QueueCacheStore
-from issue_orchestrator.ports.timeline_store import TimelineStore, TimelineRecord, NullTimelineStore
-from issue_orchestrator.ports.timeline_reader import TimelineReader, NullTimelineReader
-from issue_orchestrator.ports.timeline_writer import TimelineWriter, NullTimelineWriter
-from issue_orchestrator.ports.background_job import (
-    BackgroundJobRunner,
-    CompletedJob,
-    NullBackgroundJobRunner,
-)
-
-__all__ = [
-    # Issue Protocol (abstract work item)
+__all__ = (
     "Issue",
-    # Remote platform operations (new names)
     "IssueTracker",
+    "IssueRepository",
     "FreshIssueReader",
     "LabelSet",
+    "LabelManager",
     "PRInfo",
     "PullRequestTracker",
-    "ReviewState",
-    # Combined interface
-    "RepositoryHost",
-    # Identity resolution
-    "IssueResolver",
-    # Backwards compatibility aliases
-    "IssueRepository",
-    "LabelManager",
     "PRRepository",
-    # Local VCS operations
+    "ReviewState",
+    "SessionStore",
     "WorkingCopy",
     "CommitInfo",
     "BranchStatus",
     "PushResult",
     "RebaseResult",
-    # Persistence
-    "SessionStore",
-    # Event emission (core -> external)
     "EventSink",
     "TraceEvent",
     "NullEventSink",
     "InMemoryEventSink",
     "make_trace_event",
     "make_run_scoped_event",
-    # Terminal session management
     "SessionRunner",
     "NullSessionRunner",
-    # Worktree lifecycle management
+    "RepositoryHost",
+    "IssueResolver",
     "WorktreeManager",
     "WorktreeInfo",
     "WorktreeReuseOptions",
-    # Command execution
     "CommandRunner",
     "CommandResult",
     "NullCommandRunner",
     "Git",
     "GitResult",
     "GitError",
-    # Terminal process observation
     "TerminalObserver",
     "NullTerminalObserver",
-    # Session output storage
     "SessionOutput",
     "SessionRun",
     "ValidationRecord",
     "ValidationState",
-    # Manifest downloading
     "ManifestDownloader",
     "NullManifestDownloader",
-    # Goal pilot store
     "GoalPilotStore",
-    # Provider resilience
     "ProviderCircuitState",
     "ProviderCircuitStore",
     "InMemoryProviderCircuitStore",
-    # Timeline store
+    "LabelStore",
+    "QueueCacheStore",
     "TimelineStore",
     "TimelineRecord",
     "NullTimelineStore",
@@ -152,11 +124,22 @@ __all__ = [
     "NullTimelineReader",
     "TimelineWriter",
     "NullTimelineWriter",
-    # Label/cache persistence
-    "LabelStore",
-    "QueueCacheStore",
-    # Background job execution
     "BackgroundJobRunner",
     "CompletedJob",
     "NullBackgroundJobRunner",
-]
+)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    value = getattr(import_module(module_name, __name__), attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *__all__])

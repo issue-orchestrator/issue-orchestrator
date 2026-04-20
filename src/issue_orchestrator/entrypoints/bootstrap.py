@@ -24,17 +24,13 @@ from uuid import uuid4
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
-from ..ports import (
-    EventSink,
-    SessionRunner,
-    NullEventSink,
-    NullSessionRunner,
-    IssueTracker,
-    InMemoryProviderCircuitStore,
-    NullTimelineReader,
-    NullTimelineStore,
-    NullTimelineWriter,
-)
+from ..ports.event_sink import EventSink, NullEventSink
+from ..ports.issue_tracker import IssueTracker
+from ..ports.provider_resilience import InMemoryProviderCircuitStore
+from ..ports.session_runner import SessionRunner, NullSessionRunner
+from ..ports.timeline_reader import NullTimelineReader
+from ..ports.timeline_store import NullTimelineStore
+from ..ports.timeline_writer import NullTimelineWriter
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..control.provider_resilience import ProviderResilienceManager
 from ..execution import (
