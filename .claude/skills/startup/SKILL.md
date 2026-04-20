@@ -84,9 +84,9 @@ export.
 class LaunchResult:
     doctor: DoctorResult       # All check results
     launched: bool             # Whether subprocess was started
-    status: str                # "ok" | "doctor_error" | "doctor_warning" | "launch_error"
+    status: str                # "ok" | "doctor_error" | "doctor_warning" | "already_running" | "launch_error"
     error: str | None          # Error message if launch_error
-    supervisor: dict | None    # Supervisor info (pid, port) when launched
+    supervisor: dict | None    # Supervisor info (pid, port, instance_id or instances) when available
 ```
 
 ---
@@ -107,20 +107,26 @@ a 2-tier system: Installation and Verification.
 | Template Variables | `checks/config.py` | Valid template vars |
 | Repository | `checks/config.py` | Repo set or auto-detected |
 | Worktree Remediation | `checks/config.py` | Remediation settings |
-| Hook Installation | `checks/hooks.py` | Hooks files present |
-| Hook Verification | `checks/hooks.py` | Hooks actually work |
+| Milestones | `checks/milestones.py` | Configured milestone order exists |
+| Hook Installation | `checks/hooks.py` | AI hook files present for configured agents |
+| Hook Verification | `checks/hooks.py` | AI hooks/execpolicy actually block dangerous commands |
+| AI Gate | `checks/hooks.py` | Periodic live agent hook gate when due |
+| Repo Guardrails | `checks/hooks.py` | Repo-local pre-push guardrails from `setup-guardrails` |
+| Worktree Hook Corruption | `checks/hooks.py` | Managed wrapper recursion/corruption detection |
 | Workspace | `checks/workspace.py` | Working dir, agents |
+| Settings Schema | `checks/schema.py` | Schema-driven path and agent reference checks |
 | Guardrails | `checks/guardrails.py` | Safety checks pass |
 | Code Review | `checks/review.py` | Review config valid |
 | E2E Runner | `checks/e2e.py` | E2E config valid |
+| Clock Sync | `checks/clock_sync.py` | Clock drift dangerous to claim coordination |
 
-### 2-Tier Hook Verification
+### Hook Verification
 
 1. **Installation**: Are hook files present? (`is_installed()`)
 2. **Verification**: Do hooks actually block dangerous commands? (`verify_hooks()`)
+3. **AI Gate**: When due, spawn supported agent CLIs to prove the end-to-end hook gate works.
 
-The verification tier is only run if installation passes. This avoids
-running expensive verification when hooks aren't even installed.
+Verification only runs when installation succeeds. The AI gate respects `hooks.ai_gate.interval_days` and `hooks.ai_gate.dangerous_allow_failure`.
 
 ---
 
@@ -145,6 +151,8 @@ await orchestrator.run_loop()
 launch_result = launch_subprocess(repo_root, config, config_name)
 if launch_result.status == "doctor_error":
     return JSONResponse({"error": "doctor_failed", ...}, status_code=422)
+if launch_result.status == "already_running":
+    return JSONResponse({"error": "already_running", ...}, status_code=409)
 if not launch_result.launched:
     return JSONResponse({"error": "launch_failed", ...}, status_code=500)
 return JSONResponse({"status": "started", **launch_result.supervisor})
@@ -203,7 +211,8 @@ After the orchestrator process starts (either in-process or via supervisor),
 | Symptom | Check | Fix |
 |---------|-------|-----|
 | "Startup checks failed" | Doctor error | Run `issue-orchestrator doctor` |
-| "Hooks not installed" | Hook Installation check | Run `issue-orchestrator setup-hooks` |
+| "Hooks not installed" | AI hook installation check | Run `issue-orchestrator setup-hooks` |
+| "Repo guardrails not installed" | Repo Guardrails check | Run `issue-orchestrator setup-guardrails` |
 | "Hook verification failed" | Hook Verification check | Run `issue-orchestrator verify` |
 | "Config not found" | Config File check | Create `.issue-orchestrator/config/default.yaml` |
 | "Repository not configured" | Repository check | Set `repo.name` in config or run from git repo |

@@ -48,7 +48,7 @@ Use this skill when you change any schema-backed payloads (UI view models, SSE p
    ```bash
    python -c "from issue_orchestrator.infra.settings_schema import generate_config_reference; print(generate_config_reference())" > /tmp/config_reference.md
    ```
-3. Replace the auto-generated section in `docs/user/configuration_reference.md` with the new content.
+3. Replace only the content between the `AUTO-GENERATED CONFIG REFERENCE` markers in `docs/user/configuration_reference.md`.
 
 **Drift test:**
 - `tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale`
@@ -71,4 +71,3 @@ Use this skill when you change any schema-backed payloads (UI view models, SSE p
 - Always update the **source of truth** first, then regenerate derived artifacts.
 - Do not hand-edit files under `contracts/public/`.
 - Keep schema changes in sync with any UI or test expectations.
-

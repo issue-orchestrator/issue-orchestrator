@@ -58,20 +58,29 @@ gh run view <RUN_ID> --log-failed 2>&1 | grep -A 20 "short test summary"
 
 ## Step 3: Identify the Failure Domain
 
-The `validate` workflow runs `make validate` which executes these in parallel:
+The `validate` workflow path-filters Python-impacting changes, then runs two jobs:
+
+| CI Job | Command | What It Covers |
+|--------|---------|----------------|
+| `validate-fast` | `make validate` | Typecheck, architecture lint, complexity lint, unit tests, simulated core, integration core, web tests, then VS Code tests sequentially |
+| `validate-agent` | `make test-simulated-agent` and `make test-integration-agent` | Agent-backed simulated and integration slices that require real agent CLIs |
+
+Local PR guardrails use `make validate-pr`, which combines both target sets through `validate-pr-raw`.
 
 | Target | What It Runs | Test Type |
 |--------|-------------|-----------|
 | `typecheck` | pyright | Static analysis |
 | `lint-arch` | import-linter + AST guardrails | Architecture enforcement |
 | `lint-complexity` | C901/PLR0912 checks | Complexity limits |
-| `test-unit` | `pytest tests/unit/` | Unit tests (~1100+) |
-| `test-simulated` | `pytest tests/simulated_scenarios/` | Simulated scenario tests |
-| `test-integration` | `pytest tests/integration/` | Integration tests |
+| `test-unit` | `pytest tests/unit packages/agent_runner/tests` | Unit tests |
+| `test-simulated-core` | `pytest tests/simulated_scenarios/` excluding agent-backed foreign repo cases | Simulated scenario core tests |
+| `test-simulated-agent` | `$(SIMULATED_AGENT_FILES)` | Agent-backed simulated scenarios |
+| `test-integration-core` | `pytest tests/integration -m "not requires_infra"` excluding agent execution files | Integration tests without external infra |
+| `test-integration-agent` | `$(INTEGRATION_AGENT_FILES)` | Agent-backed integration tests |
 | `test-web` | `pytest tests/web/` | Web UI tests |
-| `test-vscode` | VS Code extension tests | VS Code integration (sequential) |
+| `test-vscode` | VS Code extension tests | VS Code integration, run sequentially after parallel validation |
 
-**Note:** True E2E tests (`tests/e2e/`) only run via `make validate-full` and are NOT part of standard CI. They require GitHub tokens and live API access.
+**Note:** True E2E tests (`tests/e2e/`) only run via `make validate-full` and are NOT part of the standard `validate` workflow. They require GitHub tokens and live API access.
 
 ---
 
@@ -142,9 +151,13 @@ grep -A 5 "python_bin_dir\|sys.executable" tests/simulated_scenarios/conftest.py
 
 ```bash
 # Run locally to reproduce
-pytest tests/unit/ -v -x        # Stop at first failure
-pytest tests/integration/ -v -x
-pytest tests/web/ -v -x
+make test-unit
+make test-integration-core
+make test-web
+
+# Agent-backed slices from the validate-agent CI job
+make test-simulated-agent
+make test-integration-agent
 
 # Run specific failing test
 pytest tests/unit/test_foo.py::test_bar -v
@@ -166,11 +179,22 @@ make lint-complexity  # C901/PLR0912 checks
 ## Step 5: Reproduce Locally
 
 ```bash
-# Full validation (same as CI)
+# Fast validation job
 make validate
 
-# Just simulated scenarios
-make test-simulated
+# Full PR validation gate, matching standard pre-push coverage
+make validate-pr
+
+# Simulated scenario slices
+make test-simulated-core
+make test-simulated-agent
+
+# Integration slices
+make test-integration-core
+make test-integration-agent
+
+# Full validation, including live E2E
+make validate-full
 
 # Specific simulated test
 pytest tests/simulated_scenarios/test_simulated_scenarios.py::test_name -v
@@ -217,7 +241,7 @@ git log --oneline --since="<failure-date>" -- <failing-file>
 | File | Purpose |
 |------|---------|
 | `.github/workflows/validate.yml` | CI workflow definition |
-| `Makefile` (`validate`, `_validate-impl`) | What CI runs |
+| `Makefile` (`validate`, `validate-pr`, `validate-full`, `_validate-impl`, `_validate-pr-impl`) | Local and CI validation target graph |
 | `tests/simulated_scenarios/conftest.py` | Simulated test infrastructure |
 | `tests/simulated_scenarios/scenario_dsl.py` | Test DSL framework |
 | `tests/simulated_scenarios/fixtures/scripts/` | Agent simulation bash scripts |

@@ -9,6 +9,7 @@ description: Manage the UI OpenAPI contract (view-model + dialog HTTP endpoints)
 
 Use this skill when:
 - You add or change UI HTTP endpoints under `/api/view-model`, `/api/issue-rows`, or `/api/dialog/*`.
+- You add or change UI HTTP endpoints under `/api/view-model-snapshot` or `/api/issue-detail/*`.
 - You add or change any UI payload fields consumed by the web UI.
 - You need to regenerate or validate OpenAPI contract artifacts.
 
@@ -23,8 +24,8 @@ Use this skill when:
 
 1. Edit the schema first: `docs/api/ui-openapi.json`.
 2. Regenerate artifacts:
-   - `./scripts/generate_ui_contracts.py`
-3. Ensure `response_model` uses generated models in `src/issue_orchestrator/entrypoints/web.py`.
+   - `python scripts/generate_ui_contracts.py`
+3. Ensure `response_model` uses generated models in the route module that owns the endpoint (for example `web_read_model_routes.py`, `web_diagnostics_routes.py`, or `web_issue_detail_routes.py`).
 4. Run tests that enforce guardrails:
    - `tests/unit/test_ui_openapi_generated.py`
    - `tests/unit/test_ui_openapi_payloads.py`

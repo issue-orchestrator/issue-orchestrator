@@ -1,4 +1,4 @@
 interface:
   display_name: "UI OpenAPI"
   short_description: "Help with UI OpenAPI contract workflows"
-  default_prompt: "Use the UI OpenAPI skill to keep view-model HTTP contracts in sync."
+  default_prompt: "Use $ui-openapi to keep view-model HTTP contracts in sync."

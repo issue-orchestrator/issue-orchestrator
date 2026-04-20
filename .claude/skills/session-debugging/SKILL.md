@@ -34,9 +34,12 @@ All session artifacts are now centralized in a single run directory per session:
 │   ├── retry-prompt.md           # Prompt for retry session
 │   ├── failure-diagnostic-*.json # Failure diagnostics
 │   ├── worktree.json             # Worktree metadata
+│   ├── session-identity.json     # Stable identity for this run
+│   ├── session-prompt.txt        # Prompt used for the session
 │   ├── orchestrator-tail.log     # Filtered orchestrator log for this session
 │   ├── claude-session.path       # Path to Claude log
-│   └── claude-session.jsonl      # Symlink to Claude session log
+│   ├── claude-session.jsonl      # Symlink to Claude session log
+│   └── review-exchange/          # Local-loop round logs and transcript when used
 ├── <session_name>                # Symlink to latest run for this session
 ├── latest.json                   # Pointer to most recent run
 └── index.json                    # List of all runs
@@ -109,6 +112,9 @@ ls -la $RUN_DIR
 
 # View the manifest for session metadata
 cat $RUN_DIR/manifest.json | jq
+
+# Get the exact completion record path, if the agent wrote one
+cat $RUN_DIR/manifest.json | jq -r '.completion_path // .completion_record_path // empty'
 ```
 
 ### Check Claude Session Logs
@@ -259,8 +265,9 @@ The agent successfully called `coding-done blocked`.
 # View manifest for outcome and reason
 cat $RUN_DIR/manifest.json | jq '{outcome, blocked_reason}'
 
-# Check completion file (still in worktree root for now)
-cat $WORKTREE/.issue-orchestrator/completion*.json | jq '.blocked_reason'
+# Check completion file recorded in the manifest
+COMPLETION=$(cat $RUN_DIR/manifest.json | jq -r '.completion_path // .completion_record_path // empty')
+test -n "$COMPLETION" && cat "$WORKTREE/$COMPLETION" | jq '.blocked_reason'
 ```
 
 **This is expected behavior** - the agent determined it couldn't proceed and reported properly. Review the blocked reason to understand why.
@@ -280,8 +287,11 @@ cat $WORKTREE/.issue-orchestrator/completion*.json | jq '.blocked_reason'
 | `validation-stderr.log` | Raw stderr from validation command |
 | `validation-errors.txt` | Human-readable error summary |
 | `validation-state.json` | Retry flow state (retry_count, max_retries) |
+| `session-prompt.txt` | Prompt used to launch the session |
+| `session-identity.json` | Run/session identity metadata |
 | `orchestrator-tail.log` | Filtered orchestrator log for this session |
 | `claude-session.jsonl` | Symlink to Claude session log |
+| `review-exchange/` | Local review loop round recordings and transcript |
 | `failure-diagnostic-*.json` | Detailed failure analysis |
 
 ### Key Commands

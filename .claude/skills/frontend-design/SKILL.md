@@ -109,7 +109,7 @@ Hidden by default (toggle reveals):
 ## Key Files
 
 - `src/issue_orchestrator/templates/control_center.html` - Main UI
-- `src/issue_orchestrator/templates/static/` - Static assets (if any)
+- `src/issue_orchestrator/static/` - Static CSS, JS, and vendor assets
 
 ## Checklist for UI Changes
 

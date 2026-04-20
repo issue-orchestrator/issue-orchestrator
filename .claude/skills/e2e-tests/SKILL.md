@@ -23,10 +23,18 @@ E2E settings are defined in `src/issue_orchestrator/infra/settings_schema.py` (`
 # .issue-orchestrator/config/*.yaml
 e2e:
   enabled: true
+  role: "auto"                     # auto | executor | reader | disabled
   auto_run_interval_minutes: 30    # 0 = manual only
   pytest_args: ["tests/e2e", "-v"]
   allow_retry_once: true           # Retry failing tests once
   quarantine_file: "tests/e2e/quarantine.txt"
+  stop_on_first_failure: false     # Add -x when true
+  auto_quarantine: true            # Auto-add failing tests to quarantine list
+  auto_create_issues: true         # Create GitHub issues for failures
+  issue_agent_label: "agent:backend"
+  flake_threshold: 20              # Flip-rate percent for flaky classification
+  flake_window_runs: 10
+  run_retention_count: 50
   survive_restart: true            # Let worker continue if orchestrator restarts
 ```
 
@@ -37,7 +45,8 @@ e2e:
 | `infra/e2e_db.py` | SQLite persistence for runs and results |
 | `infra/e2e_runner.py` | Worker manager, auto-trigger logic |
 | `entrypoints/e2e_worker.py` | Pytest subprocess with result plugin |
-| `entrypoints/control_api.py` | API endpoints at `/control/e2e/*` |
+| `entrypoints/control_api_e2e_runs.py` | Run/status/log/quarantine endpoints at `/control/e2e/*` |
+| `entrypoints/control_api_e2e_triage.py` | E2E failure triage endpoints |
 
 ## Database Schema
 
@@ -49,6 +58,10 @@ e2e_runs: id, status, started_at, finished_at, total_tests, current_test, worker
 
 -- Per-test results
 e2e_test_results: run_id, nodeid, outcome, duration_seconds, longrepr, retry_outcome, is_quarantined
+
+-- Failure issue tracking and stability
+e2e_failure_issues: nodeid, issue_number, issue_url, status, resolved_at
+e2e_flake_history: nodeid, run_id, outcome, retry_outcome
 ```
 
 ## Progress Tracking
@@ -101,6 +114,14 @@ curl "http://localhost:8080/control/e2e/runs?repo_root=$(pwd)" | jq
 
 # Get run details with test results
 curl "http://localhost:8080/control/e2e/run/1?repo_root=$(pwd)" | jq
+
+# Get run timeline/logs/failed tests
+curl "http://localhost:8080/control/e2e/run/1/timeline?repo_root=$(pwd)" | jq
+curl "http://localhost:8080/control/e2e/logs/1?repo_root=$(pwd)"
+curl "http://localhost:8080/control/e2e/failed/1?repo_root=$(pwd)" | jq
+
+# View or update quarantine list
+curl "http://localhost:8080/control/e2e/quarantine?repo_root=$(pwd)" | jq
 ```
 
 ## Debugging E2E Failures
@@ -169,19 +190,22 @@ Quarantined tests still run but:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | E2E not auto-triggering | `auto_run_interval_minutes: 0` | Set to positive value |
+| E2E not auto-triggering on this machine | role resolved to `reader` or `disabled` | Set `e2e.role: executor` on the runner |
 | Worker exits immediately | Invalid pytest args | Check `pytest_args` path exists |
 | "AlreadyRunning" error | Previous worker still running | Stop via API or kill process |
 | No progress shown | Old schema without `total_tests` | Delete e2e.db, will recreate |
 | Tests not resuming | Monolithic test structure | Split into discrete test functions |
+| Quarantine not working | Wrong `quarantine_file` path | Check path relative to repo root |
 
 ## Auto-Trigger Logic
 
 E2E auto-triggers when ALL conditions met:
 1. `e2e.enabled: true`
 2. `auto_run_interval_minutes > 0`
-3. At least one agent session completed since last check
-4. No E2E currently running
-5. Enough time passed since last E2E run
+3. The resolved E2E role is `executor`
+4. Enough time passed since last E2E run
+5. Main branch HEAD changed since the last tested commit
+6. No E2E currently running
 
 Check auto-trigger in logs:
 ```bash

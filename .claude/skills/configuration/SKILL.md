@@ -1,6 +1,6 @@
 ---
 name: configuration
-description: Add or modify YAML configuration options. Use when working on infra/config.py, infra/settings_schema.py, config.example.yaml, docs/user/configuration.md, docs/user/e2e.md, test_config.py, or setup_wizard.py. Ensures all config-related files stay in sync.
+description: Add or modify YAML configuration options. Use when working on infra/config.py, infra/settings_schema.py, examples/config.example.yaml, docs/user/configuration_reference.md, docs/user/e2e.md, test_config.py, or setup_wizard.py. Ensures all config-related files stay in sync.
 ---
 
 # Configuration Options
@@ -32,7 +32,7 @@ The schema drives everything else automatically:
 - **setup_wizard.py** — `get_setup_fields()` reads `setup` annotations from schema
 - **doctor checks** — `run_schema_checks()` reads `doctor_check` annotations from schema
 - **status summaries** — `format_summary()` reads `summary` annotations from schema
-- **docs/user/configuration.md** — regenerate via `generate_config_reference()`
+- **docs/user/configuration_reference.md** — regenerate via `generate_config_reference()`
 
 **Also update (when relevant):**
 
@@ -144,8 +144,10 @@ Add these to include the field in doctor status summaries:
 |-----|---------|---------|
 | `section` | UI tab section grouping | `"Session Limits"` |
 | `restart_required` | Needs server restart on change | `True` |
-| `ui_transform` | List<->string transform | `"comma_separated_list"`, `"space_separated_list"` |
+| `ui_transform` | List<->string transform | `"comma_separated_list"`, `"space_separated_list"`, `"newline_separated_list"` |
 | `config_read_method` | Use method instead of attr | `"filtering.get_milestones"` |
+| `doc_examples` | Generated reference examples | `["0", "30", "60"]` |
+| `doc_notes` | Generated reference note | `"Set to 0 to disable automatic runs."` |
 
 ## What NOT to Edit Directly
 
@@ -155,6 +157,7 @@ These are schema-driven — update the schema instead of editing them manually:
 - **Wizard simple-field prompts** — add `setup` annotation to schema field
 - **Doctor status summaries** — add `summary` annotation to schema field
 - **`ALLOWED_TOP_LEVEL_FIELDS`** in config.py — derived from `_TOP_LEVEL_SECTION_KEYS`
+- **Generated config reference body** — replace only the section between the `AUTO-GENERATED CONFIG REFERENCE` markers in `docs/user/configuration_reference.md`
 
 CI validation (`make validate`) enforces these rules automatically.
 
