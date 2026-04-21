@@ -31,7 +31,7 @@ from threading import Thread
 
 import pytest
 import uvicorn
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
 import issue_orchestrator.entrypoints.web as web_module
@@ -338,6 +338,14 @@ _TEST_INFLIGHT_NODEID = (
 )
 
 
+def _expect_visible_text(locator: Locator, description: str) -> str:
+    """Assert a rendered browser element is visible and carries non-empty text."""
+    expect(locator).to_be_visible(timeout=5000)
+    text = locator.text_content() or ""
+    assert text.strip(), f"{description} should render visible non-empty text"
+    return text
+
+
 def test_run_drawer_timeline_renders_clickable_issue_links(
     page: Page, fixture_web_server: dict[str, object]
 ) -> None:
@@ -435,6 +443,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(test_4057_event.locator(".timeline-summary").first).to_contain_text(
         _TEST_4057_NODEID,
     )
+    _expect_visible_text(
+        test_4057_event.locator(".timeline-time").first,
+        "E2E test timeline row timestamp",
+    )
 
     # Every rendered event row must expose an obvious overflow affordance
     # for details/actions. This catches the regression where the hint
@@ -531,6 +543,18 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     journey = page.locator("#issueDetailJourney")
     expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
     expect(journey.locator(".journey-cycle").first).to_be_visible(timeout=5000)
+    _expect_visible_text(
+        journey.locator(".journey-run > .journey-cycle-header .journey-cycle-time").first,
+        "issue-detail run timestamp",
+    )
+    _expect_visible_text(
+        journey.locator(".journey-cycle > .journey-cycle-header .journey-cycle-time").first,
+        "issue-detail cycle timestamp",
+    )
+    _expect_visible_text(
+        journey.locator(".journey-step .journey-time").first,
+        "issue-detail step timestamp",
+    )
     expect(journey).to_contain_text("Agent finished coding")
     expect(journey).to_contain_text("Review approved")
     expect(journey.locator(".timeline-empty")).to_have_count(0)
