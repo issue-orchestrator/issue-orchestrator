@@ -4,8 +4,9 @@ This is the highest-fidelity check we have that the dashboard's E2E
 timeline actually renders clickable issue links: it stages a captured
 real-data fixture into a tmp_path, points a real uvicorn server at it,
 loads the dashboard in Playwright, opens the run drawer, switches to
-the Timeline tab, and asserts that the rendered HTML contains issue
-link anchors that resolve to the dashboard issue detail drawer.
+the Timeline tab through a real UI affordance, and asserts that the
+rendered HTML contains issue controls that resolve to the dashboard
+issue detail drawer.
 
 It catches a class of bug the JSON-only integration test cannot:
 - frontend regressions in ``renderTimeline`` that drop ``issue_numbers``
@@ -68,6 +69,12 @@ worktrees:
 agents:
   "agent:test":
     prompt: "test.md"
+
+e2e:
+  enabled: true
+  role: "reader"
+  auto_run_interval_minutes: 0
+  pytest_args: ["tests/e2e"]
 """
 
 # Recognizable text written into the synthetic terminal recording so the
@@ -204,6 +211,15 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     shutil.copy(fixture / "base_timeline.sqlite", state_dir / "timeline.sqlite")
     shutil.copy(fixture / "worktree_timeline.sqlite", wt_state / "timeline.sqlite")
     (config_dir / "default.yaml").write_text(_MINIMAL_CONFIG_YAML)
+
+    import sqlite3
+
+    with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as conn:
+        conn.execute(
+            "UPDATE e2e_runs SET orchestrator_id = ? WHERE id = ?",
+            (repo_root.name, RUN_FIXTURE_ID),
+        )
+        conn.commit()
 
     # Materialize a real session run_dir and wire the target issue's
     # agent.coding_started event to point at it. The run_dir must
@@ -342,17 +358,14 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     3. A neighboring row (``test_inflight_refresh_discovers_issue``)
        carries ONLY issue 5723 — a negative assertion that prevents
        false positives from cross-row contamination.
-    4. Clicking the ``inflight-discovery (5723)`` link causes the
-       issue-detail drawer to render journey content
-       (``.journey-run``) — not just an optimistic title that shows
-       before the fetch completes. We also assert the status line is
-       no longer "Loading..." or "unavailable", and no
-       ``.timeline-empty`` placeholder is present.
-
-    Action-button assertions are intentionally out of scope: the staged
-    fixture uses sanitized run_dir paths that don't exist on disk, so
-    session-action decoration emits warnings that are orthogonal to the
-    row/affordance contract under test.
+    4. Clicking the run-level ``#5723`` issue timeline control causes
+       the issue-detail drawer to render journey content
+       (``.journey-run`` and ``.journey-cycle``) with realistic coding
+       and review milestones — not just an optimistic title that shows
+       before the fetch completes.
+    5. The session recording action for the staged coding event opens
+       the replay modal and loads recognizable terminal output from a
+       real synthetic ``terminal-recording.jsonl``.
     """
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
@@ -361,24 +374,51 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     page.on("pageerror", lambda err: errors.append(str(err)))
 
     page.goto(f"{base_url}/", wait_until="domcontentloaded")
-    # Open the run drawer directly via the JS entry point. The dashboard
-    # tab navigation is exercised by the existing dashboard_flow tests;
-    # this test focuses on the run drawer + timeline tab.
-    page.evaluate(f"showUnifiedRunView({run_id})")
+    # Open the run drawer through the visible E2E Run History Timeline
+    # affordance. This is intentionally not page.evaluate(): the
+    # regression was that users had no visible way to get here.
+    page.locator("#tab-e2e").click()
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator("button", has_text="Timeline"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    timeline_run_btn = run_item.locator("button", has_text="Timeline").first
+    expect(timeline_run_btn).to_be_visible(timeout=5000)
+    timeline_run_btn.click()
 
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=5000)
+    expect(page.locator("#e2eDiagnosisModal .modal-header h2")).to_contain_text(
+        f"Run #{run_id}",
+    )
 
-    # Switch to the Timeline tab. The button is rendered only when the
-    # endpoint returned a non-empty timeline.
+    # The direct Timeline affordance must land on the Timeline tab,
+    # not force the user to discover a second control after opening
+    # the run details drawer.
     timeline_tab_btn = page.locator(
         "#e2eDiagnosisModal .e2e-run-tab[data-tab='timeline']"
     )
     expect(timeline_tab_btn).to_be_visible(timeout=5000)
-    timeline_tab_btn.click()
+    expect(
+        page.locator("#e2eDiagnosisModal .e2e-run-tab.active[data-tab='timeline']")
+    ).to_be_visible(timeout=5000)
 
     timeline_panel = page.locator("#e2eRunTimelineTab")
     expect(timeline_panel).to_be_visible(timeout=5000)
+
+    # Run-level issue timeline buttons are the missing affordance from
+    # the regression report. They must be visible before digging into
+    # individual pytest event rows, and clicking one must open the same
+    # cycle-aware issue drawer as row-level issue links.
+    run_level_affordances = timeline_panel.locator(".e2e-issue-timeline-affordances")
+    expect(run_level_affordances).to_be_visible(timeout=5000)
+    run_level_issue_btn = run_level_affordances.locator(
+        ".e2e-issue-timeline-btn",
+        has_text=f"#{TEST_CLICK_ISSUE_NUMBER}",
+    ).first
+    expect(run_level_issue_btn).to_be_visible(timeout=5000)
+    expect(run_level_issue_btn).to_contain_text(TEST_CLICK_ISSUE_LABEL)
 
     # --- Ask 4: prove the Timeline tab actually rendered real event data ---
     # Find the specific test_4057 event card by its summary text. If the
@@ -472,12 +512,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     )
 
     # --- Ask 3: click-through must prove the drawer loaded data ---
-    # Click the inflight-discovery link scoped to the test_4057 row
-    # (not the matching one in the inflight row) so the click-through
-    # assertion is about the test_4057 affordance specifically.
-    test_4057_links.filter(
-        has_text=f"{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})"
-    ).first.click()
+    # Click the run-level issue timeline affordance. Row-level issue
+    # links were asserted above; this click-through pins the new
+    # top-level control that makes the timeline discoverable.
+    run_level_issue_btn.click()
 
     detail_drawer = page.locator("#issueDetailDrawer.visible")
     expect(detail_drawer).to_be_visible(timeout=5000)
@@ -492,6 +530,9 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # should be present.
     journey = page.locator("#issueDetailJourney")
     expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
+    expect(journey.locator(".journey-cycle").first).to_be_visible(timeout=5000)
+    expect(journey).to_contain_text("Agent finished coding")
+    expect(journey).to_contain_text("Review approved")
     expect(journey.locator(".timeline-empty")).to_have_count(0)
 
     # And the status line must no longer show the loading / unavailable text.

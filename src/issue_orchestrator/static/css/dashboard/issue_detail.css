@@ -147,6 +147,11 @@
     margin: 0;
 }
 
+.issue-detail-section-title:focus-visible {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: 2px;
+}
+
 /* Issue story: journey steps */
 .issue-detail-journey {
     padding: 10px 12px;

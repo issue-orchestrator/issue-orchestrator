@@ -6,7 +6,8 @@ let unifiedRunData = null;  // Stores data for the current unified run view
  *
  * @param {number} runId - The E2E run ID to display
  */
-async function showUnifiedRunView(runId) {
+async function showUnifiedRunView(runId, options) {
+    options = options || {};
     // Use the diagnosis modal as the container
     const modal = document.getElementById('e2eDiagnosisModal');
     const content = document.getElementById('e2eDiagnosisContent');
@@ -25,14 +26,18 @@ async function showUnifiedRunView(runId) {
         ]);
         const data = await detailsRes.json();
 
-        let timelineData = null;
+        let timelineData = {
+            events: [],
+            phase_toc: [],
+            cycles: [],
+            issue_affordances: [],
+        };
         if (timelineRes.ok) {
             const tl = await timelineRes.json();
-            timelineData = {
-                events: tl.events || [],
-                phase_toc: tl.phase_toc || [],
-                cycles: tl.cycles || [],
-            };
+            timelineData = normalizeE2ETimelineData(tl);
+        } else {
+            const errorData = await timelineRes.json().catch(() => ({}));
+            timelineData.error = errorData.error || errorData.detail || `Timeline unavailable (${timelineRes.status})`;
         }
 
         if (!detailsRes.ok) {
@@ -42,16 +47,32 @@ async function showUnifiedRunView(runId) {
 
         unifiedRunData = data;
         unifiedRunData._timeline = timelineData;
-        renderUnifiedRunView(data, runId);
+        renderUnifiedRunView(data, runId, options);
     } catch (err) {
         content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Failed to load run details: ${escapeHtml(err.message)}</div>`;
     }
 }
 
+function normalizeE2ETimelineData(timelineData) {
+    timelineData = timelineData || {};
+    return {
+        events: Array.isArray(timelineData.events) ? timelineData.events : [],
+        phase_toc: Array.isArray(timelineData.phase_toc) ? timelineData.phase_toc : [],
+        cycles: Array.isArray(timelineData.cycles) ? timelineData.cycles : [],
+        issue_affordances: Array.isArray(timelineData.issue_affordances) ? timelineData.issue_affordances : [],
+        error: timelineData.error || timelineData.detail || '',
+    };
+}
+
+function openE2ERunTimeline(runId) {
+    return showUnifiedRunView(runId, {initialTab: 'timeline'});
+}
+
 /**
  * Render the unified run view with tests grouped by category.
  */
-function renderUnifiedRunView(data, runId) {
+function renderUnifiedRunView(data, runId, options) {
+    options = options || {};
     const content = document.getElementById('e2eDiagnosisContent');
     const modalTitle = document.getElementById('e2eDiagnosisModal').querySelector('.modal-header h2');
     const run = data.run;
@@ -62,8 +83,10 @@ function renderUnifiedRunView(data, runId) {
     const runDate = run.started_at ? new Date(run.started_at).toLocaleString() : 'Unknown';
     modalTitle.textContent = `Run #${run.id} - ${runDate}`;
 
-    const tl = data._timeline || {};
-    const hasTimeline = tl.events && tl.events.length > 0;
+    const tl = normalizeE2ETimelineData(data._timeline || {});
+    const activeTab = options.initialTab === 'timeline' ? 'timeline' : 'tests';
+    const testsActive = activeTab === 'tests';
+    const timelineActive = activeTab === 'timeline';
 
     // Build header with run info, summary, and tab switcher
     let html = `
@@ -75,16 +98,15 @@ function renderUnifiedRunView(data, runId) {
                 ${summary.passed > 0 ? `<span class="stat passed">${summary.passed} passed</span>` : ''}
                 ${summary.untriaged + summary.has_issue > 0 ? `<span class="stat failed">${summary.untriaged + summary.has_issue} failed</span>` : ''}
             </div>
-            ${hasTimeline ? `
             <div class="e2e-run-tabs">
-                <button class="e2e-run-tab active" onclick="switchE2ERunTab('tests', this)" data-tab="tests">Tests</button>
-                <button class="e2e-run-tab" onclick="switchE2ERunTab('timeline', this)" data-tab="timeline">Timeline</button>
-            </div>` : ''}
+                <button class="e2e-run-tab ${testsActive ? 'active' : ''}" onclick="switchE2ERunTab('tests', this)" data-tab="tests">Tests</button>
+                <button class="e2e-run-tab ${timelineActive ? 'active' : ''}" onclick="switchE2ERunTab('timeline', this)" data-tab="timeline">Timeline</button>
+            </div>
         </div>
     `;
 
     // Tests tab panel
-    html += '<div id="e2eRunTestsTab" class="e2e-run-tab-panel">';
+    html += `<div id="e2eRunTestsTab" class="e2e-run-tab-panel" style="${testsActive ? '' : 'display: none;'}">`;
 
     // Render each category section
     html += renderCategorySection('untriaged', 'UNTRIAGED', tests.untriaged,
@@ -140,28 +162,57 @@ function renderUnifiedRunView(data, runId) {
     // Close tests tab panel
     html += '</div>';
 
-    // Timeline tab panel (hidden by default, populated on tab switch)
-    if (hasTimeline) {
-        html += `<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="display: none;">
-            <div class="e2e-timeline-view-switcher">
-                <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this)" data-view="user">Story</button>
-                <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this)" data-view="ops">Ops</button>
-                <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this)" data-view="debug">Debug</button>
-            </div>
-            <div id="e2eTimelineContent"></div>
-        </div>`;
-    }
+    // Timeline tab panel
+    html += `<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="${timelineActive ? '' : 'display: none;'}">
+        <div class="e2e-timeline-view-switcher">
+            <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this)" data-view="user">Story</button>
+            <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this)" data-view="ops">Ops</button>
+            <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this)" data-view="debug">Debug</button>
+        </div>
+        <div id="e2eTimelineContent"></div>
+    </div>`;
 
     // Close the unified-run-view wrapper
     html += '</div>';
 
     content.innerHTML = html;
 
-    // Pre-render timeline if available
-    if (hasTimeline) {
-        const timelineContainer = document.getElementById('e2eTimelineContent');
-        renderTimeline(timelineContainer, tl.events, tl.phase_toc || [], tl.cycles || []);
-    }
+    const timelineContainer = document.getElementById('e2eTimelineContent');
+    renderE2ETimeline(timelineContainer, tl);
+}
+
+function renderE2ETimeline(container, timelineData) {
+    if (!container) return;
+    const tl = normalizeE2ETimelineData(timelineData || {});
+    container.innerHTML = `
+        ${renderE2EIssueTimelineAffordances(tl.issue_affordances)}
+        ${tl.error ? `<div class="timeline-empty e2e-timeline-error">${escapeHtml(tl.error)}</div>` : ''}
+        <div class="e2e-timeline-events"></div>
+    `;
+    const eventsContainer = container.querySelector('.e2e-timeline-events');
+    renderTimeline(eventsContainer, tl.events, tl.phase_toc, tl.cycles);
+}
+
+function renderE2EIssueTimelineAffordances(affordances) {
+    const items = (Array.isArray(affordances) ? affordances : [])
+        .map((affordance) => {
+            const issueNumber = Number(affordance.issue_number);
+            const runId = Number(affordance.run_id);
+            if (!Number.isInteger(issueNumber) || !Number.isInteger(runId)) return '';
+            const label = affordance.label ? String(affordance.label) : '';
+            const labelHtml = label
+                ? `<span class="e2e-issue-timeline-label">${escapeHtml(label)}</span>`
+                : '';
+            return `<button class="e2e-issue-timeline-btn" onclick="openIssueTimeline(${issueNumber}, this, {e2eRunId: ${runId}});event.stopPropagation();" title="Open cycle timeline for issue #${issueNumber}" aria-label="Open cycle timeline for issue #${issueNumber}">
+                <span class="e2e-issue-timeline-number">#${issueNumber}</span>${labelHtml}
+            </button>`;
+        })
+        .filter(Boolean);
+    if (!items.length) return '';
+    return `<section class="e2e-issue-timeline-affordances" aria-label="Issue timelines from this E2E run">
+        <div class="e2e-issue-timeline-title">Issue timelines</div>
+        <div class="e2e-issue-timeline-list">${items.join('')}</div>
+    </section>`;
 }
 
 /**
@@ -333,8 +384,9 @@ async function switchE2ETimelineView(view, btn) {
             container.innerHTML = '<div style="color: var(--danger);">Failed to load timeline</div>';
             return;
         }
-        const tl = await res.json();
-        renderTimeline(container, tl.events || [], tl.phase_toc || [], tl.cycles || []);
+        const tl = normalizeE2ETimelineData(await res.json());
+        unifiedRunData._timeline = tl;
+        renderE2ETimeline(container, tl);
     } catch (err) {
         container.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(err.message)}</div>`;
     }

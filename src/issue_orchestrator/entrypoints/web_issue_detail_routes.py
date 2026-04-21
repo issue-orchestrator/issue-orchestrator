@@ -12,7 +12,10 @@ from ..execution.validation_failure_summary import load_validation_failure_summa
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..view_models.dashboard import issue_url_for
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
-from .e2e_affordances import _attach_issue_numbers_to_test_windows
+from .e2e_affordances import (
+    _attach_issue_numbers_to_test_windows,
+    collect_issue_affordances,
+)
 from .timeline_presentation import (
     _build_phase_toc,
     _build_timeline_cycles,
@@ -317,6 +320,11 @@ async def get_e2e_run_detail(
         context=None,
         view=matcher_view,
     )
+    payload["issue_affordances"] = collect_issue_affordances(
+        agent_events,
+        run_id=run_id,
+        view=matcher_view,
+    )
     return JSONResponse(payload)
 
 
@@ -424,6 +432,7 @@ async def get_e2e_issue_detail(
         events=events,
         dropped_missing_semantics=dropped_missing_semantics,
     )
+    payload["e2e_run_id"] = run_id
     return JSONResponse(payload)
 
 

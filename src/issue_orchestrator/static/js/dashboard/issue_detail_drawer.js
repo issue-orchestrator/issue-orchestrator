@@ -1,3 +1,10 @@
+let currentIssueDetailE2ERunId = null;
+let currentIssueDetailFocus = null;
+
+function openIssueTimeline(issueNumber, triggerEl = null, opts = {}) {
+    return openIssueDetail(issueNumber, triggerEl, {...opts, focus: 'timeline'});
+}
+
 function getIssueDetailFocusableElements() {
     if (!issueDetailDrawer) return [];
     return Array.from(
@@ -8,6 +15,7 @@ function getIssueDetailFocusableElements() {
 async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     if (!issueDetailDrawer) return;
     lastIssueDetailTrigger = triggerEl || document.activeElement;
+    currentIssueDetailFocus = opts && opts.focus === 'timeline' ? 'timeline' : null;
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
     document.getElementById('issueDetailTitle').textContent = `Issue #${issueNumber}`;
@@ -36,8 +44,14 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     // affordance, opts.e2eRunId tells us to fetch the issue's timeline
     // directly from the e2e-worktree for that run. Otherwise fall
     // through to the main orchestrator's issue-detail endpoint.
-    const url = (opts && opts.e2eRunId)
-        ? `/api/e2e-run/${opts.e2eRunId}/issue-detail/${issueNumber}?view=${timelineView}`
+    const requestedE2ERunId = opts && opts.e2eRunId !== undefined && opts.e2eRunId !== null
+        ? Number(opts.e2eRunId)
+        : null;
+    currentIssueDetailE2ERunId = Number.isInteger(requestedE2ERunId) && requestedE2ERunId > 0
+        ? requestedE2ERunId
+        : null;
+    const url = currentIssueDetailE2ERunId
+        ? `/api/e2e-run/${currentIssueDetailE2ERunId}/issue-detail/${issueNumber}?view=${timelineView}`
         : `/api/issue-detail/${issueNumber}?view=${timelineView}`;
 
     try {
@@ -47,6 +61,9 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
             return;
         }
         issueDetailData = await res.json();
+        if (issueDetailData.e2e_run_id) {
+            currentIssueDetailE2ERunId = Number(issueDetailData.e2e_run_id);
+        }
         renderIssueDetail();
     } catch (err) {
         console.error('Failed to load issue detail:', err);
@@ -56,6 +73,7 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
 
 function closeIssueDetail() {
     if (!issueDetailDrawer) return;
+    currentIssueDetailFocus = null;
     issueDetailDrawer.classList.remove('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'true');
     if (lastIssueDetailTrigger && typeof lastIssueDetailTrigger.focus === 'function') {
@@ -360,10 +378,17 @@ async function setTimelineView(view) {
     timelineView = view;
     if (issueDetailData) {
         const issueNumber = issueDetailData.issue_number;
+        const e2eRunId = currentIssueDetailE2ERunId || issueDetailData.e2e_run_id || null;
+        const url = e2eRunId
+            ? `/api/e2e-run/${e2eRunId}/issue-detail/${issueNumber}?view=${view}`
+            : `/api/issue-detail/${issueNumber}?view=${view}`;
         try {
-            const res = await fetch(`/api/issue-detail/${issueNumber}?view=${view}`);
+            const res = await fetch(url);
             if (res.ok) {
                 issueDetailData = await res.json();
+                if (issueDetailData.e2e_run_id) {
+                    currentIssueDetailE2ERunId = Number(issueDetailData.e2e_run_id);
+                }
                 renderIssueDetail();
             }
         } catch (err) {
@@ -750,6 +775,17 @@ function renderIssueDetail() {
             </div>
         `).join('') || '<div class="timeline-empty">No events recorded.</div>';
     };
+
+    applyIssueDetailInitialFocus();
+}
+
+function applyIssueDetailInitialFocus() {
+    if (currentIssueDetailFocus !== 'timeline') return;
+    const timelineHeading = document.getElementById('issueDetailTimelineHeading');
+    if (!timelineHeading) return;
+    timelineHeading.scrollIntoView({block: 'start'});
+    timelineHeading.focus({preventScroll: true});
+    currentIssueDetailFocus = null;
 }
 
 document.addEventListener('keydown', (event) => {
@@ -773,4 +809,3 @@ document.addEventListener('keydown', (event) => {
         first.focus();
     }
 });
-

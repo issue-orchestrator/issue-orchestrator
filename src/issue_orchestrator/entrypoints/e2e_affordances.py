@@ -158,6 +158,37 @@ def _issues_visible_in_view(
     return visible
 
 
+def collect_issue_affordances(
+    agent_events: list[dict],
+    run_id: int,
+    view: str = "user",
+) -> list[dict[str, Any]]:
+    """Build run-level issue timeline affordances from visible agent activity."""
+    if not agent_events:
+        return []
+
+    visible_issues = _issues_visible_in_view(agent_events, view)
+    branch_by_issue = _collect_branch_names_by_issue(agent_events)
+    affordances: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for agent_evt in agent_events:
+        issue_num = agent_evt.get("issue_number")
+        if not isinstance(issue_num, int) or issue_num <= 0:
+            continue
+        if issue_num in seen or issue_num not in visible_issues:
+            continue
+        seen.add(issue_num)
+        branch = branch_by_issue.get(issue_num)
+        label = _compact_branch_label(branch, issue_num) if branch else None
+        entry: dict[str, Any] = {"issue_number": issue_num, "run_id": run_id}
+        if label:
+            entry["label"] = label
+        if branch:
+            entry["branch_name"] = branch
+        affordances.append(entry)
+    return affordances
+
+
 def _attach_issue_numbers_to_test_windows(
     e2e_events: list[dict],
     agent_events: list[dict],
@@ -215,4 +246,5 @@ __all__ = [
     "_compact_branch_label",
     "_filter_nest_and_project_agent_events",
     "_load_worktree_agent_events",
+    "collect_issue_affordances",
 ]

@@ -136,6 +136,7 @@ body.column-focus-mode .column-expanded {
 .card-head-actions .card-refresh-btn,
 .card-head-actions .card-gh,
 .card-head-actions .card-menu-btn,
+.card-head-actions .card-timeline-btn,
 .card-head-actions .card-detail-chevron {
     width: 28px;
     height: 28px;
@@ -249,6 +250,7 @@ body.column-focus-mode .column-expanded {
 .card-action-btn:active {
     background: rgba(78, 161, 255, 0.10);
 }
+.card-timeline-btn,
 .card-detail-chevron {
     border: 1px solid transparent;
     background: transparent;
@@ -260,6 +262,20 @@ body.column-focus-mode .column-expanded {
     opacity: 0.7;
     transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
 }
+.card-timeline-btn {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border-radius: 6px;
+    font-size: 14px;
+    opacity: 0.85;
+}
+.card-timeline-btn:hover,
+.card-timeline-btn:focus-visible,
 .card-detail-chevron:hover,
 .card-detail-chevron:focus-visible {
     opacity: 1;
