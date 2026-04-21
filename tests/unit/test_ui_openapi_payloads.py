@@ -36,6 +36,26 @@ from issue_orchestrator.view_models.dialogs import (
     build_session_diagnostics_dialog,
 )
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
+from issue_orchestrator.view_models.lifecycle_semantics import (
+    AgentIdentity,
+    CompletedCodingAttempt,
+    CompletionRecordEvidence,
+    DashboardIteration,
+    DashboardTimelineContainer,
+    E2ERunIteration,
+    E2ERunLifecycle,
+    E2ESuiteTimelineContainer,
+    IssueCycle,
+    IssueLifecycle,
+    OpenCompletionRecordCommand,
+    PassedE2ETestExecution,
+    ReviewNotReached,
+    SessionRecordingUnavailable,
+    ShowEventDetailsCommand,
+    TimelineSubject,
+    ValidationPassed,
+    model_to_plain_dict,
+)
 
 
 @dataclass
@@ -171,3 +191,83 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
         cycles=[{"cycle": 1, "status": "started", "phases": ["in_progress"]}],
     )
     _validator("IssueDetailPayload").validate(payload)
+
+
+def test_lifecycle_dashboard_container_payload_matches_ui_openapi() -> None:
+    container = DashboardTimelineContainer(
+        subject=TimelineSubject(kind="dashboard", id="dashboard", label="Dashboard"),
+        current=DashboardIteration(
+            subject=TimelineSubject(
+                kind="dashboard",
+                id="current",
+                label="Current Dashboard",
+            ),
+            issue_lifecycles=(_issue_lifecycle(12),),
+        ),
+    )
+
+    _validator("LifecycleTimelineContainerPayload").validate(model_to_plain_dict(container))
+
+
+def test_lifecycle_e2e_container_payload_matches_ui_openapi() -> None:
+    run = E2ERunLifecycle(
+        run_id=88,
+        started_at="2026-04-21T11:00:00Z",
+        completed_at="2026-04-21T11:02:00Z",
+        tests=(
+            PassedE2ETestExecution(
+                nodeid="tests/e2e/test_example.py::test_passes",
+                started_at="2026-04-21T11:00:00Z",
+                completed_at="2026-04-21T11:01:00Z",
+                commands=(ShowEventDetailsCommand(event_ref="event:e2e-test"),),
+            ),
+        ),
+        linked_issue_lifecycles=(_issue_lifecycle(12),),
+    )
+    container = E2ESuiteTimelineContainer(
+        subject=TimelineSubject(kind="e2e_suite", id="suite", label="E2E Suite"),
+        runs=(
+            E2ERunIteration(
+                subject=TimelineSubject(kind="e2e_run", id="88", label="Run #88"),
+                e2e_run=run,
+            ),
+        ),
+    )
+
+    _validator("LifecycleTimelineContainerPayload").validate(model_to_plain_dict(container))
+
+
+def _issue_lifecycle(issue_number: int) -> IssueLifecycle:
+    return IssueLifecycle(
+        issue_number=issue_number,
+        title=f"Issue #{issue_number}",
+        cycles=(
+            IssueCycle(
+                cycle_number=1,
+                coder=CompletedCodingAttempt(
+                    issue_number=issue_number,
+                    agent=AgentIdentity(name="codex", role="coder"),
+                    started_at="2026-04-21T10:00:00Z",
+                    completed_at="2026-04-21T10:10:00Z",
+                    completion_record=CompletionRecordEvidence(
+                        path=f"/runs/issue-{issue_number}/completion-record.json",
+                    ),
+                    validation=ValidationPassed(
+                        command="pytest tests/unit -q",
+                        record_path=f"/runs/issue-{issue_number}/validation.json",
+                    ),
+                    session_recording=SessionRecordingUnavailable(
+                        reason="fixture has no recording",
+                    ),
+                    commands=(
+                        ShowEventDetailsCommand(event_ref=f"event:issue:{issue_number}"),
+                        OpenCompletionRecordCommand(
+                            path=f"/runs/issue-{issue_number}/completion-record.json",
+                        ),
+                    ),
+                ),
+                review=ReviewNotReached(reason="not_required"),
+                outcome="Completed",
+            ),
+        ),
+    )
