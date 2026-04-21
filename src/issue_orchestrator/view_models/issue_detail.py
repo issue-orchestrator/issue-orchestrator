@@ -97,8 +97,13 @@ def _filter_events_by_view(events: list[dict[str, Any]], view: str) -> list[dict
     """
     result: list[dict[str, Any]] = []
     for evt in events:
+        event_name = str(evt.get("source_event") or evt.get("event") or "")
         views = evt.get("views")
-        if views is None:
+        if event_name == "publish.failed" and view in {"user", "ops", "debug"}:
+            # Compatibility for records written before publish.failed was
+            # promoted from debug-only to user-visible.
+            result.append(evt)
+        elif views is None:
             # Legacy event without view tags — include everywhere
             result.append(evt)
         elif view in views:
@@ -276,6 +281,7 @@ _BLOCKED_EVENT_NAMES = frozenset({
     "session.validation_failed",
     "issue.blocked",
     "issue.needs_human",
+    "publish.failed",
     "review.changes_requested",
     "review.escalated",
 })
@@ -427,6 +433,7 @@ _NARRATIVE_MAP: dict[str, str] = {
     "validation.started": "Validation started",
     "validation.completed": "Validation passed",
     "session.validation_retry_needed": "Validation failed — retrying{_summary}",
+    "publish.failed": "Publish failed{_summary}",
     "review.comment_added": "Review comment posted{_summary}",
 }
 
@@ -546,6 +553,7 @@ _OUTCOME_EVENTS = frozenset({
     "review.merged",
     "issue.blocked",
     "issue.needs_human",
+    "publish.failed",
     "issue.completed",
 })
 

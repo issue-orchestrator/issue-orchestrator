@@ -82,6 +82,18 @@ class TestFanOut:
             assert "ops" in spec.views
             assert "debug" in spec.views
 
+    def test_publish_failed_visible_to_user(self):
+        specs = fan_out("publish.failed")
+
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.name == "publish.failed"
+        assert spec.narrative == "Publish failed"
+        assert spec.phase == "orchestrator"
+        assert "user" in spec.views
+        assert "ops" in spec.views
+        assert "debug" in spec.views
+
 
 class TestFilterEventsByView:
     def test_user_view_filters_debug_events(self):
@@ -117,6 +129,18 @@ class TestFilterEventsByView:
         events = [{"event": "session.started"}]  # no views tag
         assert len(_filter_events_by_view(events, "user")) == 1
         assert len(_filter_events_by_view(events, "debug")) == 1
+
+    def test_legacy_debug_only_publish_failed_is_promoted(self):
+        events = [
+            {
+                "event": "publish.failed",
+                "source_event": "publish.failed",
+                "views": ["debug"],
+            }
+        ]
+
+        assert len(_filter_events_by_view(events, "user")) == 1
+        assert len(_filter_events_by_view(events, "ops")) == 1
 
 
 class TestWriterFanOut:

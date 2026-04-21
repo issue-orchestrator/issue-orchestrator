@@ -86,6 +86,37 @@ def test_build_issue_timeline_maps_validation_and_review_queue_to_orchestrator_p
     ]
 
 
+def test_build_issue_timeline_surfaces_publish_failure_reason():
+    records = [
+        TimelineRecord(
+            event_id="p1",
+            timestamp="2026-02-06T00:00:00Z",
+            event="publish.failed",
+            source_event="publish.failed",
+            data={
+                "issue_number": 123,
+                "stage": "push_branch",
+                "branch": "123-feature",
+                "retryable": True,
+                "error": (
+                    "ERROR: Test-skipping patterns detected\n"
+                    "+import org.junit.jupiter.api.Assumptions.assumeTrue\n"
+                    "error: failed to push some refs"
+                ),
+            },
+        ),
+    ]
+
+    event = build_issue_timeline(123, records)["events"][0]
+
+    assert event["phase"] == "orchestrator"
+    assert event["status"] == "failed"
+    assert event["summary"].startswith("Push failed: ")
+    assert "Test-skipping patterns detected" in event["summary"]
+    assert "assumeTrue" in event["summary"]
+    assert event["detail"] == "Branch: 123-feature. Retryable: yes"
+
+
 def test_build_issue_timeline_status_mapping():
     records = [
         TimelineRecord(

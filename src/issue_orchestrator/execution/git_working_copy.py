@@ -548,7 +548,7 @@ class GitWorkingCopy:
             )
         except GitError as e:
             duration = time.monotonic() - start
-            error_msg = e.result.stderr if e.result.stderr else str(e)
+            error_msg = _git_error_output(e)
             logger.warning(
                 "Push failed in %.2fs: branch=%s remote=%s skip_hooks=%s error=%s",
                 duration,
@@ -759,3 +759,17 @@ class GitWorkingCopy:
                 return True
             logger.warning("Failed to delete remote branch %s/%s: %s", remote, branch, e)
             return False
+
+
+def _git_error_output(error: GitError) -> str:
+    """Return the full user-facing output from a failed git command."""
+    parts: list[str] = []
+    stdout = (error.result.stdout or "").strip()
+    stderr = (error.result.stderr or "").strip()
+    if stdout:
+        parts.append(stdout)
+    if stderr and stderr != stdout:
+        parts.append(stderr)
+    if parts:
+        return "\n".join(parts)
+    return str(error)
