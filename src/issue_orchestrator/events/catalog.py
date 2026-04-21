@@ -93,6 +93,7 @@ class EventName(str, Enum):
     SESSION_STOPPED = "session.stopped"
     SESSION_CLEANUP = "session.cleanup"
     SESSION_LAUNCHED = "session.launched"
+    SESSION_RESTORED = "session.restored"
     SESSION_SLOW = "session.slow"
     SESSION_TIMEOUT = "session.timeout"
     SESSION_BLOCKED = "session.blocked"

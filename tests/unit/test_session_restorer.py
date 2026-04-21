@@ -57,6 +57,7 @@ def make_discovered_session(
     issue_number: int,
     tab_name: str | None = None,
     is_review: bool = False,
+    session_name: str | None = None,
 ) -> DiscoveredSession:
     """Create a DiscoveredSession for testing."""
     if tab_name is None:
@@ -64,11 +65,14 @@ def make_discovered_session(
             tab_name = f"#100 Review PR #{issue_number}"
         else:
             tab_name = f"#{issue_number} Some task"
-    return DiscoveredSession(
+    discovered = DiscoveredSession(
         issue_number=issue_number,
         tab_name=tab_name,
         is_review=is_review,
     )
+    if session_name:
+        discovered["session_name"] = session_name
+    return discovered
 
 
 def make_config(
@@ -96,6 +100,68 @@ def make_agent_config(
 
 class TestRestoreSessionsBasic:
     """Tests for basic session restoration behavior."""
+
+    def test_canonical_terminal_id_prefers_persisted_session_name(self, tmp_path):
+        """The persisted registry id wins over user-facing tab text."""
+        config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
+        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        discovered = make_discovered_session(
+            100,
+            tab_name="Review PR #456",
+            is_review=True,
+            session_name="review-789",
+        )
+
+        assert restorer.canonical_terminal_id(discovered) == "review-789"
+
+    def test_canonical_terminal_id_extracts_review_pr_from_tab_name(self, tmp_path):
+        """Legacy discovered review records still derive review-N from tab text."""
+        config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
+        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        discovered = make_discovered_session(100, tab_name="#100 Review PR #456", is_review=True)
+
+        assert restorer.canonical_terminal_id(discovered) == "review-456"
+
+    def test_canonical_terminal_id_warns_when_review_name_cannot_be_derived(
+        self,
+        tmp_path,
+        caplog,
+    ):
+        """A malformed review discovery record is visible in logs before fallback."""
+        config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
+        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        discovered = make_discovered_session(100, tab_name="review title without pr", is_review=True)
+
+        with caplog.at_level(logging.WARNING):
+            assert restorer.canonical_terminal_id(discovered) == "review-100"
+
+        assert "Could not derive review PR number" in caplog.text
+
+    def test_restore_known_terminal_uses_canonical_name_without_fake_tab_title(
+        self,
+        tmp_path,
+    ):
+        """Known-terminal restore carries session_name without inventing tab text."""
+        config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
+        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        restorer.restore_sessions = MagicMock(return_value=[])
+
+        restorer.restore_known_terminal(
+            issue_number=123,
+            session_name="issue-123",
+            is_review=False,
+            already_tracked=[],
+        )
+
+        running = restorer.restore_sessions.call_args.args[0]
+        assert running == [
+            {
+                "issue_number": 123,
+                "tab_name": "",
+                "is_review": False,
+                "session_name": "issue-123",
+            }
+        ]
 
     def test_restores_code_session_with_worktree_and_issue(self, tmp_path):
         """A discovered code session with matching worktree and issue is restored."""

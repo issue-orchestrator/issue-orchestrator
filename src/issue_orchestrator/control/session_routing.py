@@ -42,8 +42,10 @@ def orchestrator_launch_review_session(
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         session_name = f"review-{review.pr_number}"
-        restored = session_restorer.restore_sessions(
-            running=[{"issue_number": review.issue_number, "tab_name": session_name, "is_review": True}],
+        restored = session_restorer.restore_known_terminal(
+            issue_number=review.issue_number,
+            session_name=session_name,
+            is_review=True,
             already_tracked=state.active_sessions,
         )
         if restored:
@@ -71,8 +73,10 @@ def orchestrator_launch_rework_session(
             logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
             return None
         session_name = f"rework-{issue_number}"
-        restored = session_restorer.restore_sessions(
-            running=[{"issue_number": issue_number, "tab_name": session_name, "is_review": False}],
+        restored = session_restorer.restore_known_terminal(
+            issue_number=issue_number,
+            session_name=session_name,
+            is_review=False,
             already_tracked=state.active_sessions,
         )
         if restored:
@@ -119,10 +123,22 @@ def restore_running_sessions(
     running: list["DiscoveredSession"],
     active_sessions: list[Session],
     session_restorer: "SessionRestorer",
-) -> None:
+) -> list[Session]:
     """Restore running terminal sessions into active-session tracking."""
     restored = session_restorer.restore_sessions(running, active_sessions)
     append_unique_active_sessions(active_sessions, restored)
+    if restored:
+        logger.info(
+            "[ORPHAN] Restored %d running terminal session(s): %s",
+            len(restored),
+            ", ".join(str(getattr(s, "terminal_id", s)) for s in restored),
+        )
+    elif running:
+        logger.warning(
+            "[ORPHAN] Found %d running terminal session(s), but none could be restored",
+            len(running),
+        )
+    return restored
 
 
 def parse_session_ref(
@@ -179,9 +195,23 @@ def orchestrator_launch_session(
     issue: IssueProtocol,
     state: "OrchestratorState",
     session_launcher: SessionLauncher,
+    session_restorer: "SessionRestorer | None" = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
     result = session_launcher.launch_issue_session(issue, state.active_sessions)
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
+    elif result.keep_queued and session_restorer is not None:
+        session_name = f"issue-{issue.number}"
+        restored = session_restorer.restore_known_terminal(
+            issue_number=issue.number,
+            session_name=session_name,
+            is_review=False,
+            already_tracked=state.active_sessions,
+        )
+        if restored:
+            append_unique_active_sessions(state.active_sessions, restored)
+            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
+            return restored[0]
+        logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
     return result.session if result.success else None

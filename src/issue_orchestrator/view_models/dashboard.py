@@ -251,8 +251,8 @@ def _queue_wait_reason(
     if active_count >= max_sessions:
         return f"Waiting: at capacity ({active_count}/{max_sessions} running)"
 
-    if dep_problem is not None and dep_problem.summary:
-        return f"Waiting: {dep_problem.summary}"
+    if dep_problem is not None:
+        return f"Waiting: {dep_problem.summary or 'dependency details unavailable'}"
 
     if issue_number in state.failed_this_cycle:
         return "Waiting: previous launch/action failed (manual retry may be needed)"
@@ -262,7 +262,7 @@ def _queue_wait_reason(
 
     if queue_position <= 1:
         return "Waiting: next scheduler tick"
-    return f"Waiting: {queue_position - 1} queued ahead"
+    return f"Waiting: {queue_position - 1} runnable queued ahead"
 
 
 def _display_labels(labels: list[str], lm: LabelManager) -> list[str]:
@@ -581,7 +581,12 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             flow_stage = "in_progress"
         else:
             flow_stage = "queued"
-            queued_position += 1
+            if (
+                not is_dependency_blocked
+                and issue.number not in state.failed_this_cycle
+                and not any(entry.issue_number == issue.number for entry in state.session_history)
+            ):
+                queued_position += 1
         flow_steps = flow_steps_for(flow_stage)
         flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
         queue_reason = (

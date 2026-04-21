@@ -1,6 +1,7 @@
 """Unit tests for the orchestrator module."""
 
 import asyncio
+import logging
 import pytest
 import tempfile
 from datetime import datetime
@@ -541,6 +542,158 @@ class TestLaunchSession:
         session = orchestrator.launch_session(issue)
 
         assert session is None
+
+    def test_reconcile_running_sessions_restores_untracked_registry_session(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Test runtime reconciliation restores sessions missing from active state."""
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        issue = create_issue(7, labels=["agent:web"])
+        restored = create_session(issue)
+        orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[
+            {"issue_number": 7, "tab_name": "Existing issue title", "is_review": False}
+        ])
+        orchestrator.deps.session_restorer.restore_sessions = MagicMock(return_value=[restored])
+
+        orchestrator._reconcile_running_sessions()  # noqa: SLF001
+
+        assert orchestrator.state.active_sessions == [restored]
+        orchestrator.deps.session_restorer.restore_sessions.assert_called_once()
+        restored_events = orchestrator.deps.events.get_events_by_name(EventName.SESSION_RESTORED)
+        assert len(restored_events) == 1
+        assert restored_events[0].data["trigger"] == "initial"
+        assert restored_events[0].data["session_names"] == ["issue-7"]
+        assert restored_events[0].data["discovery_elapsed_ms"] >= 0
+
+    def test_reconcile_running_sessions_handles_discovery_failure(
+        self,
+        sample_config,
+        mock_repository_host,
+        caplog,
+    ):
+        """Runtime reconciliation logs discovery failures without breaking the tick."""
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.deps.runner.discover_running_sessions = MagicMock(
+            side_effect=RuntimeError("registry unavailable")
+        )
+
+        with caplog.at_level(logging.ERROR):
+            orchestrator._reconcile_running_sessions()  # noqa: SLF001
+
+        assert orchestrator.state.active_sessions == []
+        assert "Failed to discover running terminal sessions" in caplog.text
+
+    def test_reconcile_running_sessions_throttles_registry_discovery_when_unchanged(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Runtime registry scans are rate-limited when active state is stable."""
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        existing = MagicMock(spec=Session)
+        existing.terminal_id = "issue-1"
+        orchestrator.state.active_sessions = [existing]
+        orchestrator._last_orphan_reconcile_scan_at = 100.0  # noqa: SLF001
+        orchestrator._last_orphan_reconcile_active_count = 1  # noqa: SLF001
+        orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[])
+
+        with patch("issue_orchestrator.infra.orchestrator.time.monotonic", return_value=110.0):
+            orchestrator._reconcile_running_sessions()  # noqa: SLF001
+
+        orchestrator.deps.runner.discover_running_sessions.assert_not_called()
+
+    def test_reconcile_running_sessions_scans_immediately_when_active_state_drops_to_zero(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """A lost active session list bypasses the interval throttle."""
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator._last_orphan_reconcile_scan_at = 100.0  # noqa: SLF001
+        orchestrator._last_orphan_reconcile_active_count = 1  # noqa: SLF001
+        orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[])
+
+        with patch(
+            "issue_orchestrator.infra.orchestrator.time.monotonic",
+            side_effect=[110.0, 110.01],
+        ):
+            orchestrator._reconcile_running_sessions()  # noqa: SLF001
+
+        orchestrator.deps.runner.discover_running_sessions.assert_called_once()
+
+    def test_reconcile_running_sessions_warns_when_restore_cannot_track(
+        self,
+        sample_config,
+        mock_repository_host,
+        caplog,
+    ):
+        """A still-untracked live terminal is visible after restore attempts fail."""
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[
+            {
+                "issue_number": 8,
+                "tab_name": "Issue 8",
+                "is_review": False,
+                "session_name": "issue-8",
+            }
+        ])
+        orchestrator.deps.session_restorer.restore_sessions = MagicMock(return_value=[])
+
+        with caplog.at_level(logging.WARNING):
+            orchestrator._reconcile_running_sessions()  # noqa: SLF001
+
+        assert orchestrator.state.active_sessions == []
+        assert "still untracked after restore attempt: issue-8" in caplog.text
+
+    def test_reconcile_running_sessions_uses_review_terminal_identity(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Review tab names resolve to review-PR ids when deciding if tracked."""
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        existing = MagicMock(spec=Session)
+        existing.terminal_id = "review-456"
+        orchestrator.state.active_sessions = [existing]
+        orchestrator.deps.runner.discover_running_sessions = MagicMock(return_value=[
+            {"issue_number": 100, "tab_name": "#100 Review PR #456", "is_review": True}
+        ])
+        orchestrator.deps.session_restorer.restore_sessions = MagicMock(return_value=[])
+
+        orchestrator._reconcile_running_sessions()  # noqa: SLF001
+
+        orchestrator.deps.session_restorer.restore_sessions.assert_not_called()
+
+    def test_launch_collision_restores_terminal_without_dropping_queued_issue(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """A launch collision reattaches the terminal and leaves queue state intact."""
+        issue = create_issue(9, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)
+        worktree = sample_config.repo_root.parent / f"{sample_config.repo_root.name}-9"
+        worktree.mkdir()
+        working_copy = MagicMock()
+        working_copy.get_current_branch.return_value = "9-feature"
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = True
+        orchestrator = create_test_orchestrator(
+            sample_config,
+            mock_repository_host,
+            runner=runner,
+            working_copy=working_copy,
+        )
+        orchestrator.state.cached_queue_issues = [issue]
+
+        session = orchestrator.launch_session(issue)
+
+        assert session is not None
+        assert session.terminal_id == "issue-9"
+        assert orchestrator.state.active_sessions == [session]
+        assert orchestrator.state.cached_queue_issues == [issue]
 
     def test_launch_session_returns_none_for_unknown_agent(
         self,
@@ -2312,7 +2465,7 @@ class TestSessionExistsDetection:
         assert len(orchestrator.state.pending_reviews) == 0
         # Session is restored to active_sessions (prevents infinite loop)
         assert len(orchestrator.state.active_sessions) == 1
-        assert orchestrator.state.active_sessions[0].terminal_id == "review-42"
+        assert orchestrator.state.active_sessions[0].terminal_id == "review-123"
 
     def test_review_tracked_in_active_sessions_removed_from_pending(
         self,
@@ -2389,6 +2542,7 @@ class TestSessionExistsDetection:
         assert len(orchestrator.state.pending_reworks) == 0
         # Session is restored to active_sessions (prevents infinite loop)
         assert len(orchestrator.state.active_sessions) == 1
+        assert orchestrator.state.active_sessions[0].terminal_id == "rework-42"
 
 
 class TestStateMachineTransitions:

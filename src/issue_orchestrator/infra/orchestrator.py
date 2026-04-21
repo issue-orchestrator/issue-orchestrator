@@ -4,7 +4,7 @@ import asyncio, logging, os, signal, threading, time
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
     from ..control.planner_types import Plan
@@ -98,6 +98,9 @@ class Orchestrator:
     _last_tick_time: float = field(default=0.0, init=False)
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _last_backup_check: float = field(default=0.0, init=False)
+    _last_orphan_reconcile_scan_at: float = field(default=0.0, init=False)
+    _last_orphan_reconcile_active_count: int = field(default=0, init=False)
+    _ORPHAN_RECONCILE_INTERVAL_SECONDS: ClassVar[float] = 30.0
 
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
@@ -266,7 +269,13 @@ class Orchestrator:
                 sessions_root,
             )
 
-    def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
+    def launch_session(self, issue: Issue) -> Optional[Session]:
+        return _launch_session(
+            issue,
+            self.state,
+            self._session_launcher,
+            self.deps.session_restorer,
+        )
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
 
     def tick(self) -> bool:
@@ -466,12 +475,119 @@ class Orchestrator:
         return cast(HealthDecision, _check_health(self.deps.health_gate, len(self.state.active_sessions), self.state.paused))
 
     def _process_active_sessions(self) -> None:
-        _process_active_sessions(
-            self.state, self.observer, self.deps.session_controller, self._completion_handler,
-            self.deps.action_applier, self.deps.worktree_manager, self._kill_session, self.config
+        try:
+            self._reconcile_running_sessions()
+            _process_active_sessions(
+                self.state,
+                self.observer,
+                self.deps.session_controller,
+                self._completion_handler,
+                self.deps.action_applier,
+                self.deps.worktree_manager,
+                self._kill_session,
+                self.config,
+            )
+            # Check lease renewals for active sessions
+            self._check_lease_renewals()
+        finally:
+            self._last_orphan_reconcile_active_count = len(self.state.active_sessions)
+
+    def _reconcile_running_sessions(self) -> None:
+        """Restore live terminal sessions that fell out of active-session state."""
+        active_count = len(self.state.active_sessions)
+        scan_started = time.monotonic()
+        should_scan, trigger = self._orphan_reconcile_trigger(scan_started, active_count)
+        if not should_scan:
+            self._last_orphan_reconcile_active_count = active_count
+            return
+
+        self._last_orphan_reconcile_scan_at = scan_started
+        try:
+            running = self.deps.runner.discover_running_sessions()
+        except Exception:
+            self._last_orphan_reconcile_active_count = len(self.state.active_sessions)
+            logger.exception("[ORPHAN] Failed to discover running terminal sessions")
+            return
+
+        discovery_elapsed_ms = (time.monotonic() - scan_started) * 1000
+        self._last_orphan_reconcile_active_count = len(self.state.active_sessions)
+
+        logger.debug(
+            "[ORPHAN] Runtime terminal discovery completed "
+            "(trigger=%s, active=%d, discovered=%d, discovery_elapsed_ms=%.1f)",
+            trigger,
+            active_count,
+            len(running),
+            discovery_elapsed_ms,
         )
-        # Check lease renewals for active sessions
-        self._check_lease_renewals()
+
+        if not running:
+            return
+
+        tracked_names = {s.terminal_id for s in self.state.active_sessions}
+        discovered = [
+            (info, self.deps.session_restorer.canonical_terminal_id(info))
+            for info in running
+        ]
+        untracked = [
+            (info, session_name)
+            for info, session_name in discovered
+            if session_name not in tracked_names
+        ]
+        if not untracked:
+            return
+
+        logger.warning(
+            "[ORPHAN] Found %d running terminal session(s) missing from active tracking "
+            "(tracked=%d, discovered=%d, trigger=%s, discovery_elapsed_ms=%.1f): %s",
+            len(untracked),
+            len(tracked_names),
+            len(running),
+            trigger,
+            discovery_elapsed_ms,
+            ", ".join(session_name for _, session_name in untracked),
+        )
+        restored = _restore_running_sessions(
+            [info for info, _ in untracked],
+            self.state.active_sessions,
+            self.deps.session_restorer,
+        )
+        self._last_orphan_reconcile_active_count = len(self.state.active_sessions)
+        restored_names = {s.terminal_id for s in restored}
+        if restored:
+            self.deps.events.publish(TraceEvent(
+                EventName.SESSION_RESTORED,
+                self._event_context.enrich({
+                    "source": "runtime_reconcile",
+                    "trigger": trigger,
+                    "restored_count": len(restored),
+                    "session_names": sorted(restored_names),
+                    "tracked_before": len(tracked_names),
+                    "discovered_count": len(running),
+                    "discovery_elapsed_ms": discovery_elapsed_ms,
+                }),
+            ))
+        missing = [
+            session_name
+            for _, session_name in untracked
+            if session_name not in restored_names
+        ]
+        if missing:
+            logger.warning(
+                "[ORPHAN] Running terminal session(s) still untracked after restore attempt: %s",
+                ", ".join(missing),
+            )
+
+    def _orphan_reconcile_trigger(self, now: float, active_count: int) -> tuple[bool, str]:
+        """Return whether runtime registry discovery should run this tick."""
+        if self._last_orphan_reconcile_scan_at == 0.0:
+            return True, "initial"
+        if active_count == 0 and self._last_orphan_reconcile_active_count > 0:
+            return True, "active_sessions_dropped_to_zero"
+        elapsed = now - self._last_orphan_reconcile_scan_at
+        if elapsed >= self._ORPHAN_RECONCILE_INTERVAL_SECONDS:
+            return True, "interval"
+        return False, "throttled"
 
     def _observe_active_sessions_async(self) -> None:
         """Observe active sessions and collect completion facts (async flow).

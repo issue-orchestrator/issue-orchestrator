@@ -11,6 +11,7 @@ Called during startup to restore tracking for sessions that survived a restart.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -24,6 +25,10 @@ from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
 
 logger = logging.getLogger(__name__)
+
+_CANONICAL_SESSION_PREFIXES = ("issue-", "review-", "rework-", "triage-")
+_REVIEW_SESSION_RE = re.compile(r"^review-(\d+)$")
+_REVIEW_TITLE_RE = re.compile(r"\bReview PR #(\d+)\b")
 
 
 class SessionRestorer:
@@ -62,15 +67,11 @@ class SessionRestorer:
         restored = []
 
         for session_info in running:
-            issue_number = session_info["issue_number"]
-            tab_name = session_info["tab_name"]
-            is_review = session_info["is_review"]
+            issue_number = self._issue_number(session_info)
 
             try:
                 session = self._restore_single_session(
-                    issue_number=issue_number,
-                    tab_name=tab_name,
-                    is_review=is_review,
+                    session_info=session_info,
                     already_tracked=already_tracked + restored,
                 )
                 if session:
@@ -85,11 +86,55 @@ class SessionRestorer:
 
         return restored
 
+    def canonical_terminal_id(self, session_info: DiscoveredSession) -> str:
+        """Return the canonical terminal id for a discovered or known terminal."""
+        session_name = str(session_info.get("session_name") or "")
+        if session_name.startswith(_CANONICAL_SESSION_PREFIXES):
+            return session_name
+
+        issue_number = self._issue_number(session_info)
+        tab_name = str(session_info.get("tab_name") or "")
+        if session_info.get("is_review"):
+            pr_number = self._review_pr_number(session_info)
+            if pr_number is not None:
+                return f"review-{pr_number}"
+            logger.warning(
+                "[ORPHAN] Could not derive review PR number from discovered session; "
+                "falling back to issue number: issue=%s tab_name=%r session_name=%r",
+                issue_number,
+                tab_name,
+                session_name,
+            )
+            return f"review-{issue_number}"
+
+        if tab_name.startswith(_CANONICAL_SESSION_PREFIXES):
+            return tab_name
+        # Legacy records without session_name predate durable canonical ids.
+        # Non-review records were overwhelmingly issue sessions, so issue-N is
+        # the best recoverable identity if the tab title is also noncanonical.
+        return f"issue-{issue_number}"
+
+    def restore_known_terminal(
+        self,
+        *,
+        issue_number: int,
+        session_name: str,
+        is_review: bool,
+        already_tracked: list[Session],
+        tab_name: str = "",
+    ) -> list[Session]:
+        """Restore tracking for a terminal whose canonical id is already known."""
+        discovered = DiscoveredSession(
+            issue_number=issue_number,
+            tab_name=tab_name,
+            is_review=is_review,
+            session_name=session_name,
+        )
+        return self.restore_sessions([discovered], already_tracked)
+
     def _restore_single_session(
         self,
-        issue_number: int,
-        tab_name: str,
-        is_review: bool,
+        session_info: DiscoveredSession,
         already_tracked: list[Session],
     ) -> Optional[Session]:
         """Restore a single session.
@@ -97,17 +142,16 @@ class SessionRestorer:
         Returns:
             Session object if restored, None if skipped
         """
-        import re
+        issue_number = self._issue_number(session_info)
+        tab_name = str(session_info.get("tab_name") or "")
+        is_review = session_info["is_review"]
+        session_name = self.canonical_terminal_id(session_info)
 
         # Determine session type and session_name
         restored_pr_number: int | None = None
         if is_review:
-            # Extract PR number from tab name like "#123 Review PR #456"
-            pr_match = re.search(r'Review PR #(\d+)', tab_name)
-            restored_pr_number = int(pr_match.group(1)) if pr_match else issue_number
-            session_name = f"review-{restored_pr_number}"
-        else:
-            session_name = f"issue-{issue_number}"
+            match = _REVIEW_SESSION_RE.match(session_name)
+            restored_pr_number = int(match.group(1)) if match else issue_number
 
         # Skip if already tracking this session
         if any(s.terminal_id == session_name for s in already_tracked):
@@ -206,3 +250,20 @@ class SessionRestorer:
             issue_number,
         )
         print(f"  Orphaned issue #{issue_number} (stale label cleanup deferred)")
+
+    @staticmethod
+    def _issue_number(session_info: DiscoveredSession) -> int:
+        return int(session_info.get("issue_number") or 0)
+
+    @staticmethod
+    def _review_pr_number(session_info: DiscoveredSession) -> int | None:
+        session_name = str(session_info.get("session_name") or "")
+        match = _REVIEW_SESSION_RE.match(session_name)
+        if match:
+            return int(match.group(1))
+
+        tab_name = str(session_info.get("tab_name") or "")
+        match = _REVIEW_TITLE_RE.search(tab_name)
+        if match:
+            return int(match.group(1))
+        return None

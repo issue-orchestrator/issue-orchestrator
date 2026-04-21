@@ -614,6 +614,7 @@ class TestLaunchIssueSession:
 
         assert result.success is False
         assert "Terminal session already running" in result.reason
+        assert result.keep_queued is True
 
     def test_adds_in_progress_label(self, launcher_bundle, sample_issue, mock_repo_host):
         """Verify in-progress label is added."""
@@ -1531,6 +1532,43 @@ class TestOrchestratorLaunchSession:
         assert len(state.active_sessions) == 1
         assert state.active_sessions[0].terminal_id == "issue-123"
 
+    def test_restores_orphaned_terminal_when_keep_queued(
+        self,
+        launcher_bundle,
+        sample_issue,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Verify an existing untracked issue terminal is restored."""
+        launcher_bundle.session_exists_override[0] = lambda name: name == "issue-123"
+        state = OrchestratorState()
+        restored = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=sample_issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path,
+            branch_name="123-test",
+        )
+        mock_restorer = MagicMock()
+        mock_restorer.restore_known_terminal.return_value = [restored]
+
+        result = orchestrator_launch_session(
+            sample_issue,
+            state,
+            launcher_bundle.launcher,
+            mock_restorer,
+        )
+
+        assert result is restored
+        assert state.active_sessions == [restored]
+        mock_restorer.restore_known_terminal.assert_called_once()
+        restore_kwargs = mock_restorer.restore_known_terminal.call_args.kwargs
+        assert restore_kwargs["issue_number"] == 123
+        assert restore_kwargs["session_name"] == "issue-123"
+        assert restore_kwargs["is_review"] is False
+        assert restore_kwargs["already_tracked"] is state.active_sessions
+
 
 class TestOrchestratorLaunchReviewSession:
     """Tests for orchestrator_launch_review_session function (lines 977, 990)."""
@@ -1569,13 +1607,13 @@ class TestOrchestratorLaunchReviewSession:
         state.pending_reviews = [review]
 
         mock_restorer = MagicMock()
-        mock_restorer.restore_sessions.return_value = []
+        mock_restorer.restore_known_terminal.return_value = []
 
         result = orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer)
 
         assert result is None
         # Should have tried to restore
-        mock_restorer.restore_sessions.assert_called_once()
+        mock_restorer.restore_known_terminal.assert_called_once()
 
 
 class TestOrchestratorLaunchReworkSession:

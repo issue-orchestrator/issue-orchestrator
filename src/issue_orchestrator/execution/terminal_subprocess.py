@@ -450,6 +450,7 @@ class SubprocessPlugin:
                     "issue_number": record.issue_number,
                     "tab_name": record.tab_name,
                     "is_review": record.is_review,
+                    "session_name": record.session_name,
                 })
             else:
                 self._cleanup_session(record.session_name)

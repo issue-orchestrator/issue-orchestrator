@@ -1359,6 +1359,7 @@ class TestLaunchSessionDependencyCAS:
             orch.deps.worktree_manager = MagicMock()
             orch.deps.working_copy = MagicMock()
             orch.deps.command_runner = MagicMock()
+            orch.deps.session_restorer.restore_known_terminal.return_value = []
 
         # Original issue had no dependencies
         issue = Issue(
@@ -1427,6 +1428,7 @@ class TestLaunchSessionDependencyCAS:
             orch.deps.worktree_manager = mock_worktree_manager
             orch.deps.working_copy = MagicMock()
             orch.deps.command_runner = MagicMock()
+            orch.deps.session_restorer.restore_known_terminal.return_value = []
 
         issue = Issue(
             number=1,
