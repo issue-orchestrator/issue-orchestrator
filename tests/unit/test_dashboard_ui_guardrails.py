@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DASHBOARD_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
 DASHBOARD_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard"
 DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html"
+ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
 DASHBOARD_CSS = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard.css"
 
@@ -828,6 +829,15 @@ def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
     assert "e2eRunId" in block
 
 
+def test_issue_detail_timeline_view_preserves_e2e_run_route() -> None:
+    """Story/Ops/Debug switches must keep E2E issue detail run-scoped."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "setTimelineView")
+    assert "currentIssueDetailE2ERunId" in body
+    assert "/api/e2e-run/${e2eRunId}/issue-detail/${issueNumber}?view=${view}" in body
+    assert "/api/issue-detail/${issueNumber}?view=${view}" in body
+
+
 def test_issue_detail_drawer_stacks_above_modal_overlay() -> None:
     """Issue detail drawer must render ABOVE .modal-overlay (z-index 30).
 
@@ -957,12 +967,60 @@ def test_e2e_timeline_has_view_switcher() -> None:
     assert "'debug'" in body
 
 
+def test_e2e_run_timeline_is_directly_addressable() -> None:
+    """The run view exposes a first-class Timeline entrypoint and tab."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderUnifiedRunView")
+    assert "function openE2ERunTimeline(runId)" in js
+    assert "showUnifiedRunView(runId, {initialTab: 'timeline'})" in js
+    assert "options.initialTab === 'timeline'" in body
+    assert "hasTimelinePanel" in body
+    assert "timelineActive" in body
+    assert "renderE2ETimeline(timelineContainer, tl)" in body
+
+
+def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
+    """Run-level issue affordances open cycle-aware E2E issue timelines."""
+    js = _read(DASHBOARD_JS)
+    timeline_body = _function_body(js, "renderE2ETimeline")
+    affordance_body = _function_body(js, "renderE2EIssueTimelineAffordances")
+    assert "tl.issue_affordances" in timeline_body
+    assert "e2e-issue-timeline-affordances" in affordance_body
+    assert "openIssueDetail(${issueNumber}, this, {e2eRunId: ${runId}})" in affordance_body
+    css = _read_dashboard_css_bundle()
+    assert ".e2e-issue-timeline-affordances" in css
+    assert ".e2e-issue-timeline-btn" in css
+
+
+def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
+    """Run history and issue rows must offer direct Timeline controls."""
+    dashboard = _read(DASHBOARD_TEMPLATE)
+    issue_row = _read(ISSUE_ROW_TEMPLATE)
+    assert "openE2ERunTimeline({{ run.e2e_run_id }})" in dashboard
+    assert "openE2ERunTimeline({{ issue.e2e_run_id }})" in issue_row
+    assert "openIssueDetail({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
+    assert "openTimelineModal({{ issue.issue_number }})" not in issue_row
+
+
+def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:
+    """Issue card timeline buttons should open the cycle-aware drawer."""
+    js = _read(DASHBOARD_JS)
+    dashboard = _read(DASHBOARD_TEMPLATE)
+    css = _read_dashboard_css_bundle()
+    assert "card-timeline-btn" in js
+    assert "Open timeline for issue #${n}" in js
+    assert "openIssueDetail(${n}, this);event.stopPropagation();" in js
+    assert "card-timeline-btn" in dashboard
+    assert "Open timeline for issue #{{ card.issue_number }}" in dashboard
+    assert ".card-timeline-btn" in css
+
+
 def test_e2e_timeline_view_switcher_refetches() -> None:
     """View switcher re-fetches timeline with view param."""
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "switchE2ETimelineView")
     assert "view=" in body
-    assert "renderTimeline" in body
+    assert "renderE2ETimeline" in body
 
 
 def test_timeline_children_render_with_full_treatment() -> None:

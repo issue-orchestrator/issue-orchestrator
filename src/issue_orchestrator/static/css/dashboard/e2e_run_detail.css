@@ -47,6 +47,58 @@
     color: var(--bg);
     border-color: var(--accent);
 }
+.e2e-issue-timeline-affordances {
+    border: 1px solid var(--border);
+    background: var(--bg-panel-soft);
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 12px;
+}
+.e2e-issue-timeline-title {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+}
+.e2e-issue-timeline-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.e2e-issue-timeline-btn {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 6px;
+    min-height: 28px;
+    padding: 4px 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.e2e-issue-timeline-btn:hover,
+.e2e-issue-timeline-btn:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(78, 161, 255, 0.10);
+}
+.e2e-issue-timeline-number {
+    font-weight: 700;
+}
+.e2e-issue-timeline-label {
+    color: var(--text-muted);
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.e2e-timeline-error {
+    color: var(--danger);
+}
 .timeline-issue-links {
     margin-top: 6px;
     font-size: 12px;

@@ -1510,6 +1510,83 @@ class TestE2ETimelineControlEndpoint:
         # No nested children — frontend opens issue detail via openIssueDetail
         assert test_started.get("children", []) == []
 
+    def test_run_level_issue_affordances_survive_when_no_test_window_matches(
+        self,
+        tmp_path,
+    ):
+        """Control timeline response exposes run-level issue timeline links.
+
+        Per-event issue affordances are still window-scoped to pytest
+        rows. The run drawer also needs a top-level issue list so a user
+        can open cycle-aware issue timelines even when agent activity does
+        not align with an individual test_started/test_completed window.
+        """
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
+
+        e2e_key = TimelineKey.for_e2e_run(1).to_store_key()
+        store.append(e2e_key, TimelineRecord(
+            event_id="e1", timestamp="2026-01-01T00:00:00Z",
+            event="e2e.test_started", data={"nodeid": "test_a"},
+            source_event="e2e.test_started",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="e2", timestamp="2026-01-01T00:01:00Z",
+            event="e2e.test_completed",
+            data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 55},
+            source_event="e2e.test_completed",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-late", timestamp="2026-01-01T00:03:00Z",
+            event="e2e.agent_snapshot",
+            data={"event": "agent.coding_started", "timestamp": "2026-01-01T00:03:00Z",
+                  "issue_number": 43, "branch_name": "43-m1-001-late-agent-test-issue",
+                  "views": ["user", "ops", "debug"]},
+            source_event="e2e.agent_snapshot",
+        ))
+        store.append(e2e_key, TimelineRecord(
+            event_id="snap-debug", timestamp="2026-01-01T00:03:30Z",
+            event="e2e.agent_snapshot",
+            data={"event": "agent.debug_probe", "timestamp": "2026-01-01T00:03:30Z",
+                  "issue_number": 44, "branch_name": "44-m1-002-debug-only-test-issue",
+                  "views": ["debug"]},
+            source_event="e2e.agent_snapshot",
+        ))
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+
+        test_started = next(e for e in payload["events"] if e.get("event") == "e2e.test_started")
+        assert test_started.get("issue_affordances") == []
+        assert payload["issue_affordances"] == [
+            {
+                "issue_number": 43,
+                "run_id": 1,
+                "label": "late-agent",
+                "branch_name": "43-m1-001-late-agent-test-issue",
+            },
+        ]
+
+        debug_response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path), "view": "debug"},
+        )
+        assert debug_response.status_code == 200
+        debug_issues = [
+            a["issue_number"] for a in debug_response.json()["issue_affordances"]
+        ]
+        assert debug_issues == [43, 44]
+
     def test_in_progress_test_window_attaches_issue_affordances(self, tmp_path):
         """Control endpoint also pins live in-progress issue_affordances.
 
@@ -1577,7 +1654,12 @@ class TestE2ETimelineControlEndpoint:
             params={"repo_root": str(tmp_path)},
         )
         assert response.status_code == 200
-        assert response.json()["events"] == []
+        assert response.json() == {
+            "events": [],
+            "phase_toc": [],
+            "cycles": [],
+            "issue_affordances": [],
+        }
 
     def test_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
         """Full endpoint repro through the worktree-fallback agent-events route.

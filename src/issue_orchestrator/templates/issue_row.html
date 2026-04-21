@@ -104,6 +104,9 @@
             <button class="issue-action-btn view-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
                 <span aria-hidden="true">👁</span> View
             </button>
+            <button class="issue-action-btn view-btn" onclick="openE2ERunTimeline({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Open run timeline">
+                <span aria-hidden="true">🧭</span> Timeline
+            </button>
             {% elif issue.e2e_sub_issues %}
             <a href="{{ issue.issue_url }}" target="_blank" class="issue-action-btn link-btn" onclick="event.stopPropagation();" aria-label="View issue on GitHub" title="View issue on GitHub">
                 <span aria-hidden="true">↗</span> View
@@ -142,14 +145,14 @@
             {% endif %}
             {% if issue.is_e2e and issue.e2e_run_id and active_tab != 'e2e' %}
             {# E2E runs on non-E2E tabs get a timeline button (E2E tab has the View button) #}
-            <button class="issue-timeline-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Timeline">
+            <button class="issue-timeline-btn" onclick="openE2ERunTimeline({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Timeline">
                 🧭
             </button>
             {% elif not (issue.is_e2e or issue.e2e_sub_issues or issue.e2e_failed_tests) %}
             <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
                 🧾
             </button>
-            <button class="issue-timeline-btn" onclick="openTimelineModal({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open timeline for issue #{{ issue.issue_number }}" title="Timeline">
+            <button class="issue-timeline-btn" onclick="openIssueDetail({{ issue.issue_number }}, this); event.stopPropagation();" aria-label="Open timeline for issue #{{ issue.issue_number }}" title="Timeline">
                 🧭
             </button>
             {% endif %}

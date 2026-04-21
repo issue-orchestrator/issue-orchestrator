@@ -16,6 +16,7 @@ from .control_api_e2e_support import (
 )
 from .control_api_e2e_issue_creation import create_e2e_sub_issues
 from .e2e_affordances import (
+    _collect_issue_affordances,
     _filter_nest_and_project_agent_events,
     _load_worktree_agent_events,
 )
@@ -367,7 +368,14 @@ async def e2e_run_timeline_endpoint(
         records = store.read(store_key)
 
         if not records:
-            return JSONResponse({"events": []})
+            return JSONResponse(
+                {
+                    "events": [],
+                    "phase_toc": [],
+                    "cycles": [],
+                    "issue_affordances": [],
+                },
+            )
 
         e2e_records = [record for record in records if record.event != "e2e.agent_snapshot"]
         snapshot_records = [record for record in records if record.event == "e2e.agent_snapshot"]
@@ -387,6 +395,11 @@ async def e2e_run_timeline_endpoint(
 
         if view not in {"user", "ops", "debug"}:
             view = "user"
+        issue_affordances = _collect_issue_affordances(
+            agent_events,
+            run_id=run_id,
+            view=view,
+        )
         events = _filter_nest_and_project_agent_events(
             e2e_events,
             agent_events,
@@ -399,6 +412,7 @@ async def e2e_run_timeline_endpoint(
                 "events": events,
                 "phase_toc": _build_phase_toc(events),
                 "cycles": _build_timeline_cycles(events),
+                "issue_affordances": issue_affordances,
             },
         )
     except Exception as exc:

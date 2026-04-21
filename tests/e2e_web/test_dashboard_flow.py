@@ -26,7 +26,35 @@ def test_flow_card_opens_issue_detail_drawer(page: Page, web_server: dict[str, o
     card_focus.click()
 
     expect(page.locator("#issueDetailDrawer.visible")).to_be_visible()
-    expect(page.locator("#issueDetailTitle")).to_contain_text("Issue #408")
+    expect(page.locator("#issueDetailTitle")).to_contain_text("Flow smoke item")
+
+
+def test_issue_card_timeline_button_opens_cycle_timeline(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """The visible card Timeline affordance opens the cycle-aware drawer."""
+    page.goto(str(web_server["url"]), wait_until="domcontentloaded")
+
+    timeline_btn = page.locator(
+        ".dashboard-columns .issue-card[data-issue='408'] .card-timeline-btn"
+    ).first
+    expect(timeline_btn).to_be_visible(timeout=5000)
+    timeline_btn.click()
+
+    drawer = page.locator("#issueDetailDrawer.visible")
+    expect(drawer).to_be_visible(timeout=5000)
+    expect(page.locator("#issueDetailTitle")).to_contain_text("Flow smoke item")
+
+    journey = page.locator("#issueDetailJourney")
+    expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
+    expect(journey.locator(".journey-cycle").first).to_be_visible(timeout=5000)
+    expect(journey).to_contain_text("Cycle 1")
+    expect(journey).to_contain_text("Coding")
+    expect(journey).to_contain_text("Review")
+    expect(journey).to_contain_text("Agent finished coding")
+    expect(journey).to_contain_text("Review approved")
+    expect(journey.locator(".timeline-empty")).to_have_count(0)
 
 
 def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> None:

@@ -185,6 +185,7 @@
                                                 onclick="openCompactCardActionsMenu(event, this)"
                                                 title="More actions for issue #{{ card.issue_number }}"
                                                 aria-label="More actions for issue #{{ card.issue_number }}">&#x22EE;</button>
+                                        <button class="card-timeline-btn" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Open timeline for issue #{{ card.issue_number }}" aria-label="Open timeline for issue #{{ card.issue_number }}">&#x1F9ED;</button>
                                         <button class="card-detail-chevron" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="View details" aria-label="View issue #{{ card.issue_number }} details">&#x25B8;</button>
                                     </div>
                                 </div>
@@ -314,6 +315,7 @@
                                 <div class="attention-actions">
                                     {% if run.e2e_run_id %}
                                     <button class="issue-action-btn" onclick="showUnifiedRunView({{ run.e2e_run_id }});event.stopPropagation();">Open run</button>
+                                    <button class="issue-action-btn" onclick="openE2ERunTimeline({{ run.e2e_run_id }});event.stopPropagation();">Timeline</button>
                                     {% endif %}
                                     {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
                                     <button class="issue-action-btn" onclick="triageE2ERun();event.stopPropagation();">Triage</button>
