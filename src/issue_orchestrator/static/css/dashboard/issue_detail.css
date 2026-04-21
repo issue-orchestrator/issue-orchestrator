@@ -178,6 +178,10 @@
     align-items: flex-start;
     gap: 6px;
 }
+.journey-summary-row .timeline-event-menu {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
 .journey-narrative {
     color: var(--text);
     flex: 1 1 320px;
@@ -370,4 +374,3 @@
 @keyframes startup-spin {
     to { transform: rotate(360deg); }
 }
-

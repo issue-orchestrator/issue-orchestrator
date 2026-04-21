@@ -404,6 +404,7 @@ function openModal(title, content) {
 function closeModal(e) {
     if (!e || e.target === modalOverlay) {
         modalOverlay.classList.remove('visible');
+        modalOverlay.classList.remove('timeline-event-detail-overlay');
         // Reset modal classes for viewers
         const modalEl = modalOverlay.querySelector('.modal');
         modalEl.classList.remove('diagnostics-modal', 'log-viewer-modal', 'live-log-modal');

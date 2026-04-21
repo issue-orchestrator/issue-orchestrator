@@ -396,6 +396,33 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         _TEST_4057_NODEID,
     )
 
+    # Every rendered event row must expose an obvious overflow affordance
+    # for details/actions. This catches the regression where the hint
+    # referenced a "⋯" button but E2E timeline cards rendered no trigger
+    # at all when they had no backend-provided actions.
+    details_trigger = test_4057_event.locator(".timeline-event-menu-trigger").first
+    expect(details_trigger).to_be_visible(timeout=5000)
+    details_trigger.click()
+    details_action = test_4057_event.locator(
+        ".timeline-detail-action", has_text="Event Details",
+    ).first
+    expect(details_action).to_be_visible(timeout=5000)
+    action_payload = details_action.get_attribute("data-action") or ""
+    assert "detail_id" in action_payload, (
+        f"event details action should reference a compact lookup id: {action_payload!r}"
+    )
+    assert _TEST_4057_NODEID not in action_payload, (
+        "event details action should not duplicate the full event payload in data-action"
+    )
+    details_action.click()
+    event_detail_modal = page.locator("#modalOverlay.visible")
+    expect(event_detail_modal).to_be_visible(timeout=5000)
+    expect(page.locator("#modalTitle")).to_contain_text("Timeline Event:")
+    expect(page.locator("#modalBody")).to_contain_text(_TEST_4057_NODEID)
+    expect(page.locator("#modalBody")).to_contain_text("Raw event JSON")
+    page.locator("#modalOverlay .modal-close").first.click()
+    expect(page.locator("#modalOverlay.visible")).to_have_count(0, timeout=5000)
+
     # --- Ask 1: scope link assertions to the test_4057 row ---
     # Affordances now render as "label (N)" with a hover title carrying
     # the full branch name. For run_88, test_4057 carries 5723 and 5724:
@@ -538,7 +565,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # The fixture stager wired one agent.coding_started event for
     # issue 5705 at a real tmp_path run_dir with a synthetic
     # terminal-recording.jsonl. The action decorator therefore emits
-    # a "Session Recording" button on that event; click it and verify
+    # a "Session Recording" action on that event; click it and verify
     # the session-replay modal opens AND loads real terminal content
     # from the endpoint.
     #
@@ -565,8 +592,16 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         1, timeout=5000,
     )
 
-    session_recording_btn = journey.locator(
-        ".timeline-action-btn", has_text="Session Recording"
+    session_recording_menu = journey.locator(
+        ".timeline-event-menu",
+        has=page.locator(".timeline-action-btn", has_text="Session Recording"),
+    ).first
+    expect(session_recording_menu.locator(".timeline-event-menu-trigger")).to_be_visible(
+        timeout=5000,
+    )
+    session_recording_menu.locator(".timeline-event-menu-trigger").click()
+    session_recording_btn = session_recording_menu.locator(
+        ".timeline-action-btn", has_text="Session Recording",
     ).first
     expect(session_recording_btn).to_be_visible(timeout=5000)
     session_recording_btn.scroll_into_view_if_needed()

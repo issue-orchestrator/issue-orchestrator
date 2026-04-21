@@ -8,6 +8,11 @@
     z-index: 30;
 }
 .modal-overlay.visible { display: flex; }
+/* Required when event details open directly from the E2E run drawer, before
+   the issue-detail drawer's global modal elevation rule is active. */
+.modal-overlay.timeline-event-detail-overlay {
+    z-index: 45;
+}
 .modal {
     width: min(1100px, 94vw);
     max-height: 88vh;
@@ -368,9 +373,14 @@
     border-radius: 6px;
     font-size: 12px;
     padding: 7px 9px;
+    cursor: pointer;
 }
 .timeline-more-item:hover {
     background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
+}
+.timeline-detail-action {
+    color: var(--accent);
+    font-weight: 600;
 }
 .timeline-action-divider {
     width: 100%;
@@ -381,6 +391,43 @@
     margin: 8px 0 10px;
     font-size: 11px;
     color: var(--text-muted);
+}
+.timeline-event-detail-modal {
+    display: grid;
+    gap: 12px;
+}
+.timeline-event-detail-list {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+    gap: 8px 12px;
+    margin: 0;
+}
+.timeline-event-detail-row {
+    display: contents;
+}
+.timeline-event-detail-row dt {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+}
+.timeline-event-detail-row dd {
+    min-width: 0;
+    margin: 0;
+}
+.timeline-event-detail-row pre,
+.timeline-event-raw-json pre {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.timeline-event-raw-json {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+}
+.timeline-event-raw-json summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 12px;
 }
 .diag-modal {
     display: grid;

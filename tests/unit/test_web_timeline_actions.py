@@ -33,6 +33,7 @@ class TestTimelineActionWiring:
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
         "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
+        "show_event_details": None,  # client-side modal for row payload inspection
     }
     _REQUIRED_FIELDS_BY_ACTION: dict[str, tuple[str, ...]] = {
         "open_validation_failure": ("issue_number", "run_dir"),
