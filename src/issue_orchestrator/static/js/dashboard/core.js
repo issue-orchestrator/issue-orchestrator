@@ -21,6 +21,20 @@ function escapeAttr(text) {
         .replace(/>/g, '&gt;');
 }
 
+function applyLifecycleDataset(container, lifecycle) {
+    if (!container) return;
+    if (!lifecycle || typeof lifecycle !== 'object') {
+        delete container.dataset.lifecycleKind;
+        delete container.dataset.lifecycleIterations;
+        return;
+    }
+    container.dataset.lifecycleKind = String(lifecycle.kind || '');
+    const iterations = Array.isArray(lifecycle.runs)
+        ? lifecycle.runs.length
+        : (lifecycle.current ? 1 : 0);
+    container.dataset.lifecycleIterations = String(iterations);
+}
+
 let terminalBackend = 'tmux';
 let clientCapabilities = {
     focus_session: false,

@@ -9,6 +9,8 @@ from issue_orchestrator.view_models.lifecycle_projection import (
     project_dashboard_lifecycle_container,
     project_e2e_run_iteration,
     project_e2e_suite_lifecycle_container,
+    project_e2e_suite_lifecycle_container_for_run,
+    project_issue_lifecycles_from_events,
     project_issue_lifecycle,
 )
 from issue_orchestrator.view_models.lifecycle_semantics import (
@@ -20,6 +22,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     MissingReviewEvidence,
     PassedE2ETestExecution,
     ReviewChangesRequested,
+    RunningCodingAttempt,
     command_kinds,
 )
 
@@ -204,6 +207,44 @@ def test_dashboard_projection_container_iterates_singleton_issue_model() -> None
     assert iterations[0].issue_lifecycles[0].issue_number == 5723
 
 
+def test_issue_lifecycle_without_events_is_explicit_missing_evidence_cycle() -> None:
+    lifecycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=[],
+        cycles=[],
+    )
+
+    assert len(lifecycle.cycles) == 1
+    coder = lifecycle.cycles[0].coder
+    assert isinstance(coder, MissingCodingEvidence)
+    assert coder.expected_state == "running"
+    assert coder.missing[0].evidence == "coding_start"
+
+
+def test_issue_lifecycles_from_events_group_issues_and_synthesize_cycles() -> None:
+    complete_events = tuple(dict(event, issue_number=5723) for event in _complete_issue_events())
+    running_event = _event(
+        "agent.coding_started",
+        event_id="coding-start-2",
+        timestamp="2026-04-21T12:20:00Z",
+        agent="agent:coder-2",
+        run_dir="/tmp/run-2",
+        issue_number=5724,
+    )
+
+    lifecycles = project_issue_lifecycles_from_events(
+        (*complete_events, running_event),
+        title_prefix="E2E Issue",
+        review_required=True,
+    )
+
+    assert [lifecycle.issue_number for lifecycle in lifecycles] == [5723, 5724]
+    assert lifecycles[0].title == "E2E Issue #5723"
+    assert isinstance(lifecycles[0].cycles[0].coder, CompletedCodingAttempt)
+    assert isinstance(lifecycles[1].cycles[0].coder, RunningCodingAttempt)
+
+
 def test_e2e_projection_builds_passed_and_failed_tests() -> None:
     events = [
         _event("e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"),
@@ -344,3 +385,34 @@ def test_e2e_suite_container_accepts_linked_issue_lifecycle() -> None:
     )
 
     assert tuple(container.iter_iterations()) == (iteration,)
+
+
+def test_e2e_suite_container_for_run_populates_linked_issue_lifecycle() -> None:
+    test_start = _event(
+        "e2e.test_started",
+        event_id="test-start",
+        timestamp="2026-04-21T12:01:00Z",
+        nodeid="tests/e2e/test_time.py::test_visible",
+    )
+    test_done = _event(
+        "e2e.test_completed",
+        event_id="test-done",
+        timestamp="2026-04-21T12:01:05Z",
+        nodeid="tests/e2e/test_time.py::test_visible",
+        outcome="passed",
+        issue_affordances=[{"issue_number": 5723, "run_id": 88}],
+    )
+    agent_events = tuple(dict(event, issue_number=5723) for event in _complete_issue_events())
+
+    container = project_e2e_suite_lifecycle_container_for_run(
+        run_id=88,
+        events=[test_start, test_done],
+        agent_events=agent_events,
+        subject_label="E2E",
+    )
+
+    iteration = tuple(container.iter_iterations())[0]
+    assert iteration.e2e_run.linked_issue_lifecycles[0].issue_number == 5723
+    test = iteration.e2e_run.tests[0]
+    assert isinstance(test, PassedE2ETestExecution)
+    assert [linked.issue_number for linked in test.linked_issues] == [5723]

@@ -8,6 +8,7 @@ exercise the UI.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -152,7 +153,7 @@ def project_issue_lifecycle(
 ) -> IssueLifecycle:
     """Project issue timeline cycles into explicit coder/reviewer child models."""
     projected_cycles: list[IssueCycle] = []
-    for index, cycle in enumerate(cycles, start=1):
+    for index, cycle in enumerate(_semantic_cycle_inputs(events, cycles), start=1):
         cycle_events = _cycle_events(cycle, events)
         cycle_number = _positive_int(cycle.get("cycle"), default=index)
         coder = _project_coder(
@@ -182,6 +183,30 @@ def project_issue_lifecycle(
     )
 
 
+def project_issue_lifecycles_from_events(
+    events: Sequence[EventDict],
+    *,
+    title_prefix: str = "Issue",
+    review_required: bool = False,
+) -> tuple[IssueLifecycle, ...]:
+    """Project mixed issue events into one lifecycle per issue number."""
+    events_by_issue: dict[int, list[EventDict]] = defaultdict(list)
+    for event in events:
+        issue_number = event.get("issue_number")
+        if isinstance(issue_number, int) and issue_number > 0:
+            events_by_issue[issue_number].append(event)
+    return tuple(
+        project_issue_lifecycle(
+            issue_number=issue_number,
+            title=f"{title_prefix} #{issue_number}",
+            events=issue_events,
+            cycles=(),
+            review_required=review_required,
+        )
+        for issue_number, issue_events in sorted(events_by_issue.items())
+    )
+
+
 def project_e2e_suite_lifecycle_container(
     *,
     subject_label: str,
@@ -198,6 +223,30 @@ def project_e2e_suite_lifecycle_container(
     )
     require_lifecycle_container_valid(container)
     return container
+
+
+def project_e2e_suite_lifecycle_container_for_run(
+    *,
+    run_id: int,
+    events: Sequence[EventDict],
+    agent_events: Sequence[EventDict],
+    subject_label: str = "E2E Suite",
+) -> E2ESuiteTimelineContainer:
+    """Build the suite container for one E2E run and its linked issue lifecycles."""
+    linked_issue_lifecycles = project_issue_lifecycles_from_events(
+        agent_events,
+        title_prefix="E2E Issue",
+    )
+    return project_e2e_suite_lifecycle_container(
+        subject_label=subject_label,
+        runs=(
+            project_e2e_run_iteration(
+                run_id=run_id,
+                events=events,
+                linked_issue_lifecycles=linked_issue_lifecycles,
+            ),
+        ),
+    )
 
 
 def project_e2e_run_iteration(
@@ -250,6 +299,18 @@ def _cycle_events(cycle: EventDict, all_events: Sequence[EventDict]) -> tuple[Ev
             if isinstance(event, Mapping) and event.get("logical_cycle") == cycle_number
         )
     return tuple(event for event in all_events if isinstance(event, Mapping))
+
+
+def _semantic_cycle_inputs(
+    events: Sequence[EventDict],
+    cycles: Sequence[EventDict],
+) -> tuple[EventDict, ...]:
+    real_cycles = tuple(cycle for cycle in cycles if isinstance(cycle, Mapping))
+    if real_cycles:
+        return real_cycles
+    if events:
+        return ({"cycle": 1, "events": list(events), "status": "observed"},)
+    return ({"cycle": 1, "events": [], "status": "missing_evidence"},)
 
 
 def _project_coder(
@@ -670,6 +731,8 @@ def _project_e2e_tests(
     events: Sequence[EventDict],
 ) -> list[E2ETestExecution]:
     ordered_nodeids, started_by_nodeid, completed_by_nodeid = _index_e2e_test_events(events)
+    if not ordered_nodeids:
+        return [_missing_collected_e2e_tests(events)]
     return [
         _project_e2e_test(
             run_id=run_id,
@@ -757,6 +820,28 @@ def _missing_started_e2e_test(*, nodeid: str, completed: EventDict) -> MissingE2
             ),
         ),
         commands=(_details_command(completed),),
+    )
+
+
+def _missing_collected_e2e_tests(events: Sequence[EventDict]) -> MissingE2ETestEvidence:
+    observed_at = _first_timestamp(events)
+    return MissingE2ETestEvidence(
+        nodeid="__e2e_tests__",
+        observed_at=observed_at,
+        missing=(
+            _missing(
+                "test_started_event",
+                "E2E run timeline did not include any test_started events",
+            ),
+        ),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="e2e.tests_missing",
+                message="E2E run lifecycle requires at least one test execution",
+                severity="error",
+            ),
+        ),
+        commands=(_details_command(events[0] if events else None),),
     )
 
 
@@ -1032,7 +1117,9 @@ __all__ = [
     "LifecycleProjectionError",
     "project_dashboard_lifecycle_container",
     "project_e2e_run_iteration",
+    "project_e2e_suite_lifecycle_container_for_run",
     "project_e2e_suite_lifecycle_container",
+    "project_issue_lifecycles_from_events",
     "project_issue_lifecycle",
     "require_lifecycle_container_valid",
 ]

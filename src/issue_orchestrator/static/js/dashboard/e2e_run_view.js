@@ -55,11 +55,15 @@ async function showUnifiedRunView(runId, options) {
 
 function normalizeE2ETimelineData(timelineData) {
     timelineData = timelineData || {};
+    const lifecycle = timelineData.lifecycle && typeof timelineData.lifecycle === 'object'
+        ? timelineData.lifecycle
+        : null;
     return {
         events: Array.isArray(timelineData.events) ? timelineData.events : [],
         phase_toc: Array.isArray(timelineData.phase_toc) ? timelineData.phase_toc : [],
         cycles: Array.isArray(timelineData.cycles) ? timelineData.cycles : [],
         issue_affordances: Array.isArray(timelineData.issue_affordances) ? timelineData.issue_affordances : [],
+        lifecycle,
         error: timelineData.error || timelineData.detail || '',
     };
 }
@@ -184,6 +188,7 @@ function renderUnifiedRunView(data, runId, options) {
 function renderE2ETimeline(container, timelineData) {
     if (!container) return;
     const tl = normalizeE2ETimelineData(timelineData || {});
+    applyLifecycleDataset(container, tl.lifecycle);
     container.innerHTML = `
         ${renderE2EIssueTimelineAffordances(tl.issue_affordances)}
         ${tl.error ? `<div class="timeline-empty e2e-timeline-error">${escapeHtml(tl.error)}</div>` : ''}

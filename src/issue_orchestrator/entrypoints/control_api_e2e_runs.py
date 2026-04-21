@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from ..contracts.ui_openapi_models import E2ERunTimelinePayload
 from .control_api_e2e_support import (
     ControlApiE2EDependencies,
     ControlApiE2EDependency,
@@ -25,6 +26,8 @@ from .timeline_presentation import (
     _build_timeline_cycles,
     _promote_e2e_test_event_fields,
 )
+from ..view_models.lifecycle_projection import project_e2e_suite_lifecycle_container_for_run
+from ..view_models.lifecycle_semantics import model_to_plain_dict
 
 logger = logging.getLogger(__name__)
 
@@ -369,12 +372,19 @@ async def e2e_run_timeline_endpoint(
 
         if not records:
             return JSONResponse(
-                {
-                    "events": [],
-                    "phase_toc": [],
-                    "cycles": [],
-                    "issue_affordances": [],
-                },
+                _validated_e2e_run_timeline_payload(
+                    {
+                        "events": [],
+                        "phase_toc": [],
+                        "cycles": [],
+                        "issue_affordances": [],
+                        "lifecycle": _e2e_run_lifecycle_payload(
+                            run_id=run_id,
+                            events=[],
+                            agent_events=[],
+                        ),
+                    }
+                ),
             )
 
         e2e_records = [record for record in records if record.event != "e2e.agent_snapshot"]
@@ -408,12 +418,19 @@ async def e2e_run_timeline_endpoint(
         )
 
         return JSONResponse(
-            {
-                "events": events,
-                "phase_toc": _build_phase_toc(events),
-                "cycles": _build_timeline_cycles(events),
-                "issue_affordances": issue_affordances,
-            },
+            _validated_e2e_run_timeline_payload(
+                {
+                    "events": events,
+                    "phase_toc": _build_phase_toc(events),
+                    "cycles": _build_timeline_cycles(events),
+                    "issue_affordances": issue_affordances,
+                    "lifecycle": _e2e_run_lifecycle_payload(
+                        run_id=run_id,
+                        events=events,
+                        agent_events=agent_events,
+                    ),
+                }
+            ),
         )
     except Exception as exc:
         logger.exception("Failed to get E2E run timeline: %s", exc)
@@ -421,6 +438,26 @@ async def e2e_run_timeline_endpoint(
             {"error": "db_error", "detail": str(exc)},
             status_code=500,
         )
+
+
+def _e2e_run_lifecycle_payload(
+    *,
+    run_id: int,
+    events: list[dict[str, Any]],
+    agent_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return model_to_plain_dict(
+        project_e2e_suite_lifecycle_container_for_run(
+            run_id=run_id,
+            events=events,
+            agent_events=agent_events,
+            subject_label="E2E Suite",
+        )
+    )
+
+
+def _validated_e2e_run_timeline_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return E2ERunTimelinePayload.model_validate(payload).model_dump(mode="json")
 
 
 @control_e2e_runs_router.get("/control/e2e/logs/{run_id}")

@@ -193,6 +193,18 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
     _validator("IssueDetailPayload").validate(payload)
 
 
+def test_e2e_run_timeline_payload_matches_ui_openapi() -> None:
+    payload = {
+        "events": [{"event": "e2e.test_completed", "status": "completed"}],
+        "phase_toc": [{"phase": "execution", "label": "Execution"}],
+        "cycles": [],
+        "issue_affordances": [{"issue_number": 12, "run_id": 88}],
+        "lifecycle": model_to_plain_dict(_e2e_container()),
+    }
+
+    _validator("E2ERunTimelinePayload").validate(payload)
+
+
 def test_lifecycle_dashboard_container_payload_matches_ui_openapi() -> None:
     container = DashboardTimelineContainer(
         subject=TimelineSubject(kind="dashboard", id="dashboard", label="Dashboard"),
@@ -210,6 +222,12 @@ def test_lifecycle_dashboard_container_payload_matches_ui_openapi() -> None:
 
 
 def test_lifecycle_e2e_container_payload_matches_ui_openapi() -> None:
+    _validator("LifecycleTimelineContainerPayload").validate(
+        model_to_plain_dict(_e2e_container())
+    )
+
+
+def _e2e_container() -> E2ESuiteTimelineContainer:
     run = E2ERunLifecycle(
         run_id=88,
         started_at="2026-04-21T11:00:00Z",
@@ -224,7 +242,7 @@ def test_lifecycle_e2e_container_payload_matches_ui_openapi() -> None:
         ),
         linked_issue_lifecycles=(_issue_lifecycle(12),),
     )
-    container = E2ESuiteTimelineContainer(
+    return E2ESuiteTimelineContainer(
         subject=TimelineSubject(kind="e2e_suite", id="suite", label="E2E Suite"),
         runs=(
             E2ERunIteration(
@@ -233,8 +251,6 @@ def test_lifecycle_e2e_container_payload_matches_ui_openapi() -> None:
             ),
         ),
     )
-
-    _validator("LifecycleTimelineContainerPayload").validate(model_to_plain_dict(container))
 
 
 def _issue_lifecycle(issue_number: int) -> IssueLifecycle:

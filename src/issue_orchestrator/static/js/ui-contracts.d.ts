@@ -8,6 +8,18 @@ export interface AgentIdentityPayload {
   role: "coder" | "reviewer" | "rework" | "validator" | "e2e_runner" | "orchestrator";
 }
 
+export interface BlockedCodingAttemptPayload {
+  agent: AgentIdentityPayload;
+  blocked_at: string;
+  commands: TimelineCommandPayload[];
+  diagnostics: TimelineDiagnosticPayload[];
+  issue_number: number;
+  kind: "blocked_coding_attempt";
+  reason: string;
+  session_recording: SessionRecordingEvidencePayload;
+  started_at?: string | null;
+}
+
 export interface BlockedIssuePayload {
   [key: string]: any;
 }
@@ -165,10 +177,30 @@ export interface E2ERunLifecyclePayload {
   tests: E2ETestExecutionPayload[];
 }
 
+export interface E2ERunTimelinePayload {
+  cycles: Record<string, any>[];
+  events: Record<string, any>[];
+  issue_affordances: Record<string, any>[];
+  lifecycle: LifecycleTimelineContainerPayload;
+  phase_toc: Record<string, any>[];
+}
+
 export interface E2ESuiteTimelineContainerPayload {
   kind: "e2e_suite";
   runs: E2ERunIterationPayload[];
   subject: TimelineSubjectPayload;
+}
+
+export interface FailedCodingAttemptPayload {
+  agent?: AgentIdentityPayload | null;
+  commands: TimelineCommandPayload[];
+  diagnostics: TimelineDiagnosticPayload[];
+  failed_at: string;
+  issue_number: number;
+  kind: "failed_coding_attempt";
+  reason: string;
+  session_recording: SessionRecordingEvidencePayload;
+  started_at?: string | null;
 }
 
 export interface FailedE2ETestExecutionPayload {
@@ -199,9 +231,11 @@ export interface IssueDetailPayload {
   actions: Record<string, any>[];
   blocked_detail: Record<string, any> | null;
   cycles: Record<string, any>[];
+  e2e_run_id?: number | null;
   events: Record<string, any>[];
   issue_number: number;
   issue_url: string;
+  lifecycle?: LifecycleTimelineContainerPayload;
   phase_toc: Record<string, any>[];
   previous_runs: Record<string, any>[];
   previous_runs_count: number;
@@ -260,11 +294,29 @@ export interface MissingCodingEvidencePayload {
   observed_at: string;
 }
 
+export interface MissingE2ETestEvidencePayload {
+  commands: TimelineCommandPayload[];
+  diagnostics: TimelineDiagnosticPayload[];
+  kind: "missing_e2e_test_evidence";
+  missing: MissingEvidencePayload[];
+  nodeid: string;
+  observed_at: string;
+}
+
 export interface MissingEvidencePayload {
   evidence: string;
   expected_ref?: string | null;
   kind: "missing_evidence";
   reason: string;
+}
+
+export interface MissingReviewEvidencePayload {
+  commands: TimelineCommandPayload[];
+  diagnostics: TimelineDiagnosticPayload[];
+  expected_state: "approved" | "changes_requested" | "running";
+  kind: "missing_review_evidence";
+  missing: MissingEvidencePayload[];
+  observed_at: string;
 }
 
 export interface OpenCompletionRecordCommandPayload {
@@ -321,6 +373,16 @@ export interface PhaseDialogPayload {
   title: string;
 }
 
+export interface ReviewApprovedPayload {
+  commands: TimelineCommandPayload[];
+  completed_at: string;
+  kind: "review_approved";
+  reviewer: AgentIdentityPayload;
+  session_recording: SessionRecordingEvidencePayload;
+  started_at: string;
+  transcript_available: boolean;
+}
+
 export interface ReviewChangesRequestedPayload {
   commands: TimelineCommandPayload[];
   completed_at: string;
@@ -334,6 +396,36 @@ export interface ReviewChangesRequestedPayload {
 export interface ReviewNotReachedPayload {
   kind: "review_not_reached";
   reason: "coding_in_progress" | "coding_failed" | "validation_failed" | "not_required";
+}
+
+export interface ReviewRunningPayload {
+  commands: TimelineCommandPayload[];
+  kind: "review_running";
+  reviewer: AgentIdentityPayload;
+  session_recording: SessionRecordingEvidencePayload;
+  started_at: string;
+}
+
+export interface ReviewSkippedPayload {
+  kind: "review_skipped";
+  reason: string;
+}
+
+export interface RunningCodingAttemptPayload {
+  agent: AgentIdentityPayload;
+  commands: TimelineCommandPayload[];
+  issue_number: number;
+  kind: "running_coding_attempt";
+  session_recording: SessionRecordingEvidencePayload;
+  started_at: string;
+}
+
+export interface RunningE2ETestExecutionPayload {
+  commands: TimelineCommandPayload[];
+  kind: "running_e2e_test";
+  linked_issues: LinkedIssueLifecyclePayload[];
+  nodeid: string;
+  started_at: string;
 }
 
 export interface SessionDiagnosticsActionPayload {
@@ -439,15 +531,15 @@ export interface ValidationPassedPayload {
   record_path: string;
 }
 
-export type CodingAttemptPayload = CompletedCodingAttemptPayload | MissingCodingEvidencePayload;
+export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
 
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
 
-export type E2ETestExecutionPayload = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload;
+export type E2ETestExecutionPayload = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload | RunningE2ETestExecutionPayload | MissingE2ETestEvidencePayload;
 
 export type LifecycleTimelineContainerPayload = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload;
 
-export type ReviewStagePayload = ReviewNotReachedPayload | ReviewChangesRequestedPayload;
+export type ReviewStagePayload = ReviewNotReachedPayload | ReviewSkippedPayload | ReviewRunningPayload | ReviewApprovedPayload | ReviewChangesRequestedPayload | MissingReviewEvidencePayload;
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 

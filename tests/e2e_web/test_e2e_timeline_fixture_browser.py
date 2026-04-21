@@ -414,6 +414,14 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     timeline_panel = page.locator("#e2eRunTimelineTab")
     expect(timeline_panel).to_be_visible(timeout=5000)
+    expect(page.locator("#e2eTimelineContent")).to_have_attribute(
+        "data-lifecycle-kind",
+        "e2e_suite",
+    )
+    expect(page.locator("#e2eTimelineContent")).to_have_attribute(
+        "data-lifecycle-iterations",
+        "1",
+    )
 
     # Run-level issue timeline buttons are the missing affordance from
     # the regression report. They must be visible before digging into
@@ -531,6 +539,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     detail_drawer = page.locator("#issueDetailDrawer.visible")
     expect(detail_drawer).to_be_visible(timeout=5000)
+    expect(page.locator("#issueDetailDrawer")).to_have_attribute(
+        "data-lifecycle-kind",
+        "dashboard",
+    )
     # Title alone is not sufficient — it's set before the fetch completes.
     expect(page.locator("#issueDetailTitle")).to_contain_text(
         f"Issue #{TEST_CLICK_ISSUE_NUMBER}"

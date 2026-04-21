@@ -253,6 +253,76 @@
           }
         }
       }
+    },
+    "/api/e2e-run/{run_id}/issue-detail/{issue_number}": {
+      "get": {
+        "summary": "Get issue detail payload scoped to an E2E run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "E2E-scoped issue detail",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/IssueDetailPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/control/e2e/run/{run_id}/timeline": {
+      "get": {
+        "summary": "Get E2E run timeline payload",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "repo_root",
+            "in": "query",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "E2E run timeline",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/E2ERunTimelinePayload"}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -421,6 +491,7 @@
         ],
         "properties": {
           "issue_number": {"type": "integer"},
+          "e2e_run_id": {"type": ["integer", "null"]},
           "title": {"type": "string"},
           "issue_url": {"type": "string"},
           "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -436,6 +507,7 @@
           "previous_runs_count": {"type": "integer"},
           "raw_events_count": {"type": "integer"},
           "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
+          "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
           "view": {"type": "string", "default": "user"}
         }
       },
@@ -817,6 +889,19 @@
           "pull_request_url": {"type": ["string", "null"]}
         }
       },
+      "RunningCodingAttemptPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "issue_number", "agent", "started_at", "session_recording", "commands"],
+        "properties": {
+          "kind": {"const": "running_coding_attempt"},
+          "issue_number": {"type": "integer"},
+          "agent": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
       "CompletedCodingAttemptPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -837,6 +922,43 @@
           "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
       },
+      "BlockedCodingAttemptPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "issue_number", "agent", "blocked_at", "reason",
+          "session_recording", "diagnostics", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "blocked_coding_attempt"},
+          "issue_number": {"type": "integer"},
+          "agent": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": ["string", "null"]},
+          "blocked_at": {"type": "string"},
+          "reason": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "FailedCodingAttemptPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "issue_number", "failed_at", "reason", "session_recording", "diagnostics", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "failed_coding_attempt"},
+          "issue_number": {"type": "integer"},
+          "agent": {"oneOf": [{"$ref": "#/components/schemas/AgentIdentityPayload"}, {"type": "null"}]},
+          "started_at": {"type": ["string", "null"]},
+          "failed_at": {"type": "string"},
+          "reason": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
       "MissingCodingEvidencePayload": {
         "type": "object",
         "additionalProperties": false,
@@ -853,7 +975,10 @@
       },
       "CodingAttemptPayload": {
         "oneOf": [
+          {"$ref": "#/components/schemas/RunningCodingAttemptPayload"},
           {"$ref": "#/components/schemas/CompletedCodingAttemptPayload"},
+          {"$ref": "#/components/schemas/BlockedCodingAttemptPayload"},
+          {"$ref": "#/components/schemas/FailedCodingAttemptPayload"},
           {"$ref": "#/components/schemas/MissingCodingEvidencePayload"}
         ],
         "discriminator": {"propertyName": "kind"}
@@ -865,6 +990,44 @@
         "properties": {
           "kind": {"const": "review_not_reached"},
           "reason": {"enum": ["coding_in_progress", "coding_failed", "validation_failed", "not_required"]}
+        }
+      },
+      "ReviewSkippedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reason"],
+        "properties": {
+          "kind": {"const": "review_skipped"},
+          "reason": {"type": "string"}
+        }
+      },
+      "ReviewRunningPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reviewer", "started_at", "session_recording", "commands"],
+        "properties": {
+          "kind": {"const": "review_running"},
+          "reviewer": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "ReviewApprovedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "reviewer", "started_at", "completed_at", "session_recording",
+          "transcript_available", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "review_approved"},
+          "reviewer": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "transcript_available": {"type": "boolean"},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
       },
       "ReviewChangesRequestedPayload": {
@@ -884,10 +1047,27 @@
           "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
       },
+      "MissingReviewEvidencePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "expected_state", "observed_at", "missing", "diagnostics", "commands"],
+        "properties": {
+          "kind": {"const": "missing_review_evidence"},
+          "expected_state": {"enum": ["approved", "changes_requested", "running"]},
+          "observed_at": {"type": "string"},
+          "missing": {"type": "array", "items": {"$ref": "#/components/schemas/MissingEvidencePayload"}},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
       "ReviewStagePayload": {
         "oneOf": [
           {"$ref": "#/components/schemas/ReviewNotReachedPayload"},
-          {"$ref": "#/components/schemas/ReviewChangesRequestedPayload"}
+          {"$ref": "#/components/schemas/ReviewSkippedPayload"},
+          {"$ref": "#/components/schemas/ReviewRunningPayload"},
+          {"$ref": "#/components/schemas/ReviewApprovedPayload"},
+          {"$ref": "#/components/schemas/ReviewChangesRequestedPayload"},
+          {"$ref": "#/components/schemas/MissingReviewEvidencePayload"}
         ],
         "discriminator": {"propertyName": "kind"}
       },
@@ -1002,10 +1182,37 @@
           "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
       },
+      "RunningE2ETestExecutionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "nodeid", "started_at", "linked_issues", "commands"],
+        "properties": {
+          "kind": {"const": "running_e2e_test"},
+          "nodeid": {"type": "string"},
+          "started_at": {"type": "string"},
+          "linked_issues": {"type": "array", "items": {"$ref": "#/components/schemas/LinkedIssueLifecyclePayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "MissingE2ETestEvidencePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "nodeid", "observed_at", "missing", "diagnostics", "commands"],
+        "properties": {
+          "kind": {"const": "missing_e2e_test_evidence"},
+          "nodeid": {"type": "string"},
+          "observed_at": {"type": "string"},
+          "missing": {"type": "array", "items": {"$ref": "#/components/schemas/MissingEvidencePayload"}},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
       "E2ETestExecutionPayload": {
         "oneOf": [
           {"$ref": "#/components/schemas/PassedE2ETestExecutionPayload"},
-          {"$ref": "#/components/schemas/FailedE2ETestExecutionPayload"}
+          {"$ref": "#/components/schemas/FailedE2ETestExecutionPayload"},
+          {"$ref": "#/components/schemas/RunningE2ETestExecutionPayload"},
+          {"$ref": "#/components/schemas/MissingE2ETestEvidencePayload"}
         ],
         "discriminator": {"propertyName": "kind"}
       },
@@ -1049,6 +1256,18 @@
           {"$ref": "#/components/schemas/E2ESuiteTimelineContainerPayload"}
         ],
         "discriminator": {"propertyName": "kind"}
+      },
+      "E2ERunTimelinePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["events", "phase_toc", "cycles", "issue_affordances", "lifecycle"],
+        "properties": {
+          "events": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "cycles": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "issue_affordances": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"}
+        }
       },
       "PhaseDialogPayload": {
         "type": "object",
