@@ -269,6 +269,7 @@ def _phase_for_event(event_name: str) -> str:
         "session.validation_retry_needed",
         "issue.pr_created",
         "review.queued",
+        "publish.failed",
     }:
         return "orchestrator"
     if event_name in {"issue.completed"}:
@@ -339,6 +340,7 @@ def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> st
         "rework.escalating",
         "dependency.blocked",
         "session.validation_retry_needed",
+        "publish.failed",
     }
     success_events = {
         "session.completed",
@@ -436,6 +438,8 @@ def _parent_key(issue_number: int, data: dict[str, Any]) -> str:
 def _summary_from_data(data: dict[str, Any], event_name: str = "") -> str | None:
     if is_e2e_event_name(event_name):
         return _e2e_summary(event_name, data)
+    if event_name == "publish.failed":
+        return _publish_failed_summary(data)
     for key in ("reason", "summary", "error", "status", "outcome"):
         value = data.get(key)
         if isinstance(value, str) and value:
@@ -468,6 +472,7 @@ def _e2e_summary(event_name: str, data: dict[str, Any]) -> str:
     return event_name
 
 
+_MAX_SUMMARY = 200
 _MAX_DETAIL = 200
 _MAX_REVIEW_COMMENT_DETAIL = 4000
 
@@ -560,6 +565,14 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
     elif event_name == "issue.needs_human":
         _add_if_new(parts, data.get("question"), summary_str)
 
+    elif event_name == "publish.failed":
+        branch = data.get("branch")
+        if isinstance(branch, str) and branch:
+            parts.append(f"Branch: {branch}")
+        retryable = data.get("retryable")
+        if isinstance(retryable, bool):
+            parts.append(f"Retryable: {'yes' if retryable else 'no'}")
+
     if not parts:
         return None
 
@@ -574,6 +587,27 @@ def _add_if_new(parts: list[str], value: Any, summary: str) -> None:
     """Append a string value to parts if it's not already in the summary."""
     if isinstance(value, str) and value and value not in summary:
         parts.append(value)
+
+
+def _publish_failed_summary(data: dict[str, Any]) -> str | None:
+    raw_error = data.get("error")
+    if not isinstance(raw_error, str) or not raw_error.strip():
+        return "Publish failed"
+    error = " ".join(raw_error.split())
+    stage = data.get("stage")
+    stage_label = {
+        "push_branch": "Push",
+        "create_pr": "PR creation",
+    }.get(stage if isinstance(stage, str) else "")
+    if stage_label:
+        return _truncate_summary(f"{stage_label} failed: {error}")
+    return _truncate_summary(error)
+
+
+def _truncate_summary(text: str) -> str:
+    if len(text) <= _MAX_SUMMARY:
+        return text
+    return text[: _MAX_SUMMARY - 1].rstrip() + "\u2026"
 
 
 def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:

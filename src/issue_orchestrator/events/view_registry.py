@@ -151,6 +151,9 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
     "issue.unblocked": [
         _user("issue.unblocked", "Issue unblocked", "orchestrator"),
     ],
+    "publish.failed": [
+        _user("publish.failed", "Publish failed", "orchestrator"),
+    ],
 
     # -- Triage --
     "triage.launching": [

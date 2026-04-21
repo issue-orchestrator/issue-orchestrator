@@ -1011,11 +1011,14 @@ def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:
     assert "Open timeline for issue #${n}" in js
     assert "function openIssueTimeline(issueNumber, triggerEl = null, opts = {})" in js
     assert "openIssueTimeline(${n}, this);event.stopPropagation();" in js
+    assert "card-detail-chevron" not in js
     assert "issueDetailTimelineHeading" in js
     assert "card-timeline-btn" in dashboard
     assert "Open timeline for issue #{{ card.issue_number }}" in dashboard
     assert "openIssueTimeline({{ card.issue_number }}, this);event.stopPropagation();" in dashboard
+    assert "card-detail-chevron" not in dashboard
     assert ".card-timeline-btn" in css
+    assert ".card-detail-chevron" not in css
 
 
 def test_e2e_timeline_view_switcher_refetches() -> None:

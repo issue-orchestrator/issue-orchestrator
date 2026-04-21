@@ -487,6 +487,34 @@ class TestTimelineActionWiring:
         assert validation_action["label"] == "Validation Details"
         assert validation_action["run_dir"] == str(run.run_dir)
 
+    def test_non_failed_validation_events_do_not_offer_failure_details(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-validation-passed-actions"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=1)
+
+        for event_name in (
+            "validation.passed",
+            "validation.retry",
+            "validation.started",
+            "validation.completed",
+        ):
+            actions = _timeline_event_actions(
+                {
+                    "event": event_name,
+                    "issue_number": 1,
+                    "run_dir": str(run.run_dir),
+                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                },
+                1,
+            )
+            action_types = {action.get("type") for action in actions}
+            assert "open_validation_failure" not in action_types, event_name
+            assert "open_orchestrator_log" in action_types, event_name
+
     def test_review_transcript_actions_bind_round_and_role_context(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput

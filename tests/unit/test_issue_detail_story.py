@@ -106,6 +106,21 @@ def test_status_explanation_blocked_publish_failed_no_matching_event() -> None:
     assert "Publishing failed" in result
 
 
+def test_status_explanation_blocked_publish_failed_uses_publish_event_reason() -> None:
+    ctx = _ctx(flow_stage="blocked", labels=("publish-failed",))
+    events = [
+        {
+            "event": "publish.failed",
+            "source_event": "publish.failed",
+            "summary": "Push failed: ERROR: Test-skipping patterns detected",
+        }
+    ]
+
+    result = _build_status_explanation(ctx, events)
+
+    assert result == "Publishing failed: Push failed: ERROR: Test-skipping patterns detected"
+
+
 def test_status_explanation_awaiting_merge() -> None:
     ctx = _ctx(flow_stage="awaiting_merge", pr_number=4124)
     assert _build_status_explanation(ctx, []) == "PR #4124 approved — ready to merge"

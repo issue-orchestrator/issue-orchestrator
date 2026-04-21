@@ -913,6 +913,28 @@ class TestPush:
             assert "rejected" in result.message
             assert result.retryable is False
 
+    def test_push_failure_preserves_hook_stdout_with_git_stderr(self, git_wc, worktree_path):
+        """Pre-push hooks often print actionable diagnostics to stdout."""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                git_error(
+                    stdout=(
+                        "ERROR: Test-skipping patterns detected\n"
+                        "+import org.junit.jupiter.api.Assumptions.assumeTrue"
+                    ),
+                    stderr="error: failed to push some refs",
+                ),
+            ]
+
+            result = git_wc.push(worktree_path)
+
+            assert result.success is False
+            assert "Test-skipping patterns detected" in result.message
+            assert "assumeTrue" in result.message
+            assert "failed to push some refs" in result.message
+
     def test_push_permission_denied(self, git_wc, worktree_path):
         """Test push failure due to permission denied."""
         with patch.object(git_wc, "_run_git") as mock_run:
