@@ -275,7 +275,7 @@ filtering:
   max_to_start: 0
 
 milestones:
-  sort: "due_date"                # due_date, milestone_number, pattern, name
+  sort: "milestone_number"        # milestone_number (default), due_date, pattern, name
   sort_config: {}
   # order: ["M1", "M2"]            # Explicit order; does not filter (unlisted milestones follow sort)
   foundation: "M0"

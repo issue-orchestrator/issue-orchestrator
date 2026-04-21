@@ -55,6 +55,19 @@ filtering:
   exclude_labels: ["test-data"]
 ```
 
+**Milestone sort strategy**
+```yaml
+milestones:
+  sort: "milestone_number"   # default: extracts first integer from title (M1 < M2 < M10)
+  # sort: "due_date"         # opt-in: sort by milestone due date; ties go to issue number
+  # sort: "pattern"          # opt-in: custom regex, requires sort_config.pattern
+  # sort: "name"             # opt-in: alphabetic by milestone title
+  # order: ["M0", "M1"]      # optional: explicit order for listed milestones (overrides sort)
+  foundation: "M0"
+```
+
+`milestone_number` is the default because it works whether or not milestones have due dates. `due_date` only sorts meaningfully when every milestone has a `dueOn` set; otherwise all due-less milestones tie and ordering falls through to issue number.
+
 **Enable code review**
 ```yaml
 review:
