@@ -177,7 +177,7 @@ function renderCompactCardHtml(card) {
                 <button class="card-refresh-btn" onclick="refreshIssueCard(${n}, this);event.stopPropagation();" title="Refresh issue #${n} from GitHub" aria-label="Refresh issue #${n}">&#x27F3;</button>
                 ${ghLink}
                 ${menuButton}
-                <button class="card-timeline-btn" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
+                <button class="card-timeline-btn" onclick="openIssueTimeline(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
                 <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
             </div>
         </div>
@@ -377,7 +377,7 @@ async function loadExpandedColumn(columnId, options = {}) {
                         ${columnId === 'completed' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'completed', this);event.stopPropagation();" title="Requeue issue #${n} for another run">Retry</button>` : ''}
                         ${issueLink}
                         ${prLink}
-                        <button class="card-timeline-btn" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
+                        <button class="card-timeline-btn" onclick="openIssueTimeline(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
                         <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
                     </div>
                 </div>`;

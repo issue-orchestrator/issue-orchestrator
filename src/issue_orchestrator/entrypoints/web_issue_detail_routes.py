@@ -14,7 +14,7 @@ from ..view_models.dashboard import issue_url_for
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
 from .e2e_affordances import (
     _attach_issue_numbers_to_test_windows,
-    _collect_issue_affordances,
+    collect_issue_affordances,
 )
 from .timeline_presentation import (
     _build_phase_toc,
@@ -320,7 +320,7 @@ async def get_e2e_run_detail(
         context=None,
         view=matcher_view,
     )
-    payload["issue_affordances"] = _collect_issue_affordances(
+    payload["issue_affordances"] = collect_issue_affordances(
         agent_events,
         run_id=run_id,
         view=matcher_view,

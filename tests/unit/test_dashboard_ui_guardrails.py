@@ -143,7 +143,7 @@ def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template(
 
 def test_issue_detail_uses_timeline_label_not_journey() -> None:
     html = _read(DASHBOARD_TEMPLATE)
-    assert '<h3 class="issue-detail-section-title">Timeline</h3>' in html
+    assert '<h3 class="issue-detail-section-title" id="issueDetailTimelineHeading" tabindex="-1">Timeline</h3>' in html
     assert '<h3 class="issue-detail-section-title">Journey</h3>' not in html
 
 
@@ -974,7 +974,7 @@ def test_e2e_run_timeline_is_directly_addressable() -> None:
     assert "function openE2ERunTimeline(runId)" in js
     assert "showUnifiedRunView(runId, {initialTab: 'timeline'})" in js
     assert "options.initialTab === 'timeline'" in body
-    assert "hasTimelinePanel" in body
+    assert "hasTimelinePanel" not in body
     assert "timelineActive" in body
     assert "renderE2ETimeline(timelineContainer, tl)" in body
 
@@ -986,7 +986,7 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
     affordance_body = _function_body(js, "renderE2EIssueTimelineAffordances")
     assert "tl.issue_affordances" in timeline_body
     assert "e2e-issue-timeline-affordances" in affordance_body
-    assert "openIssueDetail(${issueNumber}, this, {e2eRunId: ${runId}})" in affordance_body
+    assert "openIssueTimeline(${issueNumber}, this, {e2eRunId: ${runId}})" in affordance_body
     css = _read_dashboard_css_bundle()
     assert ".e2e-issue-timeline-affordances" in css
     assert ".e2e-issue-timeline-btn" in css
@@ -998,7 +998,7 @@ def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
     issue_row = _read(ISSUE_ROW_TEMPLATE)
     assert "openE2ERunTimeline({{ run.e2e_run_id }})" in dashboard
     assert "openE2ERunTimeline({{ issue.e2e_run_id }})" in issue_row
-    assert "openIssueDetail({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
+    assert "openIssueTimeline({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
     assert "openTimelineModal({{ issue.issue_number }})" not in issue_row
 
 
@@ -1009,9 +1009,12 @@ def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:
     css = _read_dashboard_css_bundle()
     assert "card-timeline-btn" in js
     assert "Open timeline for issue #${n}" in js
-    assert "openIssueDetail(${n}, this);event.stopPropagation();" in js
+    assert "function openIssueTimeline(issueNumber, triggerEl = null, opts = {})" in js
+    assert "openIssueTimeline(${n}, this);event.stopPropagation();" in js
+    assert "issueDetailTimelineHeading" in js
     assert "card-timeline-btn" in dashboard
     assert "Open timeline for issue #{{ card.issue_number }}" in dashboard
+    assert "openIssueTimeline({{ card.issue_number }}, this);event.stopPropagation();" in dashboard
     assert ".card-timeline-btn" in css
 
 

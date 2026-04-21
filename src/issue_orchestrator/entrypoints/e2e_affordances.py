@@ -158,7 +158,7 @@ def _issues_visible_in_view(
     return visible
 
 
-def _collect_issue_affordances(
+def collect_issue_affordances(
     agent_events: list[dict],
     run_id: int,
     view: str = "user",
@@ -243,8 +243,8 @@ def _filter_nest_and_project_agent_events(
 
 __all__ = [
     "_attach_issue_numbers_to_test_windows",
-    "_collect_issue_affordances",
     "_compact_branch_label",
     "_filter_nest_and_project_agent_events",
     "_load_worktree_agent_events",
+    "collect_issue_affordances",
 ]

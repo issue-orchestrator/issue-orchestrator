@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import socket
 import time
@@ -18,6 +19,15 @@ import issue_orchestrator.entrypoints.web as web_module
 from issue_orchestrator.entrypoints.web import app
 from issue_orchestrator.ports.timeline_store import TimelineRecord
 from tests.fixtures.web_contract_mocks import MockOrchestratorForWeb
+
+
+@dataclass(slots=True)
+class FlowWebDeps:
+    """Typed subset of orchestrator deps used by dashboard browser tests."""
+
+    timeline_store: SqliteTimelineStore
+    timeline_reader: DefaultTimelineReader
+    publish_recovery: MagicMock
 
 
 def find_free_port() -> int:
@@ -73,7 +83,7 @@ class UvicornTestServer:
 def _seed_issue_408_timeline(store: SqliteTimelineStore, repo_root: Path) -> None:
     """Populate the smoke-test issue with a realistic coding/review lifecycle."""
     run_dir = repo_root / ".issue-orchestrator" / "sessions" / "flow-run-1"
-    run_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "terminal-recording.jsonl").write_text(
         '{"event_type":"resize","offset_ms":0,"rows":24,"cols":80}\n',
         encoding="utf-8",
@@ -162,11 +172,13 @@ def _configure_flow_deps(orchestrator: FlowWebMockOrchestrator, repo_root: Path)
     store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
     _seed_issue_408_timeline(store, repo_root)
 
-    deps = MagicMock()
-    deps.timeline_store = store
-    deps.timeline_reader = DefaultTimelineReader(store)
-    deps.publish_recovery.can_retry_publish.return_value = False
-    orchestrator.deps = deps
+    publish_recovery = MagicMock(spec=["can_retry_publish"])
+    publish_recovery.can_retry_publish.return_value = False
+    orchestrator.deps = FlowWebDeps(
+        timeline_store=store,
+        timeline_reader=DefaultTimelineReader(store),
+        publish_recovery=publish_recovery,
+    )
     orchestrator.config.repo_root = repo_root
     orchestrator.config.config_path = repo_root / ".issue-orchestrator" / "config" / "default.yaml"
 

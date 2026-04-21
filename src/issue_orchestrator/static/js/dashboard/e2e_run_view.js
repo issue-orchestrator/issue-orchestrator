@@ -84,8 +84,7 @@ function renderUnifiedRunView(data, runId, options) {
     modalTitle.textContent = `Run #${run.id} - ${runDate}`;
 
     const tl = normalizeE2ETimelineData(data._timeline || {});
-    const hasTimelinePanel = Boolean(data._timeline);
-    const activeTab = options.initialTab === 'timeline' && hasTimelinePanel ? 'timeline' : 'tests';
+    const activeTab = options.initialTab === 'timeline' ? 'timeline' : 'tests';
     const testsActive = activeTab === 'tests';
     const timelineActive = activeTab === 'timeline';
 
@@ -99,11 +98,10 @@ function renderUnifiedRunView(data, runId, options) {
                 ${summary.passed > 0 ? `<span class="stat passed">${summary.passed} passed</span>` : ''}
                 ${summary.untriaged + summary.has_issue > 0 ? `<span class="stat failed">${summary.untriaged + summary.has_issue} failed</span>` : ''}
             </div>
-            ${hasTimelinePanel ? `
             <div class="e2e-run-tabs">
                 <button class="e2e-run-tab ${testsActive ? 'active' : ''}" onclick="switchE2ERunTab('tests', this)" data-tab="tests">Tests</button>
                 <button class="e2e-run-tab ${timelineActive ? 'active' : ''}" onclick="switchE2ERunTab('timeline', this)" data-tab="timeline">Timeline</button>
-            </div>` : ''}
+            </div>
         </div>
     `;
 
@@ -165,26 +163,22 @@ function renderUnifiedRunView(data, runId, options) {
     html += '</div>';
 
     // Timeline tab panel
-    if (hasTimelinePanel) {
-        html += `<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="${timelineActive ? '' : 'display: none;'}">
-            <div class="e2e-timeline-view-switcher">
-                <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this)" data-view="user">Story</button>
-                <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this)" data-view="ops">Ops</button>
-                <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this)" data-view="debug">Debug</button>
-            </div>
-            <div id="e2eTimelineContent"></div>
-        </div>`;
-    }
+    html += `<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="${timelineActive ? '' : 'display: none;'}">
+        <div class="e2e-timeline-view-switcher">
+            <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this)" data-view="user">Story</button>
+            <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this)" data-view="ops">Ops</button>
+            <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this)" data-view="debug">Debug</button>
+        </div>
+        <div id="e2eTimelineContent"></div>
+    </div>`;
 
     // Close the unified-run-view wrapper
     html += '</div>';
 
     content.innerHTML = html;
 
-    if (hasTimelinePanel) {
-        const timelineContainer = document.getElementById('e2eTimelineContent');
-        renderE2ETimeline(timelineContainer, tl);
-    }
+    const timelineContainer = document.getElementById('e2eTimelineContent');
+    renderE2ETimeline(timelineContainer, tl);
 }
 
 function renderE2ETimeline(container, timelineData) {
@@ -209,7 +203,7 @@ function renderE2EIssueTimelineAffordances(affordances) {
             const labelHtml = label
                 ? `<span class="e2e-issue-timeline-label">${escapeHtml(label)}</span>`
                 : '';
-            return `<button class="e2e-issue-timeline-btn" onclick="openIssueDetail(${issueNumber}, this, {e2eRunId: ${runId}});event.stopPropagation();" title="Open cycle timeline for issue #${issueNumber}" aria-label="Open cycle timeline for issue #${issueNumber}">
+            return `<button class="e2e-issue-timeline-btn" onclick="openIssueTimeline(${issueNumber}, this, {e2eRunId: ${runId}});event.stopPropagation();" title="Open cycle timeline for issue #${issueNumber}" aria-label="Open cycle timeline for issue #${issueNumber}">
                 <span class="e2e-issue-timeline-number">#${issueNumber}</span>${labelHtml}
             </button>`;
         })

@@ -185,7 +185,7 @@
                                                 onclick="openCompactCardActionsMenu(event, this)"
                                                 title="More actions for issue #{{ card.issue_number }}"
                                                 aria-label="More actions for issue #{{ card.issue_number }}">&#x22EE;</button>
-                                        <button class="card-timeline-btn" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Open timeline for issue #{{ card.issue_number }}" aria-label="Open timeline for issue #{{ card.issue_number }}">&#x1F9ED;</button>
+                                        <button class="card-timeline-btn" onclick="openIssueTimeline({{ card.issue_number }}, this);event.stopPropagation();" title="Open timeline for issue #{{ card.issue_number }}" aria-label="Open timeline for issue #{{ card.issue_number }}">&#x1F9ED;</button>
                                         <button class="card-detail-chevron" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="View details" aria-label="View issue #{{ card.issue_number }} details">&#x25B8;</button>
                                     </div>
                                 </div>
@@ -353,7 +353,7 @@
             <div class="issue-detail-validation-reason" id="issueDetailValidationReason"></div>
             <ul class="issue-detail-validation-tests" id="issueDetailValidationTests"></ul>
         </section>
-        <h3 class="issue-detail-section-title">Timeline</h3>
+        <h3 class="issue-detail-section-title" id="issueDetailTimelineHeading" tabindex="-1">Timeline</h3>
         <div class="issue-detail-journey" id="issueDetailJourney"></div>
         <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">
             <summary id="issueDetailPrevCyclesSummary">Previous runs</summary>

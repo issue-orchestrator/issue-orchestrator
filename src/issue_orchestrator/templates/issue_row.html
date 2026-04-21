@@ -152,7 +152,7 @@
             <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
                 🧾
             </button>
-            <button class="issue-timeline-btn" onclick="openIssueDetail({{ issue.issue_number }}, this); event.stopPropagation();" aria-label="Open timeline for issue #{{ issue.issue_number }}" title="Timeline">
+            <button class="issue-timeline-btn" onclick="openIssueTimeline({{ issue.issue_number }}, this); event.stopPropagation();" aria-label="Open timeline for issue #{{ issue.issue_number }}" title="Timeline">
                 🧭
             </button>
             {% endif %}

@@ -1,4 +1,9 @@
 let currentIssueDetailE2ERunId = null;
+let currentIssueDetailFocus = null;
+
+function openIssueTimeline(issueNumber, triggerEl = null, opts = {}) {
+    return openIssueDetail(issueNumber, triggerEl, {...opts, focus: 'timeline'});
+}
 
 function getIssueDetailFocusableElements() {
     if (!issueDetailDrawer) return [];
@@ -10,6 +15,7 @@ function getIssueDetailFocusableElements() {
 async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     if (!issueDetailDrawer) return;
     lastIssueDetailTrigger = triggerEl || document.activeElement;
+    currentIssueDetailFocus = opts && opts.focus === 'timeline' ? 'timeline' : null;
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
     document.getElementById('issueDetailTitle').textContent = `Issue #${issueNumber}`;
@@ -67,6 +73,7 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
 
 function closeIssueDetail() {
     if (!issueDetailDrawer) return;
+    currentIssueDetailFocus = null;
     issueDetailDrawer.classList.remove('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'true');
     if (lastIssueDetailTrigger && typeof lastIssueDetailTrigger.focus === 'function') {
@@ -768,6 +775,17 @@ function renderIssueDetail() {
             </div>
         `).join('') || '<div class="timeline-empty">No events recorded.</div>';
     };
+
+    applyIssueDetailInitialFocus();
+}
+
+function applyIssueDetailInitialFocus() {
+    if (currentIssueDetailFocus !== 'timeline') return;
+    const timelineHeading = document.getElementById('issueDetailTimelineHeading');
+    if (!timelineHeading) return;
+    timelineHeading.scrollIntoView({block: 'start'});
+    timelineHeading.focus({preventScroll: true});
+    currentIssueDetailFocus = null;
 }
 
 document.addEventListener('keydown', (event) => {

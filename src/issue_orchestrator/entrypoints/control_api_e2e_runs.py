@@ -16,9 +16,9 @@ from .control_api_e2e_support import (
 )
 from .control_api_e2e_issue_creation import create_e2e_sub_issues
 from .e2e_affordances import (
-    _collect_issue_affordances,
     _filter_nest_and_project_agent_events,
     _load_worktree_agent_events,
+    collect_issue_affordances,
 )
 from .timeline_presentation import (
     _build_phase_toc,
@@ -395,7 +395,7 @@ async def e2e_run_timeline_endpoint(
 
         if view not in {"user", "ops", "debug"}:
             view = "user"
-        issue_affordances = _collect_issue_affordances(
+        issue_affordances = collect_issue_affordances(
             agent_events,
             run_id=run_id,
             view=view,
