@@ -763,6 +763,49 @@ def test_queue_item_shows_textual_wait_reason():
     assert card["queue_wait_reason"].startswith("Waiting:")
 
 
+def test_queue_wait_reason_counts_only_runnable_items_ahead():
+    config = _make_config()
+    issues = [
+        Issue(number=1, title="Dependency blocked", labels=["agent:web"]),
+        Issue(number=2, title="Runnable ahead", labels=["agent:web"]),
+        Issue(number=3, title="Also dependency blocked", labels=["agent:web"]),
+        Issue(number=4, title="Runnable target", labels=["agent:web"]),
+    ]
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=issues,
+        dependency_problems={
+            1: DependencyProblem(
+                issue_number=1,
+                issue_title="Dependency blocked",
+                blocked_by=[(10, "Dep", "open")],
+                summary="Blocked - waiting on: #10",
+            ),
+            3: DependencyProblem(
+                issue_number=3,
+                issue_title="Also dependency blocked",
+                blocked_by=[(11, "Dep", "open")],
+                summary="Blocked - waiting on: #11",
+            ),
+        },
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    target = next(item for item in view_model.queue_items if item["issue_number"] == 4)
+    assert target["queue_wait_reason"] == "Waiting: 1 runnable queued ahead"
+
+    dep_blocked = next(item for item in view_model.queue_items if item["issue_number"] == 1)
+    assert dep_blocked["queue_wait_reason"] == "Waiting: Blocked - waiting on: #10"
+
+
 def test_publish_failed_issue_routes_to_blocked_lane():
     config = _make_config()
     issue = Issue(number=4057, title="Publish failed", labels=["agent:web", "publish-failed"])

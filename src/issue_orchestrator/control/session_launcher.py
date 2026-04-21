@@ -375,7 +375,7 @@ class SessionLauncher:
 
         if self._session_exists(session_name):
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running")
+            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
 
         return None
 

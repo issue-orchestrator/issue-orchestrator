@@ -104,6 +104,37 @@ def test_session_exists_returns_false_when_session_not_alive(tmp_path, monkeypat
     assert "issue-1" not in plugin._registry.load()  # noqa: SLF001
 
 
+def test_discover_running_sessions_includes_canonical_session_name(tmp_path, monkeypatch):
+    """Registry discovery exposes the persisted terminal id to callers."""
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    plugin = SubprocessPlugin()
+    record = _SessionRecord(
+        session_name="review-456",
+        issue_number=100,
+        worktree_path=str(worktree),
+        pid=4242,
+        started_at="2026-01-01T00:00:00",
+        log_path=str(worktree / "ui-session.log"),
+        tab_name="Review PR #456",
+        is_review=True,
+    )
+    plugin._registry.upsert(record)  # noqa: SLF001
+    monkeypatch.setattr(plugin, "_process_alive", lambda pid, session_name=None: True)  # noqa: ARG005, SLF001
+
+    assert plugin.discover_running_sessions() == [
+        {
+            "issue_number": 100,
+            "tab_name": "Review PR #456",
+            "is_review": True,
+            "session_name": "review-456",
+        }
+    ]
+
+
 def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"

@@ -7,7 +7,7 @@ details (currently subprocess-based).
 This abstraction keeps terminal backend details out of the core.
 """
 
-from typing import Protocol, TypedDict
+from typing import NotRequired, Protocol, TypedDict
 
 
 class DiscoveredSession(TypedDict):
@@ -16,6 +16,7 @@ class DiscoveredSession(TypedDict):
     issue_number: int
     tab_name: str
     is_review: bool
+    session_name: NotRequired[str]
 
 
 class SessionRunner(Protocol):
