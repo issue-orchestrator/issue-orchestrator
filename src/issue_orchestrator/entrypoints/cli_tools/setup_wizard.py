@@ -259,13 +259,13 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
         prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
         prompter.print("Milestone sort strategies:")
+        prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10) [default]")
         prompter.print("  due_date         - By milestone due date (earliest first)")
-        prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10)")
         prompter.print("  pattern          - Custom regex to extract number")
         prompter.print("  name             - Alphabetically by milestone name\n")
         valid_strategies = ("due_date", "milestone_number", "pattern", "name")
         while True:
-            milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+            milestone_sort = prompter.input("Milestone sort strategy", "milestone_number")
             if milestone_sort in valid_strategies:
                 break
             prompter.print(
@@ -303,7 +303,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
         milestones_config["foundation"] = foundation_milestone
     else:
-        config["milestones"] = {"sort": "due_date", "foundation": "M0"}
+        config["milestones"] = {"sort": "milestone_number", "foundation": "M0"}
 
     # Worktree location — schema-driven
     prompter.print("\n--- Worktree Location ---")
@@ -708,13 +708,13 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
         prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
         prompter.print("Milestone sort strategies:")
+        prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10) [default]")
         prompter.print("  due_date         - By milestone due date (earliest first)")
-        prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10)")
         prompter.print("  pattern          - Custom regex to extract number")
         prompter.print("  name             - Alphabetically by milestone name\n")
         valid_strategies = ("due_date", "milestone_number", "pattern", "name")
         while True:
-            milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+            milestone_sort = prompter.input("Milestone sort strategy", "milestone_number")
             if milestone_sort in valid_strategies:
                 break
             prompter.print(

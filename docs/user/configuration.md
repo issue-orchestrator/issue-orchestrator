@@ -55,6 +55,21 @@ filtering:
   exclude_labels: ["test-data"]
 ```
 
+**Milestone sort strategy**
+```yaml
+milestones:
+  sort: "milestone_number"   # default: extracts first integer from title (M1 < M2 < M10)
+  # sort: "due_date"         # opt-in: sort by milestone due date; ties fall through to the remaining scheduler keys
+  # sort: "pattern"          # opt-in: custom regex, requires sort_config.pattern
+  # sort: "name"             # opt-in: alphabetic by milestone title
+  # order: ["M0", "M1"]      # optional: explicit order for listed milestones (overrides sort)
+  foundation: "M0"
+```
+
+The full sort key is `(milestone_key, priority_tier, sequence, issue.number)` — each layer only tie-breaks when the previous one ties.
+
+`milestone_number` is the default because it works whether or not milestones have due dates. `due_date` only sorts meaningfully when every milestone has a `dueOn` set; otherwise due-less milestones tie on the milestone key and ordering falls through to priority tier (from `[Px-nnn]` in the title), then sequence, then issue number.
+
 **Enable code review**
 ```yaml
 review:

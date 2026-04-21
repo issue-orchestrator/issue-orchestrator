@@ -204,9 +204,9 @@ class Config:
     # Can be "subprocess" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
-    # Milestone sorting strategy - built-in: "due_date", "number", "pattern", "name"
+    # Milestone sorting strategy - built-in: "milestone_number", "due_date", "pattern", "name"
     # Or provide a custom class path like "mymodule.MyStrategy"
-    milestone_sort: str = "due_date"
+    milestone_sort: str = "milestone_number"
     # Config passed to strategy via **kwargs (e.g., pattern="M(\\d+)" for PatternStrategy)
     milestone_sort_config: dict = field(default_factory=dict)
     # Optional explicit order for milestones (titles). Unlisted milestones follow milestone_sort.
@@ -1162,7 +1162,7 @@ class Config:
         # Simple direct assignments
         config.e2e_pr_labels = sections["e2e"].get("pr_labels", [])
         config.filtering = parse_filtering_config(sections["filtering"])
-        config.milestone_sort = sections["milestones"].get("sort", "due_date")
+        config.milestone_sort = sections["milestones"].get("sort", "milestone_number")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
         config.milestone_order = parse_milestone_order(sections["milestones"].get("order", []))
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")

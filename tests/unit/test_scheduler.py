@@ -688,8 +688,14 @@ class TestMilestoneSortStrategies:
 class TestSchedulerWithStrategies:
     """Test Scheduler integration with milestone strategies."""
 
-    def test_scheduler_uses_default_strategy(self, sample_config):
-        """Test Scheduler uses default due_date strategy from config."""
+    def test_scheduler_default_strategy_is_milestone_number(self):
+        """A fresh Config should resolve to MilestoneNumberStrategy."""
+        scheduler = Scheduler(config=Config())
+
+        assert isinstance(scheduler.milestone_strategy, MilestoneNumberStrategy)
+
+    def test_scheduler_honors_explicit_due_date_strategy(self, sample_config):
+        """Setting milestone_sort='due_date' opts into DueDateStrategy."""
         sample_config.milestone_sort = "due_date"
         scheduler = Scheduler(config=sample_config)
 

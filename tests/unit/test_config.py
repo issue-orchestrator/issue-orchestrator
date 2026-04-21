@@ -379,6 +379,7 @@ agents:
         assert config.label_in_progress == "in-progress"
         assert config.label_blocked == "blocked"
         assert config.label_needs_human == "needs-human"
+        assert config.milestone_sort == "milestone_number"
 
     def test_config_load_file_not_found(self, tmp_path):
         """Test that FileNotFoundError is raised for missing config."""
