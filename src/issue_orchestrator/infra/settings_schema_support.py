@@ -25,6 +25,9 @@ SUMMARY_KEY_VALUE = "key_value"
 SUMMARY_INTERVAL = "interval"
 SUMMARY_BOOLEAN_FLAG = "boolean_flag"
 
+# Config value type constants - used in json_schema_extra["config_value_type"]
+CONFIG_VALUE_TYPE_PATH = "path"
+
 
 def _get_nested_attr(obj: Any, path: str) -> Any:
     """Get obj.a.b.c from dotted path 'a.b.c'."""
@@ -39,6 +42,19 @@ def _set_nested_attr(obj: Any, path: str, value: Any) -> None:
     for part in parts[:-1]:
         obj = getattr(obj, part)
     setattr(obj, parts[-1], value)
+
+
+def _coerce_config_value(extra: dict[str, Any], value: Any, config: Any) -> Any:
+    """Convert schema form values into the config field's runtime type."""
+    if extra.get("config_value_type") != CONFIG_VALUE_TYPE_PATH:
+        return value
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        value = str(value)
+    if isinstance(value, str):
+        return resolve_relative_path(value, config.repo_root)
+    return value
 
 
 def build_tabs_from_config(tab_definitions: list[dict[str, Any]], config: Any) -> dict[str, BaseModel]:
@@ -105,14 +121,12 @@ def apply_tabs_to_config(tab_definitions: list[dict[str, Any]], tabs: dict[str, 
             elif transform == "newline_separated_list":
                 value = [s.strip() for s in value.split("\n") if s.strip()] if value else []
 
-            # Check restart requirement before applying.
             old = _get_nested_attr(config, config_attr)
+            value = _coerce_config_value(extra, value, config)
             if extra.get("restart_required"):
-                if str(old) != str(value):
+                old_for_comparison = _coerce_config_value(extra, old, config)
+                if str(old_for_comparison) != str(value):
                     restart = True
-
-            if isinstance(old, Path) and isinstance(value, str):
-                value = resolve_relative_path(value, config.repo_root)
 
             _set_nested_attr(config, config_attr, value)
     return restart

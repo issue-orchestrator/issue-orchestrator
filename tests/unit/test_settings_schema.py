@@ -7,6 +7,7 @@ from pydantic import BaseModel, ValidationError
 
 from issue_orchestrator.infra.config import Config, E2EConfig, FilteringConfig
 from issue_orchestrator.infra.settings_schema import (
+    CONFIG_VALUE_TYPE_PATH,
     DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
     DOCTOR_CHECK_PATH_EXISTS,
     DOCTOR_CHECK_REFERENCES_AGENT,
@@ -146,6 +147,10 @@ class TestValidation:
     def test_worktree_branch_on_recreate_enum(self):
         with pytest.raises(ValidationError):
             AdvancedSettings(worktree_branch_on_recreate="invalid")
+
+    def test_worktree_base_rejects_empty_string(self):
+        with pytest.raises(ValidationError):
+            AdvancedSettings(worktree_base="")
 
     def test_valid_values_accepted(self):
         """Boundary values should be accepted."""
@@ -357,6 +362,20 @@ class TestApplyTo:
         assert cfg.worktree_base == (tmp_path / "new-worktrees").resolve()
         assert isinstance(cfg.worktree_base, Path)
 
+    def test_restart_not_required_for_effectively_unchanged_path(self, tmp_path):
+        """Restart checks should compare coerced config values, not raw UI text."""
+        cfg = Config()
+        cfg.repo_root = (tmp_path / "repo").resolve()
+        cfg.worktree_base = (tmp_path / "worktrees").resolve()
+
+        tabs = from_config(cfg)
+        tabs["advanced"] = tabs["advanced"].model_copy(update={"worktree_base": "../worktrees"})
+        restart = apply_to(tabs, cfg)
+
+        assert restart is False
+        assert cfg.worktree_base == (tmp_path / "worktrees").resolve()
+        assert isinstance(cfg.worktree_base, Path)
+
     def test_restart_required_detection(self):
         """apply_to should return True when restart-required fields change."""
         cfg = Config()
@@ -483,6 +502,10 @@ class TestGetFieldMeta:
         assert meta["title"] == "Max Concurrent Sessions"
         assert meta["default"] == 3
         assert meta["yaml_path"] == "execution.concurrency.max_concurrent_sessions"
+
+    def test_worktree_base_declares_path_config_value_type(self):
+        meta = get_field_meta("advanced", "worktree_base")
+        assert meta["config_value_type"] == CONFIG_VALUE_TYPE_PATH
 
     def test_unknown_tab_raises(self):
         with pytest.raises(KeyError):
