@@ -178,7 +178,6 @@ function renderCompactCardHtml(card) {
                 ${ghLink}
                 ${menuButton}
                 <button class="card-timeline-btn" onclick="openIssueTimeline(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
-                <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
             </div>
         </div>
         <div class="card-line">${phaseLine}${ageStr}</div>
@@ -378,7 +377,6 @@ async function loadExpandedColumn(columnId, options = {}) {
                         ${issueLink}
                         ${prLink}
                         <button class="card-timeline-btn" onclick="openIssueTimeline(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
-                        <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
                     </div>
                 </div>`;
             }).join('');

@@ -136,8 +136,7 @@ body.column-focus-mode .column-expanded {
 .card-head-actions .card-refresh-btn,
 .card-head-actions .card-gh,
 .card-head-actions .card-menu-btn,
-.card-head-actions .card-timeline-btn,
-.card-head-actions .card-detail-chevron {
+.card-head-actions .card-timeline-btn {
     width: 28px;
     height: 28px;
     min-width: 28px;
@@ -250,8 +249,7 @@ body.column-focus-mode .column-expanded {
 .card-action-btn:active {
     background: rgba(78, 161, 255, 0.10);
 }
-.card-timeline-btn,
-.card-detail-chevron {
+.card-timeline-btn {
     border: 1px solid transparent;
     background: transparent;
     color: var(--text-muted);
@@ -275,9 +273,7 @@ body.column-focus-mode .column-expanded {
     opacity: 0.85;
 }
 .card-timeline-btn:hover,
-.card-timeline-btn:focus-visible,
-.card-detail-chevron:hover,
-.card-detail-chevron:focus-visible {
+.card-timeline-btn:focus-visible {
     opacity: 1;
     color: var(--accent);
     border-color: var(--accent);
