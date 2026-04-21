@@ -771,6 +771,43 @@ class TestSettingsEndpoints:
             finally:
                 web._orchestrator = None
 
+    def test_post_settings_partial_tabs_preserve_path_values_for_doctor(self, tmp_path):
+        """Partial settings saves keep Path-typed config fields valid before doctor runs."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo_root = (tmp_path / "repo").resolve()
+        mock_orch.config.worktree_base = (tmp_path / "worktrees").resolve()
+        original_worktree_base = mock_orch.config.worktree_base
+
+        def run_doctor_asserts_path(config, runner):
+            assert config.worktree_base == original_worktree_base
+            assert isinstance(config.worktree_base, Path)
+            mock_result = MagicMock()
+            mock_result.checks = []
+            return mock_result
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor", side_effect=run_doctor_asserts_path):
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "concurrency": {
+                        "max_concurrent_sessions": 2,
+                        "session_timeout_minutes": 45,
+                        "queue_refresh_seconds": 600,
+                    }
+                })
+
+                assert response.status_code == 200
+                assert mock_orch.config.max_concurrent_sessions == 2
+                assert mock_orch.config.worktree_base == original_worktree_base
+                assert isinstance(mock_orch.config.worktree_base, Path)
+            finally:
+                web._orchestrator = None
+
 
 class TestStaticFilesSecurity:
     """Tests for static file serving security."""

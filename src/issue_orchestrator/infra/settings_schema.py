@@ -17,6 +17,7 @@ from typing import Any, Literal, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from .settings_schema_support import (
+    CONFIG_VALUE_TYPE_PATH,
     DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
     DOCTOR_CHECK_PATH_EXISTS,
     DOCTOR_CHECK_REFERENCES_AGENT,
@@ -1088,11 +1089,13 @@ class AdvancedSettings(BaseModel):
         "../",
         title="Worktree Base Directory",
         description="Directory where git worktrees are created",
+        min_length=1,
         json_schema_extra={
             "doc_examples": ["../", "../worktrees", "/tmp/worktrees"],
             "doc_notes": "Relative paths are resolved from the repo root.",
             "section": "Worktrees",
             "restart_required": True,
+            "config_value_type": CONFIG_VALUE_TYPE_PATH,
             "config_attr": "worktree_base",
             "yaml_path": "worktrees.base",
             "setup": {
