@@ -472,6 +472,7 @@ def _e2e_summary(event_name: str, data: dict[str, Any]) -> str:
     return event_name
 
 
+_MAX_SUMMARY = 200
 _MAX_DETAIL = 200
 _MAX_REVIEW_COMMENT_DETAIL = 4000
 
@@ -599,8 +600,14 @@ def _publish_failed_summary(data: dict[str, Any]) -> str | None:
         "create_pr": "PR creation",
     }.get(stage if isinstance(stage, str) else "")
     if stage_label:
-        return f"{stage_label} failed: {error}"
-    return error
+        return _truncate_summary(f"{stage_label} failed: {error}")
+    return _truncate_summary(error)
+
+
+def _truncate_summary(text: str) -> str:
+    if len(text) <= _MAX_SUMMARY:
+        return text
+    return text[: _MAX_SUMMARY - 1].rstrip() + "\u2026"
 
 
 def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
