@@ -1,0 +1,1038 @@
+"""Project legacy timeline dictionaries into semantic lifecycle models.
+
+The browser still renders the older event/cycle payloads today.  This module
+keeps a stricter representation beside that path so cheap unit and contract
+tests can validate the lifecycle semantics before Playwright or live E2E
+exercise the UI.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from .lifecycle_semantics import (
+    AgentIdentity,
+    BlockedCodingAttempt,
+    CodingAttempt,
+    CodingOutputs,
+    CompletedCodingAttempt,
+    CompletionRecordEvidence,
+    DashboardIteration,
+    DashboardTimelineContainer,
+    E2EFailureDetailsAvailable,
+    E2EFailureDetailsMissing,
+    E2ERunIteration,
+    E2ERunLifecycle,
+    E2ESuiteTimelineContainer,
+    E2ETestExecution,
+    FailedCodingAttempt,
+    FailedE2ETestExecution,
+    IssueCycle,
+    IssueLifecycle,
+    LinkedIssueLifecycle,
+    MissingCodingEvidence,
+    MissingE2ETestEvidence,
+    MissingEvidence,
+    MissingReviewEvidence,
+    OpenCompletionRecordCommand,
+    OpenIssueTimelineCommand,
+    OpenReviewFeedbackCommand,
+    OpenSessionRecordingCommand,
+    OpenValidationDetailsCommand,
+    PassedE2ETestExecution,
+    ReviewApproved,
+    ReviewChangesRequested,
+    ReviewNotReached,
+    ReviewRunning,
+    ReviewSkipped,
+    ReviewStage,
+    RunningCodingAttempt,
+    RunningE2ETestExecution,
+    SessionRecordingAvailable,
+    SessionRecordingEvidence,
+    SessionRecordingUnavailable,
+    ShowEventDetailsCommand,
+    TimelineCommand,
+    TimelineContainer,
+    TimelineDiagnostic,
+    TimelineSubject,
+    ValidationEvidenceMissing,
+    ValidationFailed,
+    ValidationNotRun,
+    ValidationOutcome,
+    ValidationPassed,
+    validate_lifecycle_container,
+)
+
+EventDict = Mapping[str, Any]
+
+_CODING_START_EVENTS = frozenset({
+    "agent.coding_started",
+    "agent.rework_started",
+    "review.rework_started",
+    "session.started",
+    "rework.started",
+})
+_CODING_COMPLETED_EVENTS = frozenset({
+    "agent.coding_completed",
+    "observation.completion_detected",
+    "session.completed",
+})
+_CODING_BLOCKED_EVENTS = frozenset({"agent.blocked", "session.blocked", "issue.blocked"})
+_CODING_FAILED_EVENTS = frozenset({
+    "agent.failed",
+    "agent.timed_out",
+    "session.failed",
+    "session.timeout",
+    "publish.failed",
+})
+_VALIDATION_PASSED_EVENTS = frozenset({"validation.passed", "session.validation_passed"})
+_VALIDATION_FAILED_EVENTS = frozenset({
+    "validation.failed",
+    "session.validation_failed",
+    "session.validation_retry_needed",
+})
+_REVIEW_START_EVENTS = frozenset({
+    "review.started",
+    "review_exchange.started",
+    "review_exchange.round_started",
+})
+_REVIEW_APPROVED_EVENTS = frozenset({"review.approved"})
+_REVIEW_CHANGES_REQUESTED_EVENTS = frozenset({"review.changes_requested"})
+_REVIEW_SKIPPED_EVENTS = frozenset({"review.skipped"})
+_E2E_TEST_STARTED = "e2e.test_started"
+_E2E_TEST_COMPLETED = "e2e.test_completed"
+
+
+class LifecycleProjectionError(RuntimeError):
+    """Raised when a semantic lifecycle projection violates hard invariants."""
+
+
+def project_dashboard_lifecycle_container(
+    *,
+    subject_label: str,
+    issue_number: int,
+    title: str,
+    events: Sequence[EventDict],
+    cycles: Sequence[EventDict],
+    review_required: bool = False,
+) -> DashboardTimelineContainer:
+    """Build a dashboard container that iterates like the E2E suite container."""
+    issue_lifecycle = project_issue_lifecycle(
+        issue_number=issue_number,
+        title=title,
+        events=events,
+        cycles=cycles,
+        review_required=review_required,
+    )
+    subject = TimelineSubject(
+        kind="dashboard",
+        id="current",
+        label=subject_label,
+    )
+    container = DashboardTimelineContainer(
+        subject=subject,
+        current=DashboardIteration(
+            subject=subject,
+            issue_lifecycles=(issue_lifecycle,),
+        ),
+    )
+    require_lifecycle_container_valid(container)
+    return container
+
+
+def project_issue_lifecycle(
+    *,
+    issue_number: int,
+    title: str,
+    events: Sequence[EventDict],
+    cycles: Sequence[EventDict],
+    review_required: bool = False,
+) -> IssueLifecycle:
+    """Project issue timeline cycles into explicit coder/reviewer child models."""
+    projected_cycles: list[IssueCycle] = []
+    for index, cycle in enumerate(cycles, start=1):
+        cycle_events = _cycle_events(cycle, events)
+        cycle_number = _positive_int(cycle.get("cycle"), default=index)
+        coder = _project_coder(
+            issue_number=issue_number,
+            cycle_number=cycle_number,
+            events=cycle_events,
+        )
+        review = _project_review(
+            issue_number=issue_number,
+            cycle_number=cycle_number,
+            events=cycle_events,
+            coder=coder,
+            review_required=review_required,
+        )
+        projected_cycles.append(
+            IssueCycle(
+                cycle_number=cycle_number,
+                coder=coder,
+                review=review,
+                outcome=str(cycle.get("status") or _cycle_outcome(coder, review)),
+            )
+        )
+    return IssueLifecycle(
+        issue_number=issue_number,
+        title=title,
+        cycles=tuple(projected_cycles),
+    )
+
+
+def project_e2e_suite_lifecycle_container(
+    *,
+    subject_label: str,
+    runs: Sequence[E2ERunIteration],
+) -> E2ESuiteTimelineContainer:
+    """Build the E2E parent container around run iterations."""
+    container = E2ESuiteTimelineContainer(
+        subject=TimelineSubject(
+            kind="e2e_suite",
+            id="e2e",
+            label=subject_label,
+        ),
+        runs=tuple(runs),
+    )
+    require_lifecycle_container_valid(container)
+    return container
+
+
+def project_e2e_run_iteration(
+    *,
+    run_id: int,
+    events: Sequence[EventDict],
+    linked_issue_lifecycles: Sequence[IssueLifecycle] = (),
+) -> E2ERunIteration:
+    """Project an E2E run timeline into test execution child models."""
+    run_started = _first_event(events, {"e2e.run_started"})
+    run_finished = _last_event(events, {"e2e.run_finished", "e2e.run_error", "e2e.run_canceled"})
+    started_at = _event_timestamp(run_started) if run_started else _first_timestamp(events)
+    tests = _project_e2e_tests(run_id=run_id, events=events)
+    subject = TimelineSubject(
+        kind="e2e_run",
+        id=str(run_id),
+        label=f"Run #{run_id}",
+        status=str(run_finished.get("status")) if run_finished and run_finished.get("status") else None,
+    )
+    return E2ERunIteration(
+        subject=subject,
+        e2e_run=E2ERunLifecycle(
+            run_id=run_id,
+            started_at=started_at,
+            completed_at=_event_timestamp(run_finished) if run_finished else None,
+            tests=tuple(tests),
+            linked_issue_lifecycles=tuple(linked_issue_lifecycles),
+        ),
+    )
+
+
+def require_lifecycle_container_valid(container: TimelineContainer) -> None:
+    """Raise for aggregate lifecycle errors while allowing informational diagnostics."""
+    diagnostics = validate_lifecycle_container(container)
+    errors = [diag for diag in diagnostics if diag.severity == "error"]
+    if not errors:
+        return
+    detail = "; ".join(f"{diag.code}: {diag.message}" for diag in errors)
+    raise LifecycleProjectionError(detail)
+
+
+def _cycle_events(cycle: EventDict, all_events: Sequence[EventDict]) -> tuple[EventDict, ...]:
+    raw = cycle.get("events")
+    if isinstance(raw, list):
+        return tuple(event for event in raw if isinstance(event, Mapping))
+    cycle_number = cycle.get("cycle")
+    if isinstance(cycle_number, int):
+        return tuple(
+            event for event in all_events
+            if isinstance(event, Mapping) and event.get("logical_cycle") == cycle_number
+        )
+    return tuple(event for event in all_events if isinstance(event, Mapping))
+
+
+def _project_coder(
+    *,
+    issue_number: int,
+    cycle_number: int,
+    events: Sequence[EventDict],
+) -> CodingAttempt:
+    start = _first_event(events, _CODING_START_EVENTS)
+    completed = _last_event(events, _CODING_COMPLETED_EVENTS)
+    blocked = _last_event(events, _CODING_BLOCKED_EVENTS)
+    failed = _last_event(events, _CODING_FAILED_EVENTS)
+    observed = _event_timestamp(completed or blocked or failed or start)
+
+    if completed is not None:
+        return _completed_coder_attempt(
+            issue_number=issue_number,
+            events=events,
+            start=start,
+            completed=completed,
+            observed_at=observed,
+        )
+
+    if blocked is not None:
+        return _blocked_coder_attempt(
+            issue_number=issue_number,
+            start=start,
+            blocked=blocked,
+            observed_at=observed,
+        )
+
+    if failed is not None:
+        return _failed_coder_attempt(
+            issue_number=issue_number,
+            start=start,
+            failed=failed,
+        )
+
+    if start is not None:
+        return _running_coder_attempt(
+            issue_number=issue_number,
+            start=start,
+            observed_at=observed,
+        )
+
+    return _missing_coding(
+        issue_number=issue_number,
+        expected_state="running",
+        observed_at=observed,
+        missing=(_missing("coding_start", f"cycle {cycle_number} has no coding start event"),),
+        event=None,
+    )
+
+
+def _completed_coder_attempt(
+    *,
+    issue_number: int,
+    events: Sequence[EventDict],
+    start: EventDict | None,
+    completed: EventDict,
+    observed_at: str,
+) -> CodingAttempt:
+    agent = _agent_identity_from_event(start or completed, role="coder")
+    completion_path = _artifact_value(completed, "completion_record")
+    missing = _completed_coder_missing(agent=agent, completion_path=completion_path)
+    if missing:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=observed_at,
+            missing=missing,
+            event=completed,
+        )
+    assert agent is not None
+    assert completion_path is not None
+    session_recording = _session_recording(issue_number, start or completed)
+    return CompletedCodingAttempt(
+        issue_number=issue_number,
+        agent=agent,
+        started_at=_event_timestamp(start or completed),
+        completed_at=_event_timestamp(completed),
+        completion_record=CompletionRecordEvidence(
+            path=completion_path,
+            summary=_optional_text(completed.get("summary")),
+        ),
+        validation=_validation_outcome(issue_number, events),
+        session_recording=session_recording,
+        outputs=CodingOutputs(
+            worktree_path=_artifact_value(completed, "worktree"),
+            pull_request_url=_artifact_value(completed, "pull_request"),
+        ),
+        commands=_completed_coder_commands(completed, completion_path, session_recording),
+    )
+
+
+def _completed_coder_missing(
+    *,
+    agent: AgentIdentity | None,
+    completion_path: str | None,
+) -> tuple[MissingEvidence, ...]:
+    missing: list[MissingEvidence] = []
+    if agent is None:
+        missing.append(_missing("agent", "completed coding attempt did not name its coding agent"))
+    if completion_path is None:
+        missing.append(
+            _missing(
+                "completion_record",
+                "completed coding attempt did not expose a completion record",
+            )
+        )
+    return tuple(missing)
+
+
+def _completed_coder_commands(
+    completed: EventDict,
+    completion_path: str,
+    session_recording: SessionRecordingEvidence,
+) -> tuple[TimelineCommand, ...]:
+    commands: tuple[TimelineCommand, ...] = (
+        _details_command(completed),
+        OpenCompletionRecordCommand(path=completion_path),
+    )
+    if isinstance(session_recording, SessionRecordingAvailable):
+        commands += (session_recording.command,)
+    return commands
+
+
+def _blocked_coder_attempt(
+    *,
+    issue_number: int,
+    start: EventDict | None,
+    blocked: EventDict,
+    observed_at: str,
+) -> CodingAttempt:
+    agent = _agent_identity_from_event(start or blocked, role="coder")
+    if agent is None:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="blocked",
+            observed_at=observed_at,
+            missing=(_missing("agent", "blocked coding attempt did not name its coding agent"),),
+            event=blocked,
+        )
+    return BlockedCodingAttempt(
+        issue_number=issue_number,
+        agent=agent,
+        started_at=_event_timestamp(start) if start else None,
+        blocked_at=_event_timestamp(blocked),
+        reason=_event_summary(blocked),
+        session_recording=_session_recording(issue_number, start or blocked),
+        commands=(_details_command(blocked),),
+    )
+
+
+def _failed_coder_attempt(
+    *,
+    issue_number: int,
+    start: EventDict | None,
+    failed: EventDict,
+) -> FailedCodingAttempt:
+    return FailedCodingAttempt(
+        issue_number=issue_number,
+        agent=_agent_identity_from_event(start or failed, role="coder"),
+        started_at=_event_timestamp(start) if start else None,
+        failed_at=_event_timestamp(failed),
+        reason=_event_summary(failed),
+        session_recording=_session_recording(issue_number, start or failed),
+        commands=(_details_command(failed),),
+    )
+
+
+def _running_coder_attempt(
+    *,
+    issue_number: int,
+    start: EventDict,
+    observed_at: str,
+) -> CodingAttempt:
+    agent = _agent_identity_from_event(start, role="coder")
+    if agent is None:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="running",
+            observed_at=observed_at,
+            missing=(_missing("agent", "running coding attempt did not name its coding agent"),),
+            event=start,
+        )
+    session_recording = _session_recording(issue_number, start)
+    commands: tuple[TimelineCommand, ...] = (_details_command(start),)
+    if isinstance(session_recording, SessionRecordingAvailable):
+        commands += (session_recording.command,)
+    return RunningCodingAttempt(
+        issue_number=issue_number,
+        agent=agent,
+        started_at=_event_timestamp(start),
+        session_recording=session_recording,
+        commands=commands,
+    )
+
+
+def _project_review(
+    *,
+    issue_number: int,
+    cycle_number: int,
+    events: Sequence[EventDict],
+    coder: CodingAttempt,
+    review_required: bool,
+) -> ReviewStage:
+    start = _first_event(events, _REVIEW_START_EVENTS)
+    approved = _last_event(events, _REVIEW_APPROVED_EVENTS)
+    changes_requested = _last_event(events, _REVIEW_CHANGES_REQUESTED_EVENTS)
+    skipped = _last_event(events, _REVIEW_SKIPPED_EVENTS)
+
+    if approved is not None:
+        return _approved_review(
+            issue_number=issue_number,
+            start=start,
+            approved=approved,
+        )
+
+    if changes_requested is not None:
+        return _changes_requested_review(
+            issue_number=issue_number,
+            start=start,
+            changes_requested=changes_requested,
+        )
+
+    if skipped is not None:
+        return ReviewSkipped(reason=_event_summary(skipped))
+
+    if start is not None:
+        return _running_review(issue_number=issue_number, start=start)
+
+    return _unreached_review(
+        coder=coder,
+        cycle_number=cycle_number,
+        events=events,
+        review_required=review_required,
+    )
+
+
+def _approved_review(
+    *,
+    issue_number: int,
+    start: EventDict | None,
+    approved: EventDict,
+) -> ReviewStage:
+    reviewer = _agent_identity_from_event(approved, role="reviewer")
+    if reviewer is None:
+        return _missing_review(
+            expected_state="approved",
+            observed_at=_event_timestamp(approved),
+            missing=(_missing("reviewer", "approved review did not name a reviewer"),),
+            event=approved,
+        )
+    return ReviewApproved(
+        reviewer=reviewer,
+        started_at=_event_timestamp(start or approved),
+        completed_at=_event_timestamp(approved),
+        session_recording=_session_recording(issue_number, approved),
+        transcript_available=_has_action(approved, "open_review_transcript"),
+        commands=(_details_command(approved),),
+    )
+
+
+def _changes_requested_review(
+    *,
+    issue_number: int,
+    start: EventDict | None,
+    changes_requested: EventDict,
+) -> ReviewStage:
+    reviewer = _agent_identity_from_event(changes_requested, role="reviewer")
+    feedback_summary = _review_feedback_summary(changes_requested)
+    missing = _changes_requested_missing(
+        reviewer=reviewer,
+        feedback_summary=feedback_summary,
+    )
+    if missing:
+        return _missing_review(
+            expected_state="changes_requested",
+            observed_at=_event_timestamp(changes_requested),
+            missing=missing,
+            event=changes_requested,
+        )
+    assert reviewer is not None
+    assert feedback_summary is not None
+    return ReviewChangesRequested(
+        reviewer=reviewer,
+        started_at=_event_timestamp(start or changes_requested),
+        completed_at=_event_timestamp(changes_requested),
+        feedback_summary=feedback_summary,
+        session_recording=_session_recording(issue_number, changes_requested),
+        commands=(
+            _details_command(changes_requested),
+            OpenReviewFeedbackCommand(
+                issue_number=issue_number,
+                event_ref=_event_ref(changes_requested),
+            ),
+        ),
+    )
+
+
+def _review_feedback_summary(event: EventDict) -> str | None:
+    return _optional_text(
+        event.get("reviewer_response_text")
+        or event.get("summary")
+        or event.get("narrative")
+    )
+
+
+def _changes_requested_missing(
+    *,
+    reviewer: AgentIdentity | None,
+    feedback_summary: str | None,
+) -> tuple[MissingEvidence, ...]:
+    missing: list[MissingEvidence] = []
+    if reviewer is None:
+        missing.append(_missing("reviewer", "changes-requested review did not name a reviewer"))
+    if feedback_summary is None:
+        missing.append(_missing("review_feedback", "changes-requested review did not expose feedback"))
+    return tuple(missing)
+
+
+def _running_review(*, issue_number: int, start: EventDict) -> ReviewStage:
+    reviewer = _agent_identity_from_event(start, role="reviewer")
+    if reviewer is None:
+        return _missing_review(
+            expected_state="running",
+            observed_at=_event_timestamp(start),
+            missing=(_missing("reviewer", "running review did not name a reviewer"),),
+            event=start,
+        )
+    return ReviewRunning(
+        reviewer=reviewer,
+        started_at=_event_timestamp(start),
+        session_recording=_session_recording(issue_number, start),
+        commands=(_details_command(start),),
+    )
+
+
+def _unreached_review(
+    *,
+    coder: CodingAttempt,
+    cycle_number: int,
+    events: Sequence[EventDict],
+    review_required: bool,
+) -> ReviewStage:
+    if review_required:
+        return _missing_review(
+            expected_state="running",
+            observed_at=_first_timestamp(events),
+            missing=(
+                _missing(
+                    "review_stage",
+                    f"cycle {cycle_number} completed coding without a review stage",
+                ),
+            ),
+            event=None,
+        )
+    if isinstance(coder, RunningCodingAttempt):
+        return ReviewNotReached(reason="coding_in_progress")
+    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence):
+        return ReviewNotReached(reason="coding_failed")
+    if isinstance(coder, CompletedCodingAttempt) and isinstance(coder.validation, ValidationFailed):
+        return ReviewNotReached(reason="validation_failed")
+    return ReviewNotReached(reason="not_required")
+
+
+def _validation_outcome(issue_number: int, events: Sequence[EventDict]) -> ValidationOutcome:
+    passed = _last_event(events, _VALIDATION_PASSED_EVENTS)
+    failed = _last_event(events, _VALIDATION_FAILED_EVENTS)
+    terminal = failed or passed
+    if terminal is None:
+        return ValidationNotRun(reason="not_required")
+
+    record_path = _artifact_value(terminal, "validation")
+    command = _event_summary(terminal)
+    if not record_path:
+        return ValidationEvidenceMissing(
+            expected_record_path=None,
+            diagnostics=(
+                TimelineDiagnostic(
+                    code="validation.record_missing",
+                    message="validation event did not expose a validation record artifact",
+                    severity="error",
+                    evidence_ref=_event_ref(terminal),
+                ),
+            ),
+        )
+    if failed is not None:
+        run_dir = _optional_text(terminal.get("run_dir"))
+        if not run_dir:
+            return ValidationEvidenceMissing(
+                expected_record_path=record_path,
+                diagnostics=(
+                    TimelineDiagnostic(
+                        code="validation.run_dir_missing",
+                        message="failed validation event did not expose run_dir for details",
+                        severity="error",
+                        evidence_ref=_event_ref(terminal),
+                    ),
+                ),
+            )
+        return ValidationFailed(
+            command=command,
+            record_path=record_path,
+            failure_summary=_event_summary(terminal),
+            details_command=OpenValidationDetailsCommand(
+                issue_number=issue_number,
+                run_dir=run_dir,
+            ),
+        )
+    return ValidationPassed(command=command, record_path=record_path)
+
+
+def _project_e2e_tests(
+    *,
+    run_id: int,
+    events: Sequence[EventDict],
+) -> list[E2ETestExecution]:
+    ordered_nodeids, started_by_nodeid, completed_by_nodeid = _index_e2e_test_events(events)
+    return [
+        _project_e2e_test(
+            run_id=run_id,
+            nodeid=nodeid,
+            started=started_by_nodeid.get(nodeid),
+            completed=completed_by_nodeid.get(nodeid),
+        )
+        for nodeid in ordered_nodeids
+    ]
+
+
+def _index_e2e_test_events(
+    events: Sequence[EventDict],
+) -> tuple[list[str], dict[str, EventDict], dict[str, EventDict]]:
+    started_by_nodeid: dict[str, EventDict] = {}
+    completed_by_nodeid: dict[str, EventDict] = {}
+    ordered_nodeids: list[str] = []
+    for event in events:
+        if _event_name(event) not in {_E2E_TEST_STARTED, _E2E_TEST_COMPLETED}:
+            continue
+        nodeid = _optional_text(event.get("nodeid"))
+        if nodeid is None:
+            continue
+        if nodeid not in ordered_nodeids:
+            ordered_nodeids.append(nodeid)
+        if _event_name(event) == _E2E_TEST_STARTED:
+            started_by_nodeid.setdefault(nodeid, event)
+        else:
+            completed_by_nodeid[nodeid] = event
+    return ordered_nodeids, started_by_nodeid, completed_by_nodeid
+
+
+def _project_e2e_test(
+    *,
+    run_id: int,
+    nodeid: str,
+    started: EventDict | None,
+    completed: EventDict | None,
+) -> E2ETestExecution:
+    if completed is None:
+        return RunningE2ETestExecution(
+            nodeid=nodeid,
+            started_at=_event_timestamp(started),
+            linked_issues=_linked_issues(run_id, started),
+            commands=(_details_command(started),),
+        )
+    if started is None:
+        return _missing_started_e2e_test(nodeid=nodeid, completed=completed)
+    if _e2e_test_failed(completed):
+        return FailedE2ETestExecution(
+            nodeid=nodeid,
+            started_at=_event_timestamp(started),
+            completed_at=_event_timestamp(completed),
+            duration_seconds=_float_or_none(completed.get("duration_seconds")),
+            failure=_e2e_failure_evidence(nodeid=nodeid, completed=completed),
+            linked_issues=_linked_issues(run_id, completed),
+            commands=(_details_command(completed),),
+        )
+    return PassedE2ETestExecution(
+        nodeid=nodeid,
+        started_at=_event_timestamp(started),
+        completed_at=_event_timestamp(completed),
+        duration_seconds=_float_or_none(completed.get("duration_seconds")),
+        linked_issues=_linked_issues(run_id, completed),
+        commands=(_details_command(completed),),
+    )
+
+
+def _missing_started_e2e_test(*, nodeid: str, completed: EventDict) -> MissingE2ETestEvidence:
+    return MissingE2ETestEvidence(
+        nodeid=nodeid,
+        observed_at=_event_timestamp(completed),
+        missing=(
+            _missing(
+                "test_started_event",
+                "completed E2E test did not have a matching start event",
+            ),
+        ),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="e2e.test_started_missing",
+                message=f"E2E test {nodeid} completed without a matching start event",
+                severity="error",
+                evidence_ref=_event_ref(completed),
+            ),
+        ),
+        commands=(_details_command(completed),),
+    )
+
+
+def _e2e_test_failed(completed: EventDict) -> bool:
+    outcome = str(completed.get("outcome") or completed.get("status") or "").lower()
+    return outcome in {"failed", "error"}
+
+
+def _e2e_failure_evidence(
+    *,
+    nodeid: str,
+    completed: EventDict,
+) -> E2EFailureDetailsAvailable | E2EFailureDetailsMissing:
+    longrepr = _optional_text(completed.get("longrepr"))
+    if longrepr is not None:
+        return E2EFailureDetailsAvailable(longrepr=longrepr)
+    return E2EFailureDetailsMissing(
+        diagnostics=(
+            TimelineDiagnostic(
+                code="e2e.failure_details_missing",
+                message=f"failed E2E test {nodeid} did not expose longrepr",
+                severity="error",
+                evidence_ref=_event_ref(completed),
+            ),
+        )
+    )
+
+
+def _linked_issues(run_id: int, event: EventDict | None) -> tuple[LinkedIssueLifecycle, ...]:
+    if event is None:
+        return ()
+    raw_affordances = event.get("issue_affordances")
+    issue_numbers: list[int] = []
+    if isinstance(raw_affordances, list):
+        for affordance in raw_affordances:
+            if isinstance(affordance, Mapping):
+                issue_number = _positive_int(affordance.get("issue_number"), default=0)
+                if issue_number > 0:
+                    issue_numbers.append(issue_number)
+    raw_issue_numbers = event.get("issue_numbers")
+    if isinstance(raw_issue_numbers, list):
+        for issue_number in raw_issue_numbers:
+            normalized = _positive_int(issue_number, default=0)
+            if normalized > 0:
+                issue_numbers.append(normalized)
+    return tuple(
+        LinkedIssueLifecycle(
+            issue_number=issue_number,
+            relationship="exercises",
+            command=OpenIssueTimelineCommand(
+                issue_number=issue_number,
+                scope_kind="e2e_run",
+                e2e_run_id=run_id,
+            ),
+        )
+        for issue_number in dict.fromkeys(issue_numbers)
+    )
+
+
+def _missing_coding(
+    *,
+    issue_number: int,
+    expected_state: str,
+    observed_at: str,
+    missing: tuple[MissingEvidence, ...],
+    event: EventDict | None,
+) -> MissingCodingEvidence:
+    return MissingCodingEvidence(
+        issue_number=issue_number,
+        expected_state=expected_state,  # type: ignore[arg-type]
+        observed_at=observed_at,
+        missing=missing,
+        diagnostics=tuple(
+            TimelineDiagnostic(
+                code=f"coding.{item.evidence}.missing",
+                message=item.reason,
+                severity="error",
+                evidence_ref=_event_ref(event) if event is not None else None,
+            )
+            for item in missing
+        ),
+        commands=(_details_command(event),),
+    )
+
+
+def _missing_review(
+    *,
+    expected_state: str,
+    observed_at: str,
+    missing: tuple[MissingEvidence, ...],
+    event: EventDict | None,
+) -> MissingReviewEvidence:
+    return MissingReviewEvidence(
+        expected_state=expected_state,  # type: ignore[arg-type]
+        observed_at=observed_at,
+        missing=missing,
+        diagnostics=tuple(
+            TimelineDiagnostic(
+                code=f"review.{item.evidence}.missing",
+                message=item.reason,
+                severity="error",
+                evidence_ref=_event_ref(event) if event is not None else None,
+            )
+            for item in missing
+        ),
+        commands=(_details_command(event),),
+    )
+
+
+def _missing(evidence: str, reason: str) -> MissingEvidence:
+    return MissingEvidence(evidence=evidence, reason=reason)
+
+
+def _session_recording(issue_number: int, event: EventDict | None) -> SessionRecordingEvidence:
+    run_dir = _optional_text(event.get("run_dir")) if event is not None else None
+    if run_dir is None:
+        return SessionRecordingUnavailable(
+            reason="timeline event did not expose run_dir",
+            diagnostics=(
+                TimelineDiagnostic(
+                    code="session_recording.run_dir_missing",
+                    message="session recording requires run_dir evidence",
+                    severity="warning",
+                    evidence_ref=_event_ref(event) if event is not None else None,
+                ),
+            ),
+        )
+    assert event is not None
+    command = OpenSessionRecordingCommand(
+        issue_number=issue_number,
+        run_dir=run_dir,
+        session_role=_optional_text(event.get("task") or event.get("logical_phase")),
+        round_index=event.get("round_index") if isinstance(event.get("round_index"), int) else None,
+    )
+    return SessionRecordingAvailable(
+        run_dir=run_dir,
+        recording_path=f"{run_dir.rstrip('/')}/terminal-recording.jsonl",
+        command=command,
+    )
+
+
+def _details_command(event: EventDict | None) -> ShowEventDetailsCommand:
+    return ShowEventDetailsCommand(event_ref=_event_ref(event))
+
+
+def _event_ref(event: EventDict | None) -> str:
+    if event is None:
+        return "missing-event"
+    for key in ("event_id", "detail_id"):
+        value = _optional_text(event.get(key))
+        if value is not None:
+            return value
+    name = _event_name(event) or "event"
+    timestamp = _optional_text(event.get("timestamp")) or "no-timestamp"
+    return f"{name}:{timestamp}"
+
+
+def _event_name(event: EventDict | None) -> str:
+    if event is None:
+        return ""
+    return str(event.get("source_event") or event.get("event") or "")
+
+
+def _first_event(events: Sequence[EventDict], names: set[str] | frozenset[str]) -> EventDict | None:
+    for event in events:
+        if _event_name(event) in names:
+            return event
+    return None
+
+
+def _last_event(events: Sequence[EventDict], names: set[str] | frozenset[str]) -> EventDict | None:
+    for event in reversed(events):
+        if _event_name(event) in names:
+            return event
+    return None
+
+
+def _first_timestamp(events: Sequence[EventDict]) -> str:
+    if events:
+        return _event_timestamp(events[0])
+    return "unknown"
+
+
+def _event_timestamp(event: EventDict | None) -> str:
+    if event is None:
+        return "unknown"
+    timestamp = _optional_text(event.get("timestamp"))
+    return timestamp or "unknown"
+
+
+def _event_summary(event: EventDict) -> str:
+    return (
+        _optional_text(
+            event.get("summary")
+            or event.get("narrative")
+            or event.get("detail")
+            or event.get("event")
+        )
+        or _event_ref(event)
+    )
+
+
+def _agent_identity_from_event(
+    event: EventDict | None,
+    *,
+    role: str,
+) -> AgentIdentity | None:
+    if event is None:
+        return None
+    raw = event.get("reviewer_agent") if role == "reviewer" else None
+    name = _optional_text(raw or event.get("agent"))
+    if name is None:
+        return None
+    return AgentIdentity(
+        name=name,
+        role="reviewer" if role == "reviewer" else "coder",
+    )
+
+
+def _artifact_value(event: EventDict, artifact_type: str) -> str | None:
+    raw = event.get("artifacts")
+    if not isinstance(raw, list):
+        return None
+    for artifact in raw:
+        if not isinstance(artifact, Mapping):
+            continue
+        if artifact.get("type") == artifact_type:
+            return _optional_text(artifact.get("value"))
+    return None
+
+
+def _has_action(event: EventDict, action_type: str) -> bool:
+    raw = event.get("actions")
+    if not isinstance(raw, list):
+        return False
+    return any(isinstance(action, Mapping) and action.get("type") == action_type for action in raw)
+
+
+def _optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit() and int(value) > 0:
+        return int(value)
+    return default
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _cycle_outcome(coder: CodingAttempt, review: ReviewStage) -> str:
+    if isinstance(review, ReviewApproved):
+        return "approved"
+    if isinstance(review, ReviewChangesRequested):
+        return "changes_requested"
+    if isinstance(coder, CompletedCodingAttempt):
+        return "completed"
+    if isinstance(coder, RunningCodingAttempt):
+        return "in_progress"
+    return "blocked"
+
+
+__all__ = [
+    "LifecycleProjectionError",
+    "project_dashboard_lifecycle_container",
+    "project_e2e_run_iteration",
+    "project_e2e_suite_lifecycle_container",
+    "project_issue_lifecycle",
+    "require_lifecycle_container_valid",
+]
