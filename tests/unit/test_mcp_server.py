@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.entrypoints.mcp_server import McpApp, McpSettings, OrchestratorHttpClient
+import asyncio
+
+from issue_orchestrator.entrypoints.mcp_server import (
+    McpApp,
+    McpSettings,
+    OrchestratorHttpClient,
+    _mcp_repos_allowlist,
+    _validate_repo_start_path,
+)
 from issue_orchestrator.infra import supervisor
 
 
@@ -64,3 +72,126 @@ def test_client_base_url_uses_supervisor_status_when_port_not_cached(monkeypatch
     )
 
     assert client.client_base_url() == "http://localhost:19080"
+
+
+# ---------------------------------------------------------------------------
+# Security hardening tests — see #5987 (F4).
+# ---------------------------------------------------------------------------
+
+
+class _FakeMcpServer:
+    """Captures tool registrations so we can assert on the exposed surface."""
+
+    def __init__(self) -> None:
+        self.registered: list[str] = []
+
+    def tool(self, name: str):
+        def decorator(fn):
+            self.registered.append(name)
+            return fn
+
+        return decorator
+
+
+def test_register_omits_session_send_tool() -> None:
+    """orchestrator.session.send is the prompt-injection tool we removed."""
+    app = McpApp(_settings())
+    fake = _FakeMcpServer()
+
+    app.register(fake)  # type: ignore[arg-type]
+
+    assert "orchestrator.session.kill" in fake.registered
+    assert "orchestrator.session.send" not in fake.registered
+
+
+def test_shutdown_force_requires_confirm() -> None:
+    app = McpApp(_settings())
+
+    result = asyncio.run(app.tool_shutdown(force=True, confirm=False))
+
+    assert "error" in result
+    assert result["error"]["type"] == "ConfirmationRequired"
+
+
+def test_shutdown_graceful_does_not_require_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-forced shutdown runs without the confirm gate."""
+    app = McpApp(_settings())
+
+    async def fake_shutdown(force: bool) -> dict:
+        return {"ok": True, "force": force}
+
+    # Replace the inner shutdown coroutine so we do not have to stand up
+    # a real HTTP client for this unit.
+    monkeypatch.setattr(app, "shutdown", fake_shutdown)
+
+    result = asyncio.run(app.tool_shutdown(force=False))
+
+    assert result == {"ok": True, "force": False}
+
+
+def test_validate_repo_start_path_rejects_missing(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+
+    error = _validate_repo_start_path(str(missing))
+
+    assert error is not None
+    assert "not found" in error
+
+
+def test_validate_repo_start_path_rejects_non_git(tmp_path: Path) -> None:
+    plain = tmp_path / "plain-dir"
+    plain.mkdir()
+
+    error = _validate_repo_start_path(str(plain))
+
+    assert error is not None
+    assert "not a git checkout" in error
+
+
+def test_validate_repo_start_path_accepts_git_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    assert _validate_repo_start_path(str(repo)) is None
+
+
+def test_validate_repo_start_path_rejects_outside_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / ".git").mkdir()
+    monkeypatch.setenv(
+        "ISSUE_ORCHESTRATOR_MCP_REPOS_ALLOWLIST", str(allowed_root)
+    )
+
+    error = _validate_repo_start_path(str(other))
+
+    assert error is not None
+    assert "ALLOWLIST" in error
+
+
+def test_validate_repo_start_path_accepts_under_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    repo = allowed_root / "child" / "repo"
+    repo.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    monkeypatch.setenv(
+        "ISSUE_ORCHESTRATOR_MCP_REPOS_ALLOWLIST", str(allowed_root)
+    )
+
+    assert _validate_repo_start_path(str(repo)) is None
+
+
+def test_mcp_repos_allowlist_empty_forbids_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_MCP_REPOS_ALLOWLIST", "   ")
+
+    assert _mcp_repos_allowlist() == []

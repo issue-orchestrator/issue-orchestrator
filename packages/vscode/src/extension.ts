@@ -403,23 +403,6 @@ function registerCommands(
         await vscode.env.openExternal(vscode.Uri.parse(url));
       }, output, "Open issue failed");
     }),
-    vscode.commands.registerCommand("issueOrchestrator.sendMessage", async (item?: unknown) => {
-      await runCommand(async () => {
-        const issueNumber = await resolveIssueNumber(item);
-        if (!issueNumber) {
-          return;
-        }
-        const text = await vscode.window.showInputBox({
-          prompt: `Send message to issue #${issueNumber}`,
-          placeHolder: "Type a message for the running agent session",
-        });
-        if (!text) {
-          return;
-        }
-        await client.sendMessage(issueNumber, text);
-        vscode.window.showInformationMessage(`Sent message to #${issueNumber}`);
-      }, output, "Send message failed");
-    }),
     vscode.commands.registerCommand("issueOrchestrator.openClaudeLog", async (item?: unknown) => {
       await runCommand(async () => {
         const issueNumber = await resolveIssueNumber(item);
@@ -701,11 +684,6 @@ async function openSessionConsole(
   panel.webview.html = renderConsoleHtml(issueNumber, logData);
 
   panel.webview.onDidReceiveMessage(async (message) => {
-    if (message?.type === "send" && typeof message.text === "string") {
-      await client.sendMessage(issueNumber, message.text);
-      const updated = await client.getClaudeLog(issueNumber, 200).catch(() => null);
-      panel.webview.html = renderConsoleHtml(issueNumber, updated);
-    }
     if (message?.type === "refresh") {
       const updated = await client.getClaudeLog(issueNumber, 200).catch(() => null);
       panel.webview.html = renderConsoleHtml(issueNumber, updated);
@@ -1028,19 +1006,10 @@ function renderConsoleHtml(issueNumber: number, logData: ClaudeLogResponse | nul
       <h2>Session Console #${issueNumber}</h2>
       <pre>${escapeHtml(formatted || "No log entries found.")}</pre>
       <div>
-        <textarea id="message" placeholder="Send a message to the agent..."></textarea>
-      </div>
-      <div>
-        <button id="send">Send</button>
         <button id="refresh">Refresh</button>
       </div>
       <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-        document.getElementById("send").addEventListener("click", () => {
-          const text = document.getElementById("message").value.trim();
-          if (!text) return;
-          vscode.postMessage({ type: "send", text });
-        });
         document.getElementById("refresh").addEventListener("click", () => {
           vscode.postMessage({ type: "refresh" });
         });

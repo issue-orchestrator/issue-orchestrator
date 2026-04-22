@@ -147,10 +147,6 @@ export class McpClient implements OrchestratorClient {
     await this.callTool("orchestrator.session.kill", { issue_number: issueNumber });
   }
 
-  async sendMessage(issueNumber: number, text: string): Promise<void> {
-    await this.callTool("orchestrator.session.send", { issue_number: issueNumber, text });
-  }
-
   private async callTool<T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     if (!this.client) {
       throw new Error("MCP client not connected");
