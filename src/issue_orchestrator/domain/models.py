@@ -1,11 +1,12 @@
 """Data models for issue-orchestrator."""
 
 import os
+import re
 import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Optional, TYPE_CHECKING, TypeAlias
 
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
@@ -140,6 +141,247 @@ class WorktreeLocation:
     completion_path: str  # Relative path to completion.json
 
 
+# ---------------------------------------------------------------------------
+# CompletionRecord untrusted-input bounds
+#
+# Completion records are written by agents in isolated worktrees and read by
+# the orchestrator as untrusted input. Bounds here cap DoS / injection surface
+# (see security issue #5987, findings F1, F2, F7). Downstream consumers are
+# still responsible for any context-specific checks (e.g. path containment
+# relative to the actual worktree path).
+# ---------------------------------------------------------------------------
+
+# Default cap for any agent-supplied free-form string. Matches GitHub's max
+# comment length so we do not reject a legitimate comment body.
+_COMPLETION_STRING_MAX_BYTES = 64 * 1024
+
+# Tighter caps for specific fields.
+_COMPLETION_RISK_LEVEL_MAX = 32
+_COMPLETION_TIMESTAMP_MAX = 64
+_COMPLETION_OPTION_MAX_BYTES = 1 * 1024
+_COMPLETION_LIST_OF_STRINGS_MAX_ITEMS = 100
+_COMPLETION_BLOCKED_BY_MAX_ITEMS = 50
+
+_PR_LABEL_MAX_LENGTH = 50  # GitHub's own limit
+_PR_LABEL_MAX_COUNT = 20
+# GitHub allows unicode in labels; we intentionally restrict to a conservative
+# ASCII allowlist because agent-supplied labels are untrusted and appear in
+# GH API URLs, logs, and UI. Start with an alphanum; allow space/dash/dot/
+# underscore/slash/colon thereafter.
+_PR_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/:\-]{0,49}$")
+
+_FOLLOW_UP_ISSUES_MAX = 5
+_FOLLOW_UP_TITLE_MAX_BYTES = 255
+_FOLLOW_UP_REASON_MAX_BYTES = 4 * 1024
+_FOLLOW_UP_EVIDENCE_MAX_BYTES = 4 * 1024
+_FOLLOW_UP_SUGGESTED_LABELS_MAX = 10
+
+
+def _check_optional_string(
+    name: str,
+    value: Any,
+    *,
+    max_bytes: int = _COMPLETION_STRING_MAX_BYTES,
+    allow_empty: bool = True,
+) -> str | None:
+    """Validate an optional agent-supplied string field.
+
+    Returns the string unchanged if valid; raises ValueError on violation.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    if "\x00" in value:
+        raise ValueError(f"{name} must not contain null bytes")
+    if not allow_empty and not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    encoded_len = len(value.encode("utf-8"))
+    if encoded_len > max_bytes:
+        raise ValueError(
+            f"{name} exceeds maximum length "
+            f"({encoded_len} bytes > {max_bytes} bytes)"
+        )
+    return value
+
+
+def _check_required_string(name: str, value: Any, *, max_bytes: int) -> str:
+    """Validate a required agent-supplied string field."""
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    if "\x00" in value:
+        raise ValueError(f"{name} must not contain null bytes")
+    encoded_len = len(value.encode("utf-8"))
+    if encoded_len > max_bytes:
+        raise ValueError(
+            f"{name} exceeds maximum length "
+            f"({encoded_len} bytes > {max_bytes} bytes)"
+        )
+    return value
+
+
+def _check_validation_record_path(value: Any) -> str | None:
+    """Static validation for ``validation_record_path``.
+
+    The value is produced by agent-side validation machinery and later used to
+    read/copy a file. We reject absolute paths, parent-directory traversal,
+    and null bytes here; downstream consumers are still responsible for
+    verifying containment within the actual worktree before opening the file.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("validation_record_path must be a string")
+    if not value.strip():
+        raise ValueError("validation_record_path must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError("validation_record_path must not contain null bytes")
+    if len(value.encode("utf-8")) > _COMPLETION_STRING_MAX_BYTES:
+        raise ValueError("validation_record_path is too long")
+    normalized = PurePosixPath(value.replace("\\", "/"))
+    if normalized.is_absolute() or value.startswith("/") or value.startswith("\\"):
+        raise ValueError("validation_record_path must be a relative path")
+    if any(part == ".." for part in normalized.parts):
+        raise ValueError(
+            "validation_record_path must not contain '..' path segments"
+        )
+    return value
+
+
+def _check_pr_labels(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("pr_labels must be a list of strings")
+    if len(value) > _PR_LABEL_MAX_COUNT:
+        raise ValueError(
+            f"pr_labels exceeds maximum count "
+            f"({len(value)} > {_PR_LABEL_MAX_COUNT})"
+        )
+    checked: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(f"pr_labels[{idx}] must be a string")
+        if not _PR_LABEL_PATTERN.match(item):
+            raise ValueError(
+                f"pr_labels[{idx}] is not a valid label "
+                f"(must match {_PR_LABEL_PATTERN.pattern})"
+            )
+        checked.append(item)
+    return checked
+
+
+def _check_list_of_strings(
+    name: str,
+    value: Any,
+    *,
+    max_items: int = _COMPLETION_LIST_OF_STRINGS_MAX_ITEMS,
+    max_bytes_per_item: int = _COMPLETION_STRING_MAX_BYTES,
+) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a list of strings")
+    if len(value) > max_items:
+        raise ValueError(
+            f"{name} exceeds maximum count ({len(value)} > {max_items})"
+        )
+    for idx, item in enumerate(value):
+        _check_required_string(
+            f"{name}[{idx}]", item, max_bytes=max_bytes_per_item
+        )
+    return list(value)
+
+
+def _check_blocked_by(value: Any) -> list[int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("blocked_by must be a list of integers")
+    if len(value) > _COMPLETION_BLOCKED_BY_MAX_ITEMS:
+        raise ValueError(
+            f"blocked_by exceeds maximum count "
+            f"({len(value)} > {_COMPLETION_BLOCKED_BY_MAX_ITEMS})"
+        )
+    for idx, item in enumerate(value):
+        # Reject bools explicitly; bool is a subclass of int in Python.
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise ValueError(f"blocked_by[{idx}] must be an integer")
+    return list(value)
+
+
+def _check_follow_up_issues_count(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise ValueError("follow_up_issues must be a list")
+    if len(value) > _FOLLOW_UP_ISSUES_MAX:
+        raise ValueError(
+            f"follow_up_issues exceeds maximum count "
+            f"({len(value)} > {_FOLLOW_UP_ISSUES_MAX})"
+        )
+
+
+def _validate_follow_up_required_string(
+    value: Any, field_name: str, max_bytes: int
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"follow_up_issues entries require non-empty {field_name}"
+        )
+    if "\x00" in value:
+        raise ValueError(
+            f"follow_up_issues {field_name} must not contain null bytes"
+        )
+    if len(value.encode("utf-8")) > max_bytes:
+        raise ValueError(
+            f"follow_up_issues {field_name} exceeds maximum length "
+            f"({max_bytes} bytes)"
+        )
+    return value
+
+
+def _validate_follow_up_suggested_labels(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ValueError(
+            "follow_up_issues suggested_labels must be a list of non-empty strings"
+        )
+    if len(value) > _FOLLOW_UP_SUGGESTED_LABELS_MAX:
+        raise ValueError(
+            "follow_up_issues suggested_labels exceeds maximum count "
+            f"({_FOLLOW_UP_SUGGESTED_LABELS_MAX})"
+        )
+    for idx, label in enumerate(value):
+        if not _PR_LABEL_PATTERN.match(label):
+            raise ValueError(
+                f"follow_up_issues suggested_labels[{idx}] is not a valid label"
+            )
+    return list(value)
+
+
+def _validate_follow_up_evidence(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "follow_up_issues evidence must be a non-empty string when provided"
+        )
+    if "\x00" in value:
+        raise ValueError(
+            "follow_up_issues evidence must not contain null bytes"
+        )
+    if len(value.encode("utf-8")) > _FOLLOW_UP_EVIDENCE_MAX_BYTES:
+        raise ValueError(
+            "follow_up_issues evidence exceeds maximum length "
+            f"({_FOLLOW_UP_EVIDENCE_MAX_BYTES} bytes)"
+        )
+    return value
+
+
 @dataclass
 class CompletionRecord:
     """Structured completion record written by coding-done/reviewer-done.
@@ -259,34 +501,75 @@ class CompletionRecord:
             except ValueError:
                 raise ValueError(f"Invalid requested action: {action}")
 
+        session_id = _check_required_string(
+            "session_id", data["session_id"], max_bytes=_COMPLETION_STRING_MAX_BYTES
+        )
+        timestamp = _check_required_string(
+            "timestamp", data["timestamp"], max_bytes=_COMPLETION_TIMESTAMP_MAX
+        )
+        summary = _check_required_string(
+            "summary", data["summary"], max_bytes=_COMPLETION_STRING_MAX_BYTES
+        )
+
+        follow_up_raw = data.get("follow_up_issues")
+        _check_follow_up_issues_count(follow_up_raw)
+
         return cls(
-            session_id=data["session_id"],
-            timestamp=data["timestamp"],
+            session_id=session_id,
+            timestamp=timestamp,
             outcome=outcome,
-            summary=data["summary"],
+            summary=summary,
             requested_actions=requested_actions,
-            implementation=data.get("implementation"),
-            problems=data.get("problems"),
-            blocked_reason=data.get("blocked_reason"),
-            blocked_by=data.get("blocked_by"),
-            attempted=data.get("attempted"),
-            when_unblocked=data.get("when_unblocked"),
-            question=data.get("question"),
-            context=data.get("context"),
-            options=data.get("options"),
-            default_action=data.get("default_action"),
-            review_summary=data.get("review_summary"),
-            review_issues=data.get("review_issues"),
-            risk_level=data.get("risk_level"),
-            checks_passed=data.get("checks_passed"),
-            checks_needed=data.get("checks_needed"),
-            comment_body=data.get("comment_body"),
-            pr_labels=data.get("pr_labels"),
-            validation_record_path=data.get("validation_record_path"),
+            implementation=_check_optional_string(
+                "implementation", data.get("implementation")
+            ),
+            problems=_check_optional_string("problems", data.get("problems")),
+            blocked_reason=_check_optional_string(
+                "blocked_reason", data.get("blocked_reason")
+            ),
+            blocked_by=_check_blocked_by(data.get("blocked_by")),
+            attempted=_check_optional_string("attempted", data.get("attempted")),
+            when_unblocked=_check_optional_string(
+                "when_unblocked", data.get("when_unblocked")
+            ),
+            question=_check_optional_string("question", data.get("question")),
+            context=_check_optional_string("context", data.get("context")),
+            options=_check_list_of_strings(
+                "options",
+                data.get("options"),
+                max_bytes_per_item=_COMPLETION_OPTION_MAX_BYTES,
+            ),
+            default_action=_check_optional_string(
+                "default_action", data.get("default_action")
+            ),
+            review_summary=_check_optional_string(
+                "review_summary", data.get("review_summary")
+            ),
+            review_issues=_check_optional_string(
+                "review_issues", data.get("review_issues")
+            ),
+            risk_level=_check_optional_string(
+                "risk_level",
+                data.get("risk_level"),
+                max_bytes=_COMPLETION_RISK_LEVEL_MAX,
+            ),
+            checks_passed=_check_list_of_strings(
+                "checks_passed", data.get("checks_passed")
+            ),
+            checks_needed=_check_list_of_strings(
+                "checks_needed", data.get("checks_needed")
+            ),
+            comment_body=_check_optional_string(
+                "comment_body", data.get("comment_body")
+            ),
+            pr_labels=_check_pr_labels(data.get("pr_labels")),
+            validation_record_path=_check_validation_record_path(
+                data.get("validation_record_path")
+            ),
             follow_up_issues=[
                 ProposedFollowUpIssue.from_dict(item)
-                for item in data.get("follow_up_issues", [])
-            ] if data.get("follow_up_issues") is not None else None,
+                for item in follow_up_raw
+            ] if follow_up_raw is not None else None,
         )
 
 
@@ -314,26 +597,19 @@ class ProposedFollowUpIssue:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProposedFollowUpIssue":
-        title = data.get("title")
-        reason = data.get("reason")
-        if not isinstance(title, str) or not title.strip():
-            raise ValueError("follow_up_issues entries require non-empty title")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("follow_up_issues entries require non-empty reason")
-        evidence = data.get("evidence")
-        suggested_labels_raw = data.get("suggested_labels")
-        suggested_labels = None
-        if suggested_labels_raw is not None:
-            if not isinstance(suggested_labels_raw, list) or not all(
-                isinstance(item, str) and item.strip() for item in suggested_labels_raw
-            ):
-                raise ValueError("follow_up_issues suggested_labels must be a list of non-empty strings")
-            suggested_labels = list(suggested_labels_raw)
+        title = _validate_follow_up_required_string(
+            data.get("title"), "title", _FOLLOW_UP_TITLE_MAX_BYTES
+        )
+        reason = _validate_follow_up_required_string(
+            data.get("reason"), "reason", _FOLLOW_UP_REASON_MAX_BYTES
+        )
+        suggested_labels = _validate_follow_up_suggested_labels(
+            data.get("suggested_labels")
+        )
         blocking = data.get("blocking", False)
         if not isinstance(blocking, bool):
             raise ValueError("follow_up_issues blocking must be a boolean")
-        if evidence is not None and (not isinstance(evidence, str) or not evidence.strip()):
-            raise ValueError("follow_up_issues evidence must be a non-empty string when provided")
+        evidence = _validate_follow_up_evidence(data.get("evidence"))
         return cls(
             title=title,
             reason=reason,
