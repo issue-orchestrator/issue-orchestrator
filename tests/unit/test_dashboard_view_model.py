@@ -1255,3 +1255,9 @@ def test_e2e_badge_state_maps_warning():
     )
     assert vm["badge"]["state"] == "warning"
     assert vm["badge"]["icon"] == "⚠"
+
+
+def test_normalize_status_reason_drops_none_and_blank_values():
+    """`_normalize_status_reason` returns None for None input and whitespace-only strings."""
+    assert _normalize_status_reason(None) is None
+    assert _normalize_status_reason("   ") is None
