@@ -1,4 +1,47 @@
 // ============================================
+// Browser-session CSRF shim (security #6017, re-review P3).
+// The server renders the CSRF token into <meta name="io-csrf-token">
+// at page load. Wrap the global ``fetch`` so every mutating request
+// we issue carries the matching X-CSRF-Token header — otherwise the
+// Control API middleware returns 403 and every dashboard button
+// silently fails. SameSite=Strict on the session cookie already
+// blocks cross-origin forgery; the CSRF token is defense-in-depth.
+// ============================================
+(() => {
+    const meta = document.querySelector('meta[name="io-csrf-token"]');
+    const csrfToken = meta ? meta.getAttribute('content') : '';
+    if (!csrfToken) return;
+    const originalFetch = window.fetch.bind(window);
+    const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+    window.fetch = (input, init = {}) => {
+        const method = ((init && init.method) || (typeof input !== 'string' && input?.method) || 'GET').toUpperCase();
+        if (safeMethods.has(method)) {
+            return originalFetch(input, init);
+        }
+        const headers = new Headers(init.headers || (typeof input !== 'string' ? input?.headers : undefined) || {});
+        if (!headers.has('X-CSRF-Token')) {
+            headers.set('X-CSRF-Token', csrfToken);
+        }
+        return originalFetch(input, { ...init, headers });
+    };
+})();
+
+// Fetch a short-lived SSE token bound to the browser session, then
+// open the EventSource. EventSource can't carry custom headers or
+// (reliably) cookies, so the token goes in the query string. The
+// server verifies it against the session on every reconnect.
+async function openAuthenticatedSseStream(path) {
+    const resp = await fetch('/api/sse-token');
+    if (!resp.ok) {
+        throw new Error(`sse-token request failed (${resp.status})`);
+    }
+    const { sse_token } = await resp.json();
+    const url = `${path}${path.includes('?') ? '&' : '?'}sse_token=${encodeURIComponent(sse_token)}`;
+    return new EventSource(url);
+}
+window.openAuthenticatedSseStream = openAuthenticatedSseStream;
+
+// ============================================
 // State
 // ============================================
 const state = {

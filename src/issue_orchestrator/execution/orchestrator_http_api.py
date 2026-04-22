@@ -12,15 +12,26 @@ from ..ports.orchestrator_api import OrchestratorApi
 
 
 def _default_token_provider() -> str | None:
-    """Resolve the Control API bearer token from the environment.
+    """Resolve the admin Control API bearer token for outgoing calls.
 
-    MCP and CLI clients in the same process tree as a running
-    orchestrator inherit ``ISSUE_ORCHESTRATOR_API_TOKEN``. Standalone
-    clients can export it explicitly, or override the provider via the
-    ``token_provider`` constructor argument. See security issue #5987
-    (F3).
+    Resolution order (security #5987 F3 + #6017 review P3):
+
+    1. ``ISSUE_ORCHESTRATOR_API_TOKEN`` env var — fastest path and
+       used by MCP / CLI clients launched by the orchestrator.
+    2. The on-disk admin token file if it already exists — lets a
+       standalone Control Center or an operator CLI reach an
+       orchestrator that is already running in another process
+       without the operator manually exporting the secret.
+
+    Neither path creates the token file; only server-side startup
+    (``ControlAPIServer.start`` / ``control_center.main``) does.
     """
-    return os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN") or None
+    from_env = os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN")
+    if from_env:
+        return from_env
+    from ..infra.api_token import read_existing_admin_token
+
+    return read_existing_admin_token()
 
 
 def _auth_headers(token_provider: Callable[[], str | None]) -> dict[str, str]:
@@ -30,10 +41,24 @@ def _auth_headers(token_provider: Callable[[], str | None]) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def probe_orchestrator_json(url: str, *, timeout_seconds: float) -> dict[str, Any] | None:
-    """Return a JSON object from an orchestrator endpoint, or ``None`` on probe failure."""
+def probe_orchestrator_json(
+    url: str,
+    *,
+    timeout_seconds: float,
+    token_provider: Callable[[], str | None] = _default_token_provider,
+) -> dict[str, Any] | None:
+    """Return a JSON object from an orchestrator endpoint, or ``None`` on probe failure.
+
+    After #5987 F3 landed, every Control API route requires a bearer
+    token. Probes that forgot to send one silently received 401 and the
+    caller treated the orchestrator as absent — the exact symptom
+    flagged in the #6017 re-review P4. Route the probe through the
+    same token resolver as the HTTP adapter so lifecycle probes
+    continue to see authenticated engines.
+    """
+    headers = _auth_headers(token_provider)
     try:
-        response = httpx.get(url, timeout=timeout_seconds)
+        response = httpx.get(url, timeout=timeout_seconds, headers=headers)
         response.raise_for_status()
     except Exception:
         return None

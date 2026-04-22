@@ -53,12 +53,13 @@ RUNTIME_COMPLETION_RECORD: Any = RuntimeCompletionRecord
 def _api_request_headers() -> dict[str, str]:
     """Build headers for Control API requests, including bearer token if set.
 
-    The orchestrator exports ``ISSUE_ORCHESTRATOR_API_TOKEN`` when it
-    starts the Control API server; agent subprocesses inherit it via
-    ``ALWAYS_PASSTHROUGH_ENV_VARS``. See security issue #5987 (F3).
+    Agents hold a scoped ``ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN``
+    that authorizes only ``/api/preflight-push`` and
+    ``/api/issues/{n}/resume``. The admin token is deliberately
+    scrubbed from the agent env (security #6017 review P2).
     """
     headers = {"Content-Type": "application/json"}
-    token = os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN")
+    token = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers

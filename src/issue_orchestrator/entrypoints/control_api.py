@@ -56,8 +56,12 @@ from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from ..infra import gh_audit
-from ..infra.api_token import resolve_api_token, verify_token
+from ..infra import browser_session, gh_audit
+from ..infra.api_token import (
+    resolve_agent_callback_token,
+    resolve_api_token,
+    verify_token,
+)
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
@@ -142,54 +146,179 @@ if STATIC_DIR.exists():
     control_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+_BROWSER_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_SSE_PATH = "/api/events"
+
+
+def _check_bearer_auth(
+    request: Request, admin: str | None, agent: str | None
+) -> str | None:
+    """Evaluate the ``Authorization: Bearer`` path.
+
+    Returns ``"ok"`` when the header is valid for the route,
+    ``"invalid"`` when a Bearer header was present but did not
+    match, or ``None`` when no Bearer header was supplied (caller
+    should fall through to browser-session checks).
+    """
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    provided = header[len("Bearer "):].strip()
+    if admin is not None and verify_token(admin, provided):
+        return "ok"
+    if (
+        agent is not None
+        and _is_agent_callback_route(request.url.path)
+        and verify_token(agent, provided)
+    ):
+        return "ok"
+    return "invalid"
+
+
+def _check_browser_session_auth(
+    request: Request,
+) -> tuple[bool, str, int]:
+    """Evaluate the browser session + CSRF path.
+
+    Returns ``(ok, message, status)``. When ``ok`` is True the
+    request is authenticated; ``message`` and ``status`` are only
+    meaningful when ``ok`` is False.
+    """
+    session_id = request.cookies.get(browser_session.SESSION_COOKIE)
+    if not session_id or not browser_session.session_is_valid(session_id):
+        return (False, "missing credentials", 401)
+    if request.url.path == _SSE_PATH:
+        sse_token = request.query_params.get(browser_session.SSE_TOKEN_QUERY)
+        if browser_session.verify_sse_token(sse_token, session_id):
+            return (True, "", 200)
+        return (False, "invalid sse token", 401)
+    if request.method in _BROWSER_SAFE_METHODS:
+        return (True, "", 200)
+    csrf = request.headers.get(browser_session.CSRF_HEADER)
+    if browser_session.verify_csrf(session_id, csrf):
+        return (True, "", 200)
+    return (False, "missing or invalid csrf token", 403)
+
+
 @control_app.middleware("http")
 async def _require_api_token_middleware(  # pyright: ignore[reportUnusedFunction]
     request: Request, call_next: Any
 ) -> Response:
-    """Enforce bearer-token auth when ``configure_api_token`` has been called."""
-    expected = _api_token
-    if expected is None:
+    """Enforce Control API auth via three parallel paths.
+
+    1. **Bearer token** — admin token authorizes every route; agent
+       callback token authorizes only ``_AGENT_CALLBACK_ROUTES``.
+    2. **Browser session cookie + CSRF** — established by visiting
+       ``/``. Mutating methods require ``X-CSRF-Token``.
+    3. **SSE short-lived token** — signed query-string token bound
+       to the same session, for ``EventSource`` which cannot carry
+       headers.
+
+    Public routes (landing HTML, favicon, ``/static/*``) always pass.
+    """
+    if _is_public_path(request.url.path):
         return await call_next(request)
-    if request.url.path in _UNAUTHENTICATED_PATHS:
+    admin = _admin_token
+    agent = _agent_callback_token
+    if admin is None and agent is None:
         return await call_next(request)
-    header = request.headers.get("authorization", "")
-    prefix = "Bearer "
-    if not header.startswith(prefix):
-        return JSONResponse(
-            {"error": "missing bearer token"}, status_code=401
-        )
-    provided = header[len(prefix):].strip()
-    if not verify_token(expected, provided):
+    bearer_result = _check_bearer_auth(request, admin, agent)
+    if bearer_result == "ok":
+        return await call_next(request)
+    if bearer_result == "invalid":
         return JSONResponse(
             {"error": "invalid bearer token"}, status_code=401
         )
-    return await call_next(request)
+    ok, message, status = _check_browser_session_auth(request)
+    if ok:
+        return await call_next(request)
+    return JSONResponse({"error": message}, status_code=status)
 
-# Bearer-token enforcement (security issue #5987, F3).
+# Bearer-token enforcement (security issue #5987, F3 + #6017 review).
 #
-# When ``_api_token`` is set, every HTTP request is required to carry an
-# ``Authorization: Bearer <token>`` header that matches. When it is
-# ``None`` (the default in unit tests), the middleware is a no-op so
-# existing in-process TestClient setups keep working. Production
-# startup in ``ControlAPIServer.start`` calls ``configure_api_token``
-# to turn enforcement on.
-_api_token: str | None = None
+# Two tokens gate the Control API:
+#
+# - ``_admin_token`` authorizes every route. Held by the orchestrator,
+#   the operator CLI, the Control Center, and MCP clients driven by the
+#   operator.
+# - ``_agent_callback_token`` authorizes an allowlist of routes only
+#   (``_AGENT_CALLBACK_ROUTES``). Issued to agent subprocesses so they
+#   can call preflight-push / issue-resume without holding the admin
+#   credential (#6017 P2 review).
+#
+# Both are ``None`` by default so unit tests using ``TestClient`` keep
+# working. Production startup in ``ControlAPIServer.start`` and
+# ``control_center.main`` calls ``configure_api_token`` to turn
+# enforcement on.
+_admin_token: str | None = None
+_agent_callback_token: str | None = None
 
-# Paths that must remain accessible without a token. Keep this list
-# minimal — today it is empty because there is no liveness probe, but we
-# keep the hook so future health endpoints do not have to re-invent it.
-_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset()
+# Paths that must remain accessible without any authentication —
+# browser chrome, static assets, the login form, and favicon. The
+# landing HTML (``/``) is NOT in this set: without a valid session
+# cookie it renders the login page, not the dashboard, and neither
+# path issues a usable credential until ``POST /login`` verifies the
+# admin bearer token. See security #6017 re-review-2 P1 — earlier
+# versions minted a session cookie for any anonymous GET of ``/``,
+# which defeated bearer-token auth entirely.
+_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset({
+    "/",
+    "/login",
+    "/favicon.ico",
+})
+_UNAUTHENTICATED_PREFIXES: tuple[str, ...] = ("/static/",)
 
 
-def configure_api_token(token: str | None) -> None:
-    """Enable (or disable) bearer-token enforcement on the Control API."""
-    global _api_token
-    _api_token = token
+def _is_public_path(path: str) -> bool:
+    if path in _UNAUTHENTICATED_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES)
+
+# Routes the agent-callback token is allowed to reach. Anything NOT in
+# this set requires the admin token. The agent-callback token is
+# intentionally scoped to the two flows coding-done / reviewer-done
+# actually drive.
+_AGENT_CALLBACK_ROUTES: frozenset[str] = frozenset({"/api/preflight-push"})
+
+
+def _is_agent_callback_route(path: str) -> bool:
+    if path in _AGENT_CALLBACK_ROUTES:
+        return True
+    # ``/api/issues/{issue_number}/resume`` has a variable path segment;
+    # match by prefix + suffix rather than hardcoding every number.
+    if path.startswith("/api/issues/") and path.endswith("/resume"):
+        return True
+    return False
+
+
+def configure_api_token(
+    admin: str | None,
+    *,
+    agent_callback: str | None = None,
+) -> None:
+    """Enable (or disable) bearer-token enforcement on the Control API.
+
+    ``admin`` — required for anything other than the agent-callback
+    allowlist. Pass ``None`` to disable enforcement entirely (test
+    default).
+
+    ``agent_callback`` — optional scoped token; when set, carrying
+    ``Authorization: Bearer <agent_callback>`` is accepted on the
+    allowlisted routes.
+    """
+    global _admin_token, _agent_callback_token
+    _admin_token = admin
+    _agent_callback_token = agent_callback
 
 
 def get_configured_api_token() -> str | None:
-    """Return the currently configured token (for clients in the same process)."""
-    return _api_token
+    """Return the currently configured admin token."""
+    return _admin_token
+
+
+def get_configured_agent_callback_token() -> str | None:
+    """Return the currently configured agent-callback token."""
+    return _agent_callback_token
 
 
 # Global reference to orchestrator (set at startup)
@@ -744,13 +873,79 @@ async def favicon():
     )
 
 
-@control_app.get("/", response_class=HTMLResponse)
-async def control_center_ui() -> HTMLResponse:
-    """Serve the control center UI.
+def _render_login_page(error: str | None = None) -> HTMLResponse:
+    """Render the minimal Control Center login form.
 
-    This UI is served by the control API and works even when no orchestrator
-    is running. It allows starting/stopping orchestrators for any registered repo.
+    The page submits ``POST /login`` with the admin bearer token.
+    Kept intentionally self-contained so it cannot depend on any
+    authenticated fetch to boot.
     """
+    error_html = (
+        f'<p class="err">{error}</p>' if error else ""
+    )
+    content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Issue Orchestrator — Sign in</title>
+<link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
+<style>
+body {{ font-family: sans-serif; display: flex; align-items: center;
+       justify-content: center; height: 100vh; margin: 0;
+       background: #0f1419; color: #e6e6e6; }}
+form {{ background: #1c2330; padding: 32px; border-radius: 8px;
+        min-width: 320px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }}
+h1 {{ margin: 0 0 12px; font-size: 20px; }}
+p  {{ margin: 0 0 16px; color: #9aa5b1; font-size: 13px; line-height: 1.4; }}
+.err {{ color: #ff6b6b; }}
+input[type=password] {{ width: 100%; padding: 10px; border-radius: 4px;
+                        border: 1px solid #334155; background: #0f1419;
+                        color: #e6e6e6; box-sizing: border-box;
+                        font-family: monospace; }}
+button {{ margin-top: 12px; width: 100%; padding: 10px; border: 0;
+         border-radius: 4px; background: #3b82f6; color: white;
+         font-weight: 600; cursor: pointer; }}
+code {{ background: #0f1419; padding: 2px 6px; border-radius: 3px;
+        font-size: 12px; }}
+</style>
+</head>
+<body>
+<form method="POST" action="/login">
+<h1>Issue Orchestrator</h1>
+<p>Paste the admin token from <code>~/.issue-orchestrator/api-token</code>.</p>
+{error_html}
+<input type="password" name="token" autofocus autocomplete="off"
+       placeholder="Admin token" required>
+<button type="submit">Sign in</button>
+</form>
+</body>
+</html>"""
+    return HTMLResponse(content)
+
+
+@control_app.get("/", response_class=HTMLResponse)
+async def control_center_ui(request: Request) -> HTMLResponse:
+    """Serve the Control Center dashboard to an authenticated browser.
+
+    When auth is disabled entirely (test default) or the visitor
+    already holds a valid session cookie, we render the dashboard
+    with the session's CSRF token embedded in a ``<meta>`` tag.
+    Otherwise we serve the login page; the session cookie is minted
+    only after ``POST /login`` verifies the admin bearer token.
+
+    Regression for security #6017 re-review-2 P1: this route used to
+    mint a valid session for anyone who hit ``/``, letting any local
+    process turn an anonymous visit into admin-equivalent API access.
+    """
+    auth_disabled = _admin_token is None and _agent_callback_token is None
+    existing_session = request.cookies.get(browser_session.SESSION_COOKIE)
+    csrf_token: str | None = None
+    if existing_session:
+        csrf_token = browser_session.get_csrf_token(existing_session)
+    if csrf_token is None and not auth_disabled:
+        # No valid session and auth is active — show login form.
+        return _render_login_page()
+
     template_path = _TEMPLATES_DIR / "control_center.html"
     if not template_path.exists():
         return HTMLResponse(
@@ -766,7 +961,91 @@ async def control_center_ui() -> HTMLResponse:
     content = template_path.read_text()
     content = content.replace("{{ version }}", __version__)
     content = content.replace("{{ commit_sha }}", commit_short)
+    content = content.replace("{{ csrf_token }}", csrf_token or "")
     return HTMLResponse(content)
+
+
+@control_app.post("/login")
+async def control_center_login(request: Request) -> Response:
+    """Exchange the admin bearer token for a browser session cookie.
+
+    Accepts both ``application/x-www-form-urlencoded`` (the HTML form
+    submits this) and ``application/json`` (for programmatic flows).
+    Rate limiting is deliberately not added here because only the
+    bearer-token comparison is sensitive, and ``hmac.compare_digest``
+    already neutralizes timing attacks.
+    """
+    if _admin_token is None:
+        # Auth not configured — accept blindly (keeps tests happy).
+        response = JSONResponse({"status": "ok"})
+        return response
+    token: str | None = None
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict):
+            raw = body.get("token")
+            token = raw if isinstance(raw, str) else None
+    else:
+        form = await request.form()
+        raw = form.get("token")
+        token = raw if isinstance(raw, str) else None
+    if not token or not verify_token(_admin_token, token):
+        if content_type.startswith("application/json"):
+            return JSONResponse(
+                {"error": "invalid token"}, status_code=401
+            )
+        return _render_login_page(error="Invalid token. Try again.")
+
+    session_id, _csrf = browser_session.create_session()
+    # HTML form → redirect so the dashboard loads from a fresh GET.
+    # JSON client → 200 with session id in the response so automated
+    # flows can assert they actually got a session.
+    if content_type.startswith("application/json"):
+        response: Response = JSONResponse(
+            {"status": "ok", "session_id": session_id}
+        )
+    else:
+        response = Response(status_code=303)
+        response.headers["Location"] = "/"
+    response.set_cookie(
+        browser_session.SESSION_COOKIE,
+        session_id,
+        max_age=browser_session.SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@control_app.get("/api/sse-token")
+async def issue_browser_sse_token(request: Request) -> JSONResponse:
+    """Return a short-lived SSE token bound to the caller's session.
+
+    ``EventSource`` cannot send headers, so the JS client calls this
+    endpoint (which is CSRF-protected via the middleware) and then
+    passes the returned token to ``/api/events`` as a query
+    parameter. See ``browser_session.issue_sse_token`` for the token
+    format.
+    """
+    session_id = request.cookies.get(browser_session.SESSION_COOKIE)
+    if not session_id:
+        return JSONResponse(
+            {"error": "no session"}, status_code=401
+        )
+    token = browser_session.issue_sse_token(session_id)
+    if token is None:
+        return JSONResponse(
+            {"error": "session invalid"}, status_code=401
+        )
+    return JSONResponse({
+        "sse_token": token,
+        "ttl_seconds": browser_session.SSE_TOKEN_TTL_SECONDS,
+    })
 
 
 # ======================================================================# Supervisor Control API - Process Management Endpoints
@@ -984,17 +1263,26 @@ class ControlAPIServer:
 
         set_orchestrator(self.orchestrator)
 
-        # Resolve + activate the shared-secret token before binding. Kept
-        # inside ``start`` so test harnesses that import ``control_app``
-        # without spinning up a server do not inadvertently create the
-        # token file on a developer machine. See security issue #5987
-        # (F3) and infra/api_token.py for the resolution order.
-        token = resolve_api_token()
-        configure_api_token(token)
+        # Resolve + activate both tokens before binding. Kept inside
+        # ``start`` so test harnesses that import ``control_app``
+        # without spinning up a server do not inadvertently create
+        # the token files on a developer machine. The admin token
+        # authorizes every route; the agent-callback token is scoped
+        # to the routes in ``_AGENT_CALLBACK_ROUTES``. See security
+        # #5987 (F3) and #6017 review (P2 on agent-privilege).
+        admin_token = resolve_api_token()
+        agent_callback_token = resolve_agent_callback_token()
+        configure_api_token(admin_token, agent_callback=agent_callback_token)
+        # Initialize the browser-session HMAC secret so the Control
+        # Center UI can establish an ``io_session`` cookie on first
+        # visit (#6017 re-review P3).
+        browser_session.initialize()
         # Export into the process environment so in-process clients
-        # (MCP server, CLI tools launched by this orchestrator) pick it
-        # up without having to re-read the file.
-        os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", token)
+        # (MCP server, CLI tools launched by this orchestrator) pick
+        # up the admin token. The agent-callback token is surfaced
+        # only into agent subprocesses — see agent_runner_env.py.
+        os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
+        os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
 
         config = uvicorn.Config(
             control_app,

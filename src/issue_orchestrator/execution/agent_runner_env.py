@@ -37,6 +37,12 @@ DEFAULT_FORBIDDEN_ENV_VARS: list[str] = [
     # Claude Code nesting detection - must not leak into child agents
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
+    # Admin bearer token for the loopback Control API. Agents get the
+    # narrower ``ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN`` instead — see
+    # ``ALWAYS_PASSTHROUGH_ENV_VARS`` below and security #6017 review P2.
+    # Without this scrub, the orchestrator's own env would leak the
+    # admin credential into every agent subprocess.
+    "ISSUE_ORCHESTRATOR_API_TOKEN",
 ]
 
 # Environment variables to set for safe git behavior
@@ -65,11 +71,19 @@ ALWAYS_PASSTHROUGH_ENV_VARS: list[str] = [
     # by pre-push hook scripts that live outside the venv and cannot
     # otherwise find the orchestrator's interpreter.
     "ISSUE_ORCHESTRATOR_PYTHON",
-    # Bearer token for the loopback Control API (security issue #5987,
-    # F3). Agent subprocesses call back into the orchestrator to trigger
-    # preflight-push and session-resume; without this token those
-    # requests would fail with 401.
-    "ISSUE_ORCHESTRATOR_API_TOKEN",
+    # Scoped bearer token for the loopback Control API (security
+    # #5987 F3). Agent subprocesses call back into the orchestrator
+    # for preflight-push and session-resume; this token authorizes
+    # ONLY those routes in ``control_api._AGENT_CALLBACK_ROUTES``.
+    #
+    # Scope note: the admin token is scrubbed from agent env, but a
+    # deliberately malicious agent running as the same user can still
+    # read ``~/.issue-orchestrator/api-token`` directly and bypass
+    # the scoping. The callback token is defense in depth — it keeps
+    # agents off admin routes in the default path — not a hard
+    # privilege boundary. Real isolation requires OS-level
+    # separation; tracked as issue #6024.
+    "ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN",
 ]
 
 

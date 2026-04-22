@@ -14,9 +14,14 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.infra.api_token import (
+    AGENT_CALLBACK_TOKEN_ENV_VAR,
     TOKEN_ENV_VAR,
     generate_token,
     load_or_create_token,
+    read_existing_admin_token,
+    read_existing_agent_callback_token,
+    read_existing_token,
+    resolve_agent_callback_token,
     resolve_api_token,
     verify_token,
 )
@@ -113,3 +118,66 @@ class TestVerifyToken:
 
     def test_rejects_different_length(self) -> None:
         assert verify_token("short", "much-longer-value") is False
+
+
+class TestReadExistingToken:
+    """Tests for the non-creating token-file readers (#6017 review P3)."""
+
+    def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        missing = tmp_path / "absent-token"
+        assert read_existing_token(missing) is None
+
+    def test_reads_existing_admin_file(self, tmp_path: Path) -> None:
+        target = tmp_path / "api-token"
+        target.write_text("on-disk-token")
+        target.chmod(0o600)
+        assert read_existing_token(target) == "on-disk-token"
+
+    def test_admin_helper_prefers_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(TOKEN_ENV_VAR, "from-env")
+
+        assert read_existing_admin_token() == "from-env"
+
+    def test_admin_helper_returns_none_when_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # No file in tmp_path/.issue-orchestrator/api-token.
+        assert read_existing_admin_token() is None
+
+
+class TestAgentCallbackToken:
+    """Scoped callback token surface (security #6017 review P2)."""
+
+    def test_resolve_creates_separate_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "agent-callback-token"
+        token = resolve_agent_callback_token(path)
+
+        assert token
+        assert path.exists()
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_resolve_prefers_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "agent-callback-token"
+        path.write_text("file-value")
+        path.chmod(0o600)
+        monkeypatch.setenv(AGENT_CALLBACK_TOKEN_ENV_VAR, "env-value")
+
+        assert resolve_agent_callback_token(path) == "env-value"
+
+    def test_read_existing_returns_none_when_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(AGENT_CALLBACK_TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert read_existing_agent_callback_token() is None
+
+    def test_admin_and_agent_tokens_are_independent(self) -> None:
+        """Different env vars — writing one must not leak into the other."""
+        assert TOKEN_ENV_VAR != AGENT_CALLBACK_TOKEN_ENV_VAR
