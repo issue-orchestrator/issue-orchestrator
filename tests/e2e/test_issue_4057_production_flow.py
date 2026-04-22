@@ -26,6 +26,7 @@ from issue_orchestrator.domain.event_taxonomy import (
     REVIEW_START_CLUSTER_EVENT_NAMES,
     REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
 )
+from issue_orchestrator.contracts.ui_openapi_models import IssueDetailPayload
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
@@ -287,6 +288,95 @@ def _steps_from_issue_detail(payload: dict[str, object]) -> list[dict[str, objec
     return [step for step in steps if isinstance(step, dict)]
 
 
+def _issue_lifecycle_from_detail(
+    payload: dict[str, object],
+    *,
+    issue_number: int,
+) -> dict[str, object]:
+    IssueDetailPayload.model_validate(payload)
+    lifecycle = payload.get("lifecycle")
+    assert isinstance(lifecycle, dict), "Expected issue-detail semantic lifecycle"
+    assert lifecycle.get("kind") == "dashboard"
+
+    current = lifecycle.get("current")
+    assert isinstance(current, dict), "Expected dashboard lifecycle iteration"
+    assert current.get("kind") == "dashboard_current"
+
+    issue_lifecycles = current.get("issue_lifecycles")
+    assert isinstance(issue_lifecycles, list) and issue_lifecycles, (
+        "Expected semantic issue lifecycle entries"
+    )
+    matches = [
+        lifecycle_item
+        for lifecycle_item in issue_lifecycles
+        if isinstance(lifecycle_item, dict)
+        and lifecycle_item.get("issue_number") == issue_number
+    ]
+    assert len(matches) == 1, (
+        f"Expected exactly one lifecycle for issue #{issue_number}; "
+        f"found {len(matches)} in {issue_lifecycles}"
+    )
+    return matches[0]
+
+
+def _assert_issue_lifecycle_contains_approved_review_cycle(
+    payload: dict[str, object],
+    *,
+    issue_number: int,
+    coding_run_dir: Path,
+) -> None:
+    issue_lifecycle = _issue_lifecycle_from_detail(
+        payload,
+        issue_number=issue_number,
+    )
+    cycles = issue_lifecycle.get("cycles")
+    assert isinstance(cycles, list) and cycles, "Expected semantic issue cycles"
+
+    approved_cycles: list[dict[str, object]] = []
+    for cycle in cycles:
+        if not isinstance(cycle, dict):
+            continue
+        coder = cycle.get("coder")
+        review = cycle.get("review")
+        if not isinstance(coder, dict) or not isinstance(review, dict):
+            continue
+        if (
+            coder.get("kind") == "completed_coding_attempt"
+            and review.get("kind") == "review_approved"
+        ):
+            approved_cycles.append(cycle)
+
+    assert approved_cycles, (
+        "Expected at least one semantically approved lifecycle cycle with "
+        "completed coding and approved review"
+    )
+    approved_cycle = approved_cycles[-1]
+    assert approved_cycle.get("outcome") == "approved"
+
+    coder = approved_cycle["coder"]
+    review = approved_cycle["review"]
+    assert isinstance(coder, dict)
+    assert isinstance(review, dict)
+
+    validation = coder.get("validation")
+    assert isinstance(validation, dict)
+    assert validation.get("kind") == "passed"
+    completion_record = coder.get("completion_record")
+    assert isinstance(completion_record, dict)
+    assert completion_record.get("kind") == "available"
+    coder_recording = coder.get("session_recording")
+    assert isinstance(coder_recording, dict)
+    assert coder_recording.get("kind") == "available"
+    assert coder_recording.get("run_dir") == str(coding_run_dir)
+
+    review_recording = review.get("session_recording")
+    assert isinstance(review_recording, dict)
+    assert review_recording.get("kind") == "available"
+    transcript = review.get("transcript")
+    assert isinstance(transcript, dict)
+    assert transcript.get("kind") == "available"
+
+
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=550, system_gh_activity_limit=220)
 async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     repo_name: str,
@@ -516,6 +606,11 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
 
         detail_after_review = await _fetch_issue_detail(config.web_port, issue_number)
         steps_after_review = _steps_from_issue_detail(detail_after_review)
+        _assert_issue_lifecycle_contains_approved_review_cycle(
+            detail_after_review,
+            issue_number=issue_number,
+            coding_run_dir=coding_run_dir,
+        )
         # Review lifecycle check against the collapsed Story view.
         #
         # The backend always emits a deterministic cluster of
