@@ -26,7 +26,17 @@ from issue_orchestrator.domain.event_taxonomy import (
     REVIEW_START_CLUSTER_EVENT_NAMES,
     REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
 )
-from issue_orchestrator.contracts.ui_openapi_models import IssueDetailPayload
+from issue_orchestrator.contracts.ui_openapi_models import (
+    CompletedCodingAttemptPayload,
+    CompletionRecordEvidencePayload,
+    DashboardTimelineContainerPayload,
+    IssueDetailPayload,
+    IssueLifecyclePayload,
+    ReviewApprovedPayload,
+    ReviewTranscriptAvailablePayload,
+    SessionRecordingAvailablePayload,
+    ValidationPassedPayload,
+)
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
@@ -55,7 +65,7 @@ def build_issue_4057_prompt() -> str:
         f"Open only {ISSUE_4057_TARGET_TEST}. "
         "Add exactly one new regression test named "
         "`test_normalize_status_reason_drops_none_and_blank_values` that proves "
-        "`_normalize_status_reason(None)` and `_normalize_status_reason(\"   \")` both return `None`. "
+        '`_normalize_status_reason(None)` and `_normalize_status_reason("   ")` both return `None`. '
         "Do NOT edit production files, generated contracts, schemas, `.gitignore`, or any other tests. "
         "Do NOT edit src/issue_orchestrator/entrypoints/cli_tools/agent_done.py, "
         "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py, or "
@@ -81,7 +91,7 @@ def build_issue_4057_body() -> str:
         "- Treat this as a control-flow verification, not a feature implementation task\n"
         f"- Open only {ISSUE_4057_TARGET_TEST}\n"
         "- Add exactly one regression test named test_normalize_status_reason_drops_none_and_blank_values\n"
-        "- Assert _normalize_status_reason(None) is None and _normalize_status_reason(\"   \") is None\n"
+        '- Assert _normalize_status_reason(None) is None and _normalize_status_reason("   ") is None\n'
         "- Do not edit production files, generated contracts, schemas, .gitignore, or any other tests\n"
         f"- Run {ISSUE_4057_VALIDATION_CMD} before completion\n"
         f"- Final validation must run through {ISSUE_4057_VALIDATION_CMD}\n"
@@ -132,7 +142,11 @@ async def _wait_for_session_manifest(
                     last_payload = payload
                     run_dir_value = payload.get("run_dir")
                     manifest = payload.get("manifest")
-                    artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+                    artifacts = (
+                        manifest.get("artifacts")
+                        if isinstance(manifest, dict)
+                        else None
+                    )
                     if isinstance(run_dir_value, str) and run_dir_value:
                         run_dir = Path(run_dir_value)
                         if previous_run_dir is not None and run_dir == previous_run_dir:
@@ -154,7 +168,9 @@ async def _wait_for_session_manifest(
     )
 
 
-async def _wait_for_file(path: Path, *, timeout_s: float = 180.0, non_empty: bool = False) -> None:
+async def _wait_for_file(
+    path: Path, *, timeout_s: float = 180.0, non_empty: bool = False
+) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if path.exists() and (not non_empty or path.stat().st_size > 0):
@@ -189,7 +205,9 @@ async def _assert_stage_artifacts(
             )
 
 
-async def _assert_review_stage_artifacts(run_dir: Path, *, require_validation: bool) -> None:
+async def _assert_review_stage_artifacts(
+    run_dir: Path, *, require_validation: bool
+) -> None:
     """Review-exchange runs are protocol-driven and may not emit reviewer completion files."""
     await _wait_for_file(run_dir / "terminal-recording.jsonl", non_empty=True)
     await _wait_for_file(run_dir / "review-exchange" / "summary.json", non_empty=True)
@@ -223,7 +241,11 @@ async def _assert_live_terminal_recording_stream(
                 payload = response.json()
                 total_events = int(payload.get("total_events") or 0)
                 events = payload.get("events") or []
-                if isinstance(events, list) and any(event.get("event_type") == "output" for event in events if isinstance(event, dict)):
+                if isinstance(events, list) and any(
+                    event.get("event_type") == "output"
+                    for event in events
+                    if isinstance(event, dict)
+                ):
                     non_empty_samples += 1
                 total_event_values.append(total_events)
 
@@ -238,15 +260,25 @@ async def _assert_live_terminal_recording_stream(
             in_progress = bool(issue_view and "in-progress" in issue_view.labels)
             if in_progress and len(total_event_values) >= 3:
                 event_growth = max(total_event_values) > min(total_event_values)
-                size_growth = len(size_values) >= 2 and max(size_values) > min(size_values)
+                size_growth = len(size_values) >= 2 and max(size_values) > min(
+                    size_values
+                )
                 if non_empty_samples >= 2 and (event_growth or size_growth):
                     return
-            if validation_observed and non_empty_samples == 0 and len(total_event_values) >= 5:
+            if (
+                validation_observed
+                and non_empty_samples == 0
+                and len(total_event_values) >= 5
+            ):
                 raise AssertionError(
                     "terminal recording remained empty even after validation artifacts were present: "
                     f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
-            if not in_progress and non_empty_samples == 0 and len(total_event_values) >= 5:
+            if (
+                not in_progress
+                and non_empty_samples == 0
+                and len(total_event_values) >= 5
+            ):
                 raise AssertionError(
                     "terminal recording remained empty after issue left in-progress state: "
                     f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
@@ -267,7 +299,9 @@ async def _assert_live_terminal_recording_stream(
 
 async def _fetch_issue_detail(web_port: int, issue_number: int) -> dict[str, object]:
     async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(f"http://localhost:{web_port}/api/issue-detail/{issue_number}")
+        response = await client.get(
+            f"http://localhost:{web_port}/api/issue-detail/{issue_number}"
+        )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert isinstance(payload, dict)
@@ -292,25 +326,18 @@ def _issue_lifecycle_from_detail(
     payload: dict[str, object],
     *,
     issue_number: int,
-) -> dict[str, object]:
-    IssueDetailPayload.model_validate(payload)
-    lifecycle = payload.get("lifecycle")
-    assert isinstance(lifecycle, dict), "Expected issue-detail semantic lifecycle"
-    assert lifecycle.get("kind") == "dashboard"
-
-    current = lifecycle.get("current")
-    assert isinstance(current, dict), "Expected dashboard lifecycle iteration"
-    assert current.get("kind") == "dashboard_current"
-
-    issue_lifecycles = current.get("issue_lifecycles")
-    assert isinstance(issue_lifecycles, list) and issue_lifecycles, (
-        "Expected semantic issue lifecycle entries"
+) -> IssueLifecyclePayload:
+    detail = IssueDetailPayload.model_validate(payload)
+    lifecycle = detail.lifecycle
+    assert isinstance(lifecycle, DashboardTimelineContainerPayload), (
+        "Expected issue-detail semantic dashboard lifecycle"
     )
+
+    issue_lifecycles = lifecycle.current.issue_lifecycles
     matches = [
         lifecycle_item
         for lifecycle_item in issue_lifecycles
-        if isinstance(lifecycle_item, dict)
-        and lifecycle_item.get("issue_number") == issue_number
+        if lifecycle_item.issue_number == issue_number
     ]
     assert len(matches) == 1, (
         f"Expected exactly one lifecycle for issue #{issue_number}; "
@@ -329,20 +356,14 @@ def _assert_issue_lifecycle_contains_approved_review_cycle(
         payload,
         issue_number=issue_number,
     )
-    cycles = issue_lifecycle.get("cycles")
-    assert isinstance(cycles, list) and cycles, "Expected semantic issue cycles"
+    cycles = issue_lifecycle.cycles
+    assert cycles, "Expected semantic issue cycles"
 
-    approved_cycles: list[dict[str, object]] = []
+    approved_cycles = []
     for cycle in cycles:
-        if not isinstance(cycle, dict):
-            continue
-        coder = cycle.get("coder")
-        review = cycle.get("review")
-        if not isinstance(coder, dict) or not isinstance(review, dict):
-            continue
-        if (
-            coder.get("kind") == "completed_coding_attempt"
-            and review.get("kind") == "review_approved"
+        if isinstance(cycle.coder, CompletedCodingAttemptPayload) and isinstance(
+            cycle.review,
+            ReviewApprovedPayload,
         ):
             approved_cycles.append(cycle)
 
@@ -351,30 +372,18 @@ def _assert_issue_lifecycle_contains_approved_review_cycle(
         "completed coding and approved review"
     )
     approved_cycle = approved_cycles[-1]
-    assert approved_cycle.get("outcome") == "approved"
+    assert approved_cycle.outcome == "approved"
 
-    coder = approved_cycle["coder"]
-    review = approved_cycle["review"]
-    assert isinstance(coder, dict)
-    assert isinstance(review, dict)
-
-    validation = coder.get("validation")
-    assert isinstance(validation, dict)
-    assert validation.get("kind") == "passed"
-    completion_record = coder.get("completion_record")
-    assert isinstance(completion_record, dict)
-    assert completion_record.get("kind") == "available"
-    coder_recording = coder.get("session_recording")
-    assert isinstance(coder_recording, dict)
-    assert coder_recording.get("kind") == "available"
-    assert coder_recording.get("run_dir") == str(coding_run_dir)
-
-    review_recording = review.get("session_recording")
-    assert isinstance(review_recording, dict)
-    assert review_recording.get("kind") == "available"
-    transcript = review.get("transcript")
-    assert isinstance(transcript, dict)
-    assert transcript.get("kind") == "available"
+    coder = approved_cycle.coder
+    review = approved_cycle.review
+    assert isinstance(coder, CompletedCodingAttemptPayload)
+    assert isinstance(review, ReviewApprovedPayload)
+    assert isinstance(coder.validation, ValidationPassedPayload)
+    assert isinstance(coder.completion_record, CompletionRecordEvidencePayload)
+    assert isinstance(coder.session_recording, SessionRecordingAvailablePayload)
+    assert coder.session_recording.run_dir == str(coding_run_dir)
+    assert isinstance(review.session_recording, SessionRecordingAvailablePayload)
+    assert isinstance(review.transcript, ReviewTranscriptAvailablePayload)
 
 
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=550, system_gh_activity_limit=220)
@@ -386,7 +395,9 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     """Run production-like #4057 lifecycle with local review loop and validate diagnostics."""
     dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
     if dry_run:
-        pytest.skip("Production-parity flow requires real PR creation (E2E_DRY_RUN_PUSH=false)")
+        pytest.skip(
+            "Production-parity flow requires real PR creation (E2E_DRY_RUN_PUSH=false)"
+        )
 
     run_suffix = str(int(time.time()))
     isolated_label = e2e_label(f"isolated-4057-{run_suffix}")
@@ -412,7 +423,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         "make worktree-setup",
         "git reset --hard HEAD",
         "git clean -fd",
-        "HOOKS_DIR=\"$(git rev-parse --git-path hooks)\" && printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$HOOKS_DIR/pre-push.project\" && chmod +x \"$HOOKS_DIR/pre-push.project\"",
+        'HOOKS_DIR="$(git rev-parse --git-path hooks)" && printf \'#!/usr/bin/env bash\\nexit 0\\n\' > "$HOOKS_DIR/pre-push.project" && chmod +x "$HOOKS_DIR/pre-push.project"',
     ]
     config.code_review_agent = "agent:reviewer"
     config.code_review_label = review_label
@@ -422,15 +433,18 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.review_exchange_mode = "via-local-loop"
     config.review_exchange_require_validation = True
     config.agents = {
-            "agent:backend": AgentConfig(
-                prompt_path=e2e_project_root / "repo-specific" / "prompts" / "simple-fix.md",
-                provider="claude-code",
-                model="opus",
-                timeout_minutes=CODING_AGENT_TIMEOUT_MINUTES,
-                ai_system="claude-code",
-                permission_mode="bypassPermissions",
-                initial_prompt=ISSUE_4057_PROMPT,
-            ),
+        "agent:backend": AgentConfig(
+            prompt_path=e2e_project_root
+            / "repo-specific"
+            / "prompts"
+            / "simple-fix.md",
+            provider="claude-code",
+            model="opus",
+            timeout_minutes=CODING_AGENT_TIMEOUT_MINUTES,
+            ai_system="claude-code",
+            permission_mode="bypassPermissions",
+            initial_prompt=ISSUE_4057_PROMPT,
+        ),
         "agent:reviewer": AgentConfig(
             prompt_path=e2e_project_root / "repo-specific" / "prompts" / "reviewer.md",
             provider="claude-code",
@@ -514,7 +528,9 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             )
             for step in coding_steps
         )
-        assert has_coding_log_action, "Expected run-scoped open_agent_log action during coding"
+        assert has_coding_log_action, (
+            "Expected run-scoped open_agent_log action during coding"
+        )
         logger.info("[4057] UI assertions OK. Starting live log stream check...")
 
         await _assert_live_terminal_recording_stream(
@@ -578,8 +594,14 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 payload = response.json()
                 actions = payload.get("actions")
                 if isinstance(actions, list):
-                    labels = {str(action.get("label")) for action in actions if isinstance(action, dict)}
-                    if {"Open Validation Record", "Open Validation Output"}.issubset(labels):
+                    labels = {
+                        str(action.get("label"))
+                        for action in actions
+                        if isinstance(action, dict)
+                    }
+                    if {"Open Validation Record", "Open Validation Output"}.issubset(
+                        labels
+                    ):
                         diagnostics = payload
                         break
             await asyncio.sleep(2)
@@ -599,9 +621,15 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         }
         validation_record_path = Path(str(action_map["Open Validation Record"]["path"]))
         validation_output_path = Path(str(action_map["Open Validation Output"]["path"]))
-        assert validation_record_path.exists(), f"Validation record missing: {validation_record_path}"
-        assert validation_output_path.exists(), f"Validation output missing: {validation_output_path}"
-        assert validation_output_path.stat().st_size > 0, f"Validation output empty: {validation_output_path}"
+        assert validation_record_path.exists(), (
+            f"Validation record missing: {validation_record_path}"
+        )
+        assert validation_output_path.exists(), (
+            f"Validation output missing: {validation_output_path}"
+        )
+        assert validation_output_path.stat().st_size > 0, (
+            f"Validation output empty: {validation_output_path}"
+        )
         logger.info("[4057] Validation paths OK. Checking issue detail timeline...")
 
         detail_after_review = await _fetch_issue_detail(config.web_port, issue_number)
@@ -653,7 +681,9 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             )
             for step in steps_after_review
         )
-        assert has_diagnostics_action, "Expected run-scoped diagnostics action in timeline steps"
+        assert has_diagnostics_action, (
+            "Expected run-scoped diagnostics action in timeline steps"
+        )
         logger.info("[4057] ALL ASSERTIONS PASSED!")
 
     finally:
@@ -664,7 +694,11 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 pass
         if flow and issue_number is not None:
             try:
-                close_issue(repo_name, issue_number, "Closed by production-parity 4057 e2e cleanup")
+                close_issue(
+                    repo_name,
+                    issue_number,
+                    "Closed by production-parity 4057 e2e cleanup",
+                )
             except Exception:
                 pass
         if runtime is not None:
