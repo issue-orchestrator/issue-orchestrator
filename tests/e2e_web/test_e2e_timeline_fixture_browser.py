@@ -61,6 +61,17 @@ TEST_CLICK_ISSUE_LABEL = "inflight-discovery"
 TEST_CLICK_ISSUE_NUMBER_2 = 5724
 TEST_CLICK_ISSUE_LABEL_2 = "ui-surface-provider-cir\u2026"
 _INVALID_TIME_TEXTS = {"", "-", "n/a", "na", "unknown"}
+FIXTURE_RUN_DIR_REWRITTEN_PATH_KEYS = (
+    "worktree_path",
+    "session_prompt_path",
+    "completion_path_absolute",
+)
+FIXTURE_REVIEW_PHASE_RECORDING_ROLES = {
+    "review_exchange.round_started": "reviewer",
+    "review_exchange.round_completed": "reviewer",
+    "review.rework_started": "coder",
+    "review.rework_completed": "coder",
+}
 
 
 def _find_free_port() -> int:
@@ -135,6 +146,39 @@ def _materialize_synthetic_session_dir(session_dir: Path) -> None:
     )
 
 
+def _write_review_phase_terminal_recording(
+    run_dir: Path,
+    *,
+    round_index: int,
+    role: str,
+) -> None:
+    import base64
+
+    recording = (
+        run_dir
+        / "review-exchange"
+        / f"round-{round_index:03d}"
+        / role
+        / "terminal-recording.jsonl"
+    )
+    recording.parent.mkdir(parents=True, exist_ok=True)
+    payload = base64.b64encode(
+        f"browser fixture {role} round {round_index}\n".encode(),
+    ).decode("ascii")
+    recording.write_text(
+        json.dumps(
+            {
+                "event_type": "output",
+                "offset_ms": 0,
+                "data_b64": payload,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _wire_event_to_session_dir(
     worktree_db: Path,
     issue_number: int,
@@ -172,11 +216,7 @@ def _wire_event_to_session_dir(
         data = json.loads(row["data_json"]) if row["data_json"] else {}
         if isinstance(data, dict):
             data["run_dir"] = run_dir_str
-            for key in (
-                "worktree_path",
-                "session_prompt_path",
-                "completion_path_absolute",
-            ):
+            for key in FIXTURE_RUN_DIR_REWRITTEN_PATH_KEYS:
                 if key in data and isinstance(data[key], str):
                     if key == "worktree_path":
                         data[key] = str(session_dir.parent)
@@ -186,6 +226,57 @@ def _wire_event_to_session_dir(
             "UPDATE timeline_events SET run_dir = ?, data_json = ? WHERE sequence = ?",
             (run_dir_str, json.dumps(data), row["sequence"]),
         )
+        conn.commit()
+
+
+def _materialize_fixture_run_dirs(worktree_db: Path, run_dir_root: Path) -> None:
+    """Replace sanitized fixture run_dir paths with real directories."""
+    import sqlite3
+
+    rows: list[tuple[int, str, str, str]] = []
+    with sqlite3.connect(str(worktree_db)) as conn:
+        for sequence, event_name, run_dir, data_json in conn.execute(
+            """
+            SELECT sequence, event, run_dir, data_json
+            FROM timeline_events
+            WHERE run_dir != ''
+            ORDER BY sequence ASC
+            """
+        ):
+            rows.append((int(sequence), str(event_name), str(run_dir), str(data_json or "{}")))
+
+        replacements: dict[str, Path] = {}
+        for _sequence, _event_name, original_run_dir, _data_json in rows:
+            if original_run_dir not in replacements:
+                synthetic_run_dir = run_dir_root / f"session-{len(replacements) + 1}"
+                _materialize_synthetic_session_dir(synthetic_run_dir)
+                replacements[original_run_dir] = synthetic_run_dir
+
+        for sequence, event_name, original_run_dir, data_json in rows:
+            synthetic_run_dir = replacements[original_run_dir]
+            data = json.loads(data_json)
+            if isinstance(data, dict):
+                data["run_dir"] = str(synthetic_run_dir)
+                role = FIXTURE_REVIEW_PHASE_RECORDING_ROLES.get(event_name)
+                round_index = data.get("round_index")
+                if role is not None and isinstance(round_index, int):
+                    _write_review_phase_terminal_recording(
+                        synthetic_run_dir,
+                        round_index=round_index,
+                        role=role,
+                    )
+                for key in FIXTURE_RUN_DIR_REWRITTEN_PATH_KEYS:
+                    value = data.get(key)
+                    if not isinstance(value, str):
+                        continue
+                    if key == "worktree_path":
+                        data[key] = str(synthetic_run_dir.parent)
+                    else:
+                        data[key] = str(synthetic_run_dir / Path(value).name)
+            conn.execute(
+                "UPDATE timeline_events SET run_dir = ?, data_json = ? WHERE sequence = ?",
+                (str(synthetic_run_dir), json.dumps(data), sequence),
+            )
         conn.commit()
 
 
@@ -232,6 +323,7 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     # run-scoped start events to point at them. The run_dir must contain
     # a non-empty terminal-recording.jsonl for both the action decorator
     # and the session-replay endpoint to surface real data.
+    _materialize_fixture_run_dirs(wt_state / "timeline.sqlite", tmp_path / "run-dirs")
     session_dir = tmp_path / "session1"
     review_session_dir = tmp_path / "review-session1"
     _materialize_synthetic_session_dir(session_dir)
@@ -456,6 +548,16 @@ def _url(base_url: str, path: str, **params: object) -> str:
     return f"{base_url}{path}?{urlencode(params)}"
 
 
+def _issue_affordance_numbers(timeline_payload: dict[str, Any]) -> list[int]:
+    issue_numbers: list[int] = []
+    for affordance in timeline_payload.get("issue_affordances", []):
+        issue_number = affordance.get("issue_number")
+        if isinstance(issue_number, int) and issue_number not in issue_numbers:
+            issue_numbers.append(issue_number)
+    assert issue_numbers, "timeline payload should include visible issue affordances"
+    return issue_numbers
+
+
 def _linked_issue_lifecycle_from_suite(
     timeline_payload: dict[str, Any],
     *,
@@ -627,6 +729,29 @@ def _assert_issue_detail_dom_matches_payload(
     )
 
 
+def _assert_issue_drawer_counts_match_payload(
+    page: Page,
+    detail_payload: dict[str, Any],
+    *,
+    issue_number: int,
+) -> None:
+    detail_drawer = page.locator("#issueDetailDrawer.visible")
+    expect(detail_drawer).to_be_visible(timeout=5000)
+    expect(page.locator("#issueDetailTitle")).to_contain_text(f"Issue #{issue_number}")
+
+    journey = page.locator("#issueDetailJourney")
+    expected_runs = _expected_rendered_runs(detail_payload)
+    expected_cycles = sum(len(run["cycles"]) for run in expected_runs)
+    expect(journey.locator(".journey-run")).to_have_count(len(expected_runs))
+    expect(journey.locator(".journey-cycle")).to_have_count(expected_cycles)
+    expect(journey.locator(".timeline-empty")).to_have_count(0)
+
+    status_text = page.locator("#issueDetailStatus").text_content() or ""
+    assert "Loading issue detail" not in status_text
+    assert "Issue detail unavailable" not in status_text
+    assert "Failed to load" not in status_text
+
+
 def test_run_drawer_timeline_renders_clickable_issue_links(
     page: Page,
     fixture_web_server: dict[str, object],
@@ -752,6 +877,39 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     ).first
     expect(run_level_issue_btn).to_be_visible(timeout=5000)
     expect(run_level_issue_btn).to_contain_text(TEST_CLICK_ISSUE_LABEL)
+
+    expected_run_level_issues = _issue_affordance_numbers(timeline_payload)
+    run_level_issue_buttons = run_level_affordances.locator(".e2e-issue-timeline-btn")
+    expect(run_level_issue_buttons).to_have_count(len(expected_run_level_issues))
+    run_level_issue_text = "\n".join(run_level_issue_buttons.all_text_contents())
+    for issue_number in expected_run_level_issues:
+        assert f"#{issue_number}" in run_level_issue_text, (
+            f"run-level issue affordance #{issue_number} is missing from: "
+            f"{run_level_issue_text!r}"
+        )
+
+    for issue_number in expected_run_level_issues:
+        per_issue_payload = _browser_fetch_json(
+            page,
+            _url(
+                str(base_url),
+                f"/api/e2e-run/{run_id}/issue-detail/{issue_number}",
+                view="user",
+            ),
+        )
+        per_issue_button = run_level_affordances.locator(
+            ".e2e-issue-timeline-btn",
+            has_text=f"#{issue_number}",
+        ).first
+        expect(per_issue_button).to_be_visible(timeout=5000)
+        per_issue_button.click()
+        _assert_issue_drawer_counts_match_payload(
+            page,
+            per_issue_payload,
+            issue_number=issue_number,
+        )
+        page.locator("#issueDetailCloseBtn").click()
+        expect(page.locator("#issueDetailDrawer.visible")).to_have_count(0, timeout=5000)
 
     # --- Ask 4: prove the Timeline tab actually rendered real event data ---
     # Find the specific test_4057 event card by its summary text. If the
@@ -1100,5 +1258,156 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         f"follow-up synthetic text {_SYNTHETIC_SESSION_OUTPUT_FOLLOWUP!r} "
         f"not found in decoded terminal output: {decoded_output.get('text')!r}"
     )
+
+    assert errors == [], f"Unexpected page errors: {errors}"
+
+
+def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    base_url = fixture_web_server["url"]
+    errors: list[str] = []
+    page.on("pageerror", lambda err: errors.append(str(err)))
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    synthetic_events = [
+        {
+            "event_id": "unhappy-blocked",
+            "timestamp": "2026-04-21T13:00:00Z",
+            "event": "agent.blocked",
+            "phase": "coding",
+            "step": "blocked",
+            "status": "blocked",
+            "summary": "Blocked coder: waiting for product decision",
+            "actions": [
+                {
+                    "type": "open_session_diagnostics",
+                    "label": "Diagnostics",
+                    "issue_number": 9001,
+                    "run_dir": "/tmp/unhappy-coder",
+                }
+            ],
+        },
+        {
+            "event_id": "unhappy-publish",
+            "timestamp": "2026-04-21T13:05:00Z",
+            "event": "publish.failed",
+            "phase": "publish",
+            "step": "failed",
+            "status": "failed",
+            "summary": "Publish failed: push rejected",
+        },
+        {
+            "event_id": "unhappy-review-running",
+            "timestamp": "2026-04-21T13:10:00Z",
+            "event": "review.started",
+            "phase": "review",
+            "step": "started",
+            "status": "in_progress",
+            "summary": "Review running: reviewer session active",
+        },
+        {
+            "event_id": "unhappy-review-failed",
+            "timestamp": "2026-04-21T13:15:00Z",
+            "event": "review_exchange.failed",
+            "phase": "review",
+            "step": "failed",
+            "status": "failed",
+            "summary": "Review failed: reviewer crashed",
+        },
+        {
+            "event_id": "unhappy-missing-evidence",
+            "timestamp": "2026-04-21T13:20:00Z",
+            "event": "semantic.missing_evidence",
+            "phase": "diagnostics",
+            "step": "missing_evidence",
+            "status": "validation_failed",
+            "summary": "Missing evidence: completion_record was not emitted",
+            "actions": [
+                {
+                    "type": "show_actions_error",
+                    "label": "What is missing?",
+                    "issue_number": 9001,
+                    "error_message": "completion_record missing",
+                    "error_messages": ["completion_record missing"],
+                }
+            ],
+        },
+    ]
+    render_result = page.evaluate(
+        """
+        (events) => {
+            if (typeof renderTimeline !== 'function') {
+                throw new Error('renderTimeline is not available');
+            }
+            const existing = document.getElementById('synthetic-unhappy-timeline');
+            if (existing) existing.remove();
+            const container = document.createElement('section');
+            container.id = 'synthetic-unhappy-timeline';
+            document.body.appendChild(container);
+            renderTimeline(
+                container,
+                events,
+                [
+                    { phase: 'coding', label: 'Coding' },
+                    { phase: 'publish', label: 'Publish' },
+                    { phase: 'review', label: 'Review' },
+                    { phase: 'diagnostics', label: 'Diagnostics' },
+                ],
+                [
+                    {
+                        cycle: 1,
+                        phases: ['coding', 'publish', 'review', 'diagnostics'],
+                        status: 'validation_failed',
+                    },
+                ],
+            );
+            return {
+                text: container.innerText,
+                eventCount: container.querySelectorAll('.timeline-event').length,
+                emptyCount: container.querySelectorAll('.timeline-empty').length,
+            };
+        }
+        """,
+        synthetic_events,
+    )
+
+    assert render_result["eventCount"] == len(synthetic_events)
+    assert render_result["emptyCount"] == 0
+    rendered_text = render_result["text"]
+    for expected_text in (
+        "Blocked coder: waiting for product decision",
+        "Publish failed: push rejected",
+        "Review running: reviewer session active",
+        "Review failed: reviewer crashed",
+        "Missing evidence: completion_record was not emitted",
+        "Validation Failed",
+    ):
+        assert expected_text in rendered_text
+
+    synthetic = page.locator("#synthetic-unhappy-timeline")
+    _expect_all_parseable_time_texts(
+        page,
+        synthetic.locator(".timeline-time"),
+        "synthetic unhappy timeline timestamp",
+    )
+    missing_event = synthetic.locator(
+        ".timeline-event",
+        has=page.locator(
+            ".timeline-summary",
+            has_text="Missing evidence: completion_record was not emitted",
+        ),
+    ).first
+    expect(missing_event).to_be_visible(timeout=5000)
+    missing_event.locator(".timeline-event-menu-trigger").click()
+    missing_event.locator(".timeline-more-trigger").click()
+    missing_event.locator(
+        ".timeline-more-item",
+        has_text="What is missing?",
+    ).click()
+    expect(page.locator("#modalOverlay.visible")).to_be_visible(timeout=5000)
+    expect(page.locator("#modalTitle")).to_contain_text("What is missing #9001")
+    expect(page.locator("#modalBody")).to_contain_text("completion_record missing")
 
     assert errors == [], f"Unexpected page errors: {errors}"
