@@ -31,6 +31,56 @@ _DIRTY_FILES_REASON_LIMIT = 8
 _MAX_COMPLETION_FILE_BYTES = 2 * 1024 * 1024
 
 
+def load_completion_record(record_path: Path) -> CompletionRecord | None:
+    """Read and validate a single completion record file.
+
+    This is the ONE entry point for parsing an untrusted completion
+    record: applies the per-file size gate BEFORE ``json.load`` runs,
+    then delegates to ``CompletionRecord.from_dict`` for field-level
+    bounds. All call sites (the publish-path validator, the observer
+    that scans sessions for completions) must route through this
+    function so an agent cannot bypass the gate by hitting a
+    duplicate reader — that was the bug flagged in #6017 re-review-2
+    P3. Returns ``None`` for any failure mode (missing file, oversized
+    file, malformed JSON, invalid record); callers log context.
+    """
+    if not record_path.exists():
+        logger.info("No completion record found at %s", record_path)
+        return None
+
+    try:
+        size = record_path.stat().st_size
+    except OSError as exc:
+        logger.error("Could not stat completion record %s: %s", record_path, exc)
+        return None
+    if size > _MAX_COMPLETION_FILE_BYTES:
+        logger.error(
+            "Completion record %s is %d bytes, exceeds max %d",
+            record_path,
+            size,
+            _MAX_COMPLETION_FILE_BYTES,
+        )
+        return None
+
+    try:
+        with open(record_path) as f:
+            data = json.load(f)
+        record = CompletionRecord.from_dict(data)
+        logger.info(
+            "Read completion record: outcome=%s session=%s path=%s",
+            record.outcome.value,
+            record.session_id,
+            record_path,
+        )
+        return record
+    except json.JSONDecodeError as exc:
+        logger.error("Invalid JSON in completion record %s: %s", record_path, exc)
+        return None
+    except ValueError as exc:
+        logger.error("Invalid completion record %s: %s", record_path, exc)
+        return None
+
+
 class CompletionValidationGitAdapter(Protocol):
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
@@ -55,45 +105,7 @@ class CompletionRecordValidator:
     ) -> CompletionRecord | None:
         """Read and validate a completion record from a worktree."""
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-
-        if not record_path.exists():
-            logger.info("No completion record found at %s", record_path)
-            return None
-
-        # Size-gate before json.load so an abusive agent cannot force the
-        # orchestrator to walk a massive blob before any field-level
-        # validation runs. See #6017 / review comment P2.
-        try:
-            size = record_path.stat().st_size
-        except OSError as exc:
-            logger.error("Could not stat completion record %s: %s", record_path, exc)
-            return None
-        if size > _MAX_COMPLETION_FILE_BYTES:
-            logger.error(
-                "Completion record %s is %d bytes, exceeds max %d",
-                record_path,
-                size,
-                _MAX_COMPLETION_FILE_BYTES,
-            )
-            return None
-
-        try:
-            with open(record_path) as f:
-                data = json.load(f)
-            record = CompletionRecord.from_dict(data)
-            logger.info(
-                "Read completion record: outcome=%s session=%s path=%s",
-                record.outcome.value,
-                record.session_id,
-                record_path,
-            )
-            return record
-        except json.JSONDecodeError as exc:
-            logger.error("Invalid JSON in completion record: %s", exc)
-            return None
-        except ValueError as exc:
-            logger.error("Invalid completion record: %s", exc)
-            return None
+        return load_completion_record(record_path)
 
     def resolve_agent_label_from_completion_path(
         self, completion_path: str | None

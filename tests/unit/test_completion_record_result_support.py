@@ -173,6 +173,34 @@ def test_read_completion_record_accepts_reasonable_size(tmp_path: Path) -> None:
     assert result.outcome == CompletionOutcome.COMPLETED
 
 
+def test_observer_also_applies_file_size_gate(tmp_path: Path) -> None:
+    """Regression for #6017 re-review-2 P3.
+
+    The CompletionObserver has its own read path; it must route
+    through the shared ``load_completion_record`` so the 2 MiB cap
+    applies on observation just like it does on publish.
+    """
+    from issue_orchestrator.control.completion_observer import (
+        CompletionObserver,
+    )
+
+    record_path = tmp_path / ".issue-orchestrator" / "completion.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_bytes(
+        b"{" + b"a" * _MAX_COMPLETION_FILE_BYTES + b"}"
+    )
+
+    observer = CompletionObserver(session_output=None)  # type: ignore[arg-type]
+    # noqa: SLF001 — exercising the private loader is the point.
+    result = observer._read_completion_record(
+        worktree=tmp_path,
+        completion_path=".issue-orchestrator/completion.json",
+        issue_number=1,
+    )
+
+    assert result is None
+
+
 def test_read_completion_record_accepts_absolute_validation_path(
     tmp_path: Path,
 ) -> None:

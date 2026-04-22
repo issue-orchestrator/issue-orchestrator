@@ -20,7 +20,6 @@ Architecture:
     This module handles observation only.
 """
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +39,7 @@ from ..infra.logging_config import issue_log
 from ..infra.provider_resilience import ProviderStatus, read_provider_status, now_iso
 from ..ports.provider_resilience import ProviderErrorType
 from ..observation.observation import SessionObservation, SessionObservationResult
+from .completion_record_validation import load_completion_record
 
 if TYPE_CHECKING:
     from ..ports.session_output import SessionOutput
@@ -167,53 +167,18 @@ class CompletionObserver:
     ) -> CompletionRecord | None:
         """Read and validate a completion record from a worktree.
 
-        This is a fast operation - just file I/O and JSON parsing.
-
-        Args:
-            worktree: Path to the worktree directory
-            completion_path: Relative path to completion file (or None for legacy)
-            issue_number: For logging
-
-        Returns:
-            The validated CompletionRecord, or None if not found/invalid
+        Delegates to ``load_completion_record`` — the single entry point
+        for parsing an untrusted completion record — so the per-file
+        size gate and field bounds apply uniformly on both the
+        observation and publish paths. See #6017 re-review-2 P3.
         """
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-
         logger.info(
             issue_log(issue_number, "Checking completion: path=%s exists=%s"),
             record_path,
             record_path.exists(),
         )
-
-        if not record_path.exists():
-            logger.debug("No completion record found at %s", record_path)
-            return None
-
-        try:
-            with open(record_path) as f:
-                data = json.load(f)
-            record = CompletionRecord.from_dict(data)
-            logger.info(
-                issue_log(
-                    issue_number,
-                    "Read completion record: outcome=%s session=%s",
-                ),
-                record.outcome.value,
-                record.session_id,
-            )
-            return record
-        except json.JSONDecodeError as e:
-            logger.error(
-                issue_log(issue_number, "Invalid JSON in completion record: %s"),
-                e,
-            )
-            return None
-        except ValueError as e:
-            logger.error(
-                issue_log(issue_number, "Invalid completion record: %s"),
-                e,
-            )
-            return None
+        return load_completion_record(record_path)
 
     def _handle_no_completion_record(
         self,
