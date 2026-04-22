@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ import sys
 from dataclasses import dataclass
 
 from .errors import GitHubAuthError
+
+logger = logging.getLogger(__name__)
 
 
 # Keyring service/username constants for token storage
@@ -174,15 +177,34 @@ def _read_keyring_token(
             token = keyring.get_password(service, username)
             if token:
                 return token
-        except Exception:
-            # Keyring can fail for various reasons (no backend, locked, etc.).
-            # Fall through to the macOS security CLI if available.
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Keyring can fail for a variety of legitimate reasons — no
+            # backend on headless Linux, a locked keyring, a remote
+            # daemon that timed out. We still have to fall through to
+            # the macOS ``security`` CLI fallback for those cases, so
+            # catch broadly here but log at DEBUG so a misconfigured
+            # keyring is not totally invisible when someone is
+            # troubleshooting auth.
+            logger.debug(
+                "keyring.get_password failed for service=%s user=%s: %s",
+                service,
+                username,
+                exc,
+            )
     return _read_macos_security_keychain_token(service=service, username=username)
 
 
 def _read_macos_security_keychain_token(*, service: str, username: str) -> str | None:
-    """Read a generic password directly from the macOS login keychain."""
+    """Read a generic password directly from the macOS login keychain.
+
+    SECURITY NOTE: this is a command-injection boundary. ``service`` and
+    ``username`` flow into the argv of the ``security`` binary, which is
+    safe because we pass a fixed ``list`` to ``subprocess.run`` (no
+    ``shell=True``, no string interpolation). Do NOT switch this call
+    to ``shell=True`` or build the command with an f-string — that
+    would let an attacker-controlled service name inject arbitrary
+    shell metacharacters.
+    """
     if sys.platform != "darwin":
         return None
     if not shutil.which("security"):
@@ -203,7 +225,17 @@ def _read_macos_security_keychain_token(*, service: str, username: str) -> str |
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Keep this catch narrow — an unknown exception here may be a
+        # signal of tampering or a broken environment and should not be
+        # silently swallowed without a trace. DEBUG so it only surfaces
+        # under active troubleshooting.
+        logger.debug(
+            "macOS security find-generic-password failed for service=%s user=%s: %s",
+            service,
+            username,
+            exc,
+        )
         return None
     if result.returncode != 0:
         return None
