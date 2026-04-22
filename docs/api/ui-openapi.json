@@ -599,6 +599,457 @@
           "blocked_issues": {"type": "array", "items": {"$ref": "#/components/schemas/BlockedIssuePayload"}}
         }
       },
+      "TimelineDiagnosticPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "severity"],
+        "properties": {
+          "code": {"type": "string"},
+          "message": {"type": "string"},
+          "severity": {"enum": ["info", "warning", "error"]},
+          "evidence_ref": {"type": ["string", "null"]}
+        }
+      },
+      "MissingEvidencePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "evidence", "reason"],
+        "properties": {
+          "kind": {"const": "missing_evidence"},
+          "evidence": {"type": "string"},
+          "reason": {"type": "string"},
+          "expected_ref": {"type": ["string", "null"]}
+        }
+      },
+      "TimelineSubjectPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id", "label"],
+        "properties": {
+          "kind": {"enum": ["dashboard", "repo", "issue", "e2e_suite", "e2e_run", "e2e_test"]},
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "status": {"type": ["string", "null"]},
+          "outcome": {"type": ["string", "null"]}
+        }
+      },
+      "ShowEventDetailsCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "event_ref"],
+        "properties": {
+          "kind": {"const": "show_event_details"},
+          "label": {"type": "string"},
+          "event_ref": {"type": "string"}
+        }
+      },
+      "OpenCompletionRecordCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "path"],
+        "properties": {
+          "kind": {"const": "open_completion_record"},
+          "label": {"type": "string"},
+          "path": {"type": "string"}
+        }
+      },
+      "OpenValidationDetailsCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number", "run_dir"],
+        "properties": {
+          "kind": {"const": "open_validation_details"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": "string"}
+        }
+      },
+      "OpenSessionRecordingCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number", "run_dir"],
+        "properties": {
+          "kind": {"const": "open_session_recording"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": "string"},
+          "session_role": {"type": ["string", "null"]},
+          "round_index": {"type": ["integer", "null"]}
+        }
+      },
+      "OpenReviewFeedbackCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number"],
+        "properties": {
+          "kind": {"const": "open_review_feedback"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "event_ref": {"type": ["string", "null"]}
+        }
+      },
+      "OpenIssueTimelineCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number", "scope_kind"],
+        "properties": {
+          "kind": {"const": "open_issue_timeline"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "scope_kind": {"enum": ["dashboard", "e2e_run"]},
+          "e2e_run_id": {"type": ["integer", "null"]}
+        }
+      },
+      "TimelineCommandPayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/ShowEventDetailsCommandPayload"},
+          {"$ref": "#/components/schemas/OpenCompletionRecordCommandPayload"},
+          {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"},
+          {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"},
+          {"$ref": "#/components/schemas/OpenReviewFeedbackCommandPayload"},
+          {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "CompletionRecordEvidencePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path"],
+        "properties": {
+          "kind": {"const": "available"},
+          "path": {"type": "string"},
+          "summary": {"type": ["string", "null"]}
+        }
+      },
+      "SessionRecordingUnavailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reason", "diagnostics"],
+        "properties": {
+          "kind": {"const": "unavailable"},
+          "reason": {"type": "string"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "SessionRecordingAvailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "run_dir", "recording_path", "command"],
+        "properties": {
+          "kind": {"const": "available"},
+          "run_dir": {"type": "string"},
+          "recording_path": {"type": "string"},
+          "command": {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"}
+        }
+      },
+      "SessionRecordingEvidencePayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/SessionRecordingAvailablePayload"},
+          {"$ref": "#/components/schemas/SessionRecordingUnavailablePayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "ValidationPassedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "command", "record_path"],
+        "properties": {
+          "kind": {"const": "passed"},
+          "command": {"type": "string"},
+          "record_path": {"type": "string"}
+        }
+      },
+      "ValidationFailedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "command", "record_path", "failure_summary", "details_command"],
+        "properties": {
+          "kind": {"const": "failed"},
+          "command": {"type": "string"},
+          "record_path": {"type": "string"},
+          "failure_summary": {"type": "string"},
+          "details_command": {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"}
+        }
+      },
+      "ValidationNotRunPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reason"],
+        "properties": {
+          "kind": {"const": "not_run"},
+          "reason": {"enum": ["coding_in_progress", "validation_disabled", "not_required"]}
+        }
+      },
+      "ValidationEvidenceMissingPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "diagnostics"],
+        "properties": {
+          "kind": {"const": "missing_evidence"},
+          "expected_record_path": {"type": ["string", "null"]},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "ValidationOutcomePayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/ValidationPassedPayload"},
+          {"$ref": "#/components/schemas/ValidationFailedPayload"},
+          {"$ref": "#/components/schemas/ValidationNotRunPayload"},
+          {"$ref": "#/components/schemas/ValidationEvidenceMissingPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "AgentIdentityPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "role"],
+        "properties": {
+          "name": {"type": "string"},
+          "role": {"enum": ["coder", "reviewer", "rework", "validator", "e2e_runner", "orchestrator"]}
+        }
+      },
+      "CodingOutputsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "worktree_path": {"type": ["string", "null"]},
+          "pull_request_url": {"type": ["string", "null"]}
+        }
+      },
+      "CompletedCodingAttemptPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "issue_number", "agent", "started_at", "completed_at",
+          "completion_record", "validation", "session_recording", "outputs", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "completed_coding_attempt"},
+          "issue_number": {"type": "integer"},
+          "agent": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": "string"},
+          "completion_record": {"$ref": "#/components/schemas/CompletionRecordEvidencePayload"},
+          "validation": {"$ref": "#/components/schemas/ValidationOutcomePayload"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "outputs": {"$ref": "#/components/schemas/CodingOutputsPayload"},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "MissingCodingEvidencePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "issue_number", "expected_state", "observed_at", "missing", "diagnostics", "commands"],
+        "properties": {
+          "kind": {"const": "missing_coding_evidence"},
+          "issue_number": {"type": "integer"},
+          "expected_state": {"enum": ["completed", "running", "blocked", "failed"]},
+          "observed_at": {"type": "string"},
+          "missing": {"type": "array", "items": {"$ref": "#/components/schemas/MissingEvidencePayload"}},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "CodingAttemptPayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/CompletedCodingAttemptPayload"},
+          {"$ref": "#/components/schemas/MissingCodingEvidencePayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "ReviewNotReachedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reason"],
+        "properties": {
+          "kind": {"const": "review_not_reached"},
+          "reason": {"enum": ["coding_in_progress", "coding_failed", "validation_failed", "not_required"]}
+        }
+      },
+      "ReviewChangesRequestedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "reviewer", "started_at", "completed_at", "feedback_summary",
+          "session_recording", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "review_changes_requested"},
+          "reviewer": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": "string"},
+          "feedback_summary": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "ReviewStagePayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/ReviewNotReachedPayload"},
+          {"$ref": "#/components/schemas/ReviewChangesRequestedPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "IssueCyclePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cycle_number", "coder", "review", "outcome", "diagnostics"],
+        "properties": {
+          "cycle_number": {"type": "integer"},
+          "coder": {"$ref": "#/components/schemas/CodingAttemptPayload"},
+          "review": {"$ref": "#/components/schemas/ReviewStagePayload"},
+          "outcome": {"type": "string"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "IssueLifecyclePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "title", "cycles", "diagnostics"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "title": {"type": "string"},
+          "cycles": {"type": "array", "items": {"$ref": "#/components/schemas/IssueCyclePayload"}},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "DashboardIterationPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "subject", "issue_lifecycles", "diagnostics"],
+        "properties": {
+          "kind": {"const": "dashboard_current"},
+          "subject": {"$ref": "#/components/schemas/TimelineSubjectPayload"},
+          "issue_lifecycles": {"type": "array", "items": {"$ref": "#/components/schemas/IssueLifecyclePayload"}},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "DashboardTimelineContainerPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "subject", "current"],
+        "properties": {
+          "kind": {"const": "dashboard"},
+          "subject": {"$ref": "#/components/schemas/TimelineSubjectPayload"},
+          "current": {"$ref": "#/components/schemas/DashboardIterationPayload"}
+        }
+      },
+      "LinkedIssueLifecyclePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "relationship", "command"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "relationship": {"enum": ["exercises", "discovered", "failed_with", "validates"]},
+          "command": {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"}
+        }
+      },
+      "E2EFailureDetailsAvailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "longrepr"],
+        "properties": {
+          "kind": {"const": "available"},
+          "longrepr": {"type": "string"}
+        }
+      },
+      "E2EFailureDetailsMissingPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "diagnostics"],
+        "properties": {
+          "kind": {"const": "missing_evidence"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "E2EFailureEvidencePayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/E2EFailureDetailsAvailablePayload"},
+          {"$ref": "#/components/schemas/E2EFailureDetailsMissingPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "PassedE2ETestExecutionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "nodeid", "started_at", "completed_at", "linked_issues", "commands"],
+        "properties": {
+          "kind": {"const": "passed_e2e_test"},
+          "nodeid": {"type": "string"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": "string"},
+          "duration_seconds": {"type": ["number", "null"]},
+          "linked_issues": {"type": "array", "items": {"$ref": "#/components/schemas/LinkedIssueLifecyclePayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "FailedE2ETestExecutionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "nodeid", "started_at", "completed_at",
+          "failure", "linked_issues", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "failed_e2e_test"},
+          "nodeid": {"type": "string"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": "string"},
+          "duration_seconds": {"type": ["number", "null"]},
+          "failure": {"$ref": "#/components/schemas/E2EFailureEvidencePayload"},
+          "linked_issues": {"type": "array", "items": {"$ref": "#/components/schemas/LinkedIssueLifecyclePayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "E2ETestExecutionPayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/PassedE2ETestExecutionPayload"},
+          {"$ref": "#/components/schemas/FailedE2ETestExecutionPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
+      "E2ERunLifecyclePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "started_at", "tests", "linked_issue_lifecycles", "diagnostics"],
+        "properties": {
+          "run_id": {"type": "integer"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": ["string", "null"]},
+          "tests": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETestExecutionPayload"}},
+          "linked_issue_lifecycles": {"type": "array", "items": {"$ref": "#/components/schemas/IssueLifecyclePayload"}},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "E2ERunIterationPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "subject", "e2e_run", "diagnostics"],
+        "properties": {
+          "kind": {"const": "e2e_run"},
+          "subject": {"$ref": "#/components/schemas/TimelineSubjectPayload"},
+          "e2e_run": {"$ref": "#/components/schemas/E2ERunLifecyclePayload"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "E2ESuiteTimelineContainerPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "subject", "runs"],
+        "properties": {
+          "kind": {"const": "e2e_suite"},
+          "subject": {"$ref": "#/components/schemas/TimelineSubjectPayload"},
+          "runs": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunIterationPayload"}}
+        }
+      },
+      "LifecycleTimelineContainerPayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/DashboardTimelineContainerPayload"},
+          {"$ref": "#/components/schemas/E2ESuiteTimelineContainerPayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
+      },
       "PhaseDialogPayload": {
         "type": "object",
         "additionalProperties": false,

@@ -36,6 +36,10 @@ def ref_name(ref: str) -> str:
 
 
 def resolve_type(schema: dict[str, Any]) -> str:
+    if "const" in schema:
+        return _python_literal(schema["const"])
+    if "enum" in schema and isinstance(schema["enum"], list):
+        return " | ".join(_python_literal(item) for item in schema["enum"])
     if "$ref" in schema:
         return ref_name(schema["$ref"])
 
@@ -107,16 +111,20 @@ def render_python_models(components: list[ComponentSchema]) -> str:
         "\n",
         "from __future__ import annotations",
         "\n",
-        "from typing import Any",
+        "from typing import Any, Literal, TypeAlias",
         "\n",
         "from pydantic import BaseModel, ConfigDict",
         "\n",
         "\n",
     ]
 
+    alias_components: list[ComponentSchema] = []
     for component in components:
         name = component.name
         schema = component.schema
+        if _is_union_alias_schema(schema):
+            alias_components.append(component)
+            continue
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
         additional = schema.get("additionalProperties")
@@ -141,14 +149,22 @@ def render_python_models(components: list[ComponentSchema]) -> str:
 
         lines.append("")
 
+    for component in alias_components:
+        lines.append(f"{component.name}: TypeAlias = {resolve_type(component.schema)}")
+        lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
 def render_dts_types(components: list[ComponentSchema]) -> str:
     lines: list[str] = [DTS_HEADER, "\n"]
+    alias_components: list[ComponentSchema] = []
     for component in components:
         name = component.name
         schema = component.schema
+        if _is_union_alias_schema(schema):
+            alias_components.append(component)
+            continue
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
         additional = schema.get("additionalProperties")
@@ -163,10 +179,17 @@ def render_dts_types(components: list[ComponentSchema]) -> str:
             lines.append("  [key: string]: any;")
         lines.append("}\n")
 
+    for component in alias_components:
+        lines.append(f"export type {component.name} = {ts_type(component.schema)};\n")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
 def ts_type(schema: dict[str, Any]) -> str:
+    if "const" in schema:
+        return json.dumps(schema["const"])
+    if "enum" in schema and isinstance(schema["enum"], list):
+        return " | ".join(json.dumps(item) for item in schema["enum"])
     if "$ref" in schema:
         return ref_name(schema["$ref"])
     union = schema.get("oneOf") or schema.get("anyOf")
@@ -204,6 +227,14 @@ def _ts_object_type(schema: dict[str, Any]) -> str:
     if isinstance(additional, dict):
         return f"Record<string, {ts_type(additional)}>"
     return "Record<string, any>"
+
+
+def _python_literal(value: Any) -> str:
+    return f"Literal[{value!r}]"
+
+
+def _is_union_alias_schema(schema: dict[str, Any]) -> bool:
+    return bool(schema.get("oneOf") or schema.get("anyOf")) and not schema.get("properties")
 
 
 def generate_artifacts(schema_path: Path | None = None, python_out: Path | None = None, dts_out: Path | None = None) -> None:
