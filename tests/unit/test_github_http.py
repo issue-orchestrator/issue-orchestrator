@@ -44,6 +44,14 @@ def test_resolve_github_token_repo_scoped_env_is_strict(monkeypatch: pytest.Monk
         )
 
 
+def test_resolve_github_token_allows_default_sources_without_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ISSUE_ORCH_GITHUB_TOKEN", "generic-token")
+
+    assert resolve_github_token() == "generic-token"
+
+
 def test_resolve_github_token_repo_scoped_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ISSUE_ORCH_GITHUB_TOKEN", raising=False)
     monkeypatch.setattr(
