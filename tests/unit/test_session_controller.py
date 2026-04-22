@@ -12,10 +12,21 @@ from unittest.mock import MagicMock, patch
 
 from datetime import datetime
 from issue_orchestrator.events import EventName
-from issue_orchestrator.control.session_controller import SessionController, SessionDecision
+from issue_orchestrator.control.session_controller import (
+    SessionController,
+    SessionDecision,
+)
 from issue_orchestrator.control.completion_processor import CompletionProcessor
-from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
-from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
+from issue_orchestrator.observation.observation import (
+    SessionObservation,
+    SessionObservationResult,
+)
+from issue_orchestrator.domain.models import (
+    SessionStatus,
+    CompletionRecord,
+    CompletionOutcome,
+    RequestedAction,
+)
 from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -76,10 +87,19 @@ class MockCompletionProcessor:
         # path. Tests for the deferred branch override this explicitly.
         self.process_result.review_exchange_deferred = False
 
-    def read_completion_record(self, worktree_path: Path, completion_path: str | None = None) -> CompletionRecord | None:
+    def read_completion_record(
+        self, worktree_path: Path, completion_path: str | None = None
+    ) -> CompletionRecord | None:
         return self.completion_record
 
-    def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None, completion_path: str | None = None):
+    def process(
+        self,
+        worktree_path: Path,
+        issue_number: int,
+        issue_title: str,
+        pr_number: int | None = None,
+        completion_path: str | None = None,
+    ):
         return self.process_result
 
 
@@ -323,7 +343,9 @@ class TestSessionControllerTimeout:
             timeout_minutes=45,
             session_exists=True,
         )
-        completion_rel_path = ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+        completion_rel_path = (
+            ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+        )
 
         decision = controller.decide_outcome(
             observation=observation,
@@ -350,7 +372,9 @@ class TestSessionControllerTimeout:
         assert diagnostic["nearby_completion_candidates"] == []
         assert decision.status == SessionStatus.TIMED_OUT
 
-    def test_timeout_without_completion_records_marker_and_nearby_candidates(self, tmp_path: Path):
+    def test_timeout_without_completion_records_marker_and_nearby_candidates(
+        self, tmp_path: Path
+    ):
         """No-completion diagnostics should capture marker presence and alternate completion files."""
         processor = MockCompletionProcessor()
         processor.completion_record = None
@@ -365,7 +389,13 @@ class TestSessionControllerTimeout:
             "agent-done completed called at 2026-03-17T00:00:00\n",
             encoding="utf-8",
         )
-        alt_completion = tmp_path / ".issue-orchestrator" / "sessions" / "other-run" / "completion-agent_backend.json"
+        alt_completion = (
+            tmp_path
+            / ".issue-orchestrator"
+            / "sessions"
+            / "other-run"
+            / "completion-agent_backend.json"
+        )
         alt_completion.parent.mkdir(parents=True, exist_ok=True)
         alt_completion.write_text('{"outcome":"completed"}', encoding="utf-8")
 
@@ -374,7 +404,9 @@ class TestSessionControllerTimeout:
             timeout_minutes=45,
             session_exists=True,
         )
-        completion_rel_path = ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+        completion_rel_path = (
+            ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+        )
 
         decision = controller.decide_outcome(
             observation=observation,
@@ -526,7 +558,13 @@ class TestSessionControllerReviewOutcomes:
 class MockCommandRunner:
     """Mock command runner for testing validation."""
 
-    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "", timed_out: bool = False):
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        timed_out: bool = False,
+    ):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
@@ -535,14 +573,17 @@ class MockCommandRunner:
 
     def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False):
         """Record the call and return configured result."""
-        self.run_calls.append({
-            "command": command,
-            "cwd": cwd,
-            "timeout_seconds": timeout_seconds,
-            "shell": shell,
-        })
+        self.run_calls.append(
+            {
+                "command": command,
+                "cwd": cwd,
+                "timeout_seconds": timeout_seconds,
+                "shell": shell,
+            }
+        )
         # Return a result-like object
         from types import SimpleNamespace
+
         return SimpleNamespace(
             returncode=self.returncode,
             stdout=self.stdout,
@@ -581,9 +622,10 @@ class TestSessionControllerValidationCaching:
         command_runner = MockCommandRunner(returncode=0)
         working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
 
+        events = RecordingEventSink()
         controller = SessionController(
             completion_processor=processor,
-            events=NullEventSink(),
+            events=events,
             session_output=FileSystemSessionOutput(),
             working_copy=working_copy,
             command_runner=command_runner,
@@ -615,6 +657,116 @@ class TestSessionControllerValidationCaching:
 
         # SHA should have been fetched
         assert len(working_copy.get_head_sha_calls) >= 1
+        validation_event = next(
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_PASSED
+        )
+        artifacts = validation_event.data["artifacts"]
+        assert artifacts == [
+            {
+                "type": "validation",
+                "label": "Validation Record",
+                "value": str(
+                    Path(validation_event.data["run_dir"]) / "validation-record.json"
+                ),
+            }
+        ]
+        assert Path(artifacts[0]["value"]).exists()
+
+    def test_cached_validation_pass_materializes_record_for_pass_event(self, tmp_path):
+        """Cached validation passes still emit concrete run-scoped evidence."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        events = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        for issue_number, session_name in ((123, "issue-123"), (124, "issue-124")):
+            decision = controller.decide_outcome(
+                observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+                worktree_path=worktree,
+                issue_number=issue_number,
+                issue_title="Test Issue",
+                session_name=session_name,
+            )
+            assert decision.status == SessionStatus.COMPLETED
+            assert decision.validation_passed is True
+
+        assert len(command_runner.run_calls) == 1
+        validation_events = [
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_PASSED
+        ]
+        assert len(validation_events) == 2
+        cached_event = validation_events[-1]
+        cached_record_path = (
+            Path(cached_event.data["run_dir"]) / "validation-record.json"
+        )
+        assert cached_event.data["artifacts"] == [
+            {
+                "type": "validation",
+                "label": "Validation Record",
+                "value": str(cached_record_path),
+            }
+        ]
+        assert cached_record_path.exists()
+
+    def test_validation_pass_event_requires_validation_record(
+        self, tmp_path, monkeypatch
+    ):
+        """A passed validation event must not silently omit validation evidence."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        controller = SessionController(
+            completion_processor=processor,
+            validation_cmd="make test",
+            command_runner=MockCommandRunner(returncode=0),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            session_output=FileSystemSessionOutput(),
+            events=NullEventSink(),
+        )
+        monkeypatch.setattr(
+            controller,
+            "_run_validation",
+            lambda *args, **kwargs: (True, None, None),
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with pytest.raises(
+            FileNotFoundError,
+            match="validation-record.json missing for passed validation event",
+        ):
+            controller.decide_outcome(
+                observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+                worktree_path=worktree,
+                issue_number=123,
+                issue_title="Test Issue",
+                session_name="issue-123",
+            )
 
     def test_validation_failure_returns_error(self, tmp_path):
         """Validation failure returns correct status and error info."""
@@ -666,7 +818,9 @@ class TestSessionControllerValidationCaching:
         )
 
         events = RecordingEventSink()
-        command_runner = MockCommandRunner(returncode=1, stderr="dashboard tests failed")
+        command_runner = MockCommandRunner(
+            returncode=1, stderr="dashboard tests failed"
+        )
         working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
 
         controller = SessionController(
@@ -693,9 +847,14 @@ class TestSessionControllerValidationCaching:
 
         assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY
         retry_event = next(
-            event for event in events.events if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
         )
-        assert retry_event.data["validation_reason"] == "Validation failed for deadbeef (exit_code=1)"
+        assert (
+            retry_event.data["validation_reason"]
+            == "Validation failed for deadbeef (exit_code=1)"
+        )
         assert retry_event.data["validation_error_summary"] == "dashboard tests failed"
 
     def test_no_validation_when_no_command_configured(self):

@@ -17,6 +17,7 @@ Example flows:
 - Validation failed -> VALIDATION_FAILED
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -745,6 +746,10 @@ class SessionController:
                     "session_name": session_name,
                     "validation_cmd": self._validation_cmd,
                     "run_dir": str(run_dir),
+                    "artifacts": self._validation_record_artifacts(
+                        run_dir,
+                        require_record=True,
+                    ),
                 },
             )
             return (
@@ -877,6 +882,7 @@ class SessionController:
                 "retry_count": validation_retry_count,
                 "max_retries": self._max_validation_retries,
                 "run_dir": str(run_dir),
+                "artifacts": self._validation_record_artifacts(run_dir),
             },
         )
         return SessionStatus.NEEDS_VALIDATION_RETRY
@@ -912,6 +918,7 @@ class SessionController:
                 else None,
                 "retry_count": validation_retry_count,
                 "run_dir": str(run_dir),
+                "artifacts": self._validation_record_artifacts(run_dir),
             },
         )
         return SessionStatus.VALIDATION_FAILED
@@ -1082,6 +1089,10 @@ class SessionController:
         )
 
         result = gate.check(session_output_dir=target_run_dir)
+        if result.cache_hit:
+            if result.record is None:
+                raise RuntimeError("validation cache hit did not include a record")
+            self._materialize_cached_validation_record(target_run_dir, result.record)
 
         if result.allowed:
             if result.cache_hit:
@@ -1125,6 +1136,12 @@ class SessionController:
         if Path(stderr_path).is_absolute():
             return Path(stderr_path)
         return worktree_path / stderr_path
+
+    @staticmethod
+    def _materialize_cached_validation_record(run_dir: Path, record: Any) -> None:
+        record_path = run_dir / "validation-record.json"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
 
     @staticmethod
     def _validation_error_summary(validation_error_file: Optional[Path]) -> str | None:
@@ -1204,3 +1221,22 @@ class SessionController:
     def _emit_event(self, event_type: EventName, data: dict[str, Any]) -> None:
         """Emit a trace event."""
         self.events.publish(make_trace_event(event_type, data))
+
+    @staticmethod
+    def _validation_record_artifacts(
+        run_dir: Path, *, require_record: bool = False
+    ) -> list[dict[str, str]]:
+        record_path = run_dir / "validation-record.json"
+        if not record_path.exists():
+            if require_record:
+                raise FileNotFoundError(
+                    f"validation-record.json missing for passed validation event: {record_path}"
+                )
+            return []
+        return [
+            {
+                "type": "validation",
+                "label": "Validation Record",
+                "value": str(record_path),
+            }
+        ]

@@ -21,7 +21,7 @@ from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.ports.timeline_store import TimelineRecord, TimelineStore
 from issue_orchestrator.events import EventName
 from issue_orchestrator.events.catalog import EVENT_SCHEMA_VERSION
-from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION
+from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION, build_issue_timeline
 
 
 class RecordingTimelineStore(TimelineStore):
@@ -41,9 +41,15 @@ def test_sqlite_timeline_store_trims_max_records(tmp_path: Path) -> None:
         config=TimelineStoreConfig(max_records=2),
     )
     issue = 42
-    store.append(issue, TimelineRecord(event_id="1", timestamp="t1", event="e1", data={}))
-    store.append(issue, TimelineRecord(event_id="2", timestamp="t2", event="e2", data={}))
-    store.append(issue, TimelineRecord(event_id="3", timestamp="t3", event="e3", data={}))
+    store.append(
+        issue, TimelineRecord(event_id="1", timestamp="t1", event="e1", data={})
+    )
+    store.append(
+        issue, TimelineRecord(event_id="2", timestamp="t2", event="e2", data={})
+    )
+    store.append(
+        issue, TimelineRecord(event_id="3", timestamp="t3", event="e3", data={})
+    )
 
     records = store.read(issue)
     assert [record.event_id for record in records] == ["2", "3"]
@@ -55,16 +61,24 @@ def test_sqlite_timeline_store_read_limit_returns_tail(tmp_path: Path) -> None:
         config=TimelineStoreConfig(max_records=10),
     )
     issue = 7
-    store.append(issue, TimelineRecord(event_id="a", timestamp="t1", event="e1", data={}))
-    store.append(issue, TimelineRecord(event_id="b", timestamp="t2", event="e2", data={}))
-    store.append(issue, TimelineRecord(event_id="c", timestamp="t3", event="e3", data={}))
+    store.append(
+        issue, TimelineRecord(event_id="a", timestamp="t1", event="e1", data={})
+    )
+    store.append(
+        issue, TimelineRecord(event_id="b", timestamp="t2", event="e2", data={})
+    )
+    store.append(
+        issue, TimelineRecord(event_id="c", timestamp="t3", event="e3", data={})
+    )
 
     records = store.read(issue, limit=1)
     assert len(records) == 1
     assert records[0].event_id == "c"
 
 
-def test_sqlite_timeline_store_trims_total_records_across_issues(tmp_path: Path) -> None:
+def test_sqlite_timeline_store_trims_total_records_across_issues(
+    tmp_path: Path,
+) -> None:
     store = SqliteTimelineStore(
         tmp_path / "timeline.sqlite",
         config=TimelineStoreConfig(max_records=100, max_total_records=3),
@@ -106,6 +120,65 @@ def test_sqlite_timeline_store_preserves_run_dir_payload(tmp_path: Path) -> None
     assert records[0].data["task"] == "code"
 
 
+def test_issue_timeline_preserves_explicit_event_artifacts() -> None:
+    payload = build_issue_timeline(
+        4057,
+        [
+            TimelineRecord(
+                event_id="validation-1",
+                timestamp="2026-02-17T00:00:01Z",
+                event="validation.passed",
+                source_event="session.validation_passed",
+                data={
+                    "issue_number": 4057,
+                    "artifacts": [
+                        {
+                            "type": "validation",
+                            "label": "Validation Record",
+                            "value": "/tmp/run/validation-record.json",
+                        }
+                    ],
+                    "run_dir": "/tmp/run",
+                },
+            ),
+        ],
+    )
+
+    assert payload["events"][0]["artifacts"] == [
+        {
+            "type": "validation",
+            "label": "Validation Record",
+            "value": "/tmp/run/validation-record.json",
+        },
+        {"type": "run_dir", "label": "Run Dir", "value": "/tmp/run"},
+    ]
+
+
+def test_issue_timeline_rejects_malformed_explicit_event_artifacts() -> None:
+    with pytest.raises(ValueError, match="artifacts require non-empty"):
+        build_issue_timeline(
+            4057,
+            [
+                TimelineRecord(
+                    event_id="validation-1",
+                    timestamp="2026-02-17T00:00:01Z",
+                    event="validation.passed",
+                    source_event="session.validation_passed",
+                    data={
+                        "issue_number": 4057,
+                        "artifacts": [
+                            {
+                                "type": "validation",
+                                "label": "Validation Record",
+                                "value": "",
+                            }
+                        ],
+                    },
+                ),
+            ],
+        )
+
+
 def test_sqlite_timeline_store_ignores_legacy_jsonl_files(tmp_path: Path) -> None:
     legacy_dir = tmp_path / "timeline"
     legacy_dir.mkdir(parents=True)
@@ -125,7 +198,8 @@ def test_sqlite_timeline_store_ignores_legacy_jsonl_files(tmp_path: Path) -> Non
         },
     ]
     legacy_path.write_text(
-        "\n".join(json.dumps(record, sort_keys=True) for record in legacy_records) + "\n",
+        "\n".join(json.dumps(record, sort_keys=True) for record in legacy_records)
+        + "\n",
         encoding="utf-8",
     )
 
@@ -138,7 +212,9 @@ def test_sqlite_timeline_store_ignores_legacy_jsonl_files(tmp_path: Path) -> Non
     assert records == []
 
 
-def test_sqlite_timeline_store_fails_fast_if_db_file_is_replaced(tmp_path: Path) -> None:
+def test_sqlite_timeline_store_fails_fast_if_db_file_is_replaced(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "timeline.sqlite"
     store = SqliteTimelineStore(
         db_path,
@@ -162,7 +238,9 @@ def test_sqlite_timeline_store_fails_fast_if_db_file_is_replaced(tmp_path: Path)
         store.read(42)
 
 
-def test_sqlite_timeline_store_requires_run_dir_for_run_scoped_events(tmp_path: Path) -> None:
+def test_sqlite_timeline_store_requires_run_dir_for_run_scoped_events(
+    tmp_path: Path,
+) -> None:
     store = SqliteTimelineStore(
         tmp_path / "timeline.sqlite",
         config=TimelineStoreConfig(max_records=10),
@@ -262,7 +340,9 @@ def test_timeline_writer_normalizes_non_json_types() -> None:
     assert data["when"].startswith("2026-02-06T12:00:00")
 
 
-def test_timeline_writer_preserves_sequenced_event_id_and_schema(tmp_path: Path) -> None:
+def test_timeline_writer_preserves_sequenced_event_id_and_schema(
+    tmp_path: Path,
+) -> None:
     store = RecordingTimelineStore()
     writer = DefaultTimelineWriter(store)
     run_dir = tmp_path / "sessions" / "r77__issue-4057"
@@ -311,7 +391,9 @@ def test_timeline_writer_overwrites_stale_schema_versions(tmp_path: Path) -> Non
     assert record.data["timeline_schema_version"] == TIMELINE_SCHEMA_VERSION
 
 
-def test_timeline_writer_requires_session_artifact_for_session_started(tmp_path: Path) -> None:
+def test_timeline_writer_requires_session_artifact_for_session_started(
+    tmp_path: Path,
+) -> None:
     store = RecordingTimelineStore()
     writer = DefaultTimelineWriter(store)
     run_dir = tmp_path / "sessions" / "r1__issue-4057"
@@ -328,13 +410,19 @@ def test_timeline_writer_requires_session_artifact_for_session_started(tmp_path:
     assert len(store.records) == 1
 
 
-def test_timeline_writer_requires_completion_record_for_session_completed(tmp_path: Path) -> None:
+def test_timeline_writer_requires_completion_record_for_session_completed(
+    tmp_path: Path,
+) -> None:
     store = RecordingTimelineStore()
     writer = DefaultTimelineWriter(store)
     completion = tmp_path / "completion.json"
     event = TraceEvent(
         EventName.SESSION_COMPLETED,
-        {"issue_number": 4057, "completion_path_absolute": str(completion), "task": "code"},
+        {
+            "issue_number": 4057,
+            "completion_path_absolute": str(completion),
+            "task": "code",
+        },
     )
     with pytest.raises(RuntimeError, match="missing_path"):
         writer.record(event)
@@ -344,7 +432,9 @@ def test_timeline_writer_requires_completion_record_for_session_completed(tmp_pa
     assert len(store.records) == 1
 
 
-def test_timeline_writer_requires_review_feedback_reference_for_review_comment_added() -> None:
+def test_timeline_writer_requires_review_feedback_reference_for_review_comment_added() -> (
+    None
+):
     store = RecordingTimelineStore()
     writer = DefaultTimelineWriter(store)
     event = TraceEvent(
@@ -497,7 +587,11 @@ class TestNarrativeEnrichment:
     def test_round_completed_includes_verdict(self) -> None:
         narrative = self._write_and_get_narrative(
             EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
-            {"round_index": 3, "reviewer_response_type": "changes_requested", "coder_response_type": "ok"},
+            {
+                "round_index": 3,
+                "reviewer_response_type": "changes_requested",
+                "coder_response_type": "ok",
+            },
         )
         assert narrative == "Review round 3 completed — changes_requested"
 
@@ -544,7 +638,9 @@ class TestNarrativeEnrichment:
             EventName.REVIEW_STARTED,
             {
                 "cached": True,
-                "run_dir": self._make_run_dir_with_recording(tmp_path, "prior-review-run"),
+                "run_dir": self._make_run_dir_with_recording(
+                    tmp_path, "prior-review-run"
+                ),
             },
         )
         assert "reused" in narrative.lower()
@@ -552,7 +648,11 @@ class TestNarrativeEnrichment:
     def test_review_started_fresh_uses_default_narrative(self, tmp_path) -> None:
         narrative = self._write_and_get_narrative(
             EventName.REVIEW_STARTED,
-            {"run_dir": self._make_run_dir_with_recording(tmp_path, "current-review-run")},
+            {
+                "run_dir": self._make_run_dir_with_recording(
+                    tmp_path, "current-review-run"
+                )
+            },
         )
         assert narrative == "Code review started"
 
@@ -601,11 +701,16 @@ class TestNarrativeEnrichment:
 
     def test_unhandled_event_keeps_static_narrative(self) -> None:
         from issue_orchestrator.execution.timeline_writer import _enrich_narrative
-        result = _enrich_narrative("Code review started", "review.started", {"issue_number": 42})
+
+        result = _enrich_narrative(
+            "Code review started", "review.started", {"issue_number": 42}
+        )
         assert result == "Code review started"
 
 
-def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(tmp_path: Path) -> None:
+def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(
+    tmp_path: Path,
+) -> None:
     # Regression for issue #228: when publish/validation failed after a real
     # review exchange, the orchestrator restarted coding from scratch; the
     # replayed review.approved carried the prior run's ``rounds`` field with
@@ -643,7 +748,11 @@ def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(tmp_path: P
     writer.record(
         TraceEvent(
             EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
-            {**shared_base, "round_index": 1, "reviewer_response_type": "changes_requested"},
+            {
+                **shared_base,
+                "round_index": 1,
+                "reviewer_response_type": "changes_requested",
+            },
         )
     )
     writer.record(
@@ -662,13 +771,14 @@ def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(tmp_path: P
         TraceEvent(EventName.REVIEW_EXCHANGE_COMPLETED, {**shared_base, "rounds": 2})
     )
     writer.record(
-        TraceEvent(EventName.REVIEW_APPROVED, {**shared_base, "rounds": 2, "summary": "Looks good."})
+        TraceEvent(
+            EventName.REVIEW_APPROVED,
+            {**shared_base, "rounds": 2, "summary": "Looks good."},
+        )
     )
 
     # --- Cache replay after publish/validation failure restarted coding ---
-    writer.record(
-        TraceEvent(EventName.REVIEW_STARTED, {**shared_base, "cached": True})
-    )
+    writer.record(TraceEvent(EventName.REVIEW_STARTED, {**shared_base, "cached": True}))
     writer.record(
         TraceEvent(
             EventName.REVIEW_APPROVED,
@@ -768,11 +878,13 @@ class TestTrivialSummarySuppression:
 
     def test_completed_suppressed(self) -> None:
         from issue_orchestrator.view_models.issue_detail import _is_trivial_summary
+
         assert _is_trivial_summary("completed")
         assert _is_trivial_summary("Completed")
 
     def test_ok_suppressed(self) -> None:
         from issue_orchestrator.view_models.issue_detail import _is_trivial_summary
+
         assert _is_trivial_summary("ok")
         assert _is_trivial_summary("started")
         assert _is_trivial_summary("passed")
@@ -780,12 +892,14 @@ class TestTrivialSummarySuppression:
 
     def test_meaningful_summary_not_suppressed(self) -> None:
         from issue_orchestrator.view_models.issue_detail import _is_trivial_summary
+
         assert not _is_trivial_summary("Merge conflict in src/foo.py")
         assert not _is_trivial_summary("reviewer_ok")
         assert not _is_trivial_summary("Validation passed. Implementation is correct")
 
     def test_narrative_rendering_suppresses_completed(self) -> None:
         from issue_orchestrator.view_models.issue_detail import _event_to_narrative
+
         event = {
             "event": "agent.coding_completed",
             "narrative": "Agent finished coding",
@@ -797,6 +911,7 @@ class TestTrivialSummarySuppression:
 
     def test_narrative_rendering_keeps_meaningful_summary(self) -> None:
         from issue_orchestrator.view_models.issue_detail import _event_to_narrative
+
         event = {
             "event": "review.approved",
             "narrative": "Review approved after 4 rounds",
@@ -818,9 +933,12 @@ def test_sqlite_timeline_store_instance_id_persisted(tmp_path: Path) -> None:
 
     # Read back via raw SQL to verify the column value
     import sqlite3
+
     conn = sqlite3.connect(store.db_path)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT instance_id FROM timeline_events WHERE event_id = 'e1'").fetchone()
+    row = conn.execute(
+        "SELECT instance_id FROM timeline_events WHERE event_id = 'e1'"
+    ).fetchone()
     conn.close()
     assert row["instance_id"] == "test-instance-abc"
 
@@ -844,9 +962,12 @@ def test_sqlite_timeline_store_instance_id_defaults_to_empty(tmp_path: Path) -> 
     store.append(42, TimelineRecord(event_id="e1", timestamp="t1", event="ev", data={}))
 
     import sqlite3
+
     conn = sqlite3.connect(store.db_path)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT instance_id FROM timeline_events WHERE event_id = 'e1'").fetchone()
+    row = conn.execute(
+        "SELECT instance_id FROM timeline_events WHERE event_id = 'e1'"
+    ).fetchone()
     conn.close()
     assert row["instance_id"] == ""
 
@@ -857,12 +978,28 @@ def test_sqlite_timeline_store_instance_id_filters_correctly(tmp_path: Path) -> 
     store_a = SqliteTimelineStore(db_path, instance_id="instance-a")
     store_b = SqliteTimelineStore(db_path, instance_id="instance-b")
 
-    store_a.append(1, TimelineRecord(event_id="a1", timestamp="2026-01-01T00:00:01Z", event="ev", data={}))
-    store_b.append(1, TimelineRecord(event_id="b1", timestamp="2026-01-01T00:00:02Z", event="ev", data={}))
-    store_a.append(1, TimelineRecord(event_id="a2", timestamp="2026-01-01T00:00:03Z", event="ev", data={}))
+    store_a.append(
+        1,
+        TimelineRecord(
+            event_id="a1", timestamp="2026-01-01T00:00:01Z", event="ev", data={}
+        ),
+    )
+    store_b.append(
+        1,
+        TimelineRecord(
+            event_id="b1", timestamp="2026-01-01T00:00:02Z", event="ev", data={}
+        ),
+    )
+    store_a.append(
+        1,
+        TimelineRecord(
+            event_id="a2", timestamp="2026-01-01T00:00:03Z", event="ev", data={}
+        ),
+    )
 
     # Query for instance-a only
     import sqlite3
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(

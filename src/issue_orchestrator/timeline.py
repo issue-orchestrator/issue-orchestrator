@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,7 +134,9 @@ class TimelineStream:
     events: list[TimelineEvent]
 
     @classmethod
-    def from_records(cls, issue_number: int, records: list[TimelineRecord]) -> "TimelineStream":
+    def from_records(
+        cls, issue_number: int, records: list[TimelineRecord]
+    ) -> "TimelineStream":
         events = [_record_to_event(issue_number, record) for record in records]
         return cls(issue_number=issue_number, events=events)
 
@@ -150,7 +153,9 @@ class TimelineStream:
         }
 
 
-def build_issue_timeline(issue_number: int, records: list[TimelineRecord]) -> dict[str, Any]:
+def build_issue_timeline(
+    issue_number: int, records: list[TimelineRecord]
+) -> dict[str, Any]:
     return TimelineStream.from_records(issue_number, records).to_dict()
 
 
@@ -173,20 +178,54 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     artifacts = _artifacts_from_data(data)
     agent = data.get("agent") if isinstance(data.get("agent"), str) else None
     task = data.get("task") if isinstance(data.get("task"), str) else None
-    rework_cycle = data.get("rework_cycle") if isinstance(data.get("rework_cycle"), int) else None
-    reviewer_agent = data.get("reviewer_agent") if isinstance(data.get("reviewer_agent"), str) else None
+    rework_cycle = (
+        data.get("rework_cycle") if isinstance(data.get("rework_cycle"), int) else None
+    )
+    reviewer_agent = (
+        data.get("reviewer_agent")
+        if isinstance(data.get("reviewer_agent"), str)
+        else None
+    )
     added = _string_list_or_none(data.get("added"))
     removed = _string_list_or_none(data.get("removed"))
     timeline_schema_version = _timeline_schema_version_from_data(data)
-    logical_run = data.get("logical_run") if isinstance(data.get("logical_run"), int) else None
-    logical_cycle = data.get("logical_cycle") if isinstance(data.get("logical_cycle"), int) else None
-    logical_phase = data.get("logical_phase") if isinstance(data.get("logical_phase"), str) else None
-    round_index = data.get("round_index") if isinstance(data.get("round_index"), int) else None
+    logical_run = (
+        data.get("logical_run") if isinstance(data.get("logical_run"), int) else None
+    )
+    logical_cycle = (
+        data.get("logical_cycle")
+        if isinstance(data.get("logical_cycle"), int)
+        else None
+    )
+    logical_phase = (
+        data.get("logical_phase")
+        if isinstance(data.get("logical_phase"), str)
+        else None
+    )
+    round_index = (
+        data.get("round_index") if isinstance(data.get("round_index"), int) else None
+    )
     rounds = data.get("rounds") if isinstance(data.get("rounds"), int) else None
-    reviewer_response_type = data.get("reviewer_response_type") if isinstance(data.get("reviewer_response_type"), str) else None
-    reviewer_response_text = data.get("reviewer_response_text") if isinstance(data.get("reviewer_response_text"), str) else None
-    coder_response_type = data.get("coder_response_type") if isinstance(data.get("coder_response_type"), str) else None
-    coder_response_text = data.get("coder_response_text") if isinstance(data.get("coder_response_text"), str) else None
+    reviewer_response_type = (
+        data.get("reviewer_response_type")
+        if isinstance(data.get("reviewer_response_type"), str)
+        else None
+    )
+    reviewer_response_text = (
+        data.get("reviewer_response_text")
+        if isinstance(data.get("reviewer_response_text"), str)
+        else None
+    )
+    coder_response_type = (
+        data.get("coder_response_type")
+        if isinstance(data.get("coder_response_type"), str)
+        else None
+    )
+    coder_response_text = (
+        data.get("coder_response_text")
+        if isinstance(data.get("coder_response_text"), str)
+        else None
+    )
     unsupported_schema = (
         timeline_schema_version is None
         or timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
@@ -204,7 +243,9 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         try:
             event_intent = EventIntent(intent_raw).value
         except ValueError:
-            event_intent = infer_event_intent(event_name=canonical_name, task=task).value
+            event_intent = infer_event_intent(
+                event_name=canonical_name, task=task
+            ).value
     else:
         event_intent = infer_event_intent(event_name=canonical_name, task=task).value
     return TimelineEvent(
@@ -237,7 +278,9 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         logical_phase=logical_phase,
         source_event=record.source_event or None,
         views=data.get("views") if isinstance(data.get("views"), list) else None,
-        narrative=data.get("narrative") if isinstance(data.get("narrative"), str) else None,
+        narrative=data.get("narrative")
+        if isinstance(data.get("narrative"), str)
+        else None,
         round_index=round_index,
         rounds=rounds,
         reviewer_response_type=reviewer_response_type,
@@ -577,7 +620,11 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
         return None
 
     text = ". ".join(parts)
-    max_detail = _MAX_REVIEW_COMMENT_DETAIL if event_name == "review.comment_added" else _MAX_DETAIL
+    max_detail = (
+        _MAX_REVIEW_COMMENT_DETAIL
+        if event_name == "review.comment_added"
+        else _MAX_DETAIL
+    )
     if len(text) > max_detail:
         text = text[: max_detail - 1] + "\u2026"
     return text
@@ -612,25 +659,75 @@ def _truncate_summary(text: str) -> str:
 
 def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
     artifacts: list[TimelineArtifact] = []
+    seen: set[tuple[str, str]] = set()
+
+    for artifact_type, label, value in _explicit_artifacts_from_data(data):
+        _append_artifact(artifacts, seen, artifact_type, label, value)
     pr_url = data.get("pr_url")
     if isinstance(pr_url, str) and pr_url:
-        artifacts.append(TimelineArtifact("pull_request", "PR", pr_url))
+        _append_artifact(artifacts, seen, "pull_request", "PR", pr_url)
     comment_url = data.get("comment_url")
     if isinstance(comment_url, str) and comment_url:
-        artifacts.append(TimelineArtifact("review_comment", "Review Comment", comment_url))
+        _append_artifact(
+            artifacts, seen, "review_comment", "Review Comment", comment_url
+        )
     completion_path = data.get("completion_path_absolute")
     if isinstance(completion_path, str) and completion_path:
-        artifacts.append(TimelineArtifact("completion_record", "Completion", completion_path))
+        _append_artifact(
+            artifacts, seen, "completion_record", "Completion", completion_path
+        )
     worktree_path = data.get("worktree_path")
     if isinstance(worktree_path, str) and worktree_path:
-        artifacts.append(TimelineArtifact("worktree", "Worktree", worktree_path))
+        _append_artifact(artifacts, seen, "worktree", "Worktree", worktree_path)
     validation_path = data.get("validation_record_path")
     if isinstance(validation_path, str) and validation_path:
-        artifacts.append(TimelineArtifact("validation", "Validation", validation_path))
+        _append_artifact(artifacts, seen, "validation", "Validation", validation_path)
     run_dir = _run_dir_from_data(data)
     if isinstance(run_dir, str) and run_dir:
-        artifacts.append(TimelineArtifact("run_dir", "Run Dir", run_dir))
+        _append_artifact(artifacts, seen, "run_dir", "Run Dir", run_dir)
     return artifacts
+
+
+def _explicit_artifacts_from_data(data: dict[str, Any]) -> list[tuple[str, str, str]]:
+    raw = data.get("artifacts")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("timeline event artifacts must be a list")
+    return [_explicit_artifact_fields(artifact) for artifact in raw]
+
+
+def _explicit_artifact_fields(artifact: Any) -> tuple[str, str, str]:
+    if not isinstance(artifact, Mapping):
+        raise ValueError("timeline event artifact entries must be objects")
+    return (
+        _required_artifact_text(artifact, "type"),
+        _required_artifact_text(artifact, "label"),
+        _required_artifact_text(artifact, "value"),
+    )
+
+
+def _required_artifact_text(artifact: Mapping[str, Any], field: str) -> str:
+    value = artifact.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(
+            "timeline event artifacts require non-empty type, label, and value"
+        )
+    return value
+
+
+def _append_artifact(
+    artifacts: list[TimelineArtifact],
+    seen: set[tuple[str, str]],
+    artifact_type: str,
+    label: str,
+    value: str,
+) -> None:
+    key = (artifact_type, value)
+    if key in seen:
+        return
+    seen.add(key)
+    artifacts.append(TimelineArtifact(artifact_type, label, value))
 
 
 def _run_id_from_data(data: dict[str, Any]) -> str | None:
