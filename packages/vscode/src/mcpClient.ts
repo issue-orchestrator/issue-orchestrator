@@ -49,18 +49,62 @@ export class McpClient implements OrchestratorClient {
       args.push("--auto-start");
     }
 
-    // The MCP SDK's StdioClientTransport only inherits a small set of
-    // env vars by default (HOME, PATH, etc.).  In E2E mode we need the
-    // full process environment so IO_E2E_API_PORT and friends reach the
-    // MCP subprocess.
-    const isE2E = process.env.IO_VSCODE_E2E === "1";
-
+    // The MCP SDK's StdioClientTransport inherits only a minimal env
+    // by default. Two things need to reach the MCP subprocess:
+    //
+    // 1. The orchestrator's Control API bearer token (security #5987
+    //    F3). Without it every authenticated call would 401.
+    // 2. E2E harness variables (``IO_E2E_*`` / ``IO_VSCODE_E2E``) so
+    //    tests can steer the subprocess at a specific port.
+    //
+    // Plus the POSIX basics any subprocess needs to boot
+    // (``PATH``, ``HOME``, locale). The previous version forwarded
+    // the entire VS Code process env, which also leaks unrelated
+    // secrets (AWS keys, GitHub tokens, arbitrary third-party
+    // credentials the operator set in their shell) to whatever
+    // binary the ``issueOrchestrator.mcpCommand`` setting points at
+    // — and that command is user-configurable. Restrict to an
+    // explicit allowlist (security #6017 re-review P5).
+    const MCP_ENV_ALLOWLIST: readonly string[] = [
+      "PATH",
+      "HOME",
+      "USER",
+      "LOGNAME",
+      "SHELL",
+      "LANG",
+      "TZ",
+      "TMPDIR",
+      "TEMP",
+      "TMP",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_RUNTIME_DIR",
+      "ISSUE_ORCHESTRATOR_API_TOKEN",
+      "ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN",
+      "ISSUE_ORCHESTRATOR_PYTHON",
+      "ISSUE_ORCHESTRATOR_CC_SNAPSHOT",
+      "ISSUE_ORCHESTRATOR_REPO_ROOT",
+      "PYTHONPATH",
+      "IO_VSCODE_E2E",
+    ];
+    const env: Record<string, string> = {};
+    for (const name of MCP_ENV_ALLOWLIST) {
+      const value = process.env[name];
+      if (value !== undefined) {
+        env[name] = value;
+      }
+    }
+    for (const [name, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
+      if (name.startsWith("IO_E2E_") || /^LC_/.test(name)) {
+        env[name] = value;
+      }
+    }
     this.transport = new StdioClientTransport({
       command,
       args,
-      ...(isE2E ? { env: Object.fromEntries(
-        Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)
-      ) } : {}),
+      env,
     });
 
     this.client = new Client(
