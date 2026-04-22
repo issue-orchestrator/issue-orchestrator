@@ -82,6 +82,28 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(safe_repo))
 
 
+@pytest.fixture(autouse=True)
+def reset_control_api_token():
+    """Reset Control API bearer-token enforcement between tests.
+
+    ``ControlAPIServer.start`` (and tests that explicitly call
+    ``configure_api_token``) install a process-wide token on the
+    ``control_app`` module. Without an autouse reset, a leftover token
+    from an earlier test causes unrelated TestClient calls to return
+    401 instead of the expected status. See security issue #5987 (F3).
+    """
+    try:
+        from issue_orchestrator.entrypoints.control_api import configure_api_token
+    except Exception:
+        yield
+        return
+    configure_api_token(None)
+    try:
+        yield
+    finally:
+        configure_api_token(None)
+
+
 class MockGitHubAdapter:
     """Mock GitHub adapter implementing port interfaces for testing.
 

@@ -65,6 +65,11 @@ ALWAYS_PASSTHROUGH_ENV_VARS: list[str] = [
     # by pre-push hook scripts that live outside the venv and cannot
     # otherwise find the orchestrator's interpreter.
     "ISSUE_ORCHESTRATOR_PYTHON",
+    # Bearer token for the loopback Control API (security issue #5987,
+    # F3). Agent subprocesses call back into the orchestrator to trigger
+    # preflight-push and session-resume; without this token those
+    # requests would fail with 401.
+    "ISSUE_ORCHESTRATOR_API_TOKEN",
 ]
 
 

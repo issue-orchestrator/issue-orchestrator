@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 import threading
 
 import httpx
 
 from ..ports.orchestrator_api import OrchestratorApi
+
+
+def _default_token_provider() -> str | None:
+    """Resolve the Control API bearer token from the environment.
+
+    MCP and CLI clients in the same process tree as a running
+    orchestrator inherit ``ISSUE_ORCHESTRATOR_API_TOKEN``. Standalone
+    clients can export it explicitly, or override the provider via the
+    ``token_provider`` constructor argument. See security issue #5987
+    (F3).
+    """
+    return os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN") or None
+
+
+def _auth_headers(token_provider: Callable[[], str | None]) -> dict[str, str]:
+    token = token_provider()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def probe_orchestrator_json(url: str, *, timeout_seconds: float) -> dict[str, Any] | None:
@@ -32,20 +52,25 @@ class OrchestratorHttpApi(OrchestratorApi):
         refresh_base_url: Callable[[], str] | None = None,
         client: httpx.Client | None = None,
         timeout_seconds: float = 10.0,
+        token_provider: Callable[[], str | None] = _default_token_provider,
     ) -> None:
         self._base_url_provider = base_url_provider
         self._refresh_base_url = refresh_base_url
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._client_lock = threading.Lock()
+        self._token_provider = token_provider
 
     def close(self) -> None:
         self._client.close()
 
     def _request(self, method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self._base_url_provider()}{path}"
+        headers = _auth_headers(self._token_provider)
         try:
             with self._client_lock:
-                response = self._client.request(method, url, json=json_body)
+                response = self._client.request(
+                    method, url, json=json_body, headers=headers
+                )
                 response.raise_for_status()
                 return response.json()
         except httpx.RequestError:
@@ -53,7 +78,9 @@ class OrchestratorHttpApi(OrchestratorApi):
                 raise
             refreshed_url = f"{self._refresh_base_url()}{path}"
             with self._client_lock:
-                response = self._client.request(method, refreshed_url, json=json_body)
+                response = self._client.request(
+                    method, refreshed_url, json=json_body, headers=headers
+                )
                 response.raise_for_status()
                 return response.json()
 
@@ -139,10 +166,12 @@ class OrchestratorAsyncHttpApi:
         refresh_base_url: Callable[[], str] | None = None,
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 10.0,
+        token_provider: Callable[[], str | None] = _default_token_provider,
     ) -> None:
         self._base_url_provider = base_url_provider
         self._refresh_base_url = refresh_base_url
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        self._token_provider = token_provider
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -154,15 +183,20 @@ class OrchestratorAsyncHttpApi:
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url_provider()}{path}"
+        headers = _auth_headers(self._token_provider)
         try:
-            response = await self._client.request(method, url, json=json_body)
+            response = await self._client.request(
+                method, url, json=json_body, headers=headers
+            )
             response.raise_for_status()
             return response.json()
         except httpx.RequestError:
             if not self._refresh_base_url:
                 raise
             refreshed_url = f"{self._refresh_base_url()}{path}"
-            response = await self._client.request(method, refreshed_url, json=json_body)
+            response = await self._client.request(
+                method, refreshed_url, json=json_body, headers=headers
+            )
             response.raise_for_status()
             return response.json()
 

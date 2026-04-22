@@ -30,6 +30,32 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _control_api_headers() -> dict[str, str]:
+    """Return request headers for the Control API, with bearer token if set.
+
+    See security issue #5987 (F3). The orchestrator exports
+    ``ISSUE_ORCHESTRATOR_API_TOKEN`` on startup. This helper reads the
+    env var first, then falls back to the on-disk token file **only
+    when it already exists** — deliberately not calling
+    ``load_or_create_token`` here so that running the CLI (or a unit
+    test that exercises a CLI function) never writes into the user's
+    home directory.
+    """
+    token = os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN")
+    if not token:
+        try:
+            from ..infra.api_token import default_token_path
+
+            path = default_token_path()
+            if path.exists():
+                token = path.read_text().strip() or None
+        except OSError:
+            token = None
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
 def _apply_cli_overrides(args: argparse.Namespace, config: "Config") -> None:  # noqa: C901, PLR0912 - one branch per CLI override, inherent to config mapping
     """Apply CLI argument overrides to config."""
     # Handle milestone override
@@ -436,7 +462,9 @@ def cmd_pause(args: argparse.Namespace) -> int:
     base_url = f"http://localhost:{port}"
 
     try:
-        response = httpx.post(f"{base_url}/api/pause", timeout=5.0)
+        response = httpx.post(
+            f"{base_url}/api/pause", timeout=5.0, headers=_control_api_headers()
+        )
         if response.status_code == 200:
             console.print(
                 "[yellow]Orchestrator paused - no new sessions will launch until resumed[/yellow]"
@@ -460,7 +488,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
     base_url = f"http://localhost:{port}"
 
     try:
-        response = httpx.post(f"{base_url}/api/resume", timeout=5.0)
+        response = httpx.post(
+            f"{base_url}/api/resume", timeout=5.0, headers=_control_api_headers()
+        )
         if response.status_code == 200:
             console.print("[green]Orchestrator resumed - new sessions may launch[/green]")
             return 0
@@ -487,7 +517,9 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     base_url = f"http://localhost:{port}"
 
     try:
-        response = httpx.post(f"{base_url}/api/refresh", timeout=5.0)
+        response = httpx.post(
+            f"{base_url}/api/refresh", timeout=5.0, headers=_control_api_headers()
+        )
         if response.status_code == 200:
             console.print(
                 "[green]Refresh requested - issues will be fetched on next loop iteration[/green]"
@@ -521,7 +553,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     # Step 1: Check if orchestrator is running
     console.print("[cyan]Checking for running orchestrator...[/cyan]")
     try:
-        resp = httpx.get(f"{base_url}/api/status", timeout=2.0)
+        resp = httpx.get(
+            f"{base_url}/api/status", timeout=2.0, headers=_control_api_headers()
+        )
         if resp.status_code == 200:
             console.print(f"[green]Found orchestrator on port {port}[/green]")
         else:
@@ -537,7 +571,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     # Step 2: Send shutdown request
     console.print("[cyan]Sending shutdown request...[/cyan]")
     try:
-        resp = httpx.post(f"{base_url}/api/shutdown", timeout=5.0)
+        resp = httpx.post(
+            f"{base_url}/api/shutdown", timeout=5.0, headers=_control_api_headers()
+        )
         if resp.status_code == 200:
             console.print("[green]Shutdown request accepted[/green]")
         else:
@@ -549,7 +585,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     console.print("[cyan]Waiting for orchestrator to exit...[/cyan]")
     for i in range(30):  # Wait up to 30 seconds
         try:
-            httpx.get(f"{base_url}/api/status", timeout=1.0)
+            httpx.get(
+                f"{base_url}/api/status", timeout=1.0, headers=_control_api_headers()
+            )
             # Still running
             time.sleep(1)
             if i % 5 == 4:

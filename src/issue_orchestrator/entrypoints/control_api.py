@@ -57,6 +57,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from ..infra import gh_audit
+from ..infra.api_token import resolve_api_token, verify_token
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
@@ -139,6 +140,57 @@ control_app = FastAPI(title="Issue Orchestrator Control API")
 STATIC_DIR = Path(__file__).parent.parent / "static"
 if STATIC_DIR.exists():
     control_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@control_app.middleware("http")
+async def _require_api_token_middleware(  # pyright: ignore[reportUnusedFunction]
+    request: Request, call_next: Any
+) -> Response:
+    """Enforce bearer-token auth when ``configure_api_token`` has been called."""
+    expected = _api_token
+    if expected is None:
+        return await call_next(request)
+    if request.url.path in _UNAUTHENTICATED_PATHS:
+        return await call_next(request)
+    header = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    if not header.startswith(prefix):
+        return JSONResponse(
+            {"error": "missing bearer token"}, status_code=401
+        )
+    provided = header[len(prefix):].strip()
+    if not verify_token(expected, provided):
+        return JSONResponse(
+            {"error": "invalid bearer token"}, status_code=401
+        )
+    return await call_next(request)
+
+# Bearer-token enforcement (security issue #5987, F3).
+#
+# When ``_api_token`` is set, every HTTP request is required to carry an
+# ``Authorization: Bearer <token>`` header that matches. When it is
+# ``None`` (the default in unit tests), the middleware is a no-op so
+# existing in-process TestClient setups keep working. Production
+# startup in ``ControlAPIServer.start`` calls ``configure_api_token``
+# to turn enforcement on.
+_api_token: str | None = None
+
+# Paths that must remain accessible without a token. Keep this list
+# minimal — today it is empty because there is no liveness probe, but we
+# keep the hook so future health endpoints do not have to re-invent it.
+_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset()
+
+
+def configure_api_token(token: str | None) -> None:
+    """Enable (or disable) bearer-token enforcement on the Control API."""
+    global _api_token
+    _api_token = token
+
+
+def get_configured_api_token() -> str | None:
+    """Return the currently configured token (for clients in the same process)."""
+    return _api_token
+
 
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
@@ -931,6 +983,18 @@ class ControlAPIServer:
         import uvicorn
 
         set_orchestrator(self.orchestrator)
+
+        # Resolve + activate the shared-secret token before binding. Kept
+        # inside ``start`` so test harnesses that import ``control_app``
+        # without spinning up a server do not inadvertently create the
+        # token file on a developer machine. See security issue #5987
+        # (F3) and infra/api_token.py for the resolution order.
+        token = resolve_api_token()
+        configure_api_token(token)
+        # Export into the process environment so in-process clients
+        # (MCP server, CLI tools launched by this orchestrator) pick it
+        # up without having to re-read the file.
+        os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", token)
 
         config = uvicorn.Config(
             control_app,

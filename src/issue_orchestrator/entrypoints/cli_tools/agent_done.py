@@ -48,6 +48,20 @@ if not TYPE_CHECKING:
     RequestedAction = RuntimeRequestedAction
 
 RUNTIME_COMPLETION_RECORD: Any = RuntimeCompletionRecord
+
+
+def _api_request_headers() -> dict[str, str]:
+    """Build headers for Control API requests, including bearer token if set.
+
+    The orchestrator exports ``ISSUE_ORCHESTRATOR_API_TOKEN`` when it
+    starts the Control API server; agent subprocesses inherit it via
+    ``ALWAYS_PASSTHROUGH_ENV_VARS``. See security issue #5987 (F3).
+    """
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 RUNTIME_COMPLETION_OUTCOME: Any = RuntimeCompletionOutcome
 RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
@@ -657,7 +671,7 @@ def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None
         req = urllib.request.Request(
             url,
             data=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers=_api_request_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=120) as response:
@@ -715,7 +729,7 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=_api_request_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=60) as response:

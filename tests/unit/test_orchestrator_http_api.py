@@ -34,7 +34,7 @@ def test_request_refreshes_base_url_on_request_error():
         def __init__(self):
             self.fail_first = True
 
-        def request(self, method, url, json=None):
+        def request(self, method, url, json=None, headers=None):
             calls.append(url)
             if self.fail_first:
                 self.fail_first = False
@@ -63,7 +63,7 @@ def test_client_requests_are_serialized():
             self.start_event = threading.Event()
             self.release_event = threading.Event()
 
-        def request(self, method, url, json=None):
+        def request(self, method, url, json=None, headers=None):
             with self.lock:
                 self.active += 1
                 if self.active > 1:
@@ -105,7 +105,7 @@ async def test_async_request_refreshes_base_url_on_request_error():
         def __init__(self):
             self.fail_first = True
 
-        async def request(self, method, url, json=None):
+        async def request(self, method, url, json=None, headers=None):
             calls.append(url)
             if self.fail_first:
                 self.fail_first = False
@@ -135,7 +135,7 @@ async def test_async_client_allows_concurrent_requests():
             self.start_event = asyncio.Event()
             self.release_event = asyncio.Event()
 
-        async def request(self, method, url, json=None):
+        async def request(self, method, url, json=None, headers=None):
             with self.lock:
                 self.active += 1
                 if self.active > 1:
