@@ -99,6 +99,12 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
     )
 
     completion_path = get_completion_path(agent_name="agent:test", session_name=session_name)
+    # Materialize the validation record on disk so containment passes —
+    # the orchestrator only attaches records that actually exist under
+    # the worktree's ``.issue-orchestrator`` tree (#6008 re-review P2).
+    validation_record_abs = tmp_path / ".issue-orchestrator" / "validation" / "sha.json"
+    validation_record_abs.parent.mkdir(parents=True, exist_ok=True)
+    validation_record_abs.write_text("{}")
     record = CompletionRecord(
         session_id=session_name,
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -125,10 +131,16 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
 
     manifest = json.loads((run.run_dir / "manifest.json").read_text())
     assert manifest["session_name"] == session_name
-    assert manifest["validation_record_path"] == ".issue-orchestrator/validation/sha.json"
+    # After the containment fix, the manifest records the copied
+    # artifact path under the run dir (once copied) rather than the
+    # agent-supplied relative string. Assert the file was copied and
+    # the manifest points at it.
+    run_dir_record = run.run_dir / "validation-record.json"
+    assert run_dir_record.exists()
+    assert manifest["validation_record_path"] == str(run_dir_record)
     pointer = run.run_dir / "validation-record.path"
     assert pointer.exists()
-    assert pointer.read_text().strip() == ".issue-orchestrator/validation/sha.json"
+    assert pointer.read_text().strip() == str(run_dir_record)
 
 
 def test_orchestrator_tail_scoped_to_run(tmp_path: Path) -> None:

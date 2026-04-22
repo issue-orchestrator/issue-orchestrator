@@ -74,6 +74,78 @@ if TYPE_CHECKING:
     from ..infra.config import Config
 
 
+# Only paths under ``<worktree>/.issue-orchestrator`` are acceptable as a
+# validation-record source. Agents write to this subtree as part of normal
+# operation; anything outside it (``/etc/hosts``, a sibling worktree, a
+# user's SSH key) should never be handed off to the manifest/copy path.
+# See security #5987 F1 review + #6017 P2 re-review.
+_VALIDATION_CONTAINMENT_SUBDIR = ".issue-orchestrator"
+
+
+def _contain_validation_record_path(
+    record_path: str, worktree: Path
+) -> Path | None:
+    """Resolve ``record_path`` and require it to live inside the worktree.
+
+    Returns the resolved ``Path`` when it exists, is a regular file, and
+    its fully-resolved target is under ``<worktree>/.issue-orchestrator``.
+    Returns ``None`` (with a log message) otherwise — the processor must
+    then skip the attach step rather than copy an out-of-tree file.
+
+    We resolve BOTH sides (the candidate path and the worktree) because
+    ``worktree`` on macOS can be under ``/private/tmp`` vs ``/tmp`` etc.,
+    and ``Path.resolve`` follows symlinks so an attacker-planted link
+    inside ``.issue-orchestrator`` cannot escape.
+    """
+    try:
+        worktree_resolved = Path(worktree).resolve()
+    except (OSError, RuntimeError) as exc:
+        logger.warning(
+            "worktree %s could not be resolved: %s", worktree, exc
+        )
+        return None
+    try:
+        candidate_raw = Path(record_path)
+        # Relative paths are interpreted relative to the worktree — that
+        # is the form coding-done produces when the agent records a
+        # worktree-local artifact; without this, ``resolve`` would
+        # anchor on the orchestrator's CWD and always fail containment.
+        if not candidate_raw.is_absolute():
+            candidate_raw = worktree_resolved / candidate_raw
+        candidate = candidate_raw.resolve()
+    except (OSError, RuntimeError) as exc:
+        logger.warning(
+            "validation_record_path %r could not be resolved: %s",
+            record_path,
+            exc,
+        )
+        return None
+    expected_root = worktree_resolved / _VALIDATION_CONTAINMENT_SUBDIR
+    try:
+        candidate.relative_to(expected_root)
+    except ValueError:
+        logger.warning(
+            "validation_record_path %s resolves outside the worktree "
+            "containment root %s; refusing to attach",
+            candidate,
+            expected_root,
+        )
+        return None
+    if not candidate.exists():
+        logger.info(
+            "validation_record_path %s does not exist; skipping attach",
+            candidate,
+        )
+        return None
+    if not candidate.is_file():
+        logger.warning(
+            "validation_record_path %s is not a regular file; refusing to attach",
+            candidate,
+        )
+        return None
+    return candidate
+
+
 class CompletionProcessor:
     """Process agent completion records and execute requested actions.
 
@@ -653,11 +725,15 @@ class CompletionProcessor:
 
         session_name = self.session_output.session_name_from_path(completion_path) or record.session_id
         if record.validation_record_path and session_name:
-            self._attach_validation_artifacts(
-                worktree,
-                session_name,
-                record_path=Path(record.validation_record_path),
+            contained = _contain_validation_record_path(
+                record.validation_record_path, worktree
             )
+            if contained is not None:
+                self._attach_validation_artifacts(
+                    worktree,
+                    session_name,
+                    record_path=contained,
+                )
         if session_name:
             run_dir = self.session_output.find_run_dir(worktree, session_name)
             if run_dir:
