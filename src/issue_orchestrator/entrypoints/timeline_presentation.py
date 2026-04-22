@@ -28,6 +28,7 @@ from ..execution.manifest_accessor import (
     ManifestAccessor,
     RunIdentity,
 )
+from ..execution.timeline_artifact_expectations import event_requires_run_dir
 from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION, TIMELINE_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -715,13 +716,19 @@ def _is_agent_scoped_event(event: dict[str, Any], event_name: str) -> bool:
 
 def _event_supports_review_transcript(event: dict[str, Any], event_name: str) -> bool:
     """Return True when a review event has structured exchange transcript context."""
+    return _is_review_oriented_timeline_event(event, event_name)
+
+
+def _is_review_oriented_timeline_event(event: dict[str, Any], event_name: str) -> bool:
+    """Return True when timeline presentation should treat an event as review work."""
     task = str(event.get("task") or "").strip().lower()
     intent = str(event.get("event_intent") or "")
-    if intent == EventIntent.REVIEW.value:
-        return True
-    if event_name.startswith("review_exchange."):
-        return True
-    return bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task)
+    return (
+        intent == EventIntent.REVIEW.value
+        or bool(event.get("review_oriented"))
+        or event_name.startswith("review_exchange.")
+        or is_review_oriented_event(event_name=event_name, task=task)
+    )
 
 
 def _positive_int(value: Any) -> int | None:
@@ -814,7 +821,13 @@ def _preferred_run_scoped_session_action(
                 role=str(context["session_role"]),
                 allow_empty=True,
             )
-        except ArtifactNotFoundError:
+        except ArtifactNotFoundError as exc:
+            if event_requires_run_dir(event_name):
+                raise RuntimeError(
+                    "timeline review phase recording missing: "
+                    f"issue={issue_number} event={event_name} run_dir={run_dir} "
+                    f"round_index={context['round_index']} role={context['session_role']}"
+                ) from exc
             return None
         action.update(context)
     dedupe_parts = ["agent", str(issue_number)]
@@ -830,12 +843,7 @@ def _preferred_run_scoped_session_action(
 def _timeline_event_requires_run_dir(event: dict[str, Any]) -> bool:
     """Return True when a timeline event is expected to be tied to a run directory."""
     event_name = str(event.get("event") or "")
-    return (
-        event_name in _TIMELINE_START_EVENTS
-        or is_session_event_name(event_name)
-        or bool(event.get("review_oriented"))
-        or is_rework_event_name(event_name)
-    )
+    return event_requires_run_dir(event_name)
 
 
 def _agent_log_label_for_event(event: dict[str, Any]) -> str:
@@ -843,7 +851,7 @@ def _agent_log_label_for_event(event: dict[str, Any]) -> str:
     event_name = str(event.get("event") or "")
     task = str(event.get("task") or "").strip().lower()
     intent = str(event.get("event_intent") or "")
-    if intent == EventIntent.REVIEW.value or bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task):
+    if _is_review_oriented_timeline_event(event, event_name):
         return "View Reviewer Session Recording"
     if intent == EventIntent.REWORK.value or is_rework_event_name(event_name) or task == "rework":
         return "View Rework Session Recording"

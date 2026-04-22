@@ -13,6 +13,9 @@ from issue_orchestrator.execution.timeline_store import (
     SqliteTimelineStore,
     TimelineStoreConfig,
 )
+from issue_orchestrator.execution.timeline_artifact_expectations import (
+    REVIEW_PHASE_LOG_TIMELINE_EVENTS,
+)
 from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.ports.timeline_store import TimelineRecord, TimelineStore
@@ -476,6 +479,8 @@ class TestNarrativeEnrichment:
         store = RecordingTimelineStore()
         writer = DefaultTimelineWriter(store)
         data.setdefault("issue_number", 42)
+        if event_name.value in REVIEW_PHASE_LOG_TIMELINE_EVENTS:
+            data.setdefault("run_dir", "/tmp/review-phase-run")
         writer.record(TraceEvent(event_name, data))
         for r in store.records:
             if r.data.get("narrative"):

@@ -5,6 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+REVIEW_PHASE_LOG_TIMELINE_EVENTS: frozenset[str] = frozenset({
+    "review_exchange.round_started",
+    "review_exchange.round_completed",
+    "review.rework_started",
+    "review.rework_completed",
+})
+
 RUN_SCOPED_TIMELINE_EVENTS: frozenset[str] = frozenset({
     "session.started",
     "session.processing_completed",
@@ -13,7 +20,7 @@ RUN_SCOPED_TIMELINE_EVENTS: frozenset[str] = frozenset({
     "session.validation_failed",
     "review.started",
     "rework.started",
-})
+}) | REVIEW_PHASE_LOG_TIMELINE_EVENTS
 
 
 def event_requires_run_dir(event_name: str) -> bool:
