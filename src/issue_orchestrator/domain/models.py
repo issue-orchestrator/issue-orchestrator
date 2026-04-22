@@ -161,6 +161,10 @@ _COMPLETION_TIMESTAMP_MAX = 64
 _COMPLETION_OPTION_MAX_BYTES = 1 * 1024
 _COMPLETION_LIST_OF_STRINGS_MAX_ITEMS = 100
 _COMPLETION_BLOCKED_BY_MAX_ITEMS = 50
+# RequestedAction is a closed enum with ~10 members, so legitimate
+# completions never carry more than a handful. Cap generously to reject
+# clearly abusive input without hard-coding the exact enum size.
+_COMPLETION_REQUESTED_ACTIONS_MAX = 50
 
 _PR_LABEL_MAX_LENGTH = 50  # GitHub's own limit
 _PR_LABEL_MAX_COUNT = 20
@@ -223,10 +227,21 @@ def _check_required_string(name: str, value: Any, *, max_bytes: int) -> str:
 def _check_validation_record_path(value: Any) -> str | None:
     """Static validation for ``validation_record_path``.
 
-    The value is produced by agent-side validation machinery and later used to
-    read/copy a file. We reject absolute paths, parent-directory traversal,
-    and null bytes here; downstream consumers are still responsible for
-    verifying containment within the actual worktree before opening the file.
+    The value is produced by agent-side validation machinery (see
+    ``AgentGate.run`` in ``control/validation.py``, which currently
+    records ``str(self.store.get_record_path(head_sha))`` — an
+    absolute path rooted at the worktree). We can't meaningfully
+    enforce relative-only here without breaking the orchestrator's
+    own producer, so the static checks are limited to:
+
+    - non-empty string, no null bytes, bounded size
+    - no ``..`` segments (cheap traversal guard)
+
+    Runtime containment — "the resolved path must live inside the
+    worktree's ``.issue-orchestrator`` directory" — belongs in the
+    consumer (``completion_processor._attach_validation_artifacts``),
+    which has both the worktree path and the ability to resolve
+    symlinks and re-check containment against the real filesystem.
     """
     if value is None:
         return None
@@ -239,8 +254,6 @@ def _check_validation_record_path(value: Any) -> str | None:
     if len(value.encode("utf-8")) > _COMPLETION_STRING_MAX_BYTES:
         raise ValueError("validation_record_path is too long")
     normalized = PurePosixPath(value.replace("\\", "/"))
-    if normalized.is_absolute() or value.startswith("/") or value.startswith("\\"):
-        raise ValueError("validation_record_path must be a relative path")
     if any(part == ".." for part in normalized.parts):
         raise ValueError(
             "validation_record_path must not contain '..' path segments"
@@ -494,8 +507,16 @@ class CompletionRecord:
         except ValueError:
             raise ValueError(f"Invalid outcome: {data['outcome']}")
 
+        raw_actions = data.get("requested_actions", [])
+        if not isinstance(raw_actions, list):
+            raise ValueError("requested_actions must be a list")
+        if len(raw_actions) > _COMPLETION_REQUESTED_ACTIONS_MAX:
+            raise ValueError(
+                f"requested_actions exceeds maximum count "
+                f"({len(raw_actions)} > {_COMPLETION_REQUESTED_ACTIONS_MAX})"
+            )
         requested_actions = []
-        for action in data.get("requested_actions", []):
+        for action in raw_actions:
             try:
                 requested_actions.append(RequestedAction(action))
             except ValueError:

@@ -17,6 +17,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _DIRTY_FILES_REASON_LIMIT = 8
 
+# Hard cap on the completion record file size before we call ``json.load``.
+# Real records are <= a few KB; anything approaching this cap is almost
+# certainly abusive or broken. Checking the file size first prevents a
+# hostile agent from exhausting memory / CPU by writing, say, a 500 MB
+# JSON blob and forcing the orchestrator's parser to walk it. Matches the
+# per-field cap in CompletionRecord.from_dict so a well-formed record
+# cannot exceed a small multiple of this.
+#
+# 2 MiB is roughly two orders of magnitude above the largest legitimate
+# completion we have seen; tighten further if we ever shrink per-field
+# caps.
+_MAX_COMPLETION_FILE_BYTES = 2 * 1024 * 1024
+
 
 class CompletionValidationGitAdapter(Protocol):
     def get_current_branch(self, worktree: Path) -> str | None: ...
@@ -45,6 +58,23 @@ class CompletionRecordValidator:
 
         if not record_path.exists():
             logger.info("No completion record found at %s", record_path)
+            return None
+
+        # Size-gate before json.load so an abusive agent cannot force the
+        # orchestrator to walk a massive blob before any field-level
+        # validation runs. See #6017 / review comment P2.
+        try:
+            size = record_path.stat().st_size
+        except OSError as exc:
+            logger.error("Could not stat completion record %s: %s", record_path, exc)
+            return None
+        if size > _MAX_COMPLETION_FILE_BYTES:
+            logger.error(
+                "Completion record %s is %d bytes, exceeds max %d",
+                record_path,
+                size,
+                _MAX_COMPLETION_FILE_BYTES,
+            )
             return None
 
         try:

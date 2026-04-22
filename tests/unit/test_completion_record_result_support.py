@@ -1,8 +1,12 @@
 """Direct tests for completion record/result support seams."""
 
+import json
 from pathlib import Path
 
-from issue_orchestrator.control.completion_record_validation import CompletionRecordValidator
+from issue_orchestrator.control.completion_record_validation import (
+    CompletionRecordValidator,
+    _MAX_COMPLETION_FILE_BYTES,
+)
 from issue_orchestrator.control.completion_result_artifacts import build_pr_body
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from issue_orchestrator.infra.config import Config
@@ -121,3 +125,83 @@ def test_validate_worktree_state_allows_non_push_actions_on_main(tmp_path: Path)
 
     assert ok
     assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# Review comment P2 on #6008: size-gate the record file before json.load so
+# a hostile agent cannot exhaust memory with a huge blob.
+# ---------------------------------------------------------------------------
+
+
+def _write_record(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+
+
+def test_read_completion_record_rejects_oversize_file(tmp_path: Path) -> None:
+    validator = CompletionRecordValidator(
+        config=None, git_adapter=FakeGitAdapter()
+    )
+    record_path = tmp_path / ".issue-orchestrator" / "completion.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_bytes(b"{" + b"a" * _MAX_COMPLETION_FILE_BYTES + b"}")
+
+    result = validator.read_completion_record(tmp_path)
+
+    assert result is None
+
+
+def test_read_completion_record_accepts_reasonable_size(tmp_path: Path) -> None:
+    validator = CompletionRecordValidator(
+        config=None, git_adapter=FakeGitAdapter()
+    )
+    record_path = tmp_path / ".issue-orchestrator" / "completion.json"
+    _write_record(
+        record_path,
+        {
+            "session_id": "session-1",
+            "timestamp": "2026-04-22T00:00:00Z",
+            "outcome": CompletionOutcome.COMPLETED.value,
+            "summary": "done",
+            "requested_actions": [RequestedAction.CREATE_PR.value],
+        },
+    )
+
+    result = validator.read_completion_record(tmp_path)
+
+    assert result is not None
+    assert result.outcome == CompletionOutcome.COMPLETED
+
+
+def test_read_completion_record_accepts_absolute_validation_path(
+    tmp_path: Path,
+) -> None:
+    """End-to-end regression for #6008 P1: AgentGate writes an absolute path.
+
+    The old parser rejected absolute ``validation_record_path`` values and
+    returned ``None``, breaking every validated completion. Pin the
+    corrected behaviour.
+    """
+    validator = CompletionRecordValidator(
+        config=None, git_adapter=FakeGitAdapter()
+    )
+    record_path = tmp_path / ".issue-orchestrator" / "completion.json"
+    absolute_validation = str(
+        tmp_path / ".issue-orchestrator" / "validation" / "deadbeef.json"
+    )
+    _write_record(
+        record_path,
+        {
+            "session_id": "session-1",
+            "timestamp": "2026-04-22T00:00:00Z",
+            "outcome": CompletionOutcome.COMPLETED.value,
+            "summary": "done",
+            "requested_actions": [RequestedAction.CREATE_PR.value],
+            "validation_record_path": absolute_validation,
+        },
+    )
+
+    result = validator.read_completion_record(tmp_path)
+
+    assert result is not None
+    assert result.validation_record_path == absolute_validation

@@ -33,7 +33,15 @@ def _minimal_payload(**overrides: Any) -> dict[str, Any]:
 
 
 class TestValidationRecordPath:
-    """F1 — reject path traversal and absolute paths."""
+    """F1 — static checks reject traversal + null bytes.
+
+    The full "must live inside the worktree" containment check is
+    enforced at the consumer (``completion_processor``) because this
+    layer has no knowledge of the actual worktree path. Absolute
+    paths are accepted here because that is exactly what
+    ``AgentGate.run`` writes today (``str(store.get_record_path(...))``
+    resolves to an absolute path under the worktree).
+    """
 
     def test_happy_path_relative(self):
         rec = CompletionRecord.from_dict(
@@ -45,17 +53,23 @@ class TestValidationRecordPath:
             ".issue-orchestrator/validation-record.json"
         )
 
-    def test_rejects_absolute_posix(self):
-        with pytest.raises(ValueError, match="relative"):
-            CompletionRecord.from_dict(
-                _minimal_payload(validation_record_path="/etc/passwd")
-            )
+    def test_accepts_absolute_path_from_agent_gate(self):
+        """Regression for review comment P1 on #6008.
 
-    def test_rejects_absolute_windows_like(self):
-        with pytest.raises(ValueError, match="relative"):
-            CompletionRecord.from_dict(
-                _minimal_payload(validation_record_path="\\etc\\passwd")
+        AgentGate writes an absolute path at ``validation.py:582``;
+        rejecting absolute paths here broke every validated
+        completion with agent_gate enabled.
+        """
+        rec = CompletionRecord.from_dict(
+            _minimal_payload(
+                validation_record_path=(
+                    "/tmp/wt/.issue-orchestrator/validation/abc123.json"
+                ),
             )
+        )
+        assert rec.validation_record_path == (
+            "/tmp/wt/.issue-orchestrator/validation/abc123.json"
+        )
 
     def test_rejects_parent_traversal(self):
         with pytest.raises(ValueError, match="'\\.\\.'"):
@@ -78,6 +92,14 @@ class TestValidationRecordPath:
             CompletionRecord.from_dict(
                 _minimal_payload(
                     validation_record_path="..\\..\\other\\secret.json"
+                )
+            )
+
+    def test_rejects_absolute_with_dotdot(self):
+        with pytest.raises(ValueError, match="'\\.\\.'"):
+            CompletionRecord.from_dict(
+                _minimal_payload(
+                    validation_record_path="/tmp/wt/../etc/passwd"
                 )
             )
 
@@ -267,6 +289,29 @@ class TestFollowUpIssuesBounds:
             CompletionRecord.from_dict(
                 _minimal_payload(follow_up_issues=[item])
             )
+
+
+class TestRequestedActionsBounds:
+    """Review comment P2 on #6008 — requested_actions was uncapped."""
+
+    def test_accepts_reasonable_count(self):
+        payload = _minimal_payload(
+            requested_actions=["create_pr", "post_comment"],
+        )
+        rec = CompletionRecord.from_dict(payload)
+        assert len(rec.requested_actions) == 2
+
+    def test_rejects_oversized(self):
+        payload = _minimal_payload(
+            requested_actions=["create_pr"] * 100,
+        )
+        with pytest.raises(ValueError, match="requested_actions exceeds"):
+            CompletionRecord.from_dict(payload)
+
+    def test_rejects_non_list(self):
+        payload = _minimal_payload(requested_actions="create_pr")
+        with pytest.raises(ValueError, match="requested_actions must be a list"):
+            CompletionRecord.from_dict(payload)
 
 
 class TestListBounds:
