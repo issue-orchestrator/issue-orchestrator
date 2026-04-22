@@ -20,6 +20,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from issue_orchestrator.contracts.ui_openapi_models import (
     E2ERunDetailPayload,
     E2ERunTimelinePayload,
+    IssueDetailActionPayload,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -312,6 +313,13 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
 
     _validator("E2ERunDetailPayload").validate(payload)
     E2ERunDetailPayload.model_validate(payload)
+
+
+def test_issue_detail_action_payload_accepts_null_optional_url() -> None:
+    payload = {"id": "focus", "label": "Focus", "url": None}
+
+    _validator("IssueDetailActionPayload").validate(payload)
+    IssueDetailActionPayload.model_validate(payload)
 
 
 def test_e2e_run_detail_payload_rejects_untyped_detail_fields() -> None:

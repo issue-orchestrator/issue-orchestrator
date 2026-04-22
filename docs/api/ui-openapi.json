@@ -568,7 +568,7 @@
         "properties": {
           "id": {"type": "string"},
           "label": {"type": "string"},
-          "url": {"type": "string"},
+          "url": {"type": ["string", "null"]},
           "run_dir": {"type": ["string", "null"]}
         }
       },

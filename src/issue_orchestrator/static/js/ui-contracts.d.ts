@@ -326,7 +326,7 @@ export interface IssueDetailActionPayload {
   id: string;
   label: string;
   run_dir?: string | null;
-  url?: string;
+  url?: string | null;
 }
 
 export interface IssueDetailBlockedDetailPayload {
