@@ -171,18 +171,25 @@ class E2EFailureDetailsMissingPayload(BaseModel):
     diagnostics: list[TimelineDiagnosticPayload]
     kind: Literal['missing_evidence']
 
+class E2EIssueAffordancePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    branch_name: str | None = None
+    issue_number: int
+    label: str | None = None
+    run_id: int
+
 class E2ERunDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[dict[str, Any]]
     blocked_detail: dict[str, Any] | None
-    cycles: list[dict[str, Any]]
+    cycles: list[E2ETimelineCyclePayload]
     e2e_run_id: int | None = None
-    events: list[dict[str, Any]]
-    issue_affordances: list[dict[str, Any]]
+    events: list[E2ETimelineEventPayload]
+    issue_affordances: list[E2EIssueAffordancePayload]
     issue_number: int | str
     issue_url: str
     lifecycle: LifecycleTimelineContainerPayload
-    phase_toc: list[dict[str, Any]]
+    phase_toc: list[E2ETimelinePhaseTocItemPayload]
     previous_runs: list[dict[str, Any]]
     previous_runs_count: int
     raw_events_count: int
@@ -212,17 +219,82 @@ class E2ERunLifecyclePayload(BaseModel):
 
 class E2ERunTimelinePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    cycles: list[dict[str, Any]]
-    events: list[dict[str, Any]]
-    issue_affordances: list[dict[str, Any]]
+    cycles: list[E2ETimelineCyclePayload]
+    events: list[E2ETimelineEventPayload]
+    issue_affordances: list[E2EIssueAffordancePayload]
     lifecycle: LifecycleTimelineContainerPayload
-    phase_toc: list[dict[str, Any]]
+    phase_toc: list[E2ETimelinePhaseTocItemPayload]
 
 class E2ESuiteTimelineContainerPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['e2e_suite']
     runs: list[E2ERunIterationPayload]
     subject: TimelineSubjectPayload
+
+class E2ETimelineArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    type: str
+    value: str
+
+class E2ETimelineCyclePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cycle: int
+    end: str | None
+    events: list[E2ETimelineEventPayload]
+    phases: list[str]
+    start: str | None
+    status: str
+    summary: str
+
+class E2ETimelineEventPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    added: list[str] | None = None
+    agent: str | None = None
+    artifacts: list[E2ETimelineArtifactPayload]
+    coder_response_text: str | None = None
+    coder_response_type: str | None = None
+    detail: str | None
+    duration_seconds: float | None = None
+    event: str
+    event_id: str
+    event_intent: str
+    issue_affordances: list[E2EIssueAffordancePayload] | None = None
+    issue_number: int
+    level: str
+    logical_cycle: int | None = None
+    logical_phase: str | None = None
+    logical_run: int | None = None
+    longrepr: str | None = None
+    narrative: str | None = None
+    nodeid: str | None = None
+    outcome: str | None = None
+    parent_key: str
+    phase: str
+    removed: list[str] | None = None
+    review_oriented: bool
+    reviewer_agent: str | None = None
+    reviewer_response_text: str | None = None
+    reviewer_response_type: str | None = None
+    rework_cycle: int | None = None
+    round_index: int | None = None
+    rounds: int | None = None
+    run_dir: str | None
+    run_id: str | None
+    source_event: str | None = None
+    status: str
+    step: str
+    summary: str | None
+    task: str | None = None
+    timeline_schema_version: int | None = None
+    timestamp: str
+    unsupported_schema: bool
+    views: list[str] | None = None
+
+class E2ETimelinePhaseTocItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    phase: str
 
 class FailedCodingAttemptPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

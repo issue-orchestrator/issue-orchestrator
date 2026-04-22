@@ -161,17 +161,24 @@ export interface E2EFailureDetailsMissingPayload {
   kind: "missing_evidence";
 }
 
+export interface E2EIssueAffordancePayload {
+  branch_name?: string;
+  issue_number: number;
+  label?: string;
+  run_id: number;
+}
+
 export interface E2ERunDetailPayload {
   actions: Record<string, any>[];
   blocked_detail: Record<string, any> | null;
-  cycles: Record<string, any>[];
+  cycles: E2ETimelineCyclePayload[];
   e2e_run_id?: number | null;
-  events: Record<string, any>[];
-  issue_affordances: Record<string, any>[];
+  events: E2ETimelineEventPayload[];
+  issue_affordances: E2EIssueAffordancePayload[];
   issue_number: number | string;
   issue_url: string;
   lifecycle: LifecycleTimelineContainerPayload;
-  phase_toc: Record<string, any>[];
+  phase_toc: E2ETimelinePhaseTocItemPayload[];
   previous_runs: Record<string, any>[];
   previous_runs_count: number;
   raw_events_count: number;
@@ -201,17 +208,82 @@ export interface E2ERunLifecyclePayload {
 }
 
 export interface E2ERunTimelinePayload {
-  cycles: Record<string, any>[];
-  events: Record<string, any>[];
-  issue_affordances: Record<string, any>[];
+  cycles: E2ETimelineCyclePayload[];
+  events: E2ETimelineEventPayload[];
+  issue_affordances: E2EIssueAffordancePayload[];
   lifecycle: LifecycleTimelineContainerPayload;
-  phase_toc: Record<string, any>[];
+  phase_toc: E2ETimelinePhaseTocItemPayload[];
 }
 
 export interface E2ESuiteTimelineContainerPayload {
   kind: "e2e_suite";
   runs: E2ERunIterationPayload[];
   subject: TimelineSubjectPayload;
+}
+
+export interface E2ETimelineArtifactPayload {
+  label: string;
+  type: string;
+  value: string;
+}
+
+export interface E2ETimelineCyclePayload {
+  cycle: number;
+  end: string | null;
+  events: E2ETimelineEventPayload[];
+  phases: string[];
+  start: string | null;
+  status: string;
+  summary: string;
+}
+
+export interface E2ETimelineEventPayload {
+  added?: string[];
+  agent?: string;
+  artifacts: E2ETimelineArtifactPayload[];
+  coder_response_text?: string;
+  coder_response_type?: string;
+  detail: string | null;
+  duration_seconds?: number;
+  event: string;
+  event_id: string;
+  event_intent: string;
+  issue_affordances?: E2EIssueAffordancePayload[];
+  issue_number: number;
+  level: string;
+  logical_cycle?: number;
+  logical_phase?: string;
+  logical_run?: number;
+  longrepr?: string;
+  narrative?: string;
+  nodeid?: string;
+  outcome?: string;
+  parent_key: string;
+  phase: string;
+  removed?: string[];
+  review_oriented: boolean;
+  reviewer_agent?: string;
+  reviewer_response_text?: string;
+  reviewer_response_type?: string;
+  rework_cycle?: number;
+  round_index?: number;
+  rounds?: number;
+  run_dir: string | null;
+  run_id: string | null;
+  source_event?: string;
+  status: string;
+  step: string;
+  summary: string | null;
+  task?: string;
+  timeline_schema_version?: number;
+  timestamp: string;
+  unsupported_schema: boolean;
+  views?: string[];
+}
+
+export interface E2ETimelinePhaseTocItemPayload {
+  label: string;
+  phase: string;
 }
 
 export interface FailedCodingAttemptPayload {

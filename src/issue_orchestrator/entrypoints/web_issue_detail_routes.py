@@ -271,6 +271,7 @@ async def get_issue_detail(
 @web_issue_detail_router.get(
     "/api/e2e-run-detail/{run_id}",
     response_model=E2ERunDetailPayload,
+    response_model_exclude_unset=True,
 )
 async def get_e2e_run_detail(
     run_id: int,

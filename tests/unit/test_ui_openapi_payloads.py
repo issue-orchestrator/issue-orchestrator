@@ -16,6 +16,7 @@ warnings.filterwarnings(
 
 from jsonschema import Draft202012Validator, RefResolver
 
+from issue_orchestrator.contracts.ui_openapi_models import E2ERunTimelinePayload
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
     AgentConfig,
@@ -88,6 +89,44 @@ def _validator(component: str) -> Draft202012Validator:
     data = __import__("json").loads(schema)
     resolver = RefResolver.from_schema(data)
     return Draft202012Validator(data["components"]["schemas"][component], resolver=resolver)
+
+
+def _e2e_timeline_event(**overrides: object) -> dict[str, object]:
+    event: dict[str, object] = {
+        "event_id": "event:e2e-test",
+        "timestamp": "2026-04-21T11:00:00Z",
+        "event": "e2e.test_completed",
+        "issue_number": -88,
+        "phase": "execution",
+        "step": "test_completed",
+        "status": "completed",
+        "level": "info",
+        "summary": "tests/e2e/test_example.py::test_passes: passed",
+        "parent_key": "e2e-run-88",
+        "detail": None,
+        "run_id": None,
+        "run_dir": None,
+        "artifacts": [],
+        "unsupported_schema": False,
+        "review_oriented": False,
+        "event_intent": "system",
+        "nodeid": "tests/e2e/test_example.py::test_passes",
+        "outcome": "passed",
+    }
+    event.update(overrides)
+    return event
+
+
+def _e2e_timeline_cycle(*events: dict[str, object]) -> dict[str, object]:
+    return {
+        "cycle": 1,
+        "start": "2026-04-21T11:00:00Z",
+        "end": "2026-04-21T11:02:00Z",
+        "status": "completed",
+        "phases": ["execution"],
+        "events": list(events),
+        "summary": "E2E execution",
+    }
 
 
 def test_dashboard_view_model_matches_ui_openapi() -> None:
@@ -194,15 +233,56 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
 
 
 def test_e2e_run_timeline_payload_matches_ui_openapi() -> None:
+    event = _e2e_timeline_event(
+        issue_affordances=[{"issue_number": 12, "run_id": 88, "label": "fixture"}],
+    )
     payload = {
-        "events": [{"event": "e2e.test_completed", "status": "completed"}],
+        "events": [event],
+        "phase_toc": [{"phase": "execution", "label": "Execution"}],
+        "cycles": [_e2e_timeline_cycle(event)],
+        "issue_affordances": [{"issue_number": 12, "run_id": 88}],
+        "lifecycle": model_to_plain_dict(_e2e_container()),
+    }
+
+    _validator("E2ERunTimelinePayload").validate(payload)
+    E2ERunTimelinePayload.model_validate(payload)
+
+
+def test_e2e_run_timeline_payload_rejects_untyped_aggregate_fields() -> None:
+    event = _e2e_timeline_event(unexpected_event_field=True)
+    payload = {
+        "events": [event],
         "phase_toc": [{"phase": "execution", "label": "Execution"}],
         "cycles": [],
         "issue_affordances": [{"issue_number": 12, "run_id": 88}],
         "lifecycle": model_to_plain_dict(_e2e_container()),
     }
 
-    _validator("E2ERunTimelinePayload").validate(payload)
+    errors = list(_validator("E2ERunTimelinePayload").iter_errors(payload))
+
+    assert any(
+        "unexpected_event_field" in error.message and "Additional properties" in error.message
+        for error in errors
+    )
+
+
+def test_e2e_run_timeline_payload_rejects_untyped_cycle_and_affordance_fields() -> None:
+    event = _e2e_timeline_event()
+    payload = {
+        "events": [event],
+        "phase_toc": [{"phase": "execution", "label": "Execution"}],
+        "cycles": [_e2e_timeline_cycle(event) | {"unexpected_cycle_field": True}],
+        "issue_affordances": [
+            {"issue_number": 12, "run_id": 88, "unexpected_affordance_field": True},
+        ],
+        "lifecycle": model_to_plain_dict(_e2e_container()),
+    }
+
+    errors = list(_validator("E2ERunTimelinePayload").iter_errors(payload))
+    messages = "\n".join(error.message for error in errors)
+
+    assert "unexpected_cycle_field" in messages
+    assert "unexpected_affordance_field" in messages
 
 
 def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
@@ -210,7 +290,7 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
         issue_number="e2e-run:88",
         title="E2E Run #88",
         issue_url="",
-        events=[{"event": "e2e.test_completed", "status": "completed"}],
+        events=[_e2e_timeline_event()],
         phase_toc=[{"phase": "execution", "label": "Execution"}],
         cycles=[],
     )

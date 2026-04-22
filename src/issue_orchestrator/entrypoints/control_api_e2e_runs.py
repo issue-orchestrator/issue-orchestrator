@@ -457,7 +457,10 @@ def _e2e_run_lifecycle_payload(
 
 
 def _validated_e2e_run_timeline_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return E2ERunTimelinePayload.model_validate(payload).model_dump(mode="json")
+    return E2ERunTimelinePayload.model_validate(payload).model_dump(
+        mode="json",
+        exclude_unset=True,
+    )
 
 
 @control_e2e_runs_router.get("/control/e2e/logs/{run_id}")

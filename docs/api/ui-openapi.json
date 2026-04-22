@@ -568,9 +568,9 @@
           "e2e_run_id": {"type": ["integer", "null"]},
           "title": {"type": "string"},
           "issue_url": {"type": "string"},
-          "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
-          "cycles": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
-          "events": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "phase_toc": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelinePhaseTocItemPayload"}},
+          "cycles": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineCyclePayload"}},
+          "events": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineEventPayload"}},
           "summary": {"type": "object", "additionalProperties": true},
           "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "status_explanation": {"type": "string"},
@@ -581,7 +581,7 @@
           "previous_runs_count": {"type": "integer"},
           "raw_events_count": {"type": "integer"},
           "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
-          "issue_affordances": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "issue_affordances": {"type": "array", "items": {"$ref": "#/components/schemas/E2EIssueAffordancePayload"}},
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
           "view": {"type": "string", "default": "user"}
         }
@@ -1375,15 +1375,125 @@
         ],
         "discriminator": {"propertyName": "kind"}
       },
+      "E2EIssueAffordancePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "run_id"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "run_id": {"type": "integer"},
+          "label": {"type": "string"},
+          "branch_name": {"type": "string"}
+        }
+      },
+      "E2ETimelineArtifactPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "label", "value"],
+        "properties": {
+          "type": {"type": "string"},
+          "label": {"type": "string"},
+          "value": {"type": "string"}
+        }
+      },
+      "E2ETimelineEventPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "timestamp",
+          "event",
+          "issue_number",
+          "phase",
+          "step",
+          "status",
+          "level",
+          "summary",
+          "parent_key",
+          "detail",
+          "run_id",
+          "run_dir",
+          "artifacts",
+          "unsupported_schema",
+          "review_oriented",
+          "event_intent"
+        ],
+        "properties": {
+          "event_id": {"type": "string"},
+          "timestamp": {"type": "string"},
+          "event": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "phase": {"type": "string"},
+          "step": {"type": "string"},
+          "status": {"type": "string"},
+          "level": {"type": "string"},
+          "summary": {"type": ["string", "null"]},
+          "parent_key": {"type": "string"},
+          "detail": {"type": ["string", "null"]},
+          "run_id": {"type": ["string", "null"]},
+          "run_dir": {"type": ["string", "null"]},
+          "artifacts": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineArtifactPayload"}},
+          "unsupported_schema": {"type": "boolean"},
+          "review_oriented": {"type": "boolean"},
+          "event_intent": {"type": "string"},
+          "agent": {"type": "string"},
+          "task": {"type": "string"},
+          "rework_cycle": {"type": "integer"},
+          "reviewer_agent": {"type": "string"},
+          "added": {"type": "array", "items": {"type": "string"}},
+          "removed": {"type": "array", "items": {"type": "string"}},
+          "timeline_schema_version": {"type": "integer"},
+          "logical_run": {"type": "integer"},
+          "logical_cycle": {"type": "integer"},
+          "logical_phase": {"type": "string"},
+          "source_event": {"type": "string"},
+          "views": {"type": "array", "items": {"type": "string"}},
+          "narrative": {"type": "string"},
+          "round_index": {"type": "integer"},
+          "rounds": {"type": "integer"},
+          "reviewer_response_type": {"type": "string"},
+          "reviewer_response_text": {"type": "string"},
+          "coder_response_type": {"type": "string"},
+          "coder_response_text": {"type": "string"},
+          "nodeid": {"type": "string"},
+          "outcome": {"type": "string"},
+          "longrepr": {"type": "string"},
+          "duration_seconds": {"type": "number"},
+          "issue_affordances": {"type": "array", "items": {"$ref": "#/components/schemas/E2EIssueAffordancePayload"}}
+        }
+      },
+      "E2ETimelinePhaseTocItemPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "label"],
+        "properties": {
+          "phase": {"type": "string"},
+          "label": {"type": "string"}
+        }
+      },
+      "E2ETimelineCyclePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cycle", "start", "end", "status", "phases", "events", "summary"],
+        "properties": {
+          "cycle": {"type": "integer"},
+          "start": {"type": ["string", "null"]},
+          "end": {"type": ["string", "null"]},
+          "status": {"type": "string"},
+          "phases": {"type": "array", "items": {"type": "string"}},
+          "events": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineEventPayload"}},
+          "summary": {"type": "string"}
+        }
+      },
       "E2ERunTimelinePayload": {
         "type": "object",
         "additionalProperties": false,
         "required": ["events", "phase_toc", "cycles", "issue_affordances", "lifecycle"],
         "properties": {
-          "events": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
-          "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
-          "cycles": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
-          "issue_affordances": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "events": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineEventPayload"}},
+          "phase_toc": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelinePhaseTocItemPayload"}},
+          "cycles": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineCyclePayload"}},
+          "issue_affordances": {"type": "array", "items": {"$ref": "#/components/schemas/E2EIssueAffordancePayload"}},
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"}
         }
       },
