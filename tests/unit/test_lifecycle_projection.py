@@ -134,6 +134,313 @@ def _complete_issue_lifecycle():
     )
 
 
+def _project_first_issue_cycle(
+    events: tuple[dict[str, object], ...],
+    *,
+    review_required: bool = False,
+):
+    lifecycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=events,
+        cycles=[{"cycle": 1, "events": list(events)}],
+        review_required=review_required,
+    )
+    return lifecycle.cycles[0]
+
+
+def _coding_validation_kind(cycle) -> str | None:
+    coder = cycle.coder
+    if isinstance(coder, CompletedCodingAttempt | PublishFailedCodingAttempt):
+        return coder.validation.kind
+    return None
+
+
+def _missing_evidence_names(stage: object) -> tuple[str, ...]:
+    missing = getattr(stage, "missing", ())
+    return tuple(item.evidence for item in missing)
+
+
+def _diagnostic_codes(stage: object) -> tuple[str, ...]:
+    diagnostics = getattr(stage, "diagnostics", ())
+    return tuple(diagnostic.code for diagnostic in diagnostics)
+
+
+def _stage_command_kinds(stage: object) -> tuple[str, ...]:
+    commands = getattr(stage, "commands", ())
+    return command_kinds(commands)
+
+
+def _cycle_summary(cycle) -> dict[str, object]:
+    return {
+        "cycle_number": cycle.cycle_number,
+        "outcome": cycle.outcome,
+        "coder_kind": cycle.coder.kind,
+        "review_kind": cycle.review.kind,
+        "validation_kind": _coding_validation_kind(cycle),
+        "coder_commands": _stage_command_kinds(cycle.coder),
+        "review_commands": _stage_command_kinds(cycle.review),
+        "coder_started_at": getattr(cycle.coder, "started_at", None),
+        "coder_completed_at": getattr(cycle.coder, "completed_at", None),
+        "review_started_at": getattr(cycle.review, "started_at", None),
+        "review_completed_at": getattr(cycle.review, "completed_at", None),
+    }
+
+
+def _issue_lifecycle_summary(lifecycle) -> dict[str, object]:
+    return {
+        "issue_number": lifecycle.issue_number,
+        "cycle_count": len(lifecycle.cycles),
+        "cycles": tuple(_cycle_summary(cycle) for cycle in lifecycle.cycles),
+    }
+
+
+def _approved_review_event() -> dict[str, object]:
+    return _event(
+        "review.approved",
+        event_id="review-approved",
+        timestamp="2026-04-21T12:18:00Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-1",
+        actions=[{"type": "open_review_transcript"}],
+    )
+
+
+def _lifecycle_state_matrix_cases() -> tuple[dict[str, object], ...]:
+    started, completed, validation, review_start, changes_requested = _complete_issue_events()
+    validation_failed = _event(
+        "validation.failed",
+        event_id="validation-failed",
+        timestamp="2026-04-21T12:12:00Z",
+        agent="agent:validator",
+        run_dir="/tmp/run-1",
+        summary="pytest failed",
+        artifacts=[_artifact("validation", "/tmp/run-1/validation.json")],
+    )
+    publish_failed = _event(
+        "publish.failed",
+        event_id="publish-failed",
+        timestamp="2026-04-21T12:20:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Push rejected",
+    )
+    blocked = _event(
+        "agent.blocked",
+        event_id="coding-blocked",
+        timestamp="2026-04-21T12:10:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Need product decision",
+    )
+    failed = _event(
+        "session.failed",
+        event_id="coding-failed",
+        timestamp="2026-04-21T12:10:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Session failed",
+    )
+    review_failed = _event(
+        "review_exchange.failed",
+        event_id="review-failed",
+        timestamp="2026-04-21T12:18:00Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-1",
+        summary="Reviewer crashed",
+    )
+    review_skipped = _event(
+        "review.skipped",
+        event_id="review-skipped",
+        timestamp="2026-04-21T12:18:00Z",
+        summary="Review disabled for fixture",
+    )
+    completion_without_record = _event(
+        "agent.coding_completed",
+        event_id="coding-done-no-record",
+        timestamp="2026-04-21T12:10:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Implemented the fix",
+    )
+    validation_without_record = _event(
+        "validation.passed",
+        event_id="validation-without-record",
+        timestamp="2026-04-21T12:12:00Z",
+        agent="agent:validator",
+        run_dir="/tmp/run-1",
+        summary="pytest passed",
+    )
+    return (
+        {
+            "name": "completed_review_approved",
+            "events": (started, completed, validation, review_start, _approved_review_event()),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_approved",
+                "validation_kind": "passed",
+                "outcome": "approved",
+                "coder_commands": (
+                    "show_event_details",
+                    "open_completion_record",
+                    "open_session_recording",
+                ),
+                "review_commands": ("show_event_details",),
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewApproved),
+        },
+        {
+            "name": "running_coder",
+            "events": (started,),
+            "expected": {
+                "coder_kind": "running_coding_attempt",
+                "review_kind": "review_not_reached",
+                "validation_kind": None,
+                "outcome": "in_progress",
+                "coder_commands": ("show_event_details", "open_session_recording"),
+                "review_reason": "coding_in_progress",
+            },
+            "expected_types": (RunningCodingAttempt, ReviewNotReached),
+        },
+        {
+            "name": "blocked_coder",
+            "events": (started, blocked),
+            "expected": {
+                "coder_kind": "blocked_coding_attempt",
+                "review_kind": "review_not_reached",
+                "validation_kind": None,
+                "outcome": "blocked",
+                "review_reason": "coding_failed",
+            },
+            "expected_types": (BlockedCodingAttempt, ReviewNotReached),
+        },
+        {
+            "name": "failed_coder",
+            "events": (started, failed),
+            "expected": {
+                "coder_kind": "failed_coding_attempt",
+                "review_kind": "review_not_reached",
+                "validation_kind": None,
+                "outcome": "failed",
+                "review_reason": "coding_failed",
+            },
+            "expected_types": (FailedCodingAttempt, ReviewNotReached),
+        },
+        {
+            "name": "publish_failed_after_completion",
+            "events": (started, completed, validation, publish_failed),
+            "expected": {
+                "coder_kind": "publish_failed_coding_attempt",
+                "review_kind": "review_not_reached",
+                "validation_kind": "passed",
+                "outcome": "publish_failed",
+                "coder_diagnostics": ("publish.failed",),
+                "review_reason": "publish_failed",
+            },
+            "expected_types": (PublishFailedCodingAttempt, ReviewNotReached),
+        },
+        {
+            "name": "validation_failed",
+            "events": (started, completed, validation_failed),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_not_reached",
+                "validation_kind": "failed",
+                "outcome": "completed",
+                "review_reason": "validation_failed",
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewNotReached),
+        },
+        {
+            "name": "review_running",
+            "events": (started, completed, validation, review_start),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_running",
+                "validation_kind": "passed",
+                "outcome": "review_in_progress",
+                "review_commands": ("show_event_details",),
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewRunning),
+        },
+        {
+            "name": "review_changes_requested",
+            "events": (started, completed, validation, review_start, changes_requested),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_changes_requested",
+                "validation_kind": "passed",
+                "outcome": "changes_requested",
+                "review_commands": ("show_event_details", "open_review_feedback"),
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewChangesRequested),
+        },
+        {
+            "name": "review_failed",
+            "events": (started, completed, validation, review_start, review_failed),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_failed",
+                "validation_kind": "passed",
+                "outcome": "review_failed",
+                "review_diagnostics": ("review.failed",),
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewFailed),
+        },
+        {
+            "name": "review_skipped",
+            "events": (started, completed, validation, review_skipped),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_skipped",
+                "validation_kind": "passed",
+                "outcome": "review_skipped",
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewSkipped),
+        },
+        {
+            "name": "missing_coding_completion_record",
+            "events": (started, completion_without_record),
+            "expected": {
+                "coder_kind": "missing_coding_evidence",
+                "review_kind": "review_not_reached",
+                "validation_kind": None,
+                "outcome": "missing_coding_evidence",
+                "coder_missing": ("completion_record",),
+                "coder_diagnostics": ("coding.completion_record.missing",),
+                "review_reason": "coding_failed",
+            },
+            "expected_types": (MissingCodingEvidence, ReviewNotReached),
+        },
+        {
+            "name": "missing_validation_record",
+            "events": (started, completed, validation_without_record),
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "review_not_reached",
+                "validation_kind": "missing_evidence",
+                "outcome": "completed",
+                "review_reason": "not_required",
+            },
+            "expected_types": (CompletedCodingAttempt, ReviewNotReached),
+        },
+        {
+            "name": "missing_required_review",
+            "events": (started, completed, validation),
+            "review_required": True,
+            "expected": {
+                "coder_kind": "completed_coding_attempt",
+                "review_kind": "missing_review_evidence",
+                "validation_kind": "passed",
+                "outcome": "missing_review_evidence",
+                "review_missing": ("review_stage",),
+                "review_diagnostics": ("review.review_stage.missing",),
+            },
+            "expected_types": (CompletedCodingAttempt, MissingReviewEvidence),
+        },
+    )
+
+
 def test_projection_builds_completed_coder_review_and_validation_children() -> None:
     lifecycle = _complete_issue_lifecycle()
 
@@ -699,7 +1006,85 @@ def test_issue_lifecycle_rejects_mixed_logical_cycle_annotations() -> None:
             title="Timeline regression",
             events=[logical_event, legacy_event],
             cycles=[],
-        )
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    _lifecycle_state_matrix_cases(),
+    ids=lambda case: str(case["name"]),
+)
+def test_lifecycle_projection_state_matrix_preserves_distinct_public_states(
+    case: dict[str, object],
+) -> None:
+    cycle = _project_first_issue_cycle(
+        case["events"],
+        review_required=bool(case.get("review_required", False)),
+    )
+    expected = case["expected"]
+    expected_coder_type, expected_review_type = case["expected_types"]
+
+    assert isinstance(cycle.coder, expected_coder_type)
+    assert isinstance(cycle.review, expected_review_type)
+    assert cycle.coder.kind == expected["coder_kind"]
+    assert cycle.review.kind == expected["review_kind"]
+    assert _coding_validation_kind(cycle) == expected["validation_kind"]
+    assert cycle.outcome == expected["outcome"]
+
+    if "coder_commands" in expected:
+        assert _stage_command_kinds(cycle.coder) == expected["coder_commands"]
+    if "review_commands" in expected:
+        assert _stage_command_kinds(cycle.review) == expected["review_commands"]
+    if "coder_missing" in expected:
+        assert _missing_evidence_names(cycle.coder) == expected["coder_missing"]
+    if "review_missing" in expected:
+        assert _missing_evidence_names(cycle.review) == expected["review_missing"]
+    if "coder_diagnostics" in expected:
+        assert _diagnostic_codes(cycle.coder) == expected["coder_diagnostics"]
+    if "review_diagnostics" in expected:
+        assert _diagnostic_codes(cycle.review) == expected["review_diagnostics"]
+    if "review_reason" in expected:
+        assert isinstance(cycle.review, ReviewNotReached)
+        assert cycle.review.reason == expected["review_reason"]
+
+
+def test_dashboard_and_e2e_parent_models_project_congruent_issue_lifecycle() -> None:
+    issue_events = tuple(dict(event, issue_number=5723) for event in _complete_issue_events())
+    e2e_events = (
+        _event(
+            "e2e.test_started",
+            event_id="test-start",
+            timestamp="2026-04-21T12:30:00Z",
+            nodeid="tests/e2e/test_timeline.py::test_timeline",
+        ),
+        _event(
+            "e2e.test_completed",
+            event_id="test-done",
+            timestamp="2026-04-21T12:30:05Z",
+            nodeid="tests/e2e/test_timeline.py::test_timeline",
+            outcome="passed",
+            issue_affordances=[{"issue_number": 5723, "run_id": 88}],
+        ),
+    )
+
+    dashboard = project_dashboard_lifecycle_container(
+        subject_label="Dashboard",
+        issue_number=5723,
+        title="Timeline regression",
+        events=issue_events,
+        cycles=[],
+        review_required=True,
+    )
+    e2e_suite = project_e2e_suite_lifecycle_container_for_run(
+        run_id=88,
+        events=e2e_events,
+        agent_events=issue_events,
+        subject_label="E2E",
+    )
+
+    dashboard_issue = dashboard.current.issue_lifecycles[0]
+    e2e_issue = e2e_suite.runs[0].e2e_run.linked_issue_lifecycles[0]
+    assert _issue_lifecycle_summary(dashboard_issue) == _issue_lifecycle_summary(e2e_issue)
 
 
 def test_e2e_projection_builds_passed_and_failed_tests() -> None:
