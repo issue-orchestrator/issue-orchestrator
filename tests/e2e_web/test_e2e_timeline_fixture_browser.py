@@ -165,16 +165,21 @@ def _write_review_phase_terminal_recording(
     payload = base64.b64encode(
         f"browser fixture {role} round {round_index}\n".encode(),
     ).decode("ascii")
+    events = [
+        {
+            "event_type": "resize",
+            "offset_ms": 0,
+            "rows": 30,
+            "cols": 120,
+        },
+        {
+            "event_type": "output",
+            "offset_ms": 1,
+            "data_b64": payload,
+        },
+    ]
     recording.write_text(
-        json.dumps(
-            {
-                "event_type": "output",
-                "offset_ms": 0,
-                "data_b64": payload,
-            },
-            sort_keys=True,
-        )
-        + "\n",
+        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
         encoding="utf-8",
     )
 
@@ -243,7 +248,9 @@ def _materialize_fixture_run_dirs(worktree_db: Path, run_dir_root: Path) -> None
             ORDER BY sequence ASC
             """
         ):
-            rows.append((int(sequence), str(event_name), str(run_dir), str(data_json or "{}")))
+            rows.append(
+                (int(sequence), str(event_name), str(run_dir), str(data_json or "{}"))
+            )
 
         replacements: dict[str, Path] = {}
         for _sequence, _event_name, original_run_dir, _data_json in rows:
@@ -462,7 +469,9 @@ def _expect_parseable_time_text(page: Page, locator: Locator, description: str) 
     return text
 
 
-def _expect_all_parseable_time_texts(page: Page, locator: Locator, description: str) -> list[str]:
+def _expect_all_parseable_time_texts(
+    page: Page, locator: Locator, description: str
+) -> list[str]:
     """Assert every matching timestamp element is visible and parseable."""
     expect(locator.first).to_be_visible(timeout=5000)
     items = locator.all()
@@ -510,26 +519,60 @@ def _dom_click_hit_tested(locator: Locator, description: str) -> None:
 
 def _browser_fetch_json(page: Page, url: str) -> dict[str, Any]:
     """Fetch JSON through the browser so assertions cover the page's contract surface."""
-    result = page.evaluate(
-        """
-        async (url) => {
-            const response = await fetch(url);
-            const text = await response.text();
-            let payload = null;
-            try {
-                payload = JSON.parse(text);
-            } catch (err) {
-                return {
-                    ok: response.ok,
-                    status: response.status,
-                    parseError: String(err),
-                    text,
-                };
+    result: dict[str, Any] | None = None
+    for attempt in range(3):
+        result = page.evaluate(
+            """
+            async (url) => {
+                let response = null;
+                try {
+                    response = await fetch(url, { cache: "no-store" });
+                } catch (err) {
+                    return {
+                        ok: false,
+                        status: 0,
+                        fetchError: String(err),
+                    };
+                }
+                const text = await response.text();
+                let payload = null;
+                try {
+                    payload = JSON.parse(text);
+                } catch (err) {
+                    return {
+                        ok: response.ok,
+                        status: response.status,
+                        parseError: String(err),
+                        text,
+                    };
+                }
+                return { ok: response.ok, status: response.status, payload };
             }
-            return { ok: response.ok, status: response.status, payload };
-        }
-        """,
-        url,
+            """,
+            url,
+        )
+        assert isinstance(result, dict), f"browser fetch returned {result!r}"
+        if "fetchError" not in result or attempt == 2:
+            break
+        page.evaluate(
+            """
+            ({ url, attempt, error }) => {
+                console.warn(
+                    `Retrying browser fetch ${attempt}/3 for ${url}: ${error}`
+                );
+            }
+            """,
+            {
+                "url": url,
+                "attempt": attempt + 1,
+                "error": result["fetchError"],
+            },
+        )
+        page.wait_for_timeout(250)
+
+    assert result is not None
+    assert "fetchError" not in result, (
+        f"browser fetch failed for {url}: {result['fetchError']}"
     )
     assert result["ok"], (
         f"browser fetch failed for {url}: status={result['status']} "
@@ -540,7 +583,9 @@ def _browser_fetch_json(page: Page, url: str) -> dict[str, Any]:
         f"body={result.get('text')!r}"
     )
     payload = result["payload"]
-    assert isinstance(payload, dict), f"browser fetch returned non-object JSON: {payload!r}"
+    assert isinstance(payload, dict), (
+        f"browser fetch returned non-object JSON: {payload!r}"
+    )
     return payload
 
 
@@ -613,8 +658,7 @@ def _linked_issue_lifecycle_from_suite(
         for command in first_cycle.coder.commands
     )
     assert any(
-        command.kind == "show_event_details"
-        for command in first_cycle.review.commands
+        command.kind == "show_event_details" for command in first_cycle.review.commands
     )
 
     return (
@@ -670,7 +714,7 @@ def _expected_rendered_step_narratives(detail_payload: dict[str, Any]) -> list[s
             ]
             for group in phase_groups:
                 for step in group.get("steps", []):
-                    narratives.append(str(step["narrative"]))
+                    narratives.append(str(step["narrative"]).strip())
     assert narratives, "issue detail payload should render at least one journey step"
     return narratives
 
@@ -703,7 +747,9 @@ def _assert_issue_detail_dom_matches_payload(
 
     rendered_narratives = [
         text.strip()
-        for text in journey.locator(".journey-step .journey-narrative").all_text_contents()
+        for text in journey.locator(
+            ".journey-step .journey-narrative"
+        ).all_text_contents()
     ]
     expected_narratives = _expected_rendered_step_narratives(detail_payload)
     assert rendered_narratives == expected_narratives, (
@@ -750,6 +796,17 @@ def _assert_issue_drawer_counts_match_payload(
     assert "Loading issue detail" not in status_text
     assert "Issue detail unavailable" not in status_text
     assert "Failed to load" not in status_text
+    _assert_issue_detail_dom_matches_payload(
+        page,
+        journey,
+        detail_payload,
+        expected_cycle_count=expected_cycles,
+    )
+    _expect_all_parseable_time_texts(
+        page,
+        journey.locator(".journey-step .journey-time"),
+        "issue-detail drawer step timestamp",
+    )
 
 
 def test_run_drawer_timeline_renders_clickable_issue_links(
@@ -909,7 +966,9 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
             issue_number=issue_number,
         )
         page.locator("#issueDetailCloseBtn").click()
-        expect(page.locator("#issueDetailDrawer.visible")).to_have_count(0, timeout=5000)
+        expect(page.locator("#issueDetailDrawer.visible")).to_have_count(
+            0, timeout=5000
+        )
 
     # --- Ask 4: prove the Timeline tab actually rendered real event data ---
     # Find the specific test_4057 event card by its summary text. If the
@@ -940,7 +999,8 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(details_trigger).to_be_visible(timeout=5000)
     details_trigger.click()
     details_action = test_4057_event.locator(
-        ".timeline-detail-action", has_text="Event Details",
+        ".timeline-detail-action",
+        has_text="Event Details",
     ).first
     expect(details_action).to_be_visible(timeout=5000)
     action_payload = details_action.get_attribute("data-action") or ""
@@ -969,10 +1029,12 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     test_4057_links = test_4057_event.locator(".timeline-issue-links a")
     expect(test_4057_links).to_have_count(2, timeout=5000)
     link_texts = sorted(test_4057_links.all_text_contents())
-    expected_texts = sorted([
-        f"{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})",
-        f"{TEST_CLICK_ISSUE_LABEL_2} ({TEST_CLICK_ISSUE_NUMBER_2})",
-    ])
+    expected_texts = sorted(
+        [
+            f"{TEST_CLICK_ISSUE_LABEL} ({TEST_CLICK_ISSUE_NUMBER})",
+            f"{TEST_CLICK_ISSUE_LABEL_2} ({TEST_CLICK_ISSUE_NUMBER_2})",
+        ]
+    )
     assert link_texts == expected_texts, (
         f"test_4057 row should carry {expected_texts!r} but got {link_texts!r}"
     )
@@ -982,10 +1044,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         title = link.get_attribute("title") or ""
         assert title.startswith(f"{TEST_CLICK_ISSUE_NUMBER}-") or title.startswith(
             f"{TEST_CLICK_ISSUE_NUMBER_2}-"
-        ), (
-            f"test_4057 affordance is missing its full branch_name title: "
-            f"got {title!r}"
-        )
+        ), f"test_4057 affordance is missing its full branch_name title: got {title!r}"
 
     # --- Ask 2: negative assertion on a neighboring row ---
     # test_inflight_refresh_discovers_issue carries ONLY issue 5723 per
@@ -1115,8 +1174,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         f"or another element is covering it: {hit_result!r}"
     )
     assert not hit_result.get("inDrawer"), (
-        f"drawer is intercepting clicks meant for #timelineModal: "
-        f"{hit_result!r}"
+        f"drawer is intercepting clicks meant for #timelineModal: {hit_result!r}"
     )
 
     # Dismiss the timeline modal via its close button and verify the
@@ -1157,19 +1215,23 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # so every interaction layer above is reachable without dismissing
     # the one beneath. We verify that invariant here.
     expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(
-        1, timeout=5000,
+        1,
+        timeout=5000,
     )
 
     session_recording_menu = journey.locator(
         ".timeline-event-menu",
         has=page.locator(".timeline-action-btn", has_text="Session Recording"),
     ).first
-    expect(session_recording_menu.locator(".timeline-event-menu-trigger")).to_be_visible(
+    expect(
+        session_recording_menu.locator(".timeline-event-menu-trigger")
+    ).to_be_visible(
         timeout=5000,
     )
     session_recording_menu.locator(".timeline-event-menu-trigger").click()
     session_recording_btn = session_recording_menu.locator(
-        ".timeline-action-btn", has_text="Session Recording",
+        ".timeline-action-btn",
+        has_text="Session Recording",
     ).first
     expect(session_recording_btn).to_be_visible(timeout=5000)
     session_recording_btn.scroll_into_view_if_needed()
@@ -1181,7 +1243,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     session_replay_path = page.locator("#sessionReplayPath")
     expect(session_replay_path).to_be_visible(timeout=5000)
     session_path_text = session_replay_path.text_content() or ""
-    assert "session1" in session_path_text and "terminal-recording.jsonl" in session_path_text, (
+    assert (
+        "session1" in session_path_text
+        and "terminal-recording.jsonl" in session_path_text
+    ), (
         f"session replay path does not reference the synthetic recording: "
         f"{session_path_text!r}"
     )
@@ -1290,6 +1355,24 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
             ],
         },
         {
+            "event_id": "unhappy-coding-running",
+            "timestamp": "2026-04-21T13:02:00Z",
+            "event": "agent.coding_started",
+            "phase": "coding",
+            "step": "started",
+            "status": "in_progress",
+            "summary": "Running coder: implementation in progress",
+        },
+        {
+            "event_id": "unhappy-coding-failed",
+            "timestamp": "2026-04-21T13:04:00Z",
+            "event": "agent.failed",
+            "phase": "coding",
+            "step": "failed",
+            "status": "failed",
+            "summary": "Failed coder: session exited with error",
+        },
+        {
             "event_id": "unhappy-publish",
             "timestamp": "2026-04-21T13:05:00Z",
             "event": "publish.failed",
@@ -1308,6 +1391,15 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
             "summary": "Review running: reviewer session active",
         },
         {
+            "event_id": "unhappy-review-changes",
+            "timestamp": "2026-04-21T13:12:00Z",
+            "event": "review.changes_requested",
+            "phase": "review",
+            "step": "changes_requested",
+            "status": "changes_requested",
+            "summary": "Review changes requested: add a regression test",
+        },
+        {
             "event_id": "unhappy-review-failed",
             "timestamp": "2026-04-21T13:15:00Z",
             "event": "review_exchange.failed",
@@ -1315,6 +1407,33 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
             "step": "failed",
             "status": "failed",
             "summary": "Review failed: reviewer crashed",
+        },
+        {
+            "event_id": "unhappy-review-skipped",
+            "timestamp": "2026-04-21T13:17:00Z",
+            "event": "review.skipped",
+            "phase": "review",
+            "step": "skipped",
+            "status": "skipped",
+            "summary": "Review skipped: review disabled for this issue",
+        },
+        {
+            "event_id": "unhappy-review-not-reached",
+            "timestamp": "2026-04-21T13:18:00Z",
+            "event": "semantic.review_not_reached",
+            "phase": "review",
+            "step": "not_reached",
+            "status": "not_started",
+            "summary": "Review not reached: coding failed first",
+        },
+        {
+            "event_id": "unhappy-missing-coding",
+            "timestamp": "2026-04-21T13:19:00Z",
+            "event": "semantic.missing_coding_evidence",
+            "phase": "diagnostics",
+            "step": "missing_coding_evidence",
+            "status": "failed",
+            "summary": "Missing coding evidence: no coding start event",
         },
         {
             "event_id": "unhappy-missing-evidence",
@@ -1333,6 +1452,15 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
                     "error_messages": ["completion_record missing"],
                 }
             ],
+        },
+        {
+            "event_id": "unhappy-missing-review",
+            "timestamp": "2026-04-21T13:22:00Z",
+            "event": "semantic.missing_review_evidence",
+            "phase": "diagnostics",
+            "step": "missing_review_evidence",
+            "status": "failed",
+            "summary": "Missing review evidence: required review stage absent",
         },
     ]
     render_result = page.evaluate(
@@ -1378,15 +1506,29 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
     rendered_text = render_result["text"]
     for expected_text in (
         "Blocked coder: waiting for product decision",
+        "Running coder: implementation in progress",
+        "Failed coder: session exited with error",
         "Publish failed: push rejected",
         "Review running: reviewer session active",
+        "Review changes requested: add a regression test",
         "Review failed: reviewer crashed",
+        "Review skipped: review disabled for this issue",
+        "Review not reached: coding failed first",
+        "Missing coding evidence: no coding start event",
         "Missing evidence: completion_record was not emitted",
+        "Missing review evidence: required review stage absent",
         "Validation Failed",
     ):
         assert expected_text in rendered_text
 
     synthetic = page.locator("#synthetic-unhappy-timeline")
+    rendered_summaries = [
+        text.strip()
+        for text in synthetic.locator(".timeline-summary").all_text_contents()
+    ]
+    assert rendered_summaries == [
+        str(event["summary"]) for event in synthetic_events
+    ], "synthetic timeline events should render in payload order"
     _expect_all_parseable_time_texts(
         page,
         synthetic.locator(".timeline-time"),
