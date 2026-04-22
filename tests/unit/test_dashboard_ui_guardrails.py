@@ -1029,6 +1029,23 @@ def test_e2e_timeline_view_switcher_refetches() -> None:
     assert "renderE2ETimeline" in body
 
 
+def test_dashboard_and_e2e_ui_preserve_lifecycle_payloads() -> None:
+    js = _read(DASHBOARD_JS)
+    e2e_body = _function_body(js, "normalizeE2ETimelineData")
+    render_e2e_body = _function_body(js, "renderE2ETimeline")
+    issue_detail_body = _function_body(js, "renderIssueDetail")
+    dataset_body = _function_body(js, "applyLifecycleDataset")
+
+    assert "lifecycle" in e2e_body
+    assert "applyLifecycleDataset(container, tl.lifecycle)" in render_e2e_body
+    assert "applyLifecycleDataset(issueDetailDrawer, d.lifecycle || null)" in issue_detail_body
+    assert "LIFECYCLE_DATASET_KEYS" in js
+    assert "window.LIFECYCLE_DATASET_KEYS = LIFECYCLE_DATASET_KEYS" in js
+    assert "dataset[LIFECYCLE_DATASET_KEYS.kind]" in dataset_body
+    assert "dataset[LIFECYCLE_DATASET_KEYS.iterations]" in dataset_body
+    assert "throw new Error('Lifecycle payload missing kind')" in dataset_body
+
+
 def test_timeline_children_render_with_full_treatment() -> None:
     """renderTimelineChildren renders phase groups, actions, artifacts, and detail."""
     js = _read(DASHBOARD_JS)

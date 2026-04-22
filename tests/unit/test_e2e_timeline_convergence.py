@@ -1037,7 +1037,10 @@ class TestE2ERunDetailEndpoint:
             # Run 1 click-through must see ONLY run 1's event.
             r1 = client.get(f"/api/e2e-run/{run_1}/issue-detail/42?view=debug")
             assert r1.status_code == 200, r1.text
-            r1_ids = {e.get("event_id") for e in (r1.json().get("events") or [])}
+            r1_payload = r1.json()
+            assert r1_payload["e2e_run_id"] == run_1
+            assert r1_payload["lifecycle"]["kind"] == "dashboard"
+            r1_ids = {e.get("event_id") for e in (r1_payload.get("events") or [])}
             assert "run1-evt" in r1_ids, (
                 f"run 1 event missing from run 1 drawer: ids={r1_ids}"
             )
@@ -1049,7 +1052,10 @@ class TestE2ERunDetailEndpoint:
             # Run 2 click-through must see ONLY run 2's event.
             r2 = client.get(f"/api/e2e-run/{run_2}/issue-detail/42?view=debug")
             assert r2.status_code == 200, r2.text
-            r2_ids = {e.get("event_id") for e in (r2.json().get("events") or [])}
+            r2_payload = r2.json()
+            assert r2_payload["e2e_run_id"] == run_2
+            assert r2_payload["lifecycle"]["kind"] == "dashboard"
+            r2_ids = {e.get("event_id") for e in (r2_payload.get("events") or [])}
             assert "run2-evt" in r2_ids, (
                 f"run 2 event missing from run 2 drawer: ids={r2_ids}"
             )
@@ -1438,6 +1444,10 @@ class TestE2ETimelineControlEndpoint:
         assert len(payload["events"]) == 2
         assert "phase_toc" in payload
         assert "cycles" in payload
+        assert payload["lifecycle"]["kind"] == "e2e_suite"
+        test_model = payload["lifecycle"]["runs"][0]["e2e_run"]["tests"][0]
+        assert test_model["kind"] == "missing_e2e_test_evidence"
+        assert test_model["diagnostics"][0]["code"] == "e2e.tests_missing"
         assert isinstance(payload["phase_toc"], list)
         assert isinstance(payload["cycles"], list)
         # phase_toc should have setup and teardown phases
@@ -1507,6 +1517,9 @@ class TestE2ETimelineControlEndpoint:
         assert test_started.get("issue_affordances") == [
             {"issue_number": 42, "run_id": 1},
         ]
+        assert payload["lifecycle"]["kind"] == "e2e_suite"
+        linked_lifecycles = payload["lifecycle"]["runs"][0]["e2e_run"]["linked_issue_lifecycles"]
+        assert [item["issue_number"] for item in linked_lifecycles] == [42]
         # No nested children — frontend opens issue detail via openIssueDetail
         assert test_started.get("children", []) == []
 
@@ -1654,12 +1667,13 @@ class TestE2ETimelineControlEndpoint:
             params={"repo_root": str(tmp_path)},
         )
         assert response.status_code == 200
-        assert response.json() == {
-            "events": [],
-            "phase_toc": [],
-            "cycles": [],
-            "issue_affordances": [],
-        }
+        payload = response.json()
+        assert payload["events"] == []
+        assert payload["phase_toc"] == []
+        assert payload["cycles"] == []
+        assert payload["issue_affordances"] == []
+        assert payload["lifecycle"]["kind"] == "e2e_suite"
+        assert payload["lifecycle"]["runs"][0]["e2e_run"]["tests"][0]["kind"] == "missing_e2e_test_evidence"
 
     def test_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
         """Full endpoint repro through the worktree-fallback agent-events route.
@@ -1981,7 +1995,7 @@ class TestCheckE2ECompletion:
 
         with patch("issue_orchestrator.infra.orchestrator.get_e2e_runner_manager", return_value=mock_runner):
             from issue_orchestrator.infra.orchestrator import Orchestrator
-            Orchestrator._check_e2e_completion(mock_orch)
+            Orchestrator._check_e2e_completion(mock_orch)  # noqa: SLF001 - targeted legacy hook test
 
         return mock_orch
 

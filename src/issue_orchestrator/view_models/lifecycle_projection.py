@@ -8,8 +8,9 @@ exercise the UI.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from .lifecycle_semantics import (
     AgentIdentity,
@@ -41,12 +42,17 @@ from .lifecycle_semantics import (
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
     PassedE2ETestExecution,
+    PublishFailedCodingAttempt,
     ReviewApproved,
     ReviewChangesRequested,
+    ReviewFailed,
     ReviewNotReached,
     ReviewRunning,
     ReviewSkipped,
     ReviewStage,
+    ReviewTranscriptAvailable,
+    ReviewTranscriptEvidence,
+    ReviewTranscriptUnavailable,
     RunningCodingAttempt,
     RunningE2ETestExecution,
     SessionRecordingAvailable,
@@ -66,6 +72,8 @@ from .lifecycle_semantics import (
 )
 
 EventDict = Mapping[str, Any]
+CodingExpectedState = Literal["completed", "running", "blocked", "failed"]
+ReviewExpectedState = Literal["approved", "changes_requested", "running"]
 
 _CODING_START_EVENTS = frozenset({
     "agent.coding_started",
@@ -85,8 +93,8 @@ _CODING_FAILED_EVENTS = frozenset({
     "agent.timed_out",
     "session.failed",
     "session.timeout",
-    "publish.failed",
 })
+_CODING_PUBLISH_FAILED_EVENTS = frozenset({"publish.failed"})
 _VALIDATION_PASSED_EVENTS = frozenset({"validation.passed", "session.validation_passed"})
 _VALIDATION_FAILED_EVENTS = frozenset({
     "validation.failed",
@@ -101,6 +109,7 @@ _REVIEW_START_EVENTS = frozenset({
 _REVIEW_APPROVED_EVENTS = frozenset({"review.approved"})
 _REVIEW_CHANGES_REQUESTED_EVENTS = frozenset({"review.changes_requested"})
 _REVIEW_SKIPPED_EVENTS = frozenset({"review.skipped"})
+_REVIEW_FAILED_EVENTS = frozenset({"review_exchange.failed"})
 _E2E_TEST_STARTED = "e2e.test_started"
 _E2E_TEST_COMPLETED = "e2e.test_completed"
 
@@ -152,7 +161,7 @@ def project_issue_lifecycle(
 ) -> IssueLifecycle:
     """Project issue timeline cycles into explicit coder/reviewer child models."""
     projected_cycles: list[IssueCycle] = []
-    for index, cycle in enumerate(cycles, start=1):
+    for index, cycle in enumerate(_semantic_cycle_inputs(events, cycles), start=1):
         cycle_events = _cycle_events(cycle, events)
         cycle_number = _positive_int(cycle.get("cycle"), default=index)
         coder = _project_coder(
@@ -182,6 +191,30 @@ def project_issue_lifecycle(
     )
 
 
+def project_issue_lifecycles_from_events(
+    events: Sequence[EventDict],
+    *,
+    title_prefix: str = "Issue",
+    review_required: bool = False,
+) -> tuple[IssueLifecycle, ...]:
+    """Project mixed issue events into one lifecycle per issue number."""
+    events_by_issue: dict[int, list[EventDict]] = defaultdict(list)
+    for event in events:
+        issue_number = event.get("issue_number")
+        if isinstance(issue_number, int) and issue_number > 0:
+            events_by_issue[issue_number].append(event)
+    return tuple(
+        project_issue_lifecycle(
+            issue_number=issue_number,
+            title=f"{title_prefix} #{issue_number}",
+            events=issue_events,
+            cycles=(),
+            review_required=review_required,
+        )
+        for issue_number, issue_events in sorted(events_by_issue.items())
+    )
+
+
 def project_e2e_suite_lifecycle_container(
     *,
     subject_label: str,
@@ -198,6 +231,30 @@ def project_e2e_suite_lifecycle_container(
     )
     require_lifecycle_container_valid(container)
     return container
+
+
+def project_e2e_suite_lifecycle_container_for_run(
+    *,
+    run_id: int,
+    events: Sequence[EventDict],
+    agent_events: Sequence[EventDict],
+    subject_label: str = "E2E Suite",
+) -> E2ESuiteTimelineContainer:
+    """Build the suite container for one E2E run and its linked issue lifecycles."""
+    linked_issue_lifecycles = project_issue_lifecycles_from_events(
+        agent_events,
+        title_prefix="E2E Issue",
+    )
+    return project_e2e_suite_lifecycle_container(
+        subject_label=subject_label,
+        runs=(
+            project_e2e_run_iteration(
+                run_id=run_id,
+                events=events,
+                linked_issue_lifecycles=linked_issue_lifecycles,
+            ),
+        ),
+    )
 
 
 def project_e2e_run_iteration(
@@ -242,7 +299,10 @@ def require_lifecycle_container_valid(container: TimelineContainer) -> None:
 def _cycle_events(cycle: EventDict, all_events: Sequence[EventDict]) -> tuple[EventDict, ...]:
     raw = cycle.get("events")
     if isinstance(raw, list):
-        return tuple(event for event in raw if isinstance(event, Mapping))
+        events = tuple(event for event in raw if isinstance(event, Mapping))
+        if not _has_coding_lifecycle_signal(events) and _has_coding_lifecycle_signal(all_events):
+            return tuple(event for event in all_events if isinstance(event, Mapping))
+        return events
     cycle_number = cycle.get("cycle")
     if isinstance(cycle_number, int):
         return tuple(
@@ -252,6 +312,83 @@ def _cycle_events(cycle: EventDict, all_events: Sequence[EventDict]) -> tuple[Ev
     return tuple(event for event in all_events if isinstance(event, Mapping))
 
 
+def _has_coding_lifecycle_signal(events: Sequence[EventDict]) -> bool:
+    signal_events = _CODING_START_EVENTS | _CODING_COMPLETED_EVENTS | _CODING_BLOCKED_EVENTS | _CODING_FAILED_EVENTS
+    return any(
+        _event_name(event) in signal_events and not _is_review_completion_observation(event)
+        for event in events
+    )
+
+
+def _has_review_lifecycle_signal(events: Sequence[EventDict]) -> bool:
+    signal_events = (
+        _REVIEW_START_EVENTS
+        | _REVIEW_APPROVED_EVENTS
+        | _REVIEW_CHANGES_REQUESTED_EVENTS
+        | _REVIEW_SKIPPED_EVENTS
+        | _REVIEW_FAILED_EVENTS
+    )
+    return any(_event_name(event) in signal_events for event in events)
+
+
+def _semantic_cycle_inputs(
+    events: Sequence[EventDict],
+    cycles: Sequence[EventDict],
+) -> tuple[EventDict, ...]:
+    real_cycles = tuple(cycle for cycle in cycles if isinstance(cycle, Mapping))
+    if real_cycles:
+        return real_cycles
+    logical_cycles = _semantic_cycle_inputs_from_logical_fields(events)
+    if logical_cycles:
+        return logical_cycles
+    if events:
+        return ({"cycle": 1, "events": list(events), "status": "observed"},)
+    return ({"cycle": 1, "events": [], "status": "missing_evidence"},)
+
+
+def _semantic_cycle_inputs_from_logical_fields(events: Sequence[EventDict]) -> tuple[EventDict, ...]:
+    grouped: dict[tuple[int, int], list[EventDict]] = defaultdict(list)
+    saw_logical_cycle_fields = False
+    saw_legacy_event = False
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        logical_run = event.get("logical_run")
+        logical_cycle = event.get("logical_cycle")
+        if logical_run is None and logical_cycle is None:
+            if saw_logical_cycle_fields:
+                raise LifecycleProjectionError(
+                    "timeline events must not mix logical cycle fields with legacy events"
+                )
+            saw_legacy_event = True
+            continue
+        if saw_legacy_event:
+            raise LifecycleProjectionError(
+                "timeline events must not mix logical cycle fields with legacy events"
+            )
+        saw_logical_cycle_fields = True
+        if not isinstance(logical_run, int) or logical_run <= 0:
+            raise LifecycleProjectionError("timeline event logical_run must be a positive integer")
+        if not isinstance(logical_cycle, int) or logical_cycle <= 0:
+            raise LifecycleProjectionError("timeline event logical_cycle must be a positive integer")
+        grouped[(logical_run, logical_cycle)].append(event)
+
+    if not saw_logical_cycle_fields:
+        return ()
+
+    return tuple(
+        {
+            "cycle": index,
+            "events": list(group_events),
+            "status": "observed",
+        }
+        for index, group_events in enumerate(
+            (grouped[key] for key in sorted(grouped)),
+            start=1,
+        )
+    )
+
+
 def _project_coder(
     *,
     issue_number: int,
@@ -259,33 +396,55 @@ def _project_coder(
     events: Sequence[EventDict],
 ) -> CodingAttempt:
     start = _first_event(events, _CODING_START_EVENTS)
-    completed = _last_event(events, _CODING_COMPLETED_EVENTS)
-    blocked = _last_event(events, _CODING_BLOCKED_EVENTS)
-    failed = _last_event(events, _CODING_FAILED_EVENTS)
-    observed = _event_timestamp(completed or blocked or failed or start)
+    terminal = _last_coding_terminal_event(events)
+    observed = _event_timestamp(terminal or start)
 
-    if completed is not None:
+    if terminal is not None and _event_name(terminal) in _CODING_COMPLETED_EVENTS:
         return _completed_coder_attempt(
             issue_number=issue_number,
             events=events,
             start=start,
-            completed=completed,
+            completed=terminal,
             observed_at=observed,
         )
 
-    if blocked is not None:
+    if terminal is not None and _event_name(terminal) in _CODING_BLOCKED_EVENTS:
         return _blocked_coder_attempt(
             issue_number=issue_number,
             start=start,
-            blocked=blocked,
+            blocked=terminal,
             observed_at=observed,
         )
 
-    if failed is not None:
+    if terminal is not None and _event_name(terminal) in _CODING_PUBLISH_FAILED_EVENTS:
+        return _publish_failed_coder_attempt(
+            issue_number=issue_number,
+            events=events,
+            start=start,
+            publish_failed=terminal,
+            observed_at=observed,
+        )
+
+    if terminal is not None and _event_name(terminal) in _CODING_FAILED_EVENTS:
         return _failed_coder_attempt(
             issue_number=issue_number,
             start=start,
-            failed=failed,
+            failed=terminal,
+        )
+
+    if start is not None and _has_review_lifecycle_signal(events):
+        observed_event = _last_review_lifecycle_event(events) or start
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=_event_timestamp(observed_event),
+            missing=(
+                _missing(
+                    "coding_terminal_event",
+                    f"cycle {cycle_number} reached review without a completed coding event",
+                ),
+            ),
+            event=observed_event,
         )
 
     if start is not None:
@@ -302,6 +461,50 @@ def _project_coder(
         missing=(_missing("coding_start", f"cycle {cycle_number} has no coding start event"),),
         event=None,
     )
+
+
+def _last_coding_terminal_event(events: Sequence[EventDict]) -> EventDict | None:
+    terminal_events = (
+        _CODING_COMPLETED_EVENTS
+        | _CODING_BLOCKED_EVENTS
+        | _CODING_FAILED_EVENTS
+        | _CODING_PUBLISH_FAILED_EVENTS
+    )
+    for event in reversed(events):
+        if _event_name(event) not in terminal_events:
+            continue
+        if _is_review_completion_observation(event):
+            continue
+        return event
+    return None
+
+
+def _is_review_completion_observation(event: EventDict) -> bool:
+    if _event_name(event) != "observation.completion_detected":
+        return False
+    summary = _optional_text(event.get("summary"))
+    return summary is not None and summary.startswith("review_")
+
+
+def _last_review_lifecycle_event(events: Sequence[EventDict]) -> EventDict | None:
+    signal_events = (
+        _REVIEW_START_EVENTS
+        | _REVIEW_APPROVED_EVENTS
+        | _REVIEW_CHANGES_REQUESTED_EVENTS
+        | _REVIEW_SKIPPED_EVENTS
+        | _REVIEW_FAILED_EVENTS
+    )
+    return _last_event(events, signal_events)
+
+
+def _last_coding_completed_event(events: Sequence[EventDict]) -> EventDict | None:
+    for event in reversed(events):
+        if _event_name(event) not in _CODING_COMPLETED_EVENTS:
+            continue
+        if _is_review_completion_observation(event):
+            continue
+        return event
+    return None
 
 
 def _completed_coder_attempt(
@@ -375,6 +578,73 @@ def _completed_coder_commands(
     if isinstance(session_recording, SessionRecordingAvailable):
         commands += (session_recording.command,)
     return commands
+
+
+def _publish_failed_coder_attempt(
+    *,
+    issue_number: int,
+    events: Sequence[EventDict],
+    start: EventDict | None,
+    publish_failed: EventDict,
+    observed_at: str,
+) -> CodingAttempt:
+    completed = _last_coding_completed_event(events)
+    if completed is None:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=observed_at,
+            missing=(
+                _missing(
+                    "coding_terminal_event",
+                    "publish failure observed without a completed coding event",
+                ),
+            ),
+            event=publish_failed,
+        )
+
+    agent = _agent_identity_from_event(start or completed, role="coder")
+    completion_path = _artifact_value(completed, "completion_record")
+    missing = _completed_coder_missing(agent=agent, completion_path=completion_path)
+    if missing:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=observed_at,
+            missing=missing,
+            event=completed,
+        )
+
+    assert agent is not None
+    assert completion_path is not None
+    session_recording = _session_recording(issue_number, start or completed)
+    return PublishFailedCodingAttempt(
+        issue_number=issue_number,
+        agent=agent,
+        started_at=_event_timestamp(start or completed),
+        completed_at=_event_timestamp(completed),
+        publish_failed_at=_event_timestamp(publish_failed),
+        reason=_event_summary(publish_failed),
+        completion_record=CompletionRecordEvidence(
+            path=completion_path,
+            summary=_optional_text(completed.get("summary")),
+        ),
+        validation=_validation_outcome(issue_number, events),
+        session_recording=session_recording,
+        outputs=CodingOutputs(
+            worktree_path=_artifact_value(completed, "worktree"),
+            pull_request_url=_artifact_value(completed, "pull_request"),
+        ),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="publish.failed",
+                message=_event_summary(publish_failed),
+                severity="error",
+                evidence_ref=_event_ref(publish_failed),
+            ),
+        ),
+        commands=_completed_coder_commands(publish_failed, completion_path, session_recording),
+    )
 
 
 def _blocked_coder_attempt(
@@ -458,26 +728,37 @@ def _project_review(
     review_required: bool,
 ) -> ReviewStage:
     start = _first_event(events, _REVIEW_START_EVENTS)
-    approved = _last_event(events, _REVIEW_APPROVED_EVENTS)
-    changes_requested = _last_event(events, _REVIEW_CHANGES_REQUESTED_EVENTS)
-    skipped = _last_event(events, _REVIEW_SKIPPED_EVENTS)
+    terminal = _last_event(
+        events,
+        _REVIEW_APPROVED_EVENTS
+        | _REVIEW_CHANGES_REQUESTED_EVENTS
+        | _REVIEW_SKIPPED_EVENTS
+        | _REVIEW_FAILED_EVENTS,
+    )
 
-    if approved is not None:
+    if terminal is not None and _event_name(terminal) in _REVIEW_APPROVED_EVENTS:
         return _approved_review(
             issue_number=issue_number,
             start=start,
-            approved=approved,
+            approved=terminal,
         )
 
-    if changes_requested is not None:
+    if terminal is not None and _event_name(terminal) in _REVIEW_CHANGES_REQUESTED_EVENTS:
         return _changes_requested_review(
             issue_number=issue_number,
             start=start,
-            changes_requested=changes_requested,
+            changes_requested=terminal,
         )
 
-    if skipped is not None:
-        return ReviewSkipped(reason=_event_summary(skipped))
+    if terminal is not None and _event_name(terminal) in _REVIEW_FAILED_EVENTS:
+        return _failed_review(
+            issue_number=issue_number,
+            start=start,
+            failed=terminal,
+        )
+
+    if terminal is not None and _event_name(terminal) in _REVIEW_SKIPPED_EVENTS:
+        return ReviewSkipped(reason=_event_summary(terminal))
 
     if start is not None:
         return _running_review(issue_number=issue_number, start=start)
@@ -509,8 +790,24 @@ def _approved_review(
         started_at=_event_timestamp(start or approved),
         completed_at=_event_timestamp(approved),
         session_recording=_session_recording(issue_number, approved),
-        transcript_available=_has_action(approved, "open_review_transcript"),
+        transcript=_review_transcript_evidence(approved),
         commands=(_details_command(approved),),
+    )
+
+
+def _review_transcript_evidence(event: EventDict) -> ReviewTranscriptEvidence:
+    if _has_action(event, "open_review_transcript"):
+        return ReviewTranscriptAvailable()
+    return ReviewTranscriptUnavailable(
+        reason="approved review event did not expose a transcript action",
+        diagnostics=(
+            TimelineDiagnostic(
+                code="review.transcript_action_missing",
+                message="approved review event did not expose a transcript action",
+                severity="warning",
+                evidence_ref=_event_ref(event),
+            ),
+        ),
     )
 
 
@@ -589,6 +886,30 @@ def _running_review(*, issue_number: int, start: EventDict) -> ReviewStage:
     )
 
 
+def _failed_review(
+    *,
+    issue_number: int,
+    start: EventDict | None,
+    failed: EventDict,
+) -> ReviewFailed:
+    return ReviewFailed(
+        reviewer=_agent_identity_from_event(start or failed, role="reviewer"),
+        started_at=_event_timestamp(start) if start else None,
+        failed_at=_event_timestamp(failed),
+        reason=_event_summary(failed),
+        session_recording=_session_recording(issue_number, start or failed),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="review.failed",
+                message=_event_summary(failed),
+                severity="error",
+                evidence_ref=_event_ref(failed),
+            ),
+        ),
+        commands=(_details_command(failed),),
+    )
+
+
 def _unreached_review(
     *,
     coder: CodingAttempt,
@@ -596,6 +917,14 @@ def _unreached_review(
     events: Sequence[EventDict],
     review_required: bool,
 ) -> ReviewStage:
+    if isinstance(coder, RunningCodingAttempt):
+        return ReviewNotReached(reason="coding_in_progress")
+    if isinstance(coder, PublishFailedCodingAttempt):
+        return ReviewNotReached(reason="publish_failed")
+    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence):
+        return ReviewNotReached(reason="coding_failed")
+    if isinstance(coder, CompletedCodingAttempt) and isinstance(coder.validation, ValidationFailed):
+        return ReviewNotReached(reason="validation_failed")
     if review_required:
         return _missing_review(
             expected_state="running",
@@ -608,12 +937,6 @@ def _unreached_review(
             ),
             event=None,
         )
-    if isinstance(coder, RunningCodingAttempt):
-        return ReviewNotReached(reason="coding_in_progress")
-    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence):
-        return ReviewNotReached(reason="coding_failed")
-    if isinstance(coder, CompletedCodingAttempt) and isinstance(coder.validation, ValidationFailed):
-        return ReviewNotReached(reason="validation_failed")
     return ReviewNotReached(reason="not_required")
 
 
@@ -670,6 +993,8 @@ def _project_e2e_tests(
     events: Sequence[EventDict],
 ) -> list[E2ETestExecution]:
     ordered_nodeids, started_by_nodeid, completed_by_nodeid = _index_e2e_test_events(events)
+    if not ordered_nodeids:
+        return [_missing_collected_e2e_tests(events)]
     return [
         _project_e2e_test(
             run_id=run_id,
@@ -760,6 +1085,28 @@ def _missing_started_e2e_test(*, nodeid: str, completed: EventDict) -> MissingE2
     )
 
 
+def _missing_collected_e2e_tests(events: Sequence[EventDict]) -> MissingE2ETestEvidence:
+    observed_at = _first_timestamp(events)
+    return MissingE2ETestEvidence(
+        nodeid="__e2e_tests__",
+        observed_at=observed_at,
+        missing=(
+            _missing(
+                "test_started_event",
+                "E2E run timeline did not include any test_started events",
+            ),
+        ),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="e2e.tests_missing",
+                message="E2E run lifecycle requires at least one test execution",
+                severity="error",
+            ),
+        ),
+        commands=(_details_command(events[0] if events else None),),
+    )
+
+
 def _e2e_test_failed(completed: EventDict) -> bool:
     outcome = str(completed.get("outcome") or completed.get("status") or "").lower()
     return outcome in {"failed", "error"}
@@ -796,12 +1143,6 @@ def _linked_issues(run_id: int, event: EventDict | None) -> tuple[LinkedIssueLif
                 issue_number = _positive_int(affordance.get("issue_number"), default=0)
                 if issue_number > 0:
                     issue_numbers.append(issue_number)
-    raw_issue_numbers = event.get("issue_numbers")
-    if isinstance(raw_issue_numbers, list):
-        for issue_number in raw_issue_numbers:
-            normalized = _positive_int(issue_number, default=0)
-            if normalized > 0:
-                issue_numbers.append(normalized)
     return tuple(
         LinkedIssueLifecycle(
             issue_number=issue_number,
@@ -819,14 +1160,14 @@ def _linked_issues(run_id: int, event: EventDict | None) -> tuple[LinkedIssueLif
 def _missing_coding(
     *,
     issue_number: int,
-    expected_state: str,
+    expected_state: CodingExpectedState,
     observed_at: str,
     missing: tuple[MissingEvidence, ...],
     event: EventDict | None,
 ) -> MissingCodingEvidence:
     return MissingCodingEvidence(
         issue_number=issue_number,
-        expected_state=expected_state,  # type: ignore[arg-type]
+        expected_state=expected_state,
         observed_at=observed_at,
         missing=missing,
         diagnostics=tuple(
@@ -844,13 +1185,13 @@ def _missing_coding(
 
 def _missing_review(
     *,
-    expected_state: str,
+    expected_state: ReviewExpectedState,
     observed_at: str,
     missing: tuple[MissingEvidence, ...],
     event: EventDict | None,
 ) -> MissingReviewEvidence:
     return MissingReviewEvidence(
-        expected_state=expected_state,  # type: ignore[arg-type]
+        expected_state=expected_state,
         observed_at=observed_at,
         missing=missing,
         diagnostics=tuple(
@@ -1017,22 +1358,51 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _cycle_outcome(coder: CodingAttempt, review: ReviewStage) -> str:
+    review_outcome = _review_outcome(review)
+    if review_outcome is not None:
+        return review_outcome
+    return _coder_outcome(coder)
+
+
+def _review_outcome(review: ReviewStage) -> str | None:
     if isinstance(review, ReviewApproved):
         return "approved"
     if isinstance(review, ReviewChangesRequested):
         return "changes_requested"
+    if isinstance(review, ReviewFailed):
+        return "review_failed"
+    if isinstance(review, ReviewRunning):
+        return "review_in_progress"
+    if isinstance(review, ReviewSkipped):
+        return "review_skipped"
+    if isinstance(review, MissingReviewEvidence):
+        return "missing_review_evidence"
+    return None
+
+
+def _coder_outcome(coder: CodingAttempt) -> str:
     if isinstance(coder, CompletedCodingAttempt):
         return "completed"
     if isinstance(coder, RunningCodingAttempt):
         return "in_progress"
-    return "blocked"
+    if isinstance(coder, BlockedCodingAttempt):
+        return "blocked"
+    if isinstance(coder, PublishFailedCodingAttempt):
+        return "publish_failed"
+    if isinstance(coder, FailedCodingAttempt):
+        return "failed"
+    if isinstance(coder, MissingCodingEvidence):
+        return "missing_coding_evidence"
+    return "unknown"
 
 
 __all__ = [
     "LifecycleProjectionError",
     "project_dashboard_lifecycle_container",
     "project_e2e_run_iteration",
+    "project_e2e_suite_lifecycle_container_for_run",
     "project_e2e_suite_lifecycle_container",
+    "project_issue_lifecycles_from_events",
     "project_issue_lifecycle",
     "require_lifecycle_container_valid",
 ]

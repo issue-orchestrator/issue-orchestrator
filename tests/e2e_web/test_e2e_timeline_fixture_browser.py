@@ -54,6 +54,7 @@ TEST_CLICK_ISSUE_LABEL = "inflight-discovery"
 # row rendering with distinct labels.
 TEST_CLICK_ISSUE_NUMBER_2 = 5724
 TEST_CLICK_ISSUE_LABEL_2 = "ui-surface-provider-cir\u2026"
+_INVALID_TIME_TEXTS = {"", "-", "n/a", "na", "unknown"}
 
 
 def _find_free_port() -> int:
@@ -338,12 +339,32 @@ _TEST_INFLIGHT_NODEID = (
 )
 
 
-def _expect_visible_text(locator: Locator, description: str) -> str:
-    """Assert a rendered browser element is visible and carries non-empty text."""
+def _expect_parseable_time_text(page: Page, locator: Locator, description: str) -> str:
+    """Assert a rendered browser timestamp is visible and browser-parseable."""
     expect(locator).to_be_visible(timeout=5000)
-    text = locator.text_content() or ""
-    assert text.strip(), f"{description} should render visible non-empty text"
+    text = (locator.text_content() or "").strip()
+    assert text.lower() not in _INVALID_TIME_TEXTS, (
+        f"{description} should render a concrete timestamp, got {text!r}"
+    )
+    parsed_epoch = page.evaluate(
+        "(value) => Number.isNaN(new Date(value).getTime()) ? null : new Date(value).getTime()",
+        text,
+    )
+    assert parsed_epoch is not None, (
+        f"{description} should render browser-parseable timestamp text, got {text!r}"
+    )
     return text
+
+
+def _expect_all_parseable_time_texts(page: Page, locator: Locator, description: str) -> list[str]:
+    """Assert every matching timestamp element is visible and parseable."""
+    expect(locator.first).to_be_visible(timeout=5000)
+    items = locator.all()
+    assert items, f"{description} should render at least one timestamp"
+    return [
+        _expect_parseable_time_text(page, item, f"{description} #{index}")
+        for index, item in enumerate(items, start=1)
+    ]
 
 
 def test_run_drawer_timeline_renders_clickable_issue_links(
@@ -414,6 +435,14 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     timeline_panel = page.locator("#e2eRunTimelineTab")
     expect(timeline_panel).to_be_visible(timeout=5000)
+    expect(page.locator("#e2eTimelineContent")).to_have_attribute(
+        "data-lifecycle-kind",
+        "e2e_suite",
+    )
+    expect(page.locator("#e2eTimelineContent")).to_have_attribute(
+        "data-lifecycle-iterations",
+        "1",
+    )
 
     # Run-level issue timeline buttons are the missing affordance from
     # the regression report. They must be visible before digging into
@@ -443,7 +472,8 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(test_4057_event.locator(".timeline-summary").first).to_contain_text(
         _TEST_4057_NODEID,
     )
-    _expect_visible_text(
+    _expect_parseable_time_text(
+        page,
         test_4057_event.locator(".timeline-time").first,
         "E2E test timeline row timestamp",
     )
@@ -531,6 +561,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     detail_drawer = page.locator("#issueDetailDrawer.visible")
     expect(detail_drawer).to_be_visible(timeout=5000)
+    expect(page.locator("#issueDetailDrawer")).to_have_attribute(
+        "data-lifecycle-kind",
+        "dashboard",
+    )
     # Title alone is not sufficient — it's set before the fetch completes.
     expect(page.locator("#issueDetailTitle")).to_contain_text(
         f"Issue #{TEST_CLICK_ISSUE_NUMBER}"
@@ -543,16 +577,19 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     journey = page.locator("#issueDetailJourney")
     expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
     expect(journey.locator(".journey-cycle").first).to_be_visible(timeout=5000)
-    _expect_visible_text(
-        journey.locator(".journey-run > .journey-cycle-header .journey-cycle-time").first,
+    _expect_all_parseable_time_texts(
+        page,
+        journey.locator(".journey-run > .journey-cycle-header .journey-cycle-time"),
         "issue-detail run timestamp",
     )
-    _expect_visible_text(
-        journey.locator(".journey-cycle > .journey-cycle-header .journey-cycle-time").first,
+    _expect_all_parseable_time_texts(
+        page,
+        journey.locator(".journey-cycle > .journey-cycle-header .journey-cycle-time"),
         "issue-detail cycle timestamp",
     )
-    _expect_visible_text(
-        journey.locator(".journey-step .journey-time").first,
+    _expect_all_parseable_time_texts(
+        page,
+        journey.locator(".journey-step .journey-time"),
         "issue-detail step timestamp",
     )
     expect(journey).to_contain_text("Agent finished coding")

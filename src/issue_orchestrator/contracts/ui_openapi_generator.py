@@ -88,16 +88,22 @@ def _resolve_object_type(schema: dict[str, Any]) -> str:
 
 
 def is_optional(schema: dict[str, Any]) -> bool:
-    schema_type = schema.get("type")
-    if isinstance(schema_type, list) and "null" in schema_type:
+    if _schema_allows_null(schema):
         return True
     if schema.get("nullable") is True:
         return True
-    if any("null" in (s.get("type") if isinstance(s.get("type"), list) else []) for s in schema.get("oneOf", [])):
+    if any(_schema_allows_null(s) for s in schema.get("oneOf", [])):
         return True
-    if any("null" in (s.get("type") if isinstance(s.get("type"), list) else []) for s in schema.get("anyOf", [])):
+    if any(_schema_allows_null(s) for s in schema.get("anyOf", [])):
         return True
     return False
+
+
+def _schema_allows_null(schema: dict[str, Any]) -> bool:
+    schema_type = schema.get("type")
+    return schema_type == "null" or (
+        isinstance(schema_type, list) and "null" in schema_type
+    )
 
 
 def iter_components(data: dict[str, Any]) -> list[ComponentSchema]:
@@ -234,7 +240,10 @@ def _python_literal(value: Any) -> str:
 
 
 def _is_union_alias_schema(schema: dict[str, Any]) -> bool:
-    return bool(schema.get("oneOf") or schema.get("anyOf")) and not schema.get("properties")
+    has_union = bool(schema.get("oneOf") or schema.get("anyOf"))
+    if has_union and schema.get("properties"):
+        raise ValueError("component schemas must not mix oneOf/anyOf with properties")
+    return has_union
 
 
 def generate_artifacts(schema_path: Path | None = None, python_out: Path | None = None, dts_out: Path | None = None) -> None:

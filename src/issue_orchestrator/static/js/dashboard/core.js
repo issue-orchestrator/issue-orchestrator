@@ -21,6 +21,30 @@ function escapeAttr(text) {
         .replace(/>/g, '&gt;');
 }
 
+const LIFECYCLE_DATASET_KEYS = Object.freeze({
+    kind: 'lifecycleKind',
+    iterations: 'lifecycleIterations',
+});
+window.LIFECYCLE_DATASET_KEYS = LIFECYCLE_DATASET_KEYS;
+
+function applyLifecycleDataset(container, lifecycle) {
+    if (!container) return;
+    if (!lifecycle || typeof lifecycle !== 'object') {
+        delete container.dataset[LIFECYCLE_DATASET_KEYS.kind];
+        delete container.dataset[LIFECYCLE_DATASET_KEYS.iterations];
+        return;
+    }
+    if (typeof lifecycle.kind !== 'string' || lifecycle.kind.length === 0) {
+        console.error('Lifecycle payload missing kind', lifecycle);
+        throw new Error('Lifecycle payload missing kind');
+    }
+    container.dataset[LIFECYCLE_DATASET_KEYS.kind] = lifecycle.kind;
+    const iterations = Array.isArray(lifecycle.runs)
+        ? lifecycle.runs.length
+        : (lifecycle.current ? 1 : 0);
+    container.dataset[LIFECYCLE_DATASET_KEYS.iterations] = String(iterations);
+}
+
 let terminalBackend = 'tmux';
 let clientCapabilities = {
     focus_session: false,

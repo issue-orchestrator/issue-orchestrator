@@ -6,12 +6,16 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ..contracts.ui_openapi_models import IssueDetailPayload
+from ..contracts.ui_openapi_models import E2ERunDetailPayload, IssueDetailPayload
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES
 from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..view_models.dashboard import issue_url_for
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
+from ..view_models.lifecycle_projection import (
+    project_dashboard_lifecycle_container,
+    project_e2e_suite_lifecycle_container_for_run,
+)
 from .e2e_affordances import (
     _attach_issue_numbers_to_test_windows,
     collect_issue_affordances,
@@ -255,15 +259,24 @@ async def get_issue_detail(
         events=events,
         dropped_missing_semantics=dropped_missing_semantics,
     )
+    payload["lifecycle"] = _dashboard_lifecycle_payload(
+        issue_number=issue_number,
+        title=payload["title"],
+        events=events,
+    )
     return IssueDetailPayload.model_validate(payload)
 
 
-@web_issue_detail_router.get("/api/e2e-run-detail/{run_id}")
+@web_issue_detail_router.get(
+    "/api/e2e-run-detail/{run_id}",
+    response_model=E2ERunDetailPayload,
+    response_model_exclude_unset=True,
+)
 async def get_e2e_run_detail(
     run_id: int,
     orchestrator: WebOrchestratorDependency,
     view: str = "user",
-) -> JSONResponse:
+) -> E2ERunDetailPayload | JSONResponse:
     """Get E2E run detail using the shared issue-detail timeline pipeline."""
     from ..domain.timeline_key import TimelineKey
     from ..timeline import TimelineStream
@@ -325,16 +338,27 @@ async def get_e2e_run_detail(
         run_id=run_id,
         view=matcher_view,
     )
-    return JSONResponse(payload)
+    payload["lifecycle"] = project_e2e_suite_lifecycle_container_for_run(
+        run_id=run_id,
+        events=events,
+        agent_events=agent_events,
+        subject_label="E2E Suite",
+    ).model_dump(
+        mode="json",
+    )
+    return E2ERunDetailPayload.model_validate(payload)
 
 
-@web_issue_detail_router.get("/api/e2e-run/{run_id}/issue-detail/{issue_number}")
+@web_issue_detail_router.get(
+    "/api/e2e-run/{run_id}/issue-detail/{issue_number}",
+    response_model=IssueDetailPayload,
+)
 async def get_e2e_issue_detail(
     run_id: int,
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
     view: str = "user",
-) -> JSONResponse:
+) -> IssueDetailPayload | JSONResponse:
     """Return issue detail for an ephemeral E2E issue from a specific run."""
     from ..execution.timeline_store import SqliteTimelineStore
     from ..infra.e2e_db import E2EDB
@@ -433,7 +457,31 @@ async def get_e2e_issue_detail(
         dropped_missing_semantics=dropped_missing_semantics,
     )
     payload["e2e_run_id"] = run_id
-    return JSONResponse(payload)
+    payload["lifecycle"] = _dashboard_lifecycle_payload(
+        issue_number=issue_number,
+        title=payload["title"],
+        events=events,
+    )
+    return IssueDetailPayload.model_validate(payload)
+
+
+def _dashboard_lifecycle_payload(
+    *,
+    issue_number: int,
+    title: str,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return project_dashboard_lifecycle_container(
+        subject_label="Dashboard",
+        issue_number=issue_number,
+        title=title,
+        events=events,
+        # Legacy presentation cycles are display groupings. Semantic
+        # lifecycle cycles are derived from backend-owned logical fields.
+        cycles=(),
+    ).model_dump(
+        mode="json",
+    )
 
 
 def _load_orchestrator_events_for_run(

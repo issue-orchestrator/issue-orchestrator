@@ -19,6 +19,18 @@ class AgentIdentityPayload(BaseModel):
     name: str
     role: Literal['coder'] | Literal['reviewer'] | Literal['rework'] | Literal['validator'] | Literal['e2e_runner'] | Literal['orchestrator']
 
+class BlockedCodingAttemptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent: AgentIdentityPayload
+    blocked_at: str
+    commands: list[TimelineCommandPayload]
+    diagnostics: list[TimelineDiagnosticPayload]
+    issue_number: int
+    kind: Literal['blocked_coding_attempt']
+    reason: str
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str | None = None
+
 class BlockedIssuePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     pass
@@ -159,6 +171,36 @@ class E2EFailureDetailsMissingPayload(BaseModel):
     diagnostics: list[TimelineDiagnosticPayload]
     kind: Literal['missing_evidence']
 
+class E2EIssueAffordancePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    branch_name: str | None = None
+    issue_number: int
+    label: str | None = None
+    run_id: int
+
+class E2ERunDetailPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions: list[IssueDetailActionPayload]
+    blocked_detail: IssueDetailBlockedDetailPayload | None
+    cycles: list[E2ETimelineCyclePayload]
+    e2e_run_id: int | None = None
+    events: list[E2ETimelineEventPayload]
+    issue_affordances: list[E2EIssueAffordancePayload]
+    issue_number: int | str
+    issue_url: str
+    lifecycle: LifecycleTimelineContainerPayload
+    phase_toc: list[E2ETimelinePhaseTocItemPayload]
+    previous_runs: list[dict[str, Any]]
+    previous_runs_count: int
+    raw_events_count: int
+    run_count: int
+    runs: list[dict[str, Any]]
+    status_explanation: str
+    summary: IssueDetailSummaryPayload
+    timeline_steps: list[dict[str, Any]]
+    title: str
+    view: str | None = None
+
 class E2ERunIterationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     diagnostics: list[TimelineDiagnosticPayload]
@@ -175,11 +217,96 @@ class E2ERunLifecyclePayload(BaseModel):
     started_at: str
     tests: list[E2ETestExecutionPayload]
 
+class E2ERunTimelinePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cycles: list[E2ETimelineCyclePayload]
+    events: list[E2ETimelineEventPayload]
+    issue_affordances: list[E2EIssueAffordancePayload]
+    lifecycle: LifecycleTimelineContainerPayload
+    phase_toc: list[E2ETimelinePhaseTocItemPayload]
+
 class E2ESuiteTimelineContainerPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['e2e_suite']
     runs: list[E2ERunIterationPayload]
     subject: TimelineSubjectPayload
+
+class E2ETimelineArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    type: str
+    value: str
+
+class E2ETimelineCyclePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cycle: int
+    end: str | None
+    events: list[E2ETimelineEventPayload]
+    phases: list[str]
+    start: str | None
+    status: str
+    summary: str
+
+class E2ETimelineEventPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    added: list[str] | None = None
+    agent: str | None = None
+    artifacts: list[E2ETimelineArtifactPayload]
+    coder_response_text: str | None = None
+    coder_response_type: str | None = None
+    detail: str | None
+    duration_seconds: float | None = None
+    event: str
+    event_id: str
+    event_intent: str
+    issue_affordances: list[E2EIssueAffordancePayload] | None = None
+    issue_number: int
+    level: str
+    logical_cycle: int | None = None
+    logical_phase: str | None = None
+    logical_run: int | None = None
+    longrepr: str | None = None
+    narrative: str | None = None
+    nodeid: str | None = None
+    outcome: str | None = None
+    parent_key: str
+    phase: str
+    removed: list[str] | None = None
+    review_oriented: bool
+    reviewer_agent: str | None = None
+    reviewer_response_text: str | None = None
+    reviewer_response_type: str | None = None
+    rework_cycle: int | None = None
+    round_index: int | None = None
+    rounds: int | None = None
+    run_dir: str | None
+    run_id: str | None
+    source_event: str | None = None
+    status: str
+    step: str
+    summary: str | None
+    task: str | None = None
+    timeline_schema_version: int | None = None
+    timestamp: str
+    unsupported_schema: bool
+    views: list[str] | None = None
+
+class E2ETimelinePhaseTocItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    phase: str
+
+class FailedCodingAttemptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent: AgentIdentityPayload | None = None
+    commands: list[TimelineCommandPayload]
+    diagnostics: list[TimelineDiagnosticPayload]
+    failed_at: str
+    issue_number: int
+    kind: Literal['failed_coding_attempt']
+    reason: str
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str | None = None
 
 class FailedE2ETestExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -205,14 +332,30 @@ class IssueCyclePayload(BaseModel):
     outcome: str
     review: ReviewStagePayload
 
+class IssueDetailActionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    label: str
+    run_dir: str | None = None
+    url: str | None = None
+
+class IssueDetailBlockedDetailPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_summary: str
+    labels: list[str]
+    reason: str
+    rework_info: str | None
+
 class IssueDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    actions: list[dict[str, Any]]
-    blocked_detail: dict[str, Any] | None
+    actions: list[IssueDetailActionPayload]
+    blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[dict[str, Any]]
+    e2e_run_id: int | None = None
     events: list[dict[str, Any]]
     issue_number: int
     issue_url: str
+    lifecycle: LifecycleTimelineContainerPayload | None = None
     phase_toc: list[dict[str, Any]]
     previous_runs: list[dict[str, Any]]
     previous_runs_count: int
@@ -220,10 +363,42 @@ class IssueDetailPayload(BaseModel):
     run_count: int
     runs: list[dict[str, Any]]
     status_explanation: str
-    summary: dict[str, Any]
+    summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
     view: str | None = None
+
+class IssueDetailSummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_count: int
+    last_event: str
+    run_diagnostic: IssueDetailValidationDiagnosticPayload | None = None
+    status: str
+    timeline_diagnostic: IssueDetailTimelineDiagnosticPayload | None = None
+
+class IssueDetailTimelineDiagnosticPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dropped_missing_semantics: int
+    expected_timeline_store: str
+    expected_timeline_store_exists: bool
+    resolved_run_dir: str | None
+    signals: list[str]
+    state: str
+
+class IssueDetailValidationDiagnosticPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str
+    exit_code: int
+    failed_tests: list[str]
+    failed_tests_preview: list[str]
+    reason: str
+    run_dir: str
+    session_name: str | None
+    state: str
+    suite: str
+    validation_record_path: str | None
+    validation_stderr: str | None
+    validation_stdout: str | None
 
 class IssueItemPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -269,12 +444,30 @@ class MissingCodingEvidencePayload(BaseModel):
     missing: list[MissingEvidencePayload]
     observed_at: str
 
+class MissingE2ETestEvidencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commands: list[TimelineCommandPayload]
+    diagnostics: list[TimelineDiagnosticPayload]
+    kind: Literal['missing_e2e_test_evidence']
+    missing: list[MissingEvidencePayload]
+    nodeid: str
+    observed_at: str
+
 class MissingEvidencePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evidence: str
     expected_ref: str | None = None
     kind: Literal['missing_evidence']
     reason: str
+
+class MissingReviewEvidencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commands: list[TimelineCommandPayload]
+    diagnostics: list[TimelineDiagnosticPayload]
+    expected_state: Literal['approved'] | Literal['changes_requested'] | Literal['running']
+    kind: Literal['missing_review_evidence']
+    missing: list[MissingEvidencePayload]
+    observed_at: str
 
 class OpenCompletionRecordCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -330,6 +523,32 @@ class PhaseDialogPayload(BaseModel):
     phases: list[dict[str, Any]]
     title: str
 
+class PublishFailedCodingAttemptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent: AgentIdentityPayload
+    commands: list[TimelineCommandPayload]
+    completed_at: str
+    completion_record: CompletionRecordEvidencePayload
+    diagnostics: list[TimelineDiagnosticPayload]
+    issue_number: int
+    kind: Literal['publish_failed_coding_attempt']
+    outputs: CodingOutputsPayload
+    publish_failed_at: str
+    reason: str
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str
+    validation: ValidationOutcomePayload
+
+class ReviewApprovedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commands: list[TimelineCommandPayload]
+    completed_at: str
+    kind: Literal['review_approved']
+    reviewer: AgentIdentityPayload
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str
+    transcript: ReviewTranscriptEvidencePayload
+
 class ReviewChangesRequestedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     commands: list[TimelineCommandPayload]
@@ -340,10 +559,61 @@ class ReviewChangesRequestedPayload(BaseModel):
     session_recording: SessionRecordingEvidencePayload
     started_at: str
 
+class ReviewFailedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commands: list[TimelineCommandPayload]
+    diagnostics: list[TimelineDiagnosticPayload]
+    failed_at: str
+    kind: Literal['review_failed']
+    reason: str
+    reviewer: AgentIdentityPayload | None = None
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str | None = None
+
 class ReviewNotReachedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['review_not_reached']
-    reason: Literal['coding_in_progress'] | Literal['coding_failed'] | Literal['validation_failed'] | Literal['not_required']
+    reason: Literal['coding_in_progress'] | Literal['coding_failed'] | Literal['publish_failed'] | Literal['validation_failed'] | Literal['not_required']
+
+class ReviewRunningPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commands: list[TimelineCommandPayload]
+    kind: Literal['review_running']
+    reviewer: AgentIdentityPayload
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str
+
+class ReviewSkippedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['review_skipped']
+    reason: str
+
+class ReviewTranscriptAvailablePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['available']
+
+class ReviewTranscriptUnavailablePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    diagnostics: list[TimelineDiagnosticPayload]
+    kind: Literal['unavailable']
+    reason: str
+
+class RunningCodingAttemptPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent: AgentIdentityPayload
+    commands: list[TimelineCommandPayload]
+    issue_number: int
+    kind: Literal['running_coding_attempt']
+    session_recording: SessionRecordingEvidencePayload
+    started_at: str
+
+class RunningE2ETestExecutionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commands: list[TimelineCommandPayload]
+    kind: Literal['running_e2e_test']
+    linked_issues: list[LinkedIssueLifecyclePayload]
+    nodeid: str
+    started_at: str
 
 class SessionDiagnosticsActionPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -361,7 +631,7 @@ class SessionDiagnosticsAnalysisPayload(BaseModel):
 class SessionDiagnosticsDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[SessionDiagnosticsActionPayload]
-    analysis: SessionDiagnosticsAnalysisPayload | None | None = None
+    analysis: SessionDiagnosticsAnalysisPayload | None = None
     follow_up_issues: list[SessionDiagnosticsFollowUpIssuePayload] | None = None
     rows: list[DialogRowPayload]
     title: str
@@ -403,7 +673,7 @@ class TimelineDiagnosticPayload(BaseModel):
 class TimelineSubjectPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
-    kind: Literal['dashboard'] | Literal['repo'] | Literal['issue'] | Literal['e2e_suite'] | Literal['e2e_run'] | Literal['e2e_test']
+    kind: Literal['dashboard'] | Literal['issue'] | Literal['e2e_suite'] | Literal['e2e_run']
     label: str
     outcome: str | None = None
     status: str | None = None
@@ -447,15 +717,17 @@ class ValidationPassedPayload(BaseModel):
     kind: Literal['passed']
     record_path: str
 
-CodingAttemptPayload: TypeAlias = CompletedCodingAttemptPayload | MissingCodingEvidencePayload
+CodingAttemptPayload: TypeAlias = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload
 
 E2EFailureEvidencePayload: TypeAlias = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload
 
-E2ETestExecutionPayload: TypeAlias = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload
+E2ETestExecutionPayload: TypeAlias = PassedE2ETestExecutionPayload | FailedE2ETestExecutionPayload | RunningE2ETestExecutionPayload | MissingE2ETestEvidencePayload
 
 LifecycleTimelineContainerPayload: TypeAlias = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload
 
-ReviewStagePayload: TypeAlias = ReviewNotReachedPayload | ReviewChangesRequestedPayload
+ReviewStagePayload: TypeAlias = ReviewNotReachedPayload | ReviewSkippedPayload | ReviewRunningPayload | ReviewApprovedPayload | ReviewChangesRequestedPayload | ReviewFailedPayload | MissingReviewEvidencePayload
+
+ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | ReviewTranscriptUnavailablePayload
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 

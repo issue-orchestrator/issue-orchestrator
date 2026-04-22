@@ -171,6 +171,9 @@ class TestTimelineActionWiring:
             response = client.get("/api/issue-detail/123")
             assert response.status_code == 200
             payload = response.json()
+            assert payload["lifecycle"]["kind"] == "dashboard"
+            lifecycle_issue = payload["lifecycle"]["current"]["issue_lifecycles"][0]
+            assert lifecycle_issue["issue_number"] == 123
 
             # Run cycles must exist and carry actions on steps
             runs = payload.get("runs", [])

@@ -693,6 +693,7 @@ function renderIssueDetailValidation(detail) {
 function renderIssueDetail() {
     if (!issueDetailData) return;
     const d = issueDetailData;
+    applyLifecycleDataset(issueDetailDrawer, d.lifecycle || null);
     const title = d.title || `Issue #${d.issue_number}`;
     document.getElementById('issueDetailTitle').textContent = title;
     document.getElementById('issueDetailGitHubBtn').href = d.issue_url || '#';
