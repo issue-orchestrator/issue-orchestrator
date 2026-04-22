@@ -28,6 +28,8 @@ import socket
 import time
 from pathlib import Path
 from threading import Thread
+from typing import Any
+from urllib.parse import urlencode
 
 import pytest
 import uvicorn
@@ -36,6 +38,10 @@ from playwright.sync_api import Locator, Page, expect
 from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
 import issue_orchestrator.entrypoints.web as web_module
 from issue_orchestrator.entrypoints.web import app
+from issue_orchestrator.view_models.lifecycle_semantics import (
+    DashboardTimelineContainer,
+    E2ESuiteTimelineContainer,
+)
 from tests.fixtures.web_contract_mocks import MockOrchestratorForWeb
 
 
@@ -222,17 +228,25 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
         )
         conn.commit()
 
-    # Materialize a real session run_dir and wire the target issue's
-    # agent.coding_started event to point at it. The run_dir must
-    # contain a non-empty terminal-recording.jsonl for both the action
-    # decorator and the session-replay endpoint to surface real data.
+    # Materialize real session run_dirs and wire the target issue's
+    # run-scoped start events to point at them. The run_dir must contain
+    # a non-empty terminal-recording.jsonl for both the action decorator
+    # and the session-replay endpoint to surface real data.
     session_dir = tmp_path / "session1"
+    review_session_dir = tmp_path / "review-session1"
     _materialize_synthetic_session_dir(session_dir)
+    _materialize_synthetic_session_dir(review_session_dir)
     _wire_event_to_session_dir(
         wt_state / "timeline.sqlite",
         issue_number=TEST_CLICK_ISSUE_NUMBER,
         event_name="agent.coding_started",
         session_dir=session_dir,
+    )
+    _wire_event_to_session_dir(
+        wt_state / "timeline.sqlite",
+        issue_number=TEST_CLICK_ISSUE_NUMBER,
+        event_name="review.started",
+        session_dir=review_session_dir,
     )
     return repo_root
 
@@ -367,8 +381,256 @@ def _expect_all_parseable_time_texts(page: Page, locator: Locator, description: 
     ]
 
 
+def _dom_click_hit_tested(locator: Locator, description: str) -> None:
+    """Click via the DOM after proving the rendered element is hit-testable."""
+    expect(locator).to_be_visible(timeout=5000)
+    expect(locator).to_be_enabled(timeout=5000)
+    locator.scroll_into_view_if_needed()
+    hit_result = locator.evaluate(
+        """
+        (element) => {
+            const rect = element.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const hit = document.elementFromPoint(cx, cy);
+            return {
+                tag: hit ? hit.tagName : null,
+                id: hit ? hit.id : null,
+                className: hit && hit.className ? String(hit.className) : "",
+                contains: !!hit && (hit === element || element.contains(hit)),
+                pointerEvents: window.getComputedStyle(element).pointerEvents,
+                disabled: !!element.disabled,
+                width: rect.width,
+                height: rect.height,
+            };
+        }
+        """
+    )
+    assert hit_result["contains"], (
+        f"{description} is not hit-testable at its center: {hit_result!r}"
+    )
+    assert hit_result["pointerEvents"] != "none", (
+        f"{description} cannot receive pointer events: {hit_result!r}"
+    )
+    assert not hit_result["disabled"], f"{description} is disabled: {hit_result!r}"
+    locator.evaluate("(element) => element.click()")
+
+
+def _browser_fetch_json(page: Page, url: str) -> dict[str, Any]:
+    """Fetch JSON through the browser so assertions cover the page's contract surface."""
+    result = page.evaluate(
+        """
+        async (url) => {
+            const response = await fetch(url);
+            const text = await response.text();
+            let payload = null;
+            try {
+                payload = JSON.parse(text);
+            } catch (err) {
+                return {
+                    ok: response.ok,
+                    status: response.status,
+                    parseError: String(err),
+                    text,
+                };
+            }
+            return { ok: response.ok, status: response.status, payload };
+        }
+        """,
+        url,
+    )
+    assert result["ok"], (
+        f"browser fetch failed for {url}: status={result['status']} "
+        f"body={result.get('text') or result.get('payload')!r}"
+    )
+    assert "parseError" not in result, (
+        f"browser fetch returned non-JSON for {url}: {result['parseError']} "
+        f"body={result.get('text')!r}"
+    )
+    payload = result["payload"]
+    assert isinstance(payload, dict), f"browser fetch returned non-object JSON: {payload!r}"
+    return payload
+
+
+def _url(base_url: str, path: str, **params: object) -> str:
+    return f"{base_url}{path}?{urlencode(params)}"
+
+
+def _linked_issue_lifecycle_from_suite(
+    timeline_payload: dict[str, Any],
+    *,
+    run_id: int,
+    issue_number: int,
+) -> tuple[dict[str, str], int]:
+    """Validate the E2E suite lifecycle and summarize the target issue cycles."""
+    suite = E2ESuiteTimelineContainer.model_validate(timeline_payload["lifecycle"])
+    assert suite.subject.kind == "e2e_suite"
+    assert len(suite.runs) == 1
+
+    run_iteration = suite.runs[0]
+    assert run_iteration.kind == "e2e_run"
+    assert run_iteration.subject.kind == "e2e_run"
+    assert run_iteration.subject.id == str(run_id)
+    assert run_iteration.e2e_run.run_id == run_id
+    assert run_iteration.e2e_run.tests
+    assert run_iteration.e2e_run.linked_issue_lifecycles
+
+    linked_from_tests = []
+    for test_execution in run_iteration.e2e_run.tests:
+        if test_execution.kind == "missing_e2e_test_evidence":
+            continue
+        linked_from_tests.extend(
+            linked.issue_number for linked in test_execution.linked_issues
+        )
+    assert issue_number in linked_from_tests, (
+        f"E2E lifecycle should link issue #{issue_number} from at least one test, "
+        f"got {sorted(set(linked_from_tests))}"
+    )
+
+    target = next(
+        (
+            lifecycle
+            for lifecycle in run_iteration.e2e_run.linked_issue_lifecycles
+            if lifecycle.issue_number == issue_number
+        ),
+        None,
+    )
+    assert target is not None, (
+        f"E2E lifecycle linked tests to issue #{issue_number}, but omitted its "
+        "semantic issue lifecycle"
+    )
+    assert target.cycles
+
+    first_cycle = target.cycles[0]
+    assert first_cycle.coder.kind == "completed_coding_attempt"
+    assert first_cycle.review.kind == "review_approved"
+    assert first_cycle.coder.session_recording.kind == "available"
+    assert first_cycle.coder.completion_record.kind == "available"
+    assert any(
+        command.kind == "open_session_recording"
+        for command in first_cycle.coder.commands
+    )
+    assert any(
+        command.kind == "show_event_details"
+        for command in first_cycle.review.commands
+    )
+
+    return (
+        {
+            "coder_kind": first_cycle.coder.kind,
+            "review_kind": first_cycle.review.kind,
+            "outcome": first_cycle.outcome,
+        },
+        len(target.cycles),
+    )
+
+
+def _dashboard_lifecycle_summary(
+    detail_payload: dict[str, Any],
+    *,
+    issue_number: int,
+) -> tuple[dict[str, str], int]:
+    """Validate the dashboard dummy-container lifecycle returned to the drawer."""
+    dashboard = DashboardTimelineContainer.model_validate(detail_payload["lifecycle"])
+    assert dashboard.subject.kind == "dashboard"
+    assert dashboard.current.subject.kind == "dashboard"
+    assert len(dashboard.current.issue_lifecycles) == 1
+
+    lifecycle = dashboard.current.issue_lifecycles[0]
+    assert lifecycle.issue_number == issue_number
+    assert lifecycle.cycles
+    first_cycle = lifecycle.cycles[0]
+    assert first_cycle.coder.kind == "completed_coding_attempt"
+    assert first_cycle.review.kind == "review_approved"
+
+    return (
+        {
+            "coder_kind": first_cycle.coder.kind,
+            "review_kind": first_cycle.review.kind,
+            "outcome": first_cycle.outcome,
+        },
+        len(lifecycle.cycles),
+    )
+
+
+def _expected_rendered_runs(detail_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    runs = detail_payload["runs"]
+    assert isinstance(runs, list) and runs, "issue detail payload should include runs"
+    return [runs[-1]]
+
+
+def _expected_rendered_step_narratives(detail_payload: dict[str, Any]) -> list[str]:
+    narratives: list[str] = []
+    for run in _expected_rendered_runs(detail_payload):
+        for cycle in run["cycles"]:
+            phase_groups = cycle.get("phase_groups") or [
+                {"label": "", "steps": cycle.get("steps", [])}
+            ]
+            for group in phase_groups:
+                for step in group.get("steps", []):
+                    narratives.append(str(step["narrative"]))
+    assert narratives, "issue detail payload should render at least one journey step"
+    return narratives
+
+
+def _expected_rendered_phase_labels(detail_payload: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for run in _expected_rendered_runs(detail_payload):
+        for cycle in run["cycles"]:
+            for group in cycle.get("phase_groups") or []:
+                label = str(group.get("label") or "")
+                if label:
+                    labels.append(label)
+    return labels
+
+
+def _assert_issue_detail_dom_matches_payload(
+    page: Page,
+    journey: Locator,
+    detail_payload: dict[str, Any],
+    *,
+    expected_cycle_count: int,
+) -> None:
+    """Assert the rendered drawer is a faithful display of its rich payload."""
+    expected_runs = _expected_rendered_runs(detail_payload)
+    expected_dom_cycle_count = sum(len(run["cycles"]) for run in expected_runs)
+    assert expected_dom_cycle_count == expected_cycle_count
+
+    expect(journey.locator(".journey-run")).to_have_count(len(expected_runs))
+    expect(journey.locator(".journey-cycle")).to_have_count(expected_dom_cycle_count)
+
+    rendered_narratives = [
+        text.strip()
+        for text in journey.locator(".journey-step .journey-narrative").all_text_contents()
+    ]
+    expected_narratives = _expected_rendered_step_narratives(detail_payload)
+    assert rendered_narratives == expected_narratives, (
+        "journey step narratives should render directly from the endpoint payload "
+        f"without dropping/reordering semantic lifecycle steps:\n"
+        f"expected={expected_narratives!r}\nactual={rendered_narratives!r}"
+    )
+
+    rendered_phase_labels = [
+        text.strip()
+        for text in journey.locator(".journey-phase-header").all_text_contents()
+    ]
+    assert rendered_phase_labels == _expected_rendered_phase_labels(detail_payload)
+
+    run = expected_runs[0]
+    run_header = journey.locator(".journey-run > .journey-cycle-header").first
+    expect(run_header).to_contain_text(f"Run {run['run_number']}")
+    expect(run_header).to_contain_text(str(run["outcome"]))
+    _expect_parseable_time_text(
+        page,
+        run_header.locator(".journey-cycle-time"),
+        "issue-detail payload run timestamp",
+    )
+
+
 def test_run_drawer_timeline_renders_clickable_issue_links(
-    page: Page, fixture_web_server: dict[str, object]
+    page: Page,
+    fixture_web_server: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Validate row-level affordance placement and click-through content.
 
@@ -398,11 +660,45 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     """
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
+    repo_root = fixture_web_server["repo_root"]
+    caplog.set_level(
+        "WARNING",
+        logger="issue_orchestrator.entrypoints.timeline_presentation",
+    )
 
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
     page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    timeline_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/control/e2e/run/{run_id}/timeline",
+            repo_root=str(repo_root),
+            config_name="default",
+        ),
+    )
+    issue_detail_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/e2e-run/{run_id}/issue-detail/{TEST_CLICK_ISSUE_NUMBER}",
+            view="user",
+        ),
+    )
+    suite_cycle_summary, suite_cycle_count = _linked_issue_lifecycle_from_suite(
+        timeline_payload,
+        run_id=int(run_id),
+        issue_number=TEST_CLICK_ISSUE_NUMBER,
+    )
+    detail_cycle_summary, detail_cycle_count = _dashboard_lifecycle_summary(
+        issue_detail_payload,
+        issue_number=TEST_CLICK_ISSUE_NUMBER,
+    )
+    assert detail_cycle_summary == suite_cycle_summary
+    assert detail_cycle_count == suite_cycle_count
+
     # Open the run drawer through the visible E2E Run History Timeline
     # affordance. This is intentionally not page.evaluate(): the
     # regression was that users had no visible way to get here.
@@ -437,11 +733,11 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(timeline_panel).to_be_visible(timeout=5000)
     expect(page.locator("#e2eTimelineContent")).to_have_attribute(
         "data-lifecycle-kind",
-        "e2e_suite",
+        timeline_payload["lifecycle"]["kind"],
     )
     expect(page.locator("#e2eTimelineContent")).to_have_attribute(
         "data-lifecycle-iterations",
-        "1",
+        str(len(timeline_payload["lifecycle"]["runs"])),
     )
 
     # Run-level issue timeline buttons are the missing affordance from
@@ -563,7 +859,11 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(detail_drawer).to_be_visible(timeout=5000)
     expect(page.locator("#issueDetailDrawer")).to_have_attribute(
         "data-lifecycle-kind",
-        "dashboard",
+        issue_detail_payload["lifecycle"]["kind"],
+    )
+    expect(page.locator("#issueDetailDrawer")).to_have_attribute(
+        "data-lifecycle-iterations",
+        "1",
     )
     # Title alone is not sufficient — it's set before the fetch completes.
     expect(page.locator("#issueDetailTitle")).to_contain_text(
@@ -595,6 +895,12 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(journey).to_contain_text("Agent finished coding")
     expect(journey).to_contain_text("Review approved")
     expect(journey.locator(".timeline-empty")).to_have_count(0)
+    _assert_issue_detail_dom_matches_payload(
+        page,
+        journey,
+        issue_detail_payload,
+        expected_cycle_count=detail_cycle_count,
+    )
 
     # And the status line must no longer show the loading / unavailable text.
     status_el = page.locator("#issueDetailStatus")
@@ -618,8 +924,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # hit-testable at its own center (nothing is covering it), and
     # (c) can be dismissed without also dismissing the drawer.
     focus_btn = page.locator("#issueDetailFocusBtn")
-    expect(focus_btn).to_be_visible(timeout=5000)
-    focus_btn.click()
+    _dom_click_hit_tested(focus_btn, "issue detail focus button")
 
     timeline_modal = page.locator("#timelineModal.visible")
     expect(timeline_modal).to_be_visible(timeout=5000)
@@ -659,7 +964,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # Dismiss the timeline modal via its close button and verify the
     # drawer is still visible underneath (closing the modal must not
     # close the drawer).
-    page.locator("#timelineModal .modal-close").first.click()
+    _dom_click_hit_tested(
+        page.locator("#timelineModal .modal-close").first,
+        "timeline modal close button",
+    )
     expect(page.locator("#timelineModal.visible")).to_have_count(0, timeout=5000)
     expect(page.locator("#issueDetailDrawer.visible")).to_have_count(1)
 
@@ -783,6 +1091,11 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         f"synthetic session text {_SYNTHETIC_SESSION_OUTPUT!r} not found in "
         f"decoded terminal output: {decoded_output.get('text')!r}"
     )
+    assert not [
+        record.message
+        for record in caplog.records
+        if "Timeline action decoration failed" in record.message
+    ]
     assert _SYNTHETIC_SESSION_OUTPUT_FOLLOWUP in decoded_output.get("text", ""), (
         f"follow-up synthetic text {_SYNTHETIC_SESSION_OUTPUT_FOLLOWUP!r} "
         f"not found in decoded terminal output: {decoded_output.get('text')!r}"

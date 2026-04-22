@@ -1831,6 +1831,50 @@ class TestProcessActiveSessions:
         # Session should still be in active list
         assert len(state.active_sessions) == 1
 
+    def test_keeps_deferred_completion_sessions_active(self, sample_agent_config, tmp_path):
+        """A RUNNING decision after observation is a deferral, not completion."""
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=123, title="Test", labels=["agent:web"])
+        issue_key = FakeIssueKey("123")
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+
+        state = OrchestratorState()
+        state.active_sessions = [session]
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.terminated()
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.return_value = SessionDecision(
+            status=SessionStatus.RUNNING,
+            reason="Review exchange running in background; awaiting completion",
+        )
+        mock_completion_handler = MagicMock()
+        mock_action_applier = MagicMock()
+
+        process_active_sessions(
+            state=state,
+            observer=mock_observer,
+            session_controller=mock_controller,
+            completion_handler=mock_completion_handler,
+            action_applier=mock_action_applier,
+            worktree_manager=None,
+            kill_session_fn=MagicMock(),
+            config=MagicMock(),
+        )
+
+        assert state.active_sessions == [session]
+        mock_completion_handler.process_completion.assert_not_called()
+        mock_action_applier.apply_actions.assert_not_called()
+
 
 # =============================================================================
 # Session Helper Tests

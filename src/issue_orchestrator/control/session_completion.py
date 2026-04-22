@@ -251,6 +251,15 @@ def process_active_sessions(
             session.issue.title, session.terminal_id, session.completion_path,
             validation_retry_count=session.validation_retry_count
         )
+        if decision.status == SessionStatus.RUNNING:
+            logger.info(
+                "[COMPLETION] Session remains active after completion decision: "
+                "session=%s issue=%s reason=%s",
+                session.terminal_id,
+                session.issue.number,
+                decision.reason,
+            )
+            continue
         # Extract pr_url, errors, and diagnostic_path from completion processor result
         pr_url_hint = None
         processing_errors = None

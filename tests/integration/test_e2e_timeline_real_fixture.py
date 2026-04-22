@@ -23,6 +23,7 @@ against the same run to bless the new expectations.
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 from pathlib import Path
@@ -36,6 +37,17 @@ from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
 
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "e2e_runs"
+FIXTURE_RUN_DIR_REWRITTEN_PATH_KEYS = (
+    "worktree_path",
+    "session_prompt_path",
+    "completion_path_absolute",
+)
+FIXTURE_REVIEW_PHASE_RECORDING_ROLES = {
+    "review_exchange.round_started": "reviewer",
+    "review_exchange.round_completed": "reviewer",
+    "review.rework_started": "coder",
+    "review.rework_completed": "coder",
+}
 
 
 def _discover_fixtures() -> list[Path]:
@@ -70,7 +82,113 @@ def _stage_fixture_layout(fixture: Path, tmp_path: Path) -> Path:
         fixture / "worktree_timeline.sqlite",
         wt_state / "timeline.sqlite",
     )
+    _materialize_fixture_run_dirs(wt_state / "timeline.sqlite", tmp_path / "run-dirs")
     return repo_root
+
+
+def _materialize_fixture_run_dirs(worktree_db: Path, run_dir_root: Path) -> None:
+    """Replace sanitized fixture run_dir paths with real directories.
+
+    Captured fixtures store machine-specific run paths as ``<TMP>/...``.
+    The production action decorator correctly treats missing run directories
+    as a malformed run-scoped event, so integration fixtures must satisfy that
+    contract instead of accepting warning noise.
+    """
+    import sqlite3
+
+    rows: list[tuple[int, str, str, str]] = []
+    with sqlite3.connect(str(worktree_db)) as conn:
+        for sequence, event_name, run_dir, data_json in conn.execute(
+            """
+            SELECT sequence, event, run_dir, data_json
+            FROM timeline_events
+            WHERE run_dir != ''
+            ORDER BY sequence ASC
+            """
+        ):
+            rows.append((int(sequence), str(event_name), str(run_dir), str(data_json or "{}")))
+
+        replacements: dict[str, Path] = {}
+        for _sequence, _event_name, original_run_dir, _data_json in rows:
+            if original_run_dir not in replacements:
+                synthetic_run_dir = run_dir_root / f"session-{len(replacements) + 1}"
+                _write_minimal_terminal_recording(synthetic_run_dir)
+                replacements[original_run_dir] = synthetic_run_dir
+
+        for sequence, event_name, original_run_dir, data_json in rows:
+            synthetic_run_dir = replacements[original_run_dir]
+            data = json.loads(data_json)
+            if isinstance(data, dict):
+                data["run_dir"] = str(synthetic_run_dir)
+                role = FIXTURE_REVIEW_PHASE_RECORDING_ROLES.get(event_name)
+                round_index = data.get("round_index")
+                if role is not None and isinstance(round_index, int):
+                    _write_review_phase_terminal_recording(
+                        synthetic_run_dir,
+                        round_index=round_index,
+                        role=role,
+                    )
+                for key in FIXTURE_RUN_DIR_REWRITTEN_PATH_KEYS:
+                    value = data.get(key)
+                    if not isinstance(value, str):
+                        continue
+                    if key == "worktree_path":
+                        data[key] = str(synthetic_run_dir.parent)
+                    else:
+                        data[key] = str(synthetic_run_dir / Path(value).name)
+            conn.execute(
+                "UPDATE timeline_events SET run_dir = ?, data_json = ? WHERE sequence = ?",
+                (str(synthetic_run_dir), json.dumps(data), sequence),
+            )
+        conn.commit()
+
+
+def _write_minimal_terminal_recording(run_dir: Path) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload = base64.b64encode(b"integration fixture session\n").decode("ascii")
+    (run_dir / "terminal-recording.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "output",
+                "offset_ms": 0,
+                "data_b64": payload,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_review_phase_terminal_recording(
+    run_dir: Path,
+    *,
+    round_index: int,
+    role: str,
+) -> None:
+    recording = (
+        run_dir
+        / "review-exchange"
+        / f"round-{round_index:03d}"
+        / role
+        / "terminal-recording.jsonl"
+    )
+    recording.parent.mkdir(parents=True, exist_ok=True)
+    payload = base64.b64encode(f"integration fixture {role} round {round_index}\n".encode()).decode(
+        "ascii",
+    )
+    recording.write_text(
+        json.dumps(
+            {
+                "event_type": "output",
+                "offset_ms": 0,
+                "data_b64": payload,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _stage_fixture_with_real_timeline_reader(

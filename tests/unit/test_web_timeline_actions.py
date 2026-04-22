@@ -45,6 +45,26 @@ class TestTimelineActionWiring:
         "open_session_diagnostics": ("issue_number", "run_dir"),
     }
 
+    def _write_review_phase_recording(
+        self,
+        run_dir: Path,
+        *,
+        round_index: int,
+        role: str,
+    ) -> None:
+        recording = (
+            run_dir
+            / "review-exchange"
+            / f"round-{round_index:03d}"
+            / role
+            / "terminal-recording.jsonl"
+        )
+        recording.parent.mkdir(parents=True, exist_ok=True)
+        recording.write_text(
+            '{"event_type":"output","offset_ms":0,"data_b64":"cmV2aWV3Cg==","schema_version":1}\n',
+            encoding="utf-8",
+        )
+
     def _collect_app_route_patterns(self) -> set[str]:
         """Extract all registered route patterns from the FastAPI app."""
         patterns: set[str] = set()
@@ -531,6 +551,8 @@ class TestTimelineActionWiring:
             "[2026-03-20T04:39:32Z] round=2 role=reviewer section=prompt\nPrompt\n",
             encoding="utf-8",
         )
+        self._write_review_phase_recording(run.run_dir, round_index=2, role="reviewer")
+        self._write_review_phase_recording(run.run_dir, round_index=2, role="coder")
 
         review_round_actions = _timeline_event_actions(
             {
@@ -662,6 +684,7 @@ class TestTimelineActionWiring:
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
         run_dir = str(run.run_dir)
+        self._write_review_phase_recording(run.run_dir, round_index=2, role="reviewer")
 
         round_completed_actions = _timeline_event_actions(
             {
@@ -865,24 +888,29 @@ class TestTimelineActionWiring:
         assert "view_claude_log" not in action_types
         assert "show_actions_error" not in action_types
 
-    def test_run_scoped_event_without_run_dir_fails_fast(self, tmp_path: Path) -> None:
+    def test_review_oriented_non_session_event_without_run_dir_keeps_non_run_actions(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
-        with pytest.raises(RuntimeError, match="missing required run_dir"):
-            _timeline_event_actions(
-                {
-                    "event": "review.comment_added",
-                    "issue_number": 1,
-                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
-                    "event_intent": "review",
-                    "review_oriented": True,
-                    "logical_run": 1,
-                    "logical_cycle": 1,
-                    "logical_phase": "review",
-                },
-                1,
-            )
+        actions_without_run_dir = _timeline_event_actions(
+            {
+                "event": "review.comment_added",
+                "issue_number": 1,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                "event_intent": "review",
+                "review_oriented": True,
+                "logical_run": 1,
+                "logical_cycle": 1,
+                "logical_phase": "review",
+            },
+            1,
+        )
+        non_run_scoped_types = [action.get("type") for action in actions_without_run_dir]
+        assert non_run_scoped_types == [
+            "open_review_feedback",
+            "open_orchestrator_log",
+            "open_session_diagnostics",
+        ]
 
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-run-warning"
@@ -905,6 +933,57 @@ class TestTimelineActionWiring:
         run_scoped_types = {action.get("type") for action in actions_with_run_dir}
         assert "open_agent_log" in run_scoped_types
         assert "view_claude_log" in run_scoped_types
+
+    @pytest.mark.parametrize(
+        "event_name",
+        (
+            "review_exchange.round_started",
+            "review_exchange.round_completed",
+            "review.rework_started",
+            "review.rework_completed",
+        ),
+    )
+    def test_review_phase_log_events_without_run_dir_fail_fast(self, event_name: str) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+
+        with pytest.raises(RuntimeError, match="timeline event missing required run_dir"):
+            _timeline_event_actions(
+                {
+                    "event": event_name,
+                    "issue_number": 1,
+                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                    "round_index": 1,
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "review",
+                },
+                1,
+            )
+
+    def test_review_phase_log_event_with_missing_round_recording_fails_fast(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-missing-round-recording"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=1)
+        (run.run_dir / "ui-session.log").write_text("review output\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="timeline review phase recording missing"):
+            _timeline_event_actions(
+                {
+                    "event": "review_exchange.round_completed",
+                    "issue_number": 1,
+                    "run_dir": str(run.run_dir),
+                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                    "round_index": 2,
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "review",
+                },
+                1,
+            )
 
     def test_decorate_timeline_events_preserves_fallback_actions_when_strict_actions_fail(self) -> None:
         from issue_orchestrator.entrypoints.web import _decorate_timeline_events

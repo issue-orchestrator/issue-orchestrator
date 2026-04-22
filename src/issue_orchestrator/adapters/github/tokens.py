@@ -18,7 +18,7 @@ KEYRING_USERNAME = "github-token"
 
 def resolve_github_token(
     *,
-    configured_token: str | None,
+    configured_token: str | None = None,
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
