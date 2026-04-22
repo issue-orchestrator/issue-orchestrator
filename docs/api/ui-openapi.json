@@ -289,6 +289,35 @@
         }
       }
     },
+    "/api/e2e-run-detail/{run_id}": {
+      "get": {
+        "summary": "Get E2E run detail payload",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "E2E run detail",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/E2ERunDetailPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/control/e2e/run/{run_id}/timeline": {
       "get": {
         "summary": "Get E2E run timeline payload",
@@ -507,6 +536,52 @@
           "previous_runs_count": {"type": "integer"},
           "raw_events_count": {"type": "integer"},
           "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
+          "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
+          "view": {"type": "string", "default": "user"}
+        }
+      },
+      "E2ERunDetailPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "title",
+          "issue_url",
+          "phase_toc",
+          "cycles",
+          "events",
+          "summary",
+          "actions",
+          "status_explanation",
+          "runs",
+          "timeline_steps",
+          "run_count",
+          "previous_runs",
+          "previous_runs_count",
+          "raw_events_count",
+          "blocked_detail",
+          "issue_affordances",
+          "lifecycle"
+        ],
+        "properties": {
+          "issue_number": {"type": ["integer", "string"]},
+          "e2e_run_id": {"type": ["integer", "null"]},
+          "title": {"type": "string"},
+          "issue_url": {"type": "string"},
+          "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "cycles": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "events": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "summary": {"type": "object", "additionalProperties": true},
+          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "status_explanation": {"type": "string"},
+          "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "run_count": {"type": "integer"},
+          "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "previous_runs_count": {"type": "integer"},
+          "raw_events_count": {"type": "integer"},
+          "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
+          "issue_affordances": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
           "view": {"type": "string", "default": "user"}
         }
@@ -1018,7 +1093,7 @@
         "additionalProperties": false,
         "required": [
           "kind", "reviewer", "started_at", "completed_at", "session_recording",
-          "transcript_available", "commands"
+          "transcript", "commands"
         ],
         "properties": {
           "kind": {"const": "review_approved"},
@@ -1026,9 +1101,34 @@
           "started_at": {"type": "string"},
           "completed_at": {"type": "string"},
           "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
-          "transcript_available": {"type": "boolean"},
+          "transcript": {"$ref": "#/components/schemas/ReviewTranscriptEvidencePayload"},
           "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
+      },
+      "ReviewTranscriptAvailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": {"const": "available"}
+        }
+      },
+      "ReviewTranscriptUnavailablePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reason", "diagnostics"],
+        "properties": {
+          "kind": {"const": "unavailable"},
+          "reason": {"type": "string"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+        }
+      },
+      "ReviewTranscriptEvidencePayload": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/ReviewTranscriptAvailablePayload"},
+          {"$ref": "#/components/schemas/ReviewTranscriptUnavailablePayload"}
+        ],
+        "discriminator": {"propertyName": "kind"}
       },
       "ReviewChangesRequestedPayload": {
         "type": "object",
@@ -1044,6 +1144,23 @@
           "completed_at": {"type": "string"},
           "feedback_summary": {"type": "string"},
           "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
+      "ReviewFailedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "failed_at", "reason", "session_recording", "diagnostics", "commands"
+        ],
+        "properties": {
+          "kind": {"const": "review_failed"},
+          "reviewer": {"oneOf": [{"$ref": "#/components/schemas/AgentIdentityPayload"}, {"type": "null"}]},
+          "started_at": {"type": ["string", "null"]},
+          "failed_at": {"type": "string"},
+          "reason": {"type": "string"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
           "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
       },
@@ -1067,6 +1184,7 @@
           {"$ref": "#/components/schemas/ReviewRunningPayload"},
           {"$ref": "#/components/schemas/ReviewApprovedPayload"},
           {"$ref": "#/components/schemas/ReviewChangesRequestedPayload"},
+          {"$ref": "#/components/schemas/ReviewFailedPayload"},
           {"$ref": "#/components/schemas/MissingReviewEvidencePayload"}
         ],
         "discriminator": {"propertyName": "kind"}

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ..contracts.ui_openapi_models import IssueDetailPayload
+from ..contracts.ui_openapi_models import E2ERunDetailPayload, IssueDetailPayload
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES
 from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -264,17 +264,19 @@ async def get_issue_detail(
         issue_number=issue_number,
         title=payload["title"],
         events=events,
-        cycles=cycles,
     )
     return IssueDetailPayload.model_validate(payload)
 
 
-@web_issue_detail_router.get("/api/e2e-run-detail/{run_id}")
+@web_issue_detail_router.get(
+    "/api/e2e-run-detail/{run_id}",
+    response_model=E2ERunDetailPayload,
+)
 async def get_e2e_run_detail(
     run_id: int,
     orchestrator: WebOrchestratorDependency,
     view: str = "user",
-) -> JSONResponse:
+) -> E2ERunDetailPayload | JSONResponse:
     """Get E2E run detail using the shared issue-detail timeline pipeline."""
     from ..domain.timeline_key import TimelineKey
     from ..timeline import TimelineStream
@@ -344,7 +346,7 @@ async def get_e2e_run_detail(
             subject_label="E2E Suite",
         )
     )
-    return JSONResponse(payload)
+    return E2ERunDetailPayload.model_validate(payload)
 
 
 @web_issue_detail_router.get(
@@ -459,7 +461,6 @@ async def get_e2e_issue_detail(
         issue_number=issue_number,
         title=payload["title"],
         events=events,
-        cycles=payload["cycles"],
     )
     return IssueDetailPayload.model_validate(payload)
 
@@ -469,7 +470,6 @@ def _dashboard_lifecycle_payload(
     issue_number: int,
     title: str,
     events: list[dict[str, Any]],
-    cycles: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return model_to_plain_dict(
         project_dashboard_lifecycle_container(
@@ -477,7 +477,9 @@ def _dashboard_lifecycle_payload(
             issue_number=issue_number,
             title=title,
             events=events,
-            cycles=cycles,
+            # Legacy presentation cycles are display groupings. Semantic
+            # lifecycle cycles are derived from backend-owned logical fields.
+            cycles=(),
         )
     )
 

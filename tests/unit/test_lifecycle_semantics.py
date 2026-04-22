@@ -28,8 +28,12 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
     PassedE2ETestExecution,
+    ReviewApproved,
     ReviewChangesRequested,
+    ReviewFailed,
     ReviewNotReached,
+    ReviewTranscriptAvailable,
+    RunningCodingAttempt,
     SessionRecordingUnavailable,
     ShowEventDetailsCommand,
     TimelineDiagnostic,
@@ -238,6 +242,97 @@ def test_issue_cycle_requires_coder_and_review_stage() -> None:
         )
 
 
+def test_issue_cycle_rejects_incoherent_coder_review_combinations() -> None:
+    running = RunningCodingAttempt(
+        issue_number=1,
+        agent=_coder(),
+        started_at="2026-04-21T10:00:00Z",
+        session_recording=_session_unavailable(),
+        commands=(_details(),),
+    )
+    terminal_review = ReviewChangesRequested(
+        reviewer=_reviewer(),
+        started_at="2026-04-21T10:12:00Z",
+        completed_at="2026-04-21T10:14:00Z",
+        feedback_summary="Please add tests",
+        session_recording=_session_unavailable(),
+        commands=(
+            _details("event:review"),
+            OpenReviewFeedbackCommand(issue_number=1, event_ref="event:review"),
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="coding_in_progress"):
+        IssueCycle(
+            cycle_number=1,
+            coder=running,
+            review=terminal_review,
+            outcome="changes_requested",
+        )
+
+
+def test_issue_cycle_allows_missing_coding_evidence_with_review_evidence() -> None:
+    missing_coder = MissingCodingEvidence(
+        issue_number=1,
+        expected_state="completed",
+        observed_at="2026-04-21T10:10:00Z",
+        missing=(
+            MissingEvidence(
+                evidence="completion_record",
+                reason="completion event observed but record not found",
+            ),
+        ),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="coding.completion_record_missing",
+                message="Completion record missing for completed coding attempt",
+                severity="error",
+            ),
+        ),
+        commands=(_details(),),
+    )
+    review = ReviewApproved(
+        reviewer=_reviewer(),
+        started_at="2026-04-21T10:12:00Z",
+        completed_at="2026-04-21T10:14:00Z",
+        session_recording=_session_unavailable(),
+        transcript=ReviewTranscriptAvailable(),
+        commands=(_details("event:review"),),
+    )
+
+    cycle = IssueCycle(
+        cycle_number=1,
+        coder=missing_coder,
+        review=review,
+        outcome="approved",
+    )
+
+    assert cycle.coder.kind == "missing_coding_evidence"
+    assert cycle.review.kind == "review_approved"
+
+
+def test_terminal_lifecycle_states_reject_inverted_chronology() -> None:
+    with pytest.raises(ValidationError, match="started_at"):
+        CompletedCodingAttempt(
+            issue_number=1,
+            agent=_coder(),
+            started_at="2026-04-21T10:10:00Z",
+            completed_at="2026-04-21T10:00:00Z",
+            completion_record=_completion(),
+            validation=ValidationPassed(command="pytest", record_path="/runs/validation.json"),
+            session_recording=_session_unavailable(),
+            commands=(_details(), _completion_cmd()),
+        )
+
+    with pytest.raises(ValidationError, match="started_at"):
+        PassedE2ETestExecution(
+            nodeid="tests/e2e/test_a.py::test_a",
+            started_at="2026-04-21T11:01:00Z",
+            completed_at="2026-04-21T11:00:00Z",
+            commands=(_details("event:test"),),
+        )
+
+
 def test_review_changes_requested_requires_feedback_command() -> None:
     with pytest.raises(ValidationError, match="open_review_feedback"):
         ReviewChangesRequested(
@@ -267,6 +362,35 @@ def test_review_changes_requested_requires_feedback_command() -> None:
     )
 
 
+def test_review_approved_uses_tagged_transcript_evidence() -> None:
+    review = ReviewApproved(
+        reviewer=_reviewer(),
+        started_at="2026-04-21T10:12:00Z",
+        completed_at="2026-04-21T10:14:00Z",
+        session_recording=_session_unavailable(),
+        transcript=ReviewTranscriptAvailable(),
+        commands=(_details("event:review"),),
+    )
+
+    payload = model_to_plain_dict(review)
+
+    assert payload["transcript"]["kind"] == "available"
+
+
+def test_review_failed_is_distinct_terminal_state() -> None:
+    review = ReviewFailed(
+        reviewer=_reviewer(),
+        started_at="2026-04-21T10:12:00Z",
+        failed_at="2026-04-21T10:14:00Z",
+        reason="review exchange crashed",
+        session_recording=_session_unavailable(),
+        commands=(_details("event:review-failed"),),
+    )
+
+    assert review.kind == "review_failed"
+    assert review.reason == "review exchange crashed"
+
+
 def test_dashboard_container_iterates_singleton_current_iteration() -> None:
     iteration = DashboardIteration(
         subject=TimelineSubject(
@@ -283,6 +407,24 @@ def test_dashboard_container_iterates_singleton_current_iteration() -> None:
 
     assert list(container.iter_iterations()) == [iteration]
     assert validate_lifecycle_container(container) == ()
+
+
+def test_containers_reject_mismatched_subject_kinds() -> None:
+    iteration = DashboardIteration(
+        subject=TimelineSubject(kind="dashboard", id="current", label="Dashboard"),
+        issue_lifecycles=(_issue_lifecycle(),),
+    )
+    with pytest.raises(ValidationError, match="dashboard container subject"):
+        DashboardTimelineContainer(
+            subject=TimelineSubject(kind="e2e_suite", id="suite", label="E2E Suite"),
+            current=iteration,
+        )
+
+    with pytest.raises(ValidationError, match="E2E suite container subject"):
+        E2ESuiteTimelineContainer(
+            subject=TimelineSubject(kind="dashboard", id="current", label="Dashboard"),
+            runs=(_e2e_iteration(run_id=88, nodeid="tests/e2e/test_a.py::test_a"),),
+        )
 
 
 def test_e2e_container_iterates_multiple_run_iterations() -> None:

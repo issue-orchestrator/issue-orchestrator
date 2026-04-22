@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from .lifecycle_semantics import (
     AgentIdentity,
@@ -44,10 +44,14 @@ from .lifecycle_semantics import (
     PassedE2ETestExecution,
     ReviewApproved,
     ReviewChangesRequested,
+    ReviewFailed,
     ReviewNotReached,
     ReviewRunning,
     ReviewSkipped,
     ReviewStage,
+    ReviewTranscriptAvailable,
+    ReviewTranscriptEvidence,
+    ReviewTranscriptUnavailable,
     RunningCodingAttempt,
     RunningE2ETestExecution,
     SessionRecordingAvailable,
@@ -67,6 +71,8 @@ from .lifecycle_semantics import (
 )
 
 EventDict = Mapping[str, Any]
+CodingExpectedState = Literal["completed", "running", "blocked", "failed"]
+ReviewExpectedState = Literal["approved", "changes_requested", "running"]
 
 _CODING_START_EVENTS = frozenset({
     "agent.coding_started",
@@ -102,6 +108,7 @@ _REVIEW_START_EVENTS = frozenset({
 _REVIEW_APPROVED_EVENTS = frozenset({"review.approved"})
 _REVIEW_CHANGES_REQUESTED_EVENTS = frozenset({"review.changes_requested"})
 _REVIEW_SKIPPED_EVENTS = frozenset({"review.skipped"})
+_REVIEW_FAILED_EVENTS = frozenset({"review_exchange.failed"})
 _E2E_TEST_STARTED = "e2e.test_started"
 _E2E_TEST_COMPLETED = "e2e.test_completed"
 
@@ -291,7 +298,10 @@ def require_lifecycle_container_valid(container: TimelineContainer) -> None:
 def _cycle_events(cycle: EventDict, all_events: Sequence[EventDict]) -> tuple[EventDict, ...]:
     raw = cycle.get("events")
     if isinstance(raw, list):
-        return tuple(event for event in raw if isinstance(event, Mapping))
+        events = tuple(event for event in raw if isinstance(event, Mapping))
+        if not _has_coding_lifecycle_signal(events) and _has_coding_lifecycle_signal(all_events):
+            return tuple(event for event in all_events if isinstance(event, Mapping))
+        return events
     cycle_number = cycle.get("cycle")
     if isinstance(cycle_number, int):
         return tuple(
@@ -301,6 +311,25 @@ def _cycle_events(cycle: EventDict, all_events: Sequence[EventDict]) -> tuple[Ev
     return tuple(event for event in all_events if isinstance(event, Mapping))
 
 
+def _has_coding_lifecycle_signal(events: Sequence[EventDict]) -> bool:
+    signal_events = _CODING_START_EVENTS | _CODING_COMPLETED_EVENTS | _CODING_BLOCKED_EVENTS | _CODING_FAILED_EVENTS
+    return any(
+        _event_name(event) in signal_events and not _is_review_completion_observation(event)
+        for event in events
+    )
+
+
+def _has_review_lifecycle_signal(events: Sequence[EventDict]) -> bool:
+    signal_events = (
+        _REVIEW_START_EVENTS
+        | _REVIEW_APPROVED_EVENTS
+        | _REVIEW_CHANGES_REQUESTED_EVENTS
+        | _REVIEW_SKIPPED_EVENTS
+        | _REVIEW_FAILED_EVENTS
+    )
+    return any(_event_name(event) in signal_events for event in events)
+
+
 def _semantic_cycle_inputs(
     events: Sequence[EventDict],
     cycles: Sequence[EventDict],
@@ -308,9 +337,38 @@ def _semantic_cycle_inputs(
     real_cycles = tuple(cycle for cycle in cycles if isinstance(cycle, Mapping))
     if real_cycles:
         return real_cycles
+    logical_cycles = _semantic_cycle_inputs_from_logical_fields(events)
+    if logical_cycles:
+        return logical_cycles
     if events:
         return ({"cycle": 1, "events": list(events), "status": "observed"},)
     return ({"cycle": 1, "events": [], "status": "missing_evidence"},)
+
+
+def _semantic_cycle_inputs_from_logical_fields(events: Sequence[EventDict]) -> tuple[EventDict, ...]:
+    grouped: dict[tuple[int, int], list[EventDict]] = defaultdict(list)
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        logical_run = event.get("logical_run")
+        logical_cycle = event.get("logical_cycle")
+        if not isinstance(logical_run, int) or logical_run <= 0:
+            return ()
+        if not isinstance(logical_cycle, int) or logical_cycle <= 0:
+            return ()
+        grouped[(logical_run, logical_cycle)].append(event)
+
+    return tuple(
+        {
+            "cycle": index,
+            "events": list(group_events),
+            "status": "observed",
+        }
+        for index, group_events in enumerate(
+            (grouped[key] for key in sorted(grouped)),
+            start=1,
+        )
+    )
 
 
 def _project_coder(
@@ -320,33 +378,46 @@ def _project_coder(
     events: Sequence[EventDict],
 ) -> CodingAttempt:
     start = _first_event(events, _CODING_START_EVENTS)
-    completed = _last_event(events, _CODING_COMPLETED_EVENTS)
-    blocked = _last_event(events, _CODING_BLOCKED_EVENTS)
-    failed = _last_event(events, _CODING_FAILED_EVENTS)
-    observed = _event_timestamp(completed or blocked or failed or start)
+    terminal = _last_coding_terminal_event(events)
+    observed = _event_timestamp(terminal or start)
 
-    if completed is not None:
+    if terminal is not None and _event_name(terminal) in _CODING_COMPLETED_EVENTS:
         return _completed_coder_attempt(
             issue_number=issue_number,
             events=events,
             start=start,
-            completed=completed,
+            completed=terminal,
             observed_at=observed,
         )
 
-    if blocked is not None:
+    if terminal is not None and _event_name(terminal) in _CODING_BLOCKED_EVENTS:
         return _blocked_coder_attempt(
             issue_number=issue_number,
             start=start,
-            blocked=blocked,
+            blocked=terminal,
             observed_at=observed,
         )
 
-    if failed is not None:
+    if terminal is not None and _event_name(terminal) in _CODING_FAILED_EVENTS:
         return _failed_coder_attempt(
             issue_number=issue_number,
             start=start,
-            failed=failed,
+            failed=terminal,
+        )
+
+    if start is not None and _has_review_lifecycle_signal(events):
+        observed_event = _last_review_lifecycle_event(events) or start
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=_event_timestamp(observed_event),
+            missing=(
+                _missing(
+                    "coding_terminal_event",
+                    f"cycle {cycle_number} reached review without a completed coding event",
+                ),
+            ),
+            event=observed_event,
         )
 
     if start is not None:
@@ -363,6 +434,35 @@ def _project_coder(
         missing=(_missing("coding_start", f"cycle {cycle_number} has no coding start event"),),
         event=None,
     )
+
+
+def _last_coding_terminal_event(events: Sequence[EventDict]) -> EventDict | None:
+    terminal_events = _CODING_COMPLETED_EVENTS | _CODING_BLOCKED_EVENTS | _CODING_FAILED_EVENTS
+    for event in reversed(events):
+        if _event_name(event) not in terminal_events:
+            continue
+        if _is_review_completion_observation(event):
+            continue
+        return event
+    return None
+
+
+def _is_review_completion_observation(event: EventDict) -> bool:
+    if _event_name(event) != "observation.completion_detected":
+        return False
+    summary = _optional_text(event.get("summary"))
+    return summary is not None and summary.startswith("review_")
+
+
+def _last_review_lifecycle_event(events: Sequence[EventDict]) -> EventDict | None:
+    signal_events = (
+        _REVIEW_START_EVENTS
+        | _REVIEW_APPROVED_EVENTS
+        | _REVIEW_CHANGES_REQUESTED_EVENTS
+        | _REVIEW_SKIPPED_EVENTS
+        | _REVIEW_FAILED_EVENTS
+    )
+    return _last_event(events, signal_events)
 
 
 def _completed_coder_attempt(
@@ -519,26 +619,37 @@ def _project_review(
     review_required: bool,
 ) -> ReviewStage:
     start = _first_event(events, _REVIEW_START_EVENTS)
-    approved = _last_event(events, _REVIEW_APPROVED_EVENTS)
-    changes_requested = _last_event(events, _REVIEW_CHANGES_REQUESTED_EVENTS)
-    skipped = _last_event(events, _REVIEW_SKIPPED_EVENTS)
+    terminal = _last_event(
+        events,
+        _REVIEW_APPROVED_EVENTS
+        | _REVIEW_CHANGES_REQUESTED_EVENTS
+        | _REVIEW_SKIPPED_EVENTS
+        | _REVIEW_FAILED_EVENTS,
+    )
 
-    if approved is not None:
+    if terminal is not None and _event_name(terminal) in _REVIEW_APPROVED_EVENTS:
         return _approved_review(
             issue_number=issue_number,
             start=start,
-            approved=approved,
+            approved=terminal,
         )
 
-    if changes_requested is not None:
+    if terminal is not None and _event_name(terminal) in _REVIEW_CHANGES_REQUESTED_EVENTS:
         return _changes_requested_review(
             issue_number=issue_number,
             start=start,
-            changes_requested=changes_requested,
+            changes_requested=terminal,
         )
 
-    if skipped is not None:
-        return ReviewSkipped(reason=_event_summary(skipped))
+    if terminal is not None and _event_name(terminal) in _REVIEW_FAILED_EVENTS:
+        return _failed_review(
+            issue_number=issue_number,
+            start=start,
+            failed=terminal,
+        )
+
+    if terminal is not None and _event_name(terminal) in _REVIEW_SKIPPED_EVENTS:
+        return ReviewSkipped(reason=_event_summary(terminal))
 
     if start is not None:
         return _running_review(issue_number=issue_number, start=start)
@@ -570,8 +681,24 @@ def _approved_review(
         started_at=_event_timestamp(start or approved),
         completed_at=_event_timestamp(approved),
         session_recording=_session_recording(issue_number, approved),
-        transcript_available=_has_action(approved, "open_review_transcript"),
+        transcript=_review_transcript_evidence(approved),
         commands=(_details_command(approved),),
+    )
+
+
+def _review_transcript_evidence(event: EventDict) -> ReviewTranscriptEvidence:
+    if _has_action(event, "open_review_transcript"):
+        return ReviewTranscriptAvailable()
+    return ReviewTranscriptUnavailable(
+        reason="approved review event did not expose a transcript action",
+        diagnostics=(
+            TimelineDiagnostic(
+                code="review.transcript_action_missing",
+                message="approved review event did not expose a transcript action",
+                severity="warning",
+                evidence_ref=_event_ref(event),
+            ),
+        ),
     )
 
 
@@ -650,6 +777,30 @@ def _running_review(*, issue_number: int, start: EventDict) -> ReviewStage:
     )
 
 
+def _failed_review(
+    *,
+    issue_number: int,
+    start: EventDict | None,
+    failed: EventDict,
+) -> ReviewFailed:
+    return ReviewFailed(
+        reviewer=_agent_identity_from_event(start or failed, role="reviewer"),
+        started_at=_event_timestamp(start) if start else None,
+        failed_at=_event_timestamp(failed),
+        reason=_event_summary(failed),
+        session_recording=_session_recording(issue_number, start or failed),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="review.failed",
+                message=_event_summary(failed),
+                severity="error",
+                evidence_ref=_event_ref(failed),
+            ),
+        ),
+        commands=(_details_command(failed),),
+    )
+
+
 def _unreached_review(
     *,
     coder: CodingAttempt,
@@ -657,6 +808,12 @@ def _unreached_review(
     events: Sequence[EventDict],
     review_required: bool,
 ) -> ReviewStage:
+    if isinstance(coder, RunningCodingAttempt):
+        return ReviewNotReached(reason="coding_in_progress")
+    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence):
+        return ReviewNotReached(reason="coding_failed")
+    if isinstance(coder, CompletedCodingAttempt) and isinstance(coder.validation, ValidationFailed):
+        return ReviewNotReached(reason="validation_failed")
     if review_required:
         return _missing_review(
             expected_state="running",
@@ -669,12 +826,6 @@ def _unreached_review(
             ),
             event=None,
         )
-    if isinstance(coder, RunningCodingAttempt):
-        return ReviewNotReached(reason="coding_in_progress")
-    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence):
-        return ReviewNotReached(reason="coding_failed")
-    if isinstance(coder, CompletedCodingAttempt) and isinstance(coder.validation, ValidationFailed):
-        return ReviewNotReached(reason="validation_failed")
     return ReviewNotReached(reason="not_required")
 
 
@@ -881,12 +1032,6 @@ def _linked_issues(run_id: int, event: EventDict | None) -> tuple[LinkedIssueLif
                 issue_number = _positive_int(affordance.get("issue_number"), default=0)
                 if issue_number > 0:
                     issue_numbers.append(issue_number)
-    raw_issue_numbers = event.get("issue_numbers")
-    if isinstance(raw_issue_numbers, list):
-        for issue_number in raw_issue_numbers:
-            normalized = _positive_int(issue_number, default=0)
-            if normalized > 0:
-                issue_numbers.append(normalized)
     return tuple(
         LinkedIssueLifecycle(
             issue_number=issue_number,
@@ -904,14 +1049,14 @@ def _linked_issues(run_id: int, event: EventDict | None) -> tuple[LinkedIssueLif
 def _missing_coding(
     *,
     issue_number: int,
-    expected_state: str,
+    expected_state: CodingExpectedState,
     observed_at: str,
     missing: tuple[MissingEvidence, ...],
     event: EventDict | None,
 ) -> MissingCodingEvidence:
     return MissingCodingEvidence(
         issue_number=issue_number,
-        expected_state=expected_state,  # type: ignore[arg-type]
+        expected_state=expected_state,
         observed_at=observed_at,
         missing=missing,
         diagnostics=tuple(
@@ -929,13 +1074,13 @@ def _missing_coding(
 
 def _missing_review(
     *,
-    expected_state: str,
+    expected_state: ReviewExpectedState,
     observed_at: str,
     missing: tuple[MissingEvidence, ...],
     event: EventDict | None,
 ) -> MissingReviewEvidence:
     return MissingReviewEvidence(
-        expected_state=expected_state,  # type: ignore[arg-type]
+        expected_state=expected_state,
         observed_at=observed_at,
         missing=missing,
         diagnostics=tuple(
@@ -1102,15 +1247,40 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _cycle_outcome(coder: CodingAttempt, review: ReviewStage) -> str:
+    review_outcome = _review_outcome(review)
+    if review_outcome is not None:
+        return review_outcome
+    return _coder_outcome(coder)
+
+
+def _review_outcome(review: ReviewStage) -> str | None:
     if isinstance(review, ReviewApproved):
         return "approved"
     if isinstance(review, ReviewChangesRequested):
         return "changes_requested"
+    if isinstance(review, ReviewFailed):
+        return "review_failed"
+    if isinstance(review, ReviewRunning):
+        return "review_in_progress"
+    if isinstance(review, ReviewSkipped):
+        return "review_skipped"
+    if isinstance(review, MissingReviewEvidence):
+        return "missing_review_evidence"
+    return None
+
+
+def _coder_outcome(coder: CodingAttempt) -> str:
     if isinstance(coder, CompletedCodingAttempt):
         return "completed"
     if isinstance(coder, RunningCodingAttempt):
         return "in_progress"
-    return "blocked"
+    if isinstance(coder, BlockedCodingAttempt):
+        return "blocked"
+    if isinstance(coder, FailedCodingAttempt):
+        return "failed"
+    if isinstance(coder, MissingCodingEvidence):
+        return "missing_coding_evidence"
+    return "unknown"
 
 
 __all__ = [

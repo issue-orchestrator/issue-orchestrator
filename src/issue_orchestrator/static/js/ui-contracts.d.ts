@@ -161,6 +161,29 @@ export interface E2EFailureDetailsMissingPayload {
   kind: "missing_evidence";
 }
 
+export interface E2ERunDetailPayload {
+  actions: Record<string, any>[];
+  blocked_detail: Record<string, any> | null;
+  cycles: Record<string, any>[];
+  e2e_run_id?: number | null;
+  events: Record<string, any>[];
+  issue_affordances: Record<string, any>[];
+  issue_number: number | string;
+  issue_url: string;
+  lifecycle: LifecycleTimelineContainerPayload;
+  phase_toc: Record<string, any>[];
+  previous_runs: Record<string, any>[];
+  previous_runs_count: number;
+  raw_events_count: number;
+  run_count: number;
+  runs: Record<string, any>[];
+  status_explanation: string;
+  summary: Record<string, any>;
+  timeline_steps: Record<string, any>[];
+  title: string;
+  view?: string;
+}
+
 export interface E2ERunIterationPayload {
   diagnostics: TimelineDiagnosticPayload[];
   e2e_run: E2ERunLifecyclePayload;
@@ -380,7 +403,7 @@ export interface ReviewApprovedPayload {
   reviewer: AgentIdentityPayload;
   session_recording: SessionRecordingEvidencePayload;
   started_at: string;
-  transcript_available: boolean;
+  transcript: ReviewTranscriptEvidencePayload;
 }
 
 export interface ReviewChangesRequestedPayload {
@@ -391,6 +414,17 @@ export interface ReviewChangesRequestedPayload {
   reviewer: AgentIdentityPayload;
   session_recording: SessionRecordingEvidencePayload;
   started_at: string;
+}
+
+export interface ReviewFailedPayload {
+  commands: TimelineCommandPayload[];
+  diagnostics: TimelineDiagnosticPayload[];
+  failed_at: string;
+  kind: "review_failed";
+  reason: string;
+  reviewer?: AgentIdentityPayload | null;
+  session_recording: SessionRecordingEvidencePayload;
+  started_at?: string | null;
 }
 
 export interface ReviewNotReachedPayload {
@@ -408,6 +442,16 @@ export interface ReviewRunningPayload {
 
 export interface ReviewSkippedPayload {
   kind: "review_skipped";
+  reason: string;
+}
+
+export interface ReviewTranscriptAvailablePayload {
+  kind: "available";
+}
+
+export interface ReviewTranscriptUnavailablePayload {
+  diagnostics: TimelineDiagnosticPayload[];
+  kind: "unavailable";
   reason: string;
 }
 
@@ -539,7 +583,9 @@ export type E2ETestExecutionPayload = PassedE2ETestExecutionPayload | FailedE2ET
 
 export type LifecycleTimelineContainerPayload = DashboardTimelineContainerPayload | E2ESuiteTimelineContainerPayload;
 
-export type ReviewStagePayload = ReviewNotReachedPayload | ReviewSkippedPayload | ReviewRunningPayload | ReviewApprovedPayload | ReviewChangesRequestedPayload | MissingReviewEvidencePayload;
+export type ReviewStagePayload = ReviewNotReachedPayload | ReviewSkippedPayload | ReviewRunningPayload | ReviewApprovedPayload | ReviewChangesRequestedPayload | ReviewFailedPayload | MissingReviewEvidencePayload;
+
+export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload | ReviewTranscriptUnavailablePayload;
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 

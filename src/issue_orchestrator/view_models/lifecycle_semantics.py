@@ -9,6 +9,7 @@ tests instead of late Playwright runs.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -240,6 +241,11 @@ class CompletedCodingAttempt(LifecycleBase):
 
     @model_validator(mode="after")
     def _require_required_commands(self) -> "CompletedCodingAttempt":
+        _ensure_timestamp_order(
+            self.started_at,
+            self.completed_at,
+            "completed coding attempt",
+        )
         _ensure_event_details(self.commands)
         _ensure_command_kind(self.commands, "open_completion_record")
         return self
@@ -267,6 +273,11 @@ class BlockedCodingAttempt(LifecycleBase):
 
     @model_validator(mode="after")
     def _require_event_details(self) -> "BlockedCodingAttempt":
+        _ensure_optional_timestamp_order(
+            self.started_at,
+            self.blocked_at,
+            "blocked coding attempt",
+        )
         _ensure_event_details(self.commands)
         return self
 
@@ -284,6 +295,11 @@ class FailedCodingAttempt(LifecycleBase):
 
     @model_validator(mode="after")
     def _require_event_details(self) -> "FailedCodingAttempt":
+        _ensure_optional_timestamp_order(
+            self.started_at,
+            self.failed_at,
+            "failed coding attempt",
+        )
         _ensure_event_details(self.commands)
         return self
 
@@ -340,17 +356,45 @@ class ReviewRunning(LifecycleBase):
         return self
 
 
+class ReviewTranscriptAvailable(LifecycleBase):
+    kind: Literal["available"] = "available"
+
+
+class ReviewTranscriptUnavailable(LifecycleBase):
+    kind: Literal["unavailable"] = "unavailable"
+    reason: str
+    diagnostics: tuple[TimelineDiagnostic, ...] = ()
+
+    @field_validator("reason")
+    @classmethod
+    def _non_empty_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("unavailable review transcript requires a reason")
+        return value
+
+
+ReviewTranscriptEvidence = Annotated[
+    ReviewTranscriptAvailable | ReviewTranscriptUnavailable,
+    Field(discriminator="kind"),
+]
+
+
 class ReviewApproved(LifecycleBase):
     kind: Literal["review_approved"] = "review_approved"
     reviewer: AgentIdentity
     started_at: Timestamp
     completed_at: Timestamp
     session_recording: SessionRecordingEvidence
-    transcript_available: bool
+    transcript: ReviewTranscriptEvidence
     commands: tuple[TimelineCommand, ...]
 
     @model_validator(mode="after")
     def _require_event_details(self) -> "ReviewApproved":
+        _ensure_timestamp_order(
+            self.started_at,
+            self.completed_at,
+            "approved review",
+        )
         _ensure_event_details(self.commands)
         return self
 
@@ -368,8 +412,36 @@ class ReviewChangesRequested(LifecycleBase):
     def _require_feedback_and_details(self) -> "ReviewChangesRequested":
         if not self.feedback_summary.strip():
             raise ValueError("changes-requested review requires feedback summary")
+        _ensure_timestamp_order(
+            self.started_at,
+            self.completed_at,
+            "changes-requested review",
+        )
         _ensure_event_details(self.commands)
         _ensure_command_kind(self.commands, "open_review_feedback")
+        return self
+
+
+class ReviewFailed(LifecycleBase):
+    kind: Literal["review_failed"] = "review_failed"
+    reviewer: AgentIdentity | None = None
+    started_at: Timestamp | None = None
+    failed_at: Timestamp
+    reason: str
+    session_recording: SessionRecordingEvidence
+    diagnostics: tuple[TimelineDiagnostic, ...] = ()
+    commands: tuple[TimelineCommand, ...]
+
+    @model_validator(mode="after")
+    def _require_event_details(self) -> "ReviewFailed":
+        if not self.reason.strip():
+            raise ValueError("failed review requires a reason")
+        _ensure_optional_timestamp_order(
+            self.started_at,
+            self.failed_at,
+            "failed review",
+        )
+        _ensure_event_details(self.commands)
         return self
 
 
@@ -397,6 +469,7 @@ ReviewStage = Annotated[
     | ReviewRunning
     | ReviewApproved
     | ReviewChangesRequested
+    | ReviewFailed
     | MissingReviewEvidence,
     Field(discriminator="kind"),
 ]
@@ -415,6 +488,16 @@ class IssueCycle(LifecycleBase):
         if value <= 0:
             raise ValueError("cycle_number must be positive")
         return value
+
+    @model_validator(mode="after")
+    def _review_matches_coding_state(self) -> "IssueCycle":
+        if isinstance(self.coder, RunningCodingAttempt):
+            _ensure_review_not_reached_reason(self.review, "coding_in_progress")
+        elif isinstance(self.coder, BlockedCodingAttempt | FailedCodingAttempt):
+            _ensure_review_not_reached_reason(self.review, "coding_failed")
+        elif isinstance(self.coder, CompletedCodingAttempt) and isinstance(self.coder.validation, ValidationFailed):
+            _ensure_review_not_reached_reason(self.review, "validation_failed")
+        return self
 
 
 class IssueLifecycle(LifecycleBase):
@@ -482,6 +565,11 @@ class PassedE2ETestExecution(LifecycleBase):
 
     @model_validator(mode="after")
     def _require_event_details(self) -> "PassedE2ETestExecution":
+        _ensure_timestamp_order(
+            self.started_at,
+            self.completed_at,
+            "passed E2E test",
+        )
         _ensure_event_details(self.commands)
         return self
 
@@ -498,6 +586,11 @@ class FailedE2ETestExecution(LifecycleBase):
 
     @model_validator(mode="after")
     def _require_event_details(self) -> "FailedE2ETestExecution":
+        _ensure_timestamp_order(
+            self.started_at,
+            self.completed_at,
+            "failed E2E test",
+        )
         _ensure_event_details(self.commands)
         return self
 
@@ -554,6 +647,11 @@ class E2ERunLifecycle(LifecycleBase):
     def _require_tests(self) -> "E2ERunLifecycle":
         if not self.tests:
             raise ValueError("E2E run lifecycle requires at least one test execution")
+        _ensure_optional_timestamp_order(
+            self.started_at,
+            self.completed_at,
+            "E2E run lifecycle",
+        )
         return self
 
 
@@ -562,6 +660,12 @@ class DashboardIteration(LifecycleBase):
     subject: TimelineSubject
     issue_lifecycles: tuple[IssueLifecycle, ...]
     diagnostics: tuple[TimelineDiagnostic, ...] = ()
+
+    @model_validator(mode="after")
+    def _subject_matches_dashboard_iteration(self) -> "DashboardIteration":
+        if self.subject.kind != "dashboard":
+            raise ValueError("dashboard iteration subject must be a dashboard subject")
+        return self
 
 
 class E2ERunIteration(LifecycleBase):
@@ -585,6 +689,14 @@ class DashboardTimelineContainer(LifecycleBase):
     subject: TimelineSubject
     current: DashboardIteration
 
+    @model_validator(mode="after")
+    def _subject_matches_container(self) -> "DashboardTimelineContainer":
+        if self.subject.kind != "dashboard":
+            raise ValueError("dashboard container subject must be a dashboard subject")
+        if self.current.subject.kind != "dashboard":
+            raise ValueError("dashboard current iteration subject must be a dashboard subject")
+        return self
+
     def iter_iterations(self) -> Iterator[DashboardIteration]:
         yield self.current
 
@@ -596,6 +708,8 @@ class E2ESuiteTimelineContainer(LifecycleBase):
 
     @model_validator(mode="after")
     def _require_runs(self) -> "E2ESuiteTimelineContainer":
+        if self.subject.kind != "e2e_suite":
+            raise ValueError("E2E suite container subject must be an e2e_suite subject")
         if not self.runs:
             raise ValueError("E2E suite container requires at least one run iteration")
         return self
@@ -655,8 +769,7 @@ def _validate_e2e_run(run: E2ERunLifecycle) -> list[TimelineDiagnostic]:
         lifecycle.issue_number for lifecycle in run.linked_issue_lifecycles
     }
     for test in run.tests:
-        linked_issues = getattr(test, "linked_issues", ())
-        for linked in linked_issues:
+        for linked in _linked_issues_for_test(test):
             if linked.issue_number not in lifecycle_issue_numbers:
                 diagnostics.append(
                     TimelineDiagnostic(
@@ -676,8 +789,46 @@ def _ensure_event_details(commands: tuple[TimelineCommand, ...]) -> None:
 
 
 def _ensure_command_kind(commands: tuple[TimelineCommand, ...], kind: str) -> None:
-    if not any(getattr(command, "kind", None) == kind for command in commands):
+    if not any(command.kind == kind for command in commands):
         raise ValueError(f"commands must include {kind}")
+
+
+def _linked_issues_for_test(test: E2ETestExecution) -> tuple[LinkedIssueLifecycle, ...]:
+    if isinstance(test, MissingE2ETestEvidence):
+        return ()
+    return test.linked_issues
+
+
+def _ensure_review_not_reached_reason(review: ReviewStage, reason: str) -> None:
+    if not isinstance(review, ReviewNotReached) or review.reason != reason:
+        raise ValueError(f"{reason} coder state requires review_not_reached:{reason}")
+
+
+def _ensure_optional_timestamp_order(
+    started_at: Timestamp | None,
+    completed_at: Timestamp | None,
+    context: str,
+) -> None:
+    if started_at is None or completed_at is None:
+        return
+    _ensure_timestamp_order(started_at, completed_at, context)
+
+
+def _ensure_timestamp_order(started_at: Timestamp, completed_at: Timestamp, context: str) -> None:
+    started = _parse_required_timestamp(started_at, f"{context} started_at")
+    completed = _parse_required_timestamp(completed_at, f"{context} completed_at")
+    if started > completed:
+        raise ValueError(f"{context} started_at must not be after completed_at")
+
+
+def _parse_required_timestamp(value: Timestamp, label: str) -> datetime:
+    text = value.strip()
+    if not text or text == "unknown":
+        raise ValueError(f"{label} must be a concrete timestamp")
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{label} must be ISO-8601 parseable") from exc
 
 
 def command_kinds(commands: tuple[TimelineCommand, ...]) -> tuple[str, ...]:
@@ -723,10 +874,14 @@ __all__ = [
     "PassedE2ETestExecution",
     "ReviewApproved",
     "ReviewChangesRequested",
+    "ReviewFailed",
     "ReviewNotReached",
     "ReviewRunning",
     "ReviewSkipped",
     "ReviewStage",
+    "ReviewTranscriptAvailable",
+    "ReviewTranscriptEvidence",
+    "ReviewTranscriptUnavailable",
     "RunningCodingAttempt",
     "RunningE2ETestExecution",
     "SessionRecordingAvailable",

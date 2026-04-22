@@ -1039,8 +1039,11 @@ def test_dashboard_and_e2e_ui_preserve_lifecycle_payloads() -> None:
     assert "lifecycle" in e2e_body
     assert "applyLifecycleDataset(container, tl.lifecycle)" in render_e2e_body
     assert "applyLifecycleDataset(issueDetailDrawer, d.lifecycle || null)" in issue_detail_body
-    assert "dataset.lifecycleKind" in dataset_body
-    assert "dataset.lifecycleIterations" in dataset_body
+    assert "LIFECYCLE_DATASET_KEYS" in js
+    assert "window.LIFECYCLE_DATASET_KEYS = LIFECYCLE_DATASET_KEYS" in js
+    assert "dataset[LIFECYCLE_DATASET_KEYS.kind]" in dataset_body
+    assert "dataset[LIFECYCLE_DATASET_KEYS.iterations]" in dataset_body
+    assert "throw new Error('Lifecycle payload missing kind')" in dataset_body
 
 
 def test_timeline_children_render_with_full_treatment() -> None:

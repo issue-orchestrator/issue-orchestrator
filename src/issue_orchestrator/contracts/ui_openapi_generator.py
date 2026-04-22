@@ -240,7 +240,10 @@ def _python_literal(value: Any) -> str:
 
 
 def _is_union_alias_schema(schema: dict[str, Any]) -> bool:
-    return bool(schema.get("oneOf") or schema.get("anyOf")) and not schema.get("properties")
+    has_union = bool(schema.get("oneOf") or schema.get("anyOf"))
+    if has_union and schema.get("properties"):
+        raise ValueError("component schemas must not mix oneOf/anyOf with properties")
+    return has_union
 
 
 def generate_artifacts(schema_path: Path | None = None, python_out: Path | None = None, dts_out: Path | None = None) -> None:
