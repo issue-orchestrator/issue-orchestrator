@@ -42,6 +42,7 @@ from .lifecycle_semantics import (
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
     PassedE2ETestExecution,
+    PublishFailedCodingAttempt,
     ReviewApproved,
     ReviewChangesRequested,
     ReviewFailed,
@@ -92,8 +93,8 @@ _CODING_FAILED_EVENTS = frozenset({
     "agent.timed_out",
     "session.failed",
     "session.timeout",
-    "publish.failed",
 })
+_CODING_PUBLISH_FAILED_EVENTS = frozenset({"publish.failed"})
 _VALIDATION_PASSED_EVENTS = frozenset({"validation.passed", "session.validation_passed"})
 _VALIDATION_FAILED_EVENTS = frozenset({
     "validation.failed",
@@ -347,16 +348,33 @@ def _semantic_cycle_inputs(
 
 def _semantic_cycle_inputs_from_logical_fields(events: Sequence[EventDict]) -> tuple[EventDict, ...]:
     grouped: dict[tuple[int, int], list[EventDict]] = defaultdict(list)
+    saw_logical_cycle_fields = False
+    saw_legacy_event = False
     for event in events:
         if not isinstance(event, Mapping):
             continue
         logical_run = event.get("logical_run")
         logical_cycle = event.get("logical_cycle")
+        if logical_run is None and logical_cycle is None:
+            if saw_logical_cycle_fields:
+                raise LifecycleProjectionError(
+                    "timeline events must not mix logical cycle fields with legacy events"
+                )
+            saw_legacy_event = True
+            continue
+        if saw_legacy_event:
+            raise LifecycleProjectionError(
+                "timeline events must not mix logical cycle fields with legacy events"
+            )
+        saw_logical_cycle_fields = True
         if not isinstance(logical_run, int) or logical_run <= 0:
-            return ()
+            raise LifecycleProjectionError("timeline event logical_run must be a positive integer")
         if not isinstance(logical_cycle, int) or logical_cycle <= 0:
-            return ()
+            raise LifecycleProjectionError("timeline event logical_cycle must be a positive integer")
         grouped[(logical_run, logical_cycle)].append(event)
+
+    if not saw_logical_cycle_fields:
+        return ()
 
     return tuple(
         {
@@ -395,6 +413,15 @@ def _project_coder(
             issue_number=issue_number,
             start=start,
             blocked=terminal,
+            observed_at=observed,
+        )
+
+    if terminal is not None and _event_name(terminal) in _CODING_PUBLISH_FAILED_EVENTS:
+        return _publish_failed_coder_attempt(
+            issue_number=issue_number,
+            events=events,
+            start=start,
+            publish_failed=terminal,
             observed_at=observed,
         )
 
@@ -437,7 +464,12 @@ def _project_coder(
 
 
 def _last_coding_terminal_event(events: Sequence[EventDict]) -> EventDict | None:
-    terminal_events = _CODING_COMPLETED_EVENTS | _CODING_BLOCKED_EVENTS | _CODING_FAILED_EVENTS
+    terminal_events = (
+        _CODING_COMPLETED_EVENTS
+        | _CODING_BLOCKED_EVENTS
+        | _CODING_FAILED_EVENTS
+        | _CODING_PUBLISH_FAILED_EVENTS
+    )
     for event in reversed(events):
         if _event_name(event) not in terminal_events:
             continue
@@ -463,6 +495,16 @@ def _last_review_lifecycle_event(events: Sequence[EventDict]) -> EventDict | Non
         | _REVIEW_FAILED_EVENTS
     )
     return _last_event(events, signal_events)
+
+
+def _last_coding_completed_event(events: Sequence[EventDict]) -> EventDict | None:
+    for event in reversed(events):
+        if _event_name(event) not in _CODING_COMPLETED_EVENTS:
+            continue
+        if _is_review_completion_observation(event):
+            continue
+        return event
+    return None
 
 
 def _completed_coder_attempt(
@@ -536,6 +578,73 @@ def _completed_coder_commands(
     if isinstance(session_recording, SessionRecordingAvailable):
         commands += (session_recording.command,)
     return commands
+
+
+def _publish_failed_coder_attempt(
+    *,
+    issue_number: int,
+    events: Sequence[EventDict],
+    start: EventDict | None,
+    publish_failed: EventDict,
+    observed_at: str,
+) -> CodingAttempt:
+    completed = _last_coding_completed_event(events)
+    if completed is None:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=observed_at,
+            missing=(
+                _missing(
+                    "coding_terminal_event",
+                    "publish failure observed without a completed coding event",
+                ),
+            ),
+            event=publish_failed,
+        )
+
+    agent = _agent_identity_from_event(start or completed, role="coder")
+    completion_path = _artifact_value(completed, "completion_record")
+    missing = _completed_coder_missing(agent=agent, completion_path=completion_path)
+    if missing:
+        return _missing_coding(
+            issue_number=issue_number,
+            expected_state="completed",
+            observed_at=observed_at,
+            missing=missing,
+            event=completed,
+        )
+
+    assert agent is not None
+    assert completion_path is not None
+    session_recording = _session_recording(issue_number, start or completed)
+    return PublishFailedCodingAttempt(
+        issue_number=issue_number,
+        agent=agent,
+        started_at=_event_timestamp(start or completed),
+        completed_at=_event_timestamp(completed),
+        publish_failed_at=_event_timestamp(publish_failed),
+        reason=_event_summary(publish_failed),
+        completion_record=CompletionRecordEvidence(
+            path=completion_path,
+            summary=_optional_text(completed.get("summary")),
+        ),
+        validation=_validation_outcome(issue_number, events),
+        session_recording=session_recording,
+        outputs=CodingOutputs(
+            worktree_path=_artifact_value(completed, "worktree"),
+            pull_request_url=_artifact_value(completed, "pull_request"),
+        ),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="publish.failed",
+                message=_event_summary(publish_failed),
+                severity="error",
+                evidence_ref=_event_ref(publish_failed),
+            ),
+        ),
+        commands=_completed_coder_commands(publish_failed, completion_path, session_recording),
+    )
 
 
 def _blocked_coder_attempt(
@@ -810,6 +919,8 @@ def _unreached_review(
 ) -> ReviewStage:
     if isinstance(coder, RunningCodingAttempt):
         return ReviewNotReached(reason="coding_in_progress")
+    if isinstance(coder, PublishFailedCodingAttempt):
+        return ReviewNotReached(reason="publish_failed")
     if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence):
         return ReviewNotReached(reason="coding_failed")
     if isinstance(coder, CompletedCodingAttempt) and isinstance(coder.validation, ValidationFailed):
@@ -1276,6 +1387,8 @@ def _coder_outcome(coder: CodingAttempt) -> str:
         return "in_progress"
     if isinstance(coder, BlockedCodingAttempt):
         return "blocked"
+    if isinstance(coder, PublishFailedCodingAttempt):
+        return "publish_failed"
     if isinstance(coder, FailedCodingAttempt):
         return "failed"
     if isinstance(coder, MissingCodingEvidence):

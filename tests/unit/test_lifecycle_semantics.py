@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import ValidationError
 
@@ -28,6 +30,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
     PassedE2ETestExecution,
+    PublishFailedCodingAttempt,
     ReviewApproved,
     ReviewChangesRequested,
     ReviewFailed,
@@ -42,7 +45,6 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     ValidationFailed,
     ValidationPassed,
     command_kinds,
-    model_to_plain_dict,
     validate_lifecycle_container,
 )
 
@@ -271,6 +273,48 @@ def test_issue_cycle_rejects_incoherent_coder_review_combinations() -> None:
         )
 
 
+def test_issue_cycle_requires_publish_failure_review_reason() -> None:
+    publish_failed = PublishFailedCodingAttempt(
+        issue_number=1,
+        agent=_coder(),
+        started_at="2026-04-21T10:00:00Z",
+        completed_at="2026-04-21T10:10:00Z",
+        publish_failed_at="2026-04-21T10:12:00Z",
+        reason="Push rejected",
+        completion_record=_completion(),
+        validation=ValidationPassed(
+            command="pytest",
+            record_path="/runs/validation.json",
+        ),
+        session_recording=_session_unavailable(),
+        diagnostics=(
+            TimelineDiagnostic(
+                code="publish.failed",
+                message="Push rejected",
+                severity="error",
+            ),
+        ),
+        commands=(_details(), _completion_cmd()),
+    )
+
+    with pytest.raises(ValidationError, match="publish_failed"):
+        IssueCycle(
+            cycle_number=1,
+            coder=publish_failed,
+            review=ReviewNotReached(reason="coding_failed"),
+            outcome="publish_failed",
+        )
+
+    cycle = IssueCycle(
+        cycle_number=1,
+        coder=publish_failed,
+        review=ReviewNotReached(reason="publish_failed"),
+        outcome="publish_failed",
+    )
+
+    assert cycle.coder.kind == "publish_failed_coding_attempt"
+
+
 def test_issue_cycle_allows_missing_coding_evidence_with_review_evidence() -> None:
     missing_coder = MissingCodingEvidence(
         issue_number=1,
@@ -372,7 +416,7 @@ def test_review_approved_uses_tagged_transcript_evidence() -> None:
         commands=(_details("event:review"),),
     )
 
-    payload = model_to_plain_dict(review)
+    payload = review.model_dump(mode="json")
 
     assert payload["transcript"]["kind"] == "available"
 
@@ -489,6 +533,25 @@ def test_linked_issue_command_must_target_same_issue() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "relationship",
+    ["exercises", "discovered", "failed_with", "validates"],
+)
+def test_linked_issue_relationship_values_are_supported(
+    relationship: Literal["exercises", "discovered", "failed_with", "validates"],
+) -> None:
+    linked = LinkedIssueLifecycle(
+        issue_number=1,
+        relationship=relationship,
+        command=OpenIssueTimelineCommand(
+            issue_number=1,
+            scope_kind="dashboard",
+        ),
+    )
+
+    assert linked.relationship == relationship
+
+
 def test_aggregate_validator_flags_e2e_link_without_issue_lifecycle() -> None:
     test = PassedE2ETestExecution(
         nodeid="tests/e2e/test_a.py::test_a",
@@ -555,7 +618,7 @@ def test_failed_e2e_test_requires_failure_evidence_or_diagnostic() -> None:
 def test_serialized_model_preserves_discriminator_kinds() -> None:
     attempt = _validated_coding_attempt()
 
-    payload = model_to_plain_dict(attempt)
+    payload = attempt.model_dump(mode="json")
 
     assert payload["kind"] == "completed_coding_attempt"
     assert payload["validation"]["kind"] == "passed"

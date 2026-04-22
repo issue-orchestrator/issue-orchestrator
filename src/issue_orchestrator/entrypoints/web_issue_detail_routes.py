@@ -16,7 +16,6 @@ from ..view_models.lifecycle_projection import (
     project_dashboard_lifecycle_container,
     project_e2e_suite_lifecycle_container_for_run,
 )
-from ..view_models.lifecycle_semantics import model_to_plain_dict
 from .e2e_affordances import (
     _attach_issue_numbers_to_test_windows,
     collect_issue_affordances,
@@ -339,13 +338,13 @@ async def get_e2e_run_detail(
         run_id=run_id,
         view=matcher_view,
     )
-    payload["lifecycle"] = model_to_plain_dict(
-        project_e2e_suite_lifecycle_container_for_run(
-            run_id=run_id,
-            events=events,
-            agent_events=agent_events,
-            subject_label="E2E Suite",
-        )
+    payload["lifecycle"] = project_e2e_suite_lifecycle_container_for_run(
+        run_id=run_id,
+        events=events,
+        agent_events=agent_events,
+        subject_label="E2E Suite",
+    ).model_dump(
+        mode="json",
     )
     return E2ERunDetailPayload.model_validate(payload)
 
@@ -472,16 +471,16 @@ def _dashboard_lifecycle_payload(
     title: str,
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    return model_to_plain_dict(
-        project_dashboard_lifecycle_container(
-            subject_label="Dashboard",
-            issue_number=issue_number,
-            title=title,
-            events=events,
-            # Legacy presentation cycles are display groupings. Semantic
-            # lifecycle cycles are derived from backend-owned logical fields.
-            cycles=(),
-        )
+    return project_dashboard_lifecycle_container(
+        subject_label="Dashboard",
+        issue_number=issue_number,
+        title=title,
+        events=events,
+        # Legacy presentation cycles are display groupings. Semantic
+        # lifecycle cycles are derived from backend-owned logical fields.
+        cycles=(),
+    ).model_dump(
+        mode="json",
     )
 
 

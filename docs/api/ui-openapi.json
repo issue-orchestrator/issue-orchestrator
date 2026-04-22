@@ -497,6 +497,92 @@
           "count": {"type": "integer"}
         }
       },
+      "IssueDetailValidationDiagnosticPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "run_dir",
+          "session_name",
+          "reason",
+          "suite",
+          "command",
+          "exit_code",
+          "failed_tests",
+          "failed_tests_preview",
+          "validation_record_path",
+          "validation_stderr",
+          "validation_stdout"
+        ],
+        "properties": {
+          "state": {"type": "string"},
+          "run_dir": {"type": "string"},
+          "session_name": {"type": ["string", "null"]},
+          "reason": {"type": "string"},
+          "suite": {"type": "string"},
+          "command": {"type": "string"},
+          "exit_code": {"type": "integer"},
+          "failed_tests": {"type": "array", "items": {"type": "string"}},
+          "failed_tests_preview": {"type": "array", "items": {"type": "string"}},
+          "validation_record_path": {"type": ["string", "null"]},
+          "validation_stderr": {"type": ["string", "null"]},
+          "validation_stdout": {"type": ["string", "null"]}
+        }
+      },
+      "IssueDetailTimelineDiagnosticPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "signals",
+          "expected_timeline_store",
+          "expected_timeline_store_exists",
+          "resolved_run_dir",
+          "dropped_missing_semantics"
+        ],
+        "properties": {
+          "state": {"type": "string"},
+          "signals": {"type": "array", "items": {"type": "string"}},
+          "expected_timeline_store": {"type": "string"},
+          "expected_timeline_store_exists": {"type": "boolean"},
+          "resolved_run_dir": {"type": ["string", "null"]},
+          "dropped_missing_semantics": {"type": "integer"}
+        }
+      },
+      "IssueDetailSummaryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "last_event", "event_count"],
+        "properties": {
+          "status": {"type": "string"},
+          "last_event": {"type": "string"},
+          "event_count": {"type": "integer"},
+          "run_diagnostic": {"$ref": "#/components/schemas/IssueDetailValidationDiagnosticPayload"},
+          "timeline_diagnostic": {"$ref": "#/components/schemas/IssueDetailTimelineDiagnosticPayload"}
+        }
+      },
+      "IssueDetailActionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label"],
+        "properties": {
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "url": {"type": "string"},
+          "run_dir": {"type": ["string", "null"]}
+        }
+      },
+      "IssueDetailBlockedDetailPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reason", "labels", "rework_info", "event_summary"],
+        "properties": {
+          "reason": {"type": "string"},
+          "labels": {"type": "array", "items": {"type": "string"}},
+          "rework_info": {"type": ["string", "null"]},
+          "event_summary": {"type": "string"}
+        }
+      },
       "IssueDetailPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -526,8 +612,8 @@
           "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "cycles": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "events": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
-          "summary": {"type": "object", "additionalProperties": true},
-          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "summary": {"$ref": "#/components/schemas/IssueDetailSummaryPayload"},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/IssueDetailActionPayload"}},
           "status_explanation": {"type": "string"},
           "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -535,7 +621,12 @@
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "previous_runs_count": {"type": "integer"},
           "raw_events_count": {"type": "integer"},
-          "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
+          "blocked_detail": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/IssueDetailBlockedDetailPayload"},
+              {"type": "null"}
+            ]
+          },
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
           "view": {"type": "string", "default": "user"}
         }
@@ -571,8 +662,8 @@
           "phase_toc": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelinePhaseTocItemPayload"}},
           "cycles": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineCyclePayload"}},
           "events": {"type": "array", "items": {"$ref": "#/components/schemas/E2ETimelineEventPayload"}},
-          "summary": {"type": "object", "additionalProperties": true},
-          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "summary": {"$ref": "#/components/schemas/IssueDetailSummaryPayload"},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/IssueDetailActionPayload"}},
           "status_explanation": {"type": "string"},
           "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -580,7 +671,12 @@
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "previous_runs_count": {"type": "integer"},
           "raw_events_count": {"type": "integer"},
-          "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
+          "blocked_detail": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/IssueDetailBlockedDetailPayload"},
+              {"type": "null"}
+            ]
+          },
           "issue_affordances": {"type": "array", "items": {"$ref": "#/components/schemas/E2EIssueAffordancePayload"}},
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
           "view": {"type": "string", "default": "user"}
@@ -773,7 +869,7 @@
         "additionalProperties": false,
         "required": ["kind", "id", "label"],
         "properties": {
-          "kind": {"enum": ["dashboard", "repo", "issue", "e2e_suite", "e2e_run", "e2e_test"]},
+          "kind": {"enum": ["dashboard", "issue", "e2e_suite", "e2e_run"]},
           "id": {"type": "string"},
           "label": {"type": "string"},
           "status": {"type": ["string", "null"]},
@@ -997,6 +1093,40 @@
           "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
         }
       },
+      "PublishFailedCodingAttemptPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "issue_number",
+          "agent",
+          "started_at",
+          "completed_at",
+          "publish_failed_at",
+          "reason",
+          "completion_record",
+          "validation",
+          "session_recording",
+          "outputs",
+          "diagnostics",
+          "commands"
+        ],
+        "properties": {
+          "kind": {"const": "publish_failed_coding_attempt"},
+          "issue_number": {"type": "integer"},
+          "agent": {"$ref": "#/components/schemas/AgentIdentityPayload"},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": "string"},
+          "publish_failed_at": {"type": "string"},
+          "reason": {"type": "string"},
+          "completion_record": {"$ref": "#/components/schemas/CompletionRecordEvidencePayload"},
+          "validation": {"$ref": "#/components/schemas/ValidationOutcomePayload"},
+          "session_recording": {"$ref": "#/components/schemas/SessionRecordingEvidencePayload"},
+          "outputs": {"$ref": "#/components/schemas/CodingOutputsPayload"},
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "commands": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineCommandPayload"}}
+        }
+      },
       "BlockedCodingAttemptPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1052,6 +1182,7 @@
         "oneOf": [
           {"$ref": "#/components/schemas/RunningCodingAttemptPayload"},
           {"$ref": "#/components/schemas/CompletedCodingAttemptPayload"},
+          {"$ref": "#/components/schemas/PublishFailedCodingAttemptPayload"},
           {"$ref": "#/components/schemas/BlockedCodingAttemptPayload"},
           {"$ref": "#/components/schemas/FailedCodingAttemptPayload"},
           {"$ref": "#/components/schemas/MissingCodingEvidencePayload"}
@@ -1064,7 +1195,7 @@
         "required": ["kind", "reason"],
         "properties": {
           "kind": {"const": "review_not_reached"},
-          "reason": {"enum": ["coding_in_progress", "coding_failed", "validation_failed", "not_required"]}
+          "reason": {"enum": ["coding_in_progress", "coding_failed", "publish_failed", "validation_failed", "not_required"]}
         }
       },
       "ReviewSkippedPayload": {

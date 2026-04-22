@@ -15,8 +15,12 @@ warnings.filterwarnings(
 )
 
 from jsonschema import Draft202012Validator, RefResolver
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from issue_orchestrator.contracts.ui_openapi_models import E2ERunTimelinePayload
+from issue_orchestrator.contracts.ui_openapi_models import (
+    E2ERunDetailPayload,
+    E2ERunTimelinePayload,
+)
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
     AgentConfig,
@@ -55,7 +59,6 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     ShowEventDetailsCommand,
     TimelineSubject,
     ValidationPassed,
-    model_to_plain_dict,
 )
 
 
@@ -89,6 +92,16 @@ def _validator(component: str) -> Draft202012Validator:
     data = __import__("json").loads(schema)
     resolver = RefResolver.from_schema(data)
     return Draft202012Validator(data["components"]["schemas"][component], resolver=resolver)
+
+
+def _schema_error_messages(errors: list[JsonSchemaValidationError]) -> str:
+    messages: list[str] = []
+    pending = list(errors)
+    while pending:
+        error = pending.pop()
+        messages.append(error.message)
+        pending.extend(error.context)
+    return "\n".join(messages)
 
 
 def _e2e_timeline_event(**overrides: object) -> dict[str, object]:
@@ -241,7 +254,7 @@ def test_e2e_run_timeline_payload_matches_ui_openapi() -> None:
         "phase_toc": [{"phase": "execution", "label": "Execution"}],
         "cycles": [_e2e_timeline_cycle(event)],
         "issue_affordances": [{"issue_number": 12, "run_id": 88}],
-        "lifecycle": model_to_plain_dict(_e2e_container()),
+        "lifecycle": _e2e_container().model_dump(mode="json"),
     }
 
     _validator("E2ERunTimelinePayload").validate(payload)
@@ -255,7 +268,7 @@ def test_e2e_run_timeline_payload_rejects_untyped_aggregate_fields() -> None:
         "phase_toc": [{"phase": "execution", "label": "Execution"}],
         "cycles": [],
         "issue_affordances": [{"issue_number": 12, "run_id": 88}],
-        "lifecycle": model_to_plain_dict(_e2e_container()),
+        "lifecycle": _e2e_container().model_dump(mode="json"),
     }
 
     errors = list(_validator("E2ERunTimelinePayload").iter_errors(payload))
@@ -275,11 +288,11 @@ def test_e2e_run_timeline_payload_rejects_untyped_cycle_and_affordance_fields() 
         "issue_affordances": [
             {"issue_number": 12, "run_id": 88, "unexpected_affordance_field": True},
         ],
-        "lifecycle": model_to_plain_dict(_e2e_container()),
+        "lifecycle": _e2e_container().model_dump(mode="json"),
     }
 
     errors = list(_validator("E2ERunTimelinePayload").iter_errors(payload))
-    messages = "\n".join(error.message for error in errors)
+    messages = _schema_error_messages(errors)
 
     assert "unexpected_cycle_field" in messages
     assert "unexpected_affordance_field" in messages
@@ -295,9 +308,39 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
         cycles=[],
     )
     payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
-    payload["lifecycle"] = model_to_plain_dict(_e2e_container())
+    payload["lifecycle"] = _e2e_container().model_dump(mode="json")
 
     _validator("E2ERunDetailPayload").validate(payload)
+    E2ERunDetailPayload.model_validate(payload)
+
+
+def test_e2e_run_detail_payload_rejects_untyped_detail_fields() -> None:
+    payload = build_issue_detail_view_model(
+        issue_number="e2e-run:88",
+        title="E2E Run #88",
+        issue_url="",
+        events=[_e2e_timeline_event()],
+        phase_toc=[{"phase": "execution", "label": "Execution"}],
+        cycles=[],
+    )
+    payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
+    payload["lifecycle"] = _e2e_container().model_dump(mode="json")
+    payload["summary"]["unexpected_summary_field"] = True
+    payload["actions"][0]["unexpected_action_field"] = True
+    payload["blocked_detail"] = {
+        "reason": "Blocked",
+        "labels": ["blocked"],
+        "rework_info": None,
+        "event_summary": "waiting",
+        "unexpected_blocked_detail_field": True,
+    }
+
+    errors = list(_validator("E2ERunDetailPayload").iter_errors(payload))
+    messages = _schema_error_messages(errors)
+
+    assert "unexpected_summary_field" in messages
+    assert "unexpected_action_field" in messages
+    assert "unexpected_blocked_detail_field" in messages
 
 
 def test_lifecycle_dashboard_container_payload_matches_ui_openapi() -> None:
@@ -313,12 +356,14 @@ def test_lifecycle_dashboard_container_payload_matches_ui_openapi() -> None:
         ),
     )
 
-    _validator("LifecycleTimelineContainerPayload").validate(model_to_plain_dict(container))
+    _validator("LifecycleTimelineContainerPayload").validate(
+        container.model_dump(mode="json")
+    )
 
 
 def test_lifecycle_e2e_container_payload_matches_ui_openapi() -> None:
     _validator("LifecycleTimelineContainerPayload").validate(
-        model_to_plain_dict(_e2e_container())
+        _e2e_container().model_dump(mode="json")
     )
 
 

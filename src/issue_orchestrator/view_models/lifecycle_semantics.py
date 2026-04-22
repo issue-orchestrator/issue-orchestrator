@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -65,7 +65,7 @@ class AgentIdentity(LifecycleBase):
 
 
 class TimelineSubject(LifecycleBase):
-    kind: Literal["dashboard", "repo", "issue", "e2e_suite", "e2e_run", "e2e_test"]
+    kind: Literal["dashboard", "issue", "e2e_suite", "e2e_run"]
     id: str
     label: str
     status: str | None = None
@@ -260,6 +260,47 @@ class CompletedCodingAttempt(LifecycleBase):
         return isinstance(self.validation, ValidationFailed)
 
 
+class PublishFailedCodingAttempt(LifecycleBase):
+    kind: Literal["publish_failed_coding_attempt"] = "publish_failed_coding_attempt"
+    issue_number: int
+    agent: AgentIdentity
+    started_at: Timestamp
+    completed_at: Timestamp
+    publish_failed_at: Timestamp
+    reason: str
+    completion_record: CompletionRecordEvidence
+    validation: ValidationOutcome
+    session_recording: SessionRecordingEvidence
+    outputs: CodingOutputs = Field(default_factory=CodingOutputs)
+    diagnostics: tuple[TimelineDiagnostic, ...]
+    commands: tuple[TimelineCommand, ...]
+
+    @model_validator(mode="after")
+    def _require_publish_failure_evidence(self) -> "PublishFailedCodingAttempt":
+        if not self.reason.strip():
+            raise ValueError("publish-failed coding attempt requires a reason")
+        if not self.diagnostics:
+            raise ValueError("publish-failed coding attempt requires diagnostics")
+        _ensure_timestamp_not_after(
+            self.started_at,
+            self.completed_at,
+            "publish-failed coding attempt started_at",
+            "completed_at",
+        )
+        _ensure_timestamp_not_after(
+            self.completed_at,
+            self.publish_failed_at,
+            "publish-failed coding attempt completed_at",
+            "publish_failed_at",
+        )
+        _ensure_event_details(self.commands)
+        _ensure_command_kind(self.commands, "open_completion_record")
+        return self
+
+    def has_validated_output(self) -> bool:
+        return isinstance(self.validation, ValidationPassed)
+
+
 class BlockedCodingAttempt(LifecycleBase):
     kind: Literal["blocked_coding_attempt"] = "blocked_coding_attempt"
     issue_number: int
@@ -326,6 +367,7 @@ class MissingCodingEvidence(LifecycleBase):
 CodingAttempt = Annotated[
     RunningCodingAttempt
     | CompletedCodingAttempt
+    | PublishFailedCodingAttempt
     | BlockedCodingAttempt
     | FailedCodingAttempt
     | MissingCodingEvidence,
@@ -335,7 +377,13 @@ CodingAttempt = Annotated[
 
 class ReviewNotReached(LifecycleBase):
     kind: Literal["review_not_reached"] = "review_not_reached"
-    reason: Literal["coding_in_progress", "coding_failed", "validation_failed", "not_required"]
+    reason: Literal[
+        "coding_in_progress",
+        "coding_failed",
+        "publish_failed",
+        "validation_failed",
+        "not_required",
+    ]
 
 
 class ReviewSkipped(LifecycleBase):
@@ -493,6 +541,8 @@ class IssueCycle(LifecycleBase):
     def _review_matches_coding_state(self) -> "IssueCycle":
         if isinstance(self.coder, RunningCodingAttempt):
             _ensure_review_not_reached_reason(self.review, "coding_in_progress")
+        elif isinstance(self.coder, PublishFailedCodingAttempt):
+            _ensure_review_not_reached_reason(self.review, "publish_failed")
         elif isinstance(self.coder, BlockedCodingAttempt | FailedCodingAttempt):
             _ensure_review_not_reached_reason(self.review, "coding_failed")
         elif isinstance(self.coder, CompletedCodingAttempt) and isinstance(self.coder.validation, ValidationFailed):
@@ -742,13 +792,7 @@ def _validate_issue_lifecycles(
                 isinstance(cycle.coder, CompletedCodingAttempt)
                 and cycle.coder.has_validated_output()
                 and isinstance(cycle.review, ReviewNotReached)
-                and cycle.review.reason == "not_required"
-            ):
-                continue
-            if (
-                isinstance(cycle.coder, CompletedCodingAttempt)
-                and cycle.coder.has_validated_output()
-                and isinstance(cycle.review, ReviewNotReached)
+                and cycle.review.reason != "not_required"
             ):
                 diagnostics.append(
                     TimelineDiagnostic(
@@ -815,10 +859,24 @@ def _ensure_optional_timestamp_order(
 
 
 def _ensure_timestamp_order(started_at: Timestamp, completed_at: Timestamp, context: str) -> None:
-    started = _parse_required_timestamp(started_at, f"{context} started_at")
-    completed = _parse_required_timestamp(completed_at, f"{context} completed_at")
-    if started > completed:
-        raise ValueError(f"{context} started_at must not be after completed_at")
+    _ensure_timestamp_not_after(
+        started_at,
+        completed_at,
+        f"{context} started_at",
+        f"{context} completed_at",
+    )
+
+
+def _ensure_timestamp_not_after(
+    earlier_at: Timestamp,
+    later_at: Timestamp,
+    earlier_label: str,
+    later_label: str,
+) -> None:
+    earlier = _parse_required_timestamp(earlier_at, earlier_label)
+    later = _parse_required_timestamp(later_at, later_label)
+    if earlier > later:
+        raise ValueError(f"{earlier_label} must not be after {later_label}")
 
 
 def _parse_required_timestamp(value: Timestamp, label: str) -> datetime:
@@ -834,11 +892,6 @@ def _parse_required_timestamp(value: Timestamp, label: str) -> datetime:
 def command_kinds(commands: tuple[TimelineCommand, ...]) -> tuple[str, ...]:
     """Return command kinds for high-signal tests and projections."""
     return tuple(str(command.kind) for command in commands)
-
-
-def model_to_plain_dict(model: LifecycleBase) -> dict[str, Any]:
-    """Serialize a lifecycle model using the JSON contract shape."""
-    return model.model_dump(mode="json")
 
 
 __all__ = [
@@ -872,6 +925,7 @@ __all__ = [
     "OpenSessionRecordingCommand",
     "OpenValidationDetailsCommand",
     "PassedE2ETestExecution",
+    "PublishFailedCodingAttempt",
     "ReviewApproved",
     "ReviewChangesRequested",
     "ReviewFailed",
@@ -899,6 +953,5 @@ __all__ = [
     "ValidationOutcome",
     "ValidationPassed",
     "command_kinds",
-    "model_to_plain_dict",
     "validate_lifecycle_container",
 ]

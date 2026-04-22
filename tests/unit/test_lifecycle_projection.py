@@ -23,6 +23,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     MissingE2ETestEvidence,
     MissingReviewEvidence,
     PassedE2ETestExecution,
+    PublishFailedCodingAttempt,
     ReviewApproved,
     ReviewChangesRequested,
     ReviewFailed,
@@ -216,7 +217,7 @@ def test_blocked_coder_projects_as_terminal_blocked_state() -> None:
     assert cycle.outcome == "blocked"
 
 
-def test_publish_failed_after_coding_completion_projects_failed_attempt() -> None:
+def test_publish_failed_after_coding_completion_projects_publish_failed_attempt() -> None:
     started, completed, validation, *_ = _complete_issue_events()
     publish_failed = _event(
         "publish.failed",
@@ -235,11 +236,14 @@ def test_publish_failed_after_coding_completion_projects_failed_attempt() -> Non
     )
 
     cycle = lifecycle.cycles[0]
-    assert isinstance(cycle.coder, FailedCodingAttempt)
+    assert isinstance(cycle.coder, PublishFailedCodingAttempt)
     assert cycle.coder.reason == "Push rejected"
+    assert cycle.coder.completed_at == "2026-04-21T12:10:00Z"
+    assert cycle.coder.publish_failed_at == "2026-04-21T12:20:00Z"
+    assert cycle.coder.diagnostics[0].code == "publish.failed"
     assert isinstance(cycle.review, ReviewNotReached)
-    assert cycle.review.reason == "coding_failed"
-    assert cycle.outcome == "failed"
+    assert cycle.review.reason == "publish_failed"
+    assert cycle.outcome == "publish_failed"
 
 
 def test_review_completion_observation_does_not_replace_coding_completion() -> None:
@@ -661,6 +665,41 @@ def test_issue_lifecycle_without_presentation_cycles_groups_by_logical_cycle() -
     assert isinstance(lifecycle.cycles[1].coder, FailedCodingAttempt)
     assert isinstance(lifecycle.cycles[1].review, ReviewNotReached)
     assert lifecycle.cycles[1].review.reason == "coding_failed"
+
+
+def test_issue_lifecycle_rejects_mixed_logical_cycle_annotations() -> None:
+    logical_event = _event(
+        "agent.coding_started",
+        event_id="coding-start-1",
+        timestamp="2026-04-21T12:00:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        logical_run=1,
+        logical_cycle=1,
+    )
+    legacy_event = _event(
+        "session.completed",
+        event_id="coding-completed-legacy",
+        timestamp="2026-04-21T12:10:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+    )
+
+    with pytest.raises(LifecycleProjectionError, match="must not mix logical cycle fields"):
+        project_issue_lifecycle(
+            issue_number=5723,
+            title="Timeline regression",
+            events=[legacy_event, logical_event],
+            cycles=[],
+        )
+
+    with pytest.raises(LifecycleProjectionError, match="must not mix logical cycle fields"):
+        project_issue_lifecycle(
+            issue_number=5723,
+            title="Timeline regression",
+            events=[logical_event, legacy_event],
+            cycles=[],
+        )
 
 
 def test_e2e_projection_builds_passed_and_failed_tests() -> None:

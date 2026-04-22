@@ -27,7 +27,6 @@ from .timeline_presentation import (
     _promote_e2e_test_event_fields,
 )
 from ..view_models.lifecycle_projection import project_e2e_suite_lifecycle_container_for_run
-from ..view_models.lifecycle_semantics import model_to_plain_dict
 
 logger = logging.getLogger(__name__)
 
@@ -446,13 +445,13 @@ def _e2e_run_lifecycle_payload(
     events: list[dict[str, Any]],
     agent_events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    return model_to_plain_dict(
-        project_e2e_suite_lifecycle_container_for_run(
-            run_id=run_id,
-            events=events,
-            agent_events=agent_events,
-            subject_label="E2E Suite",
-        )
+    return project_e2e_suite_lifecycle_container_for_run(
+        run_id=run_id,
+        events=events,
+        agent_events=agent_events,
+        subject_label="E2E Suite",
+    ).model_dump(
+        mode="json",
     )
 
 

@@ -169,8 +169,8 @@ export interface E2EIssueAffordancePayload {
 }
 
 export interface E2ERunDetailPayload {
-  actions: Record<string, any>[];
-  blocked_detail: Record<string, any> | null;
+  actions: IssueDetailActionPayload[];
+  blocked_detail: IssueDetailBlockedDetailPayload | null;
   cycles: E2ETimelineCyclePayload[];
   e2e_run_id?: number | null;
   events: E2ETimelineEventPayload[];
@@ -185,7 +185,7 @@ export interface E2ERunDetailPayload {
   run_count: number;
   runs: Record<string, any>[];
   status_explanation: string;
-  summary: Record<string, any>;
+  summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
   title: string;
   view?: string;
@@ -322,9 +322,23 @@ export interface IssueCyclePayload {
   review: ReviewStagePayload;
 }
 
+export interface IssueDetailActionPayload {
+  id: string;
+  label: string;
+  run_dir?: string | null;
+  url?: string;
+}
+
+export interface IssueDetailBlockedDetailPayload {
+  event_summary: string;
+  labels: string[];
+  reason: string;
+  rework_info: string | null;
+}
+
 export interface IssueDetailPayload {
-  actions: Record<string, any>[];
-  blocked_detail: Record<string, any> | null;
+  actions: IssueDetailActionPayload[];
+  blocked_detail: IssueDetailBlockedDetailPayload | null;
   cycles: Record<string, any>[];
   e2e_run_id?: number | null;
   events: Record<string, any>[];
@@ -338,10 +352,42 @@ export interface IssueDetailPayload {
   run_count: number;
   runs: Record<string, any>[];
   status_explanation: string;
-  summary: Record<string, any>;
+  summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
   title: string;
   view?: string;
+}
+
+export interface IssueDetailSummaryPayload {
+  event_count: number;
+  last_event: string;
+  run_diagnostic?: IssueDetailValidationDiagnosticPayload;
+  status: string;
+  timeline_diagnostic?: IssueDetailTimelineDiagnosticPayload;
+}
+
+export interface IssueDetailTimelineDiagnosticPayload {
+  dropped_missing_semantics: number;
+  expected_timeline_store: string;
+  expected_timeline_store_exists: boolean;
+  resolved_run_dir: string | null;
+  signals: string[];
+  state: string;
+}
+
+export interface IssueDetailValidationDiagnosticPayload {
+  command: string;
+  exit_code: number;
+  failed_tests: string[];
+  failed_tests_preview: string[];
+  reason: string;
+  run_dir: string;
+  session_name: string | null;
+  state: string;
+  suite: string;
+  validation_record_path: string | null;
+  validation_stderr: string | null;
+  validation_stdout: string | null;
 }
 
 export interface IssueItemPayload {
@@ -468,6 +514,22 @@ export interface PhaseDialogPayload {
   title: string;
 }
 
+export interface PublishFailedCodingAttemptPayload {
+  agent: AgentIdentityPayload;
+  commands: TimelineCommandPayload[];
+  completed_at: string;
+  completion_record: CompletionRecordEvidencePayload;
+  diagnostics: TimelineDiagnosticPayload[];
+  issue_number: number;
+  kind: "publish_failed_coding_attempt";
+  outputs: CodingOutputsPayload;
+  publish_failed_at: string;
+  reason: string;
+  session_recording: SessionRecordingEvidencePayload;
+  started_at: string;
+  validation: ValidationOutcomePayload;
+}
+
 export interface ReviewApprovedPayload {
   commands: TimelineCommandPayload[];
   completed_at: string;
@@ -501,7 +563,7 @@ export interface ReviewFailedPayload {
 
 export interface ReviewNotReachedPayload {
   kind: "review_not_reached";
-  reason: "coding_in_progress" | "coding_failed" | "validation_failed" | "not_required";
+  reason: "coding_in_progress" | "coding_failed" | "publish_failed" | "validation_failed" | "not_required";
 }
 
 export interface ReviewRunningPayload {
@@ -602,7 +664,7 @@ export interface TimelineDiagnosticPayload {
 
 export interface TimelineSubjectPayload {
   id: string;
-  kind: "dashboard" | "repo" | "issue" | "e2e_suite" | "e2e_run" | "e2e_test";
+  kind: "dashboard" | "issue" | "e2e_suite" | "e2e_run";
   label: string;
   outcome?: string | null;
   status?: string | null;
@@ -647,7 +709,7 @@ export interface ValidationPassedPayload {
   record_path: string;
 }
 
-export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
+export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
 
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
 
