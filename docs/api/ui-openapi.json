@@ -637,7 +637,12 @@
               {"type": "null"}
             ]
           },
-          "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
+          "lifecycle": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
+              {"type": "null"}
+            ]
+          },
           "view": {"type": "string", "default": "user"}
         }
       },

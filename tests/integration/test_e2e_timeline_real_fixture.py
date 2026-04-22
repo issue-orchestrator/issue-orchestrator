@@ -27,6 +27,7 @@ import base64
 import json
 import shutil
 import warnings
+from functools import lru_cache
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -72,7 +73,8 @@ def _discover_fixtures() -> list[Path]:
     if not FIXTURE_DIR.exists():
         return []
     return sorted(
-        d for d in FIXTURE_DIR.iterdir()
+        d
+        for d in FIXTURE_DIR.iterdir()
         if d.is_dir() and (d / "expected.json").exists()
     )
 
@@ -123,7 +125,9 @@ def _materialize_fixture_run_dirs(worktree_db: Path, run_dir_root: Path) -> None
             ORDER BY sequence ASC
             """
         ):
-            rows.append((int(sequence), str(event_name), str(run_dir), str(data_json or "{}")))
+            rows.append(
+                (int(sequence), str(event_name), str(run_dir), str(data_json or "{}"))
+            )
 
         replacements: dict[str, Path] = {}
         for _sequence, _event_name, original_run_dir, _data_json in rows:
@@ -132,6 +136,8 @@ def _materialize_fixture_run_dirs(worktree_db: Path, run_dir_root: Path) -> None
                 _write_minimal_terminal_recording(synthetic_run_dir)
                 replacements[original_run_dir] = synthetic_run_dir
 
+        # Rows are materialized before UPDATE so this loop does not mutate a
+        # cursor while iterating over it.
         for sequence, event_name, original_run_dir, data_json in rows:
             synthetic_run_dir = replacements[original_run_dir]
             data = json.loads(data_json)
@@ -191,25 +197,28 @@ def _write_review_phase_terminal_recording(
         / "terminal-recording.jsonl"
     )
     recording.parent.mkdir(parents=True, exist_ok=True)
-    payload = base64.b64encode(f"integration fixture {role} round {round_index}\n".encode()).decode(
+    payload = base64.b64encode(
+        f"integration fixture {role} round {round_index}\n".encode()
+    ).decode(
         "ascii",
     )
+    output = json.dumps(
+        {
+            "event_type": "output",
+            "offset_ms": 0,
+            "data_b64": payload,
+        },
+        sort_keys=True,
+    )
     recording.write_text(
-        json.dumps(
-            {
-                "event_type": "output",
-                "offset_ms": 0,
-                "data_b64": payload,
-            },
-            sort_keys=True,
-        )
-        + "\n",
+        f"{output}\n",
         encoding="utf-8",
     )
 
 
 def _stage_fixture_with_real_timeline_reader(
-    fixture: Path, tmp_path: Path,
+    fixture: Path,
+    tmp_path: Path,
 ):
     """Stage a fixture and return (repo_root, mock_orchestrator).
 
@@ -254,8 +263,15 @@ def _fixture_issue_numbers(expected: dict) -> list[int]:
     return issue_numbers
 
 
-def _openapi_validator(component: str) -> Draft202012Validator:
+@lru_cache(maxsize=1)
+def _openapi_schema() -> dict:
     schema = json.loads(Path("docs/api/ui-openapi.json").read_text())
+    return schema
+
+
+@lru_cache(maxsize=None)
+def _openapi_validator(component: str) -> Draft202012Validator:
+    schema = _openapi_schema()
     resolver = RefResolver.from_schema(schema)
     return Draft202012Validator(
         schema["components"]["schemas"][component],
@@ -281,10 +297,12 @@ def _assert_matches_openapi(component: str, payload: dict) -> None:
 def _get_route_payload(client: TestClient, path: str, **params: object) -> dict:
     response = client.get(path, params=params)
     assert response.status_code == 200, (
-        f"GET {path} returned HTTP {response.status_code}: {response.text[:500]}"
+        f"GET {path} returned HTTP {response.status_code}: {response.text}"
     )
     payload = response.json()
-    assert isinstance(payload, dict), f"GET {path} returned non-object JSON: {payload!r}"
+    assert isinstance(payload, dict), (
+        f"GET {path} returned non-object JSON: {payload!r}"
+    )
     return payload
 
 
@@ -359,7 +377,9 @@ def test_e2e_run_detail_matches_captured_fixture(fixture: Path, tmp_path: Path) 
                     f"  MISSING test_started for {nodeid} (expected issues={want})"
                 )
             elif got != want:
-                mismatches.append(f"  {nodeid}\n    expected={want}\n    actual  ={got}")
+                mismatches.append(
+                    f"  {nodeid}\n    expected={want}\n    actual  ={got}"
+                )
 
         # Also catch unexpected new test rows so the fixture stays canonical.
         expected_nodeids = {t["nodeid"] for t in expected["tests"]}
@@ -371,14 +391,14 @@ def test_e2e_run_detail_matches_captured_fixture(fixture: Path, tmp_path: Path) 
 
         assert not mismatches, (
             f"Fixture {fixture.name} drift "
-            f"({len(mismatches)} row(s)):\n" + "\n".join(mismatches) +
-            "\n\nIf this is a legitimate contract change, re-bless via:"
+            f"({len(mismatches)} row(s)):\n"
+            + "\n".join(mismatches)
+            + "\n\nIf this is a legitimate contract change, re-bless via:"
             f"\n  scripts/snapshot_e2e_run.py --run-id {run_id} --repo-root <path>"
         )
         assert not run_id_drift, (
             f"Affordances in fixture {fixture.name} carry the wrong run_id "
-            f"(frontend click-through routing will break):\n"
-            + "\n".join(run_id_drift)
+            f"(frontend click-through routing will break):\n" + "\n".join(run_id_drift)
         )
     finally:
         set_orchestrator(None)
@@ -390,7 +410,8 @@ def test_e2e_run_detail_matches_captured_fixture(fixture: Path, tmp_path: Path) 
     ids=lambda f: f.name,
 )
 def test_real_route_payloads_match_ui_openapi_schemas(
-    fixture: Path, tmp_path: Path,
+    fixture: Path,
+    tmp_path: Path,
 ) -> None:
     """Validate captured real route responses against the generated UI contract."""
     expected = json.loads((fixture / "expected.json").read_text())
@@ -414,9 +435,13 @@ def test_real_route_payloads_match_ui_openapi_schemas(
         )
         _assert_matches_openapi("E2ERunTimelinePayload", timeline_payload)
         E2ERunTimelinePayload.model_validate(timeline_payload)
-        assert timeline_payload["events"], "real fixture timeline route returned no events"
+        assert timeline_payload["events"], (
+            "real fixture timeline route returned no events"
+        )
         assert isinstance(timeline_payload["cycles"], list)
-        assert timeline_payload["phase_toc"], "real fixture timeline route returned no phase_toc"
+        assert timeline_payload["phase_toc"], (
+            "real fixture timeline route returned no phase_toc"
+        )
         assert timeline_payload["issue_affordances"], (
             "real fixture timeline route returned no issue affordances"
         )
@@ -444,9 +469,9 @@ def test_real_route_payloads_match_ui_openapi_schemas(
             IssueDetailPayload.model_validate(e2e_issue_payload)
             assert e2e_issue_payload["lifecycle"] is not None
             assert e2e_issue_payload["events"]
-            assert (
-                e2e_issue_payload["lifecycle"]["current"]["issue_lifecycles"][0]["cycles"]
-            ), "semantic issue lifecycle did not carry cycles"
+            assert e2e_issue_payload["lifecycle"]["current"]["issue_lifecycles"][0][
+                "cycles"
+            ], "semantic issue lifecycle did not carry cycles"
 
             dashboard_issue_payload = _get_route_payload(
                 client,
@@ -454,6 +479,7 @@ def test_real_route_payloads_match_ui_openapi_schemas(
             )
             _assert_matches_openapi("IssueDetailPayload", dashboard_issue_payload)
             IssueDetailPayload.model_validate(dashboard_issue_payload)
+            assert dashboard_issue_payload["lifecycle"] is None
     finally:
         set_orchestrator(None)
         set_control_orchestrator(None)
@@ -474,7 +500,8 @@ def test_at_least_one_fixture_exists() -> None:
     ids=lambda f: f.name,
 )
 def test_issue_affordance_click_through_returns_real_events(
-    fixture: Path, tmp_path: Path,
+    fixture: Path,
+    tmp_path: Path,
 ) -> None:
     """Sequenced HTTP commands: timeline → click → issue detail.
 
@@ -575,12 +602,14 @@ def test_issue_affordance_click_through_returns_real_events(
         for issue_num in click_through_targets:
             legacy_response = client.get(f"/api/issue-detail/{issue_num}")
             assert legacy_response.status_code == 200
-            legacy_events = legacy_response.json().get("events") or []
+            legacy_payload = legacy_response.json()
+            legacy_events = legacy_payload.get("events") or []
             assert legacy_events == [], (
                 f"Legacy /api/issue-detail/{issue_num} should NOT surface "
                 f"e2e-worktree events — that's the explicit endpoint's job. "
                 f"If you see events here, the fallback sneaked back in."
             )
+            assert legacy_payload["lifecycle"] is None
     finally:
         set_orchestrator(None)
 

@@ -344,7 +344,7 @@ export interface IssueDetailPayload {
   events: Record<string, any>[];
   issue_number: number;
   issue_url: string;
-  lifecycle?: LifecycleTimelineContainerPayload;
+  lifecycle?: LifecycleTimelineContainerPayload | null;
   phase_toc: Record<string, any>[];
   previous_runs: Record<string, any>[];
   previous_runs_count: number;
