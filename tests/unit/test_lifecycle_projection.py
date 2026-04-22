@@ -207,7 +207,9 @@ def _approved_review_event() -> dict[str, object]:
 
 
 def _lifecycle_state_matrix_cases() -> tuple[dict[str, object], ...]:
-    started, completed, validation, review_start, changes_requested = _complete_issue_events()
+    started, completed, validation, review_start, changes_requested = (
+        _complete_issue_events()
+    )
     validation_failed = _event(
         "validation.failed",
         event_id="validation-failed",
@@ -274,7 +276,13 @@ def _lifecycle_state_matrix_cases() -> tuple[dict[str, object], ...]:
     return (
         {
             "name": "completed_review_approved",
-            "events": (started, completed, validation, review_start, _approved_review_event()),
+            "events": (
+                started,
+                completed,
+                validation,
+                review_start,
+                _approved_review_event(),
+            ),
             "expected": {
                 "coder_kind": "completed_coding_attempt",
                 "review_kind": "review_approved",
@@ -310,6 +318,7 @@ def _lifecycle_state_matrix_cases() -> tuple[dict[str, object], ...]:
                 "review_kind": "review_not_reached",
                 "validation_kind": None,
                 "outcome": "blocked",
+                "coder_commands": ("show_event_details",),
                 "review_reason": "coding_failed",
             },
             "expected_types": (BlockedCodingAttempt, ReviewNotReached),
@@ -322,6 +331,7 @@ def _lifecycle_state_matrix_cases() -> tuple[dict[str, object], ...]:
                 "review_kind": "review_not_reached",
                 "validation_kind": None,
                 "outcome": "failed",
+                "coder_commands": ("show_event_details",),
                 "review_reason": "coding_failed",
             },
             "expected_types": (FailedCodingAttempt, ReviewNotReached),
@@ -491,6 +501,70 @@ def test_completed_coder_without_completion_record_becomes_missing_evidence() ->
     assert coder.diagnostics[0].code == "coding.completion_record.missing"
 
 
+@pytest.mark.parametrize(
+    ("name", "events", "expected_state", "missing"),
+    (
+        (
+            "running",
+            (
+                _event(
+                    "agent.coding_started",
+                    event_id="coding-start-no-agent",
+                    timestamp="2026-04-21T12:00:00Z",
+                ),
+            ),
+            "running",
+            ("agent",),
+        ),
+        (
+            "blocked",
+            (
+                _event(
+                    "agent.blocked",
+                    event_id="coding-blocked-no-agent",
+                    timestamp="2026-04-21T12:10:00Z",
+                    summary="No agent on blocked event",
+                ),
+            ),
+            "blocked",
+            ("agent",),
+        ),
+        (
+            "failed",
+            (
+                _event(
+                    "session.failed",
+                    event_id="coding-failed-no-agent",
+                    timestamp="2026-04-21T12:10:00Z",
+                    summary="No agent on failed event",
+                ),
+            ),
+            "failed",
+            ("agent",),
+        ),
+    ),
+    ids=("running", "blocked", "failed"),
+)
+def test_missing_coding_evidence_expected_state_variants(
+    name: str,
+    events: tuple[dict[str, object], ...],
+    expected_state: str,
+    missing: tuple[str, ...],
+) -> None:
+    lifecycle = project_issue_lifecycle(
+        issue_number=5723,
+        title=f"Missing {name} coding evidence",
+        events=events,
+        cycles=[{"cycle": 1, "events": list(events)}],
+    )
+
+    coder = lifecycle.cycles[0].coder
+    assert isinstance(coder, MissingCodingEvidence)
+    assert coder.expected_state == expected_state
+    assert _missing_evidence_names(coder) == missing
+    assert _stage_command_kinds(coder) == ("show_event_details",)
+
+
 def test_blocked_coder_projects_as_terminal_blocked_state() -> None:
     started = _event(
         "agent.coding_started",
@@ -524,7 +598,9 @@ def test_blocked_coder_projects_as_terminal_blocked_state() -> None:
     assert cycle.outcome == "blocked"
 
 
-def test_publish_failed_after_coding_completion_projects_publish_failed_attempt() -> None:
+def test_publish_failed_after_coding_completion_projects_publish_failed_attempt() -> (
+    None
+):
     started, completed, validation, *_ = _complete_issue_events()
     publish_failed = _event(
         "publish.failed",
@@ -539,7 +615,9 @@ def test_publish_failed_after_coding_completion_projects_publish_failed_attempt(
         issue_number=5723,
         title="Timeline regression",
         events=[started, completed, validation, publish_failed],
-        cycles=[{"cycle": 1, "events": [started, completed, validation, publish_failed]}],
+        cycles=[
+            {"cycle": 1, "events": [started, completed, validation, publish_failed]}
+        ],
     )
 
     cycle = lifecycle.cycles[0]
@@ -573,11 +651,25 @@ def test_review_completion_observation_does_not_replace_coding_completion() -> N
     lifecycle = project_issue_lifecycle(
         issue_number=5723,
         title="Timeline regression",
-        events=[started, completed, validation, review_start, review_observation, approved],
+        events=[
+            started,
+            completed,
+            validation,
+            review_start,
+            review_observation,
+            approved,
+        ],
         cycles=[
             {
                 "cycle": 1,
-                "events": [started, completed, validation, review_start, review_observation, approved],
+                "events": [
+                    started,
+                    completed,
+                    validation,
+                    review_start,
+                    review_observation,
+                    approved,
+                ],
             }
         ],
         review_required=True,
@@ -605,13 +697,26 @@ def test_legacy_review_only_cycle_uses_full_event_window_for_semantics() -> None
         reviewer_agent="agent:reviewer",
         run_dir="/tmp/review-1",
     )
-    all_events = [started, completed, validation, review_start, review_observation, approved]
+    all_events = [
+        started,
+        completed,
+        validation,
+        review_start,
+        review_observation,
+        approved,
+    ]
 
     lifecycle = project_issue_lifecycle(
         issue_number=5723,
         title="Timeline regression",
         events=all_events,
-        cycles=[{"cycle": 1, "status": "completed", "events": [review_start, review_observation]}],
+        cycles=[
+            {
+                "cycle": 1,
+                "status": "completed",
+                "events": [review_start, review_observation],
+            }
+        ],
         review_required=True,
     )
 
@@ -620,7 +725,9 @@ def test_legacy_review_only_cycle_uses_full_event_window_for_semantics() -> None
     assert isinstance(cycle.review, ReviewApproved)
 
 
-def test_review_reached_without_coding_terminal_projects_missing_completion_evidence() -> None:
+def test_review_reached_without_coding_terminal_projects_missing_completion_evidence() -> (
+    None
+):
     started = _event(
         "agent.coding_started",
         event_id="coding-start",
@@ -691,7 +798,12 @@ def test_review_approved_projects_transcript_evidence() -> None:
         issue_number=5723,
         title="Timeline regression",
         events=[started, completed, validation, review_start, approved],
-        cycles=[{"cycle": 1, "events": [started, completed, validation, review_start, approved]}],
+        cycles=[
+            {
+                "cycle": 1,
+                "events": [started, completed, validation, review_start, approved],
+            }
+        ],
         review_required=True,
     )
 
@@ -724,7 +836,9 @@ def test_review_running_skipped_and_failed_project_distinct_states() -> None:
         issue_number=5723,
         title="Timeline regression",
         events=[started, completed, validation, skipped_event],
-        cycles=[{"cycle": 1, "events": [started, completed, validation, skipped_event]}],
+        cycles=[
+            {"cycle": 1, "events": [started, completed, validation, skipped_event]}
+        ],
     ).cycles[0]
     assert isinstance(skipped.review, ReviewSkipped)
     assert skipped.outcome == "review_skipped"
@@ -741,7 +855,12 @@ def test_review_running_skipped_and_failed_project_distinct_states() -> None:
         issue_number=5723,
         title="Timeline regression",
         events=[started, completed, validation, review_start, failed_event],
-        cycles=[{"cycle": 1, "events": [started, completed, validation, review_start, failed_event]}],
+        cycles=[
+            {
+                "cycle": 1,
+                "events": [started, completed, validation, review_start, failed_event],
+            }
+        ],
         review_required=True,
     ).cycles[0]
     assert isinstance(failed.review, ReviewFailed)
@@ -845,7 +964,10 @@ def test_validation_failed_and_missing_evidence_branches_project_distinctly() ->
     ).cycles[0]
     assert isinstance(missing_record_cycle.coder, CompletedCodingAttempt)
     assert isinstance(missing_record_cycle.coder.validation, ValidationEvidenceMissing)
-    assert missing_record_cycle.coder.validation.diagnostics[0].code == "validation.record_missing"
+    assert (
+        missing_record_cycle.coder.validation.diagnostics[0].code
+        == "validation.record_missing"
+    )
 
     missing_run_dir_event = _event(
         "validation.failed",
@@ -862,7 +984,10 @@ def test_validation_failed_and_missing_evidence_branches_project_distinctly() ->
     ).cycles[0]
     assert isinstance(missing_run_dir_cycle.coder, CompletedCodingAttempt)
     assert isinstance(missing_run_dir_cycle.coder.validation, ValidationEvidenceMissing)
-    assert missing_run_dir_cycle.coder.validation.diagnostics[0].code == "validation.run_dir_missing"
+    assert (
+        missing_run_dir_cycle.coder.validation.diagnostics[0].code
+        == "validation.run_dir_missing"
+    )
 
 
 def test_dashboard_projection_container_iterates_singleton_issue_model() -> None:
@@ -898,7 +1023,9 @@ def test_issue_lifecycle_without_events_is_explicit_missing_evidence_cycle() -> 
 
 
 def test_issue_lifecycles_from_events_group_issues_and_synthesize_cycles() -> None:
-    complete_events = tuple(dict(event, issue_number=5723) for event in _complete_issue_events())
+    complete_events = tuple(
+        dict(event, issue_number=5723) for event in _complete_issue_events()
+    )
     running_event = _event(
         "agent.coding_started",
         event_id="coding-start-2",
@@ -917,7 +1044,9 @@ def test_issue_lifecycles_from_events_group_issues_and_synthesize_cycles() -> No
     assert [lifecycle.issue_number for lifecycle in lifecycles] == [5723, 5724]
     assert lifecycles[0].title == "E2E Issue #5723"
     assert isinstance(lifecycles[0].cycles[0].coder, CompletedCodingAttempt)
+    assert lifecycles[0].cycles[0].outcome == "changes_requested"
     assert isinstance(lifecycles[1].cycles[0].coder, RunningCodingAttempt)
+    assert lifecycles[1].cycles[0].outcome == "in_progress"
 
 
 def test_issue_lifecycle_without_presentation_cycles_groups_by_logical_cycle() -> None:
@@ -992,7 +1121,9 @@ def test_issue_lifecycle_rejects_mixed_logical_cycle_annotations() -> None:
         run_dir="/tmp/run-1",
     )
 
-    with pytest.raises(LifecycleProjectionError, match="must not mix logical cycle fields"):
+    with pytest.raises(
+        LifecycleProjectionError, match="must not mix logical cycle fields"
+    ):
         project_issue_lifecycle(
             issue_number=5723,
             title="Timeline regression",
@@ -1000,13 +1131,15 @@ def test_issue_lifecycle_rejects_mixed_logical_cycle_annotations() -> None:
             cycles=[],
         )
 
-    with pytest.raises(LifecycleProjectionError, match="must not mix logical cycle fields"):
+    with pytest.raises(
+        LifecycleProjectionError, match="must not mix logical cycle fields"
+    ):
         project_issue_lifecycle(
             issue_number=5723,
             title="Timeline regression",
             events=[logical_event, legacy_event],
             cycles=[],
-    )
+        )
 
 
 @pytest.mark.parametrize(
@@ -1048,8 +1181,18 @@ def test_lifecycle_projection_state_matrix_preserves_distinct_public_states(
         assert cycle.review.reason == expected["review_reason"]
 
 
-def test_dashboard_and_e2e_parent_models_project_congruent_issue_lifecycle() -> None:
-    issue_events = tuple(dict(event, issue_number=5723) for event in _complete_issue_events())
+@pytest.mark.parametrize(
+    "issue_events",
+    (
+        _complete_issue_events(),
+        _complete_issue_events()[:3],
+    ),
+    ids=("completed_with_review", "completed_validated_missing_review"),
+)
+def test_dashboard_and_e2e_parent_models_project_congruent_issue_lifecycle(
+    issue_events: tuple[dict[str, object], ...],
+) -> None:
+    issue_events = tuple(dict(event, issue_number=5723) for event in issue_events)
     e2e_events = (
         _event(
             "e2e.test_started",
@@ -1080,16 +1223,21 @@ def test_dashboard_and_e2e_parent_models_project_congruent_issue_lifecycle() -> 
         events=e2e_events,
         agent_events=issue_events,
         subject_label="E2E",
+        review_required=True,
     )
 
     dashboard_issue = dashboard.current.issue_lifecycles[0]
     e2e_issue = e2e_suite.runs[0].e2e_run.linked_issue_lifecycles[0]
-    assert _issue_lifecycle_summary(dashboard_issue) == _issue_lifecycle_summary(e2e_issue)
+    assert _issue_lifecycle_summary(dashboard_issue) == _issue_lifecycle_summary(
+        e2e_issue
+    )
 
 
 def test_e2e_projection_builds_passed_and_failed_tests() -> None:
     events = [
-        _event("e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"),
+        _event(
+            "e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"
+        ),
         _event(
             "e2e.test_started",
             event_id="test-a-start",
@@ -1119,7 +1267,9 @@ def test_e2e_projection_builds_passed_and_failed_tests() -> None:
             longrepr="assert visible_time",
             duration_seconds=8.0,
         ),
-        _event("e2e.run_finished", event_id="run-finish", timestamp="2026-04-21T12:03:00Z"),
+        _event(
+            "e2e.run_finished", event_id="run-finish", timestamp="2026-04-21T12:03:00Z"
+        ),
     ]
 
     iteration = project_e2e_run_iteration(run_id=88, events=events)
@@ -1133,7 +1283,9 @@ def test_e2e_projection_builds_passed_and_failed_tests() -> None:
 
 def test_failed_e2e_test_without_longrepr_is_explicit_missing_evidence() -> None:
     events = [
-        _event("e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"),
+        _event(
+            "e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"
+        ),
         _event(
             "e2e.test_started",
             event_id="test-start",
@@ -1159,7 +1311,9 @@ def test_failed_e2e_test_without_longrepr_is_explicit_missing_evidence() -> None
 
 def test_completed_e2e_test_without_started_event_is_missing_evidence() -> None:
     events = [
-        _event("e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"),
+        _event(
+            "e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"
+        ),
         _event(
             "e2e.test_completed",
             event_id="test-done",
@@ -1178,7 +1332,9 @@ def test_completed_e2e_test_without_started_event_is_missing_evidence() -> None:
 
 def test_started_e2e_test_without_completion_projects_running_execution() -> None:
     events = [
-        _event("e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"),
+        _event(
+            "e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"
+        ),
         _event(
             "e2e.test_started",
             event_id="test-start",
@@ -1195,7 +1351,9 @@ def test_started_e2e_test_without_completion_projects_running_execution() -> Non
 
 def test_e2e_run_without_test_events_projects_missing_test_evidence() -> None:
     events = [
-        _event("e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"),
+        _event(
+            "e2e.run_started", event_id="run-start", timestamp="2026-04-21T12:00:00Z"
+        ),
     ]
 
     iteration = project_e2e_run_iteration(run_id=88, events=events)
@@ -1222,7 +1380,9 @@ def test_e2e_suite_container_requires_linked_issue_lifecycle() -> None:
     )
     iteration = project_e2e_run_iteration(run_id=88, events=[event_start, event_done])
 
-    with pytest.raises(LifecycleProjectionError, match="linked_issue_lifecycle_missing"):
+    with pytest.raises(
+        LifecycleProjectionError, match="linked_issue_lifecycle_missing"
+    ):
         project_e2e_suite_lifecycle_container(
             subject_label="E2E",
             runs=[iteration],
@@ -1273,7 +1433,9 @@ def test_e2e_suite_container_for_run_populates_linked_issue_lifecycle() -> None:
         outcome="passed",
         issue_affordances=[{"issue_number": 5723, "run_id": 88}],
     )
-    agent_events = tuple(dict(event, issue_number=5723) for event in _complete_issue_events())
+    agent_events = tuple(
+        dict(event, issue_number=5723) for event in _complete_issue_events()
+    )
 
     container = project_e2e_suite_lifecycle_container_for_run(
         run_id=88,
