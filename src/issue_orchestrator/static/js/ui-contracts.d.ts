@@ -361,9 +361,9 @@ export interface IssueDetailPayload {
 export interface IssueDetailSummaryPayload {
   event_count: number;
   last_event: string;
-  run_diagnostic?: IssueDetailValidationDiagnosticPayload;
+  run_diagnostic?: IssueDetailValidationDiagnosticPayload | null;
   status: string;
-  timeline_diagnostic?: IssueDetailTimelineDiagnosticPayload;
+  timeline_diagnostic?: IssueDetailTimelineDiagnosticPayload | null;
 }
 
 export interface IssueDetailTimelineDiagnosticPayload {

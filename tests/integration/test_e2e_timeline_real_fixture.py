@@ -26,15 +26,32 @@ from __future__ import annotations
 import base64
 import json
 import shutil
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+warnings.filterwarnings(
+    "ignore",
+    category=DeprecationWarning,
+    message="jsonschema.RefResolver is deprecated",
+)
+
+from jsonschema import Draft202012Validator, RefResolver
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+
+from issue_orchestrator.contracts.ui_openapi_models import (
+    E2ERunDetailPayload,
+    E2ERunTimelinePayload,
+    IssueDetailPayload,
+)
+from issue_orchestrator.entrypoints.control_api import (
+    set_orchestrator as set_control_orchestrator,
+)
 from issue_orchestrator.entrypoints.web import app, set_orchestrator
 from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
-
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "e2e_runs"
 FIXTURE_RUN_DIR_REWRITTEN_PATH_KEYS = (
@@ -228,6 +245,49 @@ def _expected_issue_numbers(entry: dict) -> list[int]:
     return sorted(a["issue_number"] for a in affordances)
 
 
+def _fixture_issue_numbers(expected: dict) -> list[int]:
+    issue_numbers: list[int] = []
+    for entry in expected["tests"]:
+        for issue_number in _expected_issue_numbers(entry):
+            if issue_number not in issue_numbers:
+                issue_numbers.append(issue_number)
+    return issue_numbers
+
+
+def _openapi_validator(component: str) -> Draft202012Validator:
+    schema = json.loads(Path("docs/api/ui-openapi.json").read_text())
+    resolver = RefResolver.from_schema(schema)
+    return Draft202012Validator(
+        schema["components"]["schemas"][component],
+        resolver=resolver,
+    )
+
+
+def _schema_error_messages(errors: list[JsonSchemaValidationError]) -> str:
+    messages: list[str] = []
+    pending = list(errors)
+    while pending:
+        error = pending.pop()
+        messages.append(error.message)
+        pending.extend(error.context)
+    return "\n".join(messages)
+
+
+def _assert_matches_openapi(component: str, payload: dict) -> None:
+    errors = sorted(_openapi_validator(component).iter_errors(payload), key=str)
+    assert not errors, _schema_error_messages(errors)
+
+
+def _get_route_payload(client: TestClient, path: str, **params: object) -> dict:
+    response = client.get(path, params=params)
+    assert response.status_code == 200, (
+        f"GET {path} returned HTTP {response.status_code}: {response.text[:500]}"
+    )
+    payload = response.json()
+    assert isinstance(payload, dict), f"GET {path} returned non-object JSON: {payload!r}"
+    return payload
+
+
 @pytest.mark.parametrize(
     "fixture",
     _discover_fixtures(),
@@ -324,6 +384,81 @@ def test_e2e_run_detail_matches_captured_fixture(fixture: Path, tmp_path: Path) 
         set_orchestrator(None)
 
 
+@pytest.mark.parametrize(
+    "fixture",
+    _discover_fixtures(),
+    ids=lambda f: f.name,
+)
+def test_real_route_payloads_match_ui_openapi_schemas(
+    fixture: Path, tmp_path: Path,
+) -> None:
+    """Validate captured real route responses against the generated UI contract."""
+    expected = json.loads((fixture / "expected.json").read_text())
+    run_id = expected["run_id"]
+    issue_numbers = _fixture_issue_numbers(expected)
+    if not issue_numbers:
+        pytest.skip(f"Fixture {fixture.name} has no issue affordances to validate")
+
+    repo_root, mock_orch = _stage_fixture_with_real_timeline_reader(fixture, tmp_path)
+
+    set_orchestrator(mock_orch)
+    set_control_orchestrator(mock_orch)
+    try:
+        client = TestClient(app)
+
+        timeline_payload = _get_route_payload(
+            client,
+            f"/control/e2e/run/{run_id}/timeline",
+            repo_root=str(repo_root),
+            view="user",
+        )
+        _assert_matches_openapi("E2ERunTimelinePayload", timeline_payload)
+        E2ERunTimelinePayload.model_validate(timeline_payload)
+        assert timeline_payload["events"], "real fixture timeline route returned no events"
+        assert isinstance(timeline_payload["cycles"], list)
+        assert timeline_payload["phase_toc"], "real fixture timeline route returned no phase_toc"
+        assert timeline_payload["issue_affordances"], (
+            "real fixture timeline route returned no issue affordances"
+        )
+        assert any(
+            event.get("issue_affordances") for event in timeline_payload["events"]
+        ), "typed E2E events did not carry nested issue affordances"
+
+        run_detail_payload = _get_route_payload(
+            client,
+            f"/api/e2e-run-detail/{run_id}",
+        )
+        _assert_matches_openapi("E2ERunDetailPayload", run_detail_payload)
+        E2ERunDetailPayload.model_validate(run_detail_payload)
+        assert run_detail_payload["events"]
+        assert isinstance(run_detail_payload["cycles"], list)
+        assert run_detail_payload["issue_affordances"]
+
+        for issue_number in issue_numbers:
+            e2e_issue_payload = _get_route_payload(
+                client,
+                f"/api/e2e-run/{run_id}/issue-detail/{issue_number}",
+                view="user",
+            )
+            _assert_matches_openapi("IssueDetailPayload", e2e_issue_payload)
+            IssueDetailPayload.model_validate(e2e_issue_payload)
+            assert e2e_issue_payload["lifecycle"] is not None
+            assert e2e_issue_payload["events"]
+            assert (
+                e2e_issue_payload["lifecycle"]["current"]["issue_lifecycles"][0]["cycles"]
+            ), "semantic issue lifecycle did not carry cycles"
+
+            dashboard_issue_payload = _get_route_payload(
+                client,
+                f"/api/issue-detail/{issue_number}",
+            )
+            _assert_matches_openapi("IssueDetailPayload", dashboard_issue_payload)
+            IssueDetailPayload.model_validate(dashboard_issue_payload)
+    finally:
+        set_orchestrator(None)
+        set_control_orchestrator(None)
+
+
 def test_at_least_one_fixture_exists() -> None:
     """Sanity check: there must be at least one captured fixture."""
     fixtures = _discover_fixtures()
@@ -365,11 +500,7 @@ def test_issue_affordance_click_through_returns_real_events(
 
     # Pick the distinct affordances captured under expected.json.
     # Skip fixtures that have no agent activity (e.g. run_86 — pruned worktree).
-    click_through_targets: list[int] = []
-    for entry in expected["tests"]:
-        for n in _expected_issue_numbers(entry):
-            if n not in click_through_targets:
-                click_through_targets.append(n)
+    click_through_targets = _fixture_issue_numbers(expected)
     if not click_through_targets:
         pytest.skip(f"Fixture {fixture.name} has no issue affordances to click")
 

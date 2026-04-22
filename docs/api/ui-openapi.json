@@ -557,8 +557,18 @@
           "status": {"type": "string"},
           "last_event": {"type": "string"},
           "event_count": {"type": "integer"},
-          "run_diagnostic": {"$ref": "#/components/schemas/IssueDetailValidationDiagnosticPayload"},
-          "timeline_diagnostic": {"$ref": "#/components/schemas/IssueDetailTimelineDiagnosticPayload"}
+          "run_diagnostic": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/IssueDetailValidationDiagnosticPayload"},
+              {"type": "null"}
+            ]
+          },
+          "timeline_diagnostic": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/IssueDetailTimelineDiagnosticPayload"},
+              {"type": "null"}
+            ]
+          }
         }
       },
       "IssueDetailActionPayload": {
