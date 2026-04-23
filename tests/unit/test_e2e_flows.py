@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 
 from issue_orchestrator.events import EventName
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from tests.e2e import flows
 
 
@@ -44,6 +45,70 @@ def test_flow_create_issue_no_duplicate_filter_label(monkeypatch):
     flow.create_issue("Test issue", ["test-data", "agent:e2e-test"])
 
     assert called["labels"] == ["test-data", "agent:e2e-test"]
+
+
+def test_cleanup_test_prs_for_issues_closes_only_matching_e2e_prs(monkeypatch):
+    matching = PRInfo(
+        number=10,
+        title="#123: Test artifact",
+        url="https://example.test/pull/10",
+        branch="123-test-artifact",
+        body="Closes #123",
+        state="open",
+        labels=["io-e2e-test-data"],
+    )
+    unrelated = PRInfo(
+        number=11,
+        title="#999: Other artifact",
+        url="https://example.test/pull/11",
+        branch="999-other-artifact",
+        body="Closes #999",
+        state="open",
+        labels=["io-e2e-test-data"],
+    )
+    adapter = Mock()
+    adapter.get_prs_with_label.return_value = [matching, unrelated]
+    monkeypatch.setattr(flows, "_github_adapter", lambda repo: adapter)
+
+    closed = flows.cleanup_test_prs_for_issues(
+        "owner/repo",
+        [123],
+        ["io-e2e-test-data", "agent:e2e-test"],
+    )
+
+    assert closed == 1
+    adapter.get_prs_with_label.assert_called_once_with("io-e2e-test-data", state="open")
+    adapter.close_pr.assert_called_once_with(10)
+    adapter.delete_branch.assert_called_once_with("123-test-artifact")
+
+
+def test_flow_cleanup_closes_prs_before_issues(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    def fake_create(repo, title, labels, body=None):
+        return Mock(stable_id=lambda: "123", scope=lambda: repo), 123
+
+    def fake_cleanup_prs(repo, issue_numbers, labels):
+        calls.append(("prs", (repo, tuple(issue_numbers), tuple(sorted(labels)))))
+        return 1
+
+    def fake_close_issue(repo, issue_number):
+        calls.append(("issue", issue_number))
+
+    monkeypatch.setattr(flows, "inflight_create", fake_create)
+    monkeypatch.setattr(flows, "cleanup_test_prs_for_issues", fake_cleanup_prs)
+
+    import issue_orchestrator.testing.support.test_data as test_data
+    monkeypatch.setattr(test_data, "close_issue", fake_close_issue)
+
+    flow = flows.E2EFlow(repo="owner/repo", watcher=None, filter_label="io-e2e-test-data")
+    flow.create_issue("Test issue", ["agent:e2e-test"])
+    flow.cleanup_created_issues()
+
+    assert calls == [
+        ("prs", ("owner/repo", (123,), ("agent:e2e-test", "io-e2e-test-data"))),
+        ("issue", 123),
+    ]
 
 
 def test_flow_update_issue_calls_inflight_update(monkeypatch):
