@@ -127,6 +127,47 @@ class E2EDB:
                 conn.execute(
                     "ALTER TABLE e2e_test_results ADD COLUMN result_source TEXT NOT NULL DEFAULT 'runtime'"
                 )
+            self._backfill_legacy_run_commands(conn)
+
+    def _backfill_legacy_run_commands(self, conn: sqlite3.Connection) -> None:
+        """Populate canonical commands for legacy pytest rows added before command_json."""
+        rows = conn.execute(
+            """
+            SELECT id, pytest_args, command_json, runner_kind
+            FROM e2e_runs
+            WHERE runner_kind = 'pytest'
+            """
+        ).fetchall()
+        updates: list[tuple[str, int]] = []
+        for row in rows:
+            raw_command = row["command_json"]
+            if isinstance(raw_command, str) and raw_command.strip() not in {"", "[]"}:
+                continue
+            try:
+                pytest_args = json.loads(row["pytest_args"])
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Skipping canonical-command backfill for legacy E2E run %s: invalid pytest_args JSON",
+                    row["id"],
+                )
+                continue
+            if not isinstance(pytest_args, list) or not all(
+                isinstance(arg, str) for arg in pytest_args
+            ):
+                logger.warning(
+                    "Skipping canonical-command backfill for legacy E2E run %s: pytest_args was not a list[str]",
+                    row["id"],
+                )
+                continue
+            if not pytest_args:
+                continue
+            updates.append((json.dumps(["pytest", *pytest_args]), int(row["id"])))
+        if not updates:
+            return
+        conn.executemany(
+            "UPDATE e2e_runs SET command_json = ? WHERE id = ?",
+            updates,
+        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

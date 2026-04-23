@@ -1,5 +1,6 @@
 """Unit tests for E2E database layer."""
 
+import json
 import pytest
 import tempfile
 from datetime import datetime, timezone
@@ -1026,3 +1027,61 @@ class TestOrchestratorInstanceId:
         run = db.get_run(run_id)
         assert run is not None
         assert run.orchestrator_instance_id == "migrated-uuid"
+
+    def test_schema_migration_backfills_legacy_pytest_command(self, tmp_path: Path):
+        """Legacy pytest rows gain a canonical command during schema migration."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy-command.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE e2e_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_root TEXT NOT NULL,
+                orchestrator_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                pytest_args TEXT NOT NULL,
+                commit_sha TEXT,
+                branch TEXT,
+                retry_of INTEGER,
+                is_retry_run INTEGER DEFAULT 0,
+                duration_seconds REAL,
+                note TEXT,
+                log_path TEXT,
+                artifacts_dir TEXT,
+                worker_pid INTEGER,
+                total_tests INTEGER,
+                current_test TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO e2e_runs (
+                repo_root,
+                orchestrator_id,
+                started_at,
+                status,
+                pytest_args
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "/tmp/repo",
+                "orch",
+                "2026-04-23T00:00:00+00:00",
+                "passed",
+                json.dumps(["tests/e2e", "-v"]),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        db = E2EDB(db_path)
+        run = db.get_run(1)
+        assert run is not None
+        assert run.command == ["pytest", "tests/e2e", "-v"]
+        assert run.runner_kind == "pytest"
