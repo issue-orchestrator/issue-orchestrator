@@ -6,6 +6,8 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from issue_orchestrator.entrypoints import control_center
 
 
@@ -113,7 +115,7 @@ def test_start_tray_icon_returns_none_when_startup_fails() -> None:
     assert result is None
 
 
-def _make_main_args(*, debug_http: bool) -> Namespace:
+def _make_main_args(*, debug_http: bool, dev_no_auth: bool = False) -> Namespace:
     return Namespace(
         port=19080,
         host="127.0.0.1",
@@ -121,6 +123,52 @@ def _make_main_args(*, debug_http: bool) -> Namespace:
         debug_http=debug_http,
         no_browser=True,
         no_tray=True,
+        dev_no_auth=dev_no_auth,
+    )
+
+
+def test_main_dev_no_auth_skips_configure_api_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``--dev-no-auth`` must leave the auth middleware a no-op.
+
+    Confirms the admin + agent-callback tokens stay ``None`` in the
+    ``control_api`` module and that an ERROR log line is emitted so
+    the footgun cannot be silently enabled.
+    """
+    import logging as _logging
+
+    from issue_orchestrator.entrypoints import control_api
+
+    prev_admin = control_api.get_configured_api_token()
+    prev_agent = control_api.get_configured_agent_callback_token()
+    control_api.configure_api_token(None, agent_callback=None)
+
+    with (
+        patch(
+            "argparse.ArgumentParser.parse_args",
+            return_value=_make_main_args(debug_http=False, dev_no_auth=True),
+        ),
+        patch("issue_orchestrator.entrypoints.control_center.uvicorn.run"),
+        patch("issue_orchestrator.entrypoints.control_center.write_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.clear_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.logging.basicConfig"),
+        patch("issue_orchestrator.infra.repo_registry.cleanup_stale_repos", return_value=0),
+        patch("issue_orchestrator.entrypoints.control_center.threading.Thread") as thread_cls,
+        caplog.at_level(_logging.ERROR, logger="issue_orchestrator.entrypoints.control_center"),
+    ):
+        thread_cls.return_value = MagicMock(start=MagicMock())
+        try:
+            result = control_center.main()
+        finally:
+            control_api.configure_api_token(prev_admin, agent_callback=prev_agent)
+
+    assert result == 0
+    assert control_api.get_configured_api_token() is None
+    assert control_api.get_configured_agent_callback_token() is None
+    assert any(
+        "authentication is DISABLED" in record.getMessage()
+        for record in caplog.records
     )
 
 

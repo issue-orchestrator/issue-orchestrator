@@ -192,8 +192,20 @@ def main() -> int:
         action="store_true",
         help="Don't show system tray icon",
     )
+    parser.add_argument(
+        "--dev-no-auth",
+        action="store_true",
+        help=(
+            "DEVELOPMENT ONLY: disable Control API authentication. "
+            "Any local process can mutate state. Also triggered by "
+            "ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1. Never use on a shared "
+            "host or in production."
+        ),
+    )
 
     args = parser.parse_args()
+    if os.environ.get("ISSUE_ORCHESTRATOR_DEV_NO_AUTH") == "1":
+        args.dev_no_auth = True
 
     # Default engine target repo to where Control Center was launched from.
     os.environ.setdefault("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(Path.cwd().resolve()))
@@ -237,12 +249,35 @@ def main() -> int:
     # of ``ControlAPIServer.start``), so if we skip this call every
     # request lands on an unauthenticated endpoint — the exact hole
     # flagged in #6017 review (P1 on #6011).
-    admin_token = resolve_api_token()
-    agent_callback_token = resolve_agent_callback_token()
-    configure_api_token(admin_token, agent_callback=agent_callback_token)
-    browser_session.initialize()
-    os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
-    os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
+    if args.dev_no_auth:
+        logger.error(
+            "⚠  Control Center running with --dev-no-auth: "
+            "authentication is DISABLED. Any local process can mutate "
+            "state. DO NOT use on a shared host or in production. "
+            "(set via %s)",
+            "ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1"
+            if os.environ.get("ISSUE_ORCHESTRATOR_DEV_NO_AUTH") == "1"
+            else "--dev-no-auth",
+        )
+        print(
+            "\n\033[1;31m"
+            "⚠  AUTH DISABLED (--dev-no-auth). Any local process can "
+            "mutate Control API state. Dev only."
+            "\033[0m\n",
+            flush=True,
+        )
+        # Leave ``_admin_token`` / ``_agent_callback_token`` as ``None``
+        # so the middleware is a no-op for every request. We still
+        # initialize ``browser_session`` so the dashboard's existing
+        # cookie-rendering path keeps working in the no-auth case.
+        browser_session.initialize()
+    else:
+        admin_token = resolve_api_token()
+        agent_callback_token = resolve_agent_callback_token()
+        configure_api_token(admin_token, agent_callback=agent_callback_token)
+        browser_session.initialize()
+        os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
+        os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
 
     # Start system tray icon (menu bar on macOS)
     tray_icon = _start_tray_icon(url) if not args.no_tray else None
