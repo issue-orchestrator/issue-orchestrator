@@ -51,7 +51,9 @@ class E2ERunDiagnosis:
     flaky_tests: list[dict] = field(default_factory=list)  # Passed on retry
 
     # Context
+    command: list[str] = field(default_factory=list)
     pytest_args: list[str] = field(default_factory=list)
+    runner_kind: str = "pytest"
     repo_root: str = ""
     orchestrator_id: str = ""
 
@@ -80,7 +82,9 @@ class E2ERunDiagnosis:
             "skipped_count": self.skipped_count,
             "failed_tests": self.failed_tests,
             "flaky_tests": self.flaky_tests,
+            "command": self.command,
             "pytest_args": self.pytest_args,
+            "runner_kind": self.runner_kind,
             "repo_root": self.repo_root,
             "orchestrator_id": self.orchestrator_id,
             "warnings": self.warnings,
@@ -144,7 +148,7 @@ def _build_warnings_and_suggestions(
     # No tests ran
     if total_tests == 0:
         warnings.append("No tests were collected")
-        suggestions.append("Check pytest args and test discovery")
+        suggestions.append("Check the runner configuration and report generation")
 
     return warnings, suggestions
 
@@ -184,6 +188,8 @@ def create_e2e_run_diagnosis(run_id: int, db: E2EDB) -> E2ERunDiagnosis | None:
         worker_pid=run_dict["worker_pid"],
         total_tests=run_dict["total_tests"],
         current_test=run_dict["current_test"],
+        command=run_dict.get("command", []),
+        runner_kind=run_dict.get("runner_kind", "pytest"),
     )
 
     summary = db.get_test_summary(run_id)
@@ -239,7 +245,9 @@ def create_e2e_run_diagnosis(run_id: int, db: E2EDB) -> E2ERunDiagnosis | None:
         skipped_count=counts["skipped"],
         failed_tests=failed_tests,
         flaky_tests=flaky_tests,
+        command=run.command,
         pytest_args=run.pytest_args,
+        runner_kind=run.runner_kind,
         repo_root=run.repo_root,
         orchestrator_id=run.orchestrator_id,
         warnings=warnings,

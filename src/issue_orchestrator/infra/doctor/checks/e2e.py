@@ -1,9 +1,8 @@
 """E2E runner checks for doctor.
 
-Path validation (quarantine_file, pytest_args test directory) is now
-schema-driven via doctor_check annotations in settings_schema.py.
 This module handles:
 - Status summary (Enabled/Disabled with detail)
+- Runner-target validation for pytest and generic command modes
 - DB directory writability check (not a schema field)
 - Quarantine file line count (runtime inspection, not schema-validatable)
 """
@@ -13,7 +12,52 @@ from pathlib import Path
 
 from ..types import Check
 from ...config import Config
-from .schema import format_summary
+
+
+def _e2e_summary_parts(config: Config, repo_root: Path) -> tuple[list[str], list[Check]]:
+    parts: list[str] = []
+    checks: list[Check] = []
+    try:
+        spec = config.e2e.execution_spec()
+    except ValueError as exc:
+        checks.append(Check(
+            name="E2E Runner",
+            status="error",
+            detail=str(exc),
+        ))
+        return parts, checks
+
+    parts.append(f"runner={spec.runner_kind}")
+    parts.append(f"target={spec.display_target}")
+    if spec.allow_retry_once and spec.runner_kind == "pytest":
+        parts.append("retry=on")
+    elif spec.runner_kind == "pytest":
+        parts.append("retry=off")
+    else:
+        parts.append("retry=n/a")
+
+    if spec.runner_kind == "pytest" and spec.pytest_args:
+        test_path = repo_root / spec.pytest_args[0]
+        if not test_path.exists():
+            checks.append(Check(
+                name="E2E Runner",
+                status="warning",
+                detail=f"Pytest target does not exist: {spec.pytest_args[0]}",
+            ))
+    elif spec.runner_kind == "command" and spec.command:
+        command_path = Path(spec.command[0])
+        if ("/" in spec.command[0] or spec.command[0].startswith(".")) and not (repo_root / command_path).exists():
+            checks.append(Check(
+                name="E2E Runner",
+                status="warning",
+                detail=f"Command path does not exist: {spec.command[0]}",
+            ))
+        if not spec.junit_xml_paths:
+            parts.append("results=log-only")
+        else:
+            parts.append(f"junit={len(spec.junit_xml_paths)}")
+
+    return parts, checks
 
 
 def check_e2e_runner(config: Config) -> list[Check]:
@@ -22,11 +66,9 @@ def check_e2e_runner(config: Config) -> list[Check]:
     if config.e2e.enabled:
         repo_root = Path.cwd()
         e2e_parts: list[str] = []
-
-        # Schema-driven summary parts (auto, retry, tests path)
-        summary = format_summary("e2e", config)
-        if summary:
-            e2e_parts.append(summary)
+        summary_parts, validation_checks = _e2e_summary_parts(config, repo_root)
+        e2e_parts.extend(summary_parts)
+        checks.extend(validation_checks)
 
         # Quarantine file line count — runtime inspection beyond path existence
         quarantine_path = repo_root / config.e2e.quarantine_file

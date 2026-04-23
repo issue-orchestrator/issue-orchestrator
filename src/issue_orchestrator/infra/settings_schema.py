@@ -282,25 +282,63 @@ class E2ESettings(BaseModel):
             "yaml_path": "e2e.role",
         },
     )
+    runner_kind: Literal["pytest", "command"] = Field(
+        "pytest",
+        title="Runner Kind",
+        description="Execution adapter used for E2E runs",
+        json_schema_extra={
+            "doc_examples": ["pytest", "command"],
+            "doc_notes": "Use pytest for live test events and retries; use command for arbitrary test runners that emit JUnit XML.",
+            "config_attr": "e2e.runner_kind",
+            "yaml_path": "e2e.runner_kind",
+        },
+    )
     pytest_args: str = Field(
         "tests/e2e -v",
         title="Pytest Arguments",
-        description="Space-separated pytest arguments (e.g., tests/e2e -v)",
+        description="Space-separated pytest arguments used when Runner Kind is pytest",
         json_schema_extra={
             "doc_examples": ["tests/e2e -v", "tests/e2e -v -x"],
-            "doc_notes": "First argument should be a path; it is validated by the doctor.",
+            "doc_notes": "Used only when runner_kind=pytest.",
             "config_attr": "e2e.pytest_args",
             "yaml_path": "e2e.pytest_args",
             "ui_transform": "space_separated_list",
-            "doctor_check": DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
-            "doctor_check_condition": "e2e.enabled",
-            "doctor_severity": DOCTOR_SEVERITY_WARNING,
-            "summary": {
-                "section": "e2e",
-                "format": SUMMARY_KEY_VALUE,
-                "label": "tests",
-                "value_index": 0,
-            },
+        },
+    )
+    command: str = Field(
+        "",
+        title="Command",
+        description="Space-separated command used when Runner Kind is command",
+        json_schema_extra={
+            "doc_examples": ["./scripts/run-e2e-suite.sh", "npm run test:e2e -- --reporter=junit"],
+            "doc_notes": "Used when runner_kind=command. The command runs inside the E2E worktree.",
+            "config_attr": "e2e.command",
+            "yaml_path": "e2e.command",
+            "ui_transform": "space_separated_list",
+        },
+    )
+    junit_xml_paths: str = Field(
+        "",
+        title="JUnit XML Paths",
+        description="Relative JUnit XML files or globs to ingest after the run (one per line)",
+        json_schema_extra={
+            "doc_examples": ["test-results/junit.xml", "reports/**/*.xml"],
+            "doc_notes": "Leave empty for log-only runs. Missing configured reports fail the run loudly.",
+            "config_attr": "e2e.junit_xml_paths",
+            "yaml_path": "e2e.junit_xml_paths",
+            "ui_transform": "newline_separated_list",
+        },
+    )
+    artifact_paths: str = Field(
+        "",
+        title="Artifact Paths",
+        description="Additional report or artifact files to expose in the UI (one per line)",
+        json_schema_extra={
+            "doc_examples": ["playwright-report/index.html", "test-results/**/*.zip"],
+            "doc_notes": "Paths are resolved relative to the E2E worktree after the run completes.",
+            "config_attr": "e2e.artifact_paths",
+            "yaml_path": "e2e.artifact_paths",
+            "ui_transform": "newline_separated_list",
         },
     )
     allow_retry_once: bool = Field(
@@ -309,7 +347,7 @@ class E2ESettings(BaseModel):
         description="Retry failing tests to reduce flakiness",
         json_schema_extra={
             "doc_examples": ["true", "false"],
-            "doc_notes": "Disable if reruns hide real failures or are too slow.",
+            "doc_notes": "Applies to runner_kind=pytest. Command runners ignore this and report the original command result.",
             "config_attr": "e2e.allow_retry_once",
             "yaml_path": "e2e.allow_retry_once",
             "summary": {
@@ -327,7 +365,7 @@ class E2ESettings(BaseModel):
         description="Add -x flag to stop test run on first failure",
         json_schema_extra={
             "doc_examples": ["true", "false"],
-            "doc_notes": "Enable for faster feedback when most tests pass.",
+            "doc_notes": "Applies to runner_kind=pytest.",
             "config_attr": "e2e.stop_on_first_failure",
             "yaml_path": "e2e.stop_on_first_failure",
         },

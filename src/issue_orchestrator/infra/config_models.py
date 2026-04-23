@@ -233,6 +233,31 @@ class SchedulingConfig:
     default_priority_tier: int = 1  # P1 (medium) when no [P?-nnn] prefix
 
 
+@dataclass(frozen=True)
+class E2EExecutionSpec:
+    """Normalized execution spec for a single E2E run."""
+
+    runner_kind: str
+    pytest_args: tuple[str, ...] = ()
+    command: tuple[str, ...] = ()
+    junit_xml_paths: tuple[str, ...] = ()
+    artifact_paths: tuple[str, ...] = ()
+    allow_retry_once: bool = True
+    stop_on_first_failure: bool = False
+
+    @property
+    def canonical_command(self) -> tuple[str, ...]:
+        if self.runner_kind == "pytest":
+            return ("pytest", *self.pytest_args)
+        return self.command
+
+    @property
+    def display_target(self) -> str:
+        if self.runner_kind == "pytest":
+            return self.pytest_args[0] if self.pytest_args else "pytest"
+        return self.command[0] if self.command else "command"
+
+
 @dataclass
 class E2EConfig:
     """E2E async test runner settings.
@@ -256,7 +281,11 @@ class E2EConfig:
     enabled: bool = False  # Whether E2E runner is active
     role: str = "auto"  # auto | executor | reader | disabled
     auto_run_interval_minutes: int = 30  # Min interval between auto runs (0 = disable auto)
+    runner_kind: str = "pytest"  # pytest | command
     pytest_args: list[str] = field(default_factory=lambda: ["tests/e2e", "-v"])
+    command: list[str] = field(default_factory=list)  # Generic command when runner_kind=command
+    junit_xml_paths: list[str] = field(default_factory=list)  # Relative file paths or globs
+    artifact_paths: list[str] = field(default_factory=list)  # Additional artifact paths or globs
     allow_retry_once: bool = True  # Retry failing tests once to reduce flakiness
     quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
@@ -267,6 +296,30 @@ class E2EConfig:
     flake_threshold: int = 20  # Flip rate percentage (0-100) to flag test as flaky
     flake_window_runs: int = 10  # Number of recent runs to check for flakiness
     run_retention_count: int = 50  # Max runs to keep; older runs are pruned on completion
+
+    def execution_spec(self) -> E2EExecutionSpec:
+        """Return the normalized execution spec for a run."""
+        if self.runner_kind == "pytest":
+            return E2EExecutionSpec(
+                runner_kind="pytest",
+                pytest_args=tuple(self.pytest_args),
+                junit_xml_paths=tuple(self.junit_xml_paths),
+                artifact_paths=tuple(self.artifact_paths),
+                allow_retry_once=self.allow_retry_once,
+                stop_on_first_failure=self.stop_on_first_failure,
+            )
+        if self.runner_kind == "command":
+            if not self.command:
+                raise ValueError("e2e.command must be configured when runner_kind=command")
+            return E2EExecutionSpec(
+                runner_kind="command",
+                command=tuple(self.command),
+                junit_xml_paths=tuple(self.junit_xml_paths),
+                artifact_paths=tuple(self.artifact_paths),
+                allow_retry_once=self.allow_retry_once,
+                stop_on_first_failure=self.stop_on_first_failure,
+            )
+        raise ValueError(f"Unsupported e2e.runner_kind: {self.runner_kind}")
 
 
 @dataclass

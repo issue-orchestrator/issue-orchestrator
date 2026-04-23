@@ -33,9 +33,13 @@ _Auto-generated from settings schema._
 | `e2e.enabled` | boolean | `False` | Automatically run E2E tests when main branch changes | `true`, `false` | Keep disabled on repos without stable E2E tests. |
 | `e2e.auto_run_interval_minutes` | integer | `30` | Min interval between auto runs (0 = disable) | `0`, `30`, `60` | Set to 0 to disable automatic runs and trigger manually. |
 | `e2e.role` | string | `auto` | Role in multi-orchestrator setup | `auto`, `executor`, `reader`, `disabled` | Use executor on the single machine that should run tests. |
-| `e2e.pytest_args` | string | `tests/e2e -v` | Space-separated pytest arguments (e.g., tests/e2e -v) | `tests/e2e -v`, `tests/e2e -v -x` | First argument should be a path; it is validated by the doctor. |
-| `e2e.allow_retry_once` | boolean | `True` | Retry failing tests to reduce flakiness | `true`, `false` | Disable if reruns hide real failures or are too slow. |
-| `e2e.stop_on_first_failure` | boolean | `False` | Add -x flag to stop test run on first failure | `true`, `false` | Enable for faster feedback when most tests pass. |
+| `e2e.runner_kind` | string | `pytest` | Execution adapter used for E2E runs | `pytest`, `command` | Use pytest for live test events and retries; use command for arbitrary test runners that emit JUnit XML. |
+| `e2e.pytest_args` | string | `tests/e2e -v` | Space-separated pytest arguments used when Runner Kind is pytest | `tests/e2e -v`, `tests/e2e -v -x` | Used only when runner_kind=pytest. |
+| `e2e.command` | string | `` | Space-separated command used when Runner Kind is command | `./scripts/run-e2e-suite.sh`, `npm run test:e2e -- --reporter=junit` | Used when runner_kind=command. The command runs inside the E2E worktree. |
+| `e2e.junit_xml_paths` | string | `` | Relative JUnit XML files or globs to ingest after the run (one per line) | `test-results/junit.xml`, `reports/**/*.xml` | Leave empty for log-only runs. Missing configured reports fail the run loudly. |
+| `e2e.artifact_paths` | string | `` | Additional report or artifact files to expose in the UI (one per line) | `playwright-report/index.html`, `test-results/**/*.zip` | Paths are resolved relative to the E2E worktree after the run completes. |
+| `e2e.allow_retry_once` | boolean | `True` | Retry failing tests to reduce flakiness | `true`, `false` | Applies to runner_kind=pytest. Command runners ignore this and report the original command result. |
+| `e2e.stop_on_first_failure` | boolean | `False` | Add -x flag to stop test run on first failure | `true`, `false` | Applies to runner_kind=pytest. |
 | `e2e.quarantine_file` | string | `tests/e2e/quarantine.txt` | Path to quarantine file for skipping known-flaky tests | `tests/e2e/quarantine.txt`, `tests/e2e/quarantine-local.txt` | Doctor verifies the file exists when E2E is enabled. |
 | `e2e.auto_quarantine` | boolean | `True` | Automatically add failing tests to the quarantine list | `true`, `false` | Set false to require manual quarantine updates. |
 | `e2e.auto_create_issues` | boolean | `True` | Automatically create GitHub issues for failed tests | `true`, `false` | Disable if you prefer manual triage of failures. |
@@ -125,4 +129,5 @@ _Auto-generated from settings schema._
 | `worktrees.seed_ref` | string (optional) | `None` | Optional local ref used to seed fresh issue worktrees before review/PR creation | `HEAD`, `main`, `fc42d4c` | Use for local iteration when fresh issue worktrees should inherit a specific local ref. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
 | `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic. |
+
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

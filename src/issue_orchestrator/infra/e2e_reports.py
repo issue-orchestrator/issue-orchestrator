@@ -39,6 +39,43 @@ class E2ERunArtifactRecord:
     path: str
 
 
+def discover_report_artifacts(
+    repo_root: Path,
+    *,
+    junit_xml_paths: list[str] | tuple[str, ...],
+    artifact_paths: list[str] | tuple[str, ...],
+) -> tuple[list[JUnitCaseResult], list[E2ERunArtifactRecord]]:
+    """Resolve configured reports/artifacts and return typed results.
+
+    Raises:
+        ValueError: if a configured path/glob resolves to nothing or a JUnit report
+        is malformed.
+    """
+    cases: list[JUnitCaseResult] = []
+    artifacts: list[E2ERunArtifactRecord] = []
+
+    junit_files = _resolve_paths(repo_root, junit_xml_paths)
+    if junit_xml_paths and not junit_files:
+        raise ValueError("Configured JUnit XML paths did not resolve to any files")
+    for path in junit_files:
+        cases.extend(parse_junit_report(path))
+        artifacts.append(
+            E2ERunArtifactRecord(
+                kind="junit_xml",
+                label=f"JUnit XML: {path.name}",
+                path=str(path),
+            )
+        )
+
+    extra_files = _resolve_paths(repo_root, artifact_paths)
+    if artifact_paths and not extra_files:
+        raise ValueError("Configured artifact paths did not resolve to any files")
+    for path in extra_files:
+        artifacts.append(_artifact_record_for_path(path))
+
+    return cases, _dedupe_artifacts(artifacts)
+
+
 def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
     """Parse JUnit XML into strongly typed case results.
 
@@ -137,3 +174,69 @@ def _optional_float(value: object) -> float | None:
     if not stripped:
         return None
     return float(stripped)
+
+
+def _resolve_paths(
+    repo_root: Path,
+    patterns: list[str] | tuple[str, ...],
+) -> list[Path]:
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in patterns:
+        candidate = pattern.strip()
+        if not candidate:
+            continue
+        matches = sorted(repo_root.glob(candidate))
+        if not matches:
+            direct = repo_root / candidate
+            matches = [direct] if direct.exists() else []
+        for path in matches:
+            if path.is_dir():
+                continue
+            real = path.resolve()
+            if real in seen:
+                continue
+            resolved.append(real)
+            seen.add(real)
+    return resolved
+
+
+def _artifact_record_for_path(path: Path) -> E2ERunArtifactRecord:
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if suffix == ".html":
+        kind = "html_report"
+        label = f"HTML Report: {path.name}"
+    elif suffix == ".json":
+        kind = "json_report"
+        label = f"JSON Report: {path.name}"
+    elif suffix == ".xml":
+        kind = "xml_report"
+        label = f"XML Report: {path.name}"
+    elif suffix == ".zip" and "trace" in name:
+        kind = "trace"
+        label = f"Trace: {path.name}"
+    elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        kind = "image"
+        label = f"Image: {path.name}"
+    elif suffix in {".log", ".txt"}:
+        kind = "text_artifact"
+        label = f"Text Artifact: {path.name}"
+    else:
+        kind = "artifact"
+        label = path.name
+    return E2ERunArtifactRecord(kind=kind, label=label, path=str(path))
+
+
+def _dedupe_artifacts(
+    artifacts: list[E2ERunArtifactRecord],
+) -> list[E2ERunArtifactRecord]:
+    deduped: list[E2ERunArtifactRecord] = []
+    seen: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        key = (artifact.kind, artifact.path)
+        if key in seen:
+            continue
+        deduped.append(artifact)
+        seen.add(key)
+    return deduped

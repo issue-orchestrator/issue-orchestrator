@@ -133,6 +133,8 @@ class ResultPlugin:
             longrepr = str(report.longrepr)[:4000] if report.longrepr else None
 
         is_quarantined = nodeid in self.quarantine
+        suite_name = nodeid.rsplit("::", 1)[0] if "::" in nodeid else None
+        display_name = nodeid.split("::")[-1]
 
         self.db.upsert_test_result(
             run_id=self.run_id,
@@ -142,6 +144,9 @@ class ResultPlugin:
             longrepr=longrepr,
             retry_outcome=None,
             is_quarantined=is_quarantined,
+            display_name=display_name,
+            suite_name=suite_name,
+            result_source="runtime",
         )
 
         # Clear current_test after completion
@@ -224,7 +229,62 @@ def _run_retry(
 
     return passed_nodeids
 
-    return passed_on_retry
+
+def _run_command(command: list[str], repo_root: Path) -> int:
+    """Run a generic test command, inheriting the worker's stdout/stderr."""
+    if not command:
+        raise ValueError("Command runner requires a non-empty command")
+    logger.info("Running command: %s", command)
+    completed = subprocess.run(command, cwd=repo_root, check=False)
+    return int(completed.returncode)
+
+
+def _emit_junit_case_events(
+    run_id: int,
+    cases: list[Any],
+    *,
+    timeline_store: "SqliteTimelineStore",
+) -> None:
+    """Emit synthetic timeline events for post-run JUnit ingestion."""
+    if not cases:
+        return
+    _emit_run_event(
+        run_id,
+        "e2e.tests_collected",
+        {
+            "total": len(cases),
+            "nodeids": [case.case_id for case in cases],
+            "result_source": "junit_xml",
+        },
+        timeline_store=timeline_store,
+    )
+    for case in cases:
+        event_data: dict[str, Any] = {
+            "nodeid": case.case_id,
+            "display_name": case.display_name,
+            "suite_name": case.suite_name,
+            "outcome": case.outcome,
+            "duration_seconds": case.duration_seconds,
+            "result_source": "junit_xml",
+            "is_quarantined": False,
+        }
+        if case.failure_details:
+            event_data["longrepr"] = case.failure_details[:4000]
+        _emit_run_event(
+            run_id,
+            "e2e.test_completed",
+            event_data,
+            timeline_store=timeline_store,
+        )
+
+
+def _status_from_cases(cases: list[Any]) -> str | None:
+    """Derive a run status from parsed structured results."""
+    if not cases:
+        return None
+    if any(case.outcome in {"failed", "error"} for case in cases):
+        return "failed"
+    return "passed"
 
 
 def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test execution, quarantine handling, and retry logic
@@ -246,9 +306,12 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         help="Orchestrator identifier",
     )
     parser.add_argument(
+        "--execution-spec-json",
+        help="JSON execution spec for pytest or generic command mode",
+    )
+    parser.add_argument(
         "--pytest-args-json",
-        required=True,
-        help="JSON array of pytest arguments",
+        help="JSON array of pytest arguments (legacy compatibility path)",
     )
     parser.add_argument(
         "--quarantine-file",
@@ -301,7 +364,21 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     repo_root = Path(args.repo_root).resolve()
     db_path = Path(args.db_path)
-    pytest_args = json.loads(args.pytest_args_json)
+    if args.execution_spec_json:
+        raw_execution_spec = json.loads(args.execution_spec_json)
+    elif args.pytest_args_json:
+        raw_execution_spec = {
+            "runner_kind": "pytest",
+            "pytest_args": json.loads(args.pytest_args_json),
+            "command": [],
+            "junit_xml_paths": [],
+            "artifact_paths": [],
+            "allow_retry_once": args.allow_retry_once,
+            "stop_on_first_failure": False,
+        }
+    else:
+        logger.error("--execution-spec-json or --pytest-args-json is required")
+        return 1
 
     # Configure file logging if specified
     if args.log_file:
@@ -320,11 +397,23 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     # Import E2EDB after we're in the right directory
     # This ensures any local imports work correctly
+    from issue_orchestrator.infra.config_models import E2EExecutionSpec
     from issue_orchestrator.infra.e2e_db import (
         E2EDB,
         AlreadyRunning,
         load_quarantine_list,
         save_quarantine_list,
+    )
+    from issue_orchestrator.infra.e2e_reports import discover_report_artifacts
+
+    execution_spec = E2EExecutionSpec(
+        runner_kind=str(raw_execution_spec.get("runner_kind") or "pytest"),
+        pytest_args=tuple(raw_execution_spec.get("pytest_args") or []),
+        command=tuple(raw_execution_spec.get("command") or []),
+        junit_xml_paths=tuple(raw_execution_spec.get("junit_xml_paths") or []),
+        artifact_paths=tuple(raw_execution_spec.get("artifact_paths") or []),
+        allow_retry_once=bool(raw_execution_spec.get("allow_retry_once", args.allow_retry_once)),
+        stop_on_first_failure=bool(raw_execution_spec.get("stop_on_first_failure", False)),
     )
 
     # Load quarantine list
@@ -362,19 +451,22 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             run_id = db.start_run(
                 repo_root=str(repo_root),
                 orchestrator_id=args.orchestrator_id,
-                pytest_args=pytest_args,
+                pytest_args=list(execution_spec.pytest_args),
                 commit_sha=commit_sha,
                 branch=branch,
                 worker_pid=os.getpid(),
                 orchestrator_instance_id=args.orchestrator_instance_id,
+                command=list(execution_spec.canonical_command),
+                runner_kind=execution_spec.runner_kind,
             )
         except AlreadyRunning as e:
             logger.error("Cannot start: %s", e)
             return 1
         logger.info("Started run %d", run_id)
 
+    pytest_args = list(execution_spec.pytest_args)
     # Add deselected tests to pytest args (for skipping already-passed tests on resume)
-    if args.deselect:
+    if args.deselect and execution_spec.runner_kind == "pytest":
         for nodeid in args.deselect:
             pytest_args.extend(["--deselect", nodeid])
     start_time = time.time()
@@ -383,7 +475,9 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     log_path_for_db = args.log_file
 
     _emit_run_event(run_id, "e2e.run_started", {
-        "pytest_args": pytest_args,
+        "pytest_args": list(execution_spec.pytest_args),
+        "command": list(execution_spec.canonical_command),
+        "runner_kind": execution_spec.runner_kind,
         "commit_sha": commit_sha,
         "branch": branch,
         "quarantined_count": len(quarantine),
@@ -391,29 +485,81 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     }, timeline_store=timeline_store)
 
     try:
-        # Run pytest
-        logger.info("Running pytest with args: %s", pytest_args)
-        exit_code, failed_tests, fixture_errors = _run_pytest(pytest_args, db, run_id, quarantine, timeline_store=timeline_store)
+        failed_tests: list[str] = []
+        fixture_errors: list[str] = []
+        retried_passed: list[str] = []
+        structured_cases: list[Any] = []
+        artifact_records: list[Any] = []
+        structured_status = None
 
-        # Retry logic
-        retried_passed: list[str] = []  # Tests that failed then passed on retry
-        if args.allow_retry_once and failed_tests:
-            _emit_run_event(run_id, "e2e.retry_started", {
-                "failed_count": len(failed_tests),
-                "nodeids": failed_tests,
-            }, timeline_store=timeline_store)
-            retried_passed = _run_retry(failed_tests, db, run_id)
+        if execution_spec.runner_kind == "pytest":
+            logger.info("Running pytest with args: %s", pytest_args)
+            exit_code, failed_tests, fixture_errors = _run_pytest(
+                pytest_args,
+                db,
+                run_id,
+                quarantine,
+                timeline_store=timeline_store,
+            )
 
-            # Update exit code if all retries passed
-            if len(retried_passed) == len(failed_tests):
-                logger.info("All %d retried tests passed!", len(retried_passed))
-                exit_code = 0
-            else:
-                logger.warning(
-                    "%d/%d tests still failing after retry",
-                    len(failed_tests) - len(retried_passed),
-                    len(failed_tests),
+            if execution_spec.allow_retry_once and failed_tests:
+                _emit_run_event(
+                    run_id,
+                    "e2e.retry_started",
+                    {
+                        "failed_count": len(failed_tests),
+                        "nodeids": failed_tests,
+                    },
+                    timeline_store=timeline_store,
                 )
+                retried_passed = _run_retry(failed_tests, db, run_id)
+
+                if len(retried_passed) == len(failed_tests):
+                    logger.info("All %d retried tests passed!", len(retried_passed))
+                    exit_code = 0
+                else:
+                    logger.warning(
+                        "%d/%d tests still failing after retry",
+                        len(failed_tests) - len(retried_passed),
+                        len(failed_tests),
+                    )
+
+            if execution_spec.junit_xml_paths or execution_spec.artifact_paths:
+                structured_cases, artifact_records = discover_report_artifacts(
+                    repo_root,
+                    junit_xml_paths=execution_spec.junit_xml_paths,
+                    artifact_paths=execution_spec.artifact_paths,
+                )
+                db.replace_run_artifacts(run_id, artifact_records)
+
+        elif execution_spec.runner_kind == "command":
+            if execution_spec.allow_retry_once:
+                logger.info("Ignoring allow_retry_once for command runner")
+            if execution_spec.stop_on_first_failure:
+                logger.info("Ignoring stop_on_first_failure for command runner")
+            exit_code = _run_command(list(execution_spec.command), repo_root)
+            structured_cases, artifact_records = discover_report_artifacts(
+                repo_root,
+                junit_xml_paths=execution_spec.junit_xml_paths,
+                artifact_paths=execution_spec.artifact_paths,
+            )
+            db.replace_run_artifacts(run_id, artifact_records)
+            if structured_cases:
+                db.update_progress(run_id, total_tests=len(structured_cases), current_test=None)
+                db.record_junit_cases(run_id, structured_cases)
+                _emit_junit_case_events(
+                    run_id,
+                    structured_cases,
+                    timeline_store=timeline_store,
+                )
+                structured_status = _status_from_cases(structured_cases)
+                failed_tests = [
+                    case.case_id
+                    for case in structured_cases
+                    if case.outcome in {"failed", "error"} and case.case_id not in quarantine
+                ]
+        else:
+            raise ValueError(f"Unsupported runner_kind: {execution_spec.runner_kind}")
 
         # Determine final status and note.
         #
@@ -436,6 +582,8 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 f"{len(retried_passed)} test(s) required retry: "
                 + ", ".join(short)
             )
+        if execution_spec.runner_kind == "command" and structured_status == "failed" and exit_code == 0:
+            notes.append("Command exited 0 but JUnit XML reported failing tests")
 
         if fixture_errors:
             status = "failed"
@@ -443,9 +591,11 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             # All tests eventually passed, but retries were needed —
             # surface as "warning" so the run isn't silently green.
             status = "warning"
+        elif structured_status == "failed":
+            status = "failed"
         elif exit_code == 0:
             status = "passed"
-        elif exit_code == 5:
+        elif execution_spec.runner_kind == "pytest" and exit_code == 5:
             # pytest exit code 5 = no tests collected
             status = "passed"
             logger.warning("No tests collected (exit code 5), marking as passed")

@@ -73,16 +73,40 @@ def parse_e2e_config(data: dict) -> E2EConfig:
         # Support space-separated string
         pytest_args = pytest_args.split()
 
+    command = data.get("command") or []
+    if isinstance(command, str):
+        command = command.split()
+
+    junit_xml_paths = data.get("junit_xml_paths") or []
+    if isinstance(junit_xml_paths, str):
+        junit_xml_paths = [
+            line.strip() for line in junit_xml_paths.splitlines() if line.strip()
+        ]
+
+    artifact_paths = data.get("artifact_paths") or []
+    if isinstance(artifact_paths, str):
+        artifact_paths = [
+            line.strip() for line in artifact_paths.splitlines() if line.strip()
+        ]
+
     # Validate role
     role = data.get("role", "auto")
     if role not in ("auto", "executor", "reader", "disabled"):
         role = "auto"
 
+    runner_kind = data.get("runner_kind", "pytest")
+    if runner_kind not in ("pytest", "command"):
+        runner_kind = "pytest"
+
     return E2EConfig(
         enabled=data.get("enabled", False),
         role=role,
         auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
+        runner_kind=runner_kind,
         pytest_args=list(pytest_args),
+        command=list(command),
+        junit_xml_paths=list(junit_xml_paths),
+        artifact_paths=list(artifact_paths),
         allow_retry_once=data.get("allow_retry_once", True),
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
