@@ -25,8 +25,10 @@ from typing import Any
 
 import uvicorn
 
-from .control_api import control_app
+from .control_api import configure_api_token, control_app
 from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
+from ..infra import browser_session
+from ..infra.api_token import resolve_agent_callback_token, resolve_api_token
 from ..infra.client_urls import resolve_client_dashboard_url
 from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
@@ -229,6 +231,18 @@ def main() -> int:
         _reaper_stop.clear()
         reaper_thread = threading.Thread(target=_zombie_reaper, daemon=True)
         reaper_thread.start()
+
+    # Activate bearer-token auth on the Control API before binding the
+    # port. ``control_center`` serves ``control_app`` directly (outside
+    # of ``ControlAPIServer.start``), so if we skip this call every
+    # request lands on an unauthenticated endpoint — the exact hole
+    # flagged in #6017 review (P1 on #6011).
+    admin_token = resolve_api_token()
+    agent_callback_token = resolve_agent_callback_token()
+    configure_api_token(admin_token, agent_callback=agent_callback_token)
+    browser_session.initialize()
+    os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
+    os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
 
     # Start system tray icon (menu bar on macOS)
     tray_icon = _start_tray_icon(url) if not args.no_tray else None

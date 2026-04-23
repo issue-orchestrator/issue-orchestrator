@@ -340,10 +340,18 @@ async function toggleExcluded() {
         };
     }
 
-    function connectEventStream() {
+    async function connectEventStream() {
         closeEventStream();
         try {
-            evtSource = new EventSource('/api/events');
+            // Control API requires an authenticated query-string token
+            // on /api/events (security #6017). Use the helper installed
+            // by control_center.js when it's available; fall back to
+            // the raw URL for pages/tests that haven't loaded the shim.
+            if (typeof window.openAuthenticatedSseStream === 'function') {
+                evtSource = await window.openAuthenticatedSseStream('/api/events');
+            } else {
+                evtSource = new EventSource('/api/events');
+            }
             wireEventListeners(evtSource);
         } catch (err) {
             console.error('[SSE] Failed to create EventSource:', err);

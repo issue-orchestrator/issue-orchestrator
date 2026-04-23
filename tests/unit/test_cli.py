@@ -624,9 +624,12 @@ class TestCmdPauseResume:
             result = cmd_pause(args)
 
             assert result == 0
-            mock_post.assert_called_once_with(
-                "http://localhost:8080/api/pause", timeout=5.0
-            )
+            ((call_url,), call_kwargs) = mock_post.call_args
+            assert call_url == "http://localhost:8080/api/pause"
+            assert call_kwargs["timeout"] == 5.0
+            # headers may or may not include Authorization depending on
+            # whether the developer has ~/.issue-orchestrator/api-token —
+            # we don't pin that here.
 
     def test_cmd_pause_connection_error(self):
         """Verify pause handles connection error."""
@@ -651,9 +654,9 @@ class TestCmdPauseResume:
             result = cmd_resume(args)
 
             assert result == 0
-            mock_post.assert_called_once_with(
-                "http://localhost:8080/api/resume", timeout=5.0
-            )
+            ((call_url,), call_kwargs) = mock_post.call_args
+            assert call_url == "http://localhost:8080/api/resume"
+            assert call_kwargs["timeout"] == 5.0
 
     def test_cmd_resume_connection_error(self):
         """Verify resume handles connection error."""
@@ -1637,9 +1640,9 @@ class TestCmdRefresh:
             result = cmd_refresh(args)
 
             assert result == 0
-            mock_post.assert_called_once_with(
-                "http://localhost:8080/api/refresh", timeout=5.0
-            )
+            ((call_url,), call_kwargs) = mock_post.call_args
+            assert call_url == "http://localhost:8080/api/refresh"
+            assert call_kwargs["timeout"] == 5.0
 
     def test_cmd_refresh_connection_error(self):
         """Verify refresh command handles connection error."""
