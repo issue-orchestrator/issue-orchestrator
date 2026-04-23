@@ -171,6 +171,61 @@ def test_consumed_nonce_does_not_affect_fresh_tokens() -> None:
     assert browser_session.verify_sse_token(tok_b, sid) is True
 
 
+class TestInitializeConfig:
+    """Config + env-var knobs (#6017 re-review-3 ttl config)."""
+
+    def test_yaml_config_overrides_defaults(self) -> None:
+        browser_session.shutdown()
+        browser_session.initialize(
+            secret=b"s",
+            session_ttl_seconds=1234,
+            sse_token_ttl_seconds=17,
+            max_sessions=42,
+        )
+
+        assert browser_session.SESSION_TTL_SECONDS == 1234
+        assert browser_session.SSE_TOKEN_TTL_SECONDS == 17
+        assert browser_session.MAX_SESSIONS == 42
+
+    def test_env_var_overrides_yaml(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        browser_session.shutdown()
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS", "900")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS", "10")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_MAX_SESSIONS", "7")
+
+        browser_session.initialize(
+            secret=b"s",
+            session_ttl_seconds=1234,
+            sse_token_ttl_seconds=17,
+            max_sessions=42,
+        )
+
+        assert browser_session.SESSION_TTL_SECONDS == 900
+        assert browser_session.SSE_TOKEN_TTL_SECONDS == 10
+        assert browser_session.MAX_SESSIONS == 7
+
+    def test_invalid_env_value_falls_back_to_yaml(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        browser_session.shutdown()
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS", "not-a-number")
+
+        with caplog.at_level(
+            "WARNING", logger="issue_orchestrator.infra.browser_session"
+        ):
+            browser_session.initialize(
+                secret=b"s", session_ttl_seconds=555
+            )
+
+        assert browser_session.SESSION_TTL_SECONDS == 555
+        assert any(
+            "Ignoring invalid" in record.getMessage()
+            for record in caplog.records
+        )
+
+
 def test_sessions_are_capped_and_lru_evicted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

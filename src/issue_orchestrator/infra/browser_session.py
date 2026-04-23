@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 import secrets
 import time
 from collections import OrderedDict
@@ -48,15 +49,25 @@ SESSION_COOKIE = "io_session"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_META_NAME = "io-csrf-token"
 SSE_TOKEN_QUERY = "sse_token"
-SESSION_TTL_SECONDS = 8 * 3600
-SSE_TOKEN_TTL_SECONDS = 60
 
-# Upper bound on concurrent browser sessions. Practically the operator
-# sees this cap only in pathological cases (a script hammering
-# ``POST /login`` with the admin token to create sessions). Cheap to
-# enforce and prevents the in-memory dict from growing without limit
-# over a long-running process. See #6017 re-review-3 P4.
-MAX_SESSIONS = 1024
+# Baseline defaults. The operator can override these at runtime via
+# YAML (``ui.browser_session.*``) or env vars (see the ``_ENV_*``
+# names below); the effective value lives in the module-level
+# ``_session_ttl_seconds`` etc. that the rest of the module reads.
+_DEFAULT_SESSION_TTL_SECONDS = 8 * 3600
+_DEFAULT_SSE_TOKEN_TTL_SECONDS = 60
+_DEFAULT_MAX_SESSIONS = 1024
+
+# Back-compat module-level names — public module surface. Tests
+# reference ``SESSION_TTL_SECONDS``; resolved values live in the
+# mutable module-level state below.
+SESSION_TTL_SECONDS = _DEFAULT_SESSION_TTL_SECONDS
+SSE_TOKEN_TTL_SECONDS = _DEFAULT_SSE_TOKEN_TTL_SECONDS
+MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
+
+_ENV_SESSION_TTL = "ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS"
+_ENV_SSE_TOKEN_TTL = "ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS"
+_ENV_MAX_SESSIONS = "ISSUE_ORCHESTRATOR_MAX_SESSIONS"
 
 _SECRET: bytes | None = None
 _SESSIONS: "OrderedDict[str, _Session]" = OrderedDict()
@@ -70,15 +81,50 @@ class _Session:
     last_seen: float
 
 
-def initialize(secret: bytes | None = None) -> None:
-    """Initialize the process-wide HMAC secret.
+def _resolve_int(env_name: str, config_value: int | None, default: int) -> int:
+    """Env var wins; config falls through; default is the last resort."""
+    raw = os.environ.get(env_name)
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid %s=%r; not an integer", env_name, raw
+            )
+    if config_value is not None:
+        return int(config_value)
+    return default
+
+
+def initialize(
+    secret: bytes | None = None,
+    *,
+    session_ttl_seconds: int | None = None,
+    sse_token_ttl_seconds: int | None = None,
+    max_sessions: int | None = None,
+) -> None:
+    """Initialize the process-wide HMAC secret and tunable knobs.
 
     Called once at server startup (``ControlAPIServer.start`` /
-    ``control_center.main``). ``secret`` is optional so tests can
-    inject a known value.
+    ``control_center.main``). Each tunable falls through a standard
+    resolver: env var wins when set, then the passed-in value from
+    YAML config, then the module default.
+
+    ``secret`` is optional so tests can inject a known value.
     """
-    global _SECRET
+    global _SECRET, SESSION_TTL_SECONDS, SSE_TOKEN_TTL_SECONDS, MAX_SESSIONS
     _SECRET = secret or secrets.token_bytes(32)
+    SESSION_TTL_SECONDS = _resolve_int(
+        _ENV_SESSION_TTL, session_ttl_seconds, _DEFAULT_SESSION_TTL_SECONDS
+    )
+    SSE_TOKEN_TTL_SECONDS = _resolve_int(
+        _ENV_SSE_TOKEN_TTL,
+        sse_token_ttl_seconds,
+        _DEFAULT_SSE_TOKEN_TTL_SECONDS,
+    )
+    MAX_SESSIONS = _resolve_int(
+        _ENV_MAX_SESSIONS, max_sessions, _DEFAULT_MAX_SESSIONS
+    )
     _SESSIONS.clear()
     _CONSUMED_SSE_NONCES.clear()
 
@@ -89,10 +135,13 @@ def is_initialized() -> bool:
 
 def shutdown() -> None:
     """Clear state. Used by tests between cases."""
-    global _SECRET
+    global _SECRET, SESSION_TTL_SECONDS, SSE_TOKEN_TTL_SECONDS, MAX_SESSIONS
     _SECRET = None
     _SESSIONS.clear()
     _CONSUMED_SSE_NONCES.clear()
+    SESSION_TTL_SECONDS = _DEFAULT_SESSION_TTL_SECONDS
+    SSE_TOKEN_TTL_SECONDS = _DEFAULT_SSE_TOKEN_TTL_SECONDS
+    MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
 
 
 def _expire_old(now: float) -> None:

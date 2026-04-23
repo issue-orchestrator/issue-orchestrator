@@ -231,8 +231,14 @@ def _check_browser_session_auth(
     meaningful when ``ok`` is False.
     """
     session_id = request.cookies.get(browser_session.SESSION_COOKIE)
-    if not session_id or not browser_session.session_is_valid(session_id):
-        return (False, "missing credentials", 401)
+    if not session_id:
+        return (False, "missing credentials — please sign in", 401)
+    if not browser_session.session_is_valid(session_id):
+        # Cookie is present but the server no longer knows the session
+        # — TTL expired, LRU-evicted, or the HMAC secret rotated on a
+        # server restart. The JS shim treats 401 as a hint to reload
+        # the page so the user lands on the login form.
+        return (False, "session expired — please sign in again", 401)
     if request.url.path == _SSE_PATH:
         sse_token = request.query_params.get(browser_session.SSE_TOKEN_QUERY)
         if browser_session.verify_sse_token(sse_token, session_id):
@@ -1403,10 +1409,16 @@ class ControlAPIServer:
         admin_token = resolve_api_token()
         agent_callback_token = resolve_agent_callback_token()
         configure_api_token(admin_token, agent_callback=agent_callback_token)
-        # Initialize the browser-session HMAC secret so the Control
-        # Center UI can establish an ``io_session`` cookie on first
-        # visit (#6017 re-review P3).
-        browser_session.initialize()
+        # Initialize the browser-session HMAC secret + tunables so the
+        # Control Center UI can establish an ``io_session`` cookie on
+        # first visit (#6017 re-review P3). YAML config supplies the
+        # defaults; env vars override at resolution time.
+        cfg = getattr(self.orchestrator, "config", None)
+        browser_session.initialize(
+            session_ttl_seconds=getattr(cfg, "browser_session_ttl_seconds", None),
+            sse_token_ttl_seconds=getattr(cfg, "sse_token_ttl_seconds", None),
+            max_sessions=getattr(cfg, "browser_session_max", None),
+        )
         # Strip SSE tokens from uvicorn access-log lines so a query
         # param that's still valid for a few seconds doesn't persist
         # in log storage (#6017 re-review-3 P2).

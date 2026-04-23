@@ -230,6 +230,13 @@ ui:
     enabled: true
     stale_seconds: 900
     cooldown_seconds: 120
+  # Browser session knobs for the Control Center login flow.
+  # Env vars override these when set: ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS,
+  # ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS, ISSUE_ORCHESTRATOR_MAX_SESSIONS.
+  browser_session:
+    ttl_seconds: 28800              # 8 hours; min 60
+    max: 1024                       # LRU-evicted above this
+    sse_token_ttl_seconds: 60       # single-use /api/sse-token lifetime
 
 observability:
   session_no_output_seconds: 120
