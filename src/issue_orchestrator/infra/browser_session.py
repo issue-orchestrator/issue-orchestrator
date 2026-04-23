@@ -20,10 +20,15 @@ second auth path that's native to the browser:
   forward cookies reliably in every browser, so the SSE endpoint
   accepts a short-lived HMAC-signed token in the query string that
   JS obtains via the (CSRF-protected) ``/api/sse-token`` endpoint.
+  The token is **single-use** (verifying consumes its nonce) and
+  valid for ``SSE_TOKEN_TTL_SECONDS``, so a value that leaks through
+  access logs / ``Referer`` / browser history cannot be replayed
+  even within its window.
 
 All state is per-process: no persistence, no cross-restart sharing.
-For a local-dev Control Center this is fine — restarts invalidate
-sessions and the browser re-auths on next load.
+Sessions are LRU-evicted once ``MAX_SESSIONS`` is hit so the table
+has a hard upper bound. For a local-dev Control Center this is fine —
+restarts invalidate sessions and the browser re-auths on next load.
 """
 
 from __future__ import annotations

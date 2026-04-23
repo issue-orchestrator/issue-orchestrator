@@ -321,9 +321,16 @@ def _is_public_path(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES)
 
 # Routes the agent-callback token is allowed to reach. Anything NOT in
-# this set requires the admin token. The agent-callback token is
-# intentionally scoped to the two flows coding-done / reviewer-done
-# actually drive.
+# this set requires the admin token.
+#
+# Honest scope: this allowlist limits what the agent-callback token
+# can do IF an agent holds only that token. It does NOT stop an
+# agent that reads ``~/.issue-orchestrator/api-token`` off the same
+# filesystem (agents run with the real HOME under the same user;
+# see issue #6024) from mutating any route. The callback token is
+# defense in depth — it narrows the default blast radius and is
+# the right shape for a future isolated-agent model — not a
+# privilege boundary against same-user agents today.
 _AGENT_CALLBACK_ROUTES: frozenset[str] = frozenset({"/api/preflight-push"})
 
 
@@ -1387,9 +1394,12 @@ class ControlAPIServer:
         # ``start`` so test harnesses that import ``control_app``
         # without spinning up a server do not inadvertently create
         # the token files on a developer machine. The admin token
-        # authorizes every route; the agent-callback token is scoped
-        # to the routes in ``_AGENT_CALLBACK_ROUTES``. See security
-        # #5987 (F3) and #6017 review (P2 on agent-privilege).
+        # authorizes every route; the agent-callback token narrows
+        # the default path for agent subprocesses to
+        # ``_AGENT_CALLBACK_ROUTES`` — defense in depth, not an
+        # isolation boundary against a same-user malicious agent
+        # that can read the admin token file directly (issue #6024).
+        # See security #5987 (F3) and #6017 review (P2).
         admin_token = resolve_api_token()
         agent_callback_token = resolve_agent_callback_token()
         configure_api_token(admin_token, agent_callback=agent_callback_token)
