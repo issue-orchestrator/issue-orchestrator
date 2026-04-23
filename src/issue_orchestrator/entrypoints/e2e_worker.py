@@ -530,6 +530,8 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                     junit_xml_paths=execution_spec.junit_xml_paths,
                     artifact_paths=execution_spec.artifact_paths,
                 )
+                if structured_cases:
+                    db.record_junit_cases(run_id, structured_cases)
                 db.replace_run_artifacts(run_id, artifact_records)
 
         elif execution_spec.runner_kind == "command":
