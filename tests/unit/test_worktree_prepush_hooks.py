@@ -264,6 +264,40 @@ def test_chained_wrapper_refuses_legacy_managed_project_hook(harness: Path) -> N
     assert "recursion guard" in audit_log.lower()
 
 
+def test_chained_wrapper_ignores_skip_project_hook_env_var(harness: Path) -> None:
+    """Regression for security issue #5987 (F5).
+
+    ``ORCHESTRATOR_SKIP_PROJECT_HOOK=1`` used to disable the project hook. A
+    compromised agent in the worktree could set it and neuter the project's
+    lint/test gate. The wrapper must run the project hook regardless.
+    """
+    hooks_dir = harness / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "pre-push").write_text(_chained_hook_script())
+    (hooks_dir / "pre-push").chmod(0o755)
+    marker = harness / "project-hook-ran"
+    (hooks_dir / "pre-push.project").write_text(
+        f"#!/usr/bin/env bash\ntouch {marker}\nexit 0\n"
+    )
+    (hooks_dir / "pre-push.project").chmod(0o755)
+
+    result = subprocess.run(
+        [str(hooks_dir / "pre-push")],
+        cwd=harness,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": os.environ.get("PATH", ""),
+            "ORCHESTRATOR_SKIP_PROJECT_HOOK": "1",
+        },
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.exists(), "project hook must run even when skip env var is set"
+
+
 def test_chained_wrapper_runs_benign_project_hook(harness: Path) -> None:
     hooks_dir = harness / ".git" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)

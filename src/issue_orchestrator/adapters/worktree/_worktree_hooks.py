@@ -277,10 +277,13 @@ is_managed_wrapper() {{
 }}
 
 # Run project's pre-push hook first (lint, tests, etc.)
-# Skip if ORCHESTRATOR_SKIP_PROJECT_HOOK=1 (used by e2e tests)
-if [ "${{ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}}" = "1" ]; then
-    audit "Skipping project hook (ORCHESTRATOR_SKIP_PROJECT_HOOK=1)"
-elif [ -x "$HOOKS_DIR/pre-push.project" ] && is_managed_wrapper "$HOOKS_DIR/pre-push.project"; then
+#
+# No env-var bypass: an ``ORCHESTRATOR_SKIP_PROJECT_HOOK`` escape hatch used
+# to live here, but any process with shell access in the worktree could set
+# it and neuter the project's lint/test gate. There are no remaining callers;
+# removed for security issue #5987 (F5). To run without a project hook,
+# arrange the worktree without a ``pre-push.project`` file.
+if [ -x "$HOOKS_DIR/pre-push.project" ] && is_managed_wrapper "$HOOKS_DIR/pre-push.project"; then
     # Recursion guard: pre-push.project contains the managed wrapper marker,
     # meaning a prior install copied this wrapper (or the repo wrapper) into
     # it. Executing it would forkbomb the push.
