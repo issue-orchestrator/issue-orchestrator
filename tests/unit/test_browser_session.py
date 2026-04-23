@@ -171,6 +171,36 @@ def test_consumed_nonce_does_not_affect_fresh_tokens() -> None:
     assert browser_session.verify_sse_token(tok_b, sid) is True
 
 
+def test_sessions_are_capped_and_lru_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``MAX_SESSIONS`` is enforced via LRU eviction (#6017 re-review-3 P4).
+
+    Cap the module-level constant to a tiny value, pump sessions
+    through, and assert the first-created session is evicted when
+    the cap is reached.
+    """
+    monkeypatch.setattr(browser_session, "MAX_SESSIONS", 3)
+
+    sid_a, _ = browser_session.create_session()
+    sid_b, _ = browser_session.create_session()
+    sid_c, _ = browser_session.create_session()
+
+    assert browser_session.session_is_valid(sid_a)
+    assert browser_session.session_is_valid(sid_b)
+    assert browser_session.session_is_valid(sid_c)
+
+    # Touch ``sid_a`` so it becomes most-recently-used; a fourth
+    # session should evict ``sid_b`` (now LRU), not ``sid_a``.
+    browser_session.get_csrf_token(sid_a)
+    sid_d, _ = browser_session.create_session()
+
+    assert browser_session.session_is_valid(sid_a)
+    assert not browser_session.session_is_valid(sid_b)
+    assert browser_session.session_is_valid(sid_c)
+    assert browser_session.session_is_valid(sid_d)
+
+
 def test_consumed_nonces_expire_after_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -32,6 +32,7 @@ import hmac
 import logging
 import secrets
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import Lock
@@ -45,8 +46,15 @@ SSE_TOKEN_QUERY = "sse_token"
 SESSION_TTL_SECONDS = 8 * 3600
 SSE_TOKEN_TTL_SECONDS = 60
 
+# Upper bound on concurrent browser sessions. Practically the operator
+# sees this cap only in pathological cases (a script hammering
+# ``POST /login`` with the admin token to create sessions). Cheap to
+# enforce and prevents the in-memory dict from growing without limit
+# over a long-running process. See #6017 re-review-3 P4.
+MAX_SESSIONS = 1024
+
 _SECRET: bytes | None = None
-_SESSIONS: dict[str, "_Session"] = {}
+_SESSIONS: "OrderedDict[str, _Session]" = OrderedDict()
 _LOCK = Lock()
 
 
@@ -93,12 +101,27 @@ def _expire_old(now: float) -> None:
 
 
 def create_session() -> tuple[str, str]:
-    """Return ``(session_id, csrf_token)`` for a fresh session."""
+    """Return ``(session_id, csrf_token)`` for a fresh session.
+
+    Maintains ``len(_SESSIONS) <= MAX_SESSIONS`` by expiring TTL-stale
+    entries and, if still over the cap, evicting the
+    least-recently-used entries in insertion order. ``_SESSIONS`` is
+    an ``OrderedDict`` and ``get_csrf_token`` moves touched entries
+    to the back, so "least recently used" is a cheap pop from the
+    front.
+    """
     if _SECRET is None:
         raise RuntimeError("browser_session.initialize was never called")
     with _LOCK:
         now = time.time()
         _expire_old(now)
+        while len(_SESSIONS) >= MAX_SESSIONS:
+            evicted_id, _ = _SESSIONS.popitem(last=False)
+            logger.info(
+                "browser_session: evicted LRU session %s… to stay under cap %d",
+                evicted_id[:8],
+                MAX_SESSIONS,
+            )
         session_id = secrets.token_hex(32)
         csrf_token = secrets.token_hex(32)
         _SESSIONS[session_id] = _Session(
@@ -110,8 +133,9 @@ def create_session() -> tuple[str, str]:
 def get_csrf_token(session_id: str) -> str | None:
     """Return the CSRF token for ``session_id``, or ``None`` if unknown/expired.
 
-    Touches the session's ``last_seen`` timestamp on hit so active
-    sessions don't expire while they're being used.
+    Touches the session's ``last_seen`` timestamp on hit and moves the
+    entry to the back of the LRU ordering so active sessions are
+    never evicted while they're in use.
     """
     if _SECRET is None:
         return None
@@ -124,6 +148,7 @@ def get_csrf_token(session_id: str) -> str | None:
             _SESSIONS.pop(session_id, None)
             return None
         sess.last_seen = now
+        _SESSIONS.move_to_end(session_id)
         return sess.csrf_token
 
 
