@@ -1,23 +1,54 @@
 # Async E2E Test Runner
 
-The Issue Orchestrator includes a built-in facility for running end-to-end tests asynchronously, with full visibility in the web dashboard and robust handling of long-running test suites.
+The Issue Orchestrator can run long-lived E2E suites in a background worker and surface the results in the dashboard without making the product pytest-shaped.
 
-## Overview
+The reporting model is:
 
-The E2E runner executes pytest-based tests in a background worker process, storing results in SQLite for persistence across restarts. It's designed for test suites that take minutes to hours, with features specifically aimed at reducing flakiness and providing visibility into test execution.
+1. Raw run output is always captured.
+2. Structured case results are ingested from JUnit XML when the runner emits it.
+3. Native framework artifacts such as HTML reports, traces, screenshots, and logs are linked as artifacts.
+4. Agentic issue lifecycles, logical cycles, validation, and session logs appear as linked evidence when the tests exercised the orchestrator itself.
 
-**Live by default:** E2E runs create real PRs and hit real GitHub APIs. If you need a dry-run (no PRs), set `E2E_DRY_RUN_PUSH=1` before starting the run.
+That gives one UI that works for both of these cases:
+
+- `issue-orchestrator` running pytest-based agentic E2E tests
+- external repos such as `tixmeup` running arbitrary commands that emit JUnit XML and artifacts
+
+## Dashboard Model
+
+Each E2E run now has two primary surfaces:
+
+- `Results`: framework-neutral case outcomes, raw output, JUnit-backed results, and native artifacts
+- `Timeline`: chronological run events plus linked issue lifecycles when the suite created or exercised issues
+
+When an E2E run includes orchestrator work, the Results tab also shows `Linked issue lifecycles`. Those rows keep the semantically projected cycles visible and expose:
+
+- `Timeline`
+- `Coder Session`
+- `Review Session`
+- `Review Transcript`
+- `Validation`
+
+That is the critical bridge for agentic tests: a non-agentic suite is still debuggable from raw output and JUnit results, while an agentic suite additionally exposes logical cycles and UI session logs.
 
 ## Quick Start
 
-### 1. Enable in config
+### Pytest runner: issue-orchestrator style
+
+Use this when the suite is already pytest-based and you want the dashboard to ingest structured per-case results in addition to runtime events.
 
 ```yaml
-# .issue-orchestrator/config/default.yaml
 e2e:
   enabled: true
-  auto_run_interval_minutes: 30    # Auto-run when main HEAD changes (0 = manual only)
-  pytest_args: ["tests/e2e", "-v"]
+  role: "auto"
+  runner_kind: "pytest"
+  auto_run_interval_minutes: 30
+  pytest_args:
+    - "tests/e2e"
+    - "-v"
+    - "--junitxml=.issue-orchestrator/e2e-results/pytest-junit.xml"
+  junit_xml_paths:
+    - ".issue-orchestrator/e2e-results/pytest-junit.xml"
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
   auto_quarantine: true
@@ -26,243 +57,183 @@ e2e:
   survive_restart: true
 ```
 
-### 2. Run manually or let it auto-trigger
+Notes:
 
-**Manual:** Click "Run E2E" in the dashboard, or:
-```bash
-curl -X POST http://localhost:8080/control/e2e/start \
-  -H "Content-Type: application/json" \
-  -d '{"repo_root": "'$(pwd)'"}'
+- `pytest_args` still drive live pytest execution and retries.
+- `junit_xml_paths` point at the files to ingest after the run completes.
+- `Raw Output` is available even if the XML report is missing or incomplete.
+
+### Command runner: framework-neutral mode
+
+Use this when the suite lives behind a command such as Playwright, Vitest, Cypress, Robot Framework, or a project-local wrapper script.
+
+```yaml
+e2e:
+  enabled: true
+  role: "auto"
+  runner_kind: "command"
+  auto_run_interval_minutes: 30
+  command:
+    - "./scripts/run-e2e-suite.sh"
+  junit_xml_paths:
+    - "test-results/junit.xml"
+  artifact_paths:
+    - "playwright-report/index.html"
+    - "test-results/**/*.zip"
+    - "test-results/**/*.png"
+  auto_create_issues: true
+  issue_agent_label: "agent:backend"
 ```
 
-**Auto-trigger:** When `auto_run_interval_minutes > 0`, E2E runs automatically when main HEAD changes (respecting the interval).
+The command runs inside the E2E worktree. Missing configured JUnit or artifact paths fail the run loudly.
 
-### 3. Monitor in dashboard
+## What To Configure For New Projects
 
-The E2E panel shows:
-- Live progress bar with test counts
-- Current test being executed
-- Signal score (pass rate over recent runs)
-- Quarantine count (click to view list)
+For any new repo, start with these invariants:
 
-## Configuration Options
+1. The E2E command must produce a stable raw log. The orchestrator captures this automatically.
+2. The suite should emit JUnit XML whenever practical.
+3. Any native HTML report or trace output should be listed in `artifact_paths`.
+4. Agentic issue/session data is optional. The dashboard works without it.
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the E2E runner |
-| `auto_run_interval_minutes` | int | `30` | Minimum minutes between auto-triggered runs. Set to 0 to disable auto-trigger. |
-| `pytest_args` | list | `["tests/e2e", "-v"]` | Arguments passed to pytest |
-| `allow_retry_once` | bool | `true` | Automatically retry failed tests once |
-| `quarantine_file` | string | `"tests/e2e/quarantine.txt"` | Path to quarantine list (relative to repo root) |
-| `auto_quarantine` | bool | `true` | Auto-add failing tests to quarantine list |
-| `auto_create_issues` | bool | `true` | Auto-create GitHub issues for failed tests |
-| `issue_agent_label` | string | `"agent:backend"` | Agent label assigned to failure issues |
-| `survive_restart` | bool | `true` | Let E2E worker continue if orchestrator restarts |
-| `run_retention_count` | int | `50` | Max runs to keep; older runs are pruned automatically after each completion |
+Recommended patterns:
 
-### Resetting E2E History
+- `pytest`: add `--junitxml=...` to `pytest_args` and mirror the same path in `junit_xml_paths`
+- `Playwright`: emit JUnit XML plus `playwright-report/index.html`
+- `Vitest` / `Jest`: use a JUnit reporter plus any native HTML/JSON output as artifacts
+- project-local wrapper scripts: keep the command stable and have the script write JUnit + artifacts
 
-To clear all E2E run history (runs, test results, log files, timeline events):
+## Results, Artifacts, And Session Logs
 
-```bash
-issue-orchestrator e2e-reset --config path/to/config.yaml
-```
+The Results tab intentionally separates universal debugging evidence from orchestrator-specific evidence.
 
-This is useful when starting fresh or after major changes to the test suite.
+Universal run evidence:
 
-## Features
+- canonical command
+- run status
+- started time
+- duration
+- `Raw Output`
+- structured reports and additional artifacts
 
-### Progress Tracking
+Agentic evidence, when present:
 
-The runner tracks test execution in real-time:
-- **Total tests**: Set after pytest collection phase
-- **Current test**: Updated as each test starts
-- **Completed counts**: Passed, failed, skipped updated after each test
+- linked issue lifecycles
+- logical cycle chips
+- coder/reviewer session recordings
+- review transcript
+- validation details
 
-The dashboard polls every 2 seconds while E2E is running, showing a live progress bar.
+This matters because many E2E suites will not create issues on every failing test. In that case:
 
-### Resumable Runs
+- the run is still debuggable from `Results`
+- the Timeline still shows chronology
+- linked lifecycle/session controls simply remain absent
 
-If the orchestrator restarts mid-run (or the E2E worker is interrupted):
+## Retry And Resume Semantics
 
-1. The interrupted run is detected via orphan PID detection
-2. On next start, the runner checks for interrupted runs
-3. Tests that already passed are skipped via `--deselect`
-4. Execution resumes from where it left off
+`runner_kind=pytest`
 
-**Best practice for resumability:** Structure tests as discrete functions rather than monolithic test cases.
+- supports live per-test progress
+- supports retry-once
+- interrupted pytest runs can resume through deselection of already-passing tests
 
-E2E tests live in `tests/e2e/` (configured via `pytest_args`). They differ from unit/integration tests by testing full workflows against live systems (GitHub, real git repos, etc.):
+`runner_kind=command`
 
-```python
-# tests/e2e/test_workflow.py
-
-# Good - each function is a resumable checkpoint
-def test_create_issue(): ...
-def test_create_pr(): ...
-def test_review_cycle(): ...
-
-# Bad - monolithic, no partial progress saved
-def test_entire_workflow():
-    # 20 minutes of steps with no checkpoints
-    ...
-```
-
-### Retry-Once Policy
-
-When `allow_retry_once: true`:
-
-1. After the initial run, failed tests (non-quarantined) are collected
-2. Each failed test is re-run individually
-3. Results are recorded as `retry_outcome` (passed/failed)
-4. Final status is "passed" only if all retries pass
-
-This reduces flakiness impact without masking real failures.
-
-### Quarantine Support
-
-The quarantine file lists known-flaky tests that should be excluded from failure counts:
-
-```
-# tests/e2e/quarantine.txt
-# Known flaky tests - still run but excluded from required pass
-tests/e2e/test_slow_network.py::test_timeout_handling
-tests/e2e/test_race_condition.py::test_concurrent_updates
-```
-
-Quarantined tests:
-
-### Auto-Quarantine + Failure Issues
-
-When `auto_quarantine: true`, failing tests are automatically appended to the quarantine list after a run.
-
-When `auto_create_issues: true`, the orchestrator automatically creates a parent issue for the run and sub-issues for each failing test. The sub-issues are labeled with `e2e:test-failure` and the configured `issue_agent_label`.
-
-- Still execute (so you know if they start passing)
-- Are marked with `is_quarantined=1` in the database
-- Don't affect the overall pass/fail status
-- Are shown separately in the dashboard
-
-### Signal Score
-
-Track E2E stability over time:
-
-```
-Stability: 94% (30 runs) · 2 quarantined
-```
-
-The signal score shows:
-- **Pass rate**: Percentage of recent runs that passed
-- **Runs analyzed**: How many runs are in the calculation (up to 30)
-- **Quarantine count**: Tests currently in quarantine
-
-### Survive Restart
-
-When `survive_restart: true`:
-- The E2E worker runs in its own process group
-- If the orchestrator restarts, the worker continues
-- On next startup, the orchestrator detects the running worker
-- Progress is preserved and visible in the dashboard
+- is framework-neutral
+- ingests results after the command completes
+- does not attempt pytest-style resume semantics
+- interrupted runs restart fresh
 
 ## API Endpoints
 
-The dashboard provides UI for all E2E operations. For programmatic access, these endpoints are available at `/control/e2e/*`:
+The dashboard uses these endpoints:
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/start` | POST | Start E2E run |
-| `/stop` | POST | Cancel running E2E |
-| `/status` | GET | Current status and progress |
-| `/summary/{run_id}` | GET | Test breakdown for a run |
-| `/quarantine` | GET | View quarantine list |
-| `/runs` | GET | List recent runs |
-| `/logs/{run_id}` | GET | View run logs |
+- `POST /control/e2e/start`
+- `POST /control/e2e/stop`
+- `GET /control/e2e/status`
+- `GET /control/e2e/runs`
+- `GET /api/e2e-run-detail/{run_id}`
+- `GET /control/e2e/run/{run_id}/timeline`
+- `GET /api/e2e-run/{run_id}/issue-detail/{issue_number}`
+- `GET /api/session/terminal-recording/{issue_number}`
+- `GET /api/session/review-transcript/{issue_number}`
 
-## Database Schema
+`/api/e2e-run-detail/{run_id}` is the main typed payload for the run drawer. It carries:
 
-Results are stored in `.issue-orchestrator/e2e.db` (SQLite):
+- run metadata
+- results summary
+- categorized case results
+- artifacts and reports
+- lifecycle projection
 
-```sql
--- Runs table
-CREATE TABLE e2e_runs (
-  id INTEGER PRIMARY KEY,
-  repo_root TEXT NOT NULL,
-  orchestrator_id TEXT NOT NULL,
-  started_at TEXT NOT NULL,
-  finished_at TEXT,
-  status TEXT NOT NULL,  -- running/passed/failed/canceled/interrupted/error
-  exit_code INTEGER,
-  pytest_args TEXT NOT NULL,
-  commit_sha TEXT,
-  branch TEXT,
-  worker_pid INTEGER,
-  total_tests INTEGER,
-  current_test TEXT,
-  duration_seconds REAL,
-  note TEXT,
-  log_path TEXT
-);
+## Database Model
 
--- Per-test results
-CREATE TABLE e2e_test_results (
-  id INTEGER PRIMARY KEY,
-  run_id INTEGER NOT NULL,
-  nodeid TEXT NOT NULL,
-  outcome TEXT NOT NULL,      -- passed/failed/skipped/error
-  duration_seconds REAL,
-  longrepr TEXT,              -- Stack trace for failures
-  retry_outcome TEXT,         -- Outcome after retry
-  is_quarantined INTEGER DEFAULT 0,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(run_id) REFERENCES e2e_runs(id)
-);
-```
+Run metadata lives in `.issue-orchestrator/e2e.db`.
+
+Key tables:
+
+- `e2e_runs`
+- `e2e_test_results`
+- `e2e_run_artifacts`
+
+Important run fields:
+
+- `pytest_args`
+- `command_json`
+- `runner_kind`
+- `log_path`
+- `artifacts_dir`
+
+Important case fields:
+
+- `display_name`
+- `suite_name`
+- `result_source`
+- `outcome`
+- `longrepr`
+
+`result_source` tells you whether a row came from live runtime observation or a structured external report such as JUnit XML.
 
 ## Debugging
 
-### Check if worker is running
-
-```bash
-ps aux | grep e2e_worker
-```
-
-### View database directly
-
-```bash
-sqlite3 .issue-orchestrator/e2e.db "SELECT id, status, total_tests, started_at FROM e2e_runs ORDER BY id DESC LIMIT 5"
-```
-
-### View failed tests from last run
+### Check recent runs
 
 ```bash
 sqlite3 .issue-orchestrator/e2e.db "
-  SELECT nodeid, outcome, retry_outcome, longrepr
+  SELECT id, runner_kind, status, started_at, command_json
+  FROM e2e_runs
+  ORDER BY id DESC
+  LIMIT 5
+"
+```
+
+### Check the latest structured case results
+
+```bash
+sqlite3 .issue-orchestrator/e2e.db "
+  SELECT nodeid, suite_name, outcome, result_source
   FROM e2e_test_results
   WHERE run_id = (SELECT MAX(id) FROM e2e_runs)
-    AND outcome = 'failed'
+  ORDER BY nodeid
 "
 ```
 
-### Check progress mid-run
+### Check captured artifacts
 
 ```bash
 sqlite3 .issue-orchestrator/e2e.db "
-  SELECT
-    (SELECT COUNT(*) FROM e2e_test_results WHERE run_id = r.id) as completed,
-    r.total_tests,
-    r.current_test
-  FROM e2e_runs r
-  WHERE r.status = 'running'
+  SELECT kind, label, path
+  FROM e2e_run_artifacts
+  WHERE run_id = (SELECT MAX(id) FROM e2e_runs)
+  ORDER BY kind, label
 "
 ```
 
-### View logs
+### Tail raw output
 
 ```bash
-# Find latest log
 ls -lt .issue-orchestrator/logs/e2e/ | head -5
-
-# Tail log
 tail -f .issue-orchestrator/logs/e2e/run_*.log
 ```
 
@@ -270,20 +241,19 @@ tail -f .issue-orchestrator/logs/e2e/run_*.log
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| E2E not auto-triggering | `auto_run_interval_minutes: 0` | Set to positive value |
-| Worker exits immediately | Invalid pytest args | Check `pytest_args` path exists |
-| "AlreadyRunning" error | Previous worker still running | Stop via API or kill process |
-| No progress shown | Old schema | Delete e2e.db, will recreate |
-| Tests not resuming | Monolithic test structure | Split into discrete test functions |
-| Quarantine not working | Wrong file path | Check `quarantine_file` config |
+| E2E not auto-triggering | `auto_run_interval_minutes: 0` | Set it to a positive value |
+| Results tab has only Raw Output | No JUnit XML configured or emitted | Add `--junitxml` / `junit_xml_paths` or configure your command runner to emit JUnit |
+| Run fails with configured-report error | `junit_xml_paths` or `artifact_paths` did not resolve | Fix the emitted file path or the config glob |
+| Command runner cannot resume | Resume is pytest-only | Restart the command run; use raw output and JUnit for debugging |
+| Linked issue lifecycle is missing | The suite did not create or exercise issues in-window | Debug from Results/Timeline instead; lifecycle/session controls are additive |
+| Session Recording button does nothing | The lifecycle command lacked valid run-scoped recording context | This is a bug; the dashboard should only emit phase-scoped session parameters when both `round_index` and `session_role` are available |
 
 ## Auto-Trigger Logic
 
-E2E auto-triggers when ALL conditions are met:
+E2E auto-triggers when all conditions are met:
+
 1. `e2e.enabled: true`
 2. `auto_run_interval_minutes > 0`
-3. Enough time passed since last E2E run
-4. Main branch HEAD has changed since last tested commit
-5. No E2E currently running
-
-This ensures E2E only runs when there's new code to test, avoiding redundant test runs.
+3. enough time passed since the last run
+4. the tracked main branch HEAD changed
+5. no E2E run is already active

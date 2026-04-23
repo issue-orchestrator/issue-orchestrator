@@ -1,6 +1,7 @@
 """Unit tests for configuration loading and management."""
 
 import pytest
+import yaml
 from pathlib import Path
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import AgentConfig
@@ -225,6 +226,22 @@ worktrees:
         config = Config.load(config_file)
 
         assert config.worktree_seed_ref is None
+
+    def test_example_config_e2e_section_shows_pytest_junit_contract(self):
+        """The checked-in example should show the migrated pytest/JUnit shape."""
+        example_path = (
+            Path(__file__).resolve().parents[2] / "examples" / "config.example.yaml"
+        )
+        data = yaml.safe_load(example_path.read_text(encoding="utf-8"))
+
+        e2e = data["e2e"]
+        assert e2e["runner_kind"] == "pytest"
+        assert "--junitxml=.issue-orchestrator/e2e-results/pytest-junit.xml" in e2e[
+            "pytest_args"
+        ]
+        assert e2e["junit_xml_paths"] == [
+            ".issue-orchestrator/e2e-results/pytest-junit.xml"
+        ]
 
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
