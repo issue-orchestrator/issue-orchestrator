@@ -115,6 +115,108 @@ def _apply_issue_detail_run_diagnostic(
     )
 
 
+def _e2e_run_execution_details(orchestrator: Any, run_id: int) -> dict[str, Any]:
+    from ..infra.e2e_db import E2EDB
+
+    db_path = orchestrator.config.repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        raise ValueError(f"E2E database not found for run {run_id}")
+
+    db = E2EDB(db_path)
+    details = db.run_details_enhanced(
+        run_id,
+        history_limit=5,
+        flake_threshold_percent=float(orchestrator.config.e2e.flake_threshold),
+    )
+    if details is None:
+        raise ValueError(f"E2E database record not found for run {run_id}")
+    return details
+
+
+def _canonical_e2e_command(run: dict[str, Any]) -> list[str]:
+    raw_command = run.get("command")
+    if isinstance(raw_command, list) and all(isinstance(item, str) for item in raw_command):
+        return list(raw_command)
+    raw_pytest_args = run.get("pytest_args")
+    if isinstance(raw_pytest_args, list) and all(isinstance(item, str) for item in raw_pytest_args):
+        return ["pytest", *raw_pytest_args]
+    return []
+
+
+def _public_e2e_run_payload(run: dict[str, Any], run_id: int) -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "orchestrator_id": str(run.get("orchestrator_id") or ""),
+        "started_at": str(run.get("started_at") or ""),
+        "finished_at": run.get("finished_at"),
+        "status": str(run.get("status") or "unknown"),
+        "exit_code": run.get("exit_code"),
+        "duration_seconds": run.get("duration_seconds"),
+        "pytest_args": list(run.get("pytest_args") or []),
+        "command": _canonical_e2e_command(run),
+        "runner_kind": str(run.get("runner_kind") or "unknown"),
+        "commit_sha": run.get("commit_sha"),
+        "branch": run.get("branch"),
+        "log_path": run.get("log_path"),
+        "artifacts_dir": run.get("artifacts_dir"),
+        "total_tests": run.get("total_tests"),
+        "current_test": run.get("current_test"),
+    }
+
+
+def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    artifacts: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    log_path = run.get("log_path")
+    if isinstance(log_path, str) and log_path.strip():
+        artifacts.append(
+            {
+                "kind": "raw_log",
+                "label": "Raw Output",
+                "path": log_path,
+            }
+        )
+        seen.add(("raw_log", log_path))
+
+    for artifact in db_artifacts:
+        kind = artifact.get("kind")
+        label = artifact.get("label")
+        path = artifact.get("path")
+        if not isinstance(kind, str) or not isinstance(label, str) or not isinstance(path, str):
+            continue
+        key = (kind, path)
+        if key in seen:
+            continue
+        artifacts.append(
+            {
+                "kind": kind,
+                "label": label,
+                "path": path,
+            }
+        )
+        seen.add(key)
+
+    reports = [
+        artifact
+        for artifact in artifacts
+        if artifact["kind"] in {"junit_xml", "html_report", "json_report", "playwright_report"}
+    ]
+    return artifacts, reports
+
+
+def _empty_e2e_result_categories() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [],
+        "quarantined": [],
+        "skipped": [],
+    }
+
+
 def _finalize_issue_detail_payload(
     *,
     orchestrator: Any,
@@ -354,6 +456,52 @@ async def get_e2e_run_detail(
         run_id=run_id,
         view=matcher_view,
     )
+    try:
+        run_details = _e2e_run_execution_details(orchestrator, run_id)
+        run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
+        artifacts, reports = _e2e_run_artifacts(
+            run_payload,
+            list(run_details.get("artifacts") or []),
+        )
+        results_summary = dict(run_details["summary"])
+        results_by_category = dict(run_details["tests_by_category"])
+    except ValueError:
+        run_payload = {
+            "id": run_id,
+            "orchestrator_id": "",
+            "started_at": events[0]["timestamp"] if events else "",
+            "finished_at": None,
+            "status": "unknown",
+            "exit_code": None,
+            "duration_seconds": None,
+            "pytest_args": [],
+            "command": [],
+            "runner_kind": "unknown",
+            "commit_sha": None,
+            "branch": None,
+            "log_path": None,
+            "artifacts_dir": None,
+            "total_tests": None,
+            "current_test": None,
+        }
+        artifacts = []
+        reports = []
+        results_summary = {
+            "untriaged": 0,
+            "has_issue": 0,
+            "flaky": 0,
+            "fixed": 0,
+            "passed": 0,
+            "quarantined": 0,
+            "skipped": 0,
+            "total": 0,
+        }
+        results_by_category = _empty_e2e_result_categories()
+    payload["run"] = run_payload
+    payload["results_summary"] = results_summary
+    payload["results_by_category"] = results_by_category
+    payload["artifacts"] = artifacts
+    payload["reports"] = reports
     payload["lifecycle"] = project_e2e_suite_lifecycle_container_for_run(
         run_id=run_id,
         events=events,

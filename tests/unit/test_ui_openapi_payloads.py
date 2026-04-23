@@ -308,6 +308,72 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
         phase_toc=[{"phase": "execution", "label": "Execution"}],
         cycles=[],
     )
+    payload["run"] = {
+        "id": 88,
+        "orchestrator_id": "test-orch",
+        "started_at": "2026-04-21T11:00:00Z",
+        "finished_at": "2026-04-21T11:10:00Z",
+        "status": "passed",
+        "exit_code": 0,
+        "duration_seconds": 600.0,
+        "pytest_args": ["tests/e2e", "-v"],
+        "command": ["pytest", "tests/e2e", "-v"],
+        "runner_kind": "pytest",
+        "commit_sha": "abc123",
+        "branch": "main",
+        "log_path": "/tmp/run.log",
+        "artifacts_dir": "/tmp/e2e-artifacts/run-88",
+        "total_tests": 1,
+        "current_test": None,
+    }
+    payload["results_summary"] = {
+        "untriaged": 0,
+        "has_issue": 0,
+        "flaky": 0,
+        "fixed": 0,
+        "passed": 1,
+        "quarantined": 0,
+        "skipped": 0,
+        "total": 1,
+    }
+    payload["results_by_category"] = {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [
+            {
+                "nodeid": "tests/e2e/test_example.py::test_passes",
+                "case_id": "tests/e2e/test_example.py::test_passes",
+                "label": "test_passes",
+                "display_name": "test_passes",
+                "suite_name": "tests.e2e.test_example",
+                "result_source": "junit_xml",
+                "outcome": "passed",
+                "duration_seconds": 1.2,
+                "longrepr": None,
+                "failure_summary": None,
+                "retry_outcome": None,
+                "is_quarantined": False,
+                "updated_at": "2026-04-21T11:01:00Z",
+                "history": [],
+                "existing_issue": None,
+                "category": "healthy",
+                "flip_rate": 0.0,
+                "flip_rate_percent": 0.0,
+                "is_likely_flaky": False,
+            }
+        ],
+        "quarantined": [],
+        "skipped": [],
+    }
+    payload["artifacts"] = [
+        {"kind": "raw_log", "label": "Raw Output", "path": "/tmp/run.log"},
+        {"kind": "junit_xml", "label": "JUnit XML", "path": "/tmp/e2e-artifacts/run-88/junit.xml"},
+    ]
+    payload["reports"] = [
+        {"kind": "junit_xml", "label": "JUnit XML", "path": "/tmp/e2e-artifacts/run-88/junit.xml"},
+    ]
     payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
     payload["lifecycle"] = _e2e_container().model_dump(mode="json")
 
@@ -331,6 +397,45 @@ def test_e2e_run_detail_payload_rejects_untyped_detail_fields() -> None:
         phase_toc=[{"phase": "execution", "label": "Execution"}],
         cycles=[],
     )
+    payload["run"] = {
+        "id": 88,
+        "orchestrator_id": "test-orch",
+        "started_at": "2026-04-21T11:00:00Z",
+        "finished_at": "2026-04-21T11:10:00Z",
+        "status": "passed",
+        "exit_code": 0,
+        "duration_seconds": 600.0,
+        "pytest_args": ["tests/e2e", "-v"],
+        "command": ["pytest", "tests/e2e", "-v"],
+        "runner_kind": "pytest",
+        "commit_sha": "abc123",
+        "branch": "main",
+        "log_path": "/tmp/run.log",
+        "artifacts_dir": "/tmp/e2e-artifacts/run-88",
+        "total_tests": 1,
+        "current_test": None,
+    }
+    payload["results_summary"] = {
+        "untriaged": 0,
+        "has_issue": 0,
+        "flaky": 0,
+        "fixed": 0,
+        "passed": 1,
+        "quarantined": 0,
+        "skipped": 0,
+        "total": 1,
+    }
+    payload["results_by_category"] = {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [],
+        "quarantined": [],
+        "skipped": [],
+    }
+    payload["artifacts"] = []
+    payload["reports"] = []
     payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
     payload["lifecycle"] = _e2e_container().model_dump(mode="json")
     payload["summary"]["unexpected_summary_field"] = True

@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -29,6 +29,8 @@ class E2ERun:
     worker_pid: Optional[int]
     total_tests: Optional[int]
     current_test: Optional[str]
+    command: list[str] = field(default_factory=list)
+    runner_kind: str = "pytest"
     orchestrator_instance_id: str = ""
 
     @classmethod
@@ -53,6 +55,8 @@ class E2ERun:
             worker_pid=row["worker_pid"],
             total_tests=row["total_tests"],
             current_test=row["current_test"],
+            command=json.loads(row["command_json"]) if "command_json" in row.keys() else [],
+            runner_kind=row["runner_kind"] if "runner_kind" in row.keys() else "pytest",
             orchestrator_instance_id=row["orchestrator_instance_id"] if "orchestrator_instance_id" in row.keys() else "",
         )
 
@@ -66,6 +70,8 @@ class E2ERun:
             "status": self.status,
             "exit_code": self.exit_code,
             "pytest_args": self.pytest_args,
+            "command": self.command,
+            "runner_kind": self.runner_kind,
             "commit_sha": self.commit_sha,
             "branch": self.branch,
             "retry_of": self.retry_of,
@@ -88,6 +94,9 @@ class E2ETestResult:
     id: int
     run_id: int
     nodeid: str
+    display_name: Optional[str]
+    suite_name: Optional[str]
+    result_source: str
     outcome: str
     duration_seconds: Optional[float]
     longrepr: Optional[str]
@@ -101,6 +110,9 @@ class E2ETestResult:
             id=row["id"],
             run_id=row["run_id"],
             nodeid=row["nodeid"],
+            display_name=row["display_name"] if "display_name" in row.keys() else None,
+            suite_name=row["suite_name"] if "suite_name" in row.keys() else None,
+            result_source=row["result_source"] if "result_source" in row.keys() else "runtime",
             outcome=row["outcome"],
             duration_seconds=row["duration_seconds"],
             longrepr=row["longrepr"],
@@ -109,17 +121,74 @@ class E2ETestResult:
             updated_at=row["updated_at"],
         )
 
+    @property
+    def case_id(self) -> str:
+        return self.nodeid
+
+    @property
+    def label(self) -> str:
+        if self.display_name:
+            return self.display_name
+        if "::" in self.nodeid:
+            return self.nodeid.split("::")[-1]
+        return self.nodeid
+
+    @property
+    def failure_summary(self) -> Optional[str]:
+        if not self.longrepr:
+            return None
+        return self.longrepr.splitlines()[0][:240]
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "run_id": self.run_id,
             "nodeid": self.nodeid,
+            "case_id": self.case_id,
+            "display_name": self.display_name,
+            "label": self.label,
+            "suite_name": self.suite_name,
+            "result_source": self.result_source,
             "outcome": self.outcome,
             "duration_seconds": self.duration_seconds,
             "longrepr": self.longrepr,
+            "failure_summary": self.failure_summary,
             "retry_outcome": self.retry_outcome,
             "is_quarantined": self.is_quarantined,
             "updated_at": self.updated_at,
+        }
+
+
+@dataclass
+class E2ERunArtifact:
+    """One run-scoped artifact."""
+
+    id: int
+    run_id: int
+    kind: str
+    label: str
+    path: str
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "E2ERunArtifact":
+        return cls(
+            id=row["id"],
+            run_id=row["run_id"],
+            kind=row["kind"],
+            label=row["label"],
+            path=row["path"],
+            created_at=row["created_at"],
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "kind": self.kind,
+            "label": self.label,
+            "path": self.path,
+            "created_at": self.created_at,
         }
 
 

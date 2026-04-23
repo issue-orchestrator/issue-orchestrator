@@ -650,6 +650,11 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "run",
+          "results_summary",
+          "results_by_category",
+          "artifacts",
+          "reports",
           "issue_number",
           "title",
           "issue_url",
@@ -670,6 +675,11 @@
           "lifecycle"
         ],
         "properties": {
+          "run": {"$ref": "#/components/schemas/E2ERunExecutionPayload"},
+          "results_summary": {"$ref": "#/components/schemas/E2ERunResultsSummaryPayload"},
+          "results_by_category": {"$ref": "#/components/schemas/E2ERunResultCategoriesPayload"},
+          "artifacts": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunArtifactPayload"}},
+          "reports": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunArtifactPayload"}},
           "issue_number": {"type": ["integer", "string"]},
           "e2e_run_id": {"type": ["integer", "null"]},
           "title": {"type": "string"},
@@ -695,6 +705,155 @@
           "issue_affordances": {"type": "array", "items": {"$ref": "#/components/schemas/E2EIssueAffordancePayload"}},
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
           "view": {"type": "string", "default": "user"}
+        }
+      },
+      "E2ERunExecutionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "orchestrator_id",
+          "started_at",
+          "finished_at",
+          "status",
+          "exit_code",
+          "duration_seconds",
+          "pytest_args",
+          "command",
+          "runner_kind",
+          "commit_sha",
+          "branch",
+          "log_path",
+          "artifacts_dir",
+          "total_tests",
+          "current_test"
+        ],
+        "properties": {
+          "id": {"type": "integer"},
+          "orchestrator_id": {"type": "string"},
+          "started_at": {"type": "string"},
+          "finished_at": {"type": ["string", "null"]},
+          "status": {"type": "string"},
+          "exit_code": {"type": ["integer", "null"]},
+          "duration_seconds": {"type": ["number", "null"]},
+          "pytest_args": {"type": "array", "items": {"type": "string"}},
+          "command": {"type": "array", "items": {"type": "string"}},
+          "runner_kind": {"type": "string"},
+          "commit_sha": {"type": ["string", "null"]},
+          "branch": {"type": ["string", "null"]},
+          "log_path": {"type": ["string", "null"]},
+          "artifacts_dir": {"type": ["string", "null"]},
+          "total_tests": {"type": ["integer", "null"]},
+          "current_test": {"type": ["string", "null"]}
+        }
+      },
+      "E2ERunArtifactPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "path"],
+        "properties": {
+          "kind": {"type": "string"},
+          "label": {"type": "string"},
+          "path": {"type": "string"}
+        }
+      },
+      "E2ERunIssueLinkPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "status", "resolution"],
+        "properties": {
+          "number": {"type": "integer"},
+          "status": {"type": "string"},
+          "resolution": {"type": ["string", "null"]}
+        }
+      },
+      "E2ERunCaseHistoryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["outcome", "run_id"],
+        "properties": {
+          "outcome": {"type": "string"},
+          "run_id": {"type": "integer"}
+        }
+      },
+      "E2ERunResultCasePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "nodeid",
+          "case_id",
+          "label",
+          "display_name",
+          "suite_name",
+          "result_source",
+          "outcome",
+          "duration_seconds",
+          "longrepr",
+          "failure_summary",
+          "retry_outcome",
+          "is_quarantined",
+          "updated_at",
+          "history",
+          "existing_issue",
+          "category",
+          "flip_rate",
+          "flip_rate_percent",
+          "is_likely_flaky"
+        ],
+        "properties": {
+          "nodeid": {"type": "string"},
+          "case_id": {"type": "string"},
+          "label": {"type": "string"},
+          "display_name": {"type": ["string", "null"]},
+          "suite_name": {"type": ["string", "null"]},
+          "result_source": {"type": "string"},
+          "outcome": {"type": "string"},
+          "duration_seconds": {"type": ["number", "null"]},
+          "longrepr": {"type": ["string", "null"]},
+          "failure_summary": {"type": ["string", "null"]},
+          "retry_outcome": {"type": ["string", "null"]},
+          "is_quarantined": {"type": "boolean"},
+          "updated_at": {"type": "string"},
+          "history": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunCaseHistoryPayload"}},
+          "existing_issue": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/E2ERunIssueLinkPayload"},
+              {"type": "null"}
+            ]
+          },
+          "category": {"type": "string"},
+          "flip_rate": {"type": "number"},
+          "flip_rate_percent": {"type": "number"},
+          "is_likely_flaky": {"type": "boolean"}
+        }
+      },
+      "E2ERunResultCategoriesPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["untriaged", "has_issue", "flaky", "fixed", "passed", "quarantined", "skipped"],
+        "properties": {
+          "untriaged": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
+          "has_issue": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
+          "flaky": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
+          "fixed": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
+          "passed": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
+          "quarantined": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
+          "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}}
+        }
+      },
+      "E2ERunResultsSummaryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["untriaged", "has_issue", "flaky", "fixed", "passed", "quarantined", "skipped", "total"],
+        "properties": {
+          "untriaged": {"type": "integer"},
+          "has_issue": {"type": "integer"},
+          "flaky": {"type": "integer"},
+          "fixed": {"type": "integer"},
+          "passed": {"type": "integer"},
+          "quarantined": {"type": "integer"},
+          "skipped": {"type": "integer"},
+          "total": {"type": "integer"}
         }
       },
       "DialogRowPayload": {

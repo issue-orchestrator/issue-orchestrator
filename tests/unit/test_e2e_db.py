@@ -15,6 +15,7 @@ from issue_orchestrator.infra.e2e_db import (
     load_quarantine_list,
     save_quarantine_list,
 )
+from issue_orchestrator.infra.e2e_reports import E2ERunArtifactRecord, JUnitCaseResult
 
 
 class TestE2EDB:
@@ -49,6 +50,8 @@ class TestE2EDB:
             pytest_args=["tests/e2e", "-v"],
             commit_sha="abc123",
             branch="main",
+            command=["pytest", "tests/e2e", "-v"],
+            runner_kind="pytest",
         )
 
         assert run_id == 1
@@ -60,6 +63,8 @@ class TestE2EDB:
         assert run.orchestrator_id == "test-orch"
         assert run.commit_sha == "abc123"
         assert run.branch == "main"
+        assert run.command == ["pytest", "tests/e2e", "-v"]
+        assert run.runner_kind == "pytest"
 
     def test_start_run_prevents_concurrent(self, db: E2EDB):
         """Test that starting a run while another is running raises AlreadyRunning."""
@@ -110,6 +115,9 @@ class TestE2EDB:
             outcome="passed",
             duration_seconds=1.5,
             longrepr=None,
+            display_name="test_login_success",
+            suite_name="tests.e2e.test_login",
+            result_source="junit_xml",
         )
 
         # Verify result is in DB
@@ -118,8 +126,70 @@ class TestE2EDB:
         results = details.get("results", [])
         assert len(results) == 1
         assert results[0]["nodeid"] == "tests/e2e/test_login.py::test_login_success"
+        assert results[0]["case_id"] == "tests/e2e/test_login.py::test_login_success"
+        assert results[0]["label"] == "test_login_success"
+        assert results[0]["display_name"] == "test_login_success"
+        assert results[0]["suite_name"] == "tests.e2e.test_login"
+        assert results[0]["result_source"] == "junit_xml"
         assert results[0]["outcome"] == "passed"
         assert results[0]["duration_seconds"] == 1.5
+
+    def test_replace_run_artifacts(self, db: E2EDB):
+        """Run-scoped artifacts should round-trip through the DB facade."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+
+        db.replace_run_artifacts(
+            run_id,
+            [
+                E2ERunArtifactRecord(
+                    kind="raw_log",
+                    label="Raw Output",
+                    path="/tmp/run.log",
+                ),
+                E2ERunArtifactRecord(
+                    kind="junit_xml",
+                    label="JUnit XML",
+                    path="/tmp/junit.xml",
+                ),
+            ],
+        )
+
+        details = db.run_details(run_id)
+        artifacts = details["artifacts"]
+        assert [artifact["kind"] for artifact in artifacts] == ["junit_xml", "raw_log"]
+        assert artifacts[0]["path"] == "/tmp/junit.xml"
+
+    def test_record_junit_cases(self, db: E2EDB):
+        """Parsed JUnit cases should populate generic result metadata."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+
+        db.record_junit_cases(
+            run_id,
+            [
+                JUnitCaseResult(
+                    case_id="suite::test_passes",
+                    display_name="test_passes",
+                    suite_name="suite",
+                    outcome="passed",
+                    duration_seconds=1.2,
+                ),
+                JUnitCaseResult(
+                    case_id="suite::test_fails",
+                    display_name="test_fails",
+                    suite_name="suite",
+                    outcome="failed",
+                    duration_seconds=2.4,
+                    failure_details="AssertionError\nexpected 1",
+                ),
+            ],
+        )
+
+        details = db.run_details(run_id)
+        results = details["results"]
+        by_case_id = {result["case_id"]: result for result in results}
+        assert by_case_id["suite::test_passes"]["display_name"] == "test_passes"
+        assert by_case_id["suite::test_passes"]["result_source"] == "junit_xml"
+        assert by_case_id["suite::test_fails"]["failure_summary"] == "AssertionError"
 
     def test_upsert_test_result_update(self, db: E2EDB):
         """Test that upsert updates existing results."""

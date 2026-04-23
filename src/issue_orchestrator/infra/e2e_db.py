@@ -21,10 +21,12 @@ from .e2e_event_nesting import (
 )
 from .e2e_models import (
     E2EFailureIssue as E2EFailureIssue,
+    E2ERunArtifact as E2ERunArtifact,
     E2ERun as E2ERun,
     E2ERunIssue as E2ERunIssue,
     E2ETestResult as E2ETestResult,
 )
+from .e2e_reports import E2ERunArtifactRecord, JUnitCaseResult
 from .e2e_quarantine import (
     load_quarantine_list as load_quarantine_list,
     save_quarantine_list as save_quarantine_list,
@@ -47,6 +49,7 @@ __all__ = [
     "AlreadyRunning",
     "E2EDB",
     "E2EFailureIssue",
+    "E2ERunArtifact",
     "E2ERun",
     "E2ERunIssue",
     "E2ETestResult",
@@ -101,6 +104,29 @@ class E2EDB:
                 conn.execute(
                     "ALTER TABLE e2e_runs ADD COLUMN orchestrator_instance_id TEXT NOT NULL DEFAULT ''"
                 )
+            if "command_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE e2e_runs ADD COLUMN command_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "runner_kind" not in columns:
+                conn.execute(
+                    "ALTER TABLE e2e_runs ADD COLUMN runner_kind TEXT NOT NULL DEFAULT 'pytest'"
+                )
+            result_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(e2e_test_results)")
+            }
+            if "display_name" not in result_columns:
+                conn.execute(
+                    "ALTER TABLE e2e_test_results ADD COLUMN display_name TEXT"
+                )
+            if "suite_name" not in result_columns:
+                conn.execute(
+                    "ALTER TABLE e2e_test_results ADD COLUMN suite_name TEXT"
+                )
+            if "result_source" not in result_columns:
+                conn.execute(
+                    "ALTER TABLE e2e_test_results ADD COLUMN result_source TEXT NOT NULL DEFAULT 'runtime'"
+                )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -134,6 +160,8 @@ class E2EDB:
         retry_of: Optional[int] = None,
         worker_pid: Optional[int] = None,
         orchestrator_instance_id: str = "",
+        command: list[str] | None = None,
+        runner_kind: str = "pytest",
     ) -> int:
         """Start a new E2E run.
 
@@ -148,6 +176,8 @@ class E2EDB:
             branch: Git branch name (optional)
             retry_of: If this is a retry, the original run_id
             worker_pid: PID of the worker process (for orphan detection)
+            command: Canonical command associated with the run
+            runner_kind: Result adapter kind, for example pytest or command
 
         Returns:
             The new run's ID
@@ -191,18 +221,21 @@ class E2EDB:
 
             # Create new run
             cursor = conn.execute(
-                """
+                    """
                 INSERT INTO e2e_runs (
                     repo_root, orchestrator_id, started_at, status,
-                    pytest_args, commit_sha, branch, retry_of, is_retry_run,
+                    pytest_args, command_json, runner_kind,
+                    commit_sha, branch, retry_of, is_retry_run,
                     worker_pid, orchestrator_instance_id
-                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_root,
                     orchestrator_id,
                     self._now_iso(),
                     json.dumps(pytest_args),
+                    json.dumps(command or []),
+                    runner_kind,
                     commit_sha,
                     branch,
                     retry_of,
@@ -403,6 +436,7 @@ class E2EDB:
                 log_path = row["log_path"]
 
                 # Delete related rows
+                conn.execute("DELETE FROM e2e_run_artifacts WHERE run_id = ?", (run_id,))
                 conn.execute("DELETE FROM e2e_test_results WHERE run_id = ?", (run_id,))
                 conn.execute("DELETE FROM e2e_failure_issues WHERE first_failing_run_id = ?", (run_id,))
                 conn.execute("DELETE FROM e2e_run_issues WHERE run_id = ?", (run_id,))
@@ -501,7 +535,14 @@ class E2EDB:
             # Collect run IDs and log paths before deletion
             runs = conn.execute("SELECT id, log_path FROM e2e_runs").fetchall()
 
-            for table in ("e2e_test_results", "e2e_failure_issues", "e2e_run_issues", "e2e_flake_history", "e2e_runs"):
+            for table in (
+                "e2e_run_artifacts",
+                "e2e_test_results",
+                "e2e_failure_issues",
+                "e2e_run_issues",
+                "e2e_flake_history",
+                "e2e_runs",
+            ):
                 cursor = conn.execute(f"DELETE FROM {table}")  # noqa: S608 — table names are hardcoded literals
                 counts[table] = cursor.rowcount
 
@@ -638,6 +679,9 @@ class E2EDB:
         longrepr: Optional[str] = None,
         retry_outcome: Optional[str] = None,
         is_quarantined: bool = False,
+        display_name: str | None = None,
+        suite_name: str | None = None,
+        result_source: str = "runtime",
     ) -> None:
         """Insert or update a test result.
 
@@ -647,10 +691,14 @@ class E2EDB:
             conn.execute(
                 """
                 INSERT INTO e2e_test_results (
-                    run_id, nodeid, outcome, duration_seconds,
-                    longrepr, retry_outcome, is_quarantined, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, nodeid, display_name, suite_name, result_source,
+                    outcome, duration_seconds, longrepr, retry_outcome,
+                    is_quarantined, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id, nodeid) DO UPDATE SET
+                    display_name = COALESCE(excluded.display_name, e2e_test_results.display_name),
+                    suite_name = COALESCE(excluded.suite_name, e2e_test_results.suite_name),
+                    result_source = excluded.result_source,
                     outcome = excluded.outcome,
                     duration_seconds = excluded.duration_seconds,
                     longrepr = excluded.longrepr,
@@ -660,6 +708,9 @@ class E2EDB:
                 (
                     run_id,
                     nodeid,
+                    display_name,
+                    suite_name,
+                    result_source,
                     outcome,
                     duration_seconds,
                     longrepr,
@@ -667,6 +718,83 @@ class E2EDB:
                     1 if is_quarantined else 0,
                     self._now_iso(),
                 ),
+            )
+
+    def upsert_result_case(
+        self,
+        run_id: int,
+        case_id: str,
+        outcome: str,
+        duration_seconds: float | None = None,
+        failure_details: str | None = None,
+        display_name: str | None = None,
+        suite_name: str | None = None,
+        result_source: str = "external_report",
+    ) -> None:
+        """Generic wrapper for non-pytest case results."""
+        self.upsert_test_result(
+            run_id=run_id,
+            nodeid=case_id,
+            outcome=outcome,
+            duration_seconds=duration_seconds,
+            longrepr=failure_details,
+            display_name=display_name,
+            suite_name=suite_name,
+            result_source=result_source,
+        )
+
+    def replace_run_artifacts(
+        self,
+        run_id: int,
+        artifacts: list[E2ERunArtifactRecord],
+    ) -> None:
+        """Replace the run-scoped artifact set atomically."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM e2e_run_artifacts WHERE run_id = ?", (run_id,))
+            for artifact in artifacts:
+                conn.execute(
+                    """
+                    INSERT INTO e2e_run_artifacts (run_id, kind, label, path, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        artifact.kind,
+                        artifact.label,
+                        artifact.path,
+                        self._now_iso(),
+                    ),
+                )
+
+    def list_run_artifacts(self, run_id: int) -> list[E2ERunArtifact]:
+        """List artifacts for one run."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM e2e_run_artifacts
+                WHERE run_id = ?
+                ORDER BY kind, label, path
+                """,
+                (run_id,),
+            )
+            return [E2ERunArtifact.from_row(row) for row in cursor.fetchall()]
+
+    def record_junit_cases(
+        self,
+        run_id: int,
+        cases: list[JUnitCaseResult],
+    ) -> None:
+        """Persist parsed JUnit cases into e2e_test_results."""
+        for case in cases:
+            self.upsert_result_case(
+                run_id=run_id,
+                case_id=case.case_id,
+                outcome=case.outcome,
+                duration_seconds=case.duration_seconds,
+                failure_details=case.failure_details,
+                display_name=case.display_name,
+                suite_name=case.suite_name,
+                result_source="junit_xml",
             )
 
     def update_retry_outcome(
@@ -772,10 +900,20 @@ class E2EDB:
                 (run_id,),
             )
             results = [E2ETestResult.from_row(r) for r in cursor.fetchall()]
+            artifacts_cursor = conn.execute(
+                """
+                SELECT * FROM e2e_run_artifacts
+                WHERE run_id = ?
+                ORDER BY kind, label, path
+                """,
+                (run_id,),
+            )
+            artifacts = [E2ERunArtifact.from_row(r) for r in artifacts_cursor.fetchall()]
 
             return {
                 "run": run.to_dict(),
                 "results": [r.to_dict() for r in results],
+                "artifacts": [artifact.to_dict() for artifact in artifacts],
             }
 
     def _fetch_test_history(
@@ -904,11 +1042,21 @@ class E2EDB:
             # Build summary counts
             summary = {cat: len(tests) for cat, tests in tests_by_category.items()}
             summary["total"] = len(results)
+            artifacts_cursor = conn.execute(
+                """
+                SELECT * FROM e2e_run_artifacts
+                WHERE run_id = ?
+                ORDER BY kind, label, path
+                """,
+                (run_id,),
+            )
+            artifacts = [E2ERunArtifact.from_row(r).to_dict() for r in artifacts_cursor.fetchall()]
 
             return {
                 "run": run.to_dict(),
                 "tests_by_category": tests_by_category,
                 "summary": summary,
+                "artifacts": artifacts,
             }
 
     def get_failed_tests(self, run_id: int) -> list[E2ETestResult]:

@@ -178,9 +178,21 @@ class E2EIssueAffordancePayload(BaseModel):
     label: str | None = None
     run_id: int
 
+class E2ERunArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    label: str
+    path: str
+
+class E2ERunCaseHistoryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: str
+    run_id: int
+
 class E2ERunDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[IssueDetailActionPayload]
+    artifacts: list[E2ERunArtifactPayload]
     blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[E2ETimelineCyclePayload]
     e2e_run_id: int | None = None
@@ -193,6 +205,10 @@ class E2ERunDetailPayload(BaseModel):
     previous_runs: list[dict[str, Any]]
     previous_runs_count: int
     raw_events_count: int
+    reports: list[E2ERunArtifactPayload]
+    results_by_category: E2ERunResultCategoriesPayload
+    results_summary: E2ERunResultsSummaryPayload
+    run: E2ERunExecutionPayload
     run_count: int
     runs: list[dict[str, Any]]
     status_explanation: str
@@ -200,6 +216,31 @@ class E2ERunDetailPayload(BaseModel):
     timeline_steps: list[dict[str, Any]]
     title: str
     view: str | None = None
+
+class E2ERunExecutionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifacts_dir: str | None
+    branch: str | None
+    command: list[str]
+    commit_sha: str | None
+    current_test: str | None
+    duration_seconds: float | None
+    exit_code: int | None
+    finished_at: str | None
+    id: int
+    log_path: str | None
+    orchestrator_id: str
+    pytest_args: list[str]
+    runner_kind: str
+    started_at: str
+    status: str
+    total_tests: int | None
+
+class E2ERunIssueLinkPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    number: int
+    resolution: str | None
+    status: str
 
 class E2ERunIterationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -216,6 +257,49 @@ class E2ERunLifecyclePayload(BaseModel):
     run_id: int
     started_at: str
     tests: list[E2ETestExecutionPayload]
+
+class E2ERunResultCasePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str
+    category: str
+    display_name: str | None
+    duration_seconds: float | None
+    existing_issue: E2ERunIssueLinkPayload | None
+    failure_summary: str | None
+    flip_rate: float
+    flip_rate_percent: float
+    history: list[E2ERunCaseHistoryPayload]
+    is_likely_flaky: bool
+    is_quarantined: bool
+    label: str
+    longrepr: str | None
+    nodeid: str
+    outcome: str
+    result_source: str
+    retry_outcome: str | None
+    suite_name: str | None
+    updated_at: str
+
+class E2ERunResultCategoriesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fixed: list[E2ERunResultCasePayload]
+    flaky: list[E2ERunResultCasePayload]
+    has_issue: list[E2ERunResultCasePayload]
+    passed: list[E2ERunResultCasePayload]
+    quarantined: list[E2ERunResultCasePayload]
+    skipped: list[E2ERunResultCasePayload]
+    untriaged: list[E2ERunResultCasePayload]
+
+class E2ERunResultsSummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fixed: int
+    flaky: int
+    has_issue: int
+    passed: int
+    quarantined: int
+    skipped: int
+    total: int
+    untriaged: int
 
 class E2ERunTimelinePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
