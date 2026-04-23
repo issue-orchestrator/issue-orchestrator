@@ -6,6 +6,7 @@ import pytest
 
 from issue_orchestrator.infra.e2e_reports import (
     JUnitCaseResult,
+    discover_report_artifacts,
     normalize_pytest_junit_cases,
     parse_junit_report,
 )
@@ -84,3 +85,53 @@ def test_normalize_pytest_junit_cases_matches_runtime_nodeids() -> None:
     assert normalized[0].case_id == "tests/e2e/test_basic.py::test_passing"
     assert normalized[1].suite_name == "tests/e2e/test_existing.py"
     assert normalized[1].case_id == "tests/e2e/test_existing.py::test_already_normalized"
+
+
+def test_discover_report_artifacts_classifies_and_dedupes_files(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    junit_report = reports_dir / "results.xml"
+    junit_report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="ui.smoke" name="test_homepage" time="1.0" />
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    html_report = reports_dir / "report.html"
+    html_report.write_text("<html><body>ok</body></html>", encoding="utf-8")
+    summary = reports_dir / "summary.txt"
+    summary.write_text("status=passed\n", encoding="utf-8")
+    trace = reports_dir / "trace.zip"
+    trace.write_bytes(b"PK\x03\x04")
+
+    cases, artifacts = discover_report_artifacts(
+        tmp_path,
+        junit_xml_paths=["reports/results.xml"],
+        artifact_paths=[
+            "reports/report.html",
+            "reports/*.txt",
+            "reports/trace.zip",
+            "reports/report.html",
+        ],
+    )
+
+    assert [case.case_id for case in cases] == ["ui.smoke::test_homepage"]
+    assert [(artifact.kind, artifact.label, Path(artifact.path).name) for artifact in artifacts] == [
+        ("junit_xml", "JUnit XML: results.xml", "results.xml"),
+        ("html_report", "HTML Report: report.html", "report.html"),
+        ("text_artifact", "Text Artifact: summary.txt", "summary.txt"),
+        ("trace", "Trace: trace.zip", "trace.zip"),
+    ]
+
+
+def test_discover_report_artifacts_rejects_missing_configured_artifact_path(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="Configured artifact paths did not resolve"):
+        discover_report_artifacts(
+            tmp_path,
+            junit_xml_paths=[],
+            artifact_paths=["reports/missing.log"],
+        )
