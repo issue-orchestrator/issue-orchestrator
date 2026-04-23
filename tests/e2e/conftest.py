@@ -247,11 +247,12 @@ def kill_stale_orchestrators():
 
 @pytest.fixture(scope="session", autouse=True)
 def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
-    """Comprehensive e2e test reconciliation - clean slate before running tests.
+    """Comprehensive e2e test reconciliation around the test session.
 
     Cleans up:
     - Default /tmp/e2e-worktrees directory
     - Current e2e test session's worktree directory
+    - E2E PRs/branches/issues before and after the session
     """
     repo = get_test_repo()
     logger.info("=" * 60)
@@ -283,6 +284,36 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
                 prs_closed, branches_deleted, issues_closed, labels_deleted)
     logger.info("=" * 60)
     yield
+
+    logger.info("=" * 60)
+    logger.info("[E2E RECONCILIATION] Cleaning up artifacts from completed run...")
+    logger.info("=" * 60)
+
+    if _keep_artifacts():
+        logger.info("[E2E RECONCILIATION] Skipping post-run local cleanup (E2E_KEEP_ARTIFACTS=1)")
+    else:
+        cleanup_local_worktrees(e2e_worktree_base)
+
+    if _keep_remote_artifacts():
+        logger.info("[E2E RECONCILIATION] Skipping post-run remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
+        prs_closed = issues_closed = labels_deleted = 0
+    else:
+        prs_closed = run_cleanup_step("Post-run PR cleanup", lambda: cleanup_prs(repo), timeout_s=120)
+        issues_closed = run_cleanup_step("Post-run issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
+        labels_deleted = run_cleanup_step(
+            "Post-run label cleanup",
+            lambda: cleanup_e2e_labels(repo, E2E_LABEL_CLEANUP_PREFIXES),
+            timeout_s=60,
+        )
+
+    logger.info("=" * 60)
+    logger.info(
+        "[E2E RECONCILIATION] Post-run summary: PRs=%d, Issues=%d, Labels=%d",
+        prs_closed,
+        issues_closed,
+        labels_deleted,
+    )
+    logger.info("=" * 60)
 
 
 @pytest.fixture(scope="session")

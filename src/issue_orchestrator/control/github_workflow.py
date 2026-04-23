@@ -26,6 +26,7 @@ from ..events import EventName, EventContext
 from ..domain.models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
+from .review_scope import ReviewScopeChecker
 
 logger = logging.getLogger(__name__)
 
@@ -208,10 +209,17 @@ class GitHubWorkflow:
         """
         if not self.config.code_review_label or not self.config.repo or not self.label_sync:
             return 0
+        scope_checker = ReviewScopeChecker(
+            self.config,
+            self.repository_host,
+            log_prefix="LABEL_SYNC",
+            require_open_issue=True,
+        )
         return self.label_sync.reconcile_orphaned_pr_labels(
             self.config.code_review_label,
             self.config.code_reviewed_label,
             orchestrator_pr_marker,
+            is_pr_in_scope=scope_checker.is_pr_in_scope,
         )
 
     def refresh_issue(self, issue_number: int) -> Optional["Issue"]:

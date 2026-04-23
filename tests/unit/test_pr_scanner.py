@@ -1321,6 +1321,32 @@ class TestIssueScopeFiltering:
         result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
         assert len(result) == 1
 
+    def test_review_includes_closed_issue_when_filter_label_matches(
+        self,
+        scanner,
+        mock_repository,
+        mock_config,
+    ):
+        """Review scanner preserves prior behavior for closed linked issues."""
+        mock_config.filtering.label = "io:e2e:isolated"
+
+        issue = (
+            IssueBuilder()
+            .with_number(42)
+            .with_title("Closed issue with review PR")
+            .with_labels("agent:developer", "io:e2e:isolated")
+            .with_state("closed")
+            .build()
+        )
+        mock_repository.issues.append(issue)
+
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert len(result) == 1
+        assert result[0].issue_number == 42
+
     def test_review_skips_excluded_label_prefix_issue(self, scanner, mock_repository, mock_config):
         """Review scan skips PRs linked to issues with excluded-label prefixes."""
         mock_config.filtering.exclude_label_prefixes = ["io:e2e:"]

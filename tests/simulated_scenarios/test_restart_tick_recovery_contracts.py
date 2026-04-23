@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from issue_orchestrator.domain.models import Issue
+from issue_orchestrator.domain.models import Issue, ORCHESTRATOR_PR_MARKER
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
@@ -44,7 +44,7 @@ def test_startup_recovers_open_pr_label_state_after_restart(scenario_repo: Path)
         title="PR for #1",
         url="https://github.com/test/repo/pull/321",
         branch="1-sim",
-        body="Closes #1\n\n<!-- orchestrator-managed-pr -->",
+        body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
         state="open",
         labels=[],
         draft=False,
@@ -90,7 +90,7 @@ def test_restart_recovers_pending_review_queue_from_pr_labels(scenario_repo: Pat
         title="Needs review",
         url="https://github.com/test/repo/pull/444",
         branch="1-sim",
-        body="Closes #1\n\n<!-- orchestrator-managed-pr -->",
+        body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
         state="open",
         labels=[config.code_review_label],
         draft=True,

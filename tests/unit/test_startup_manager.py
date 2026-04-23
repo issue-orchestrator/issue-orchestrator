@@ -13,6 +13,7 @@ from issue_orchestrator.domain.models import (
     AgentConfig,
     PendingReview,
     PendingTriageReview,
+    ORCHESTRATOR_PR_MARKER,
 )
 
 
@@ -382,6 +383,42 @@ class TestStartupManagerCodeReviewRecovery:
             title="Test PR",
             branch="1-feature",
             labels=["needs-code-review"],
+            body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            state="open",
+        )
+        mock_repository_host.get_prs_with_label.return_value = [pr]
+        mock_repository_host.get_issue.return_value = Issue(
+            number=1,
+            title="Issue with review PR",
+            labels=["agent:web"],
+            repo="owner/repo",
+        )
+
+        await startup_manager.run_startup(sample_state)
+
+        assert len(sample_state.pending_reviews) == 1
+        assert sample_state.pending_reviews[0].pr_number == 10
+
+    @pytest.mark.asyncio
+    async def test_skips_pending_review_pr_without_orchestrator_marker(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Startup review recovery ignores manually-created PRs."""
+        mock_config.agents = {}
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_review_label = "needs-code-review"
+
+        from issue_orchestrator.ports import PRInfo
+        pr = PRInfo(
+            number=10,
+            url="https://github.com/owner/repo/pull/10",
+            title="Manual PR",
+            branch="1-feature",
+            labels=["needs-code-review"],
             body="Closes #1",
             state="open",
         )
@@ -389,8 +426,8 @@ class TestStartupManagerCodeReviewRecovery:
 
         await startup_manager.run_startup(sample_state)
 
-        assert len(sample_state.pending_reviews) == 1
-        assert sample_state.pending_reviews[0].pr_number == 10
+        assert sample_state.pending_reviews == []
+        mock_repository_host.get_issue.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ignores_pending_review_pr_from_prior_attempt_branch(
@@ -414,10 +451,16 @@ class TestStartupManagerCodeReviewRecovery:
             title="Test PR",
             branch="1-old-branch",
             labels=["needs-code-review"],
-            body="Closes #1",
+            body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
             state="open",
         )
         mock_repository_host.get_prs_with_label.return_value = [pr]
+        mock_repository_host.get_issue.return_value = Issue(
+            number=1,
+            title="Issue with stale review PR",
+            labels=["agent:web"],
+            repo="owner/repo",
+        )
 
         with caplog.at_level("INFO"):
             await startup_manager.run_startup(sample_state)
@@ -449,7 +492,7 @@ class TestStartupManagerCodeReviewRecovery:
             title="Test PR",
             branch="1-feature",
             labels=["needs-code-review"],
-            body="Closes #1",
+            body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
             state="open",
         )
         issue = Issue(

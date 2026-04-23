@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from issue_orchestrator.domain.models import Issue
+from issue_orchestrator.domain.models import Issue, ORCHESTRATOR_PR_MARKER
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
@@ -25,7 +25,7 @@ def _pr(*, number: int, issue_number: int, branch: str, labels: list[str]) -> PR
         title=f"PR #{number} for issue #{issue_number}",
         url=f"https://github.com/test/repo/pull/{number}",
         branch=branch,
-        body=f"Closes #{issue_number}\n\n<!-- orchestrator-managed-pr -->",
+        body=f"Closes #{issue_number}\n\n{ORCHESTRATOR_PR_MARKER}",
         state="open",
         labels=labels,
         draft=True,

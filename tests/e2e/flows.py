@@ -11,6 +11,7 @@ from typing import Callable, Iterable
 
 import httpx
 
+from issue_orchestrator.control.review_scope import pr_fields_reference_issue
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,9 @@ from issue_orchestrator.testing.asyncdsl import (
 )
 from issue_orchestrator.testing.support.test_data import close_issue, _ensure_label
 from tests.e2e.conftest import (
+    DEFAULT_E2E_FILTER_LABEL,
+    E2E_RUN_LABEL_PREFIX,
+    E2E_TEST_LABEL_PREFIX,
     inflight_create,
     inflight_update,
     register_inflight_issue,
@@ -115,6 +119,66 @@ def close_pr(repo: str, pr_number: int) -> None:
             adapter.delete_branch(branch)
         except Exception:
             pass
+
+
+def _is_e2e_cleanup_label(label: str) -> bool:
+    return (
+        label == DEFAULT_E2E_FILTER_LABEL
+        or label.startswith(E2E_TEST_LABEL_PREFIX)
+        or label.startswith(E2E_RUN_LABEL_PREFIX)
+    )
+
+
+def _pr_matches_issue(branch: str | None, title: str, body: str, issue_numbers: set[int]) -> bool:
+    return pr_fields_reference_issue(
+        branch=branch,
+        title=title,
+        body=body,
+        issue_numbers=issue_numbers,
+    )
+
+
+def cleanup_test_prs_for_issues(
+    repo: str,
+    issue_numbers: Iterable[int],
+    labels: Iterable[str],
+) -> int:
+    """Close e2e PRs matching created issue numbers and e2e artifact labels."""
+    issue_number_set = set(issue_numbers)
+    if not issue_number_set:
+        return 0
+
+    cleanup_labels = sorted({label for label in labels if _is_e2e_cleanup_label(label)})
+    if not cleanup_labels:
+        return 0
+
+    closed_prs: set[int] = set()
+    adapter = _github_adapter(repo)
+    for label in cleanup_labels:
+        try:
+            prs = adapter.get_prs_with_label(label, state="open")
+        except Exception:
+            logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s'", label)
+            prs = []
+        for pr in prs:
+            pr_num = pr.number
+            if not pr_num or pr_num in closed_prs:
+                continue
+            if not _pr_matches_issue(pr.branch, pr.title, pr.body, issue_number_set):
+                continue
+            try:
+                adapter.close_pr(pr_num)
+                closed_prs.add(pr_num)
+                if pr.branch:
+                    try:
+                        adapter.delete_branch(pr.branch)
+                    except Exception:
+                        pass
+                logger.info("[E2E CLEANUP] Closed PR #%d for test issue", pr_num)
+            except Exception:
+                logger.warning("[E2E CLEANUP] Failed closing PR #%d", pr_num)
+
+    return len(closed_prs)
 
 
 def cleanup_test_prs(repo: str, labels: Iterable[str]) -> int:
@@ -315,6 +379,7 @@ class E2EFlow:
     review_timeout_s: float | None = None
     fail_on_blocked_failed: bool = False
     _created_issues: list[int] = field(default_factory=list, repr=False)
+    _created_issue_labels: dict[int, tuple[str, ...]] = field(default_factory=dict, repr=False)
 
     def _control_api_port(self) -> int | None:
         """Extract control API port from watcher's snapshot provider URL.
@@ -361,13 +426,22 @@ class E2EFlow:
             merged.append(self.filter_label)
         issue_key, issue_number = inflight_create(self.repo, title, merged, body=body)
         self._created_issues.append(issue_number)
+        self._created_issue_labels[issue_number] = tuple(merged)
         if self.watcher is not None:
             register_inflight_issue(issue_key)
         return issue_key, issue_number
 
+    def cleanup_created_prs(self) -> int:
+        """Close PRs created for issues owned by this flow."""
+        labels: set[str] = set()
+        for issue_labels in self._created_issue_labels.values():
+            labels.update(issue_labels)
+        return cleanup_test_prs_for_issues(self.repo, self._created_issues, labels)
+
     def cleanup_created_issues(self) -> None:
-        """Close all issues created by this flow."""
+        """Close PRs and issues created by this flow."""
         from issue_orchestrator.testing.support.test_data import close_issue
+        self.cleanup_created_prs()
         for issue_number in self._created_issues:
             try:
                 close_issue(self.repo, issue_number)

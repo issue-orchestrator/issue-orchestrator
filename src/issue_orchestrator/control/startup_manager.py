@@ -22,7 +22,6 @@ runtime initialization only:
 """
 
 import logging
-import re
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Optional
@@ -49,6 +48,7 @@ from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
+from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
@@ -117,6 +117,12 @@ class StartupManager:
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._label_store = label_store
+        self._review_scope = ReviewScopeChecker(
+            config,
+            repository_host,
+            log_prefix="startup",
+            require_open_issue=True,
+        )
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -474,26 +480,19 @@ class StartupManager:
             pr_url = pr.url
             pr_body = pr.body
 
-            # Extract issue number from "Closes #N"
-            issue_match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
-            issue_number: int = int(issue_match.group(1)) if issue_match else pr_number
+            issue_number = extract_issue_number_from_pr(pr)
 
             # Check if PR was created by orchestrator
             if ORCHESTRATOR_PR_MARKER not in pr_body:
                 logger.debug(f"PR #{pr_number}: Not created by orchestrator (no marker)")
+                continue
 
-            issue = self.repository_host.get_issue(issue_number)
+            scope = self._review_scope.check_issue_number(issue_number, pr_number)
+            if not scope.in_scope:
+                continue
+            issue = scope.issue if scope.issue is not None else self.repository_host.get_issue(issue_number)
             if not isinstance(issue, Issue):
                 issue = None
-
-            # Skip PRs whose linked issue doesn't match the filter label
-            if self.config.filtering.label:
-                if issue is None or self.config.filtering.label not in issue.labels:
-                    logger.debug(
-                        "PR #%d linked to issue #%d without filter label '%s', skipping",
-                        pr_number, issue_number, self.config.filtering.label,
-                    )
-                    continue
 
             scoped = scope_prs_to_active_issue_branch(
                 issue_number,

@@ -10,7 +10,6 @@ what to do with the results.
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence, Protocol, Callable
 
@@ -18,9 +17,9 @@ from ..infra.config import Config
 from ..events import EventName
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
-from ..domain.branch_naming import extract_issue_number_from_branch
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .review_validity import evaluate_review_validity
+from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..ports import EventSink,  make_trace_event
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
@@ -93,6 +92,7 @@ class PRScanner:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._review_scope = ReviewScopeChecker(config, repository, log_prefix="SCANNER")
 
     def load_issue_branches(self) -> dict[int, str]:
         """Load the current issue->branch map for scan-time scoping."""
@@ -140,11 +140,11 @@ class PRScanner:
             if session_name in active_review_sessions:
                 continue
 
-            # Extract issue number from PR body
-            issue_number = self._extract_issue_number(pr.body, pr.number)
+            issue_number = extract_issue_number_from_pr(pr)
 
             # Skip PRs whose linked issue is outside configured scope
-            if not self._matches_issue_scope(issue_number, pr.number):
+            scope = self._review_scope.check_issue_number(issue_number, pr.number)
+            if not scope.in_scope:
                 continue
 
             scoped = scope_prs_to_active_issue_branch(
@@ -162,7 +162,7 @@ class PRScanner:
                 )
                 continue
 
-            issue = self.repository.get_issue(issue_number)
+            issue = scope.issue if scope.issue is not None else self.repository.get_issue(issue_number)
             validity = evaluate_review_validity(
                 config=self.config,
                 label_manager=self._lm,
@@ -323,10 +323,11 @@ class PRScanner:
         queued_issue_ids: set[int],
         active_issue_numbers: set[int],
     ) -> _ReworkScanDecision:
-        issue_number = self._extract_issue_number_from_pr(pr)
+        scope = self._review_scope.check_pr(pr)
+        issue_number = scope.issue_number
 
         # Skip PRs whose linked issue is outside configured scope
-        if not self._matches_issue_scope(issue_number, pr.number):
+        if not scope.in_scope:
             return _ReworkScanDecision(
                 decision="skip",
                 issue_number=issue_number,
@@ -362,7 +363,7 @@ class PRScanner:
             )
         # Also check the linked issue's labels — a publish failure marks the
         # issue as blocked-failed but may leave needs-rework on the PR.
-        issue = self.repository.get_issue(issue_number)
+        issue = scope.issue if scope.issue is not None else self.repository.get_issue(issue_number)
         if issue is not None and self._lm.is_blocking_any(issue.labels):
             return _ReworkScanDecision(
                 decision="skip",
@@ -432,86 +433,6 @@ class PRScanner:
                 decision.rework_cycle,
                 self.config.max_rework_cycles,
             )
-
-    def _matches_issue_scope(self, issue_number: int, pr_number: int) -> bool:
-        """Check if the linked issue is within the configured scope.
-
-        Enforces three scope checks:
-        1. filtering.issue — single-issue scope (no API call needed)
-        2. filtering.label — include filter (requires issue fetch)
-        3. exclude_labels — exclusion filter (requires issue fetch)
-
-        Without these checks, the PR scanner would pick up PRs for issues
-        outside the configured scope (e.g., e2e test issues leaking into
-        production orchestrators).
-        """
-        # Single-issue scope: cheap check, no API call
-        if self.config.filtering.issue and issue_number != self.config.filtering.issue:
-            logger.debug(
-                "[SCANNER] PR #%d linked to issue #%d outside single-issue scope (%d), skipping",
-                pr_number, issue_number, self.config.filtering.issue,
-            )
-            return False
-
-        filter_label = self.config.filtering.label
-        issue_filter = self.config.get_issue_filter()
-
-        # If neither include nor exclude filter is configured, pass
-        if not filter_label and issue_filter.is_empty():
-            return True
-
-        issue = self.repository.get_issue(issue_number)
-        if issue is None:
-            logger.info(
-                "[SCANNER] PR #%d linked to issue #%d which doesn't exist, skipping",
-                pr_number, issue_number,
-            )
-            return False
-
-        # Include filter
-        if filter_label and filter_label not in issue.labels:
-            logger.debug(
-                "[SCANNER] PR #%d linked to issue #%d without filter label '%s', skipping",
-                pr_number, issue_number, filter_label,
-            )
-            return False
-
-        # Exclude filter
-        if not issue_filter.apply([issue]):
-            logger.debug(
-                "[SCANNER] PR #%d linked to issue #%d excluded by label filter, skipping",
-                pr_number, issue_number,
-            )
-            return False
-
-        return True
-
-    def _extract_issue_number_from_pr(self, pr: PRInfo) -> int:
-        """Extract issue number from PR, preferring branch name over body.
-
-        The branch name is more reliable as it's set by the orchestrator
-        and agents can't modify it. Falls back to PR body parsing if
-        branch doesn't match the expected pattern.
-
-        Args:
-            pr: The PR to extract issue number from
-
-        Returns:
-            Issue number, falling back to PR number if not found
-        """
-        # Try branch name first (format: {issue_number}-{slug})
-        if pr.branch:
-            issue_from_branch = extract_issue_number_from_branch(pr.branch)
-            if issue_from_branch is not None:
-                return issue_from_branch
-
-        # Fall back to PR body parsing
-        return self._extract_issue_number(pr.body, pr.number)
-
-    def _extract_issue_number(self, pr_body: str, fallback: int) -> int:
-        """Extract issue number from PR body (Closes #N pattern)."""
-        match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
-        return int(match.group(1)) if match else fallback
 
     def _get_rework_cycle_from_labels(self, labels: list[str]) -> int:
         """Extract rework cycle count from labels (rework-cycle-N).

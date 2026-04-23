@@ -10,7 +10,7 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional, Set, FrozenSet
+from typing import TYPE_CHECKING, Callable, Optional, Set, FrozenSet
 
 from ..events import EventName
 from ..ports import EventSink,  make_trace_event
@@ -20,6 +20,7 @@ from ..ports.pull_request_tracker import PullRequestTracker
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
+    from ..ports.pull_request_tracker import PRInfo
 
 
 @dataclass(frozen=True)
@@ -263,6 +264,7 @@ class LabelSync:
         code_review_label: str,
         code_reviewed_label: str | None,
         orchestrator_marker: str,
+        is_pr_in_scope: Callable[["PRInfo"], bool] | None = None,
     ) -> int:
         """Reconcile labels on agent-created PRs missing review labels.
 
@@ -273,6 +275,8 @@ class LabelSync:
             code_review_label: The needs-code-review label to add
             code_reviewed_label: The code-reviewed label (skip if present)
             orchestrator_marker: Marker to identify orchestrator-created PRs
+            is_pr_in_scope: Optional current-run scope predicate. When provided,
+                out-of-scope PRs are not mutated.
 
         Returns:
             Number of PRs that were fixed
@@ -303,25 +307,32 @@ class LabelSync:
                 code_review_label in pr.labels or
                 (code_reviewed_label and code_reviewed_label in pr.labels)
             )
+            if has_review_label:
+                continue
 
-            if not has_review_label:
-                # Add the needs-code-review label
-                try:
-                    self.labels.add_label(pr.number, code_review_label)
-                    fixed_count += 1
-                    logger.info("[LABEL_SYNC] Added '%s' to orphaned PR #%d", code_review_label, pr.number)
-                except Exception as e:
-                    logger.warning("[LABEL_SYNC] Failed to reconcile label on PR #%d: %s", pr.number, e)
-                    self.events.publish(
-                        make_trace_event(
-                            EventName.APPLY_FAILED,
-                            {
-                                "step_type": "label_sync_reconcile",
-                                "pr_number": pr.number,
-                                "error": str(e),
-                            },
-                        )
+            # Scope checks may fetch linked issues when filters are configured,
+            # so run them only for PRs that would otherwise be mutated.
+            if is_pr_in_scope is not None and not is_pr_in_scope(pr):
+                logger.debug("[LABEL_SYNC] Skipping out-of-scope orphaned PR #%d", pr.number)
+                continue
+
+            # Add the needs-code-review label
+            try:
+                self.labels.add_label(pr.number, code_review_label)
+                fixed_count += 1
+                logger.info("[LABEL_SYNC] Added '%s' to orphaned PR #%d", code_review_label, pr.number)
+            except Exception as e:
+                logger.warning("[LABEL_SYNC] Failed to reconcile label on PR #%d: %s", pr.number, e)
+                self.events.publish(
+                    make_trace_event(
+                        EventName.APPLY_FAILED,
+                        {
+                            "step_type": "label_sync_reconcile",
+                            "pr_number": pr.number,
+                            "error": str(e),
+                        },
                     )
+                )
 
         if fixed_count > 0:
             logger.info("Reconciled labels on %d orphaned PR(s)", fixed_count)
