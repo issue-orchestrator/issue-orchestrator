@@ -691,6 +691,59 @@ def test_progress_with_failures(test_repo: Path):
     assert progress["percent"] == 100
 
 
+def test_worker_pytest_runner_merges_configured_junit_results_with_runtime_nodeids(
+    test_repo: Path,
+):
+    """Configured pytest JUnit XML should enrich, not duplicate, runtime results."""
+    results_dir = test_repo / ".issue-orchestrator" / "e2e-results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    result = run_worker_with_execution_spec(
+        test_repo,
+        execution_spec={
+            "runner_kind": "pytest",
+            "pytest_args": [
+                "tests/e2e",
+                "-v",
+                "--junitxml=.issue-orchestrator/e2e-results/pytest-results.xml",
+            ],
+            "command": [],
+            "junit_xml_paths": [".issue-orchestrator/e2e-results/pytest-results.xml"],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 1, result.stderr
+
+    db = E2EDB(test_repo / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    details = db.run_details(run.id)
+    assert details is not None
+
+    results = details["results"]
+    assert len(results) == 3
+    assert sorted(row["nodeid"] for row in results) == [
+        "tests/e2e/test_basic.py::test_another_passing",
+        "tests/e2e/test_basic.py::test_failing",
+        "tests/e2e/test_basic.py::test_passing",
+    ]
+    assert {row["result_source"] for row in results} == {"junit_xml"}
+
+    failure = next(row for row in results if row["nodeid"].endswith("::test_failing"))
+    assert failure["outcome"] == "failed"
+    assert "This test always fails" in (failure["longrepr"] or "")
+
+    artifacts = details["artifacts"]
+    assert [
+        (artifact["kind"], Path(artifact["path"]).name)
+        for artifact in artifacts
+    ] == [("junit_xml", "pytest-results.xml")]
+
+
 def test_worker_command_runner_ingests_junit_and_artifacts(test_repo_with_command_reports: Path):
     """Command-mode runs should ingest structured JUnit results and expose artifacts."""
     result = run_worker_with_execution_spec(

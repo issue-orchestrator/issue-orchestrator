@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.infra.e2e_reports import parse_junit_report
+from issue_orchestrator.infra.e2e_reports import (
+    JUnitCaseResult,
+    normalize_pytest_junit_cases,
+    parse_junit_report,
+)
 
 
 def test_parse_junit_report_extracts_cases(tmp_path: Path) -> None:
@@ -53,3 +57,30 @@ def test_parse_junit_report_rejects_missing_case_name(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing a non-empty name"):
         parse_junit_report(report)
+
+
+def test_normalize_pytest_junit_cases_matches_runtime_nodeids() -> None:
+    normalized = normalize_pytest_junit_cases(
+        [
+            JUnitCaseResult(
+                case_id="tests.e2e.test_basic::test_passing",
+                display_name="test_passing",
+                suite_name="tests.e2e.test_basic",
+                outcome="passed",
+                duration_seconds=0.12,
+            ),
+            JUnitCaseResult(
+                case_id="tests/e2e/test_existing.py::test_already_normalized",
+                display_name="test_already_normalized",
+                suite_name="tests/e2e/test_existing.py",
+                outcome="failed",
+                duration_seconds=0.34,
+                failure_details="boom",
+            ),
+        ]
+    )
+
+    assert normalized[0].suite_name == "tests/e2e/test_basic.py"
+    assert normalized[0].case_id == "tests/e2e/test_basic.py::test_passing"
+    assert normalized[1].suite_name == "tests/e2e/test_existing.py"
+    assert normalized[1].case_id == "tests/e2e/test_existing.py::test_already_normalized"

@@ -404,7 +404,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         load_quarantine_list,
         save_quarantine_list,
     )
-    from issue_orchestrator.infra.e2e_reports import discover_report_artifacts
+    from issue_orchestrator.infra.e2e_reports import (
+        discover_report_artifacts,
+        normalize_pytest_junit_cases,
+    )
 
     execution_spec = E2EExecutionSpec(
         runner_kind=str(raw_execution_spec.get("runner_kind") or "pytest"),
@@ -530,6 +533,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                     junit_xml_paths=execution_spec.junit_xml_paths,
                     artifact_paths=execution_spec.artifact_paths,
                 )
+                structured_cases = normalize_pytest_junit_cases(structured_cases)
                 if structured_cases:
                     db.record_junit_cases(run_id, structured_cases)
                 db.replace_run_artifacts(run_id, artifact_records)

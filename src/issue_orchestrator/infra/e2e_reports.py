@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 from xml.etree import ElementTree
@@ -95,6 +95,38 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
         raise ValueError(f"JUnit XML did not contain any <testcase> entries: {path}")
 
     return [_parse_testcase(case) for case in cases]
+
+
+def normalize_pytest_junit_cases(
+    cases: list[JUnitCaseResult],
+) -> list[JUnitCaseResult]:
+    """Normalize pytest JUnit case IDs to runtime-style nodeids.
+
+    Pytest's JUnit XML typically emits dotted module paths in ``classname``
+    (for example ``tests.e2e.test_basic``) while runtime observation records
+    nodeids with filesystem separators
+    (for example ``tests/e2e/test_basic.py::test_failing``). Converge the
+    structured report onto the runtime shape so one test maps to one row.
+    """
+    normalized: list[JUnitCaseResult] = []
+    for case in cases:
+        suite_name = case.suite_name
+        if not suite_name or "/" in suite_name:
+            normalized.append(case)
+            continue
+        parts = [part for part in suite_name.split(".") if part]
+        if len(parts) < 2:
+            normalized.append(case)
+            continue
+        path = "/".join((*parts[:-1], f"{parts[-1]}.py"))
+        normalized.append(
+            replace(
+                case,
+                suite_name=path,
+                case_id=f"{path}::{case.display_name}",
+            )
+        )
+    return normalized
 
 
 def _parse_testcase(testcase: ElementTree.Element) -> JUnitCaseResult:
