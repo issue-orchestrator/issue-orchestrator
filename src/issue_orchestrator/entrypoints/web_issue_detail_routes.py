@@ -87,7 +87,9 @@ def _apply_issue_detail_actions(
             actions.insert(0, {"id": "retry_publish", "label": "Retry Publish"})
 
 
-def _apply_issue_detail_run_diagnostic(payload: dict[str, Any], run_diagnostic: dict[str, Any]) -> None:
+def _apply_issue_detail_run_diagnostic(
+    payload: dict[str, Any], run_diagnostic: dict[str, Any]
+) -> None:
     actions = payload.get("actions")
     if isinstance(actions, list):
         actions.insert(
@@ -136,7 +138,8 @@ def _finalize_issue_detail_payload(
                 for run in runs
                 if isinstance(run, dict) and isinstance(run.get("cycles"), list)
             )
-            if isinstance(runs, list) else 0
+            if isinstance(runs, list)
+            else 0
         )
         logger.info(
             "[TIMELINE] api.issue_detail issue=%s raw=%s filtered=%s semantic=%s "
@@ -187,7 +190,9 @@ async def get_issue_timeline(
     payload = stream.to_dict()
     raw_events = payload.get("events", [])
     filtered_events = _filter_timeline_events(raw_events)
-    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(
+        filtered_events
+    )
     events = _decorate_timeline_events(events, issue_number)
     payload["events"] = events
     payload["phase_toc"] = _build_phase_toc(events)
@@ -214,7 +219,9 @@ async def get_issue_timeline(
     return JSONResponse(payload)
 
 
-@web_issue_detail_router.get("/api/issue-detail/{issue_number}", response_model=IssueDetailPayload)
+@web_issue_detail_router.get(
+    "/api/issue-detail/{issue_number}", response_model=IssueDetailPayload
+)
 async def get_issue_detail(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
@@ -236,7 +243,9 @@ async def get_issue_detail(
     timeline = stream.to_dict()
     raw_events = timeline.get("events", [])
     filtered_events = _filter_timeline_events(raw_events)
-    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(
+        filtered_events
+    )
     events = _decorate_timeline_events(events, issue_number)
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
@@ -296,12 +305,17 @@ async def get_e2e_run_detail(
 
     if not records:
         return JSONResponse(
-            {"error": "not_found", "detail": f"No timeline events for E2E run {run_id}"},
+            {
+                "error": "not_found",
+                "detail": f"No timeline events for E2E run {run_id}",
+            },
             status_code=404,
         )
 
     e2e_records = [record for record in records if record.event != "e2e.agent_snapshot"]
-    snapshot_records = [record for record in records if record.event == "e2e.agent_snapshot"]
+    snapshot_records = [
+        record for record in records if record.event == "e2e.agent_snapshot"
+    ]
 
     stream = TimelineStream.from_records(store_key, e2e_records)
     raw_events = [event.to_dict() for event in stream.events]
@@ -312,7 +326,9 @@ async def get_e2e_run_detail(
         e2e_db_path=orchestrator.config.repo_root / ".issue-orchestrator" / "e2e.db",
     )
     e2e_events = _filter_timeline_events(raw_events)
-    agent_events = [record.data for record in snapshot_records if isinstance(record.data, dict)]
+    agent_events = [
+        record.data for record in snapshot_records if isinstance(record.data, dict)
+    ]
     if not agent_events:
         agent_events = _load_orchestrator_events_for_run(orchestrator, run_id)
 
@@ -435,7 +451,9 @@ async def get_e2e_issue_detail(
     timeline = TimelineStream.from_records(issue_number, records).to_dict()
     raw_events = timeline.get("events", [])
     filtered_events = _filter_timeline_events(raw_events)
-    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(
+        filtered_events
+    )
     events = _decorate_timeline_events(events, issue_number)
     payload = build_issue_detail_view_model(
         issue_number=issue_number,
@@ -470,7 +488,9 @@ def _dashboard_lifecycle_payload(
     issue_number: int,
     title: str,
     events: list[dict[str, Any]],
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    if not events:
+        return None
     return project_dashboard_lifecycle_container(
         subject_label="Dashboard",
         issue_number=issue_number,
@@ -519,7 +539,9 @@ def _load_orchestrator_events_for_run(
             finished_at=run.finished_at,
         )
     except Exception:
-        logger.debug("Could not load orchestrator events for E2E run %d", run_id, exc_info=True)
+        logger.debug(
+            "Could not load orchestrator events for E2E run %d", run_id, exc_info=True
+        )
         return []
 
 
@@ -641,7 +663,10 @@ def _timeline_missing_diagnostic(
         signals.append("session_history_present")
     if any(review.issue_number == issue_number for review in state.pending_reviews):
         signals.append("pending_review_present")
-    if any(rework.resolve_issue_number() == issue_number for rework in state.pending_reworks):
+    if any(
+        rework.resolve_issue_number() == issue_number
+        for rework in state.pending_reworks
+    ):
         signals.append("pending_rework_present")
     if issue_number in state.completed_today:
         signals.append("completed_today_present")
@@ -662,7 +687,11 @@ def _timeline_missing_diagnostic(
     from ..infra.repo_identity import state_dir
 
     timeline_db_path = state_dir(orchestrator.config.repo_root) / "timeline.sqlite"
-    state_name = "logical_semantics_missing" if dropped_missing_semantics > 0 else "expected_history_missing"
+    state_name = (
+        "logical_semantics_missing"
+        if dropped_missing_semantics > 0
+        else "expected_history_missing"
+    )
     return {
         "state": state_name,
         "signals": signals,
