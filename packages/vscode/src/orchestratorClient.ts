@@ -20,5 +20,4 @@ export interface OrchestratorClient {
   getOrchestratorLog(issueNumber: number): Promise<Record<string, unknown>>;
   focusSession(issueNumber: number): Promise<void>;
   killSession(issueNumber: number): Promise<void>;
-  sendMessage(issueNumber: number, text: string): Promise<void>;
 }

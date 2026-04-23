@@ -1,4 +1,30 @@
-"""MCP server for issue-orchestrator control and data access."""
+"""MCP server for issue-orchestrator control and data access.
+
+Security posture (see issue #5987, F4):
+
+- **Transport is stdio only.** The MCP server is launched by
+  ``mcp.run()`` with no transport argument so it uses stdio. Exposing
+  it over HTTP would expand the attack surface significantly; the
+  Control API bearer token (F3) is not a substitute for a dedicated
+  MCP auth story. If an HTTP transport is ever needed, gate it behind
+  an explicit opt-in and add per-tool authorization before touching
+  it.
+- **No free-form text injection into agents.** The earlier
+  ``orchestrator.session.send`` tool let any MCP client write
+  arbitrary text into a running agent's session — a prompt-injection
+  primitive dressed as a convenience method. It was removed as part
+  of F4. If we later want a human to join a stuck session, the
+  intended mechanism is a PTY attach directly to the agent terminal,
+  not a synthetic MCP tool that types on the human's behalf.
+- **Destructive tools require explicit confirmation.**
+  ``orchestrator.shutdown`` rejects ``force=True`` unless the caller
+  also passes ``confirm=True``, so accidental or drive-by invocations
+  can't tear the orchestrator down.
+- **``orchestrator.repos.start`` is path-guarded.** The ``repo_path``
+  argument must point at an existing git repository; when the
+  ``ISSUE_ORCHESTRATOR_MCP_REPOS_ALLOWLIST`` env var is set, it must
+  also resolve under one of the allowlisted roots.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +43,58 @@ from ..infra.client_urls import resolve_client_base_url
 from ..execution.orchestrator_http_api import OrchestratorAsyncHttpApi
 
 logger = logging.getLogger(__name__)
+
+_REPOS_ALLOWLIST_ENV = "ISSUE_ORCHESTRATOR_MCP_REPOS_ALLOWLIST"
+
+
+def _mcp_repos_allowlist() -> list[Path] | None:
+    """Return configured allowlist roots for ``orchestrator.repos.start``.
+
+    When the env var is unset we return ``None`` — the caller still
+    validates that the path is a real git repo, but does not gate on
+    allowlisted roots. When the env var is set but empty (after
+    stripping), we return an empty list, which forbids every path.
+    """
+    raw = os.environ.get(_REPOS_ALLOWLIST_ENV)
+    if raw is None:
+        return None
+    roots: list[Path] = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        roots.append(Path(entry).expanduser().resolve())
+    return roots
+
+
+def _validate_repo_start_path(repo_path: str) -> str | None:
+    """Return an error message if ``repo_path`` is not safe to start.
+
+    ``None`` means the path passes static validation.
+    """
+    try:
+        path = Path(repo_path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        return f"Invalid repo_path: {exc}"
+    if not path.exists():
+        return f"Repository not found: {repo_path}"
+    if not path.is_dir():
+        return f"Repository path is not a directory: {repo_path}"
+    if not (path / ".git").exists():
+        return f"Repository path is not a git checkout: {repo_path}"
+    allowlist = _mcp_repos_allowlist()
+    if allowlist is None:
+        return None
+    for root in allowlist:
+        try:
+            path.relative_to(root)
+            return None
+        except ValueError:
+            continue
+    return (
+        f"Repository path {repo_path} is not under any configured "
+        f"{_REPOS_ALLOWLIST_ENV} root"
+    )
 
 
 @dataclass(frozen=True)
@@ -173,7 +251,9 @@ class McpApp:
         server.tool(name="orchestrator.session.phases")(self.tool_session_phases)
         server.tool(name="orchestrator.session.claude_log")(self.tool_session_claude_log)
         server.tool(name="orchestrator.session.orchestrator_log")(self.tool_session_orchestrator_log)
-        server.tool(name="orchestrator.session.send")(self.tool_session_send)
+        # orchestrator.session.send intentionally omitted — see module
+        # docstring. Any MCP client holding the transport could inject
+        # arbitrary text into a running agent's prompt via that tool.
         server.tool(name="orchestrator.session.kill")(self.tool_session_kill)
         server.tool(name="orchestrator.session.focus")(self.tool_session_focus)
         server.tool(name="orchestrator.urls")(self.tool_urls)
@@ -216,7 +296,25 @@ class McpApp:
     async def tool_refresh(self, inflight_stable_ids: list[str] | None = None) -> dict[str, Any]:
         return await self._safe("orchestrator.refresh", lambda: self.refresh(inflight_stable_ids))
 
-    async def tool_shutdown(self, force: bool = False) -> dict[str, Any]:
+    async def tool_shutdown(
+        self, force: bool = False, confirm: bool = False
+    ) -> dict[str, Any]:
+        """Request orchestrator shutdown.
+
+        ``force=True`` is destructive (kills running sessions mid-flight),
+        so we require the caller to also pass ``confirm=True``. A
+        graceful ``force=False`` shutdown does not require confirmation.
+        """
+        if force and not confirm:
+            return {
+                "error": {
+                    "message": (
+                        "orchestrator.shutdown(force=True) requires "
+                        "confirm=True to prevent accidental tear-downs."
+                    ),
+                    "type": "ConfirmationRequired",
+                }
+            }
         return await self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
 
     async def tool_snapshot(self) -> dict[str, Any]:
@@ -250,12 +348,6 @@ class McpApp:
         return await self._safe(
             "orchestrator.session.orchestrator_log",
             lambda: self.session_orchestrator_log(issue_number),
-        )
-
-    async def tool_session_send(self, issue_number: int, text: str) -> dict[str, Any]:
-        return await self._safe(
-            "orchestrator.session.send",
-            lambda: self.session_send(issue_number, text),
         )
 
     async def tool_session_kill(self, issue_number: int) -> dict[str, Any]:
@@ -313,10 +405,16 @@ class McpApp:
         return {"repos": [r.to_dict() for r in state.repos]}
 
     def start_repo(self, repo_path: str, config_name: str = "default.yaml") -> dict[str, Any]:
-        """Start orchestrator for a specific repo."""
-        path = Path(repo_path)
-        if not path.exists():
-            return {"error": f"Repository not found: {repo_path}"}
+        """Start orchestrator for a specific repo.
+
+        The ``repo_path`` is caller-supplied and therefore untrusted —
+        validate before we hand it to ``supervisor.start``. See module
+        docstring for the threat model.
+        """
+        error = _validate_repo_start_path(repo_path)
+        if error is not None:
+            return {"error": error}
+        path = Path(repo_path).expanduser().resolve(strict=False)
 
         try:
             info = supervisor.start(path, config_name)
@@ -408,9 +506,6 @@ class McpApp:
 
     async def session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
         return await self._api.session_orchestrator_log(issue_number)
-
-    async def session_send(self, issue_number: int, text: str) -> dict[str, Any]:
-        return await self._api.send(issue_number, text)
 
     async def session_kill(self, issue_number: int) -> dict[str, Any]:
         return await self._api.kill(issue_number)
