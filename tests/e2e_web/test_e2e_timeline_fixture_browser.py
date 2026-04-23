@@ -1435,6 +1435,151 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     assert _SYNTHETIC_SESSION_OUTPUT in decoded_output, decoded_output
 
 
+def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecycle(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """Generic command-runner runs must still surface artifacts without issue links."""
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    run_detail_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/e2e-run-detail/{run_id}",
+            view="user",
+        ),
+    )
+    synthetic_payload = json.loads(json.dumps(run_detail_payload))
+    synthetic_payload["run"]["runner_kind"] = "command"
+    synthetic_payload["run"]["status"] = "passed"
+    synthetic_payload["run"]["command"] = ["sh", "scripts/run-e2e-suite.sh"]
+    synthetic_payload["run"]["log_path"] = "/tmp/tixmeup-e2e-worker.log"
+    synthetic_payload["reports"] = [
+        {
+            "kind": "junit_xml",
+            "label": "JUnit XML: tixmeup-e2e-smoke.xml",
+            "path": "/tmp/tixmeup-e2e-smoke.xml",
+        }
+    ]
+    synthetic_payload["artifacts"] = [
+        {
+            "kind": "text_artifact",
+            "label": "Text Artifact: compose-services.log",
+            "path": "/tmp/compose-services.log",
+        },
+        {
+            "kind": "text_artifact",
+            "label": "Text Artifact: tixmeup-e2e-smoke.summary.txt",
+            "path": "/tmp/tixmeup-e2e-smoke.summary.txt",
+        },
+    ]
+    suite_lifecycle = synthetic_payload["lifecycle"]
+    suite_lifecycle["runs"][0]["e2e_run"]["linked_issue_lifecycles"] = []
+    synthetic_payload["issue_affordances"] = []
+    synthetic_payload["results_by_category"] = {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [
+            {
+                "nodeid": "tixmeup.e2e.smoke::package.build_image",
+                "display_name": "package.build_image",
+                "suite_name": "tixmeup.e2e.smoke",
+                "outcome": "passed",
+                "retry_outcome": None,
+                "duration_seconds": 450.0,
+                "longrepr": None,
+                "history": [],
+                "existing_issue": None,
+                "flip_rate_percent": 0,
+                "result_source": "junit_xml",
+                "is_quarantined": False,
+            }
+        ],
+        "quarantined": [],
+        "skipped": [],
+    }
+    synthetic_payload["results_summary"] = {
+        "total": 1,
+        "passed": 1,
+        "untriaged": 0,
+        "has_issue": 0,
+        "flaky": 0,
+        "fixed": 0,
+        "quarantined": 0,
+        "skipped": 0,
+    }
+
+    page.route(
+        _url(
+            str(base_url),
+            f"/api/e2e-run-detail/{run_id}",
+            view="user",
+        ),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(synthetic_payload),
+        ),
+    )
+    page.locator("#tab-e2e").click()
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator("button", has_text="Open run"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    page.evaluate(
+        """() => {
+            window.__openedPaths = [];
+            window.openPath = (path) => window.__openedPaths.push(String(path));
+        }"""
+    )
+    run_item.locator("button", has_text="Open run").first.click()
+
+    results_panel = page.locator("#e2eRunResultsTab")
+    expect(results_panel).to_be_visible(timeout=5000)
+    expect(results_panel).to_contain_text("Run evidence")
+    expect(results_panel).to_contain_text("No linked issue lifecycles for this run.")
+    expect(results_panel.locator(".e2e-run-command")).to_contain_text(
+        "sh scripts/run-e2e-suite.sh"
+    )
+    expect(results_panel.locator(".test-row")).to_have_count(1)
+    expect(results_panel.locator(".test-row")).to_contain_text("package.build_image")
+    expect(results_panel.locator(".test-source")).to_contain_text("Junit Xml")
+
+    raw_output_btn = results_panel.locator("button", has_text="Raw Output").first
+    junit_btn = results_panel.locator(
+        "button", has_text="JUnit XML: tixmeup-e2e-smoke.xml"
+    ).first
+    compose_log_btn = results_panel.locator(
+        "button", has_text="Text Artifact: compose-services.log"
+    ).first
+    summary_btn = results_panel.locator(
+        "button", has_text="Text Artifact: tixmeup-e2e-smoke.summary.txt"
+    ).first
+    expect(raw_output_btn).to_be_visible(timeout=5000)
+    expect(junit_btn).to_be_visible(timeout=5000)
+    expect(compose_log_btn).to_be_visible(timeout=5000)
+    expect(summary_btn).to_be_visible(timeout=5000)
+
+    _dom_click_hit_tested(raw_output_btn, "generic run raw output button")
+    _dom_click_hit_tested(junit_btn, "generic run junit report button")
+    _dom_click_hit_tested(compose_log_btn, "generic run compose log button")
+    _dom_click_hit_tested(summary_btn, "generic run summary artifact button")
+
+    opened_paths = page.evaluate("() => window.__openedPaths.slice()")
+    assert opened_paths == [
+        "/tmp/tixmeup-e2e-worker.log",
+        "/tmp/tixmeup-e2e-smoke.xml",
+        "/tmp/compose-services.log",
+        "/tmp/tixmeup-e2e-smoke.summary.txt",
+    ]
+
+
 def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
     page: Page,
     fixture_web_server: dict[str, object],

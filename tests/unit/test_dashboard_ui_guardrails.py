@@ -1000,6 +1000,7 @@ def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> Non
     results_body = _function_body(js, "renderE2EResultsPanel")
     evidence_body = _function_body(js, "renderE2ERunEvidenceSection")
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
+    result_evidence_body = _function_body(js, "_renderResultEvidenceButtons")
     lifecycle_body = _function_body(js, "renderE2ELinkedIssueLifecycles")
     lifecycle_row_body = _function_body(js, "_renderLinkedIssueLifecycle")
     command_body = _function_body(js, "runE2ELifecycleCommand")
@@ -1007,9 +1008,13 @@ def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> Non
     assert "renderE2EResultsPanel(data)" in render_body
     assert "renderE2ERunEvidenceSection(data)" in results_body
     assert "renderE2ELinkedIssueLifecycles(data)" in results_body
+    assert "Always-visible debugging surfaces for any framework" in evidence_body
     assert "raw output" in evidence_body.lower()
     assert "Raw Output" in artifact_body
+    assert "Primary report" in evidence_body
     assert "No run-scoped logs or reports were captured for this run." in evidence_body
+    assert "Run Log" in result_evidence_body
+    assert "Report" in result_evidence_body
     assert "No linked issue lifecycles for this run." in lifecycle_body
     assert "Coder Session" in lifecycle_row_body
     assert "Review Session" in lifecycle_row_body
