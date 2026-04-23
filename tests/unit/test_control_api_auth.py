@@ -177,6 +177,67 @@ def test_admin_token_still_works_on_allowlisted_route(
     assert resp.status_code != 401
 
 
+def test_sse_token_endpoint_sets_no_store_cache_headers(
+    browser_auth_client: TestClient,
+) -> None:
+    """The SSE token must never be cached by browsers or proxies (#6017
+    re-review-3 P2 mitigation).
+    """
+    _login_and_get_session(browser_auth_client)
+
+    resp = browser_auth_client.get("/api/sse-token")
+
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "no-store"
+    assert resp.headers.get("pragma") == "no-cache"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+
+
+def test_sse_token_endpoint_tokens_are_single_use(
+    browser_auth_client: TestClient,
+) -> None:
+    """First-use succeeds; replay within TTL is rejected."""
+    _login_and_get_session(browser_auth_client)
+
+    issued = browser_auth_client.get("/api/sse-token")
+    assert issued.status_code == 200
+    token = issued.json()["sse_token"]
+
+    with browser_auth_client.stream(
+        "GET", f"/api/events?sse_token={token}"
+    ) as first:
+        assert first.status_code not in (401, 403)
+
+    replay = browser_auth_client.get(f"/api/events?sse_token={token}")
+    assert replay.status_code == 401
+
+
+def test_access_log_redaction_scrubs_sse_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The uvicorn.access logger must never emit a raw sse_token.
+
+    Pins the filter installation + substitution pattern together so a
+    refactor that drops either half trips this test.
+    """
+    import logging as _logging
+
+    from issue_orchestrator.entrypoints.control_api import (
+        install_access_log_redaction,
+    )
+
+    install_access_log_redaction()
+    logger = _logging.getLogger("uvicorn.access")
+    with caplog.at_level(_logging.INFO, logger="uvicorn.access"):
+        logger.info(
+            '127.0.0.1:0 - "GET /api/events?sse_token=abc123def456 HTTP/1.1" 200'
+        )
+
+    combined = " ".join(r.getMessage() for r in caplog.records)
+    assert "abc123def456" not in combined
+    assert "sse_token=REDACTED" in combined
+
+
 def test_bearer_token_comparison_is_constant_time() -> None:
     """verify_token must accept the exact token and reject anything else.
 

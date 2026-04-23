@@ -47,6 +47,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional
@@ -148,6 +149,51 @@ if STATIC_DIR.exists():
 
 _BROWSER_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SSE_PATH = "/api/events"
+
+# Matches the SSE single-use token in query strings so it can be
+# stripped from HTTP access-log messages before they're emitted.
+# Uvicorn's access log format includes the full request line with
+# query params, which would otherwise persist a still-valid-for-a-few
+# seconds credential (#6017 re-review-3 P2).
+_SSE_TOKEN_QUERY_PATTERN = re.compile(
+    r"(?P<sep>[?&])sse_token=[^&\s\"']+"
+)
+_SSE_TOKEN_REDACTION = r"\g<sep>sse_token=REDACTED"
+
+
+class _SseTokenAccessLogFilter(logging.Filter):
+    """Scrub ``sse_token=...`` from every uvicorn.access log record.
+
+    The filter inspects both the pre-formatted message (``record.msg``
+    + ``record.args``) and any already-rendered ``record.message``
+    attribute so whichever emission style the formatter uses, the
+    token never reaches the log file / stderr.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 - never let logging crash on us
+            return True
+        if "sse_token=" not in msg:
+            return True
+        scrubbed = _SSE_TOKEN_QUERY_PATTERN.sub(_SSE_TOKEN_REDACTION, msg)
+        record.msg = scrubbed
+        record.args = None
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Attach the SSE-token redaction filter to uvicorn's access logger.
+
+    Idempotent: re-running (e.g. across test fixtures) does not stack
+    duplicate filters.
+    """
+    access_logger = logging.getLogger("uvicorn.access")
+    for existing in access_logger.filters:
+        if isinstance(existing, _SseTokenAccessLogFilter):
+            return
+    access_logger.addFilter(_SseTokenAccessLogFilter())
 
 
 def _check_bearer_auth(
@@ -1043,13 +1089,23 @@ async def control_center_login(request: Request) -> Response:
 
 @control_app.get("/api/sse-token")
 async def issue_browser_sse_token(request: Request) -> JSONResponse:
-    """Return a short-lived SSE token bound to the caller's session.
+    """Return a short-lived single-use SSE token bound to the caller's session.
 
     ``EventSource`` cannot send headers, so the JS client calls this
     endpoint (which is CSRF-protected via the middleware) and then
     passes the returned token to ``/api/events`` as a query
-    parameter. See ``browser_session.issue_sse_token`` for the token
-    format.
+    parameter. The token is valid for ``SSE_TOKEN_TTL_SECONDS`` and
+    can be consumed exactly once — see
+    ``browser_session.verify_sse_token``.
+
+    Defense-in-depth response headers (#6017 re-review-3 P2):
+
+    - ``Cache-Control: no-store`` keeps the token out of browser /
+      intermediary caches.
+    - ``Referrer-Policy: no-referrer`` prevents a page opened via
+      the returned token's URL from leaking it to external origins
+      in the ``Referer`` header.
+    - ``Pragma: no-cache`` for HTTP/1.0 proxies.
     """
     session_id = request.cookies.get(browser_session.SESSION_COOKIE)
     if not session_id:
@@ -1061,10 +1117,14 @@ async def issue_browser_sse_token(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "session invalid"}, status_code=401
         )
-    return JSONResponse({
+    response = JSONResponse({
         "sse_token": token,
         "ttl_seconds": browser_session.SSE_TOKEN_TTL_SECONDS,
     })
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 # ======================================================================# Supervisor Control API - Process Management Endpoints
@@ -1337,6 +1397,10 @@ class ControlAPIServer:
         # Center UI can establish an ``io_session`` cookie on first
         # visit (#6017 re-review P3).
         browser_session.initialize()
+        # Strip SSE tokens from uvicorn access-log lines so a query
+        # param that's still valid for a few seconds doesn't persist
+        # in log storage (#6017 re-review-3 P2).
+        install_access_log_redaction()
         # Export into the process environment so in-process clients
         # (MCP server, CLI tools launched by this orchestrator) pick
         # up the admin token. The agent-callback token is surfaced

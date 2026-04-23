@@ -138,3 +138,63 @@ def test_initialize_requires_explicit_call_for_token_issuance() -> None:
     browser_session.shutdown()
     with pytest.raises(RuntimeError):
         browser_session.create_session()
+
+
+# ---------------------------------------------------------------------------
+# SSE token single-use semantics — #6017 re-review-3 P2.
+# ---------------------------------------------------------------------------
+
+
+def test_sse_token_cannot_be_replayed() -> None:
+    """A valid token is consumed on first verify; second use fails.
+
+    Pins single-use semantics so a token leaked via access log,
+    browser history, or ``Referer`` cannot be replayed within its
+    TTL.
+    """
+    sid, _ = browser_session.create_session()
+    tok = browser_session.issue_sse_token(sid)
+    assert tok is not None
+
+    assert browser_session.verify_sse_token(tok, sid) is True
+    assert browser_session.verify_sse_token(tok, sid) is False
+
+
+def test_consumed_nonce_does_not_affect_fresh_tokens() -> None:
+    """Consuming one token does not block other tokens for the same session."""
+    sid, _ = browser_session.create_session()
+    tok_a = browser_session.issue_sse_token(sid)
+    tok_b = browser_session.issue_sse_token(sid)
+    assert tok_a and tok_b and tok_a != tok_b
+
+    assert browser_session.verify_sse_token(tok_a, sid) is True
+    assert browser_session.verify_sse_token(tok_b, sid) is True
+
+
+def test_consumed_nonces_expire_after_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The consumed-nonce table trims entries older than the TTL so the
+    dict does not grow unbounded.
+    """
+    sid, _ = browser_session.create_session()
+    tok = browser_session.issue_sse_token(sid)
+    assert tok is not None
+
+    assert browser_session.verify_sse_token(tok, sid) is True
+    nonce = tok.split(":")[2]
+    assert nonce in browser_session._CONSUMED_SSE_NONCES  # noqa: SLF001
+
+    real_now = time.time()
+    monkeypatch.setattr(
+        browser_session.time,
+        "time",
+        lambda: real_now + browser_session.SSE_TOKEN_TTL_SECONDS + 10,
+    )
+    # A second verify (even on a new token) triggers the expiry sweep.
+    other_sid, _ = browser_session.create_session()
+    other_tok = browser_session.issue_sse_token(other_sid)
+    assert other_tok is not None
+    browser_session.verify_sse_token(other_tok, other_sid)
+
+    assert nonce not in browser_session._CONSUMED_SSE_NONCES  # noqa: SLF001

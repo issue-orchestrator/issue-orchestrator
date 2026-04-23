@@ -67,6 +67,7 @@ def initialize(secret: bytes | None = None) -> None:
     global _SECRET
     _SECRET = secret or secrets.token_bytes(32)
     _SESSIONS.clear()
+    _CONSUMED_SSE_NONCES.clear()
 
 
 def is_initialized() -> bool:
@@ -78,6 +79,7 @@ def shutdown() -> None:
     global _SECRET
     _SECRET = None
     _SESSIONS.clear()
+    _CONSUMED_SSE_NONCES.clear()
 
 
 def _expire_old(now: float) -> None:
@@ -154,13 +156,38 @@ def issue_sse_token(session_id: str) -> str | None:
     return f"{session_id}:{now}:{nonce}:{sig}"
 
 
+# Nonces from successfully-verified SSE tokens. Because each SSE token
+# is single-use (#6017 re-review-3 P2), we remember the consumed
+# nonces within their TTL window so a leaked ``sse_token`` in a log /
+# proxy / browser history cannot be replayed later. Nonces are 8 hex
+# chars, expire alongside their token, and live in a bounded dict
+# trimmed on every use.
+_CONSUMED_SSE_NONCES: dict[str, float] = {}
+
+
+def _expire_consumed_nonces(now: float) -> None:
+    stale = [
+        nonce
+        for nonce, seen_at in _CONSUMED_SSE_NONCES.items()
+        if now - seen_at > SSE_TOKEN_TTL_SECONDS
+    ]
+    for nonce in stale:
+        _CONSUMED_SSE_NONCES.pop(nonce, None)
+
+
 def verify_sse_token(token: str | None, expected_session_id: str) -> bool:
     """Validate an SSE query-string token for this session.
 
-    Must match ``expected_session_id`` (so a token issued for session A
-    can't reach session B's stream), must be signed with the current
-    process secret, and must be less than ``SSE_TOKEN_TTL_SECONDS``
-    old.
+    Single-use semantics: a successful verify records the token's
+    nonce in ``_CONSUMED_SSE_NONCES`` for ``SSE_TOKEN_TTL_SECONDS``.
+    A second call with the same token returns ``False`` — so a token
+    leaked via server access logs, browser history, or a
+    ``Referer`` header cannot be replayed within its TTL.
+
+    The token must also match ``expected_session_id`` (a token for
+    session A can't reach session B's stream), be signed with the
+    current process secret, and be less than
+    ``SSE_TOKEN_TTL_SECONDS`` old.
     """
     if not token or _SECRET is None:
         return False
@@ -174,10 +201,20 @@ def verify_sse_token(token: str | None, expected_session_id: str) -> bool:
         ts = int(ts_str)
     except ValueError:
         return False
-    if time.time() - ts > SSE_TOKEN_TTL_SECONDS:
+    now = time.time()
+    if now - ts > SSE_TOKEN_TTL_SECONDS:
         return False
-    if time.time() - ts < -5:  # clock skew tolerance
+    if now - ts < -5:  # clock skew tolerance
         return False
     payload = f"{sid}:{ts_str}:{nonce}".encode("utf-8")
     expected_sig = hmac.new(_SECRET, payload, sha256).hexdigest()
-    return hmac.compare_digest(expected_sig, sig)
+    if not hmac.compare_digest(expected_sig, sig):
+        return False
+    with _LOCK:
+        _expire_consumed_nonces(now)
+        if nonce in _CONSUMED_SSE_NONCES:
+            # Replay attempt — the signature is valid but the nonce
+            # has already been accepted once. Refuse.
+            return False
+        _CONSUMED_SSE_NONCES[nonce] = now
+    return True

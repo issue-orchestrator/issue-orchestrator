@@ -27,7 +27,11 @@ import uvicorn
 
 import ipaddress
 
-from .control_api import configure_api_token, control_app
+from .control_api import (
+    configure_api_token,
+    control_app,
+    install_access_log_redaction,
+)
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -329,6 +333,11 @@ def main() -> int:
         browser_session.initialize()
         os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
         os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
+    # Strip SSE tokens from uvicorn access-log lines so a query param
+    # that's still valid for a few seconds doesn't persist in log
+    # storage (#6017 re-review-3 P2). Applies in both auth and
+    # dev-no-auth modes since the log format is identical.
+    install_access_log_redaction()
 
     # Start system tray icon (menu bar on macOS)
     tray_icon = _start_tray_icon(url) if not args.no_tray else None
