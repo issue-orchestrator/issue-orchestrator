@@ -1316,13 +1316,18 @@ def _session_recording(
             ),
         )
     assert event is not None
+    round_index = (
+        event.get("round_index") if isinstance(event.get("round_index"), int) else None
+    )
     command = OpenSessionRecordingCommand(
         issue_number=issue_number,
         run_dir=run_dir,
-        session_role=_optional_text(event.get("task") or event.get("logical_phase")),
-        round_index=event.get("round_index")
-        if isinstance(event.get("round_index"), int)
-        else None,
+        session_role=(
+            _optional_text(event.get("task") or event.get("logical_phase"))
+            if round_index is not None
+            else None
+        ),
+        round_index=round_index,
     )
     return SessionRecordingAvailable(
         run_dir=run_dir,

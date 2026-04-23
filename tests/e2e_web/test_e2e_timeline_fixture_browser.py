@@ -22,6 +22,7 @@ single ``snapshot_e2e_run.py`` capture covers both layers.
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import socket
@@ -99,6 +100,7 @@ e2e:
 # Playwright test can prove the session-log endpoint returned real content.
 _SYNTHETIC_SESSION_OUTPUT = "PLAYWRIGHT-FIXTURE-SESSION-STARTED"
 _SYNTHETIC_SESSION_OUTPUT_FOLLOWUP = "PLAYWRIGHT-FIXTURE-AGENT-READY"
+_SYNTHETIC_RUN_LOG_TEXT = "PLAYWRIGHT-FIXTURE-RUN-LOG"
 
 
 def _materialize_synthetic_session_dir(session_dir: Path) -> None:
@@ -307,8 +309,10 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     repo_root = tmp_path / "repo"
     state_dir = repo_root / ".issue-orchestrator" / "state"
     config_dir = repo_root / ".issue-orchestrator" / "config"
+    log_dir = repo_root / ".issue-orchestrator" / "logs"
     state_dir.mkdir(parents=True)
     config_dir.mkdir(parents=True)
+    log_dir.mkdir(parents=True)
     wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
     wt_state.mkdir(parents=True)
 
@@ -319,10 +323,13 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
 
     import sqlite3
 
+    run_log_path = log_dir / f"run-{RUN_FIXTURE_ID}.log"
+    run_log_path.write_text(f"{_SYNTHETIC_RUN_LOG_TEXT}\n", encoding="utf-8")
+
     with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as conn:
         conn.execute(
-            "UPDATE e2e_runs SET orchestrator_id = ? WHERE id = ?",
-            (repo_root.name, RUN_FIXTURE_ID),
+            "UPDATE e2e_runs SET orchestrator_id = ?, log_path = ? WHERE id = ?",
+            (repo_root.name, str(run_log_path), RUN_FIXTURE_ID),
         )
         conn.commit()
 
@@ -1325,6 +1332,107 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     )
 
     assert errors == [], f"Unexpected page errors: {errors}"
+
+
+def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """The default run view must expose generic evidence plus agentic session access."""
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    run_detail_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/e2e-run-detail/{run_id}",
+            view="user",
+        ),
+    )
+    suite = E2ESuiteTimelineContainer.model_validate(run_detail_payload["lifecycle"])
+    run_lifecycle = suite.runs[0].e2e_run
+    issue_lifecycle = next(
+        lifecycle
+        for lifecycle in run_lifecycle.linked_issue_lifecycles
+        if lifecycle.issue_number == TEST_CLICK_ISSUE_NUMBER
+    )
+    latest_cycle = issue_lifecycle.cycles[-1]
+    assert latest_cycle.coder.session_recording.kind == "available"
+
+    page.locator("#tab-e2e").click()
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator("button", has_text="Open run"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    open_run_btn = run_item.locator("button", has_text="Open run").first
+    expect(open_run_btn).to_be_visible(timeout=5000)
+    open_run_btn.click()
+
+    modal = page.locator("#e2eDiagnosisModal.visible")
+    expect(modal).to_be_visible(timeout=5000)
+    expect(
+        page.locator("#e2eDiagnosisModal .e2e-run-tab.active[data-tab='results']")
+    ).to_be_visible(timeout=5000)
+
+    results_panel = page.locator("#e2eRunResultsTab")
+    expect(results_panel).to_be_visible(timeout=5000)
+    expect(results_panel).to_contain_text("Run evidence")
+    expect(results_panel).to_contain_text("Linked issue lifecycles")
+    expect(results_panel.locator(".e2e-run-command")).to_contain_text(
+        run_detail_payload["run"]["command"][0]
+    )
+    expect(results_panel.locator("button", has_text="Raw Output")).to_be_visible(
+        timeout=5000
+    )
+
+    linked_row = results_panel.locator(
+        ".e2e-linked-issue-row",
+        has_text=f"#{TEST_CLICK_ISSUE_NUMBER}",
+    ).first
+    expect(linked_row).to_be_visible(timeout=5000)
+    expect(linked_row).to_contain_text("Cycle 1")
+    expect(linked_row.locator("button", has_text="Timeline")).to_be_visible(
+        timeout=5000
+    )
+
+    coder_session_btn = linked_row.locator("button", has_text="Coder Session").first
+    expect(coder_session_btn).to_be_visible(timeout=5000)
+    _dom_click_hit_tested(coder_session_btn, "linked issue coder session button")
+
+    session_modal = page.locator("#modalOverlay.visible")
+    expect(session_modal).to_be_visible(timeout=5000)
+    expect(page.locator("#sessionReplayPath")).to_contain_text(
+        latest_cycle.coder.session_recording.run_dir
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        text = page.locator("#sessionReplayProgressText").text_content() or ""
+        if "/" in text and not text.startswith("0 /"):
+            break
+        page.wait_for_timeout(100)
+    progress_text = page.locator("#sessionReplayProgressText").text_content() or ""
+    assert "/" in progress_text, progress_text
+    assert not progress_text.startswith("0 /"), progress_text
+
+    recording_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/session/terminal-recording/{TEST_CLICK_ISSUE_NUMBER}",
+            run_dir=latest_cycle.coder.session_recording.run_dir,
+            offset=0,
+            limit=0,
+        ),
+    )
+    decoded_output = "".join(
+        base64.b64decode(event["data_b64"]).decode("utf-8")
+        for event in recording_payload.get("events", [])
+        if event.get("event_type") == "output" and isinstance(event.get("data_b64"), str)
+    )
+    assert _SYNTHETIC_SESSION_OUTPUT in decoded_output, decoded_output
 
 
 def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
