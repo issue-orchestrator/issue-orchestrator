@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import shutil
+import stat as stat_module
 import time
 import traceback
 from dataclasses import dataclass
@@ -144,6 +145,86 @@ def _contain_validation_record_path(
         )
         return None
     return candidate
+
+
+# Hard cap on bytes we'll read off an agent-supplied validation record.
+# Mirrors the per-file gate in ``completion_record_validation`` so the
+# TOCTOU-safe copy path also refuses absurdly large files (#6017
+# re-review-3 P1).
+_VALIDATION_RECORD_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _safe_copy_validation_record(src: Path, dst: Path) -> bool:
+    """Copy ``src`` to ``dst`` without following symlinks, safe against TOCTOU.
+
+    ``_contain_validation_record_path`` resolves + verifies containment
+    against the worktree, but by the time ``shutil.copy2`` reopens the
+    path by name, a compromised agent can swap the last path segment
+    for a symlink and have the copy follow it outside the allowed
+    subtree (#6017 re-review-3 P1). Avoid that by:
+
+    1. Opening the source with ``O_NOFOLLOW`` — the open itself fails
+       if the final component is a symlink, closing the check/copy
+       race.
+    2. Re-checking the opened fd's type (regular file) and size via
+       ``fstat`` before reading any bytes.
+    3. Streaming from the *file descriptor*, never re-resolving the
+       path.
+
+    Returns ``True`` on a successful copy, ``False`` (with a logged
+    reason) otherwise.
+    """
+    try:
+        fd = os.open(str(src), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        logger.warning(
+            "Refusing to copy validation record %s: %s (symlink or "
+            "race between containment check and open)",
+            src,
+            exc,
+        )
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode):
+            logger.warning(
+                "Validation record %s is not a regular file after "
+                "open(O_NOFOLLOW); refusing to copy",
+                src,
+            )
+            return False
+        if st.st_size > _VALIDATION_RECORD_MAX_BYTES:
+            logger.warning(
+                "Validation record %s is %d bytes, exceeds cap %d; "
+                "refusing to copy",
+                src,
+                st.st_size,
+                _VALIDATION_RECORD_MAX_BYTES,
+            )
+            return False
+        try:
+            with os.fdopen(fd, "rb", closefd=True) as src_fd, open(
+                dst, "wb"
+            ) as dst_fd:
+                # The fdopen takes ownership of the fd; we must not
+                # call ``os.close`` on it in the outer finally.
+                fd = -1
+                shutil.copyfileobj(src_fd, dst_fd, length=65536)
+        except OSError as exc:
+            logger.debug(
+                "Failed to copy validation record from %s to %s: %s",
+                src,
+                dst,
+                exc,
+            )
+            return False
+        return True
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 class CompletionProcessor:
@@ -515,14 +596,12 @@ class CompletionProcessor:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
         run_dir_record_path = run_dir / "validation-record.json"
         if not run_dir_record_path.exists() and record_path is not None and record_path.exists():
-            try:
-                shutil.copy2(record_path, run_dir_record_path)
-            except OSError:
-                logger.debug(
-                    "Failed to copy validation record from %s to %s",
-                    record_path,
-                    run_dir_record_path,
-                )
+            # Use the TOCTOU-safe copy helper: a naive ``shutil.copy2``
+            # here would reopen ``record_path`` by name after the
+            # containment check, giving a compromised agent a window
+            # to swap the last segment for a symlink. See
+            # ``_safe_copy_validation_record`` + #6017 re-review-3 P1.
+            _safe_copy_validation_record(record_path, run_dir_record_path)
         effective_record_path = run_dir_record_path if run_dir_record_path.exists() else record_path
         if effective_record_path is not None:
             self.session_output.update_manifest(

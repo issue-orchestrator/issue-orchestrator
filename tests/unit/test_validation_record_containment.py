@@ -121,3 +121,108 @@ def test_handles_resolved_worktree_symlink(tmp_path: Path) -> None:
     resolved = _contain_validation_record_path(str(record), link_worktree)
 
     assert resolved is not None
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU-safe copy path — #6017 re-review-3 P1.
+# ---------------------------------------------------------------------------
+
+
+def test_safe_copy_copies_regular_file(tmp_path: Path) -> None:
+    """Happy path: a real regular file gets copied byte-for-byte."""
+    from issue_orchestrator.control.completion_processor import (
+        _safe_copy_validation_record,
+    )
+
+    src = tmp_path / "rec.json"
+    src.write_text('{"ok": true}')
+    dst = tmp_path / "dst.json"
+
+    assert _safe_copy_validation_record(src, dst) is True
+    assert dst.read_text() == '{"ok": true}'
+
+
+def test_safe_copy_refuses_symlink_source(tmp_path: Path) -> None:
+    """``O_NOFOLLOW`` on the final path segment refuses a planted symlink."""
+    import os as _os
+
+    from issue_orchestrator.control.completion_processor import (
+        _safe_copy_validation_record,
+    )
+
+    outside = tmp_path / "secret.json"
+    outside.write_text("secret")
+    link_path = tmp_path / "link.json"
+    try:
+        _os.symlink(outside, link_path)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    dst = tmp_path / "dst.json"
+
+    assert _safe_copy_validation_record(link_path, dst) is False
+    assert not dst.exists()
+
+
+def test_safe_copy_refuses_directory_source(tmp_path: Path) -> None:
+    """``fstat`` catches a non-regular file (directory in this case)."""
+    from issue_orchestrator.control.completion_processor import (
+        _safe_copy_validation_record,
+    )
+
+    src = tmp_path / "dir-not-file"
+    src.mkdir()
+    dst = tmp_path / "dst.json"
+
+    assert _safe_copy_validation_record(src, dst) is False
+    assert not dst.exists()
+
+
+def test_safe_copy_refuses_oversize_source(tmp_path: Path) -> None:
+    from issue_orchestrator.control.completion_processor import (
+        _VALIDATION_RECORD_MAX_BYTES,
+        _safe_copy_validation_record,
+    )
+
+    src = tmp_path / "rec.json"
+    src.write_bytes(b"x" * (_VALIDATION_RECORD_MAX_BYTES + 1))
+    dst = tmp_path / "dst.json"
+
+    assert _safe_copy_validation_record(src, dst) is False
+    assert not dst.exists()
+
+
+def test_safe_copy_race_swapping_symlink_is_refused(tmp_path: Path) -> None:
+    """Simulate the TOCTOU: containment check passes, then the final
+    path segment is replaced with a symlink to an outside target before
+    ``_safe_copy_validation_record`` opens the fd.
+
+    The unsafe path (``shutil.copy2``) would follow the swap; our
+    fd-based helper must refuse because ``O_NOFOLLOW`` fires on the
+    final component.
+    """
+    import os as _os
+
+    from issue_orchestrator.control.completion_processor import (
+        _safe_copy_validation_record,
+    )
+
+    outside = tmp_path / "outside-secret.json"
+    outside.write_text("EXFILTRATED")
+    # The "original" record that passes a hypothetical containment
+    # check; we then remove it and plant a symlink at the same name.
+    inside_dir = tmp_path / ".issue-orchestrator" / "validation"
+    inside_dir.mkdir(parents=True)
+    inside_path = inside_dir / "rec.json"
+    inside_path.write_text('{"ok": true}')
+
+    # Simulate the attacker's swap between check and copy.
+    inside_path.unlink()
+    try:
+        _os.symlink(outside, inside_path)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    dst = tmp_path / "dst.json"
+
+    assert _safe_copy_validation_record(inside_path, dst) is False
+    # The exfiltrated content must never land in the destination.
+    assert not dst.exists()
