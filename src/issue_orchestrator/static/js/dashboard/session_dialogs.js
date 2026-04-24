@@ -201,19 +201,19 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     const summaryRows = Array.isArray(data.summary_rows) && data.summary_rows.length > 0
         ? data.summary_rows
         : [
-        { label: 'Reason', value: String(data.reason || 'Validation failed') },
-        { label: 'Suite', value: String(data.suite || '-') },
-        { label: 'Command', value: String(data.command || '-') },
-        { label: 'Exit Code', value: String(data.exit_code ?? '-') },
-        { label: 'Started', value: String(data.started_at || '-') },
-        { label: 'Ended', value: String(data.ended_at || '-') },
+            { label: 'Reason', value: String(data.reason || 'Validation failed') },
+            { label: 'Suite', value: String(data.suite || '-') },
+            { label: 'Command', value: String(data.command || '-') },
+            { label: 'Exit Code', value: String(data.exit_code ?? '-') },
+            { label: 'Started', value: String(data.started_at || '-') },
+            { label: 'Ended', value: String(data.ended_at || '-') },
         ];
     const actionSections = Array.isArray(data.action_sections) ? data.action_sections : [];
 
     let html = '<div class="diag-modal diag-validation-shell">';
     html += '<div class="diag-header">';
     html += '<div class="diag-header-title">Validation Results</div>';
-    html += `<div class="diag-chip-row">${renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
+    html += `<div class="diag-chip-row">${renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections, actions)}</div>`;
     html += '</div>';
 
     html += '<div class="diag-validation-grid">';
@@ -272,11 +272,14 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     openModal(data.title || `Validation Failure #${issueNumber}`, html);
 }
 
-function renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
-    const artifactCount = (actionSections || []).reduce((count, section) => {
+function renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections, actions) {
+    let artifactCount = (actionSections || []).reduce((count, section) => {
         const sectionActions = Array.isArray(section && section.actions) ? section.actions : [];
         return count + sectionActions.length;
     }, 0);
+    if (artifactCount === 0 && Array.isArray(actions)) {
+        artifactCount = actions.length;
+    }
     const chips = [
         `<span class="diag-chip is-muted">${failedTests.length} failing test${failedTests.length === 1 ? '' : 's'}</span>`,
         `<span class="diag-chip ${stdoutExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stdoutExcerpt.length > 0 ? 'stdout excerpt captured' : 'no stdout excerpt'}</span>`,

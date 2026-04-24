@@ -607,6 +607,7 @@ export interface RunningE2ETestExecutionPayload {
 }
 
 export interface SessionDiagnosticsActionPayload {
+  group?: "validation_artifacts" | "session_evidence" | "diagnostics" | null;
   issue_number?: number | null;
   label: string;
   path?: string | null;
@@ -694,7 +695,7 @@ export interface ValidationFailureDialogPayload {
   actions: SessionDiagnosticsActionPayload[];
   command: string;
   ended_at: string;
-  exit_code: number;
+  exit_code?: number | null;
   failed_tests: string[];
   reason: string;
   started_at: string;

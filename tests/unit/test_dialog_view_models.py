@@ -343,16 +343,19 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
                     "type": "open_path",
                     "label": "Open Validation Record",
                     "path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+                    "group": "validation_artifacts",
                 },
                 {
                     "type": "open_path",
                     "label": "Open Validation Output",
                     "path": "/wt/.issue-orchestrator/sessions/r1/validation-stdout.log",
+                    "group": "validation_artifacts",
                 },
                 {
                     "type": "open_path",
                     "label": "Open Validation Stderr",
                     "path": "/wt/.issue-orchestrator/sessions/r1/validation-stderr.log",
+                    "group": "validation_artifacts",
                 },
             ],
         },
@@ -364,18 +367,21 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
                     "label": "View Session Recording",
                     "issue_number": 12,
                     "run_dir": "/run/r1",
+                    "group": "session_evidence",
                 },
                 {
                     "type": "copy_agent_log",
                     "label": "Copy Session Recording",
                     "issue_number": 12,
                     "run_dir": "/run/r1",
+                    "group": "session_evidence",
                 },
                 {
                     "type": "open_orchestrator_log",
                     "label": "Open Orchestrator Log",
                     "issue_number": 12,
                     "run_dir": "/run/r1",
+                    "group": "session_evidence",
                 },
             ],
         },
@@ -386,11 +392,13 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
                     "type": "open_path",
                     "label": "Open Session Dir",
                     "path": "/run/r1",
+                    "group": "diagnostics",
                 },
                 {
                     "type": "open_path",
                     "label": "Open Session Settings",
                     "path": "/run/r1/session-identity.json",
+                    "group": "diagnostics",
                 },
                 {
                     "type": "open_session_diagnostics",
@@ -404,6 +412,31 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
     action_types = [action["type"] for action in dialog["actions"]]
     assert "open_path" in action_types
     assert "open_session_diagnostics" in action_types
+
+
+def test_build_validation_failure_dialog_keeps_missing_exit_code_visible() -> None:
+    dialog = build_validation_failure_dialog(
+        13,
+        {
+            "manifest": {
+                "session_name": "sess-validate",
+            },
+            "run_dir": "/run/r2",
+            "validation_failure": {
+                "reason": "Validation failed without an exit code",
+                "suite": "publish_gate",
+                "command": "make validate",
+                "started_at": "2026-03-22T04:53:14Z",
+                "ended_at": "2026-03-22T04:53:58Z",
+                "failed_tests": [],
+                "stdout_excerpt": [],
+                "stderr_excerpt": [],
+            },
+        },
+    )
+
+    assert dialog["exit_code"] is None
+    assert {"label": "Exit Code", "value": "-"} in dialog["summary_rows"]
 
 
 def test_build_session_diagnostics_dialog_drops_malformed_analysis():

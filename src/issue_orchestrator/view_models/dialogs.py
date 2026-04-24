@@ -252,28 +252,61 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
 
 def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
-    _append_open_path(actions, "Open Session Dir", ctx.run_dir)
-    _append_open_path(actions, "Open Session Settings", ctx.session_settings_path)
-    _append_run_scoped_action(actions, ctx, action_type="open_agent_log", label="View Session Recording")
-    _append_run_scoped_action(actions, ctx, action_type="copy_agent_log", label="Copy Session Recording")
+    _append_open_path(actions, "Open Session Dir", ctx.run_dir, group="diagnostics")
+    _append_open_path(actions, "Open Session Settings", ctx.session_settings_path, group="diagnostics")
+    _append_run_scoped_action(
+        actions,
+        ctx,
+        action_type="open_agent_log",
+        label="View Session Recording",
+        group="session_evidence",
+    )
+    _append_run_scoped_action(
+        actions,
+        ctx,
+        action_type="copy_agent_log",
+        label="Copy Session Recording",
+        group="session_evidence",
+    )
     if ctx.claude_log_path:
-        _append_run_scoped_action(actions, ctx, action_type="view_claude_log", label="View Claude Log")
-        _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path)
-    _append_open_path(actions, "Open Claude Log Dir", ctx.claude_log_dir)
-    _append_run_scoped_action(actions, ctx, action_type="open_orchestrator_log", label="Open Orchestrator Log")
-    _append_open_path(actions, "Open Full Log", ctx.orchestrator_log)
-    _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path)
-    _append_open_path(actions, "Open Run Audit", ctx.run_audit_path)
-    _append_open_path(actions, "Open Validation Record", ctx.validation_path)
-    _append_open_path(actions, "Open Validation Output", ctx.validation_output_path)
-    _append_open_path(actions, "Open Validation Stderr", ctx.validation_stderr_path)
+        _append_run_scoped_action(
+            actions,
+            ctx,
+            action_type="view_claude_log",
+            label="View Claude Log",
+            group="session_evidence",
+        )
+        _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path, group="session_evidence")
+    _append_open_path(actions, "Open Claude Log Dir", ctx.claude_log_dir, group="session_evidence")
+    _append_run_scoped_action(
+        actions,
+        ctx,
+        action_type="open_orchestrator_log",
+        label="Open Orchestrator Log",
+        group="session_evidence",
+    )
+    _append_open_path(actions, "Open Full Log", ctx.orchestrator_log, group="session_evidence")
+    _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path, group="diagnostics")
+    _append_open_path(actions, "Open Run Audit", ctx.run_audit_path, group="diagnostics")
+    _append_open_path(actions, "Open Validation Record", ctx.validation_path, group="validation_artifacts")
+    _append_open_path(actions, "Open Validation Output", ctx.validation_output_path, group="validation_artifacts")
+    _append_open_path(actions, "Open Validation Stderr", ctx.validation_stderr_path, group="validation_artifacts")
     return actions
 
 
-def _append_open_path(actions: list[dict[str, Any]], label: str, path: str) -> None:
+def _append_open_path(
+    actions: list[dict[str, Any]],
+    label: str,
+    path: str,
+    *,
+    group: str | None = None,
+) -> None:
     if not path:
         return
-    actions.append({"type": "open_path", "label": label, "path": path})
+    payload: dict[str, Any] = {"type": "open_path", "label": label, "path": path}
+    if group:
+        payload["group"] = group
+    actions.append(payload)
 
 
 def _append_run_scoped_action(
@@ -282,17 +315,19 @@ def _append_run_scoped_action(
     *,
     action_type: str,
     label: str,
+    group: str | None = None,
 ) -> None:
     if not ctx.run_dir:
         return
-    actions.append(
-        {
-            "type": action_type,
-            "label": label,
-            "issue_number": ctx.issue_number,
-            "run_dir": ctx.run_dir,
-        }
-    )
+    payload: dict[str, Any] = {
+        "type": action_type,
+        "label": label,
+        "issue_number": ctx.issue_number,
+        "run_dir": ctx.run_dir,
+    }
+    if group:
+        payload["group"] = group
+    actions.append(payload)
 
 
 def _format_extra_provider_args(raw: Any) -> str:
@@ -454,7 +489,7 @@ def build_validation_failure_dialog(
         "reason": str(validation.get("reason") or ctx.validation_reason or "Validation failed"),
         "suite": str(validation.get("suite") or ""),
         "command": str(validation.get("command") or ""),
-        "exit_code": int(validation.get("exit_code") or 0),
+        "exit_code": _optional_int(validation.get("exit_code")),
         "started_at": str(validation.get("started_at") or ""),
         "ended_at": str(validation.get("ended_at") or ""),
         "failed_tests": failed_tests,
@@ -470,8 +505,8 @@ def _build_validation_failure_summary_rows(
     validation: dict[str, Any],
     failed_tests: list[str],
 ) -> list[DialogRow]:
-    exit_code = validation.get("exit_code")
-    exit_code_display = str(exit_code) if isinstance(exit_code, int) else "-"
+    exit_code = _optional_int(validation.get("exit_code"))
+    exit_code_display = str(exit_code) if exit_code is not None else "-"
     return [
         DialogRow("Reason", str(validation.get("reason") or "Validation failed")),
         DialogRow("Suite", str(validation.get("suite") or "-")),
@@ -489,50 +524,47 @@ def _build_validation_failure_summary_rows(
 def _build_validation_failure_action_sections(
     actions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    validation_artifacts: list[dict[str, Any]] = []
-    session_evidence: list[dict[str, Any]] = []
-    diagnostics: list[dict[str, Any]] = []
+    grouped_actions: dict[str, list[dict[str, Any]]] = {
+        "validation_artifacts": [],
+        "session_evidence": [],
+        "diagnostics": [],
+    }
 
     for action in actions:
-        action_type = str(action.get("type") or "")
-        label = str(action.get("label") or "").strip().lower()
-        if action_type == "open_path" and "validation" in label:
-            validation_artifacts.append(action)
-            continue
-        if action_type in {"open_agent_log", "copy_agent_log", "view_claude_log", "open_orchestrator_log"}:
-            session_evidence.append(action)
-            continue
-        if action_type == "open_path" and any(
-            token in label
-            for token in ("claude log", "full log")
-        ):
-            session_evidence.append(action)
-            continue
-        diagnostics.append(action)
+        group = str(action.get("group") or "diagnostics")
+        if group not in grouped_actions:
+            group = "diagnostics"
+        grouped_actions[group].append(action)
 
     sections: list[dict[str, Any]] = []
-    if validation_artifacts:
+    if grouped_actions["validation_artifacts"]:
         sections.append(
             {
                 "title": "Validation Artifacts",
-                "actions": validation_artifacts,
+                "actions": grouped_actions["validation_artifacts"],
             }
         )
-    if session_evidence:
+    if grouped_actions["session_evidence"]:
         sections.append(
             {
                 "title": "Session Evidence",
-                "actions": session_evidence,
+                "actions": grouped_actions["session_evidence"],
             }
         )
-    if diagnostics:
+    if grouped_actions["diagnostics"]:
         sections.append(
             {
                 "title": "Diagnostics",
-                "actions": diagnostics,
+                "actions": grouped_actions["diagnostics"],
             }
         )
     return sections
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def build_blocked_issues_dialog(blocked_payload: dict[str, Any]) -> dict[str, Any]:

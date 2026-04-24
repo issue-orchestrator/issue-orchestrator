@@ -617,6 +617,7 @@ class RunningE2ETestExecutionPayload(BaseModel):
 
 class SessionDiagnosticsActionPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
+    group: Literal['validation_artifacts'] | Literal['session_evidence'] | Literal['diagnostics'] | Literal[None] = None
     issue_number: int | None = None
     label: str
     path: str | None = None
@@ -703,7 +704,7 @@ class ValidationFailureDialogPayload(BaseModel):
     actions: list[SessionDiagnosticsActionPayload]
     command: str
     ended_at: str
-    exit_code: int
+    exit_code: int | None = None
     failed_tests: list[str]
     reason: str
     started_at: str
