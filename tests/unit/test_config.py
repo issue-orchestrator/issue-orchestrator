@@ -243,6 +243,25 @@ worktrees:
             ".issue-orchestrator/e2e-results/pytest-junit.xml"
         ]
 
+    def test_codespaces_config_e2e_section_shows_pytest_junit_contract(self):
+        """Codespaces config should emit and ingest JUnit explicitly too."""
+        codespaces_path = (
+            Path(__file__).resolve().parents[2]
+            / ".issue-orchestrator"
+            / "config"
+            / "z-codespaces.yaml"
+        )
+        data = yaml.safe_load(codespaces_path.read_text(encoding="utf-8"))
+
+        e2e = data["e2e"]
+        assert e2e["runner_kind"] == "pytest"
+        assert "--junitxml=.issue-orchestrator/e2e-results/issue-orchestrator-e2e.xml" in e2e[
+            "pytest_args"
+        ]
+        assert e2e["junit_xml_paths"] == [
+            ".issue-orchestrator/e2e-results/issue-orchestrator-e2e.xml"
+        ]
+
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
         prompt = tmp_path / "prompt.md"
