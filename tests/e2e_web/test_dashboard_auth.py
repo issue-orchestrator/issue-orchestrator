@@ -71,6 +71,14 @@ def test_session_cookie_reaches_mounted_control_route(
     303 redirect propagates to ``/control/*`` requests fired from the
     dashboard page.
 
+    Hits ``/control/repos`` because that handler is parameter-free and
+    returns a deterministic ``{"repos": [...]}`` payload — the review
+    on the initial pass noted that the earlier target
+    (``/control/orchestrator/status``) returns 422 without
+    ``repo_root``, so ``not-401/403`` would have passed even if the
+    route were renamed or crashing. Parsing the JSON in-browser
+    proves the mounted handler actually ran end to end.
+
     One extra fetch via ``page.evaluate`` — no second page load, so
     this adds <1s to the suite.
     """
@@ -79,15 +87,15 @@ def test_session_cookie_reaches_mounted_control_route(
 
     login_via_form(page, base_url, cc_admin_token)
 
-    status = page.evaluate(
+    result = page.evaluate(
         """async () => {
-            const r = await fetch('/control/orchestrator/status', {
+            const r = await fetch('/control/repos', {
                 credentials: 'same-origin',
             });
-            return r.status;
+            const body = await r.json();
+            return { status: r.status, body };
         }"""
     )
-    # 401/403 would mean the cookie didn't reach the gate. Anything
-    # else (200, 404, 5xx) means the dashboard middleware accepted
-    # the cookie on the mounted path.
-    assert status not in (401, 403), status
+    assert result["status"] == 200, result
+    assert "repos" in result["body"], result["body"]
+    assert isinstance(result["body"]["repos"], list)
