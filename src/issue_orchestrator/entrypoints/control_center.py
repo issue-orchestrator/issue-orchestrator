@@ -25,7 +25,28 @@ from typing import Any
 
 import uvicorn
 
+import ipaddress
+
 from .control_api import configure_api_token, control_app
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether ``host`` binds only to the loopback interface.
+
+    Accepts hostnames (``localhost``, ``ip6-localhost``) and literal
+    addresses (``127.0.0.0/8``, ``::1``). Anything else — including
+    ``0.0.0.0``, ``::``, or a concrete LAN interface — counts as
+    non-loopback so ``--dev-no-auth`` can refuse it.
+    """
+    if not host:
+        return False
+    normalized = host.strip().lower()
+    if normalized in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
 from ..infra import browser_session
 from ..infra.api_token import resolve_agent_callback_token, resolve_api_token
@@ -250,6 +271,25 @@ def main() -> int:
     # request lands on an unauthenticated endpoint — the exact hole
     # flagged in #6017 review (P1 on #6011).
     if args.dev_no_auth:
+        # Hard-refuse the footgun: unauthenticated Control API on a
+        # non-loopback bind would expose admin-equivalent mutation to
+        # anyone who can reach the port. Loopback + same-user is the
+        # threat model we accept for dev; the network case is not.
+        # Tracked by #6017 re-review-3 P2.
+        if not _is_loopback_host(args.host):
+            logger.error(
+                "--dev-no-auth refused: host %s is not a loopback address. "
+                "Unauthenticated Control API on a non-loopback bind would "
+                "expose admin mutation to anyone who can reach the port. "
+                "Re-run with --host 127.0.0.1 or without --dev-no-auth.",
+                args.host,
+            )
+            print(
+                f"\n\033[1;31mRefusing --dev-no-auth with --host {args.host}. "
+                "Only loopback binds are allowed in dev-no-auth mode.\033[0m\n",
+                flush=True,
+            )
+            return 2
         logger.error(
             "⚠  Control Center running with --dev-no-auth: "
             "authentication is DISABLED. Any local process can mutate "
@@ -266,10 +306,16 @@ def main() -> int:
             "\033[0m\n",
             flush=True,
         )
-        # Leave ``_admin_token`` / ``_agent_callback_token`` as ``None``
-        # so the middleware is a no-op for every request. We still
-        # initialize ``browser_session`` so the dashboard's existing
-        # cookie-rendering path keeps working in the no-auth case.
+        # Explicitly clear any preexisting auth state. If the module
+        # globals were seeded from an earlier server run, or if the
+        # operator exported ``ISSUE_ORCHESTRATOR_API_TOKEN`` /
+        # ``ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN`` before launching
+        # this CC, the middleware would still enforce against them.
+        # ``--dev-no-auth`` must be an authoritative OFF, not a hope
+        # that state is clean.
+        configure_api_token(None, agent_callback=None)
+        os.environ.pop("ISSUE_ORCHESTRATOR_API_TOKEN", None)
+        os.environ.pop("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", None)
         browser_session.initialize()
     else:
         admin_token = resolve_api_token()

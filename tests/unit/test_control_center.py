@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -115,10 +116,12 @@ def test_start_tray_icon_returns_none_when_startup_fails() -> None:
     assert result is None
 
 
-def _make_main_args(*, debug_http: bool, dev_no_auth: bool = False) -> Namespace:
+def _make_main_args(
+    *, debug_http: bool, dev_no_auth: bool = False, host: str = "127.0.0.1"
+) -> Namespace:
     return Namespace(
         port=19080,
-        host="127.0.0.1",
+        host=host,
         debug=False,
         debug_http=debug_http,
         no_browser=True,
@@ -127,14 +130,17 @@ def _make_main_args(*, debug_http: bool, dev_no_auth: bool = False) -> Namespace
     )
 
 
-def test_main_dev_no_auth_skips_configure_api_token(
+def test_main_dev_no_auth_clears_stale_auth_state(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``--dev-no-auth`` must leave the auth middleware a no-op.
+    """``--dev-no-auth`` must clear preexisting auth state, not inherit it.
 
-    Confirms the admin + agent-callback tokens stay ``None`` in the
-    ``control_api`` module and that an ERROR log line is emitted so
-    the footgun cannot be silently enabled.
+    Regression for #6017 re-review-3 P2 on #6035. Seed the module
+    globals AND the inherited env vars with stale values first, then
+    call ``main()`` with ``dev_no_auth=True`` and verify everything
+    is zeroed. Earlier version just declined to re-configure; stale
+    values stayed live and the middleware kept enforcing.
     """
     import logging as _logging
 
@@ -142,7 +148,14 @@ def test_main_dev_no_auth_skips_configure_api_token(
 
     prev_admin = control_api.get_configured_api_token()
     prev_agent = control_api.get_configured_agent_callback_token()
-    control_api.configure_api_token(None, agent_callback=None)
+    # Seed the stale state the reviewer flagged.
+    control_api.configure_api_token(
+        "stale-admin-token", agent_callback="stale-agent-token"
+    )
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_API_TOKEN", "env-stale-admin")
+    monkeypatch.setenv(
+        "ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", "env-stale-agent"
+    )
 
     with (
         patch(
@@ -166,10 +179,75 @@ def test_main_dev_no_auth_skips_configure_api_token(
     assert result == 0
     assert control_api.get_configured_api_token() is None
     assert control_api.get_configured_agent_callback_token() is None
+    assert os.environ.get("ISSUE_ORCHESTRATOR_API_TOKEN") is None
+    assert os.environ.get("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN") is None
     assert any(
         "authentication is DISABLED" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_main_dev_no_auth_refuses_non_loopback_host(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``--dev-no-auth`` must refuse any non-loopback ``--host`` value.
+
+    Regression for #6017 re-review-3 P2 on #6035. Combining
+    ``--dev-no-auth`` with ``--host 0.0.0.0`` would expose an
+    unauthenticated Control API to the network.
+    """
+    import logging as _logging
+
+    from issue_orchestrator.entrypoints import control_api
+
+    prev_admin = control_api.get_configured_api_token()
+    prev_agent = control_api.get_configured_agent_callback_token()
+
+    with (
+        patch(
+            "argparse.ArgumentParser.parse_args",
+            return_value=_make_main_args(
+                debug_http=False, dev_no_auth=True, host="0.0.0.0"
+            ),
+        ),
+        patch("issue_orchestrator.entrypoints.control_center.uvicorn.run") as run_mock,
+        patch("issue_orchestrator.entrypoints.control_center.write_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.clear_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.logging.basicConfig"),
+        patch("issue_orchestrator.infra.repo_registry.cleanup_stale_repos", return_value=0),
+        patch("issue_orchestrator.entrypoints.control_center.threading.Thread") as thread_cls,
+        caplog.at_level(_logging.ERROR, logger="issue_orchestrator.entrypoints.control_center"),
+    ):
+        thread_cls.return_value = MagicMock(start=MagicMock())
+        try:
+            result = control_center.main()
+        finally:
+            control_api.configure_api_token(prev_admin, agent_callback=prev_agent)
+
+    assert result == 2
+    # uvicorn must NEVER be invoked in this path.
+    run_mock.assert_not_called()
+    assert any(
+        "not a loopback" in record.getMessage() for record in caplog.records
+    )
+
+
+class TestLoopbackHostHelper:
+    """Pin what counts as loopback."""
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.99", "::1", "localhost"])
+    def test_loopback(self, host: str) -> None:
+        from issue_orchestrator.entrypoints.control_center import _is_loopback_host
+
+        assert _is_loopback_host(host) is True
+
+    @pytest.mark.parametrize(
+        "host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com", "", "not-an-ip"]
+    )
+    def test_not_loopback(self, host: str) -> None:
+        from issue_orchestrator.entrypoints.control_center import _is_loopback_host
+
+        assert _is_loopback_host(host) is False
 
 
 def test_main_disables_uvicorn_access_log_by_default() -> None:
