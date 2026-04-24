@@ -298,8 +298,11 @@ class E2ESettings(BaseModel):
         title="Pytest Arguments",
         description="Space-separated pytest arguments used when Runner Kind is pytest",
         json_schema_extra={
-            "doc_examples": ["tests/e2e -v", "tests/e2e -v -x"],
-            "doc_notes": "Used only when runner_kind=pytest.",
+            "doc_examples": [
+                "tests/e2e -v",
+                "tests/e2e -v --junitxml=.issue-orchestrator/e2e-results/pytest-junit.xml",
+            ],
+            "doc_notes": "Used only when runner_kind=pytest. Add --junitxml and mirror the same path in junit_xml_paths when you want structured Results coverage in the dashboard.",
             "config_attr": "e2e.pytest_args",
             "yaml_path": "e2e.pytest_args",
             "ui_transform": "space_separated_list",
@@ -322,8 +325,11 @@ class E2ESettings(BaseModel):
         title="JUnit XML Paths",
         description="Relative JUnit XML files or globs to ingest after the run (one per line)",
         json_schema_extra={
-            "doc_examples": ["test-results/junit.xml", "reports/**/*.xml"],
-            "doc_notes": "Leave empty for log-only runs. Missing configured reports fail the run loudly.",
+            "doc_examples": [
+                ".issue-orchestrator/e2e-results/pytest-junit.xml",
+                "test-results/junit.xml",
+            ],
+            "doc_notes": "Leave empty for log-only runs. Missing configured reports fail the run loudly. Use the same path you passed to pytest --junitxml or your external test runner.",
             "config_attr": "e2e.junit_xml_paths",
             "yaml_path": "e2e.junit_xml_paths",
             "ui_transform": "newline_separated_list",
@@ -334,8 +340,12 @@ class E2ESettings(BaseModel):
         title="Artifact Paths",
         description="Additional report or artifact files to expose in the UI (one per line)",
         json_schema_extra={
-            "doc_examples": ["playwright-report/index.html", "test-results/**/*.zip"],
-            "doc_notes": "Paths are resolved relative to the E2E worktree after the run completes.",
+            "doc_examples": [
+                "playwright-report/index.html",
+                "test-results/**/*.zip",
+                "reports/**/*.html",
+            ],
+            "doc_notes": "Paths are resolved relative to the E2E worktree after the run completes. Use this for native HTML reports, traces, screenshots, and similar debugging artifacts.",
             "config_attr": "e2e.artifact_paths",
             "yaml_path": "e2e.artifact_paths",
             "ui_transform": "newline_separated_list",

@@ -296,9 +296,14 @@ e2e:
   role: "auto"                     # auto | executor | reader | disabled
   auto_run_interval_minutes: 30
   runner_kind: "pytest"            # pytest | command
-  pytest_args: ["tests/e2e", "-v", "--tb=short"]
-  # command: ["sh", "scripts/run-e2e-suite.sh"]  # Use when runner_kind=command
-  # junit_xml_paths: [".issue-orchestrator/e2e-results/**/*.xml"]
+  pytest_args:
+    - "tests/e2e"
+    - "-v"
+    - "--tb=short"
+    - "--junitxml=.issue-orchestrator/e2e-results/pytest-junit.xml"
+  junit_xml_paths:
+    - ".issue-orchestrator/e2e-results/pytest-junit.xml"
+  # command: ["sh", "scripts/run-e2e-suite.sh"]  # Use instead when runner_kind=command
   # artifact_paths:
   #   - ".issue-orchestrator/e2e-results/**/*.log"
   #   - ".issue-orchestrator/e2e-results/**/*.html"

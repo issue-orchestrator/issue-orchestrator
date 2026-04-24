@@ -368,6 +368,56 @@ def test_worker_round_trip(test_repo: Path):
     assert "test_failing" in failed[0].nodeid
 
 
+def test_worker_pytest_runner_ingests_configured_junit_report(test_repo: Path):
+    """Pytest-mode runs should ingest configured JUnit XML into generic results."""
+    junit_relpath = ".issue-orchestrator/e2e-results/pytest-results.xml"
+    (test_repo / ".issue-orchestrator" / "e2e-results").mkdir(parents=True, exist_ok=True)
+
+    result = run_worker_with_execution_spec(
+        test_repo,
+        execution_spec={
+            "runner_kind": "pytest",
+            "pytest_args": [
+                "tests/e2e",
+                "-v",
+                f"--junitxml={junit_relpath}",
+            ],
+            "command": [],
+            "junit_xml_paths": [junit_relpath],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode in (0, 1), result.stderr
+
+    db = E2EDB(test_repo / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    assert run.runner_kind == "pytest"
+    assert run.command == ["pytest", "tests/e2e", "-v", f"--junitxml={junit_relpath}"]
+
+    details = db.run_details(run.id)
+    assert details is not None
+
+    results = details["results"]
+    assert len(results) == 3
+    assert {row["result_source"] for row in results} == {"junit_xml"}
+
+    outcomes = {row["nodeid"].split("::")[-1]: row["outcome"] for row in results}
+    assert outcomes["test_passing"] == "passed"
+    assert outcomes["test_failing"] == "failed"
+    assert outcomes["test_another_passing"] == "passed"
+
+    artifacts = details["artifacts"]
+    artifact_kinds = {
+        (artifact["kind"], Path(artifact["path"]).name) for artifact in artifacts
+    }
+    assert ("junit_xml", "pytest-results.xml") in artifact_kinds
+
+
 # ---------------------------------------------------------------------------
 # Test 2: Retry logic
 # ---------------------------------------------------------------------------
