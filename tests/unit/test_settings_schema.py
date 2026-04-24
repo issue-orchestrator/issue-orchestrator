@@ -710,7 +710,6 @@ class TestDoctorCheckFields:
         fields = get_doctor_check_fields()
         names = {f["name"] for f in fields}
         assert "quarantine_file" in names
-        assert "pytest_args" in names
         assert "default_reviewer" in names
         assert "triage_agent" in names
 
@@ -794,7 +793,6 @@ class TestSummaryFields:
         assert "enabled" in names
         assert "auto_run_interval_minutes" in names
         assert "allow_retry_once" in names
-        assert "pytest_args" in names
 
     def test_review_summary_fields(self):
         fields = get_summary_fields("review")

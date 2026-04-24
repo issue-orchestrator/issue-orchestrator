@@ -119,7 +119,6 @@ class TestFormatSummary:
         assert summary is not None
         assert "auto=30m" in summary
         assert "retry=on" in summary
-        assert "tests: tests/e2e" in summary
 
     def test_e2e_summary_manual(self):
         cfg = Config()

@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -184,7 +185,33 @@ def run_worker(
     """Run the e2e_worker subprocess."""
     if pytest_args is None:
         pytest_args = ["tests/e2e", "-v"]
+    execution_spec = {
+        "runner_kind": "pytest",
+        "pytest_args": pytest_args,
+        "command": [],
+        "junit_xml_paths": [],
+        "artifact_paths": [],
+        "allow_retry_once": allow_retry_once,
+        "stop_on_first_failure": False,
+    }
+    return run_worker_with_execution_spec(
+        repo_root,
+        orchestrator_id=orchestrator_id,
+        execution_spec=execution_spec,
+        quarantine_file=quarantine_file,
+        timeout=timeout,
+    )
 
+
+def run_worker_with_execution_spec(
+    repo_root: Path,
+    *,
+    orchestrator_id: str = "test-orch",
+    execution_spec: dict[str, object],
+    quarantine_file: str = "tests/e2e/quarantine.txt",
+    timeout: int = _WORKER_SUBPROCESS_TIMEOUT_S,
+) -> subprocess.CompletedProcess:
+    """Run the e2e_worker subprocess with a normalized execution spec."""
     db_path = repo_root / ".issue-orchestrator" / "e2e.db"
     log_path = repo_root / ".issue-orchestrator" / "e2e.log"
     timeline_db_path = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
@@ -200,8 +227,8 @@ def run_worker(
         str(db_path),
         "--orchestrator-id",
         orchestrator_id,
-        "--pytest-args-json",
-        json.dumps(pytest_args),
+        "--execution-spec-json",
+        json.dumps(execution_spec),
         "--quarantine-file",
         quarantine_file,
         "--log-file",
@@ -209,9 +236,6 @@ def run_worker(
         "--timeline-db-path",
         str(timeline_db_path),
     ]
-
-    if allow_retry_once:
-        cmd.append("--allow-retry-once")
 
     # Prepend the current worktree's src/ to PYTHONPATH so the
     # subprocess imports the code under test rather than whatever
@@ -244,6 +268,65 @@ def _wait_for_run(
             return run
         time.sleep(_RUN_CREATION_POLL_INTERVAL_S)
     return None
+
+
+@pytest.fixture
+def test_repo_with_command_reports(tmp_path: Path) -> Path:
+    """Create a repo whose E2E command writes JUnit and report artifacts."""
+    repo = tmp_path / "test_repo_command"
+    repo.mkdir()
+    (repo / ".issue-orchestrator").mkdir()
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+
+    junit_path = repo / "artifacts" / "results.xml"
+    html_path = repo / "artifacts" / "report.html"
+    log_path = repo / "artifacts" / "command-output.log"
+    scripts_dir.joinpath("run_command_suite.py").write_text(
+        textwrap.dedent(
+            f"""\
+            from pathlib import Path
+
+            ARTIFACTS = Path("artifacts")
+            ARTIFACTS.mkdir(parents=True, exist_ok=True)
+            Path({str(junit_path)!r}).write_text(
+                \"\"\"<testsuite tests="2" failures="1">
+                <testcase classname="ui.smoke" name="test_homepage" time="1.25" />
+                <testcase classname="ui.smoke" name="test_checkout" time="2.50">
+                  <failure message="checkout failed">AssertionError: checkout broke</failure>
+                </testcase>
+                </testsuite>\"\"\",
+                encoding="utf-8",
+            )
+            Path({str(html_path)!r}).write_text(
+                "<html><body><h1>command report</h1></body></html>",
+                encoding="utf-8",
+            )
+            Path({str(log_path)!r}).write_text(
+                "runner started\\ncheckout failed\\n",
+                encoding="utf-8",
+            )
+            raise SystemExit(1)
+            """
+        ),
+        encoding="utf-8",
+    )
+    return repo
+
+
+@pytest.fixture
+def test_repo_with_missing_command_junit(tmp_path: Path) -> Path:
+    """Create a repo whose E2E command exits cleanly without writing reports."""
+    repo = tmp_path / "test_repo_command_missing"
+    repo.mkdir()
+    (repo / ".issue-orchestrator").mkdir()
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    scripts_dir.joinpath("run_without_reports.py").write_text(
+        'print("no reports generated")\n',
+        encoding="utf-8",
+    )
+    return repo
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +689,136 @@ def test_progress_with_failures(test_repo: Path):
     assert progress["passed"] == 2  # test_passing and test_another_passing
     assert progress["failed"] == 1  # test_failing
     assert progress["percent"] == 100
+
+
+def test_worker_pytest_runner_merges_configured_junit_results_with_runtime_nodeids(
+    test_repo: Path,
+):
+    """Configured pytest JUnit XML should enrich, not duplicate, runtime results."""
+    results_dir = test_repo / ".issue-orchestrator" / "e2e-results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    result = run_worker_with_execution_spec(
+        test_repo,
+        execution_spec={
+            "runner_kind": "pytest",
+            "pytest_args": [
+                "tests/e2e",
+                "-v",
+                "--junitxml=.issue-orchestrator/e2e-results/pytest-results.xml",
+            ],
+            "command": [],
+            "junit_xml_paths": [".issue-orchestrator/e2e-results/pytest-results.xml"],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 1, result.stderr
+
+    db = E2EDB(test_repo / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    details = db.run_details(run.id)
+    assert details is not None
+
+    results = details["results"]
+    assert len(results) == 3
+    assert sorted(row["nodeid"] for row in results) == [
+        "tests/e2e/test_basic.py::test_another_passing",
+        "tests/e2e/test_basic.py::test_failing",
+        "tests/e2e/test_basic.py::test_passing",
+    ]
+    assert {row["result_source"] for row in results} == {"junit_xml"}
+
+    failure = next(row for row in results if row["nodeid"].endswith("::test_failing"))
+    assert failure["outcome"] == "failed"
+    assert "This test always fails" in (failure["longrepr"] or "")
+
+    artifacts = details["artifacts"]
+    assert [
+        (artifact["kind"], Path(artifact["path"]).name)
+        for artifact in artifacts
+    ] == [("junit_xml", "pytest-results.xml")]
+
+
+def test_worker_command_runner_ingests_junit_and_artifacts(test_repo_with_command_reports: Path):
+    """Command-mode runs should ingest structured JUnit results and expose artifacts."""
+    result = run_worker_with_execution_spec(
+        test_repo_with_command_reports,
+        execution_spec={
+            "runner_kind": "command",
+            "pytest_args": [],
+            "command": [sys.executable, "scripts/run_command_suite.py"],
+            "junit_xml_paths": ["artifacts/results.xml"],
+            "artifact_paths": ["artifacts/report.html", "artifacts/command-output.log"],
+            "allow_retry_once": True,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 1, result.stderr
+
+    db = E2EDB(test_repo_with_command_reports / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    assert run.status == "failed"
+    assert run.runner_kind == "command"
+    assert run.command == [sys.executable, "scripts/run_command_suite.py"]
+
+    details = db.run_details(run.id)
+    assert details is not None
+    results = details["results"]
+    assert len(results) == 2
+    assert {row["result_source"] for row in results} == {"junit_xml"}
+
+    outcomes = {row["nodeid"]: row["outcome"] for row in results}
+    assert outcomes["ui.smoke::test_homepage"] == "passed"
+    assert outcomes["ui.smoke::test_checkout"] == "failed"
+
+    failed = db.get_failed_tests(run.id)
+    assert [row.nodeid for row in failed] == ["ui.smoke::test_checkout"]
+
+    artifacts = details["artifacts"]
+    artifact_kinds = {(artifact["kind"], Path(artifact["path"]).name) for artifact in artifacts}
+    assert ("junit_xml", "results.xml") in artifact_kinds
+    assert ("html_report", "report.html") in artifact_kinds
+    assert ("text_artifact", "command-output.log") in artifact_kinds
+
+    progress = db.get_progress(run.id)
+    assert progress["total_tests"] == 2
+    assert progress["completed"] == 2
+    assert progress["failed"] == 1
+
+
+def test_worker_command_runner_requires_configured_junit_reports(
+    test_repo_with_missing_command_junit: Path,
+):
+    """Configured JUnit paths should fail loudly when the command does not write them."""
+    result = run_worker_with_execution_spec(
+        test_repo_with_missing_command_junit,
+        execution_spec={
+            "runner_kind": "command",
+            "pytest_args": [],
+            "command": [sys.executable, "scripts/run_without_reports.py"],
+            "junit_xml_paths": ["artifacts/results.xml"],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 1, result.stderr
+
+    db = E2EDB(test_repo_with_missing_command_junit / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    assert run.status == "error"
+    assert run.note == "Configured JUnit XML paths did not resolve to any files"
 
 
 # ---------------------------------------------------------------------------

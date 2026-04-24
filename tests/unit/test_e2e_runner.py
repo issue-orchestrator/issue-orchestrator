@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from issue_orchestrator.infra import e2e_runner
+from issue_orchestrator.infra.config_models import E2EConfig
 from issue_orchestrator.infra.e2e_runner import (
     E2ERunnerManager,
     E2EAlreadyRunning,
@@ -570,6 +571,14 @@ class TestMaybeTriggerE2E:
         assert result is False
 
 
+def test_command_runner_execution_spec_requires_command() -> None:
+    """Command-mode E2E config must declare the command to execute."""
+    config = E2EConfig(runner_kind="command", command=[])
+
+    with pytest.raises(ValueError, match="e2e.command must be configured"):
+        config.execution_spec()
+
+
 class TestGetE2ERunnerManager:
     """Test the singleton getter."""
 
@@ -617,13 +626,13 @@ class TestStopOnFirstFailure:
                 stop_on_first_failure=True,
             )
 
-        # Extract the pytest-args-json from the command
+        # Extract the execution-spec-json from the command
         call_args = popen_mock.call_args
         cmd = call_args[0][0]
 
-        # Find the pytest args in the command
-        pytest_args_idx = cmd.index("--pytest-args-json") + 1
-        pytest_args = json.loads(cmd[pytest_args_idx])
+        execution_spec_idx = cmd.index("--execution-spec-json") + 1
+        execution_spec = json.loads(cmd[execution_spec_idx])
+        pytest_args = execution_spec["pytest_args"]
 
         assert "-x" in pytest_args
 
@@ -644,8 +653,9 @@ class TestStopOnFirstFailure:
         call_args = popen_mock.call_args
         cmd = call_args[0][0]
 
-        pytest_args_idx = cmd.index("--pytest-args-json") + 1
-        pytest_args = json.loads(cmd[pytest_args_idx])
+        execution_spec_idx = cmd.index("--execution-spec-json") + 1
+        execution_spec = json.loads(cmd[execution_spec_idx])
+        pytest_args = execution_spec["pytest_args"]
 
         assert "-x" not in pytest_args
 
@@ -666,8 +676,9 @@ class TestStopOnFirstFailure:
         call_args = popen_mock.call_args
         cmd = call_args[0][0]
 
-        pytest_args_idx = cmd.index("--pytest-args-json") + 1
-        pytest_args = json.loads(cmd[pytest_args_idx])
+        execution_spec_idx = cmd.index("--execution-spec-json") + 1
+        execution_spec = json.loads(cmd[execution_spec_idx])
+        pytest_args = execution_spec["pytest_args"]
 
         # Should only have one -x
         assert pytest_args.count("-x") == 1
@@ -729,6 +740,48 @@ class TestLogFileCapture:
             assert "log_path" in result
             assert result["log_path"].endswith(".log")
             assert "e2e" in result["log_path"]
+
+
+def test_command_runner_interrupted_run_restarts_fresh(tmp_path: Path) -> None:
+    """Command-mode interrupted runs should fail the stale run and start fresh."""
+    db_path = tmp_path / ".issue-orchestrator" / "e2e.db"
+    db_path.parent.mkdir(parents=True)
+    db = E2EDB(db_path)
+    interrupted_id = db.start_run(
+        repo_root=str(tmp_path),
+        orchestrator_id="test-orch",
+        pytest_args=[],
+        commit_sha="abc123",
+        branch="main",
+        command=["python", "scripts/run_suite.py"],
+        runner_kind="command",
+    )
+    db.finish_run(interrupted_id, "interrupted")
+
+    manager = E2ERunnerManager()
+    with patch("subprocess.Popen") as popen_mock, \
+         patch("builtins.open", MagicMock()):
+        proc = MagicMock()
+        proc.pid = 12345
+        proc.poll.return_value = None
+        popen_mock.return_value = proc
+
+        result = manager.start_or_resume(
+            repo_root=tmp_path,
+            orchestrator_id="test-orch",
+            execution_spec=e2e_runner.E2EExecutionSpec(
+                runner_kind="command",
+                command=("python", "scripts/run_suite.py"),
+                junit_xml_paths=("artifacts/results.xml",),
+            ),
+        )
+
+    assert result["resumed"] is False
+
+    stale_run = db.get_run(interrupted_id)
+    assert stale_run is not None
+    assert stale_run.status == "failed"
+    assert stale_run.note == "Interrupted command-style run restarted from scratch"
 
 
 class TestResolveRepoPython:

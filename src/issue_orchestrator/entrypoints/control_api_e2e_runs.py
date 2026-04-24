@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -31,6 +32,30 @@ from ..view_models.lifecycle_projection import project_e2e_suite_lifecycle_conta
 logger = logging.getLogger(__name__)
 
 control_e2e_runs_router = APIRouter()
+
+
+def _execution_spec_for_start_request(
+    body: dict[str, Any],
+    config,
+):
+    """Resolve the execution spec for a manual start request."""
+    execution_spec = config.e2e.execution_spec()
+    allow_retry_once = body.get("allow_retry_once", execution_spec.allow_retry_once)
+    if execution_spec.runner_kind == "pytest" and body.get("pytest_args") is not None:
+        return replace(
+            execution_spec,
+            pytest_args=tuple(body["pytest_args"]),
+            allow_retry_once=allow_retry_once,
+        )
+    if execution_spec.runner_kind == "command" and body.get("command") is not None:
+        return replace(
+            execution_spec,
+            command=tuple(body["command"]),
+            allow_retry_once=allow_retry_once,
+        )
+    if allow_retry_once != execution_spec.allow_retry_once:
+        return replace(execution_spec, allow_retry_once=allow_retry_once)
+    return execution_spec
 
 
 @control_e2e_runs_router.post("/control/e2e/start")
@@ -74,8 +99,7 @@ async def e2e_start(
             status_code=400,
         )
 
-    pytest_args = body.get("pytest_args") or config.e2e.pytest_args
-    allow_retry = body.get("allow_retry_once", config.e2e.allow_retry_once)
+    execution_spec = _execution_spec_for_start_request(body, config)
     orchestrator_id = config.orchestrator_id
 
     runner = get_e2e_runner_manager()
@@ -86,8 +110,7 @@ async def e2e_start(
         result = runner.start(
             repo_root=repo_root,
             orchestrator_id=orchestrator_id,
-            pytest_args=pytest_args,
-            allow_retry_once=allow_retry,
+            execution_spec=execution_spec,
             quarantine_file=config.e2e.quarantine_file,
             auto_quarantine=config.e2e.auto_quarantine,
             orchestrator_instance_id=instance_id,

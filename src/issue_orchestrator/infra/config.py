@@ -653,7 +653,11 @@ class Config:
                 "pr_labels": self.e2e_pr_labels,
                 "enabled": self.e2e.enabled,
                 "auto_run_interval_minutes": self.e2e.auto_run_interval_minutes,
+                "runner_kind": self.e2e.runner_kind,
                 "pytest_args": list(self.e2e.pytest_args),
+                "command": list(self.e2e.command),
+                "junit_xml_paths": list(self.e2e.junit_xml_paths),
+                "artifact_paths": list(self.e2e.artifact_paths),
                 "allow_retry_once": self.e2e.allow_retry_once,
                 "quarantine_file": self.e2e.quarantine_file,
                 "survive_restart": self.e2e.survive_restart,
@@ -973,8 +977,16 @@ class Config:
             e2e_dict["role"] = self.e2e.role
         if self.e2e.auto_run_interval_minutes != 30:
             e2e_dict["auto_run_interval_minutes"] = self.e2e.auto_run_interval_minutes
+        if self.e2e.runner_kind != "pytest":
+            e2e_dict["runner_kind"] = self.e2e.runner_kind
         if self.e2e.pytest_args != ["tests/e2e", "-v"]:
             e2e_dict["pytest_args"] = list(self.e2e.pytest_args)
+        if self.e2e.command:
+            e2e_dict["command"] = list(self.e2e.command)
+        if self.e2e.junit_xml_paths:
+            e2e_dict["junit_xml_paths"] = list(self.e2e.junit_xml_paths)
+        if self.e2e.artifact_paths:
+            e2e_dict["artifact_paths"] = list(self.e2e.artifact_paths)
         if not self.e2e.allow_retry_once:
             e2e_dict["allow_retry_once"] = False
         if self.e2e.quarantine_file != "tests/e2e/quarantine.txt":

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import glob
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
-from xml.etree import ElementTree
+from typing import Literal, cast
+
+from defusedxml import ElementTree
+from xml.etree.ElementTree import Element as XmlElement
+from xml.etree.ElementTree import ParseError as XmlParseError
 
 
 CaseOutcome = Literal["passed", "failed", "error", "skipped"]
@@ -39,6 +43,43 @@ class E2ERunArtifactRecord:
     path: str
 
 
+def discover_report_artifacts(
+    repo_root: Path,
+    *,
+    junit_xml_paths: list[str] | tuple[str, ...],
+    artifact_paths: list[str] | tuple[str, ...],
+) -> tuple[list[JUnitCaseResult], list[E2ERunArtifactRecord]]:
+    """Resolve configured reports/artifacts and return typed results.
+
+    Raises:
+        ValueError: if a configured path/glob resolves to nothing or a JUnit report
+        is malformed.
+    """
+    cases: list[JUnitCaseResult] = []
+    artifacts: list[E2ERunArtifactRecord] = []
+
+    junit_files = _resolve_paths(repo_root, junit_xml_paths)
+    if junit_xml_paths and not junit_files:
+        raise ValueError("Configured JUnit XML paths did not resolve to any files")
+    for path in junit_files:
+        cases.extend(parse_junit_report(path))
+        artifacts.append(
+            E2ERunArtifactRecord(
+                kind="junit_xml",
+                label=f"JUnit XML: {path.name}",
+                path=str(path),
+            )
+        )
+
+    extra_files = _resolve_paths(repo_root, artifact_paths)
+    if artifact_paths and not extra_files:
+        raise ValueError("Configured artifact paths did not resolve to any files")
+    for path in extra_files:
+        artifacts.append(_artifact_record_for_path(path))
+
+    return cases, _dedupe_artifacts(artifacts)
+
+
 def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
     """Parse JUnit XML into strongly typed case results.
 
@@ -49,9 +90,11 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
         raise ValueError(f"JUnit XML does not exist: {path}")
 
     try:
-        root = ElementTree.parse(path).getroot()
-    except ElementTree.ParseError as exc:
-        raise ValueError(f"Malformed JUnit XML: {path}") from exc
+        root = cast(XmlElement, ElementTree.parse(path).getroot())
+    except XmlParseError as exc:
+        raise ValueError(
+            f"Malformed JUnit XML: {path}{_parse_error_position(exc)}"
+        ) from exc
 
     cases = root.findall(".//testcase")
     if not cases:
@@ -60,7 +103,39 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
     return [_parse_testcase(case) for case in cases]
 
 
-def _parse_testcase(testcase: ElementTree.Element) -> JUnitCaseResult:
+def normalize_pytest_junit_cases(
+    cases: list[JUnitCaseResult],
+) -> list[JUnitCaseResult]:
+    """Normalize pytest JUnit case IDs to runtime-style nodeids.
+
+    Pytest's JUnit XML typically emits dotted module paths in ``classname``
+    (for example ``tests.e2e.test_basic``) while runtime observation records
+    nodeids with filesystem separators
+    (for example ``tests/e2e/test_basic.py::test_failing``). Converge the
+    structured report onto the runtime shape so one test maps to one row.
+    """
+    normalized: list[JUnitCaseResult] = []
+    for case in cases:
+        suite_name = case.suite_name
+        if not suite_name or "/" in suite_name:
+            normalized.append(case)
+            continue
+        parts = [part for part in suite_name.split(".") if part]
+        if len(parts) < 2:
+            normalized.append(case)
+            continue
+        path = "/".join((*parts[:-1], f"{parts[-1]}.py"))
+        normalized.append(
+            replace(
+                case,
+                suite_name=path,
+                case_id=f"{path}::{case.display_name}",
+            )
+        )
+    return normalized
+
+
+def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
     display_name = (testcase.attrib.get("name") or "").strip()
     if not display_name:
         raise ValueError("JUnit testcase is missing a non-empty name attribute")
@@ -111,7 +186,7 @@ def _parse_testcase(testcase: ElementTree.Element) -> JUnitCaseResult:
     )
 
 
-def _detail_text(element: ElementTree.Element) -> str | None:
+def _detail_text(element: XmlElement) -> str | None:
     message = _optional_text(element.attrib.get("message"))
     body = _optional_text(element.text)
     if message and body:
@@ -137,3 +212,84 @@ def _optional_float(value: object) -> float | None:
     if not stripped:
         return None
     return float(stripped)
+
+
+def _resolve_paths(
+    repo_root: Path,
+    patterns: list[str] | tuple[str, ...],
+) -> list[Path]:
+    repo_root_resolved = repo_root.resolve()
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in patterns:
+        candidate = pattern.strip()
+        if not candidate:
+            continue
+        matches = _glob_matches(repo_root, candidate)
+        for path in matches:
+            if path.is_dir():
+                continue
+            real = path.resolve()
+            if not real.is_relative_to(repo_root_resolved):
+                raise ValueError(
+                    f"E2E report path resolves outside repo root: {candidate}"
+                )
+            if real in seen:
+                continue
+            resolved.append(real)
+            seen.add(real)
+    return resolved
+
+
+def _glob_matches(repo_root: Path, candidate: str) -> list[Path]:
+    search_pattern = candidate if Path(candidate).is_absolute() else str(repo_root / candidate)
+    return [Path(match) for match in sorted(glob.glob(search_pattern, recursive=True))]
+
+
+def _parse_error_position(exc: XmlParseError) -> str:
+    position = getattr(exc, "position", None)
+    if not isinstance(position, tuple) or len(position) != 2:
+        return ""
+    line, column = position
+    return f" (line {line}, column {column})"
+
+
+def _artifact_record_for_path(path: Path) -> E2ERunArtifactRecord:
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if suffix == ".html":
+        kind = "html_report"
+        label = f"HTML Report: {path.name}"
+    elif suffix == ".json":
+        kind = "json_report"
+        label = f"JSON Report: {path.name}"
+    elif suffix == ".xml":
+        kind = "xml_report"
+        label = f"XML Report: {path.name}"
+    elif suffix == ".zip" and "trace" in name:
+        kind = "trace"
+        label = f"Trace: {path.name}"
+    elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        kind = "image"
+        label = f"Image: {path.name}"
+    elif suffix in {".log", ".txt"}:
+        kind = "text_artifact"
+        label = f"Text Artifact: {path.name}"
+    else:
+        kind = "artifact"
+        label = path.name
+    return E2ERunArtifactRecord(kind=kind, label=label, path=str(path))
+
+
+def _dedupe_artifacts(
+    artifacts: list[E2ERunArtifactRecord],
+) -> list[E2ERunArtifactRecord]:
+    deduped: list[E2ERunArtifactRecord] = []
+    seen: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        key = (artifact.kind, artifact.path)
+        if key in seen:
+            continue
+        deduped.append(artifact)
+        seen.add(key)
+    return deduped

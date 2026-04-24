@@ -4,16 +4,16 @@ Provides start/stop/status operations for E2E test workers.
 """
 
 import json
-from datetime import datetime, timezone, timedelta
 import logging
 import os
 import signal
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from .config_models import E2EExecutionSpec
 from .e2e_db import E2EDB
 from .e2e_worktree import ensure_e2e_worktree
 
@@ -45,6 +45,102 @@ def _build_worker_env() -> dict[str, str]:
         else f"{source_root}{os.pathsep}{existing_pythonpath}"
     )
     return env
+
+
+def _effective_execution_spec(spec: E2EExecutionSpec) -> E2EExecutionSpec:
+    """Apply runner-local adjustments without mutating config state."""
+    if spec.runner_kind != "pytest":
+        return spec
+    pytest_args = list(spec.pytest_args)
+    if spec.stop_on_first_failure and "-x" not in pytest_args:
+        pytest_args.append("-x")
+    return E2EExecutionSpec(
+        runner_kind=spec.runner_kind,
+        pytest_args=tuple(pytest_args),
+        command=spec.command,
+        junit_xml_paths=spec.junit_xml_paths,
+        artifact_paths=spec.artifact_paths,
+        allow_retry_once=spec.allow_retry_once,
+        stop_on_first_failure=spec.stop_on_first_failure,
+    )
+
+
+def _normalize_execution_spec(
+    execution_spec: E2EExecutionSpec | list[str] | None,
+    *,
+    pytest_args: list[str] | None,
+    allow_retry_once: bool,
+    stop_on_first_failure: bool,
+) -> E2EExecutionSpec:
+    """Normalize legacy pytest args and new execution specs into one shape."""
+    if isinstance(execution_spec, E2EExecutionSpec):
+        return execution_spec
+    legacy_pytest_args = execution_spec if isinstance(execution_spec, list) else pytest_args
+    if legacy_pytest_args is None:
+        raise TypeError("execution_spec or pytest_args is required")
+    return E2EExecutionSpec(
+        runner_kind="pytest",
+        pytest_args=tuple(legacy_pytest_args),
+        allow_retry_once=allow_retry_once,
+        stop_on_first_failure=stop_on_first_failure,
+    )
+
+
+def _worker_command(
+    *,
+    repo_root: Path,
+    worktree_path: Path,
+    orchestrator_id: str,
+    execution_spec: E2EExecutionSpec,
+    quarantine_file: str,
+    log_path: Path,
+    orchestrator_instance_id: str,
+    run_retention_count: int,
+    resume_run_id: int | None = None,
+    deselect: set[str] | None = None,
+) -> list[str]:
+    """Build the worker subprocess command."""
+    python = _resolve_repo_python(worktree_path)
+    cmd = [
+        python,
+        "-m",
+        "issue_orchestrator.entrypoints.e2e_worker",
+        "--repo-root",
+        str(worktree_path),
+        "--db-path",
+        str(repo_root / ".issue-orchestrator" / "e2e.db"),
+        "--orchestrator-id",
+        orchestrator_id,
+        "--execution-spec-json",
+        json.dumps(
+            {
+                "runner_kind": execution_spec.runner_kind,
+                "pytest_args": list(execution_spec.pytest_args),
+                "command": list(execution_spec.command),
+                "junit_xml_paths": list(execution_spec.junit_xml_paths),
+                "artifact_paths": list(execution_spec.artifact_paths),
+                "allow_retry_once": execution_spec.allow_retry_once,
+                "stop_on_first_failure": execution_spec.stop_on_first_failure,
+            }
+        ),
+        "--quarantine-file",
+        quarantine_file,
+        "--log-file",
+        str(log_path),
+        "--timeline-db-path",
+        str(repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"),
+        "--run-retention-count",
+        str(run_retention_count),
+    ]
+    if orchestrator_instance_id:
+        cmd.extend(["--orchestrator-instance-id", orchestrator_instance_id])
+    if resume_run_id is not None:
+        cmd.extend(["--resume-run-id", str(resume_run_id)])
+    for nodeid in sorted(deselect or ()):
+        cmd.extend(["--deselect", nodeid])
+    if execution_spec.allow_retry_once:
+        cmd.append("--allow-retry-once")
+    return cmd
 
 
 def get_e2e_role(
@@ -102,7 +198,9 @@ class E2ERunnerManager:
         self,
         repo_root: Path,
         orchestrator_id: str,
-        pytest_args: list[str],
+        execution_spec: E2EExecutionSpec | list[str] | None = None,
+        *,
+        pytest_args: list[str] | None = None,
         allow_retry_once: bool = True,
         quarantine_file: str = "tests/e2e/quarantine.txt",
         stop_on_first_failure: bool = False,
@@ -115,10 +213,8 @@ class E2ERunnerManager:
         Args:
             repo_root: Path to repository root
             orchestrator_id: Unique orchestrator identifier
-            pytest_args: Arguments to pass to pytest
-            allow_retry_once: Whether to retry failed tests once
+            execution_spec: Normalized execution spec for this run
             quarantine_file: Path to quarantine file (relative to repo root)
-            stop_on_first_failure: If True, add -x flag to stop on first failure
             auto_quarantine: If True, auto-add failing tests to quarantine list
 
         Returns:
@@ -138,7 +234,6 @@ class E2ERunnerManager:
         worktree_path = ensure_e2e_worktree(repo_root)
 
         # DB and logs stay in the base repo (read by web UI).
-        db_path = repo_root / ".issue-orchestrator" / "e2e.db"
         log_dir = repo_root / ".issue-orchestrator" / "logs" / "e2e"
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,44 +241,26 @@ class E2ERunnerManager:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"run_{timestamp}.log"
 
-        # Build effective pytest args (add -x if stop_on_first_failure)
-        effective_pytest_args = list(pytest_args)
-        if stop_on_first_failure and "-x" not in effective_pytest_args:
-            effective_pytest_args.append("-x")
-
-        # Use the worktree's venv Python so tests run with correct deps.
-        python = _resolve_repo_python(worktree_path)
-
-        # Build command — --repo-root points to worktree, --db-path to base repo
-        cmd = [
-            python,
-            "-m",
-            "issue_orchestrator.entrypoints.e2e_worker",
-            "--repo-root",
-            str(worktree_path),
-            "--db-path",
-            str(db_path),
-            "--orchestrator-id",
-            orchestrator_id,
-            "--pytest-args-json",
-            json.dumps(effective_pytest_args),
-            "--quarantine-file",
-            quarantine_file,
-            "--log-file",
-            str(log_path),
-        ]
-
-        if allow_retry_once:
-            cmd.append("--allow-retry-once")
+        spec = _effective_execution_spec(
+            _normalize_execution_spec(
+                execution_spec,
+                pytest_args=pytest_args,
+                allow_retry_once=allow_retry_once,
+                stop_on_first_failure=stop_on_first_failure,
+            )
+        )
+        cmd = _worker_command(
+            repo_root=repo_root,
+            worktree_path=worktree_path,
+            orchestrator_id=orchestrator_id,
+            execution_spec=spec,
+            quarantine_file=quarantine_file,
+            log_path=log_path,
+            orchestrator_instance_id=orchestrator_instance_id,
+            run_retention_count=run_retention_count,
+        )
         if auto_quarantine:
             cmd.append("--auto-quarantine")
-        if orchestrator_instance_id:
-            cmd.extend(["--orchestrator-instance-id", orchestrator_instance_id])
-
-        # Pass timeline DB path so E2E events flow through the shared timeline store
-        timeline_db = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
-        cmd.extend(["--timeline-db-path", str(timeline_db)])
-        cmd.extend(["--run-retention-count", str(run_retention_count)])
 
         logger.info(
             "Starting E2E worker for %s: %s",
@@ -226,7 +303,9 @@ class E2ERunnerManager:
         self,
         repo_root: Path,
         orchestrator_id: str,
-        pytest_args: list[str],
+        execution_spec: E2EExecutionSpec | list[str] | None = None,
+        *,
+        pytest_args: list[str] | None = None,
         allow_retry_once: bool = True,
         quarantine_file: str = "tests/e2e/quarantine.txt",
         stop_on_first_failure: bool = False,
@@ -241,10 +320,8 @@ class E2ERunnerManager:
         Args:
             repo_root: Path to repository root
             orchestrator_id: Unique orchestrator identifier
-            pytest_args: Arguments to pass to pytest (for new runs)
-            allow_retry_once: Whether to retry failed tests once
+            execution_spec: Normalized execution spec for this run
             quarantine_file: Path to quarantine file (relative to repo root)
-            stop_on_first_failure: If True, add -x flag to stop on first failure
             auto_quarantine: If True, auto-add failing tests to quarantine list
 
         Returns:
@@ -258,33 +335,59 @@ class E2ERunnerManager:
         if proc is not None and proc.poll() is None:
             raise E2EAlreadyRunning(orchestrator_id, proc.pid)
 
+        spec = _normalize_execution_spec(
+            execution_spec,
+            pytest_args=pytest_args,
+            allow_retry_once=allow_retry_once,
+            stop_on_first_failure=stop_on_first_failure,
+        )
+
         db_path = repo_root / ".issue-orchestrator" / "e2e.db"
         db = E2EDB(db_path)
 
         # Check for interrupted run to resume
         interrupted = db.get_interrupted_run(orchestrator_id)
         if interrupted:
-            passed_nodeids = db.get_passed_nodeids(interrupted.id)
-            if passed_nodeids:
+            if spec.runner_kind != "pytest":
                 logger.info(
-                    "Resuming interrupted E2E run %d (%d tests already passed)",
+                    "Interrupted run %d cannot be resumed for runner_kind=%s, starting fresh",
                     interrupted.id,
-                    len(passed_nodeids),
+                    spec.runner_kind,
                 )
-                return self._resume_run(
-                    repo_root=repo_root,
-                    orchestrator_id=orchestrator_id,
-                    run_id=interrupted.id,
-                    pytest_args=interrupted.pytest_args,  # Use original args
-                    passed_nodeids=passed_nodeids,
-                    allow_retry_once=allow_retry_once,
-                    quarantine_file=quarantine_file,
-                    stop_on_first_failure=stop_on_first_failure,
-                    auto_quarantine=auto_quarantine,
-                    db=db,
+                db.finish_run(
+                    interrupted.id,
+                    "failed",
+                    note="Interrupted command-style run restarted from scratch",
                 )
             else:
-                # No passed tests - mark as failed and start fresh
+                passed_nodeids = db.get_passed_nodeids(interrupted.id)
+                if passed_nodeids:
+                    logger.info(
+                        "Resuming interrupted E2E run %d (%d tests already passed)",
+                        interrupted.id,
+                        len(passed_nodeids),
+                    )
+                    resume_spec = E2EExecutionSpec(
+                        runner_kind="pytest",
+                        pytest_args=tuple(interrupted.pytest_args),
+                        command=tuple(interrupted.command),
+                        junit_xml_paths=spec.junit_xml_paths,
+                        artifact_paths=spec.artifact_paths,
+                        allow_retry_once=spec.allow_retry_once,
+                        stop_on_first_failure=spec.stop_on_first_failure,
+                    )
+                    return self._resume_run(
+                        repo_root=repo_root,
+                        orchestrator_id=orchestrator_id,
+                        run_id=interrupted.id,
+                        execution_spec=resume_spec,
+                        passed_nodeids=passed_nodeids,
+                        quarantine_file=quarantine_file,
+                        auto_quarantine=auto_quarantine,
+                        orchestrator_instance_id=orchestrator_instance_id,
+                        run_retention_count=run_retention_count,
+                        db=db,
+                    )
                 logger.info(
                     "Interrupted run %d has no passed tests, starting fresh",
                     interrupted.id,
@@ -295,10 +398,8 @@ class E2ERunnerManager:
         result = self.start(
             repo_root=repo_root,
             orchestrator_id=orchestrator_id,
-            pytest_args=pytest_args,
-            allow_retry_once=allow_retry_once,
+            execution_spec=spec,
             quarantine_file=quarantine_file,
-            stop_on_first_failure=stop_on_first_failure,
             auto_quarantine=auto_quarantine,
             orchestrator_instance_id=orchestrator_instance_id,
             run_retention_count=run_retention_count,
@@ -313,12 +414,12 @@ class E2ERunnerManager:
         repo_root: Path,
         orchestrator_id: str,
         run_id: int,
-        pytest_args: list[str],
+        execution_spec: E2EExecutionSpec,
         passed_nodeids: set[str],
-        allow_retry_once: bool,
         quarantine_file: str,
-        stop_on_first_failure: bool,
         auto_quarantine: bool,
+        orchestrator_instance_id: str,
+        run_retention_count: int,
         db: E2EDB,
     ) -> dict:
         """Resume an interrupted run by starting worker with --deselect for passed tests."""
@@ -331,45 +432,21 @@ class E2ERunnerManager:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"run_{run_id}_resume_{timestamp}.log"
 
-        # Build effective pytest args (add -x if stop_on_first_failure)
-        effective_pytest_args = list(pytest_args)
-        if stop_on_first_failure and "-x" not in effective_pytest_args:
-            effective_pytest_args.append("-x")
-
-        # Build command — --repo-root points to worktree, --db-path to base repo
-        python = _resolve_repo_python(worktree_path)
-        cmd = [
-            python,
-            "-m",
-            "issue_orchestrator.entrypoints.e2e_worker",
-            "--repo-root",
-            str(worktree_path),
-            "--db-path",
-            str(repo_root / ".issue-orchestrator" / "e2e.db"),
-            "--orchestrator-id",
-            orchestrator_id,
-            "--pytest-args-json",
-            json.dumps(effective_pytest_args),
-            "--quarantine-file",
-            quarantine_file,
-            "--log-file",
-            str(log_path),
-            "--resume-run-id",
-            str(run_id),
-        ]
-
-        # Add --deselect for each passed test (passed to pytest)
-        for nodeid in passed_nodeids:
-            cmd.extend(["--deselect", nodeid])
-
-        if allow_retry_once:
-            cmd.append("--allow-retry-once")
+        spec = _effective_execution_spec(execution_spec)
+        cmd = _worker_command(
+            repo_root=repo_root,
+            worktree_path=worktree_path,
+            orchestrator_id=orchestrator_id,
+            execution_spec=spec,
+            quarantine_file=quarantine_file,
+            log_path=log_path,
+            orchestrator_instance_id=orchestrator_instance_id,
+            run_retention_count=run_retention_count,
+            resume_run_id=run_id,
+            deselect=passed_nodeids,
+        )
         if auto_quarantine:
             cmd.append("--auto-quarantine")
-
-        # Pass timeline DB path so E2E events flow through the shared timeline store
-        timeline_db = repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
-        cmd.extend(["--timeline-db-path", str(timeline_db)])
 
         logger.info(
             "Resuming E2E run %d for %s (skipping %d passed tests)",
@@ -617,10 +694,8 @@ def maybe_trigger_e2e(
         result = manager.start_or_resume(
             repo_root=repo_root,
             orchestrator_id=orchestrator_id,
-            pytest_args=config.e2e.pytest_args,
-            allow_retry_once=config.e2e.allow_retry_once,
+            execution_spec=config.e2e.execution_spec(),
             quarantine_file=config.e2e.quarantine_file,
-            stop_on_first_failure=config.e2e.stop_on_first_failure,
             auto_quarantine=config.e2e.auto_quarantine,
             orchestrator_instance_id=orchestrator_instance_id,
             run_retention_count=config.e2e.run_retention_count,
