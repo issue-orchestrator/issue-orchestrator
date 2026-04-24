@@ -40,6 +40,7 @@ from issue_orchestrator.view_models.dialogs import (
     build_info_dialog,
     build_phase_dialog,
     build_session_diagnostics_dialog,
+    build_validation_failure_dialog,
 )
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 from issue_orchestrator.view_models.lifecycle_semantics import (
@@ -232,6 +233,32 @@ def test_dialog_payloads_match_ui_openapi() -> None:
 
     phase_dialog = build_phase_dialog({"phases": [{"name": "review-1", "display_name": "Review"}]}, 12, None)
     _validator("PhaseDialogPayload").validate(phase_dialog)
+
+    validation_dialog = build_validation_failure_dialog(
+        42,
+        {
+            "manifest": {
+                "session_name": "session-42",
+                "worktree": "/tmp/worktree",
+                "validation_record_path": ".issue-orchestrator/sessions/run-1/validation-record.json",
+                "validation_stdout": ".issue-orchestrator/sessions/run-1/validation-output.log",
+                "validation_stderr": ".issue-orchestrator/sessions/run-1/validation-stderr.log",
+            },
+            "run_dir": "/tmp/run",
+            "validation_failure": {
+                "reason": "Validation failed for abc123 (exit_code=2)",
+                "suite": "publish_gate",
+                "command": "make validate-pr",
+                "exit_code": 2,
+                "started_at": "2026-04-24T00:00:00Z",
+                "ended_at": "2026-04-24T00:01:00Z",
+                "failed_tests": ["tests/unit/test_example.py::test_breaks"],
+                "stdout_excerpt": ["FAILED tests/unit/test_example.py::test_breaks"],
+                "stderr_excerpt": ["make: *** [validate-pr] Error 2"],
+            },
+        },
+    )
+    _validator("ValidationFailureDialogPayload").validate(validation_dialog)
 
 
 def test_issue_detail_payload_matches_ui_openapi() -> None:

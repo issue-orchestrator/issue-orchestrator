@@ -1,4 +1,7 @@
+import pytest
+
 from issue_orchestrator.view_models.dialogs import (
+    _build_validation_failure_action_sections,
     build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
@@ -326,9 +329,130 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
     assert dialog["failed_tests"] == ["tests/unit/test_web.py::test_one"]
     assert dialog["stdout_excerpt"] == ["FAILED tests/unit/test_web.py::test_one"]
     assert dialog["stderr_excerpt"] == ["make: *** [validate] Error 2"]
-    action_types = [action["type"] for action in dialog["actions"]]
-    assert "open_path" in action_types
-    assert "open_session_diagnostics" in action_types
+    assert dialog["summary_rows"] == [
+        {"label": "Reason", "value": "Validation failed for deadbeef (exit_code=2)"},
+        {"label": "Suite", "value": "publish_gate"},
+        {"label": "Command", "value": "make validate"},
+        {"label": "Exit Code", "value": "2"},
+        {"label": "Started", "value": "2026-03-22T04:53:14Z"},
+        {"label": "Ended", "value": "2026-03-22T04:53:58Z"},
+        {"label": "Failing Tests", "value": "1"},
+    ]
+    assert dialog["action_sections"] == [
+        {
+            "title": "Validation Artifacts",
+            "actions": [
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Record",
+                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+                    "group": "validation_artifacts",
+                },
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Output",
+                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-stdout.log",
+                    "group": "validation_artifacts",
+                },
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Stderr",
+                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-stderr.log",
+                    "group": "validation_artifacts",
+                },
+            ],
+        },
+        {
+            "title": "Session Evidence",
+            "actions": [
+                {
+                    "type": "open_agent_log",
+                    "label": "View Session Recording",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                    "group": "session_evidence",
+                },
+                {
+                    "type": "copy_agent_log",
+                    "label": "Copy Session Recording",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                    "group": "session_evidence",
+                },
+                {
+                    "type": "open_orchestrator_log",
+                    "label": "Open Orchestrator Log",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                    "group": "session_evidence",
+                },
+            ],
+        },
+        {
+            "title": "Diagnostics",
+            "actions": [
+                {
+                    "type": "open_path",
+                    "label": "Open Session Dir",
+                    "path": "/run/r1",
+                    "group": "diagnostics",
+                },
+                {
+                    "type": "open_path",
+                    "label": "Open Session Settings",
+                    "path": "/run/r1/session-identity.json",
+                    "group": "diagnostics",
+                },
+                {
+                    "type": "open_session_diagnostics",
+                    "label": "Full Diagnostics",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                    "group": "diagnostics",
+                },
+            ],
+        },
+    ]
+    assert "actions" not in dialog
+
+
+def test_build_validation_failure_dialog_keeps_missing_exit_code_visible() -> None:
+    dialog = build_validation_failure_dialog(
+        13,
+        {
+            "manifest": {
+                "session_name": "sess-validate",
+            },
+            "run_dir": "/run/r2",
+            "validation_failure": {
+                "reason": "Validation failed without an exit code",
+                "suite": "publish_gate",
+                "command": "make validate",
+                "started_at": "2026-03-22T04:53:14Z",
+                "ended_at": "2026-03-22T04:53:58Z",
+                "failed_tests": [],
+                "stdout_excerpt": [],
+                "stderr_excerpt": [],
+            },
+        },
+    )
+
+    assert dialog["exit_code"] is None
+    assert {"label": "Exit Code", "value": "-"} in dialog["summary_rows"]
+
+
+def test_build_validation_failure_action_sections_rejects_unknown_group() -> None:
+    with pytest.raises(ValueError, match="Unknown validation failure action group"):
+        _build_validation_failure_action_sections(
+            [
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Record",
+                    "path": "/tmp/validation-record.json",
+                    "group": "sesion_evidence",
+                }
+            ]
+        )
 
 
 def test_build_session_diagnostics_dialog_drops_malformed_analysis():

@@ -928,7 +928,11 @@
           "type": {"type": "string"},
           "label": {"type": "string"},
           "path": {"type": ["string", "null"]},
-          "issue_number": {"type": ["integer", "null"]}
+          "issue_number": {"type": ["integer", "null"]},
+          "group": {
+            "type": ["string", "null"],
+            "enum": ["validation_artifacts", "session_evidence", "diagnostics", null]
+          }
         }
       },
       "SessionDiagnosticsDialogPayload": {
@@ -973,6 +977,15 @@
           "blocking": {"type": "boolean"}
         }
       },
+      "ValidationFailureActionSectionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "actions"],
+        "properties": {
+          "title": {"type": "string"},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+        }
+      },
       "ValidationFailureDialogPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -987,20 +1000,22 @@
           "failed_tests",
           "stdout_excerpt",
           "stderr_excerpt",
-          "actions"
+          "summary_rows",
+          "action_sections"
         ],
         "properties": {
           "title": {"type": "string"},
           "reason": {"type": "string"},
           "suite": {"type": "string"},
           "command": {"type": "string"},
-          "exit_code": {"type": "integer"},
+          "exit_code": {"type": ["integer", "null"]},
           "started_at": {"type": "string"},
           "ended_at": {"type": "string"},
           "failed_tests": {"type": "array", "items": {"type": "string"}},
           "stdout_excerpt": {"type": "array", "items": {"type": "string"}},
           "stderr_excerpt": {"type": "array", "items": {"type": "string"}},
-          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+          "summary_rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
+          "action_sections": {"type": "array", "items": {"$ref": "#/components/schemas/ValidationFailureActionSectionPayload"}}
         }
       },
       "BlockedIssuePayload": {

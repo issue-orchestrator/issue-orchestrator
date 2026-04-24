@@ -193,28 +193,36 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
         return;
     }
 
-    const actions = Array.isArray(data.actions) ? data.actions : [];
-    currentDiagnosticsRunDir = runDir || ((actions.find(action => action && action.run_dir) || {}).run_dir || null);
+    const actionSections = Array.isArray(data.action_sections) ? data.action_sections : [];
+    currentDiagnosticsRunDir = runDir || firstRunDirFromActionSections(actionSections);
     const failedTests = Array.isArray(data.failed_tests) ? data.failed_tests : [];
     const stdoutExcerpt = Array.isArray(data.stdout_excerpt) ? data.stdout_excerpt : [];
     const stderrExcerpt = Array.isArray(data.stderr_excerpt) ? data.stderr_excerpt : [];
-    const summaryRows = [
-        { label: 'Reason', value: String(data.reason || 'Validation failed') },
-        { label: 'Suite', value: String(data.suite || '-') },
-        { label: 'Command', value: String(data.command || '-') },
-        { label: 'Exit Code', value: String(data.exit_code ?? '-') },
-        { label: 'Started', value: String(data.started_at || '-') },
-        { label: 'Ended', value: String(data.ended_at || '-') },
-    ];
+    const summaryRows = Array.isArray(data.summary_rows) && data.summary_rows.length > 0
+        ? data.summary_rows
+        : [
+            { label: 'Reason', value: String(data.reason || 'Validation failed') },
+            { label: 'Suite', value: String(data.suite || '-') },
+            { label: 'Command', value: String(data.command || '-') },
+            { label: 'Exit Code', value: String(data.exit_code ?? '-') },
+            { label: 'Started', value: String(data.started_at || '-') },
+            { label: 'Ended', value: String(data.ended_at || '-') },
+        ];
 
-    let html = '<div class="diag-modal">';
+    let html = '<div class="diag-modal diag-validation-shell">';
+    html += '<div class="diag-header">';
+    html += '<div class="diag-header-title">Validation Results</div>';
+    html += `<div class="diag-chip-row">${renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
+    html += '</div>';
+
+    html += '<div class="diag-validation-grid">';
     html += '<section class="diag-section diag-validation-summary">';
-    html += '<div class="diag-section-title">Validation Summary</div>';
+    html += '<div class="diag-section-title">Results</div>';
     html += renderDialogRows(summaryRows, { monospace: true });
     html += '</section>';
 
     html += '<section class="diag-section">';
-    html += '<div class="diag-section-title">Failed Tests</div>';
+    html += `<div class="diag-section-title">Failed Tests${failedTests.length > 0 ? ` (${failedTests.length})` : ''}</div>`;
     if (failedTests.length > 0) {
         html += '<ul class="diag-validation-tests">';
         for (const testName of failedTests) {
@@ -224,6 +232,12 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     } else {
         html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
     }
+    html += '</section>';
+    html += '</div>';
+
+    html += '<section class="diag-section">';
+    html += '<div class="diag-section-title">Artifacts</div>';
+    html += renderValidationFailureActionSections(actionSections);
     html += '</section>';
 
     html += '<section class="diag-section">';
@@ -242,15 +256,60 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
         html += '</section>';
     }
 
-    if (actions.length > 0) {
-        html += '<div class="diag-actions">';
-        html += renderGroupedDialogActions(actions);
-        html += '</div>';
-    }
     html += '<div class="diag-footnote">Validation details come from the run-scoped validation record and log artifacts.</div>';
     html += '</div>';
 
     openModal(data.title || `Validation Failure #${issueNumber}`, html);
+}
+
+function renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
+    const artifactCount = (actionSections || []).reduce((count, section) => {
+        const sectionActions = Array.isArray(section && section.actions) ? section.actions : [];
+        return count + sectionActions.length;
+    }, 0);
+    const chips = [
+        `<span class="diag-chip is-muted">${failedTests.length} failing test${failedTests.length === 1 ? '' : 's'}</span>`,
+        `<span class="diag-chip ${stdoutExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stdoutExcerpt.length > 0 ? 'stdout excerpt captured' : 'no stdout excerpt'}</span>`,
+        `<span class="diag-chip ${stderrExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stderrExcerpt.length > 0 ? 'stderr captured' : 'no stderr captured'}</span>`,
+    ];
+    if (artifactCount > 0) {
+        chips.push(`<span class="diag-chip is-ok">${artifactCount} artifact action${artifactCount === 1 ? '' : 's'}</span>`);
+    }
+    return chips.join('');
+}
+
+function firstRunDirFromActionSections(actionSections) {
+    for (const section of actionSections || []) {
+        const actions = Array.isArray(section && section.actions) ? section.actions : [];
+        const runScopedAction = actions.find(action => action && action.run_dir);
+        if (runScopedAction && runScopedAction.run_dir) {
+            return runScopedAction.run_dir;
+        }
+    }
+    return null;
+}
+
+function renderValidationFailureActionSections(actionSections) {
+    const sections = Array.isArray(actionSections) ? actionSections : [];
+    if (sections.length === 0) {
+        return '<div class="diag-empty">No artifact actions available for this validation run.</div>';
+    }
+    let html = '<div class="diag-validation-action-groups">';
+    for (const section of sections) {
+        const title = escapeHtml(String((section && section.title) || 'Artifacts'));
+        const actions = Array.isArray(section && section.actions) ? section.actions : [];
+        if (actions.length === 0) continue;
+        html += '<div class="diag-validation-action-group">';
+        html += `<div class="diag-validation-action-label">${title}</div>`;
+        html += '<div class="diag-validation-action-buttons">';
+        for (const action of actions) {
+            html += renderDialogActionWithLabel(action);
+        }
+        html += '</div>';
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
 }
 
 function renderDialogRows(rows, options = {}) {
