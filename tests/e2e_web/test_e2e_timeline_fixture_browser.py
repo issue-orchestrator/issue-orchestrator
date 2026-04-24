@@ -22,6 +22,7 @@ single ``snapshot_e2e_run.py`` capture covers both layers.
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import socket
@@ -99,6 +100,7 @@ e2e:
 # Playwright test can prove the session-log endpoint returned real content.
 _SYNTHETIC_SESSION_OUTPUT = "PLAYWRIGHT-FIXTURE-SESSION-STARTED"
 _SYNTHETIC_SESSION_OUTPUT_FOLLOWUP = "PLAYWRIGHT-FIXTURE-AGENT-READY"
+_SYNTHETIC_RUN_LOG_TEXT = "PLAYWRIGHT-FIXTURE-RUN-LOG"
 
 
 def _materialize_synthetic_session_dir(session_dir: Path) -> None:
@@ -307,8 +309,10 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
     repo_root = tmp_path / "repo"
     state_dir = repo_root / ".issue-orchestrator" / "state"
     config_dir = repo_root / ".issue-orchestrator" / "config"
+    log_dir = repo_root / ".issue-orchestrator" / "logs"
     state_dir.mkdir(parents=True)
     config_dir.mkdir(parents=True)
+    log_dir.mkdir(parents=True)
     wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
     wt_state.mkdir(parents=True)
 
@@ -319,10 +323,13 @@ def _stage_fixture(fixture: Path, tmp_path: Path) -> Path:
 
     import sqlite3
 
+    run_log_path = log_dir / f"run-{RUN_FIXTURE_ID}.log"
+    run_log_path.write_text(f"{_SYNTHETIC_RUN_LOG_TEXT}\n", encoding="utf-8")
+
     with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as conn:
         conn.execute(
-            "UPDATE e2e_runs SET orchestrator_id = ? WHERE id = ?",
-            (repo_root.name, RUN_FIXTURE_ID),
+            "UPDATE e2e_runs SET orchestrator_id = ?, log_path = ? WHERE id = ?",
+            (repo_root.name, str(run_log_path), RUN_FIXTURE_ID),
         )
         conn.commit()
 
@@ -515,6 +522,14 @@ def _dom_click_hit_tested(locator: Locator, description: str) -> None:
     )
     assert not hit_result["disabled"], f"{description} is disabled: {hit_result!r}"
     locator.evaluate("(element) => element.click()")
+
+
+def _open_e2e_tab(page: Page) -> None:
+    """Switch to the E2E tab and wait for the new page bundle to load."""
+    page.locator("#tab-e2e").click()
+    page.wait_for_url("**?tab=e2e**")
+    page.wait_for_function("() => window.dashboardBundleLoaded === true")
+    expect(page.locator("#panel-e2e")).to_be_visible(timeout=5000)
 
 
 def _browser_fetch_json(page: Page, url: str) -> dict[str, Any]:
@@ -884,7 +899,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # Open the run drawer through the visible E2E Run History Timeline
     # affordance. This is intentionally not page.evaluate(): the
     # regression was that users had no visible way to get here.
-    page.locator("#tab-e2e").click()
+    _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
         has=page.locator("button", has_text="Timeline"),
@@ -1325,6 +1340,255 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     )
 
     assert errors == [], f"Unexpected page errors: {errors}"
+
+
+def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """The default run view must expose generic evidence plus agentic session access."""
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    run_detail_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/e2e-run-detail/{run_id}",
+            view="user",
+        ),
+    )
+    suite = E2ESuiteTimelineContainer.model_validate(run_detail_payload["lifecycle"])
+    run_lifecycle = suite.runs[0].e2e_run
+    issue_lifecycle = next(
+        lifecycle
+        for lifecycle in run_lifecycle.linked_issue_lifecycles
+        if lifecycle.issue_number == TEST_CLICK_ISSUE_NUMBER
+    )
+    latest_cycle = issue_lifecycle.cycles[-1]
+    assert latest_cycle.coder.session_recording.kind == "available"
+
+    _open_e2e_tab(page)
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator("button", has_text="Open run"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    open_run_btn = run_item.locator("button", has_text="Open run").first
+    expect(open_run_btn).to_be_visible(timeout=5000)
+    open_run_btn.click()
+
+    modal = page.locator("#e2eDiagnosisModal.visible")
+    expect(modal).to_be_visible(timeout=5000)
+    expect(
+        page.locator("#e2eDiagnosisModal .e2e-run-tab.active[data-tab='results']")
+    ).to_be_visible(timeout=5000)
+
+    results_panel = page.locator("#e2eRunResultsTab")
+    expect(results_panel).to_be_visible(timeout=5000)
+    expect(results_panel).to_contain_text("Run evidence")
+    expect(results_panel).to_contain_text("Linked issue lifecycles")
+    expect(results_panel.locator(".e2e-run-command")).to_contain_text(
+        run_detail_payload["run"]["command"][0]
+    )
+    expect(results_panel.locator("button", has_text="Raw Output")).to_be_visible(
+        timeout=5000
+    )
+
+    linked_row = results_panel.locator(
+        ".e2e-linked-issue-row",
+        has_text=f"#{TEST_CLICK_ISSUE_NUMBER}",
+    ).first
+    expect(linked_row).to_be_visible(timeout=5000)
+    expect(linked_row).to_contain_text("Cycle 1")
+    expect(linked_row.locator("button", has_text="Timeline")).to_be_visible(
+        timeout=5000
+    )
+
+    coder_session_btn = linked_row.locator("button", has_text="Coder Session").first
+    expect(coder_session_btn).to_be_visible(timeout=5000)
+    _dom_click_hit_tested(coder_session_btn, "linked issue coder session button")
+
+    session_modal = page.locator("#modalOverlay.visible")
+    expect(session_modal).to_be_visible(timeout=5000)
+    expect(page.locator("#sessionReplayPath")).to_contain_text(
+        latest_cycle.coder.session_recording.run_dir
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        text = page.locator("#sessionReplayProgressText").text_content() or ""
+        if "/" in text and not text.startswith("0 /"):
+            break
+        page.wait_for_timeout(100)
+    progress_text = page.locator("#sessionReplayProgressText").text_content() or ""
+    assert "/" in progress_text, progress_text
+    assert not progress_text.startswith("0 /"), progress_text
+
+    recording_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/session/terminal-recording/{TEST_CLICK_ISSUE_NUMBER}",
+            run_dir=latest_cycle.coder.session_recording.run_dir,
+            offset=0,
+            limit=0,
+        ),
+    )
+    decoded_output = "".join(
+        base64.b64decode(event["data_b64"]).decode("utf-8")
+        for event in recording_payload.get("events", [])
+        if event.get("event_type") == "output" and isinstance(event.get("data_b64"), str)
+    )
+    assert _SYNTHETIC_SESSION_OUTPUT in decoded_output, decoded_output
+
+
+def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecycle(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """Generic command-runner runs must still surface artifacts without issue links."""
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    run_detail_payload = _browser_fetch_json(
+        page,
+        _url(
+            str(base_url),
+            f"/api/e2e-run-detail/{run_id}",
+            view="user",
+        ),
+    )
+    synthetic_payload = json.loads(json.dumps(run_detail_payload))
+    synthetic_payload["run"]["runner_kind"] = "command"
+    synthetic_payload["run"]["status"] = "passed"
+    synthetic_payload["run"]["command"] = ["sh", "scripts/run-e2e-suite.sh"]
+    synthetic_payload["run"]["log_path"] = "/tmp/tixmeup-e2e-worker.log"
+    synthetic_payload["reports"] = [
+        {
+            "kind": "junit_xml",
+            "label": "JUnit XML: tixmeup-e2e-smoke.xml",
+            "path": "/tmp/tixmeup-e2e-smoke.xml",
+        }
+    ]
+    adversarial_artifact_path = (
+        "/tmp/compose \"quotes\" <tag> back\\slash 'apostrophe'.log"
+    )
+    synthetic_payload["artifacts"] = [
+        {
+            "kind": "text_artifact",
+            "label": "Text Artifact: compose-services.log",
+            "path": adversarial_artifact_path,
+        },
+        {
+            "kind": "text_artifact",
+            "label": "Text Artifact: tixmeup-e2e-smoke.summary.txt",
+            "path": "/tmp/tixmeup-e2e-smoke.summary.txt",
+        },
+    ]
+    suite_lifecycle = synthetic_payload["lifecycle"]
+    suite_lifecycle["runs"][0]["e2e_run"]["linked_issue_lifecycles"] = []
+    synthetic_payload["issue_affordances"] = []
+    synthetic_payload["results_by_category"] = {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [
+            {
+                "nodeid": "tixmeup.e2e.smoke::package.build_image",
+                "display_name": "package.build_image",
+                "suite_name": "tixmeup.e2e.smoke",
+                "outcome": "passed",
+                "retry_outcome": None,
+                "duration_seconds": 450.0,
+                "longrepr": None,
+                "history": [],
+                "existing_issue": None,
+                "flip_rate_percent": 0,
+                "result_source": "junit_xml",
+                "is_quarantined": False,
+            }
+        ],
+        "quarantined": [],
+        "skipped": [],
+    }
+    synthetic_payload["results_summary"] = {
+        "total": 1,
+        "passed": 1,
+        "untriaged": 0,
+        "has_issue": 0,
+        "flaky": 0,
+        "fixed": 0,
+        "quarantined": 0,
+        "skipped": 0,
+    }
+
+    page.route(
+        _url(
+            str(base_url),
+            f"/api/e2e-run-detail/{run_id}",
+            view="user",
+        ),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(synthetic_payload),
+        ),
+    )
+    _open_e2e_tab(page)
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator("button", has_text="Open run"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    page.evaluate(
+        """() => {
+            window.__openedPaths = [];
+            window.openPath = (path) => window.__openedPaths.push(String(path));
+        }"""
+    )
+    run_item.locator("button", has_text="Open run").first.click()
+
+    results_panel = page.locator("#e2eRunResultsTab")
+    expect(results_panel).to_be_visible(timeout=5000)
+    expect(results_panel).to_contain_text("Run evidence")
+    expect(results_panel).to_contain_text("No linked issue lifecycles for this run.")
+    expect(results_panel.locator(".e2e-run-command")).to_contain_text(
+        "sh scripts/run-e2e-suite.sh"
+    )
+    expect(results_panel.locator(".test-row")).to_have_count(1)
+    expect(results_panel.locator(".test-row")).to_contain_text("package.build_image")
+    expect(results_panel.locator(".test-source")).to_contain_text("JUnit XML")
+
+    raw_output_btn = results_panel.locator("button", has_text="Raw Output").first
+    junit_btn = results_panel.locator(
+        "button", has_text="JUnit XML: tixmeup-e2e-smoke.xml"
+    ).first
+    compose_log_btn = results_panel.locator(
+        "button", has_text="Text Artifact: compose-services.log"
+    ).first
+    summary_btn = results_panel.locator(
+        "button", has_text="Text Artifact: tixmeup-e2e-smoke.summary.txt"
+    ).first
+    expect(raw_output_btn).to_be_visible(timeout=5000)
+    expect(junit_btn).to_be_visible(timeout=5000)
+    expect(compose_log_btn).to_be_visible(timeout=5000)
+    expect(summary_btn).to_be_visible(timeout=5000)
+
+    _dom_click_hit_tested(raw_output_btn, "generic run raw output button")
+    _dom_click_hit_tested(junit_btn, "generic run junit report button")
+    _dom_click_hit_tested(compose_log_btn, "generic run compose log button")
+    _dom_click_hit_tested(summary_btn, "generic run summary artifact button")
+
+    opened_paths = page.evaluate("() => window.__openedPaths.slice()")
+    assert opened_paths == [
+        "/tmp/tixmeup-e2e-worker.log",
+        "/tmp/tixmeup-e2e-smoke.xml",
+        adversarial_artifact_path,
+        "/tmp/tixmeup-e2e-smoke.summary.txt",
+    ]
 
 
 def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(

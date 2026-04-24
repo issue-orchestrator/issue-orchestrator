@@ -22,6 +22,169 @@
     color: var(--bg);
     border-color: var(--accent);
 }
+.e2e-run-note-banner {
+    margin: 10px 0 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel-soft);
+    color: var(--text);
+}
+.e2e-results-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.e2e-results-section {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--bg-panel-soft);
+}
+.e2e-results-section-header {
+    margin-bottom: 10px;
+}
+.e2e-results-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+}
+.e2e-results-subtitle {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.e2e-run-evidence-grid {
+    display: grid;
+    gap: 8px 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    margin-bottom: 10px;
+}
+.e2e-run-evidence-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.e2e-run-evidence-row .label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+.e2e-run-evidence-row .value {
+    color: var(--text);
+}
+.e2e-run-command-row {
+    grid-column: 1 / -1;
+}
+.e2e-run-command {
+    display: block;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+}
+.e2e-run-status {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    font-size: 12px;
+    font-weight: 700;
+}
+.e2e-run-status.passed {
+    color: var(--success);
+    border-color: rgba(77, 201, 131, 0.35);
+}
+.e2e-run-status.warning {
+    color: var(--warning);
+    border-color: rgba(255, 191, 71, 0.35);
+}
+.e2e-run-status.running {
+    color: var(--accent);
+    border-color: rgba(78, 161, 255, 0.35);
+}
+.e2e-run-status.failed {
+    color: var(--danger);
+    border-color: rgba(255, 107, 107, 0.35);
+}
+.e2e-run-status.muted {
+    color: var(--text-muted);
+}
+.e2e-action-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.e2e-empty-note {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.e2e-linked-issue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.e2e-linked-issue-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+}
+.e2e-linked-issue-copy {
+    flex: 1 1 320px;
+    min-width: 0;
+}
+.e2e-linked-issue-heading {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: baseline;
+}
+.e2e-linked-issue-number {
+    font-weight: 700;
+    color: var(--text);
+}
+.e2e-linked-issue-label {
+    color: var(--accent);
+    font-weight: 600;
+}
+.e2e-linked-issue-title,
+.e2e-linked-issue-summary {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.e2e-linked-cycle-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.e2e-lifecycle-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-panel-soft);
+    color: var(--text);
+    font-size: 12px;
+}
 .e2e-timeline-view-switcher {
     display: flex;
     gap: 4px;
@@ -112,4 +275,31 @@
 }
 .timeline-issue-links a:hover {
     text-decoration: underline;
+}
+.test-row-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.test-suite {
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.test-source {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.action-btn.subtle {
+    background: transparent;
+    border-color: var(--border);
 }

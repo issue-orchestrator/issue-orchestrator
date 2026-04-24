@@ -472,6 +472,17 @@ def test_projection_builds_completed_coder_review_and_validation_children() -> N
     )
 
 
+def test_coder_session_recording_command_omits_phase_context_without_round() -> None:
+    lifecycle = _complete_issue_lifecycle()
+
+    issue_cycle = lifecycle.cycles[0]
+    assert isinstance(issue_cycle.coder, CompletedCodingAttempt)
+    session_recording = issue_cycle.coder.session_recording
+    assert session_recording.kind == "available"
+    assert session_recording.command.round_index is None
+    assert session_recording.command.session_role is None
+
+
 def test_completed_coder_without_completion_record_becomes_missing_evidence() -> None:
     started = _event(
         "agent.coding_started",

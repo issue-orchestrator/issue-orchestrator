@@ -976,6 +976,7 @@ def test_e2e_run_timeline_is_directly_addressable() -> None:
     assert "options.initialTab === 'timeline'" in body
     assert "hasTimelinePanel" not in body
     assert "timelineActive" in body
+    assert "resultsActive" in body
     assert "renderE2ETimeline(timelineContainer, tl)" in body
 
 
@@ -990,6 +991,59 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
     css = _read_dashboard_css_bundle()
     assert ".e2e-issue-timeline-affordances" in css
     assert ".e2e-issue-timeline-btn" in css
+
+
+def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> None:
+    """Results tab must expose run evidence plus linked issue lifecycle/session actions."""
+    js = _read(DASHBOARD_JS)
+    render_body = _function_body(js, "renderUnifiedRunView")
+    results_body = _function_body(js, "renderE2EResultsPanel")
+    evidence_body = _function_body(js, "renderE2ERunEvidenceSection")
+    artifact_body = _function_body(js, "_renderRunArtifactButtons")
+    artifact_button_body = _function_body(js, "_artifactButton")
+    artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
+    row_action_button_body = _function_body(js, "_e2eRowActionButton")
+    row_action_dispatch_body = _function_body(js, "runE2ERowActionFromButton")
+    row_body = _function_body(js, "renderTestRow")
+    dropdown_body = _function_body(js, "showCreateIssueDropdown")
+    result_evidence_body = _function_body(js, "_renderResultEvidenceButtons")
+    lifecycle_body = _function_body(js, "renderE2ELinkedIssueLifecycles")
+    lifecycle_row_body = _function_body(js, "_renderLinkedIssueLifecycle")
+    command_body = _function_body(js, "runE2ELifecycleCommand")
+    assert 'data-tab="results"' in render_body
+    assert "renderE2EResultsPanel(data)" in render_body
+    assert "renderE2ERunEvidenceSection(data)" in results_body
+    assert "renderE2ELinkedIssueLifecycles(data)" in results_body
+    assert "Always-visible debugging surfaces for any framework" in evidence_body
+    assert "raw output" in evidence_body.lower()
+    assert "Raw Output" in artifact_body
+    assert "Primary report" in evidence_body
+    assert "data-artifact-path" in artifact_button_body
+    assert "openPath('" not in artifact_button_body
+    assert "button.dataset.artifactPath" in artifact_open_body
+    assert "data-e2e-action" in row_action_button_body
+    assert "dataset.nodeid" in row_action_dispatch_body
+    assert "closeE2EIssue(" not in row_body
+    assert "showCreateIssueDropdown(this, '" not in row_body
+    assert "quarantineSingleTest('" not in row_body
+    assert "copyTestErrorFromRun('" not in row_body
+    assert "createSingleIssueWithAgent('" not in dropdown_body
+    assert "No run-scoped logs or reports were captured for this run." in evidence_body
+    assert "Run Log" in result_evidence_body
+    assert "Report" in result_evidence_body
+    assert "No linked issue lifecycles for this run." in lifecycle_body
+    assert "Coder Session" in lifecycle_row_body
+    assert "Review Session" in lifecycle_row_body
+    assert "Validation" in lifecycle_row_body
+    assert "openIssueTimeline" in command_body
+    assert "openAgentLogAction" in command_body
+    assert "openReviewTranscript" in command_body
+    assert "openValidationFailure" in command_body
+    css = _read_dashboard_css_bundle()
+    assert ".e2e-run-evidence-grid" in css
+    assert ".e2e-linked-issue-row" in css
+    assert ".e2e-lifecycle-chip" in css
+    assert ".e2e-run-status" in css
 
 
 def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
@@ -1025,7 +1079,8 @@ def test_e2e_timeline_view_switcher_refetches() -> None:
     """View switcher re-fetches timeline with view param."""
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "switchE2ETimelineView")
-    assert "view=" in body
+    assert "_fetchE2ERunDetail(runId, view)" in body
+    assert "_fetchE2ERunDetail" in body
     assert "renderE2ETimeline" in body
 
 
