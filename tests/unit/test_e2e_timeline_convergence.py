@@ -688,14 +688,33 @@ class TestE2ERunDetailEndpoint:
 
     def _setup_orchestrator_with_timeline(self, store_key, records):
         """Set up a mock orchestrator whose timeline_reader returns the given records."""
+        import tempfile
         from unittest.mock import MagicMock
         from issue_orchestrator.entrypoints.web import app, set_orchestrator
         from fastapi.testclient import TestClient
         from pathlib import Path
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        run_id = int(str(store_key).rsplit("-", 1)[-1])
+        temp_dir = tempfile.TemporaryDirectory(prefix="e2e-run-detail-")
+        repo_root = Path(temp_dir.name)
+        db_dir = repo_root / ".issue-orchestrator"
+        db_dir.mkdir(parents=True)
+        db = E2EDB(db_dir / "e2e.db")
+        for _ in range(run_id):
+            created_run_id = db.start_run(
+                repo_root=str(repo_root),
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+                command=["pytest", "tests/e2e"],
+                runner_kind="pytest",
+            )
+            db.finish_run(created_run_id, status="passed", exit_code=0, duration_seconds=60.0)
 
         mock_orch = MagicMock()
-        mock_orch.config.repo_root = Path("/tmp/nonexistent")
-
+        setattr(mock_orch, "_e2e_temp_dir", temp_dir)
+        mock_orch.config.repo_root = repo_root
+        mock_orch.config.e2e.flake_threshold = 15.0
         mock_orch.deps.timeline_store.read.return_value = records
 
         return mock_orch, TestClient(app)
@@ -718,6 +737,85 @@ class TestE2ERunDetailEndpoint:
             assert response.json()["error"] == "not_found"
         finally:
             set_orchestrator(None)
+
+    def test_returns_404_when_e2e_database_missing(self, tmp_path):
+        """Endpoint does not synthesize unknown run data when the DB is missing."""
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = tmp_path
+        mock_orch.deps.timeline_store.read.return_value = [
+            TimelineRecord(
+                event_id="e1",
+                timestamp="2026-01-01T00:00:00Z",
+                event="e2e.run_started",
+                data={"branch": "main"},
+                source_event="e2e.run_started",
+            )
+        ]
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 404
+            assert response.json() == {
+                "error": "not_found",
+                "detail": "E2E database not found for run 10",
+            }
+        finally:
+            set_orchestrator(None)
+
+    def test_returns_404_when_e2e_run_row_missing(self, tmp_path):
+        """Endpoint distinguishes a missing DB row from a present timeline."""
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path
+        db_dir = repo_root / ".issue-orchestrator"
+        db_dir.mkdir(parents=True)
+        E2EDB(db_dir / "e2e.db")
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.config.e2e.flake_threshold = 15.0
+        mock_orch.deps.timeline_store.read.return_value = [
+            TimelineRecord(
+                event_id="e1",
+                timestamp="2026-01-01T00:00:00Z",
+                event="e2e.run_started",
+                data={"branch": "main"},
+                source_event="e2e.run_started",
+            )
+        ]
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 404
+            assert response.json() == {
+                "error": "not_found",
+                "detail": "E2E run 10 not found",
+            }
+        finally:
+            set_orchestrator(None)
+
+    def test_e2e_run_artifacts_rejects_malformed_db_rows(self):
+        """Malformed artifact rows fail loudly instead of disappearing from the payload."""
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _e2e_run_artifacts,
+        )
+
+        with pytest.raises(ValueError, match="Malformed E2E artifact row for run 10"):
+            _e2e_run_artifacts(
+                {"id": 10, "log_path": None},
+                [{"kind": "html_report", "label": "HTML Report", "path": 17}],
+            )
 
     def test_returns_200_with_e2e_events(self):
         """Endpoint returns 200 with events from the shared timeline store."""

@@ -40,6 +40,14 @@ web_issue_detail_router = APIRouter()
 _VALID_DETAIL_VIEWS = {"user", "ops", "debug"}
 
 
+class E2ERunDatabaseNotFoundError(FileNotFoundError):
+    """The E2E database required to build run detail is unavailable."""
+
+
+class E2ERunRecordNotFoundError(LookupError):
+    """The requested E2E run does not exist in the database."""
+
+
 def _normalize_detail_view(view: str) -> str:
     """Return a supported drawer view mode."""
     return view if view in _VALID_DETAIL_VIEWS else "user"
@@ -120,7 +128,7 @@ def _e2e_run_execution_details(orchestrator: Any, run_id: int) -> dict[str, Any]
 
     db_path = orchestrator.config.repo_root / ".issue-orchestrator" / "e2e.db"
     if not db_path.exists():
-        raise ValueError(f"E2E database not found for run {run_id}")
+        raise E2ERunDatabaseNotFoundError(f"E2E database not found for run {run_id}")
 
     db = E2EDB(db_path)
     details = db.run_details_enhanced(
@@ -129,7 +137,7 @@ def _e2e_run_execution_details(orchestrator: Any, run_id: int) -> dict[str, Any]
         flake_threshold_percent=float(orchestrator.config.e2e.flake_threshold),
     )
     if details is None:
-        raise ValueError(f"E2E database record not found for run {run_id}")
+        raise E2ERunRecordNotFoundError(f"E2E run {run_id} not found")
     return details
 
 
@@ -184,7 +192,9 @@ def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) 
         label = artifact.get("label")
         path = artifact.get("path")
         if not isinstance(kind, str) or not isinstance(label, str) or not isinstance(path, str):
-            continue
+            raise ValueError(
+                f"Malformed E2E artifact row for run {run.get('id')}: {artifact!r}"
+            )
         key = (kind, path)
         if key in seen:
             continue
@@ -458,45 +468,23 @@ async def get_e2e_run_detail(
     )
     try:
         run_details = _e2e_run_execution_details(orchestrator, run_id)
-        run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
-        artifacts, reports = _e2e_run_artifacts(
-            run_payload,
-            list(run_details.get("artifacts") or []),
+    except E2ERunDatabaseNotFoundError as exc:
+        return JSONResponse(
+            {"error": "not_found", "detail": str(exc)},
+            status_code=404,
         )
-        results_summary = dict(run_details["summary"])
-        results_by_category = dict(run_details["tests_by_category"])
-    except ValueError:
-        run_payload = {
-            "id": run_id,
-            "orchestrator_id": "",
-            "started_at": events[0]["timestamp"] if events else "",
-            "finished_at": None,
-            "status": "unknown",
-            "exit_code": None,
-            "duration_seconds": None,
-            "pytest_args": [],
-            "command": [],
-            "runner_kind": "unknown",
-            "commit_sha": None,
-            "branch": None,
-            "log_path": None,
-            "artifacts_dir": None,
-            "total_tests": None,
-            "current_test": None,
-        }
-        artifacts = []
-        reports = []
-        results_summary = {
-            "untriaged": 0,
-            "has_issue": 0,
-            "flaky": 0,
-            "fixed": 0,
-            "passed": 0,
-            "quarantined": 0,
-            "skipped": 0,
-            "total": 0,
-        }
-        results_by_category = _empty_e2e_result_categories()
+    except E2ERunRecordNotFoundError as exc:
+        return JSONResponse(
+            {"error": "not_found", "detail": str(exc)},
+            status_code=404,
+        )
+    run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
+    artifacts, reports = _e2e_run_artifacts(
+        run_payload,
+        list(run_details.get("artifacts") or []),
+    )
+    results_summary = dict(run_details["summary"])
+    results_by_category = dict(run_details["tests_by_category"])
     payload["run"] = run_payload
     payload["results_summary"] = results_summary
     payload["results_by_category"] = results_by_category
