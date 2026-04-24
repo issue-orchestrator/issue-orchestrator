@@ -692,7 +692,6 @@ export interface ValidationFailureActionSectionPayload {
 
 export interface ValidationFailureDialogPayload {
   action_sections: ValidationFailureActionSectionPayload[];
-  actions: SessionDiagnosticsActionPayload[];
   command: string;
   ended_at: string;
   exit_code?: number | null;

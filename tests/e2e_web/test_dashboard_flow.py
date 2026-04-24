@@ -129,12 +129,6 @@ def test_validation_failure_dialog_renders_results_and_artifacts(
                     {"type": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}
                   ]
                 }
-              ],
-              "actions": [
-                {"type": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"},
-                {"type": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"},
-                {"type": "open_agent_log", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408"},
-                {"type": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}
               ]
             }
             """,

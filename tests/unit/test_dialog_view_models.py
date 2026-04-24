@@ -405,13 +405,12 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
                     "label": "Full Diagnostics",
                     "issue_number": 12,
                     "run_dir": "/run/r1",
+                    "group": "diagnostics",
                 },
             ],
         },
     ]
-    action_types = [action["type"] for action in dialog["actions"]]
-    assert "open_path" in action_types
-    assert "open_session_diagnostics" in action_types
+    assert "actions" not in dialog
 
 
 def test_build_validation_failure_dialog_keeps_missing_exit_code_visible() -> None:

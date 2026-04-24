@@ -841,8 +841,7 @@
           "stdout_excerpt",
           "stderr_excerpt",
           "summary_rows",
-          "action_sections",
-          "actions"
+          "action_sections"
         ],
         "properties": {
           "title": {"type": "string"},
@@ -856,8 +855,7 @@
           "stdout_excerpt": {"type": "array", "items": {"type": "string"}},
           "stderr_excerpt": {"type": "array", "items": {"type": "string"}},
           "summary_rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
-          "action_sections": {"type": "array", "items": {"$ref": "#/components/schemas/ValidationFailureActionSectionPayload"}},
-          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+          "action_sections": {"type": "array", "items": {"$ref": "#/components/schemas/ValidationFailureActionSectionPayload"}}
         }
       },
       "BlockedIssuePayload": {

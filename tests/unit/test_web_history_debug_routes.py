@@ -424,7 +424,9 @@ class TestHistoryEndpoints:
                 "Session Evidence",
                 "Diagnostics",
             ]
-            assert any(action.get("type") == "open_session_diagnostics" for action in payload["actions"])
+            diagnostics_actions = payload["action_sections"][-1]["actions"]
+            assert any(action.get("type") == "open_session_diagnostics" for action in diagnostics_actions)
+            assert "actions" not in payload
         finally:
             set_orchestrator(None)
 

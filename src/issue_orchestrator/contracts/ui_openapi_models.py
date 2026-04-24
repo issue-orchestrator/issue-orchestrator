@@ -701,7 +701,6 @@ class ValidationFailureActionSectionPayload(BaseModel):
 class ValidationFailureDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action_sections: list[ValidationFailureActionSectionPayload]
-    actions: list[SessionDiagnosticsActionPayload]
     command: str
     ended_at: str
     exit_code: int | None = None

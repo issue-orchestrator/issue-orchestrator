@@ -284,6 +284,7 @@ def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     assert "renderValidationFailureActionSections" in js
     assert "action_sections" in body
     assert "diag-validation-grid" in body
+    assert "data.actions" not in body
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:

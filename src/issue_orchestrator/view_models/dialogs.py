@@ -480,6 +480,7 @@ def build_validation_failure_dialog(
         ctx,
         action_type="open_session_diagnostics",
         label="Full Diagnostics",
+        group="diagnostics",
     )
     summary_rows = _build_validation_failure_summary_rows(validation, failed_tests)
     action_sections = _build_validation_failure_action_sections(actions)
@@ -497,7 +498,6 @@ def build_validation_failure_dialog(
         "stderr_excerpt": stderr_excerpt,
         "summary_rows": [row.to_dict() for row in summary_rows],
         "action_sections": action_sections,
-        "actions": actions,
     }
 
 
