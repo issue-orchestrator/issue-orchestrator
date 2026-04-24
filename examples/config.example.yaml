@@ -295,7 +295,14 @@ e2e:
   enabled: false
   role: "auto"                     # auto | executor | reader | disabled
   auto_run_interval_minutes: 30
-  pytest_args: ["tests/e2e", "-v"]
+  runner_kind: "pytest"            # pytest | command
+  pytest_args: ["tests/e2e", "-v", "--tb=short"]
+  # command: ["sh", "scripts/run-e2e-suite.sh"]  # Use when runner_kind=command
+  # junit_xml_paths: [".issue-orchestrator/e2e-results/**/*.xml"]
+  # artifact_paths:
+  #   - ".issue-orchestrator/e2e-results/**/*.log"
+  #   - ".issue-orchestrator/e2e-results/**/*.html"
+  #   - ".issue-orchestrator/e2e-results/**/*.summary.txt"
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
   survive_restart: true

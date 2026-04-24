@@ -96,7 +96,9 @@ def parse_e2e_config(data: dict) -> E2EConfig:
 
     runner_kind = data.get("runner_kind", "pytest")
     if runner_kind not in ("pytest", "command"):
-        runner_kind = "pytest"
+        raise ValueError(
+            f"e2e.runner_kind must be 'pytest' or 'command', got {runner_kind!r}"
+        )
 
     return E2EConfig(
         enabled=data.get("enabled", False),

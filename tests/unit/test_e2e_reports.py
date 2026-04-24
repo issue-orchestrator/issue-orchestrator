@@ -44,6 +44,31 @@ def test_parse_junit_report_extracts_cases(tmp_path: Path) -> None:
     assert cases[2].outcome == "skipped"
 
 
+def test_parse_junit_report_preserves_error_outcome_under_testsuites_root(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuites>
+  <testsuite name="suite">
+    <testcase classname="pkg.test_mod" name="test_errors" time="0.50">
+      <error message="RuntimeError">kaboom</error>
+    </testcase>
+  </testsuite>
+</testsuites>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert len(cases) == 1
+    assert cases[0].outcome == "error"
+    assert cases[0].failure_summary == "RuntimeError"
+    assert cases[0].failure_details == "RuntimeError\nkaboom"
+
+
 def test_parse_junit_report_rejects_missing_testcases(tmp_path: Path) -> None:
     report = tmp_path / "junit.xml"
     report.write_text("<testsuite />", encoding="utf-8")
@@ -57,6 +82,29 @@ def test_parse_junit_report_rejects_missing_case_name(tmp_path: Path) -> None:
     report.write_text("<testsuite><testcase classname='pkg.test_mod' /></testsuite>", encoding="utf-8")
 
     with pytest.raises(ValueError, match="missing a non-empty name"):
+        parse_junit_report(report)
+
+
+def test_parse_junit_report_rejects_invalid_time_values(tmp_path: Path) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite>
+  <testcase classname="pkg.test_mod" name="test_bad_time" time="not-a-float" />
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="could not convert string to float"):
+        parse_junit_report(report)
+
+
+def test_parse_junit_report_reports_parse_location(tmp_path: Path) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text("<testsuite>\n  <testcase></testsuite>", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"Malformed JUnit XML: .*line 2, column 14"):
         parse_junit_report(report)
 
 
@@ -134,4 +182,18 @@ def test_discover_report_artifacts_rejects_missing_configured_artifact_path(
             tmp_path,
             junit_xml_paths=[],
             artifact_paths=["reports/missing.log"],
+        )
+
+
+def test_discover_report_artifacts_rejects_paths_outside_repo_root(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path.parent / "outside-report.log"
+    outside.write_text("hello\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="outside repo root"):
+        discover_report_artifacts(
+            tmp_path,
+            junit_xml_paths=[],
+            artifact_paths=[f"../{outside.name}"],
         )

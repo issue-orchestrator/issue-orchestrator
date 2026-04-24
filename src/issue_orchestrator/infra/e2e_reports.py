@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import glob
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
-from xml.etree import ElementTree
+
+from defusedxml import ElementTree
 
 
 CaseOutcome = Literal["passed", "failed", "error", "skipped"]
@@ -88,7 +90,9 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
     try:
         root = ElementTree.parse(path).getroot()
     except ElementTree.ParseError as exc:
-        raise ValueError(f"Malformed JUnit XML: {path}") from exc
+        raise ValueError(
+            f"Malformed JUnit XML: {path}{_parse_error_position(exc)}"
+        ) from exc
 
     cases = root.findall(".//testcase")
     if not cases:
@@ -212,25 +216,40 @@ def _resolve_paths(
     repo_root: Path,
     patterns: list[str] | tuple[str, ...],
 ) -> list[Path]:
+    repo_root_resolved = repo_root.resolve()
     resolved: list[Path] = []
     seen: set[Path] = set()
     for pattern in patterns:
         candidate = pattern.strip()
         if not candidate:
             continue
-        matches = sorted(repo_root.glob(candidate))
-        if not matches:
-            direct = repo_root / candidate
-            matches = [direct] if direct.exists() else []
+        matches = _glob_matches(repo_root, candidate)
         for path in matches:
             if path.is_dir():
                 continue
             real = path.resolve()
+            if not real.is_relative_to(repo_root_resolved):
+                raise ValueError(
+                    f"E2E report path resolves outside repo root: {candidate}"
+                )
             if real in seen:
                 continue
             resolved.append(real)
             seen.add(real)
     return resolved
+
+
+def _glob_matches(repo_root: Path, candidate: str) -> list[Path]:
+    search_pattern = candidate if Path(candidate).is_absolute() else str(repo_root / candidate)
+    return [Path(match) for match in sorted(glob.glob(search_pattern, recursive=True))]
+
+
+def _parse_error_position(exc: ElementTree.ParseError) -> str:
+    position = getattr(exc, "position", None)
+    if not isinstance(position, tuple) or len(position) != 2:
+        return ""
+    line, column = position
+    return f" (line {line}, column {column})"
 
 
 def _artifact_record_for_path(path: Path) -> E2ERunArtifactRecord:

@@ -459,14 +459,6 @@ class TestMaybeTriggerE2E:
 
         assert result is False
 
-
-def test_command_runner_execution_spec_requires_command() -> None:
-    """Command-mode E2E config must declare the command to execute."""
-    config = E2EConfig(runner_kind="command", command=[])
-
-    with pytest.raises(ValueError, match="e2e.command must be configured"):
-        config.execution_spec()
-
     def test_trigger_auto_run_zero(self, mock_config, tmp_path: Path):
         """Test that trigger returns False when auto_run_interval is 0."""
         mock_config.e2e.auto_run_interval_minutes = 0
@@ -577,6 +569,14 @@ def test_command_runner_execution_spec_requires_command() -> None:
         result = maybe_trigger_e2e(mock_config, tmp_path, "test-orch")
 
         assert result is False
+
+
+def test_command_runner_execution_spec_requires_command() -> None:
+    """Command-mode E2E config must declare the command to execute."""
+    config = E2EConfig(runner_kind="command", command=[])
+
+    with pytest.raises(ValueError, match="e2e.command must be configured"):
+        config.execution_spec()
 
 
 class TestGetE2ERunnerManager:

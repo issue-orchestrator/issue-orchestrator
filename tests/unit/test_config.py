@@ -2247,6 +2247,18 @@ e2e:
         assert config.e2e.stop_on_first_failure is False
 
 
+class TestE2ERunnerKindConfig:
+    """Tests for e2e.runner_kind parsing."""
+
+    def test_invalid_runner_kind_raises(self) -> None:
+        from issue_orchestrator.infra.config_sections import parse_e2e_config
+
+        with pytest.raises(
+            ValueError,
+            match="e2e.runner_kind must be 'pytest' or 'command'",
+        ):
+            parse_e2e_config({"runner_kind": "vitest"})
+
 
 class TestE2EAutoSettings:
     """Tests for e2e auto quarantine/issue settings."""

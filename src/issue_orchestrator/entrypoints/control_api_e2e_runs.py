@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -43,35 +44,19 @@ def _execution_spec_for_start_request(
     execution_spec = config.e2e.execution_spec()
     allow_retry_once = body.get("allow_retry_once", execution_spec.allow_retry_once)
     if execution_spec.runner_kind == "pytest" and body.get("pytest_args") is not None:
-        return E2EExecutionSpec(
-            runner_kind="pytest",
+        return replace(
+            execution_spec,
             pytest_args=tuple(body["pytest_args"]),
-            command=execution_spec.command,
-            junit_xml_paths=execution_spec.junit_xml_paths,
-            artifact_paths=execution_spec.artifact_paths,
             allow_retry_once=allow_retry_once,
-            stop_on_first_failure=execution_spec.stop_on_first_failure,
         )
     if execution_spec.runner_kind == "command" and body.get("command") is not None:
-        return E2EExecutionSpec(
-            runner_kind="command",
-            pytest_args=execution_spec.pytest_args,
+        return replace(
+            execution_spec,
             command=tuple(body["command"]),
-            junit_xml_paths=execution_spec.junit_xml_paths,
-            artifact_paths=execution_spec.artifact_paths,
             allow_retry_once=allow_retry_once,
-            stop_on_first_failure=execution_spec.stop_on_first_failure,
         )
     if allow_retry_once != execution_spec.allow_retry_once:
-        return E2EExecutionSpec(
-            runner_kind=execution_spec.runner_kind,
-            pytest_args=execution_spec.pytest_args,
-            command=execution_spec.command,
-            junit_xml_paths=execution_spec.junit_xml_paths,
-            artifact_paths=execution_spec.artifact_paths,
-            allow_retry_once=allow_retry_once,
-            stop_on_first_failure=execution_spec.stop_on_first_failure,
-        )
+        return replace(execution_spec, allow_retry_once=allow_retry_once)
     return execution_spec
 
 
