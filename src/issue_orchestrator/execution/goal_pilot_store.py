@@ -555,12 +555,16 @@ class SqliteGoalPilotStore:
         values.append(now)
         values.append(journey_id)
         with self._transaction() as conn:
+            # S608: ``columns`` is built from the ``allowed`` allowlist above
+            # plus a fixed ``updated_at = ?`` suffix, so it can only ever
+            # contain hardcoded ``<column> = ?`` strings. User-supplied
+            # values go through ``?`` placeholders.
             conn.execute(
                 f"""
                 UPDATE goal_pilot_journeys
                 SET {", ".join(columns)}
                 WHERE journey_id = ?
-                """,
+                """,  # noqa: S608
                 tuple(values),
             )
         row = self._get_connection().execute(
