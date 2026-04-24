@@ -524,6 +524,14 @@ def _dom_click_hit_tested(locator: Locator, description: str) -> None:
     locator.evaluate("(element) => element.click()")
 
 
+def _open_e2e_tab(page: Page) -> None:
+    """Switch to the E2E tab and wait for the new page bundle to load."""
+    page.locator("#tab-e2e").click()
+    page.wait_for_url("**?tab=e2e**")
+    page.wait_for_function("() => window.dashboardBundleLoaded === true")
+    expect(page.locator("#panel-e2e")).to_be_visible(timeout=5000)
+
+
 def _browser_fetch_json(page: Page, url: str) -> dict[str, Any]:
     """Fetch JSON through the browser so assertions cover the page's contract surface."""
     result: dict[str, Any] | None = None
@@ -891,7 +899,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # Open the run drawer through the visible E2E Run History Timeline
     # affordance. This is intentionally not page.evaluate(): the
     # regression was that users had no visible way to get here.
-    page.locator("#tab-e2e").click()
+    _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
         has=page.locator("button", has_text="Timeline"),
@@ -1361,7 +1369,7 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     latest_cycle = issue_lifecycle.cycles[-1]
     assert latest_cycle.coder.session_recording.kind == "available"
 
-    page.locator("#tab-e2e").click()
+    _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
         has=page.locator("button", has_text="Open run"),
@@ -1529,7 +1537,7 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
             body=json.dumps(synthetic_payload),
         ),
     )
-    page.locator("#tab-e2e").click()
+    _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
         has=page.locator("button", has_text="Open run"),
