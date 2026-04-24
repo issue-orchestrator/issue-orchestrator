@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict
 class AgentIdentityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
-    role: Literal['coder'] | Literal['reviewer'] | Literal['rework'] | Literal['validator'] | Literal['e2e_runner'] | Literal['orchestrator']
+    role: Literal['coder', 'reviewer', 'rework', 'validator', 'e2e_runner', 'orchestrator']
 
 class BlockedCodingAttemptPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -432,13 +432,13 @@ class LinkedIssueLifecyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: OpenIssueTimelineCommandPayload
     issue_number: int
-    relationship: Literal['exercises'] | Literal['discovered'] | Literal['failed_with'] | Literal['validates']
+    relationship: Literal['exercises', 'discovered', 'failed_with', 'validates']
 
 class MissingCodingEvidencePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     commands: list[TimelineCommandPayload]
     diagnostics: list[TimelineDiagnosticPayload]
-    expected_state: Literal['completed'] | Literal['running'] | Literal['blocked'] | Literal['failed']
+    expected_state: Literal['completed', 'running', 'blocked', 'failed']
     issue_number: int
     kind: Literal['missing_coding_evidence']
     missing: list[MissingEvidencePayload]
@@ -464,7 +464,7 @@ class MissingReviewEvidencePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     commands: list[TimelineCommandPayload]
     diagnostics: list[TimelineDiagnosticPayload]
-    expected_state: Literal['approved'] | Literal['changes_requested'] | Literal['running']
+    expected_state: Literal['approved', 'changes_requested', 'running']
     kind: Literal['missing_review_evidence']
     missing: list[MissingEvidencePayload]
     observed_at: str
@@ -481,7 +481,7 @@ class OpenIssueTimelineCommandPayload(BaseModel):
     issue_number: int
     kind: Literal['open_issue_timeline']
     label: str
-    scope_kind: Literal['dashboard'] | Literal['e2e_run']
+    scope_kind: Literal['dashboard', 'e2e_run']
 
 class OpenReviewFeedbackCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -573,7 +573,7 @@ class ReviewFailedPayload(BaseModel):
 class ReviewNotReachedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['review_not_reached']
-    reason: Literal['coding_in_progress'] | Literal['coding_failed'] | Literal['publish_failed'] | Literal['validation_failed'] | Literal['not_required']
+    reason: Literal['coding_in_progress', 'coding_failed', 'publish_failed', 'validation_failed', 'not_required']
 
 class ReviewRunningPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -617,7 +617,7 @@ class RunningE2ETestExecutionPayload(BaseModel):
 
 class SessionDiagnosticsActionPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
-    group: Literal['validation_artifacts'] | Literal['session_evidence'] | Literal['diagnostics'] | Literal[None] = None
+    group: Literal['validation_artifacts', 'session_evidence', 'diagnostics'] | None = None
     issue_number: int | None = None
     label: str
     path: str | None = None
@@ -669,12 +669,12 @@ class TimelineDiagnosticPayload(BaseModel):
     code: str
     evidence_ref: str | None = None
     message: str
-    severity: Literal['info'] | Literal['warning'] | Literal['error']
+    severity: Literal['info', 'warning', 'error']
 
 class TimelineSubjectPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
-    kind: Literal['dashboard'] | Literal['issue'] | Literal['e2e_suite'] | Literal['e2e_run']
+    kind: Literal['dashboard', 'issue', 'e2e_suite', 'e2e_run']
     label: str
     outcome: str | None = None
     status: str | None = None
@@ -703,7 +703,7 @@ class ValidationFailureDialogPayload(BaseModel):
     action_sections: list[ValidationFailureActionSectionPayload]
     command: str
     ended_at: str
-    exit_code: int | None = None
+    exit_code: int | None
     failed_tests: list[str]
     reason: str
     started_at: str
@@ -716,7 +716,7 @@ class ValidationFailureDialogPayload(BaseModel):
 class ValidationNotRunPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['not_run']
-    reason: Literal['coding_in_progress'] | Literal['validation_disabled'] | Literal['not_required']
+    reason: Literal['coding_in_progress', 'validation_disabled', 'not_required']
 
 class ValidationPassedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

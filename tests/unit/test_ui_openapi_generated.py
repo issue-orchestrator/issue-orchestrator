@@ -56,7 +56,7 @@ def test_ui_openapi_generator_renders_const_enum_and_union_shapes() -> None:
     dts_types = render_dts_types(components)
 
     assert "kind: Literal['const_enum']" in python_models
-    assert "state: Literal['queued'] | Literal['done']" in python_models
+    assert "state: Literal['queued', 'done']" in python_models
     assert "maybe_text: str | None" in python_models
     assert "UnionPayload: TypeAlias = ConstEnumPayload | None" in python_models
     assert 'kind: "const_enum";' in dts_types
@@ -78,6 +78,15 @@ def test_ui_openapi_generator_detects_nullable_schema_variants() -> None:
     assert is_optional({"type": "string", "nullable": True})
     assert is_optional({"anyOf": [{"type": "string"}, {"type": "null"}]})
     assert resolve_type({"type": ["integer", "null"]}) == "int | None"
+    assert (
+        resolve_type(
+            {
+                "type": ["string", "null"],
+                "enum": ["validation_artifacts", "session_evidence", "diagnostics", None],
+            }
+        )
+        == "Literal['validation_artifacts', 'session_evidence', 'diagnostics'] | None"
+    )
 
 
 def test_ui_openapi_generator_rejects_mixed_union_object_schema() -> None:

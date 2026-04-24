@@ -694,7 +694,7 @@ export interface ValidationFailureDialogPayload {
   action_sections: ValidationFailureActionSectionPayload[];
   command: string;
   ended_at: string;
-  exit_code?: number | null;
+  exit_code: number | null;
   failed_tests: string[];
   reason: string;
   started_at: string;

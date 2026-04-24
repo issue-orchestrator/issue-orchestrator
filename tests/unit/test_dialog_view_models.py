@@ -1,4 +1,7 @@
+import pytest
+
 from issue_orchestrator.view_models.dialogs import (
+    _build_validation_failure_action_sections,
     build_blocked_issues_dialog,
     build_config_dialog,
     build_debug_dialog,
@@ -436,6 +439,20 @@ def test_build_validation_failure_dialog_keeps_missing_exit_code_visible() -> No
 
     assert dialog["exit_code"] is None
     assert {"label": "Exit Code", "value": "-"} in dialog["summary_rows"]
+
+
+def test_build_validation_failure_action_sections_rejects_unknown_group() -> None:
+    with pytest.raises(ValueError, match="Unknown validation failure action group"):
+        _build_validation_failure_action_sections(
+            [
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Record",
+                    "path": "/tmp/validation-record.json",
+                    "group": "sesion_evidence",
+                }
+            ]
+        )
 
 
 def test_build_session_diagnostics_dialog_drops_malformed_analysis():

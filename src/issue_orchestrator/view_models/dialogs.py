@@ -294,6 +294,11 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     return actions
 
 
+_SESSION_DIAGNOSTIC_ACTION_GROUPS = frozenset(
+    {"validation_artifacts", "session_evidence", "diagnostics"}
+)
+
+
 def _append_open_path(
     actions: list[dict[str, Any]],
     label: str,
@@ -305,7 +310,7 @@ def _append_open_path(
         return
     payload: dict[str, Any] = {"type": "open_path", "label": label, "path": path}
     if group:
-        payload["group"] = group
+        payload["group"] = _validated_session_action_group(group)
     actions.append(payload)
 
 
@@ -326,8 +331,15 @@ def _append_run_scoped_action(
         "run_dir": ctx.run_dir,
     }
     if group:
-        payload["group"] = group
+        payload["group"] = _validated_session_action_group(group)
     actions.append(payload)
+
+
+def _validated_session_action_group(group: str) -> str:
+    if group not in _SESSION_DIAGNOSTIC_ACTION_GROUPS:
+        allowed = ", ".join(sorted(_SESSION_DIAGNOSTIC_ACTION_GROUPS))
+        raise ValueError(f"Unknown session diagnostics action group {group!r}; expected one of: {allowed}")
+    return group
 
 
 def _format_extra_provider_args(raw: Any) -> str:
@@ -531,9 +543,12 @@ def _build_validation_failure_action_sections(
     }
 
     for action in actions:
-        group = str(action.get("group") or "diagnostics")
+        group = action.get("group")
+        if not isinstance(group, str):
+            raise ValueError(f"Validation failure action {action.get('label')!r} is missing a group")
         if group not in grouped_actions:
-            group = "diagnostics"
+            allowed = ", ".join(sorted(grouped_actions))
+            raise ValueError(f"Unknown validation failure action group {group!r}; expected one of: {allowed}")
         grouped_actions[group].append(action)
 
     sections: list[dict[str, Any]] = []

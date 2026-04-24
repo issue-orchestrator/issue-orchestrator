@@ -39,7 +39,7 @@ def resolve_type(schema: dict[str, Any]) -> str:
     if "const" in schema:
         return _python_literal(schema["const"])
     if "enum" in schema and isinstance(schema["enum"], list):
-        return " | ".join(_python_literal(item) for item in schema["enum"])
+        return _resolve_python_enum(schema["enum"])
     if "$ref" in schema:
         return ref_name(schema["$ref"])
 
@@ -237,6 +237,17 @@ def _ts_object_type(schema: dict[str, Any]) -> str:
 
 def _python_literal(value: Any) -> str:
     return f"Literal[{value!r}]"
+
+
+def _resolve_python_enum(values: list[Any]) -> str:
+    non_null_values = [value for value in values if value is not None]
+    parts: list[str] = []
+    if non_null_values:
+        literal_values = ", ".join(repr(value) for value in non_null_values)
+        parts.append(f"Literal[{literal_values}]")
+    if any(value is None for value in values):
+        parts.append("None")
+    return " | ".join(parts) if parts else "Any"
 
 
 def _is_union_alias_schema(schema: dict[str, Any]) -> bool:
