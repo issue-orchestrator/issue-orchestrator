@@ -873,6 +873,16 @@ async def favicon():
     )
 
 
+_DEV_NO_AUTH_BANNER_HTML = (
+    '<div style="background:#b91c1c;color:#fff;padding:8px 16px;'
+    "text-align:center;font-family:sans-serif;font-weight:600;"
+    'letter-spacing:0.4px;z-index:9999;position:sticky;top:0;">'
+    "⚠  Authentication DISABLED (--dev-no-auth). "
+    "Any local process can mutate state. Dev use only."
+    "</div>"
+)
+
+
 def _render_login_page(error: str | None = None) -> HTMLResponse:
     """Render the minimal Control Center login form.
 
@@ -962,6 +972,15 @@ async def control_center_ui(request: Request) -> HTMLResponse:
     content = content.replace("{{ version }}", __version__)
     content = content.replace("{{ commit_sha }}", commit_short)
     content = content.replace("{{ csrf_token }}", csrf_token or "")
+    # Render the dev-mode banner only when the operator has
+    # explicitly disabled auth (``--dev-no-auth`` /
+    # ``ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1``). In the normal
+    # auth-enabled path we can't reach this branch without a valid
+    # session cookie, so no banner is needed.
+    content = content.replace(
+        "{{ dev_no_auth_banner }}",
+        _DEV_NO_AUTH_BANNER_HTML if auth_disabled else "",
+    )
     return HTMLResponse(content)
 
 

@@ -25,7 +25,28 @@ from typing import Any
 
 import uvicorn
 
+import ipaddress
+
 from .control_api import configure_api_token, control_app
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether ``host`` binds only to the loopback interface.
+
+    Accepts hostnames (``localhost``, ``ip6-localhost``) and literal
+    addresses (``127.0.0.0/8``, ``::1``). Anything else — including
+    ``0.0.0.0``, ``::``, or a concrete LAN interface — counts as
+    non-loopback so ``--dev-no-auth`` can refuse it.
+    """
+    if not host:
+        return False
+    normalized = host.strip().lower()
+    if normalized in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
 from ..infra import browser_session
 from ..infra.api_token import resolve_agent_callback_token, resolve_api_token
@@ -192,8 +213,40 @@ def main() -> int:
         action="store_true",
         help="Don't show system tray icon",
     )
+    parser.add_argument(
+        "--dev-no-auth",
+        action="store_true",
+        help=(
+            "DEVELOPMENT ONLY: disable Control API authentication. "
+            "Any local process can mutate state. Also triggered by "
+            "ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1. Never use on a shared "
+            "host or in production."
+        ),
+    )
 
     args = parser.parse_args()
+    if os.environ.get("ISSUE_ORCHESTRATOR_DEV_NO_AUTH") == "1":
+        args.dev_no_auth = True
+
+    # Validate the --dev-no-auth + --host combination before any
+    # startup side effect runs. ``write_dashboard_pid``, the browser
+    # auto-open thread, and the reaper all touch observable state
+    # (PID file on disk, a browser tab, a background thread); if we
+    # refused the combination after them we would leave behind a
+    # stale dashboard-detection PID file and potentially open the
+    # operator's browser to a server that never bound. Tracked as
+    # #6017 re-review-4 P2.
+    if args.dev_no_auth and not _is_loopback_host(args.host):
+        # Use ``print`` + no logger: ``logging.basicConfig`` has not
+        # been called yet in this pre-side-effects branch, so a
+        # logger call would go to the root default handler. Keep
+        # the refusal message visible on stderr for scripts.
+        print(
+            f"Refusing --dev-no-auth with --host {args.host}. "
+            "Only loopback binds are allowed in dev-no-auth mode.",
+            flush=True,
+        )
+        return 2
 
     # Default engine target repo to where Control Center was launched from.
     os.environ.setdefault("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(Path.cwd().resolve()))
@@ -237,12 +290,45 @@ def main() -> int:
     # of ``ControlAPIServer.start``), so if we skip this call every
     # request lands on an unauthenticated endpoint — the exact hole
     # flagged in #6017 review (P1 on #6011).
-    admin_token = resolve_api_token()
-    agent_callback_token = resolve_agent_callback_token()
-    configure_api_token(admin_token, agent_callback=agent_callback_token)
-    browser_session.initialize()
-    os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
-    os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
+    if args.dev_no_auth:
+        # The non-loopback refusal already ran up-top, before any
+        # startup side effects. By the time we get here we know the
+        # operator asked for a loopback dev-no-auth mode; just log,
+        # banner, and wire the middleware to pass-through.
+        logger.error(
+            "⚠  Control Center running with --dev-no-auth: "
+            "authentication is DISABLED. Any local process can mutate "
+            "state. DO NOT use on a shared host or in production. "
+            "(set via %s)",
+            "ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1"
+            if os.environ.get("ISSUE_ORCHESTRATOR_DEV_NO_AUTH") == "1"
+            else "--dev-no-auth",
+        )
+        print(
+            "\n\033[1;31m"
+            "⚠  AUTH DISABLED (--dev-no-auth). Any local process can "
+            "mutate Control API state. Dev only."
+            "\033[0m\n",
+            flush=True,
+        )
+        # Explicitly clear any preexisting auth state. If the module
+        # globals were seeded from an earlier server run, or if the
+        # operator exported ``ISSUE_ORCHESTRATOR_API_TOKEN`` /
+        # ``ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN`` before launching
+        # this CC, the middleware would still enforce against them.
+        # ``--dev-no-auth`` must be an authoritative OFF, not a hope
+        # that state is clean.
+        configure_api_token(None, agent_callback=None)
+        os.environ.pop("ISSUE_ORCHESTRATOR_API_TOKEN", None)
+        os.environ.pop("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", None)
+        browser_session.initialize()
+    else:
+        admin_token = resolve_api_token()
+        agent_callback_token = resolve_agent_callback_token()
+        configure_api_token(admin_token, agent_callback=agent_callback_token)
+        browser_session.initialize()
+        os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
+        os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
 
     # Start system tray icon (menu bar on macOS)
     tray_icon = _start_tray_icon(url) if not args.no_tray else None
