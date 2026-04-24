@@ -1002,6 +1002,10 @@ def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> Non
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
     artifact_button_body = _function_body(js, "_artifactButton")
     artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
+    row_action_button_body = _function_body(js, "_e2eRowActionButton")
+    row_action_dispatch_body = _function_body(js, "runE2ERowActionFromButton")
+    row_body = _function_body(js, "renderTestRow")
+    dropdown_body = _function_body(js, "showCreateIssueDropdown")
     result_evidence_body = _function_body(js, "_renderResultEvidenceButtons")
     lifecycle_body = _function_body(js, "renderE2ELinkedIssueLifecycles")
     lifecycle_row_body = _function_body(js, "_renderLinkedIssueLifecycle")
@@ -1017,6 +1021,13 @@ def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> Non
     assert "data-artifact-path" in artifact_button_body
     assert "openPath('" not in artifact_button_body
     assert "button.dataset.artifactPath" in artifact_open_body
+    assert "data-e2e-action" in row_action_button_body
+    assert "dataset.nodeid" in row_action_dispatch_body
+    assert "closeE2EIssue(" not in row_body
+    assert "showCreateIssueDropdown(this, '" not in row_body
+    assert "quarantineSingleTest('" not in row_body
+    assert "copyTestErrorFromRun('" not in row_body
+    assert "createSingleIssueWithAgent('" not in dropdown_body
     assert "No run-scoped logs or reports were captured for this run." in evidence_body
     assert "Run Log" in result_evidence_body
     assert "Report" in result_evidence_body

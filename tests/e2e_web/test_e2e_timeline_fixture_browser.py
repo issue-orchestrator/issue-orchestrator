@@ -1464,11 +1464,14 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
             "path": "/tmp/tixmeup-e2e-smoke.xml",
         }
     ]
+    adversarial_artifact_path = (
+        "/tmp/compose \"quotes\" <tag> back\\slash 'apostrophe'.log"
+    )
     synthetic_payload["artifacts"] = [
         {
             "kind": "text_artifact",
             "label": "Text Artifact: compose-services.log",
-            "path": "/tmp/compose-services.log",
+            "path": adversarial_artifact_path,
         },
         {
             "kind": "text_artifact",
@@ -1575,7 +1578,7 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     assert opened_paths == [
         "/tmp/tixmeup-e2e-worker.log",
         "/tmp/tixmeup-e2e-smoke.xml",
-        "/tmp/compose-services.log",
+        adversarial_artifact_path,
         "/tmp/tixmeup-e2e-smoke.summary.txt",
     ]
 

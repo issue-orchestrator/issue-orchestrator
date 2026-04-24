@@ -150,6 +150,65 @@ function openE2EArtifactFromButton(button) {
     openPath(path);
 }
 
+function _datasetButtonAttr(name, value) {
+    if (value === null || value === undefined || value === '') return '';
+    return ` data-${name}="${escapeAttr(String(value))}"`;
+}
+
+function _e2eRowActionButton(label, options) {
+    options = options || {};
+    const action = String(options.action || '').trim();
+    if (!action) {
+        throw new Error('E2E row action button requires an action');
+    }
+    const cssClass = options.cssClass || 'action-btn';
+    return `<button class="${cssClass}" data-e2e-action="${escapeAttr(action)}"${_datasetButtonAttr('nodeid', options.nodeid)}${_datasetButtonAttr('issue-number', options.issueNumber)}${_datasetButtonAttr('agent', options.agent)} onclick="runE2ERowActionFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
+}
+
+function runE2ERowActionFromButton(button) {
+    const dataset = button && button.dataset ? button.dataset : {};
+    const action = String(dataset.e2eAction || '').trim();
+    const nodeid = String(dataset.nodeid || '').trim();
+    switch (action) {
+    case 'close_issue': {
+        const issueNumber = Number.parseInt(String(dataset.issueNumber || '').trim(), 10);
+        if (!Number.isInteger(issueNumber) || !nodeid) {
+            throw new Error('Close-issue action missing issue number or nodeid');
+        }
+        void closeE2EIssue(issueNumber, nodeid);
+        return;
+    }
+    case 'create_issue_dropdown':
+        if (!nodeid) {
+            throw new Error('Create-issue action missing nodeid');
+        }
+        showCreateIssueDropdown(button, nodeid);
+        return;
+    case 'quarantine_test':
+        if (!nodeid) {
+            throw new Error('Quarantine action missing nodeid');
+        }
+        void quarantineSingleTest(nodeid);
+        return;
+    case 'copy_test_error':
+        if (!nodeid) {
+            throw new Error('Copy-error action missing nodeid');
+        }
+        copyTestErrorFromRun(nodeid);
+        return;
+    case 'create_issue_with_agent': {
+        const agent = String(dataset.agent || '').trim();
+        if (!nodeid || !agent) {
+            throw new Error('Create-issue-with-agent action missing nodeid or agent');
+        }
+        void createSingleIssueWithAgent(nodeid, agent);
+        return;
+    }
+    default:
+        throw new Error(`Unknown E2E row action: ${action}`);
+    }
+}
+
 function _primaryRunReport(data) {
     const reports = Array.isArray(data && data.reports) ? data.reports : [];
     return reports.find(report => report && report.kind === 'html_report')
@@ -655,9 +714,12 @@ function renderTestRow(test, category) {
                     → #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span>
                 </a>
                 <div class="test-actions">
-                    <button class="action-btn success" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
-                        Close #${issueNum}
-                    </button>
+                    ${_e2eRowActionButton(`Close #${issueNum}`, {
+                        action: 'close_issue',
+                        cssClass: 'action-btn success',
+                        issueNumber: issueNum,
+                        nodeid: test.nodeid,
+                    })}
                     ${actionsHtml}
                 </div>
             `;
@@ -673,15 +735,21 @@ function renderTestRow(test, category) {
     } else if (category === 'untriaged' || category === 'flaky') {
         actionsHtml = `
             <div class="test-actions">
-                <button class="action-btn primary" onclick="showCreateIssueDropdown(this, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
-                    Create Issue ▼
-                </button>
-                <button class="action-btn warning" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
-                    Quarantine
-                </button>
-                <button class="action-btn" onclick="copyTestErrorFromRun('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
-                    Copy Error
-                </button>
+                ${_e2eRowActionButton('Create Issue ▼', {
+                    action: 'create_issue_dropdown',
+                    cssClass: 'action-btn primary',
+                    nodeid: test.nodeid,
+                })}
+                ${_e2eRowActionButton('Quarantine', {
+                    action: 'quarantine_test',
+                    cssClass: 'action-btn warning',
+                    nodeid: test.nodeid,
+                })}
+                ${_e2eRowActionButton('Copy Error', {
+                    action: 'copy_test_error',
+                    cssClass: 'action-btn',
+                    nodeid: test.nodeid,
+                })}
                 ${actionsHtml}
             </div>
         `;
@@ -918,11 +986,12 @@ function showCreateIssueDropdown(button, nodeid) {
     dropdown.className = 'create-issue-dropdown';
     dropdown.innerHTML = `
         <div class="dropdown-content">
-            ${window.dashboardData.agents.map(a => `
-                <button class="dropdown-item" onclick="createSingleIssueWithAgent('${escapeAttr(nodeid)}', '${a}'); event.stopPropagation();">
-                    ${a}
-                </button>
-            `).join('')}
+            ${window.dashboardData.agents.map(a => _e2eRowActionButton(a, {
+                action: 'create_issue_with_agent',
+                cssClass: 'dropdown-item',
+                nodeid,
+                agent: a,
+            })).join('')}
         </div>
     `;
     button.parentNode.insertBefore(dropdown, button.nextSibling);
