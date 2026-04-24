@@ -91,7 +91,14 @@ goal_pilot:
 e2e:
   enabled: true
   auto_run_interval_minutes: 240
-  pytest_args: ["tests/e2e", "-v", "--tb=short"]
+  runner_kind: pytest
+  pytest_args:
+    - tests/e2e
+    - -v
+    - --tb=short
+    - --junitxml=.issue-orchestrator/e2e-results/issue-orchestrator-e2e.xml
+  junit_xml_paths:
+    - .issue-orchestrator/e2e-results/issue-orchestrator-e2e.xml
   allow_retry_once: true
   quarantine_file: tests/e2e/quarantine.txt
   survive_restart: true

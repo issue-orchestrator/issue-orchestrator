@@ -62,6 +62,7 @@ Notes:
 - `pytest_args` still drive live pytest execution and retries.
 - `junit_xml_paths` point at the files to ingest after the run completes.
 - `Raw Output` is available even if the XML report is missing or incomplete.
+- Pytest resume works best when long workflows are split into discrete test functions so already-passing nodeids can be deselected after an interruption.
 
 ### Command runner: framework-neutral mode
 
