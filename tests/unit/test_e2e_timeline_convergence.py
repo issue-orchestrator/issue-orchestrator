@@ -817,6 +817,38 @@ class TestE2ERunDetailEndpoint:
                 [{"kind": "html_report", "label": "HTML Report", "path": 17}],
             )
 
+    def test_returns_500_without_leaking_malformed_artifact_details(self):
+        """Endpoint returns a generic 500 when stored artifact rows are malformed."""
+        from unittest.mock import patch
+
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+
+        store_key = TimelineKey.for_e2e_run(10).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1",
+                timestamp="2026-01-01T00:00:00Z",
+                event="e2e.run_started",
+                data={"branch": "main"},
+                source_event="e2e.run_started",
+            )
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        set_orchestrator(mock_orch)
+        try:
+            with patch(
+                "issue_orchestrator.entrypoints.web_issue_detail_routes._e2e_run_artifacts",
+                side_effect=ValueError("secret /tmp/path should not leak"),
+            ):
+                response = client.get("/api/e2e-run-detail/10")
+            assert response.status_code == 500
+            assert response.json() == {
+                "error": "internal_error",
+                "detail": "Malformed E2E run artifacts",
+            }
+        finally:
+            set_orchestrator(None)
+
     def test_returns_200_with_e2e_events(self):
         """Endpoint returns 200 with events from the shared timeline store."""
         from issue_orchestrator.entrypoints.web import set_orchestrator

@@ -468,21 +468,26 @@ async def get_e2e_run_detail(
     )
     try:
         run_details = _e2e_run_execution_details(orchestrator, run_id)
-    except E2ERunDatabaseNotFoundError as exc:
-        return JSONResponse(
-            {"error": "not_found", "detail": str(exc)},
-            status_code=404,
-        )
-    except E2ERunRecordNotFoundError as exc:
+    except (E2ERunDatabaseNotFoundError, E2ERunRecordNotFoundError) as exc:
         return JSONResponse(
             {"error": "not_found", "detail": str(exc)},
             status_code=404,
         )
     run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
-    artifacts, reports = _e2e_run_artifacts(
-        run_payload,
-        list(run_details.get("artifacts") or []),
-    )
+    try:
+        artifacts, reports = _e2e_run_artifacts(
+            run_payload,
+            list(run_details.get("artifacts") or []),
+        )
+    except ValueError:
+        logger.exception("Malformed E2E artifact rows for run %s", run_id)
+        return JSONResponse(
+            {
+                "error": "internal_error",
+                "detail": "Malformed E2E run artifacts",
+            },
+            status_code=500,
+        )
     results_summary = dict(run_details["summary"])
     results_by_category = dict(run_details["tests_by_category"])
     payload["run"] = run_payload
