@@ -55,3 +55,39 @@ def test_invalid_token_rerenders_form_with_error(
     page.fill('input[name="token"]', "not-the-admin-token")
     page.click('button[type="submit"]')
     expect(page.locator(".err")).to_contain_text("Invalid token")
+
+
+@pytest.mark.usefixtures("browser_context_args")
+def test_session_cookie_reaches_mounted_control_route(
+    page: Page,
+    authed_web_server: dict[str, object],
+    cc_admin_token: str,
+) -> None:
+    """Logged-in dashboard can call ``/control/*`` through the same origin.
+
+    Closes the residual coverage gap from #6041 re-review: the unit
+    tests pin the middleware gate synthetically, but only a real
+    browser proves that the ``Set-Cookie`` from the ``POST /login``
+    303 redirect propagates to ``/control/*`` requests fired from the
+    dashboard page.
+
+    One extra fetch via ``page.evaluate`` — no second page load, so
+    this adds <1s to the suite.
+    """
+    base_url = authed_web_server["url"]
+    assert isinstance(base_url, str)
+
+    login_via_form(page, base_url, cc_admin_token)
+
+    status = page.evaluate(
+        """async () => {
+            const r = await fetch('/control/orchestrator/status', {
+                credentials: 'same-origin',
+            });
+            return r.status;
+        }"""
+    )
+    # 401/403 would mean the cookie didn't reach the gate. Anything
+    # else (200, 404, 5xx) means the dashboard middleware accepted
+    # the cookie on the mounted path.
+    assert status not in (401, 403), status
