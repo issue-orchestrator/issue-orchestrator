@@ -1053,25 +1053,66 @@ async def issue_browser_sse_token(request: Request) -> JSONResponse:
 # They work with repo_root paths rather than in-process state.
 
 
-def _validate_repo_root(repo_root: str | None) -> Path | None:
-    """Validate and normalize a repo_root parameter.
+def _validate_repo_root(repo_root: object | None) -> Path | None:
+    """Validate and normalize a ``repo_root`` parameter from a request.
 
-    Security: Only allow local paths that exist.
+    The Control API is bearer-token authenticated (security #5987 F3),
+    so any caller reaching this point already holds a valid token.
+    Even so, we defend against malformed input here so a bug in a
+    client (or a future unauthenticated surface) cannot feed this
+    helper something weird — including the wrong JSON type.
 
-    Returns:
-        Normalized Path if valid, None if invalid
+    Accepts ``object | None`` because the request layer passes
+    ``body.get("repo_root")`` straight through; a client that sends
+    a number, a bool, bytes, or a dict used to trigger a 500 from
+    the downstream ``.strip()`` / ``Path()`` call. This helper owns
+    all of that validation and returns ``None`` on any non-string
+    input (#6017 re-review-3 P2 on #6018):
+
+    - Reject anything that is not ``str``.
+    - Reject empty / whitespace-only strings.
+    - Reject strings containing null bytes — ``Path`` accepts them
+      silently on some platforms and they confuse downstream tooling.
+    - ``Path.resolve`` normalizes ``..`` segments and follows
+      symlinks, so the returned path is always the canonical target.
+    - Require the resolved target to exist as a directory.
+
+    Returns the resolved ``Path`` on success, ``None`` on rejection.
+    Rejections log at DEBUG so misconfiguration leaves a trace.
     """
-    if not repo_root:
+    if not isinstance(repo_root, str):
+        if repo_root is not None:
+            logger.debug(
+                "validate_repo_root rejected non-string value of type %s",
+                type(repo_root).__name__,
+            )
+        return None
+    if not repo_root or not repo_root.strip():
+        return None
+    if "\x00" in repo_root:
+        logger.debug("validate_repo_root rejected value with null byte")
         return None
 
     try:
         path = Path(repo_root).resolve()
-        # Security: only allow existing local directories
-        if not path.exists() or not path.is_dir():
-            return None
-        return path
-    except (ValueError, OSError):
+    except (ValueError, OSError) as exc:
+        logger.debug("validate_repo_root could not resolve %r: %s", repo_root, exc)
         return None
+
+    try:
+        if not path.exists() or not path.is_dir():
+            logger.debug(
+                "validate_repo_root rejected %s: does not exist or not a directory",
+                path,
+            )
+            return None
+    except OSError as exc:
+        logger.debug(
+            "validate_repo_root stat failed for %s: %s", path, exc
+        )
+        return None
+
+    return path
 
 
 install_control_api_e2e_dependencies(

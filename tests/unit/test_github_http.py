@@ -70,6 +70,39 @@ def test_resolve_github_token_repo_scoped_keyring(monkeypatch: pytest.MonkeyPatc
     assert token == "repo-keyring-token"
 
 
+def test_read_keyring_token_logs_debug_on_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keyring backend failures must leave a DEBUG trace.
+
+    Related to security issue #6017 (F8 from #5987) — silently swallowing
+    every exception hides misconfiguration. We still fall through to the
+    macOS ``security`` CLI for the happy path, but the keyring failure
+    must be logged so troubleshooting is possible.
+    """
+
+    class _ExplodingKeyring:
+        @staticmethod
+        def get_password(service: str, username: str) -> str | None:
+            raise RuntimeError("keyring backend is locked")
+
+    monkeypatch.setitem(sys.modules, "keyring", _ExplodingKeyring)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._read_macos_security_keychain_token",
+        lambda *, service, username: None,
+    )
+
+    with caplog.at_level("DEBUG", logger="issue_orchestrator.adapters.github.tokens"):
+        result = _read_keyring_token(service="svc", username="user")
+
+    assert result is None
+    assert any(
+        "keyring.get_password failed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_read_keyring_token_falls_back_to_macos_security(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeKeyring:
         @staticmethod
