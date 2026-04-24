@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import uvicorn
+from playwright.sync_api import Page
 
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
@@ -206,3 +207,61 @@ def web_server(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
     finally:
         server.stop()
         web_module.set_orchestrator(original)
+
+
+# ---------------------------------------------------------------------------
+# Browser auth helper (dormant prep for the upcoming Web Dashboard auth PR).
+#
+# Today the web dashboard does not call ``configure_api_token`` /
+# ``browser_session.initialize``, so its middleware is a no-op and these
+# helpers are a no-op too. They land ahead of the auth PR so every
+# Playwright test that needs an authenticated browser session can drop
+# in a single line without each test re-implementing the login dance.
+# ---------------------------------------------------------------------------
+
+
+TEST_ADMIN_TOKEN = "test-admin-token"  # matches the unit-test fixtures
+
+
+@pytest.fixture
+def cc_admin_token() -> str:
+    """Known admin token used by ``login_via_form``.
+
+    Pair this with the server-side ``configure_api_token(TEST_ADMIN_TOKEN,
+    ...)`` in tests that enable the auth layer; until then the helper
+    is a no-op and the fixture is harmless.
+    """
+    return TEST_ADMIN_TOKEN
+
+
+def login_via_form(page: Page, base_url: str, token: str) -> None:
+    """Establish a browser session by submitting the Control Center login form.
+
+    Safe to call from any Playwright test against any target:
+
+    - If the server has auth disabled (the current web-dashboard
+      behaviour), ``GET /`` already serves the dashboard and this
+      helper short-circuits without interacting with the form.
+    - If auth is enabled (the future Web Dashboard auth PR, or the
+      Control Center on port 19080), we fill the admin token into the
+      login form and wait for the post-login redirect.
+
+    Parameters
+    ----------
+    page:
+        Playwright sync ``Page`` fixture.
+    base_url:
+        Origin the test is targeting, e.g. ``"http://127.0.0.1:19080"``.
+    token:
+        Admin bearer token. Use the ``cc_admin_token`` fixture for the
+        test-harness default.
+    """
+    page.goto(f"{base_url}/")
+    if "Sign in" not in page.content():
+        return
+    page.fill('input[name="token"]', token)
+    page.click('button[type="submit"]')
+    # The login handler responds 303 → /. Wait for the redirected
+    # dashboard URL to confirm the session cookie took effect, and
+    # that we're no longer staring at the login form.
+    page.wait_for_url(f"{base_url}/", timeout=5000)
