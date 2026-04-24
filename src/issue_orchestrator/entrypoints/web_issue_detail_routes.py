@@ -213,20 +213,6 @@ def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) 
         if artifact["kind"] in {"junit_xml", "html_report", "json_report", "playwright_report"}
     ]
     return artifacts, reports
-
-
-def _empty_e2e_result_categories() -> dict[str, list[dict[str, Any]]]:
-    return {
-        "untriaged": [],
-        "has_issue": [],
-        "flaky": [],
-        "fixed": [],
-        "passed": [],
-        "quarantined": [],
-        "skipped": [],
-    }
-
-
 def _finalize_issue_detail_payload(
     *,
     orchestrator: Any,
