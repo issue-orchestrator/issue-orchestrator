@@ -150,6 +150,14 @@ class Config:
     web_port: int = 0  # Port for web dashboard (0 = auto-assign free port)
     control_api_port: int = 0  # Port for control API (0 = auto-assign free port)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+    # Browser-session knobs for the Control Center login flow (security
+    # #5987 F3). Overridable at runtime by
+    # ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS /
+    # ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS /
+    # ISSUE_ORCHESTRATOR_MAX_SESSIONS env vars; see ``browser_session``.
+    browser_session_ttl_seconds: int = 8 * 3600
+    browser_session_max: int = 1024
+    sse_token_ttl_seconds: int = 60
     # Fetch-layer optimization for queue refreshes
     fetch_layer_enabled: bool = True
     fetch_layer_network_sync_seconds: int = 60

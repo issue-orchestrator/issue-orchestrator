@@ -1,28 +1,49 @@
 // ============================================
-// Browser-session CSRF shim (security #6017, re-review P3).
+// Browser-session CSRF shim + 401 handler (security #6017, re-review P3+).
 // The server renders the CSRF token into <meta name="io-csrf-token">
 // at page load. Wrap the global ``fetch`` so every mutating request
 // we issue carries the matching X-CSRF-Token header — otherwise the
 // Control API middleware returns 403 and every dashboard button
 // silently fails. SameSite=Strict on the session cookie already
 // blocks cross-origin forgery; the CSRF token is defense-in-depth.
+//
+// We also intercept 401 responses from the Control API: when the
+// server-side session table has forgotten us (expired, LRU-evicted,
+// or a server restart rotated the HMAC secret), the browser's cookie
+// is stale. Surfacing the raw "missing credentials" JSON to the
+// operator is hostile; reload the page instead so the login form
+// reappears and a single re-auth gets them back to work.
 // ============================================
+let _csrfReloadTriggered = false;
+function _maybeReloadOnAuthExpiry(response) {
+    if (!response || response.status !== 401) return;
+    if (_csrfReloadTriggered) return;
+    const url = typeof response.url === 'string' ? response.url : '';
+    // Only reload for authenticated Control API paths. Avoids
+    // bouncing the page when an unrelated third-party widget 401s.
+    if (!url.includes('/api/') && !url.includes('/control/')) return;
+    _csrfReloadTriggered = true;
+    window.location.reload();
+}
+
 (() => {
     const meta = document.querySelector('meta[name="io-csrf-token"]');
     const csrfToken = meta ? meta.getAttribute('content') : '';
-    if (!csrfToken) return;
     const originalFetch = window.fetch.bind(window);
     const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
-    window.fetch = (input, init = {}) => {
+    window.fetch = async (input, init = {}) => {
         const method = ((init && init.method) || (typeof input !== 'string' && input?.method) || 'GET').toUpperCase();
-        if (safeMethods.has(method)) {
-            return originalFetch(input, init);
+        let options = init || {};
+        if (csrfToken && !safeMethods.has(method)) {
+            const headers = new Headers(options.headers || (typeof input !== 'string' ? input?.headers : undefined) || {});
+            if (!headers.has('X-CSRF-Token')) {
+                headers.set('X-CSRF-Token', csrfToken);
+            }
+            options = { ...options, headers };
         }
-        const headers = new Headers(init.headers || (typeof input !== 'string' ? input?.headers : undefined) || {});
-        if (!headers.has('X-CSRF-Token')) {
-            headers.set('X-CSRF-Token', csrfToken);
-        }
-        return originalFetch(input, { ...init, headers });
+        const response = await originalFetch(input, options);
+        _maybeReloadOnAuthExpiry(response);
+        return response;
     };
 })();
 

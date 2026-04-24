@@ -20,18 +20,25 @@ second auth path that's native to the browser:
   forward cookies reliably in every browser, so the SSE endpoint
   accepts a short-lived HMAC-signed token in the query string that
   JS obtains via the (CSRF-protected) ``/api/sse-token`` endpoint.
+  The token is **single-use** (verifying consumes its nonce) and
+  valid for ``SSE_TOKEN_TTL_SECONDS``, so a value that leaks through
+  access logs / ``Referer`` / browser history cannot be replayed
+  even within its window.
 
 All state is per-process: no persistence, no cross-restart sharing.
-For a local-dev Control Center this is fine — restarts invalidate
-sessions and the browser re-auths on next load.
+Sessions are LRU-evicted once ``MAX_SESSIONS`` is hit so the table
+has a hard upper bound. For a local-dev Control Center this is fine —
+restarts invalidate sessions and the browser re-auths on next load.
 """
 
 from __future__ import annotations
 
 import hmac
 import logging
+import os
 import secrets
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import Lock
@@ -42,11 +49,28 @@ SESSION_COOKIE = "io_session"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_META_NAME = "io-csrf-token"
 SSE_TOKEN_QUERY = "sse_token"
-SESSION_TTL_SECONDS = 8 * 3600
-SSE_TOKEN_TTL_SECONDS = 60
+
+# Baseline defaults. The operator can override these at runtime via
+# YAML (``ui.browser_session.*``) or env vars (see the ``_ENV_*``
+# names below); the effective value lives in the module-level
+# ``_session_ttl_seconds`` etc. that the rest of the module reads.
+_DEFAULT_SESSION_TTL_SECONDS = 8 * 3600
+_DEFAULT_SSE_TOKEN_TTL_SECONDS = 60
+_DEFAULT_MAX_SESSIONS = 1024
+
+# Back-compat module-level names — public module surface. Tests
+# reference ``SESSION_TTL_SECONDS``; resolved values live in the
+# mutable module-level state below.
+SESSION_TTL_SECONDS = _DEFAULT_SESSION_TTL_SECONDS
+SSE_TOKEN_TTL_SECONDS = _DEFAULT_SSE_TOKEN_TTL_SECONDS
+MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
+
+_ENV_SESSION_TTL = "ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS"
+_ENV_SSE_TOKEN_TTL = "ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS"
+_ENV_MAX_SESSIONS = "ISSUE_ORCHESTRATOR_MAX_SESSIONS"
 
 _SECRET: bytes | None = None
-_SESSIONS: dict[str, "_Session"] = {}
+_SESSIONS: "OrderedDict[str, _Session]" = OrderedDict()
 _LOCK = Lock()
 
 
@@ -57,16 +81,52 @@ class _Session:
     last_seen: float
 
 
-def initialize(secret: bytes | None = None) -> None:
-    """Initialize the process-wide HMAC secret.
+def _resolve_int(env_name: str, config_value: int | None, default: int) -> int:
+    """Env var wins; config falls through; default is the last resort."""
+    raw = os.environ.get(env_name)
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid %s=%r; not an integer", env_name, raw
+            )
+    if config_value is not None:
+        return int(config_value)
+    return default
+
+
+def initialize(
+    secret: bytes | None = None,
+    *,
+    session_ttl_seconds: int | None = None,
+    sse_token_ttl_seconds: int | None = None,
+    max_sessions: int | None = None,
+) -> None:
+    """Initialize the process-wide HMAC secret and tunable knobs.
 
     Called once at server startup (``ControlAPIServer.start`` /
-    ``control_center.main``). ``secret`` is optional so tests can
-    inject a known value.
+    ``control_center.main``). Each tunable falls through a standard
+    resolver: env var wins when set, then the passed-in value from
+    YAML config, then the module default.
+
+    ``secret`` is optional so tests can inject a known value.
     """
-    global _SECRET
+    global _SECRET, SESSION_TTL_SECONDS, SSE_TOKEN_TTL_SECONDS, MAX_SESSIONS
     _SECRET = secret or secrets.token_bytes(32)
+    SESSION_TTL_SECONDS = _resolve_int(
+        _ENV_SESSION_TTL, session_ttl_seconds, _DEFAULT_SESSION_TTL_SECONDS
+    )
+    SSE_TOKEN_TTL_SECONDS = _resolve_int(
+        _ENV_SSE_TOKEN_TTL,
+        sse_token_ttl_seconds,
+        _DEFAULT_SSE_TOKEN_TTL_SECONDS,
+    )
+    MAX_SESSIONS = _resolve_int(
+        _ENV_MAX_SESSIONS, max_sessions, _DEFAULT_MAX_SESSIONS
+    )
     _SESSIONS.clear()
+    _CONSUMED_SSE_NONCES.clear()
 
 
 def is_initialized() -> bool:
@@ -75,9 +135,13 @@ def is_initialized() -> bool:
 
 def shutdown() -> None:
     """Clear state. Used by tests between cases."""
-    global _SECRET
+    global _SECRET, SESSION_TTL_SECONDS, SSE_TOKEN_TTL_SECONDS, MAX_SESSIONS
     _SECRET = None
     _SESSIONS.clear()
+    _CONSUMED_SSE_NONCES.clear()
+    SESSION_TTL_SECONDS = _DEFAULT_SESSION_TTL_SECONDS
+    SSE_TOKEN_TTL_SECONDS = _DEFAULT_SSE_TOKEN_TTL_SECONDS
+    MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
 
 
 def _expire_old(now: float) -> None:
@@ -91,12 +155,27 @@ def _expire_old(now: float) -> None:
 
 
 def create_session() -> tuple[str, str]:
-    """Return ``(session_id, csrf_token)`` for a fresh session."""
+    """Return ``(session_id, csrf_token)`` for a fresh session.
+
+    Maintains ``len(_SESSIONS) <= MAX_SESSIONS`` by expiring TTL-stale
+    entries and, if still over the cap, evicting the
+    least-recently-used entries in insertion order. ``_SESSIONS`` is
+    an ``OrderedDict`` and ``get_csrf_token`` moves touched entries
+    to the back, so "least recently used" is a cheap pop from the
+    front.
+    """
     if _SECRET is None:
         raise RuntimeError("browser_session.initialize was never called")
     with _LOCK:
         now = time.time()
         _expire_old(now)
+        while len(_SESSIONS) >= MAX_SESSIONS:
+            evicted_id, _ = _SESSIONS.popitem(last=False)
+            logger.info(
+                "browser_session: evicted LRU session %s… to stay under cap %d",
+                evicted_id[:8],
+                MAX_SESSIONS,
+            )
         session_id = secrets.token_hex(32)
         csrf_token = secrets.token_hex(32)
         _SESSIONS[session_id] = _Session(
@@ -108,8 +187,9 @@ def create_session() -> tuple[str, str]:
 def get_csrf_token(session_id: str) -> str | None:
     """Return the CSRF token for ``session_id``, or ``None`` if unknown/expired.
 
-    Touches the session's ``last_seen`` timestamp on hit so active
-    sessions don't expire while they're being used.
+    Touches the session's ``last_seen`` timestamp on hit and moves the
+    entry to the back of the LRU ordering so active sessions are
+    never evicted while they're in use.
     """
     if _SECRET is None:
         return None
@@ -122,6 +202,7 @@ def get_csrf_token(session_id: str) -> str | None:
             _SESSIONS.pop(session_id, None)
             return None
         sess.last_seen = now
+        _SESSIONS.move_to_end(session_id)
         return sess.csrf_token
 
 
@@ -154,13 +235,38 @@ def issue_sse_token(session_id: str) -> str | None:
     return f"{session_id}:{now}:{nonce}:{sig}"
 
 
+# Nonces from successfully-verified SSE tokens. Because each SSE token
+# is single-use (#6017 re-review-3 P2), we remember the consumed
+# nonces within their TTL window so a leaked ``sse_token`` in a log /
+# proxy / browser history cannot be replayed later. Nonces are 8 hex
+# chars, expire alongside their token, and live in a bounded dict
+# trimmed on every use.
+_CONSUMED_SSE_NONCES: dict[str, float] = {}
+
+
+def _expire_consumed_nonces(now: float) -> None:
+    stale = [
+        nonce
+        for nonce, seen_at in _CONSUMED_SSE_NONCES.items()
+        if now - seen_at > SSE_TOKEN_TTL_SECONDS
+    ]
+    for nonce in stale:
+        _CONSUMED_SSE_NONCES.pop(nonce, None)
+
+
 def verify_sse_token(token: str | None, expected_session_id: str) -> bool:
     """Validate an SSE query-string token for this session.
 
-    Must match ``expected_session_id`` (so a token issued for session A
-    can't reach session B's stream), must be signed with the current
-    process secret, and must be less than ``SSE_TOKEN_TTL_SECONDS``
-    old.
+    Single-use semantics: a successful verify records the token's
+    nonce in ``_CONSUMED_SSE_NONCES`` for ``SSE_TOKEN_TTL_SECONDS``.
+    A second call with the same token returns ``False`` — so a token
+    leaked via server access logs, browser history, or a
+    ``Referer`` header cannot be replayed within its TTL.
+
+    The token must also match ``expected_session_id`` (a token for
+    session A can't reach session B's stream), be signed with the
+    current process secret, and be less than
+    ``SSE_TOKEN_TTL_SECONDS`` old.
     """
     if not token or _SECRET is None:
         return False
@@ -174,10 +280,20 @@ def verify_sse_token(token: str | None, expected_session_id: str) -> bool:
         ts = int(ts_str)
     except ValueError:
         return False
-    if time.time() - ts > SSE_TOKEN_TTL_SECONDS:
+    now = time.time()
+    if now - ts > SSE_TOKEN_TTL_SECONDS:
         return False
-    if time.time() - ts < -5:  # clock skew tolerance
+    if now - ts < -5:  # clock skew tolerance
         return False
     payload = f"{sid}:{ts_str}:{nonce}".encode("utf-8")
     expected_sig = hmac.new(_SECRET, payload, sha256).hexdigest()
-    return hmac.compare_digest(expected_sig, sig)
+    if not hmac.compare_digest(expected_sig, sig):
+        return False
+    with _LOCK:
+        _expire_consumed_nonces(now)
+        if nonce in _CONSUMED_SSE_NONCES:
+            # Replay attempt — the signature is valid but the nonce
+            # has already been accepted once. Refuse.
+            return False
+        _CONSUMED_SSE_NONCES[nonce] = now
+    return True

@@ -530,6 +530,18 @@ def load_ui_section(config: "Config", ui_section: dict) -> None:
     config.web_port = ui_section.get("web_port", 0)
     config.control_api_port = ui_section.get("control_api_port", 0)
     config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
+    browser_session_section = ui_section.get("browser_session", {}) or {}
+    config.browser_session_ttl_seconds = int(
+        browser_session_section.get("ttl_seconds", config.browser_session_ttl_seconds)
+    )
+    config.browser_session_max = int(
+        browser_session_section.get("max", config.browser_session_max)
+    )
+    config.sse_token_ttl_seconds = int(
+        browser_session_section.get(
+            "sse_token_ttl_seconds", config.sse_token_ttl_seconds
+        )
+    )
     fetch_layer = ui_section.get("fetch_layer", {})
     config.fetch_layer_enabled = fetch_layer.get("enabled", True)
     config.fetch_layer_network_sync_seconds = fetch_layer.get("network_sync_seconds", 60)

@@ -121,3 +121,232 @@ def test_handles_resolved_worktree_symlink(tmp_path: Path) -> None:
     resolved = _contain_validation_record_path(str(record), link_worktree)
 
     assert resolved is not None
+
+
+# ---------------------------------------------------------------------------
+# Symlink-safe open + copy — #6017 re-review-3 P1 and re-review-4 P1.
+#
+# The original helper used ``O_NOFOLLOW`` on a single ``os.open(path)``
+# which only rejects a final-component symlink. An ancestor-directory
+# swap still let the copy follow the new symlink outside the worktree.
+# The walk-based helper opens each path component with ``O_NOFOLLOW``
+# so any symlink at any level trips ``ELOOP``.
+# ---------------------------------------------------------------------------
+
+
+def _walk_open(worktree: Path, rel: str) -> int | None:
+    """Shorthand for the opener under test."""
+    from issue_orchestrator.control.completion_processor import (
+        _open_contained_validation_record,
+    )
+
+    return _open_contained_validation_record(rel, worktree)
+
+
+def test_walk_open_happy_path(tmp_path: Path) -> None:
+    """Valid path with no symlinks: open succeeds and fd reads the file."""
+    _make_valid_record(tmp_path)
+
+    fd = _walk_open(tmp_path, ".issue-orchestrator/validation/deadbeef.json")
+
+    assert fd is not None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            assert f.read() == b'{"passed": true}'
+    finally:
+        # Either fdopen consumed the fd or we still own it; fdopen
+        # above takes ownership, so nothing to do here.
+        pass
+
+
+def test_walk_open_refuses_final_segment_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text("secret")
+    inside_dir = tmp_path / ".issue-orchestrator" / "validation"
+    inside_dir.mkdir(parents=True)
+    link_final = inside_dir / "rec.json"
+    try:
+        os.symlink(outside, link_final)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+
+    assert _walk_open(tmp_path, ".issue-orchestrator/validation/rec.json") is None
+
+
+def test_walk_open_refuses_ancestor_directory_symlink(tmp_path: Path) -> None:
+    """Regression for #6017 re-review-4 P1.
+
+    Contains the exact attack the reviewer reproduced: ``nested/`` is
+    a real directory when containment runs, then gets renamed and
+    replaced with a symlink to an outside tree before the copy. The
+    walk must refuse because ``O_NOFOLLOW`` on the ancestor open
+    trips ``ELOOP``.
+    """
+    rec_rel = ".issue-orchestrator/validation/nested/rec.json"
+
+    # Real inside-the-worktree tree that would pass path containment.
+    inside_nested = tmp_path / ".issue-orchestrator" / "validation" / "nested"
+    inside_nested.mkdir(parents=True)
+    inside_rec = inside_nested / "rec.json"
+    inside_rec.write_text('{"ok": true}')
+
+    # Exfiltration target.
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "rec.json").write_text("EXFILTRATED")
+
+    # Attacker swaps ``nested/`` for a symlink to the outside dir.
+    import shutil
+
+    shutil.rmtree(inside_nested)
+    try:
+        os.symlink(outside_dir, inside_nested)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+
+    fd = _walk_open(tmp_path, rec_rel)
+
+    assert fd is None, (
+        "Symlinked ancestor must be refused by the O_NOFOLLOW walk; "
+        "otherwise the exfil content would become the validation record."
+    )
+
+
+def test_walk_open_refuses_absolute_path_outside_worktree(
+    tmp_path: Path,
+) -> None:
+    assert _walk_open(tmp_path, "/etc/hosts") is None
+
+
+def test_walk_open_accepts_absolute_path_through_symlinked_worktree_prefix(
+    tmp_path: Path,
+) -> None:
+    """Regression for re-review-5 P2.
+
+    On macOS ``/tmp`` is a symlink to ``/private/tmp``; on Linux
+    ``/var`` is often a symlink to ``/private/var``. When the caller
+    hands us an absolute record path using the symlink form and the
+    worktree also uses the symlink form, containment must succeed.
+    """
+    real_worktree = tmp_path / "real"
+    real_worktree.mkdir()
+    link_worktree = tmp_path / "link"
+    try:
+        os.symlink(real_worktree, link_worktree)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+
+    _make_valid_record(real_worktree)
+
+    abs_under_link = (
+        link_worktree / ".issue-orchestrator" / "validation" / "deadbeef.json"
+    )
+    fd = _walk_open(link_worktree, str(abs_under_link))
+
+    assert fd is not None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            assert f.read() == b'{"passed": true}'
+    finally:
+        pass
+
+
+def test_walk_open_refuses_dotdot_segment(tmp_path: Path) -> None:
+    _make_valid_record(tmp_path)
+    # Even if the resulting canonical path happens to fall inside the
+    # worktree, any ``..`` segment in the supplied string should be
+    # refused.
+    assert _walk_open(
+        tmp_path, ".issue-orchestrator/validation/../validation/deadbeef.json"
+    ) is None
+
+
+def test_walk_open_refuses_null_byte(tmp_path: Path) -> None:
+    assert _walk_open(tmp_path, ".issue-orchestrator/validation/a\x00b.json") is None
+
+
+def test_walk_open_refuses_first_segment_mismatch(tmp_path: Path) -> None:
+    (tmp_path / "other-dir").mkdir()
+    (tmp_path / "other-dir" / "rec.json").write_text("{}")
+
+    assert _walk_open(tmp_path, "other-dir/rec.json") is None
+
+
+def test_walk_open_refuses_directory_as_final(tmp_path: Path) -> None:
+    (tmp_path / ".issue-orchestrator" / "validation").mkdir(parents=True)
+
+    assert _walk_open(tmp_path, ".issue-orchestrator/validation") is None
+
+
+def test_walk_open_refuses_oversize(tmp_path: Path) -> None:
+    from issue_orchestrator.control.completion_processor import (
+        _VALIDATION_RECORD_MAX_BYTES,
+    )
+
+    root = tmp_path / ".issue-orchestrator" / "validation"
+    root.mkdir(parents=True)
+    (root / "big.json").write_bytes(b"x" * (_VALIDATION_RECORD_MAX_BYTES + 1))
+
+    assert _walk_open(tmp_path, ".issue-orchestrator/validation/big.json") is None
+
+
+def test_copy_from_fd_streams_bytes(tmp_path: Path) -> None:
+    from issue_orchestrator.control.completion_processor import _copy_from_fd
+
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"payload")
+    dst = tmp_path / "dst.bin"
+    fd = os.open(str(src), os.O_RDONLY | os.O_CLOEXEC)
+
+    assert _copy_from_fd(fd, dst) is True
+    assert dst.read_bytes() == b"payload"
+
+
+def test_attach_skips_manifest_when_copy_refuses(tmp_path: Path) -> None:
+    """#6017 re-review-4 P2: a refused copy must leave no trace in the
+    manifest. The manifest is a trust signal; publishing an agent-
+    supplied path that was never copied into the run dir leaks the
+    original path and implies an artifact that doesn't exist.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.completion_processor import CompletionProcessor
+
+    # Plant a valid-looking agent-supplied path that FAILS the walk
+    # because its first segment is outside ``.issue-orchestrator``.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_rec = outside / "rec.json"
+    outside_rec.write_text("EXFIL")
+
+    run_dir = tmp_path / "_run"
+    run_dir.mkdir()
+    manifest_path = run_dir / "manifest.json"
+
+    session_output = MagicMock()
+    session_output.ensure_run_dir.return_value = run_dir
+    def _update_manifest(_run_dir: Path, updates: dict) -> None:
+        existing: dict = {}
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text())
+        existing.update(updates)
+        manifest_path.write_text(json.dumps(existing))
+    session_output.update_manifest.side_effect = _update_manifest
+
+    processor = CompletionProcessor.__new__(CompletionProcessor)
+    processor.session_output = session_output  # type: ignore[attr-defined]
+
+    # Exercising the private helper is the point of this test.
+    processor._attach_validation_artifacts(  # noqa: SLF001
+        worktree=tmp_path,
+        session_name="s",
+        record=None,
+        record_path=outside_rec,
+    )
+
+    assert not (run_dir / "validation-record.json").exists()
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        assert "validation_record_path" not in manifest, manifest
+    assert not (run_dir / "validation-record.path").exists()

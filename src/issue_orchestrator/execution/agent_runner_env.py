@@ -5,8 +5,18 @@ This module provides functions to prepare isolated environments for agent sessio
 - Set safe git environment variables
 - Build filtered environment dictionaries
 
-Security principle: Agents should not have access to credentials that could
-allow them to perform privileged operations (push, merge, API calls).
+Security principle: Agents should not *accidentally* inherit credentials
+that could let them perform privileged operations. This is hygiene — it
+reduces surprise and blocks unsophisticated misuse — not isolation.
+
+Scope note: scrubbing an env var does NOT stop an agent from reading
+the same credential off the filesystem. Same-user agents still share
+HOME (``terminal_subprocess.py`` keeps ``isolate_home=False``), so for
+example ``ISSUE_ORCHESTRATOR_API_TOKEN`` is stripped from the agent
+env but the admin token file remains readable at
+``~/.issue-orchestrator/api-token``. Real containment requires
+OS-level separation (separate user, container, sandbox). Tracked as
+issue #6024.
 """
 
 import os
@@ -37,11 +47,13 @@ DEFAULT_FORBIDDEN_ENV_VARS: list[str] = [
     # Claude Code nesting detection - must not leak into child agents
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
-    # Admin bearer token for the loopback Control API. Agents get the
-    # narrower ``ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN`` instead — see
-    # ``ALWAYS_PASSTHROUGH_ENV_VARS`` below and security #6017 review P2.
-    # Without this scrub, the orchestrator's own env would leak the
-    # admin credential into every agent subprocess.
+    # Admin bearer token for the loopback Control API. Scrubbing
+    # prevents accidental inheritance from the orchestrator's env
+    # into the agent subprocess. IMPORTANT: this is hygiene only —
+    # the admin token file at ``~/.issue-orchestrator/api-token``
+    # remains readable from the agent because agents run under the
+    # same user with the real HOME (#6024). Real separation needs
+    # OS-level isolation.
     "ISSUE_ORCHESTRATOR_API_TOKEN",
 ]
 

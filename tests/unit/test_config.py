@@ -821,6 +821,32 @@ labels:
         assert config.fetch_layer_visibility_aware_enabled is False
         assert config.fetch_layer_selective_sync_planner_enabled is False
 
+    def test_browser_session_defaults(self):
+        """Session config defaults match the security-stack baseline."""
+        config = Config()
+        assert config.browser_session_ttl_seconds == 8 * 3600
+        assert config.browser_session_max == 1024
+        assert config.sse_token_ttl_seconds == 60
+
+    def test_browser_session_yaml_overrides(self, tmp_path):
+        """Values in ``ui.browser_session`` override the Config defaults."""
+        from issue_orchestrator.infra.config import Config
+
+        yaml_path = tmp_path / ".issue-orchestrator.yaml"
+        yaml_path.write_text(
+            "ui:\n"
+            "  mode: web\n"
+            "  browser_session:\n"
+            "    ttl_seconds: 900\n"
+            "    max: 32\n"
+            "    sse_token_ttl_seconds: 15\n"
+        )
+        config = Config.load(yaml_path)
+
+        assert config.browser_session_ttl_seconds == 900
+        assert config.browser_session_max == 32
+        assert config.sse_token_ttl_seconds == 15
+
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""
         config = Config()

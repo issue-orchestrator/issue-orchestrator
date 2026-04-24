@@ -47,6 +47,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional
@@ -149,6 +150,51 @@ if STATIC_DIR.exists():
 _BROWSER_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SSE_PATH = "/api/events"
 
+# Matches the SSE single-use token in query strings so it can be
+# stripped from HTTP access-log messages before they're emitted.
+# Uvicorn's access log format includes the full request line with
+# query params, which would otherwise persist a still-valid-for-a-few
+# seconds credential (#6017 re-review-3 P2).
+_SSE_TOKEN_QUERY_PATTERN = re.compile(
+    r"(?P<sep>[?&])sse_token=[^&\s\"']+"
+)
+_SSE_TOKEN_REDACTION = r"\g<sep>sse_token=REDACTED"
+
+
+class _SseTokenAccessLogFilter(logging.Filter):
+    """Scrub ``sse_token=...`` from every uvicorn.access log record.
+
+    The filter inspects both the pre-formatted message (``record.msg``
+    + ``record.args``) and any already-rendered ``record.message``
+    attribute so whichever emission style the formatter uses, the
+    token never reaches the log file / stderr.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 - never let logging crash on us
+            return True
+        if "sse_token=" not in msg:
+            return True
+        scrubbed = _SSE_TOKEN_QUERY_PATTERN.sub(_SSE_TOKEN_REDACTION, msg)
+        record.msg = scrubbed
+        record.args = None
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Attach the SSE-token redaction filter to uvicorn's access logger.
+
+    Idempotent: re-running (e.g. across test fixtures) does not stack
+    duplicate filters.
+    """
+    access_logger = logging.getLogger("uvicorn.access")
+    for existing in access_logger.filters:
+        if isinstance(existing, _SseTokenAccessLogFilter):
+            return
+    access_logger.addFilter(_SseTokenAccessLogFilter())
+
 
 def _check_bearer_auth(
     request: Request, admin: str | None, agent: str | None
@@ -185,8 +231,14 @@ def _check_browser_session_auth(
     meaningful when ``ok`` is False.
     """
     session_id = request.cookies.get(browser_session.SESSION_COOKIE)
-    if not session_id or not browser_session.session_is_valid(session_id):
-        return (False, "missing credentials", 401)
+    if not session_id:
+        return (False, "missing credentials — please sign in", 401)
+    if not browser_session.session_is_valid(session_id):
+        # Cookie is present but the server no longer knows the session
+        # — TTL expired, LRU-evicted, or the HMAC secret rotated on a
+        # server restart. The JS shim treats 401 as a hint to reload
+        # the page so the user lands on the login form.
+        return (False, "session expired — please sign in again", 401)
     if request.url.path == _SSE_PATH:
         sse_token = request.query_params.get(browser_session.SSE_TOKEN_QUERY)
         if browser_session.verify_sse_token(sse_token, session_id):
@@ -275,9 +327,16 @@ def _is_public_path(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES)
 
 # Routes the agent-callback token is allowed to reach. Anything NOT in
-# this set requires the admin token. The agent-callback token is
-# intentionally scoped to the two flows coding-done / reviewer-done
-# actually drive.
+# this set requires the admin token.
+#
+# Honest scope: this allowlist limits what the agent-callback token
+# can do IF an agent holds only that token. It does NOT stop an
+# agent that reads ``~/.issue-orchestrator/api-token`` off the same
+# filesystem (agents run with the real HOME under the same user;
+# see issue #6024) from mutating any route. The callback token is
+# defense in depth — it narrows the default blast radius and is
+# the right shape for a future isolated-agent model — not a
+# privilege boundary against same-user agents today.
 _AGENT_CALLBACK_ROUTES: frozenset[str] = frozenset({"/api/preflight-push"})
 
 
@@ -1043,13 +1102,23 @@ async def control_center_login(request: Request) -> Response:
 
 @control_app.get("/api/sse-token")
 async def issue_browser_sse_token(request: Request) -> JSONResponse:
-    """Return a short-lived SSE token bound to the caller's session.
+    """Return a short-lived single-use SSE token bound to the caller's session.
 
     ``EventSource`` cannot send headers, so the JS client calls this
     endpoint (which is CSRF-protected via the middleware) and then
     passes the returned token to ``/api/events`` as a query
-    parameter. See ``browser_session.issue_sse_token`` for the token
-    format.
+    parameter. The token is valid for ``SSE_TOKEN_TTL_SECONDS`` and
+    can be consumed exactly once — see
+    ``browser_session.verify_sse_token``.
+
+    Defense-in-depth response headers (#6017 re-review-3 P2):
+
+    - ``Cache-Control: no-store`` keeps the token out of browser /
+      intermediary caches.
+    - ``Referrer-Policy: no-referrer`` prevents a page opened via
+      the returned token's URL from leaking it to external origins
+      in the ``Referer`` header.
+    - ``Pragma: no-cache`` for HTTP/1.0 proxies.
     """
     session_id = request.cookies.get(browser_session.SESSION_COOKIE)
     if not session_id:
@@ -1061,10 +1130,14 @@ async def issue_browser_sse_token(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "session invalid"}, status_code=401
         )
-    return JSONResponse({
+    response = JSONResponse({
         "sse_token": token,
         "ttl_seconds": browser_session.SSE_TOKEN_TTL_SECONDS,
     })
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 # ======================================================================# Supervisor Control API - Process Management Endpoints
@@ -1327,16 +1400,29 @@ class ControlAPIServer:
         # ``start`` so test harnesses that import ``control_app``
         # without spinning up a server do not inadvertently create
         # the token files on a developer machine. The admin token
-        # authorizes every route; the agent-callback token is scoped
-        # to the routes in ``_AGENT_CALLBACK_ROUTES``. See security
-        # #5987 (F3) and #6017 review (P2 on agent-privilege).
+        # authorizes every route; the agent-callback token narrows
+        # the default path for agent subprocesses to
+        # ``_AGENT_CALLBACK_ROUTES`` — defense in depth, not an
+        # isolation boundary against a same-user malicious agent
+        # that can read the admin token file directly (issue #6024).
+        # See security #5987 (F3) and #6017 review (P2).
         admin_token = resolve_api_token()
         agent_callback_token = resolve_agent_callback_token()
         configure_api_token(admin_token, agent_callback=agent_callback_token)
-        # Initialize the browser-session HMAC secret so the Control
-        # Center UI can establish an ``io_session`` cookie on first
-        # visit (#6017 re-review P3).
-        browser_session.initialize()
+        # Initialize the browser-session HMAC secret + tunables so the
+        # Control Center UI can establish an ``io_session`` cookie on
+        # first visit (#6017 re-review P3). YAML config supplies the
+        # defaults; env vars override at resolution time.
+        cfg = getattr(self.orchestrator, "config", None)
+        browser_session.initialize(
+            session_ttl_seconds=getattr(cfg, "browser_session_ttl_seconds", None),
+            sse_token_ttl_seconds=getattr(cfg, "sse_token_ttl_seconds", None),
+            max_sessions=getattr(cfg, "browser_session_max", None),
+        )
+        # Strip SSE tokens from uvicorn access-log lines so a query
+        # param that's still valid for a few seconds doesn't persist
+        # in log storage (#6017 re-review-3 P2).
+        install_access_log_redaction()
         # Export into the process environment so in-process clients
         # (MCP server, CLI tools launched by this orchestrator) pick
         # up the admin token. The agent-callback token is surfaced

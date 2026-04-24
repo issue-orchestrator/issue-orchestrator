@@ -28,6 +28,12 @@ from pathlib import Path
 from typing import Generator
 
 import httpx
+
+# Fixed admin bearer token used by the integration CC subprocess + its
+# HTTP client. Any deterministic non-empty value works; real tokens
+# live in ``~/.issue-orchestrator/api-token`` which we override via
+# env var on the subprocess.
+_INTEGRATION_ADMIN_TOKEN = "integration-test-admin-token"
 import pytest
 
 from .conftest import xdist_timeout
@@ -168,11 +174,17 @@ def control_center_process(
     ]
 
     logger.info("Starting control center on port %d", control_center_port)
+    # Seed a known admin bearer token into the subprocess env so the
+    # plain ``httpx.Client`` in tests can authenticate after
+    # ``control_api`` enforces auth (#6011). The env var wins over
+    # the on-disk token file in ``resolve_api_token``.
+    subprocess_env = {**os.environ, "ISSUE_ORCHESTRATOR_API_TOKEN": _INTEGRATION_ADMIN_TOKEN}
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=subprocess_env,
     )
 
     # Wait for control center to be ready
@@ -197,10 +209,16 @@ def control_center_process(
 
 @pytest.fixture
 def cc_client(control_center_port: int) -> Generator[httpx.Client, None, None]:
-    """HTTP client for Control Center API."""
+    """HTTP client for Control Center API — pre-authenticated.
+
+    Carries ``Authorization: Bearer <token>`` using the fixed
+    ``_INTEGRATION_ADMIN_TOKEN`` that ``control_center_process``
+    injects into the subprocess env.
+    """
     client = httpx.Client(
         base_url=f"http://127.0.0.1:{control_center_port}",
         timeout=xdist_timeout(30.0),
+        headers={"Authorization": f"Bearer {_INTEGRATION_ADMIN_TOKEN}"},
     )
     yield client
     client.close()

@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import shutil
+import stat as stat_module
 import time
 import traceback
 from dataclasses import dataclass
@@ -144,6 +145,245 @@ def _contain_validation_record_path(
         )
         return None
     return candidate
+
+
+# Hard cap on bytes we'll read off an agent-supplied validation record.
+# Mirrors the per-file gate in ``completion_record_validation`` so the
+# TOCTOU-safe copy path also refuses absurdly large files (#6017
+# re-review-3 P1).
+_VALIDATION_RECORD_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _relative_parts_under_worktree(
+    record_path: str, worktree_resolved: Path
+) -> tuple[str, ...] | None:
+    """Convert ``record_path`` to segments below ``worktree_resolved``.
+
+    Handles both absolute and relative inputs. Absolute paths are
+    resolved (following symlinks) and required to fall under the
+    worktree's real path — this keeps common setups working where the
+    worktree itself is reached through a symlinked prefix (macOS
+    ``/tmp`` vs ``/private/tmp``, Linux ``/var`` vs ``/private/var``).
+    Resolving the input also turns any agent-planted symlink inside
+    the input into its real target; if that target escapes the
+    worktree, ``relative_to`` rejects it here. The subsequent
+    ``O_NOFOLLOW`` walk still guards against races between this check
+    and the open. Relative paths must not contain ``..``. The first
+    segment is required to be the containment subdirectory. Returns
+    the validated segments, or ``None`` on rejection.
+    """
+    raw = Path(record_path)
+    if raw.is_absolute():
+        try:
+            resolved_raw = raw.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            logger.warning(
+                "validation_record_path %r could not be resolved: %s",
+                record_path,
+                exc,
+            )
+            return None
+        try:
+            rel = resolved_raw.relative_to(worktree_resolved)
+        except ValueError:
+            logger.warning(
+                "validation_record_path %s resolves to %s, outside "
+                "worktree %s; refusing to attach",
+                record_path,
+                resolved_raw,
+                worktree_resolved,
+            )
+            return None
+    else:
+        if any(part == ".." for part in raw.parts):
+            logger.warning(
+                "validation_record_path %r contains '..' segment",
+                record_path,
+            )
+            return None
+        rel = raw
+
+    parts = rel.parts
+    if not parts:
+        logger.warning(
+            "validation_record_path %r resolved to empty segments",
+            record_path,
+        )
+        return None
+    if parts[0] != _VALIDATION_CONTAINMENT_SUBDIR:
+        logger.warning(
+            "validation_record_path %r first segment %r is not %s; "
+            "refusing to attach",
+            record_path,
+            parts[0],
+            _VALIDATION_CONTAINMENT_SUBDIR,
+        )
+        return None
+    if any(segment in ("", ".", "..") for segment in parts):
+        logger.warning(
+            "validation_record_path %r has invalid segment", record_path
+        )
+        return None
+    return parts
+
+
+def _nofollow_walk_open(
+    parts: tuple[str, ...], worktree_resolved: Path, record_path: str
+) -> int | None:
+    """Walk ``parts`` from ``worktree_resolved`` with ``O_NOFOLLOW``.
+
+    Returns an open fd on the final regular file, or ``None`` on
+    rejection. Caller owns the returned fd.
+    """
+    try:
+        parent_fd = os.open(
+            str(worktree_resolved),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        logger.warning(
+            "Could not open worktree root %s: %s", worktree_resolved, exc
+        )
+        return None
+
+    dir_fds: list[int] = [parent_fd]
+    try:
+        for segment in parts[:-1]:
+            try:
+                next_fd = os.open(
+                    segment,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Refusing validation_record_path %s: ancestor "
+                    "segment %r failed O_NOFOLLOW open (%s). Symlink "
+                    "in ancestor or race between check and open.",
+                    record_path,
+                    segment,
+                    exc,
+                )
+                return None
+            dir_fds.append(next_fd)
+            parent_fd = next_fd
+
+        try:
+            return os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            logger.warning(
+                "Refusing validation_record_path %s: final open "
+                "failed (%s). File missing or final component is a "
+                "symlink.",
+                record_path,
+                exc,
+            )
+            return None
+    finally:
+        for fd in dir_fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _fd_is_safe_regular_file(fd: int, record_path: str) -> bool:
+    """Reject non-regular or oversize files behind ``fd``."""
+    try:
+        st = os.fstat(fd)
+    except OSError as exc:
+        logger.warning(
+            "fstat failed on validation record %s: %s", record_path, exc
+        )
+        return False
+    if not stat_module.S_ISREG(st.st_mode):
+        logger.warning(
+            "validation_record_path %s is not a regular file after "
+            "O_NOFOLLOW walk",
+            record_path,
+        )
+        return False
+    if st.st_size > _VALIDATION_RECORD_MAX_BYTES:
+        logger.warning(
+            "Validation record %s is %d bytes, exceeds cap %d",
+            record_path,
+            st.st_size,
+            _VALIDATION_RECORD_MAX_BYTES,
+        )
+        return False
+    return True
+
+
+def _open_contained_validation_record(
+    record_path: str, worktree: Path
+) -> int | None:
+    """Open ``record_path`` by symlink-safe walk under ``worktree``.
+
+    ``Path.resolve`` + ``relative_to`` establishes containment at a
+    point in time, but reopening by pathname later (``os.open(path,
+    O_NOFOLLOW)``) only refuses a symlink in the *final* component —
+    an attacker who swaps an ancestor directory for a symlink between
+    check and open still wins. Previously this was the bypass flagged
+    in #6017 re-review-4 P1.
+
+    The fix: never reopen by path. Walk from the worktree root,
+    opening each path component with ``O_NOFOLLOW | O_CLOEXEC`` on
+    directories (``O_DIRECTORY``) and on the final regular file. Any
+    symlink at any level trips ``ELOOP`` and we refuse. The returned
+    fd is anchored to the real inode and is safe to stream from via
+    ``os.fdopen`` without ever touching the path string again.
+
+    Returns the open fd on success (caller owns closing it) or
+    ``None`` on rejection.
+    """
+    if not record_path:
+        return None
+    if "\x00" in record_path:
+        logger.warning(
+            "validation_record_path %r rejected: contains null byte",
+            record_path,
+        )
+        return None
+    try:
+        worktree_resolved = Path(worktree).resolve()
+    except (OSError, RuntimeError) as exc:
+        logger.warning("worktree %s could not be resolved: %s", worktree, exc)
+        return None
+
+    parts = _relative_parts_under_worktree(record_path, worktree_resolved)
+    if parts is None:
+        return None
+
+    fd = _nofollow_walk_open(parts, worktree_resolved, record_path)
+    if fd is None:
+        return None
+    if not _fd_is_safe_regular_file(fd, record_path):
+        os.close(fd)
+        return None
+    return fd
+
+
+def _copy_from_fd(src_fd: int, dst: Path) -> bool:
+    """Stream ``src_fd`` into ``dst``, closing the fd on exit.
+
+    The caller opens ``src_fd`` through a symlink-safe path walk
+    (see ``_open_contained_validation_record``); this helper only
+    touches the fd and the destination path, never the source path
+    string again. Returns ``True`` on success.
+    """
+    try:
+        with os.fdopen(src_fd, "rb", closefd=True) as src, open(dst, "wb") as dst_file:
+            shutil.copyfileobj(src, dst_file, length=65536)
+    except OSError as exc:
+        logger.debug(
+            "Failed to copy validation record fd to %s: %s", dst, exc
+        )
+        return False
+    return True
 
 
 class CompletionProcessor:
@@ -514,16 +754,22 @@ class CompletionProcessor:
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
         run_dir_record_path = run_dir / "validation-record.json"
-        if not run_dir_record_path.exists() and record_path is not None and record_path.exists():
-            try:
-                shutil.copy2(record_path, run_dir_record_path)
-            except OSError:
-                logger.debug(
-                    "Failed to copy validation record from %s to %s",
-                    record_path,
-                    run_dir_record_path,
-                )
-        effective_record_path = run_dir_record_path if run_dir_record_path.exists() else record_path
+        # Only publish a manifest entry when a run-scoped artifact was
+        # actually produced (either pre-existing or copied here under
+        # symlink-safe open). If the copy refuses, the manifest must
+        # not leak the agent-supplied path — #6017 re-review-4 P2.
+        effective_record_path: Path | None = None
+        if run_dir_record_path.exists():
+            effective_record_path = run_dir_record_path
+        elif record_path is not None and record_path.exists():
+            # Symlink-safe walk: opens the source under the worktree
+            # with O_NOFOLLOW on every path component, never reopens
+            # by path string.
+            src_fd = _open_contained_validation_record(
+                str(record_path), worktree
+            )
+            if src_fd is not None and _copy_from_fd(src_fd, run_dir_record_path):
+                effective_record_path = run_dir_record_path
         if effective_record_path is not None:
             self.session_output.update_manifest(
                 run_dir,

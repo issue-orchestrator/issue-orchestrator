@@ -138,3 +138,148 @@ def test_initialize_requires_explicit_call_for_token_issuance() -> None:
     browser_session.shutdown()
     with pytest.raises(RuntimeError):
         browser_session.create_session()
+
+
+# ---------------------------------------------------------------------------
+# SSE token single-use semantics — #6017 re-review-3 P2.
+# ---------------------------------------------------------------------------
+
+
+def test_sse_token_cannot_be_replayed() -> None:
+    """A valid token is consumed on first verify; second use fails.
+
+    Pins single-use semantics so a token leaked via access log,
+    browser history, or ``Referer`` cannot be replayed within its
+    TTL.
+    """
+    sid, _ = browser_session.create_session()
+    tok = browser_session.issue_sse_token(sid)
+    assert tok is not None
+
+    assert browser_session.verify_sse_token(tok, sid) is True
+    assert browser_session.verify_sse_token(tok, sid) is False
+
+
+def test_consumed_nonce_does_not_affect_fresh_tokens() -> None:
+    """Consuming one token does not block other tokens for the same session."""
+    sid, _ = browser_session.create_session()
+    tok_a = browser_session.issue_sse_token(sid)
+    tok_b = browser_session.issue_sse_token(sid)
+    assert tok_a and tok_b and tok_a != tok_b
+
+    assert browser_session.verify_sse_token(tok_a, sid) is True
+    assert browser_session.verify_sse_token(tok_b, sid) is True
+
+
+class TestInitializeConfig:
+    """Config + env-var knobs (#6017 re-review-3 ttl config)."""
+
+    def test_yaml_config_overrides_defaults(self) -> None:
+        browser_session.shutdown()
+        browser_session.initialize(
+            secret=b"s",
+            session_ttl_seconds=1234,
+            sse_token_ttl_seconds=17,
+            max_sessions=42,
+        )
+
+        assert browser_session.SESSION_TTL_SECONDS == 1234
+        assert browser_session.SSE_TOKEN_TTL_SECONDS == 17
+        assert browser_session.MAX_SESSIONS == 42
+
+    def test_env_var_overrides_yaml(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        browser_session.shutdown()
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS", "900")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS", "10")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_MAX_SESSIONS", "7")
+
+        browser_session.initialize(
+            secret=b"s",
+            session_ttl_seconds=1234,
+            sse_token_ttl_seconds=17,
+            max_sessions=42,
+        )
+
+        assert browser_session.SESSION_TTL_SECONDS == 900
+        assert browser_session.SSE_TOKEN_TTL_SECONDS == 10
+        assert browser_session.MAX_SESSIONS == 7
+
+    def test_invalid_env_value_falls_back_to_yaml(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        browser_session.shutdown()
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS", "not-a-number")
+
+        with caplog.at_level(
+            "WARNING", logger="issue_orchestrator.infra.browser_session"
+        ):
+            browser_session.initialize(
+                secret=b"s", session_ttl_seconds=555
+            )
+
+        assert browser_session.SESSION_TTL_SECONDS == 555
+        assert any(
+            "Ignoring invalid" in record.getMessage()
+            for record in caplog.records
+        )
+
+
+def test_sessions_are_capped_and_lru_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``MAX_SESSIONS`` is enforced via LRU eviction (#6017 re-review-3 P4).
+
+    Cap the module-level constant to a tiny value, pump sessions
+    through, and assert the first-created session is evicted when
+    the cap is reached.
+    """
+    monkeypatch.setattr(browser_session, "MAX_SESSIONS", 3)
+
+    sid_a, _ = browser_session.create_session()
+    sid_b, _ = browser_session.create_session()
+    sid_c, _ = browser_session.create_session()
+
+    assert browser_session.session_is_valid(sid_a)
+    assert browser_session.session_is_valid(sid_b)
+    assert browser_session.session_is_valid(sid_c)
+
+    # Touch ``sid_a`` so it becomes most-recently-used; a fourth
+    # session should evict ``sid_b`` (now LRU), not ``sid_a``.
+    browser_session.get_csrf_token(sid_a)
+    sid_d, _ = browser_session.create_session()
+
+    assert browser_session.session_is_valid(sid_a)
+    assert not browser_session.session_is_valid(sid_b)
+    assert browser_session.session_is_valid(sid_c)
+    assert browser_session.session_is_valid(sid_d)
+
+
+def test_consumed_nonces_expire_after_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The consumed-nonce table trims entries older than the TTL so the
+    dict does not grow unbounded.
+    """
+    sid, _ = browser_session.create_session()
+    tok = browser_session.issue_sse_token(sid)
+    assert tok is not None
+
+    assert browser_session.verify_sse_token(tok, sid) is True
+    nonce = tok.split(":")[2]
+    assert nonce in browser_session._CONSUMED_SSE_NONCES  # noqa: SLF001
+
+    real_now = time.time()
+    monkeypatch.setattr(
+        browser_session.time,
+        "time",
+        lambda: real_now + browser_session.SSE_TOKEN_TTL_SECONDS + 10,
+    )
+    # A second verify (even on a new token) triggers the expiry sweep.
+    other_sid, _ = browser_session.create_session()
+    other_tok = browser_session.issue_sse_token(other_sid)
+    assert other_tok is not None
+    browser_session.verify_sse_token(other_tok, other_sid)
+
+    assert nonce not in browser_session._CONSUMED_SSE_NONCES  # noqa: SLF001

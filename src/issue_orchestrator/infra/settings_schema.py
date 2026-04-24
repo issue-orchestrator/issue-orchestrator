@@ -1120,6 +1120,74 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "ui.control_api_port",
         },
     )
+    browser_session_ttl_seconds: int = Field(
+        8 * 3600,
+        title="Browser Session TTL (seconds)",
+        description=(
+            "How long a Control Center login is valid before it expires and "
+            "the operator must re-enter the admin token. Overridable at "
+            "runtime via ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS."
+        ),
+        ge=60,
+        le=30 * 24 * 3600,
+        json_schema_extra={
+            "doc_examples": ["3600", "28800", "86400"],
+            "doc_notes": (
+                "Minimum 60 s. Shorter values reduce the window a stolen "
+                "cookie is useful; longer values reduce re-login friction."
+            ),
+            "section": "Browser Session",
+            "restart_required": True,
+            "config_attr": "browser_session_ttl_seconds",
+            "yaml_path": "ui.browser_session.ttl_seconds",
+        },
+    )
+    browser_session_max: int = Field(
+        1024,
+        title="Max Concurrent Browser Sessions",
+        description=(
+            "Upper bound on the in-memory session table. Beyond this, the "
+            "least-recently-used entries are evicted on new login."
+        ),
+        ge=16,
+        le=65536,
+        json_schema_extra={
+            "doc_examples": ["256", "1024", "4096"],
+            "doc_notes": (
+                "Practically only relevant on long-running deployments with "
+                "many operators. The cap protects against unbounded memory "
+                "growth, not against brute force."
+            ),
+            "section": "Browser Session",
+            "restart_required": True,
+            "config_attr": "browser_session_max",
+            "yaml_path": "ui.browser_session.max",
+        },
+    )
+    sse_token_ttl_seconds: int = Field(
+        60,
+        title="SSE Query-String Token TTL (seconds)",
+        description=(
+            "How long a /api/sse-token response is valid before the browser "
+            "must request a fresh one. Tokens are single-use within their "
+            "window. Overridable via ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS."
+        ),
+        ge=5,
+        le=3600,
+        json_schema_extra={
+            "doc_examples": ["30", "60", "300"],
+            "doc_notes": (
+                "Shorter is safer — a token in an access log or Referer "
+                "header becomes useless faster. The browser re-requests on "
+                "every reconnect so operator-visible reconnection latency "
+                "is unchanged."
+            ),
+            "section": "Browser Session",
+            "restart_required": True,
+            "config_attr": "sse_token_ttl_seconds",
+            "yaml_path": "ui.browser_session.sse_token_ttl_seconds",
+        },
+    )
     ai_systems_allowed: str = Field(
         "",
         title="AI Systems Allowlist",
