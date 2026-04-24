@@ -160,29 +160,37 @@ def _relative_parts_under_worktree(
     """Convert ``record_path`` to segments below ``worktree_resolved``.
 
     Handles both absolute and relative inputs. Absolute paths are
-    normalized (without following symlinks) and required to fall under
-    the worktree. Relative paths must not contain ``..``. The first
+    resolved (following symlinks) and required to fall under the
+    worktree's real path — this keeps common setups working where the
+    worktree itself is reached through a symlinked prefix (macOS
+    ``/tmp`` vs ``/private/tmp``, Linux ``/var`` vs ``/private/var``).
+    Resolving the input also turns any agent-planted symlink inside
+    the input into its real target; if that target escapes the
+    worktree, ``relative_to`` rejects it here. The subsequent
+    ``O_NOFOLLOW`` walk still guards against races between this check
+    and the open. Relative paths must not contain ``..``. The first
     segment is required to be the containment subdirectory. Returns
     the validated segments, or ``None`` on rejection.
     """
     raw = Path(record_path)
     if raw.is_absolute():
         try:
-            normalized = Path(os.path.normpath(str(raw)))
-        except (ValueError, OSError) as exc:
+            resolved_raw = raw.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
             logger.warning(
-                "validation_record_path %r could not be normalized: %s",
+                "validation_record_path %r could not be resolved: %s",
                 record_path,
                 exc,
             )
             return None
         try:
-            rel = normalized.relative_to(worktree_resolved)
+            rel = resolved_raw.relative_to(worktree_resolved)
         except ValueError:
             logger.warning(
-                "validation_record_path %s resolves outside worktree %s; "
-                "refusing to attach",
-                normalized,
+                "validation_record_path %s resolves to %s, outside "
+                "worktree %s; refusing to attach",
+                record_path,
+                resolved_raw,
                 worktree_resolved,
             )
             return None

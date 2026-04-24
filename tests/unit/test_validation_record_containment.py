@@ -218,6 +218,39 @@ def test_walk_open_refuses_absolute_path_outside_worktree(
     assert _walk_open(tmp_path, "/etc/hosts") is None
 
 
+def test_walk_open_accepts_absolute_path_through_symlinked_worktree_prefix(
+    tmp_path: Path,
+) -> None:
+    """Regression for re-review-5 P2.
+
+    On macOS ``/tmp`` is a symlink to ``/private/tmp``; on Linux
+    ``/var`` is often a symlink to ``/private/var``. When the caller
+    hands us an absolute record path using the symlink form and the
+    worktree also uses the symlink form, containment must succeed.
+    """
+    real_worktree = tmp_path / "real"
+    real_worktree.mkdir()
+    link_worktree = tmp_path / "link"
+    try:
+        os.symlink(real_worktree, link_worktree)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+
+    _make_valid_record(real_worktree)
+
+    abs_under_link = (
+        link_worktree / ".issue-orchestrator" / "validation" / "deadbeef.json"
+    )
+    fd = _walk_open(link_worktree, str(abs_under_link))
+
+    assert fd is not None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            assert f.read() == b'{"passed": true}'
+    finally:
+        pass
+
+
 def test_walk_open_refuses_dotdot_segment(tmp_path: Path) -> None:
     _make_valid_record(tmp_path)
     # Even if the resulting canonical path happens to fall inside the
@@ -304,8 +337,8 @@ def test_attach_skips_manifest_when_copy_refuses(tmp_path: Path) -> None:
     processor = CompletionProcessor.__new__(CompletionProcessor)
     processor.session_output = session_output  # type: ignore[attr-defined]
 
-    # noqa: SLF001 — exercising the helper is the point of the test.
-    processor._attach_validation_artifacts(
+    # Exercising the private helper is the point of this test.
+    processor._attach_validation_artifacts(  # noqa: SLF001
         worktree=tmp_path,
         session_name="s",
         record=None,
