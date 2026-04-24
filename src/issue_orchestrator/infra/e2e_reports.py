@@ -5,9 +5,11 @@ from __future__ import annotations
 import glob
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from defusedxml import ElementTree
+from xml.etree.ElementTree import Element as XmlElement
+from xml.etree.ElementTree import ParseError as XmlParseError
 
 
 CaseOutcome = Literal["passed", "failed", "error", "skipped"]
@@ -88,8 +90,8 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
         raise ValueError(f"JUnit XML does not exist: {path}")
 
     try:
-        root = ElementTree.parse(path).getroot()
-    except ElementTree.ParseError as exc:
+        root = cast(XmlElement, ElementTree.parse(path).getroot())
+    except XmlParseError as exc:
         raise ValueError(
             f"Malformed JUnit XML: {path}{_parse_error_position(exc)}"
         ) from exc
@@ -133,7 +135,7 @@ def normalize_pytest_junit_cases(
     return normalized
 
 
-def _parse_testcase(testcase: ElementTree.Element) -> JUnitCaseResult:
+def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
     display_name = (testcase.attrib.get("name") or "").strip()
     if not display_name:
         raise ValueError("JUnit testcase is missing a non-empty name attribute")
@@ -184,7 +186,7 @@ def _parse_testcase(testcase: ElementTree.Element) -> JUnitCaseResult:
     )
 
 
-def _detail_text(element: ElementTree.Element) -> str | None:
+def _detail_text(element: XmlElement) -> str | None:
     message = _optional_text(element.attrib.get("message"))
     body = _optional_text(element.text)
     if message and body:
@@ -244,7 +246,7 @@ def _glob_matches(repo_root: Path, candidate: str) -> list[Path]:
     return [Path(match) for match in sorted(glob.glob(search_pattern, recursive=True))]
 
 
-def _parse_error_position(exc: ElementTree.ParseError) -> str:
+def _parse_error_position(exc: XmlParseError) -> str:
     position = getattr(exc, "position", None)
     if not isinstance(position, tuple) or len(position) != 2:
         return ""

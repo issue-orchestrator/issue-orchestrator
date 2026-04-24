@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
-    DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
+    DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,  # pyright: ignore[reportUnusedImport] -- re-exported for doctor schema checks
     DOCTOR_CHECK_PATH_EXISTS,
     DOCTOR_CHECK_REFERENCES_AGENT,
     DOCTOR_SEVERITY_ERROR,

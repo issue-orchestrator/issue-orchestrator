@@ -39,8 +39,6 @@ def _execution_spec_for_start_request(
     config,
 ):
     """Resolve the execution spec for a manual start request."""
-    from ..infra.config_models import E2EExecutionSpec
-
     execution_spec = config.e2e.execution_spec()
     allow_retry_once = body.get("allow_retry_once", execution_spec.allow_retry_once)
     if execution_spec.runner_kind == "pytest" and body.get("pytest_args") is not None:
