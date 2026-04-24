@@ -187,17 +187,20 @@ def test_main_dev_no_auth_clears_stale_auth_state(
     )
 
 
-def test_main_dev_no_auth_refuses_non_loopback_host(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """``--dev-no-auth`` must refuse any non-loopback ``--host`` value.
+def test_main_dev_no_auth_refuses_non_loopback_host() -> None:
+    """``--dev-no-auth`` must refuse any non-loopback ``--host`` value
+    BEFORE any startup side effect runs.
 
-    Regression for #6017 re-review-3 P2 on #6035. Combining
-    ``--dev-no-auth`` with ``--host 0.0.0.0`` would expose an
-    unauthenticated Control API to the network.
+    Regression for #6017 re-review-3 P2 + re-review-4 P2 on #6035.
+    Combining ``--dev-no-auth`` with ``--host 0.0.0.0`` would expose
+    an unauthenticated Control API to the network. The original fix
+    refused the combination, but only after
+    ``write_dashboard_pid`` / browser-open thread / reaper thread
+    had already run — leaving a stale PID file and potentially a
+    browser tab pointed at a server that never bound. Assert here
+    that none of those side-effect functions are invoked in the
+    refusal path.
     """
-    import logging as _logging
-
     from issue_orchestrator.entrypoints import control_api
 
     prev_admin = control_api.get_configured_api_token()
@@ -211,12 +214,17 @@ def test_main_dev_no_auth_refuses_non_loopback_host(
             ),
         ),
         patch("issue_orchestrator.entrypoints.control_center.uvicorn.run") as run_mock,
-        patch("issue_orchestrator.entrypoints.control_center.write_dashboard_pid"),
-        patch("issue_orchestrator.entrypoints.control_center.clear_dashboard_pid"),
-        patch("issue_orchestrator.entrypoints.control_center.logging.basicConfig"),
-        patch("issue_orchestrator.infra.repo_registry.cleanup_stale_repos", return_value=0),
-        patch("issue_orchestrator.entrypoints.control_center.threading.Thread") as thread_cls,
-        caplog.at_level(_logging.ERROR, logger="issue_orchestrator.entrypoints.control_center"),
+        patch(
+            "issue_orchestrator.entrypoints.control_center.write_dashboard_pid"
+        ) as pid_mock,
+        patch(
+            "issue_orchestrator.entrypoints.control_center.clear_dashboard_pid"
+        ) as clear_mock,
+        patch("issue_orchestrator.entrypoints.control_center.logging.basicConfig") as basic_cfg_mock,
+        patch("issue_orchestrator.infra.repo_registry.cleanup_stale_repos", return_value=0) as cleanup_mock,
+        patch(
+            "issue_orchestrator.entrypoints.control_center.threading.Thread"
+        ) as thread_cls,
     ):
         thread_cls.return_value = MagicMock(start=MagicMock())
         try:
@@ -225,11 +233,16 @@ def test_main_dev_no_auth_refuses_non_loopback_host(
             control_api.configure_api_token(prev_admin, agent_callback=prev_agent)
 
     assert result == 2
-    # uvicorn must NEVER be invoked in this path.
+    # None of the startup side-effect operations should run when we
+    # refuse the combination. A successful refusal leaves no PID
+    # file, no browser tab, no background thread, and no registry
+    # cleanup touching disk state.
     run_mock.assert_not_called()
-    assert any(
-        "not a loopback" in record.getMessage() for record in caplog.records
-    )
+    pid_mock.assert_not_called()
+    clear_mock.assert_not_called()
+    basic_cfg_mock.assert_not_called()
+    cleanup_mock.assert_not_called()
+    thread_cls.assert_not_called()
 
 
 class TestLoopbackHostHelper:

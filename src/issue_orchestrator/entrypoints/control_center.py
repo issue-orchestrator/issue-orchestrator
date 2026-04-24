@@ -228,6 +228,26 @@ def main() -> int:
     if os.environ.get("ISSUE_ORCHESTRATOR_DEV_NO_AUTH") == "1":
         args.dev_no_auth = True
 
+    # Validate the --dev-no-auth + --host combination before any
+    # startup side effect runs. ``write_dashboard_pid``, the browser
+    # auto-open thread, and the reaper all touch observable state
+    # (PID file on disk, a browser tab, a background thread); if we
+    # refused the combination after them we would leave behind a
+    # stale dashboard-detection PID file and potentially open the
+    # operator's browser to a server that never bound. Tracked as
+    # #6017 re-review-4 P2.
+    if args.dev_no_auth and not _is_loopback_host(args.host):
+        # Use ``print`` + no logger: ``logging.basicConfig`` has not
+        # been called yet in this pre-side-effects branch, so a
+        # logger call would go to the root default handler. Keep
+        # the refusal message visible on stderr for scripts.
+        print(
+            f"Refusing --dev-no-auth with --host {args.host}. "
+            "Only loopback binds are allowed in dev-no-auth mode.",
+            flush=True,
+        )
+        return 2
+
     # Default engine target repo to where Control Center was launched from.
     os.environ.setdefault("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(Path.cwd().resolve()))
 
@@ -271,25 +291,10 @@ def main() -> int:
     # request lands on an unauthenticated endpoint — the exact hole
     # flagged in #6017 review (P1 on #6011).
     if args.dev_no_auth:
-        # Hard-refuse the footgun: unauthenticated Control API on a
-        # non-loopback bind would expose admin-equivalent mutation to
-        # anyone who can reach the port. Loopback + same-user is the
-        # threat model we accept for dev; the network case is not.
-        # Tracked by #6017 re-review-3 P2.
-        if not _is_loopback_host(args.host):
-            logger.error(
-                "--dev-no-auth refused: host %s is not a loopback address. "
-                "Unauthenticated Control API on a non-loopback bind would "
-                "expose admin mutation to anyone who can reach the port. "
-                "Re-run with --host 127.0.0.1 or without --dev-no-auth.",
-                args.host,
-            )
-            print(
-                f"\n\033[1;31mRefusing --dev-no-auth with --host {args.host}. "
-                "Only loopback binds are allowed in dev-no-auth mode.\033[0m\n",
-                flush=True,
-            )
-            return 2
+        # The non-loopback refusal already ran up-top, before any
+        # startup side effects. By the time we get here we know the
+        # operator asked for a loopback dev-no-auth mode; just log,
+        # banner, and wire the middleware to pass-through.
         logger.error(
             "⚠  Control Center running with --dev-no-auth: "
             "authentication is DISABLED. Any local process can mutate "
