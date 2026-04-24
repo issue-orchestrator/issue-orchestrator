@@ -280,6 +280,10 @@ def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openValidationFailure")
     assert "/api/dialog/validation-failure/" in body
+    assert "Validation Results" in body
+    assert "renderValidationFailureActionSections" in js
+    assert "action_sections" in body
+    assert "diag-validation-grid" in body
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:

@@ -684,7 +684,13 @@ export interface ValidationFailedPayload {
   record_path: string;
 }
 
+export interface ValidationFailureActionSectionPayload {
+  actions: SessionDiagnosticsActionPayload[];
+  title: string;
+}
+
 export interface ValidationFailureDialogPayload {
+  action_sections: ValidationFailureActionSectionPayload[];
   actions: SessionDiagnosticsActionPayload[];
   command: string;
   ended_at: string;
@@ -695,6 +701,7 @@ export interface ValidationFailureDialogPayload {
   stderr_excerpt: string[];
   stdout_excerpt: string[];
   suite: string;
+  summary_rows: DialogRowPayload[];
   title: string;
 }
 

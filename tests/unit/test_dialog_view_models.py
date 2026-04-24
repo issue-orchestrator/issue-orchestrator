@@ -326,6 +326,81 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
     assert dialog["failed_tests"] == ["tests/unit/test_web.py::test_one"]
     assert dialog["stdout_excerpt"] == ["FAILED tests/unit/test_web.py::test_one"]
     assert dialog["stderr_excerpt"] == ["make: *** [validate] Error 2"]
+    assert dialog["summary_rows"] == [
+        {"label": "Reason", "value": "Validation failed for deadbeef (exit_code=2)"},
+        {"label": "Suite", "value": "publish_gate"},
+        {"label": "Command", "value": "make validate"},
+        {"label": "Exit Code", "value": "2"},
+        {"label": "Started", "value": "2026-03-22T04:53:14Z"},
+        {"label": "Ended", "value": "2026-03-22T04:53:58Z"},
+        {"label": "Failing Tests", "value": "1"},
+    ]
+    assert dialog["action_sections"] == [
+        {
+            "title": "Validation Artifacts",
+            "actions": [
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Record",
+                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+                },
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Output",
+                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-stdout.log",
+                },
+                {
+                    "type": "open_path",
+                    "label": "Open Validation Stderr",
+                    "path": "/wt/.issue-orchestrator/sessions/r1/validation-stderr.log",
+                },
+            ],
+        },
+        {
+            "title": "Session Evidence",
+            "actions": [
+                {
+                    "type": "open_agent_log",
+                    "label": "View Session Recording",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                },
+                {
+                    "type": "copy_agent_log",
+                    "label": "Copy Session Recording",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                },
+                {
+                    "type": "open_orchestrator_log",
+                    "label": "Open Orchestrator Log",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                },
+            ],
+        },
+        {
+            "title": "Diagnostics",
+            "actions": [
+                {
+                    "type": "open_path",
+                    "label": "Open Session Dir",
+                    "path": "/run/r1",
+                },
+                {
+                    "type": "open_path",
+                    "label": "Open Session Settings",
+                    "path": "/run/r1/session-identity.json",
+                },
+                {
+                    "type": "open_session_diagnostics",
+                    "label": "Full Diagnostics",
+                    "issue_number": 12,
+                    "run_dir": "/run/r1",
+                },
+            ],
+        },
+    ]
     action_types = [action["type"] for action in dialog["actions"]]
     assert "open_path" in action_types
     assert "open_session_diagnostics" in action_types

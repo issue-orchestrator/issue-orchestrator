@@ -814,6 +814,15 @@
           "blocking": {"type": "boolean"}
         }
       },
+      "ValidationFailureActionSectionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "actions"],
+        "properties": {
+          "title": {"type": "string"},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+        }
+      },
       "ValidationFailureDialogPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -828,6 +837,8 @@
           "failed_tests",
           "stdout_excerpt",
           "stderr_excerpt",
+          "summary_rows",
+          "action_sections",
           "actions"
         ],
         "properties": {
@@ -841,6 +852,8 @@
           "failed_tests": {"type": "array", "items": {"type": "string"}},
           "stdout_excerpt": {"type": "array", "items": {"type": "string"}},
           "stderr_excerpt": {"type": "array", "items": {"type": "string"}},
+          "summary_rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
+          "action_sections": {"type": "array", "items": {"$ref": "#/components/schemas/ValidationFailureActionSectionPayload"}},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
         }
       },

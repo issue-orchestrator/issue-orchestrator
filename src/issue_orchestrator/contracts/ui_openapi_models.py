@@ -692,8 +692,14 @@ class ValidationFailedPayload(BaseModel):
     kind: Literal['failed']
     record_path: str
 
+class ValidationFailureActionSectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions: list[SessionDiagnosticsActionPayload]
+    title: str
+
 class ValidationFailureDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    action_sections: list[ValidationFailureActionSectionPayload]
     actions: list[SessionDiagnosticsActionPayload]
     command: str
     ended_at: str
@@ -704,6 +710,7 @@ class ValidationFailureDialogPayload(BaseModel):
     stderr_excerpt: list[str]
     stdout_excerpt: list[str]
     suite: str
+    summary_rows: list[DialogRowPayload]
     title: str
 
 class ValidationNotRunPayload(BaseModel):

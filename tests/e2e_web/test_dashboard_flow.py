@@ -68,3 +68,92 @@ def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> 
     page.locator("#tab-e2e").click()
     page.wait_for_url("**?tab=e2e**")
     expect(page.locator("#panel-e2e")).to_be_visible()
+
+
+def test_validation_failure_dialog_renders_results_and_artifacts(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """Validation dialog should present results first and grouped artifacts second."""
+    errors: list[str] = []
+    page.on("pageerror", lambda err: errors.append(str(err)))
+
+    page.route(
+        "**/api/dialog/validation-failure/408**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body="""
+            {
+              "title": "Validation Failure #408",
+              "reason": "Validation failed for abc123 (exit_code=2)",
+              "suite": "publish_gate",
+              "command": "make validate-pr",
+              "exit_code": 2,
+              "started_at": "2026-04-24T00:00:00Z",
+              "ended_at": "2026-04-24T00:01:00Z",
+              "failed_tests": [
+                "tests/unit/test_example.py::test_breaks",
+                "tests/unit/test_example.py::test_still_breaks"
+              ],
+              "stdout_excerpt": [
+                "FAILED tests/unit/test_example.py::test_breaks"
+              ],
+              "stderr_excerpt": [
+                "make: *** [validate-pr] Error 2"
+              ],
+              "summary_rows": [
+                {"label": "Reason", "value": "Validation failed for abc123 (exit_code=2)"},
+                {"label": "Suite", "value": "publish_gate"},
+                {"label": "Command", "value": "make validate-pr"},
+                {"label": "Exit Code", "value": "2"},
+                {"label": "Failing Tests", "value": "2"}
+              ],
+              "action_sections": [
+                {
+                  "title": "Validation Artifacts",
+                  "actions": [
+                    {"type": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"},
+                    {"type": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"}
+                  ]
+                },
+                {
+                  "title": "Session Evidence",
+                  "actions": [
+                    {"type": "open_agent_log", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408"}
+                  ]
+                },
+                {
+                  "title": "Diagnostics",
+                  "actions": [
+                    {"type": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}
+                  ]
+                }
+              ],
+              "actions": [
+                {"type": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"},
+                {"type": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"},
+                {"type": "open_agent_log", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408"},
+                {"type": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}
+              ]
+            }
+            """,
+        ),
+    )
+
+    page.goto(str(web_server["url"]), wait_until="domcontentloaded")
+    page.evaluate("openValidationFailure(408, '/tmp/run-408', 'modal')")
+
+    modal = page.locator("#modalOverlay.visible")
+    expect(modal).to_be_visible(timeout=5000)
+    expect(page.locator("#modalTitle")).to_contain_text("Validation Failure #408")
+    expect(page.locator("#modalBody")).to_contain_text("Validation Results")
+    expect(page.locator("#modalBody")).to_contain_text("Results")
+    expect(page.locator("#modalBody")).to_contain_text("Artifacts")
+    expect(page.locator("#modalBody")).to_contain_text("Validation Artifacts")
+    expect(page.locator("#modalBody")).to_contain_text("Session Evidence")
+    expect(page.locator("#modalBody")).to_contain_text("Full Diagnostics")
+    expect(page.locator("#modalBody")).to_contain_text("tests/unit/test_example.py::test_breaks")
+    expect(page.locator("#modalBody .diag-validation-action-group")).to_have_count(3)
+
+    assert errors == []

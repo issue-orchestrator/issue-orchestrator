@@ -446,6 +446,8 @@ def build_validation_failure_dialog(
         action_type="open_session_diagnostics",
         label="Full Diagnostics",
     )
+    summary_rows = _build_validation_failure_summary_rows(validation, failed_tests)
+    action_sections = _build_validation_failure_action_sections(actions)
 
     return {
         "title": f"Validation Failure #{issue_number}",
@@ -458,8 +460,79 @@ def build_validation_failure_dialog(
         "failed_tests": failed_tests,
         "stdout_excerpt": stdout_excerpt,
         "stderr_excerpt": stderr_excerpt,
+        "summary_rows": [row.to_dict() for row in summary_rows],
+        "action_sections": action_sections,
         "actions": actions,
     }
+
+
+def _build_validation_failure_summary_rows(
+    validation: dict[str, Any],
+    failed_tests: list[str],
+) -> list[DialogRow]:
+    exit_code = validation.get("exit_code")
+    exit_code_display = str(exit_code) if isinstance(exit_code, int) else "-"
+    return [
+        DialogRow("Reason", str(validation.get("reason") or "Validation failed")),
+        DialogRow("Suite", str(validation.get("suite") or "-")),
+        DialogRow("Command", str(validation.get("command") or "-")),
+        DialogRow("Exit Code", exit_code_display),
+        DialogRow("Started", str(validation.get("started_at") or "-")),
+        DialogRow("Ended", str(validation.get("ended_at") or "-")),
+        DialogRow(
+            "Failing Tests",
+            str(len(failed_tests)) if failed_tests else "0",
+        ),
+    ]
+
+
+def _build_validation_failure_action_sections(
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    validation_artifacts: list[dict[str, Any]] = []
+    session_evidence: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+
+    for action in actions:
+        action_type = str(action.get("type") or "")
+        label = str(action.get("label") or "").strip().lower()
+        if action_type == "open_path" and "validation" in label:
+            validation_artifacts.append(action)
+            continue
+        if action_type in {"open_agent_log", "copy_agent_log", "view_claude_log", "open_orchestrator_log"}:
+            session_evidence.append(action)
+            continue
+        if action_type == "open_path" and any(
+            token in label
+            for token in ("claude log", "full log")
+        ):
+            session_evidence.append(action)
+            continue
+        diagnostics.append(action)
+
+    sections: list[dict[str, Any]] = []
+    if validation_artifacts:
+        sections.append(
+            {
+                "title": "Validation Artifacts",
+                "actions": validation_artifacts,
+            }
+        )
+    if session_evidence:
+        sections.append(
+            {
+                "title": "Session Evidence",
+                "actions": session_evidence,
+            }
+        )
+    if diagnostics:
+        sections.append(
+            {
+                "title": "Diagnostics",
+                "actions": diagnostics,
+            }
+        )
+    return sections
 
 
 def build_blocked_issues_dialog(blocked_payload: dict[str, Any]) -> dict[str, Any]:

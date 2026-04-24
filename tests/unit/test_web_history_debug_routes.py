@@ -418,6 +418,12 @@ class TestHistoryEndpoints:
             assert payload["failed_tests"] == [
                 "tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open"
             ]
+            assert payload["summary_rows"][-1] == {"label": "Failing Tests", "value": "1"}
+            assert [section["title"] for section in payload["action_sections"]] == [
+                "Validation Artifacts",
+                "Session Evidence",
+                "Diagnostics",
+            ]
             assert any(action.get("type") == "open_session_diagnostics" for action in payload["actions"])
         finally:
             set_orchestrator(None)
