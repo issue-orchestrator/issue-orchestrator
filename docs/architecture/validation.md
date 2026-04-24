@@ -6,7 +6,7 @@ Validation is a **publish gate**, not a CI system.
 
 - Run one user-defined local command per suite
 - Cache results by worktree + commit SHA
-- Reuse across feedback/publish/hooks
+- Reuse across feedback/publish hooks
 - Observe GitHub CI rather than reproducing it locally
 
 ## Configuration (YAML)
@@ -21,9 +21,14 @@ execution:
     mode: "standard"   # or "hardened"
 ```
 
-`make validate` is the fast local publish gate.
+`make validate` is the fast local validation command used during agent feedback.
 
-`make validate-pr` is the required pre-push and PR gate. It includes `make validate` plus the agent-backed simulated and integration slices. CI mirrors that same coverage by running the fast and agent-backed portions in separate required jobs.
+The canonical **pre-publish** gate is the worktree's effective `pre-push` hook:
+
+- project hook first (`make validate-pr`, `scripts/verify-pr.sh`, etc.)
+- orchestrator hook second (dirty-tree + banned test-skipping patterns)
+
+The orchestrator now runs that hook chain before the authenticated push so push-time policy failures are discovered before publish. CI still mirrors the repo's required PR coverage in a clean environment.
 
 ## Record Format
 

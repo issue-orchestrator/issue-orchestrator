@@ -225,6 +225,13 @@ class SessionController:
 
         # Map outcome to status
         status = self._map_outcome_to_status(record)
+        if result.failure_kind == "validation_failed":
+            status = self._handle_pre_publish_validation_failure(
+                run_dir=run_dir,
+                session_name=validation_session_name,
+                issue_number=issue_number,
+                validation_reason=result.message,
+            )
         blocked_reason = (
             record.blocked_reason if status == SessionStatus.BLOCKED else None
         )
@@ -278,6 +285,29 @@ class SessionController:
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
         )
+
+    def _handle_pre_publish_validation_failure(
+        self,
+        *,
+        run_dir: Path | None,
+        session_name: str,
+        issue_number: int,
+        validation_reason: str,
+    ) -> SessionStatus:
+        if run_dir is None:
+            return SessionStatus.VALIDATION_FAILED
+        self._emit_event(
+            EventName.SESSION_VALIDATION_FAILED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "validation_cmd": "pre_publish_hook",
+                "run_dir": str(run_dir),
+                "validation_reason": validation_reason,
+                "artifacts": self._validation_record_artifacts(run_dir),
+            },
+        )
+        return SessionStatus.VALIDATION_FAILED
 
     def _log_completion_lookup(
         self,

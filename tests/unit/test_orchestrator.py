@@ -3421,3 +3421,23 @@ class TestAsyncPublishResults:
         assert orchestrator.state.discovered_reviews == []
         assert orchestrator.state.completed_today == [42]
         assert orchestrator.state.pending_publish_jobs == {}
+
+    def test_poll_job_results_tracks_validation_failed_reason(self, sample_config):
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=False,
+                failure_kind="validation_failed",
+                message="Validation failed: ERROR: Test-skipping patterns detected",
+            )
+        ])
+
+        orchestrator._poll_job_results()
+
+        assert len(orchestrator.state.discovered_failures) == 1
+        assert orchestrator.state.discovered_failures[0].failure_reason == "validation_failed"

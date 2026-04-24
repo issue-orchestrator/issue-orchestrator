@@ -13,6 +13,7 @@ class ProcessingResult:
 
     success: bool
     message: str
+    failure_kind: str | None = None
     pr_url: str | None = None
     actions_taken: list[str] | None = None
     diagnostic_path: str | None = None

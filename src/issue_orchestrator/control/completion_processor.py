@@ -65,6 +65,7 @@ from .completion_types import (
     ERROR_PREFIX_PUSH,
     ProcessingResult,
 )
+from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
 
@@ -167,6 +168,7 @@ class CompletionProcessor:
         event_bus: EventBus | None = None,
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
+        pre_publish_gate: PrePublishGate | None = None,
         config: "Config | None" = None,
         background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     ):
@@ -180,6 +182,8 @@ class CompletionProcessor:
             event_bus: Optional EventBus for emitting processing events.
             label_config: Optional mapping of label names (e.g., {"blocked": "blocked"}).
             publish_gate: Optional PublishGate for validating before publish actions.
+            pre_publish_gate: Optional gate that runs the worktree's effective
+                pre-push hook before the authenticated push.
             background_job_supervisor: Owns failure-handling for the
                 background runner. When omitted the processor uses a private
                 supervisor wrapping :class:`NullBackgroundJobRunner` so the
@@ -196,6 +200,7 @@ class CompletionProcessor:
         self._event_context: EventContext | None = None
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
+        self.pre_publish_gate = pre_publish_gate
         self._config = config
         self._pr_collision_strategy = (
             config.worktree_remediation_pr_collision
@@ -644,7 +649,13 @@ class CompletionProcessor:
         )
 
         # Execute requested actions in order
-        branch, pr_url, review_exchange_completed, deferred = self._execute_actions(
+        (
+            branch,
+            pr_url,
+            review_exchange_completed,
+            deferred,
+            early_result,
+        ) = self._execute_actions(
             worktree=worktree,
             record=record,
             issue_number=issue_number,
@@ -657,6 +668,8 @@ class CompletionProcessor:
             errors=errors,
             error_details=error_details,
         )
+        if early_result is not None:
+            return early_result
 
         if deferred:
             # Review exchange is running in the background. Leave the completion
@@ -862,7 +875,96 @@ class CompletionProcessor:
         return ProcessingResult(
             success=False,
             message=f"Validation failed: {gate_reason}",
+            failure_kind="validation_failed",
             errors=[f"Validation: {gate_reason}"],
+        )
+
+    def _run_pre_publish_gate_if_required(
+        self,
+        *,
+        plan: Any,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+    ) -> tuple[ProcessingResult | None, bool]:
+        if self.pre_publish_gate is None:
+            return None, False
+        if RequestedAction.PUSH_BRANCH not in plan.ordered_actions:
+            return None, False
+        if session_name is None:
+            return ProcessingResult(
+                success=False,
+                message="Pre-publish validation requires a session name",
+                failure_kind="validation_failed",
+                errors=["Validation: session_name is required for pre-publish validation"],
+            ), False
+
+        result = self.pre_publish_gate.check(worktree)
+        if not result.ran:
+            return None, False
+        if result.allowed:
+            return None, True
+
+        self._persist_pre_publish_failure_artifacts(
+            worktree=worktree,
+            session_name=session_name,
+            result=result,
+        )
+        return self._handle_gate_failure(
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            result.reason,
+            self._pre_publish_validation_record(worktree, session_name, result),
+        ), False
+
+    def _persist_pre_publish_failure_artifacts(
+        self,
+        *,
+        worktree: Path,
+        session_name: str,
+        result: PrePublishGateResult,
+    ) -> None:
+        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
+        stdout_path = run_dir / "validation-stdout.log"
+        stderr_path = run_dir / "validation-stderr.log"
+        stdout_path.write_text(result.stdout)
+        stderr_path.write_text(result.stderr)
+        record = self._pre_publish_validation_record(worktree, session_name, result)
+        record_path = run_dir / "validation-record.json"
+        record_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+        self.session_output.update_manifest(
+            run_dir,
+            {
+                "validation_record_path": str(record_path),
+                "validation_stdout": str(stdout_path),
+                "validation_stderr": str(stderr_path),
+            },
+        )
+
+    def _pre_publish_validation_record(
+        self,
+        worktree: Path,
+        session_name: str,
+        result: PrePublishGateResult,
+    ) -> ValidationRecord:
+        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
+        stdout_path = run_dir / "validation-stdout.log"
+        stderr_path = run_dir / "validation-stderr.log"
+        return ValidationRecord(
+            schema_version=1,
+            suite="pre_publish_gate",
+            head_sha=result.head_sha or "unknown",
+            passed=False,
+            exit_code=result.exit_code,
+            command=result.command,
+            started_at=result.started_at,
+            ended_at=result.ended_at,
+            timed_out=False,
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
         )
 
     def _execute_actions(
@@ -879,11 +981,12 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
-    ) -> tuple[str | None, str | None, bool, bool]:
+    ) -> tuple[str | None, str | None, bool, bool, ProcessingResult | None]:
         """Execute all requested actions from completion record.
 
         Returns:
-            Tuple of (final_branch, pr_url, review_exchange_completed, deferred).
+            Tuple of (final_branch, pr_url, review_exchange_completed, deferred,
+            early_result).
             When ``deferred`` is True the review exchange is running in the
             background — callers must NOT treat the completion as finished.
         """
@@ -909,9 +1012,19 @@ class CompletionProcessor:
             run_review_exchange_loop=self._run_review_exchange_loop,
         )
         if deferred:
-            return branch, pr_url, review_exchange_completed, True
+            return branch, pr_url, review_exchange_completed, True, None
         if should_halt:
-            return branch, pr_url, review_exchange_completed, False
+            return branch, pr_url, review_exchange_completed, False, None
+
+        pre_publish_failure, skip_push_hooks = self._run_pre_publish_gate_if_required(
+            plan=plan,
+            worktree=worktree,
+            record=record,
+            session_name=session_name,
+            issue_number=issue_number,
+        )
+        if pre_publish_failure is not None:
+            return branch, pr_url, review_exchange_completed, False, pre_publish_failure
 
         branch, pr_url, review_exchange_completed = self._execute_planned_actions(
             plan=plan,
@@ -929,8 +1042,9 @@ class CompletionProcessor:
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
             review_exchange_completed=review_exchange_completed,
+            skip_push_hooks=skip_push_hooks,
         )
-        return branch, pr_url, review_exchange_completed, False
+        return branch, pr_url, review_exchange_completed, False, None
 
     def _execute_planned_actions(
         self,
@@ -950,6 +1064,7 @@ class CompletionProcessor:
         exchange_mode: str | None,
         exchange_result: Any | None,
         review_exchange_completed: bool,
+        skip_push_hooks: bool,
     ) -> tuple[str | None, str | None, bool]:
         pr_url: str | None = None
 
@@ -969,6 +1084,7 @@ class CompletionProcessor:
                 error_details=error_details,
                 exchange_mode=exchange_mode,
                 exchange_result=exchange_result,
+                skip_push_hooks=skip_push_hooks,
             )
             if result is None:
                 continue
@@ -1006,6 +1122,7 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]],
         exchange_mode: str | None,
         exchange_result: Any | None,
+        skip_push_hooks: bool,
     ) -> "_ActionResult | None":
         action_start = time.monotonic()
         logger.info("Executing action: %s for issue #%d", action.value, issue_number)
@@ -1033,6 +1150,7 @@ class CompletionProcessor:
                 error_details=error_details,
                 exchange_mode=exchange_mode,
                 exchange_result=exchange_result,
+                skip_push_hooks=skip_push_hooks,
             )
         except Exception as e:
             logger.exception(
@@ -1100,11 +1218,18 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]],
         exchange_mode: str | None,
         exchange_result: Any | None,
+        skip_push_hooks: bool,
     ) -> "_ActionResult":
         """Execute a single action and return the result."""
         if action == RequestedAction.PUSH_BRANCH:
             return self._execute_push_action(
-                worktree, issue_number, action, actions_taken, errors, error_details
+                worktree,
+                issue_number,
+                action,
+                actions_taken,
+                errors,
+                error_details,
+                skip_hooks=skip_push_hooks,
             )
         elif action == RequestedAction.CREATE_PR:
             return self._execute_create_pr_action(
@@ -1216,9 +1341,11 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
+        *,
+        skip_hooks: bool,
     ) -> "_ActionResult":
         """Execute push branch action."""
-        skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
+        skip_hooks = skip_hooks or os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
         if result.success:
             actions_taken.append("Pushed branch to remote")

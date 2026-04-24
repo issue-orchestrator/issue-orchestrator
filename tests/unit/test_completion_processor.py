@@ -31,6 +31,7 @@ from issue_orchestrator.control.completion_processor import (
     PRAdapter,
     GitAdapter,
 )
+from issue_orchestrator.control.pre_publish_gate import PrePublishGateResult
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.events import EventContext, EventName
@@ -1787,7 +1788,11 @@ class TestCompletionProcessorPublishGate:
 
     @pytest.fixture
     def processor_with_gate(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, mock_publish_gate
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
     ):
         """Processor with publish gate configured."""
         return CompletionProcessor(
@@ -1797,6 +1802,24 @@ class TestCompletionProcessorPublishGate:
             publish_gate=mock_publish_gate,
             session_output=FileSystemSessionOutput(),
         )
+
+    @pytest.fixture
+    def mock_pre_publish_gate(self):
+        gate = Mock()
+        gate.check.return_value = PrePublishGateResult(
+            allowed=True,
+            reason="Pre-push hook passed",
+            command="/tmp/hooks/pre-push",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            exit_code=0,
+            stdout="",
+            stderr="",
+            hook_path="/tmp/hooks/pre-push",
+            head_sha="abc123",
+            ran=True,
+        )
+        return gate
 
     def test_cannot_publish_without_validation_passing(
         self, processor_with_gate, mock_publish_gate, mock_git_adapter, worktree_with_completion
@@ -1979,6 +2002,83 @@ class TestCompletionProcessorPublishGate:
         assert manifest.get("validation_passed") is False
         assert manifest.get("validation_failure_reason") == "Validation failed"
         assert "ended_at" in manifest  # Must be set so UI shows correct status
+
+    def test_pre_publish_gate_runs_before_push_and_skips_duplicate_hooks(
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+        mock_pre_publish_gate,
+        worktree_with_completion,
+    ):
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            pre_publish_gate=mock_pre_publish_gate,
+            session_output=FileSystemSessionOutput(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success
+        mock_pre_publish_gate.check.assert_called_once_with(worktree)
+        mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=True)
+
+    def test_pre_publish_gate_failure_adds_validation_failed_and_blocks_push(
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+        worktree_with_completion,
+    ):
+        pre_publish_gate = Mock()
+        pre_publish_gate.check.return_value = PrePublishGateResult(
+            allowed=False,
+            reason="ERROR: Test-skipping patterns detected",
+            command="/tmp/hooks/pre-push",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            exit_code=1,
+            stdout="ERROR: Test-skipping patterns detected\n",
+            stderr="",
+            hook_path="/tmp/hooks/pre-push",
+            head_sha="abc123",
+            ran=True,
+        )
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            pre_publish_gate=pre_publish_gate,
+            session_output=FileSystemSessionOutput(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert not result.success
+        assert result.failure_kind == "validation_failed"
+        mock_git_adapter.push.assert_not_called()
+        mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
+        comment = mock_pr_adapter.add_comment.call_args[0][1]
+        assert "Validation Failed" in comment
+        assert "Test-skipping patterns detected" in comment
 
 
 def test_cleanup_failure_posts_diagnostic_comment(
