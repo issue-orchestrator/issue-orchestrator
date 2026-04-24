@@ -40,6 +40,14 @@ web_issue_detail_router = APIRouter()
 _VALID_DETAIL_VIEWS = {"user", "ops", "debug"}
 
 
+class E2ERunDatabaseNotFoundError(FileNotFoundError):
+    """The E2E database required to build run detail is unavailable."""
+
+
+class E2ERunRecordNotFoundError(LookupError):
+    """The requested E2E run does not exist in the database."""
+
+
 def _normalize_detail_view(view: str) -> str:
     """Return a supported drawer view mode."""
     return view if view in _VALID_DETAIL_VIEWS else "user"
@@ -115,6 +123,96 @@ def _apply_issue_detail_run_diagnostic(
     )
 
 
+def _e2e_run_execution_details(orchestrator: Any, run_id: int) -> dict[str, Any]:
+    from ..infra.e2e_db import E2EDB
+
+    db_path = orchestrator.config.repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        raise E2ERunDatabaseNotFoundError(f"E2E database not found for run {run_id}")
+
+    db = E2EDB(db_path)
+    details = db.run_details_enhanced(
+        run_id,
+        history_limit=5,
+        flake_threshold_percent=float(orchestrator.config.e2e.flake_threshold),
+    )
+    if details is None:
+        raise E2ERunRecordNotFoundError(f"E2E run {run_id} not found")
+    return details
+
+
+def _canonical_e2e_command(run: dict[str, Any]) -> list[str]:
+    raw_command = run.get("command")
+    if isinstance(raw_command, list) and all(isinstance(item, str) for item in raw_command):
+        return list(raw_command)
+    raw_pytest_args = run.get("pytest_args")
+    if isinstance(raw_pytest_args, list) and all(isinstance(item, str) for item in raw_pytest_args):
+        return ["pytest", *raw_pytest_args]
+    return []
+
+
+def _public_e2e_run_payload(run: dict[str, Any], run_id: int) -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "orchestrator_id": str(run.get("orchestrator_id") or ""),
+        "started_at": str(run.get("started_at") or ""),
+        "finished_at": run.get("finished_at"),
+        "status": str(run.get("status") or "unknown"),
+        "exit_code": run.get("exit_code"),
+        "duration_seconds": run.get("duration_seconds"),
+        "pytest_args": list(run.get("pytest_args") or []),
+        "command": _canonical_e2e_command(run),
+        "runner_kind": str(run.get("runner_kind") or "unknown"),
+        "commit_sha": run.get("commit_sha"),
+        "branch": run.get("branch"),
+        "log_path": run.get("log_path"),
+        "artifacts_dir": run.get("artifacts_dir"),
+        "total_tests": run.get("total_tests"),
+        "current_test": run.get("current_test"),
+    }
+
+
+def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    artifacts: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    log_path = run.get("log_path")
+    if isinstance(log_path, str) and log_path.strip():
+        artifacts.append(
+            {
+                "kind": "raw_log",
+                "label": "Raw Output",
+                "path": log_path,
+            }
+        )
+        seen.add(("raw_log", log_path))
+
+    for artifact in db_artifacts:
+        kind = artifact.get("kind")
+        label = artifact.get("label")
+        path = artifact.get("path")
+        if not isinstance(kind, str) or not isinstance(label, str) or not isinstance(path, str):
+            raise ValueError(
+                f"Malformed E2E artifact row for run {run.get('id')}: {artifact!r}"
+            )
+        key = (kind, path)
+        if key in seen:
+            continue
+        artifacts.append(
+            {
+                "kind": kind,
+                "label": label,
+                "path": path,
+            }
+        )
+        seen.add(key)
+
+    reports = [
+        artifact
+        for artifact in artifacts
+        if artifact["kind"] in {"junit_xml", "html_report", "json_report", "playwright_report"}
+    ]
+    return artifacts, reports
 def _finalize_issue_detail_payload(
     *,
     orchestrator: Any,
@@ -354,6 +452,35 @@ async def get_e2e_run_detail(
         run_id=run_id,
         view=matcher_view,
     )
+    try:
+        run_details = _e2e_run_execution_details(orchestrator, run_id)
+    except (E2ERunDatabaseNotFoundError, E2ERunRecordNotFoundError) as exc:
+        return JSONResponse(
+            {"error": "not_found", "detail": str(exc)},
+            status_code=404,
+        )
+    run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
+    try:
+        artifacts, reports = _e2e_run_artifacts(
+            run_payload,
+            list(run_details.get("artifacts") or []),
+        )
+    except ValueError:
+        logger.exception("Malformed E2E artifact rows for run %s", run_id)
+        return JSONResponse(
+            {
+                "error": "internal_error",
+                "detail": "Malformed E2E run artifacts",
+            },
+            status_code=500,
+        )
+    results_summary = dict(run_details["summary"])
+    results_by_category = dict(run_details["tests_by_category"])
+    payload["run"] = run_payload
+    payload["results_summary"] = results_summary
+    payload["results_by_category"] = results_by_category
+    payload["artifacts"] = artifacts
+    payload["reports"] = reports
     payload["lifecycle"] = project_e2e_suite_lifecycle_container_for_run(
         run_id=run_id,
         events=events,

@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS e2e_runs (
     status TEXT NOT NULL,
     exit_code INTEGER,
     pytest_args TEXT NOT NULL,
+    command_json TEXT NOT NULL DEFAULT '[]',
+    runner_kind TEXT NOT NULL DEFAULT 'pytest',
     commit_sha TEXT,
     branch TEXT,
     retry_of INTEGER,
@@ -28,6 +30,9 @@ CREATE TABLE IF NOT EXISTS e2e_test_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL,
     nodeid TEXT NOT NULL,
+    display_name TEXT,
+    suite_name TEXT,
+    result_source TEXT NOT NULL DEFAULT 'runtime',
     outcome TEXT NOT NULL,
     duration_seconds REAL,
     longrepr TEXT,
@@ -45,6 +50,19 @@ CREATE INDEX IF NOT EXISTS idx_e2e_test_results_run
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_e2e_test_results_run_nodeid
     ON e2e_test_results(run_id, nodeid);
+
+CREATE TABLE IF NOT EXISTS e2e_run_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES e2e_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_e2e_run_artifacts_run
+    ON e2e_run_artifacts(run_id);
 
 -- E2E Issue Tracking: Links test failures to GitHub issues
 CREATE TABLE IF NOT EXISTS e2e_failure_issues (
