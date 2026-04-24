@@ -147,7 +147,10 @@ function openE2EArtifactFromButton(button) {
     if (!path) {
         throw new Error('Artifact button missing data-artifact-path');
     }
-    openPath(path);
+    if (!window || typeof window.openPath !== 'function') {
+        throw new Error('openPath is unavailable');
+    }
+    window.openPath(path);
 }
 
 function _datasetButtonAttr(name, value) {
