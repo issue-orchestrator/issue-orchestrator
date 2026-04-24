@@ -86,7 +86,25 @@ def _render_issue_rows_sync(template, view_model) -> list[dict[str, Any]]:
 
 @web_read_model_router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -> HTMLResponse:
-    """Render the main dashboard."""
+    """Render the main dashboard, or the login form when unauthenticated.
+
+    Auth model: ``/`` is marked public in the middleware (otherwise an
+    anonymous browser would hit a raw 401 JSON), so this handler has
+    to decide for itself whether to serve the dashboard or the login
+    form. When auth is disabled entirely (``configure_dashboard_admin_token(None)``
+    — the TestClient default) we render the dashboard directly, which
+    keeps every non-auth unit test working.
+    """
+    from ..infra import browser_session
+    from ._auth_middleware import render_login_page
+    from .web import get_configured_dashboard_admin_token
+
+    admin_token = get_configured_dashboard_admin_token()
+    if admin_token is not None:
+        session_id = request.cookies.get(browser_session.SESSION_COOKIE)
+        if not session_id or not browser_session.session_is_valid(session_id):
+            return render_login_page(action_url="/login")
+
     request_start = time.time()
 
     query = _dashboard_query_params(request)

@@ -47,7 +47,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional
@@ -61,11 +60,18 @@ from ..infra import browser_session, gh_audit
 from ..infra.api_token import (
     resolve_agent_callback_token,
     resolve_api_token,
-    verify_token,
 )
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
+from ._auth_middleware import (
+    AuthSurfaceConfig,
+    evaluate_request,
+    handle_login_post,
+    install_access_log_redaction,
+    issue_sse_token_response,
+    render_login_page,
+)
 from .brand_assets import read_logo_svg
 from .control_api_goal_pilot_routes import control_goal_pilot_router
 from .control_api_goal_pilot_support import (
@@ -147,145 +153,6 @@ if STATIC_DIR.exists():
     control_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-_BROWSER_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-_SSE_PATH = "/api/events"
-
-# Matches the SSE single-use token in query strings so it can be
-# stripped from HTTP access-log messages before they're emitted.
-# Uvicorn's access log format includes the full request line with
-# query params, which would otherwise persist a still-valid-for-a-few
-# seconds credential (#6017 re-review-3 P2).
-_SSE_TOKEN_QUERY_PATTERN = re.compile(
-    r"(?P<sep>[?&])sse_token=[^&\s\"']+"
-)
-_SSE_TOKEN_REDACTION = r"\g<sep>sse_token=REDACTED"
-
-
-class _SseTokenAccessLogFilter(logging.Filter):
-    """Scrub ``sse_token=...`` from every uvicorn.access log record.
-
-    The filter inspects both the pre-formatted message (``record.msg``
-    + ``record.args``) and any already-rendered ``record.message``
-    attribute so whichever emission style the formatter uses, the
-    token never reaches the log file / stderr.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            msg = record.getMessage()
-        except Exception:  # noqa: BLE001 - never let logging crash on us
-            return True
-        if "sse_token=" not in msg:
-            return True
-        scrubbed = _SSE_TOKEN_QUERY_PATTERN.sub(_SSE_TOKEN_REDACTION, msg)
-        record.msg = scrubbed
-        record.args = None
-        return True
-
-
-def install_access_log_redaction() -> None:
-    """Attach the SSE-token redaction filter to uvicorn's access logger.
-
-    Idempotent: re-running (e.g. across test fixtures) does not stack
-    duplicate filters.
-    """
-    access_logger = logging.getLogger("uvicorn.access")
-    for existing in access_logger.filters:
-        if isinstance(existing, _SseTokenAccessLogFilter):
-            return
-    access_logger.addFilter(_SseTokenAccessLogFilter())
-
-
-def _check_bearer_auth(
-    request: Request, admin: str | None, agent: str | None
-) -> str | None:
-    """Evaluate the ``Authorization: Bearer`` path.
-
-    Returns ``"ok"`` when the header is valid for the route,
-    ``"invalid"`` when a Bearer header was present but did not
-    match, or ``None`` when no Bearer header was supplied (caller
-    should fall through to browser-session checks).
-    """
-    header = request.headers.get("authorization", "")
-    if not header.startswith("Bearer "):
-        return None
-    provided = header[len("Bearer "):].strip()
-    if admin is not None and verify_token(admin, provided):
-        return "ok"
-    if (
-        agent is not None
-        and _is_agent_callback_route(request.url.path)
-        and verify_token(agent, provided)
-    ):
-        return "ok"
-    return "invalid"
-
-
-def _check_browser_session_auth(
-    request: Request,
-) -> tuple[bool, str, int]:
-    """Evaluate the browser session + CSRF path.
-
-    Returns ``(ok, message, status)``. When ``ok`` is True the
-    request is authenticated; ``message`` and ``status`` are only
-    meaningful when ``ok`` is False.
-    """
-    session_id = request.cookies.get(browser_session.SESSION_COOKIE)
-    if not session_id:
-        return (False, "missing credentials — please sign in", 401)
-    if not browser_session.session_is_valid(session_id):
-        # Cookie is present but the server no longer knows the session
-        # — TTL expired, LRU-evicted, or the HMAC secret rotated on a
-        # server restart. The JS shim treats 401 as a hint to reload
-        # the page so the user lands on the login form.
-        return (False, "session expired — please sign in again", 401)
-    if request.url.path == _SSE_PATH:
-        sse_token = request.query_params.get(browser_session.SSE_TOKEN_QUERY)
-        if browser_session.verify_sse_token(sse_token, session_id):
-            return (True, "", 200)
-        return (False, "invalid sse token", 401)
-    if request.method in _BROWSER_SAFE_METHODS:
-        return (True, "", 200)
-    csrf = request.headers.get(browser_session.CSRF_HEADER)
-    if browser_session.verify_csrf(session_id, csrf):
-        return (True, "", 200)
-    return (False, "missing or invalid csrf token", 403)
-
-
-@control_app.middleware("http")
-async def _require_api_token_middleware(  # pyright: ignore[reportUnusedFunction]
-    request: Request, call_next: Any
-) -> Response:
-    """Enforce Control API auth via three parallel paths.
-
-    1. **Bearer token** — admin token authorizes every route; agent
-       callback token authorizes only ``_AGENT_CALLBACK_ROUTES``.
-    2. **Browser session cookie + CSRF** — established by visiting
-       ``/``. Mutating methods require ``X-CSRF-Token``.
-    3. **SSE short-lived token** — signed query-string token bound
-       to the same session, for ``EventSource`` which cannot carry
-       headers.
-
-    Public routes (landing HTML, favicon, ``/static/*``) always pass.
-    """
-    if _is_public_path(request.url.path):
-        return await call_next(request)
-    admin = _admin_token
-    agent = _agent_callback_token
-    if admin is None and agent is None:
-        return await call_next(request)
-    bearer_result = _check_bearer_auth(request, admin, agent)
-    if bearer_result == "ok":
-        return await call_next(request)
-    if bearer_result == "invalid":
-        return JSONResponse(
-            {"error": "invalid bearer token"}, status_code=401
-        )
-    ok, message, status = _check_browser_session_auth(request)
-    if ok:
-        return await call_next(request)
-    return JSONResponse({"error": message}, status_code=status)
-
 # Bearer-token enforcement (security issue #5987, F3 + #6017 review).
 #
 # Two tokens gate the Control API:
@@ -320,12 +187,6 @@ _UNAUTHENTICATED_PATHS: frozenset[str] = frozenset({
 })
 _UNAUTHENTICATED_PREFIXES: tuple[str, ...] = ("/static/",)
 
-
-def _is_public_path(path: str) -> bool:
-    if path in _UNAUTHENTICATED_PATHS:
-        return True
-    return any(path.startswith(prefix) for prefix in _UNAUTHENTICATED_PREFIXES)
-
 # Routes the agent-callback token is allowed to reach. Anything NOT in
 # this set requires the admin token.
 #
@@ -348,6 +209,32 @@ def _is_agent_callback_route(path: str) -> bool:
     if path.startswith("/api/issues/") and path.endswith("/resume"):
         return True
     return False
+
+
+_CONTROL_API_SURFACE = AuthSurfaceConfig(
+    sse_path="/api/events",
+    public_paths=_UNAUTHENTICATED_PATHS,
+    public_prefixes=_UNAUTHENTICATED_PREFIXES,
+    agent_callback_matcher=_is_agent_callback_route,
+)
+
+
+@control_app.middleware("http")
+async def _require_api_token_middleware(  # pyright: ignore[reportUnusedFunction]
+    request: Request, call_next: Any
+) -> Response:
+    """Enforce Control API auth via the shared three-path gate.
+
+    See ``_auth_middleware.evaluate_request`` for the bearer /
+    session-cookie / SSE-token logic; this wrapper just binds the
+    module-level admin + agent-callback tokens.
+    """
+    gate_response = evaluate_request(
+        request, _admin_token, _agent_callback_token, _CONTROL_API_SURFACE
+    )
+    if gate_response is not None:
+        return gate_response
+    return await call_next(request)
 
 
 def configure_api_token(
@@ -942,56 +829,6 @@ _DEV_NO_AUTH_BANNER_HTML = (
 )
 
 
-def _render_login_page(error: str | None = None) -> HTMLResponse:
-    """Render the minimal Control Center login form.
-
-    The page submits ``POST /login`` with the admin bearer token.
-    Kept intentionally self-contained so it cannot depend on any
-    authenticated fetch to boot.
-    """
-    error_html = (
-        f'<p class="err">{error}</p>' if error else ""
-    )
-    content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Issue Orchestrator — Sign in</title>
-<link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
-<style>
-body {{ font-family: sans-serif; display: flex; align-items: center;
-       justify-content: center; height: 100vh; margin: 0;
-       background: #0f1419; color: #e6e6e6; }}
-form {{ background: #1c2330; padding: 32px; border-radius: 8px;
-        min-width: 320px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }}
-h1 {{ margin: 0 0 12px; font-size: 20px; }}
-p  {{ margin: 0 0 16px; color: #9aa5b1; font-size: 13px; line-height: 1.4; }}
-.err {{ color: #ff6b6b; }}
-input[type=password] {{ width: 100%; padding: 10px; border-radius: 4px;
-                        border: 1px solid #334155; background: #0f1419;
-                        color: #e6e6e6; box-sizing: border-box;
-                        font-family: monospace; }}
-button {{ margin-top: 12px; width: 100%; padding: 10px; border: 0;
-         border-radius: 4px; background: #3b82f6; color: white;
-         font-weight: 600; cursor: pointer; }}
-code {{ background: #0f1419; padding: 2px 6px; border-radius: 3px;
-        font-size: 12px; }}
-</style>
-</head>
-<body>
-<form method="POST" action="/login">
-<h1>Issue Orchestrator</h1>
-<p>Paste the admin token from <code>~/.issue-orchestrator/api-token</code>.</p>
-{error_html}
-<input type="password" name="token" autofocus autocomplete="off"
-       placeholder="Admin token" required>
-<button type="submit">Sign in</button>
-</form>
-</body>
-</html>"""
-    return HTMLResponse(content)
-
-
 @control_app.get("/", response_class=HTMLResponse)
 async def control_center_ui(request: Request) -> HTMLResponse:
     """Serve the Control Center dashboard to an authenticated browser.
@@ -1013,7 +850,7 @@ async def control_center_ui(request: Request) -> HTMLResponse:
         csrf_token = browser_session.get_csrf_token(existing_session)
     if csrf_token is None and not auth_disabled:
         # No valid session and auth is active — show login form.
-        return _render_login_page()
+        return render_login_page(action_url="/login")
 
     template_path = _TEMPLATES_DIR / "control_center.html"
     if not template_path.exists():
@@ -1047,97 +884,17 @@ async def control_center_ui(request: Request) -> HTMLResponse:
 async def control_center_login(request: Request) -> Response:
     """Exchange the admin bearer token for a browser session cookie.
 
-    Accepts both ``application/x-www-form-urlencoded`` (the HTML form
-    submits this) and ``application/json`` (for programmatic flows).
-    Rate limiting is deliberately not added here because only the
-    bearer-token comparison is sensitive, and ``hmac.compare_digest``
-    already neutralizes timing attacks.
+    Delegates to the shared ``handle_login_post`` helper; see that
+    function for the accept-both-content-types / constant-time verify
+    / cookie-mint semantics.
     """
-    if _admin_token is None:
-        # Auth not configured — accept blindly (keeps tests happy).
-        response = JSONResponse({"status": "ok"})
-        return response
-    token: str | None = None
-    content_type = request.headers.get("content-type", "")
-    if content_type.startswith("application/json"):
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if isinstance(body, dict):
-            raw = body.get("token")
-            token = raw if isinstance(raw, str) else None
-    else:
-        form = await request.form()
-        raw = form.get("token")
-        token = raw if isinstance(raw, str) else None
-    if not token or not verify_token(_admin_token, token):
-        if content_type.startswith("application/json"):
-            return JSONResponse(
-                {"error": "invalid token"}, status_code=401
-            )
-        return _render_login_page(error="Invalid token. Try again.")
-
-    session_id, _csrf = browser_session.create_session()
-    # HTML form → redirect so the dashboard loads from a fresh GET.
-    # JSON client → 200 with session id in the response so automated
-    # flows can assert they actually got a session.
-    if content_type.startswith("application/json"):
-        response: Response = JSONResponse(
-            {"status": "ok", "session_id": session_id}
-        )
-    else:
-        response = Response(status_code=303)
-        response.headers["Location"] = "/"
-    response.set_cookie(
-        browser_session.SESSION_COOKIE,
-        session_id,
-        max_age=browser_session.SESSION_TTL_SECONDS,
-        httponly=True,
-        samesite="strict",
-        path="/",
-    )
-    return response
+    return await handle_login_post(request, _admin_token)
 
 
 @control_app.get("/api/sse-token")
 async def issue_browser_sse_token(request: Request) -> JSONResponse:
-    """Return a short-lived single-use SSE token bound to the caller's session.
-
-    ``EventSource`` cannot send headers, so the JS client calls this
-    endpoint (which is CSRF-protected via the middleware) and then
-    passes the returned token to ``/api/events`` as a query
-    parameter. The token is valid for ``SSE_TOKEN_TTL_SECONDS`` and
-    can be consumed exactly once — see
-    ``browser_session.verify_sse_token``.
-
-    Defense-in-depth response headers (#6017 re-review-3 P2):
-
-    - ``Cache-Control: no-store`` keeps the token out of browser /
-      intermediary caches.
-    - ``Referrer-Policy: no-referrer`` prevents a page opened via
-      the returned token's URL from leaking it to external origins
-      in the ``Referer`` header.
-    - ``Pragma: no-cache`` for HTTP/1.0 proxies.
-    """
-    session_id = request.cookies.get(browser_session.SESSION_COOKIE)
-    if not session_id:
-        return JSONResponse(
-            {"error": "no session"}, status_code=401
-        )
-    token = browser_session.issue_sse_token(session_id)
-    if token is None:
-        return JSONResponse(
-            {"error": "session invalid"}, status_code=401
-        )
-    response = JSONResponse({
-        "sse_token": token,
-        "ttl_seconds": browser_session.SSE_TOKEN_TTL_SECONDS,
-    })
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
+    """Return a short-lived single-use SSE token for the caller's session."""
+    return issue_sse_token_response(request)
 
 
 # ======================================================================# Supervisor Control API - Process Management Endpoints

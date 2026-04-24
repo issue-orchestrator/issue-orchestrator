@@ -186,13 +186,25 @@ def _configure_flow_deps(orchestrator: FlowWebMockOrchestrator, repo_root: Path)
 
 @pytest.fixture(scope="module")
 def web_server(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
-    """Run the dashboard app with a deterministic mock orchestrator."""
+    """Run the dashboard app with a deterministic mock orchestrator.
+
+    Defaults to auth-off so existing flow-level Playwright tests do
+    not each have to login — unit tests in ``test_web_dashboard_auth``
+    already pin the middleware. One e2e test (``test_dashboard_auth``)
+    flips auth on to verify the login form/redirect flow end-to-end.
+    """
     orchestrator = FlowWebMockOrchestrator()
     repo_root = tmp_path_factory.mktemp("flow-dashboard-repo")
     _configure_flow_deps(orchestrator, repo_root)
     orchestrator.add_queue_issue(408, "Flow smoke item")
     orchestrator.add_queue_issue(177, "Blocked merge item", labels=["agent:web", "blocked-needs-human"])
     port = find_free_port()
+
+    # Make sure module-level auth state from an earlier test doesn't
+    # leak into this run — the dashboard auth fixture below enables
+    # the gate, and without this reset a module teardown race could
+    # leave it on for the wider smoke suite.
+    web_module.configure_dashboard_admin_token(None)
 
     original = web_module.get_orchestrator()
     web_module.set_orchestrator(orchestrator)
@@ -210,13 +222,11 @@ def web_server(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
-# Browser auth helper (dormant prep for the upcoming Web Dashboard auth PR).
+# Browser auth helpers
 #
-# Today the web dashboard does not call ``configure_api_token`` /
-# ``browser_session.initialize``, so its middleware is a no-op and these
-# helpers are a no-op too. They land ahead of the auth PR so every
-# Playwright test that needs an authenticated browser session can drop
-# in a single line without each test re-implementing the login dance.
+# One login helper covers both the Control Center on port 19080 and the
+# Web Dashboard on port 8080 — both surfaces share the ``/login`` form
+# and session cookie model (see ``_auth_middleware``).
 # ---------------------------------------------------------------------------
 
 
@@ -225,36 +235,54 @@ TEST_ADMIN_TOKEN = "test-admin-token"  # matches the unit-test fixtures
 
 @pytest.fixture
 def cc_admin_token() -> str:
-    """Known admin token used by ``login_via_form``.
-
-    Pair this with the server-side ``configure_api_token(TEST_ADMIN_TOKEN,
-    ...)`` in tests that enable the auth layer; until then the helper
-    is a no-op and the fixture is harmless.
-    """
+    """Known admin token used by ``login_via_form``."""
     return TEST_ADMIN_TOKEN
 
 
+@pytest.fixture
+def authed_web_server(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
+    """Run the dashboard with auth turned on.
+
+    Mirrors ``web_server`` but calls ``configure_dashboard_admin_token``
+    + ``browser_session.initialize`` before binding. Used by tests that
+    need to exercise the login flow end-to-end; keeps the default
+    ``web_server`` fixture auth-off so the wider smoke suite isn't
+    forced to log in for every scenario.
+    """
+    from issue_orchestrator.infra import browser_session
+
+    orchestrator = FlowWebMockOrchestrator()
+    repo_root = tmp_path_factory.mktemp("authed-dashboard-repo")
+    _configure_flow_deps(orchestrator, repo_root)
+    orchestrator.add_queue_issue(408, "Flow smoke item")
+    port = find_free_port()
+
+    previous_token = web_module.get_configured_dashboard_admin_token()
+    browser_session.initialize()
+    web_module.configure_dashboard_admin_token(TEST_ADMIN_TOKEN)
+
+    original = web_module.get_orchestrator()
+    web_module.set_orchestrator(orchestrator)
+
+    server = UvicornTestServer("127.0.0.1", port)
+    server.start()
+    try:
+        yield {
+            "url": f"http://127.0.0.1:{port}",
+            "orchestrator": orchestrator,
+        }
+    finally:
+        server.stop()
+        web_module.set_orchestrator(original)
+        web_module.configure_dashboard_admin_token(previous_token)
+
+
 def login_via_form(page: Page, base_url: str, token: str) -> None:
-    """Establish a browser session by submitting the Control Center login form.
+    """Establish a browser session by submitting the login form.
 
-    Safe to call from any Playwright test against any target:
-
-    - If the server has auth disabled (the current web-dashboard
-      behaviour), ``GET /`` already serves the dashboard and this
-      helper short-circuits without interacting with the form.
-    - If auth is enabled (the future Web Dashboard auth PR, or the
-      Control Center on port 19080), we fill the admin token into the
-      login form and wait for the post-login redirect.
-
-    Parameters
-    ----------
-    page:
-        Playwright sync ``Page`` fixture.
-    base_url:
-        Origin the test is targeting, e.g. ``"http://127.0.0.1:19080"``.
-    token:
-        Admin bearer token. Use the ``cc_admin_token`` fixture for the
-        test-harness default.
+    Works against the Control Center (19080) and the Web Dashboard
+    (8080); both share the form shape. Short-circuits when the
+    target has auth disabled (``GET /`` returns the app directly).
     """
     page.goto(f"{base_url}/")
     if "Sign in" not in page.content():
@@ -262,6 +290,6 @@ def login_via_form(page: Page, base_url: str, token: str) -> None:
     page.fill('input[name="token"]', token)
     page.click('button[type="submit"]')
     # The login handler responds 303 → /. Wait for the redirected
-    # dashboard URL to confirm the session cookie took effect, and
-    # that we're no longer staring at the login form.
+    # URL to confirm the session cookie took effect, and that we're
+    # no longer staring at the login form.
     page.wait_for_url(f"{base_url}/", timeout=5000)

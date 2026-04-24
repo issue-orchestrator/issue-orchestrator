@@ -20,6 +20,12 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost, detect_client_host
+from ._auth_middleware import (
+    AuthSurfaceConfig,
+    evaluate_request,
+    handle_login_post,
+    issue_sse_token_response,
+)
 from .brand_assets import read_logo_svg
 from .timeline_presentation import (
     _decorate_timeline_events,
@@ -70,6 +76,77 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+# ---------------------------------------------------------------------------
+# Dashboard auth (security #5987 F3 — PR 8)
+#
+# The Web Dashboard on port 8080 exposes a large surface including
+# ``/api/shutdown``, ``/api/open-file``, ``/api/kill/{issue}``, and an
+# SSE stream on ``/api/events``. Before this change every route was
+# reachable with no credentials, so any same-host process could
+# mutate orchestrator state or snoop the SSE feed.
+#
+# PR 8 applies the same three-path gate the Control Center shipped in
+# #6011: bearer token for programmatic clients, session cookie + CSRF
+# for browsers, short-lived single-use token on the SSE URL. The
+# admin secret is shared with the CC on purpose — the dashboard
+# surface is a strict superset in sensitivity, so one login covers
+# both.
+# ---------------------------------------------------------------------------
+
+_dashboard_admin_token: str | None = None
+
+# ``/`` (the main dashboard HTML) is public so that anonymous visitors
+# can be redirected to the login form — the dashboard handler itself
+# checks for a valid session and 303s to ``/login`` when auth is
+# enabled but the caller has no cookie.
+_DASHBOARD_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset({
+    "/",
+    "/login",
+    "/favicon.ico",
+})
+_DASHBOARD_UNAUTHENTICATED_PREFIXES: tuple[str, ...] = ("/static/",)
+
+_DASHBOARD_SURFACE = AuthSurfaceConfig(
+    sse_path="/api/events",
+    public_paths=_DASHBOARD_UNAUTHENTICATED_PATHS,
+    public_prefixes=_DASHBOARD_UNAUTHENTICATED_PREFIXES,
+)
+
+
+def configure_dashboard_admin_token(admin: str | None) -> None:
+    """Enable (or disable) dashboard auth.
+
+    ``admin`` — the shared admin bearer token (same one used for the
+    Control API). Pass ``None`` to disable enforcement entirely;
+    ``TestClient`` defaults to this.
+    """
+    global _dashboard_admin_token
+    _dashboard_admin_token = admin
+
+
+def get_configured_dashboard_admin_token() -> str | None:
+    """Return the admin token currently enforced on the dashboard."""
+    return _dashboard_admin_token
+
+
+@app.middleware("http")
+async def _dashboard_auth_middleware(  # pyright: ignore[reportUnusedFunction]
+    request: Request, call_next: Any
+) -> Response:
+    """Enforce dashboard auth via the shared three-path gate.
+
+    The mounted ``control_app`` has its own middleware — requests to
+    ``/control/*`` flow through both gates, which is intentional
+    defense in depth.
+    """
+    gate_response = evaluate_request(
+        request, _dashboard_admin_token, None, _DASHBOARD_SURFACE
+    )
+    if gate_response is not None:
+        return gate_response
+    return await call_next(request)
+
+
 if os.environ.get("IO_DEV"):
 
     @app.middleware("http")
@@ -84,6 +161,22 @@ if os.environ.get("IO_DEV"):
         if request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
+
+
+@app.post("/login")
+async def dashboard_login(request: Request) -> Response:
+    """Exchange the admin bearer token for a dashboard session cookie.
+
+    Delegates to the shared helper; accepts both form-urlencoded (HTML
+    form) and JSON (programmatic) bodies.
+    """
+    return await handle_login_post(request, _dashboard_admin_token)
+
+
+@app.get("/api/sse-token")
+async def dashboard_sse_token(request: Request) -> JSONResponse:
+    """Return a short-lived single-use SSE token for the caller's session."""
+    return issue_sse_token_response(request)
 
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
