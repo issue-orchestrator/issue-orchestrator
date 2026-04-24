@@ -795,6 +795,10 @@ class E2EDB:
 
         from collections import defaultdict
 
+        # S608: ``placeholders`` only ever contains ``?`` characters — it
+        # is the dynamic-IN-clause idiom for binding a variable-length
+        # list of parameters. Values are still bound via ``(*nodeids,
+        # ...)``.
         placeholders = ",".join("?" * len(nodeids))
         cursor = conn.execute(
             f"""
@@ -814,7 +818,7 @@ class E2EDB:
             FROM ranked_history
             WHERE rn <= ?
             ORDER BY nodeid
-            """,
+            """,  # noqa: S608
             (*nodeids, run_id, history_limit),
         )
         history: dict[str, list[dict]] = defaultdict(list)
@@ -835,6 +839,8 @@ class E2EDB:
             return {}
 
         issues_by_nodeid: dict[str, dict] = {}
+        # S608: ``placeholders`` is the dynamic-IN-clause idiom —
+        # literal ``?`` characters, not values.
         placeholders = ",".join("?" * len(nodeids))
         cursor = conn.execute(
             f"""
@@ -842,7 +848,7 @@ class E2EDB:
             FROM e2e_failure_issues
             WHERE nodeid IN ({placeholders})
             ORDER BY nodeid, created_at DESC
-            """,
+            """,  # noqa: S608
             tuple(nodeids),
         )
         # Take the most recent issue per nodeid
