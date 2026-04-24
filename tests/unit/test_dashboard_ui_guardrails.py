@@ -1000,6 +1000,8 @@ def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> Non
     results_body = _function_body(js, "renderE2EResultsPanel")
     evidence_body = _function_body(js, "renderE2ERunEvidenceSection")
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
+    artifact_button_body = _function_body(js, "_artifactButton")
+    artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
     result_evidence_body = _function_body(js, "_renderResultEvidenceButtons")
     lifecycle_body = _function_body(js, "renderE2ELinkedIssueLifecycles")
     lifecycle_row_body = _function_body(js, "_renderLinkedIssueLifecycle")
@@ -1012,6 +1014,9 @@ def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> Non
     assert "raw output" in evidence_body.lower()
     assert "Raw Output" in artifact_body
     assert "Primary report" in evidence_body
+    assert "data-artifact-path" in artifact_button_body
+    assert "openPath('" not in artifact_button_body
+    assert "button.dataset.artifactPath" in artifact_open_body
     assert "No run-scoped logs or reports were captured for this run." in evidence_body
     assert "Run Log" in result_evidence_body
     assert "Report" in result_evidence_body

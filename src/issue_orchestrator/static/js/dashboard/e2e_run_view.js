@@ -1,4 +1,11 @@
 let unifiedRunData = null;  // Stores data for the current unified run view
+const E2E_LABEL_OVERRIDES = Object.freeze({
+    pytest: 'Pytest',
+    command: 'Command',
+    junit_xml: 'JUnit XML',
+    html_report: 'HTML Report',
+    json_report: 'JSON Report',
+});
 
 function _emptyE2EResultCategories() {
     return {
@@ -93,6 +100,10 @@ function _findResultCase(nodeid) {
 function _humanizeSnakeCase(value) {
     const text = String(value || '').trim();
     if (!text) return '';
+    const normalized = text.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(E2E_LABEL_OVERRIDES, normalized)) {
+        return E2E_LABEL_OVERRIDES[normalized];
+    }
     return text
         .replace(/_/g, ' ')
         .replace(/\b\w/g, char => char.toUpperCase());
@@ -110,7 +121,7 @@ function _runStatusClass(status) {
 function _formatRunnerLabel(run) {
     const runnerKind = String(run && run.runner_kind || '').trim();
     if (!runnerKind) return 'Unknown runner';
-    return runnerKind === 'pytest' ? 'Pytest' : _humanizeSnakeCase(runnerKind);
+    return _humanizeSnakeCase(runnerKind);
 }
 
 function _formatRunCommand(run) {
@@ -128,7 +139,15 @@ function _formatDurationSeconds(value) {
 
 function _artifactButton(path, label, cssClass = 'issue-action-btn') {
     if (!path) return '';
-    return `<button class="${cssClass}" onclick="openPath('${escapeAttr(path)}'); event.stopPropagation();">${escapeHtml(label)}</button>`;
+    return `<button class="${cssClass}" data-artifact-path="${escapeAttr(path)}" onclick="openE2EArtifactFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
+}
+
+function openE2EArtifactFromButton(button) {
+    const path = button && button.dataset ? String(button.dataset.artifactPath || '').trim() : '';
+    if (!path) {
+        throw new Error('Artifact button missing data-artifact-path');
+    }
+    openPath(path);
 }
 
 function _primaryRunReport(data) {

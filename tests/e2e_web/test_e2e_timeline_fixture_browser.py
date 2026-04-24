@@ -1549,7 +1549,7 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     )
     expect(results_panel.locator(".test-row")).to_have_count(1)
     expect(results_panel.locator(".test-row")).to_contain_text("package.build_image")
-    expect(results_panel.locator(".test-source")).to_contain_text("Junit Xml")
+    expect(results_panel.locator(".test-source")).to_contain_text("JUnit XML")
 
     raw_output_btn = results_panel.locator("button", has_text="Raw Output").first
     junit_btn = results_panel.locator(
