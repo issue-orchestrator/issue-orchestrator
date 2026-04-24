@@ -71,7 +71,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Start with planning/session launch paused while keeping the dashboard available",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--dev-no-auth",
+        action="store_true",
+        help=(
+            "DEVELOPMENT ONLY: disable Web Dashboard authentication. "
+            "Any local process can mutate state. Also triggered by "
+            "ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1. Never use on a shared "
+            "host or in production."
+        ),
+    )
+    args = parser.parse_args()
+    if os.environ.get("ISSUE_ORCHESTRATOR_DEV_NO_AUTH") == "1":
+        args.dev_no_auth = True
+    return args
 
 
 def _build_repo_status_resolver():
@@ -138,6 +151,39 @@ def _load_config_for_instance(repo_root: Path, config_path: Path | None, instanc
     return config
 
 
+def _configure_dashboard_auth(dev_no_auth: bool) -> None:
+    """Activate (or explicitly disable) dashboard auth before binding.
+
+    Security #5987 F3 — PR 8. The same admin token is shared with the
+    Control API so a single login covers both surfaces.
+    """
+    from ..entrypoints.web import configure_dashboard_admin_token
+    from ..infra import browser_session
+    from ..infra.api_token import resolve_api_token
+
+    if dev_no_auth:
+        logger.error(
+            "⚠  Web Dashboard running with --dev-no-auth: authentication "
+            "is DISABLED. Any local process can mutate state. DO NOT use "
+            "on a shared host or in production."
+        )
+        print(
+            "\n\033[1;31m"
+            "⚠  AUTH DISABLED (--dev-no-auth). Any local process can "
+            "mutate dashboard state. Dev only."
+            "\033[0m\n",
+            flush=True,
+        )
+        configure_dashboard_admin_token(None)
+        os.environ.pop("ISSUE_ORCHESTRATOR_API_TOKEN", None)
+        browser_session.initialize()
+        return
+    admin_token = resolve_api_token()
+    configure_dashboard_admin_token(admin_token)
+    browser_session.initialize()
+    os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
+
+
 async def run(
     repo_root: Path,
     port: int,
@@ -145,6 +191,7 @@ async def run(
     no_browser: bool = False,
     instance_id: str | None = None,
     start_paused: bool = False,
+    dev_no_auth: bool = False,
 ) -> None:
     """Run the orchestrator with web dashboard.
 
@@ -154,12 +201,17 @@ async def run(
         config_path: Optional path to config file
         no_browser: If True, don't auto-open browser
         instance_id: Optional instance ID for multi-instance deployments
+        dev_no_auth: If True, disable dashboard auth (loopback only).
     """
+    from ..entrypoints._auth_middleware import install_access_log_redaction
     from ..entrypoints.bootstrap import build_orchestrator
     from ..entrypoints.web import run_with_web_dashboard
     from ..infra.repo_lock import acquire_lock, release_lock, set_lock_http_port, touch_lock
 
     _assert_expected_identity(repo_root)
+
+    _configure_dashboard_auth(dev_no_auth)
+    install_access_log_redaction()
 
     # Acquire the repository lock (instance-specific if multi-instance)
     instance_str = f" instance={instance_id}" if instance_id else ""
@@ -246,6 +298,7 @@ def main() -> int:
             args.no_browser,
             args.instance_id,
             args.start_paused,
+            args.dev_no_auth,
         ))
         return 0
     except Exception as e:
