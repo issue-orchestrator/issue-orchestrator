@@ -22,6 +22,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
@@ -151,15 +152,26 @@ def _load_config_for_instance(repo_root: Path, config_path: Path | None, instanc
     return config
 
 
-def _configure_dashboard_auth(dev_no_auth: bool) -> None:
+def _configure_dashboard_auth(dev_no_auth: bool, config: Any) -> None:
     """Activate (or explicitly disable) dashboard auth before binding.
 
     Security #5987 F3 — PR 8. The same admin token is shared with the
-    Control API so a single login covers both surfaces.
+    Control API so a single login covers both surfaces. ``config`` is
+    the loaded ``Config`` instance; its ``browser_session_ttl_seconds``
+    / ``sse_token_ttl_seconds`` / ``browser_session_max`` settings are
+    threaded into ``browser_session.initialize`` so operator hardening
+    under ``ui.browser_session.*`` applies to the dashboard too (#6041
+    re-review P2). Without this, the dashboard silently fell back to
+    the built-in defaults while the Control API honored the config —
+    the same rule enforced differently by path.
     """
     from ..entrypoints.web import configure_dashboard_admin_token
     from ..infra import browser_session
     from ..infra.api_token import resolve_api_token
+
+    session_ttl = getattr(config, "browser_session_ttl_seconds", None)
+    sse_ttl = getattr(config, "sse_token_ttl_seconds", None)
+    max_sessions = getattr(config, "browser_session_max", None)
 
     if dev_no_auth:
         logger.error(
@@ -176,11 +188,19 @@ def _configure_dashboard_auth(dev_no_auth: bool) -> None:
         )
         configure_dashboard_admin_token(None)
         os.environ.pop("ISSUE_ORCHESTRATOR_API_TOKEN", None)
-        browser_session.initialize()
+        browser_session.initialize(
+            session_ttl_seconds=session_ttl,
+            sse_token_ttl_seconds=sse_ttl,
+            max_sessions=max_sessions,
+        )
         return
     admin_token = resolve_api_token()
     configure_dashboard_admin_token(admin_token)
-    browser_session.initialize()
+    browser_session.initialize(
+        session_ttl_seconds=session_ttl,
+        sse_token_ttl_seconds=sse_ttl,
+        max_sessions=max_sessions,
+    )
     os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
 
 
@@ -210,9 +230,6 @@ async def run(
 
     _assert_expected_identity(repo_root)
 
-    _configure_dashboard_auth(dev_no_auth)
-    install_access_log_redaction()
-
     # Acquire the repository lock (instance-specific if multi-instance)
     instance_str = f" instance={instance_id}" if instance_id else ""
     logger.info("Acquiring lock for %s%s", repo_root, instance_str)
@@ -237,6 +254,13 @@ async def run(
             logger.info("Updated lock with actual bound port %d", actual_port)
 
     config = _load_config_for_instance(repo_root, config_path, instance_id)
+
+    # Configure dashboard auth AFTER config is loaded so operator-set
+    # ``ui.browser_session.*`` values take effect on this surface
+    # (#6041 re-review P2). Run before uvicorn binds so the first
+    # request already sees the gate.
+    _configure_dashboard_auth(dev_no_auth, config)
+    install_access_log_redaction()
 
     # Build orchestrator
     logger.info("Building orchestrator...")
