@@ -2003,7 +2003,7 @@ class TestCompletionProcessorPublishGate:
         assert manifest.get("validation_failure_reason") == "Validation failed"
         assert "ended_at" in manifest  # Must be set so UI shows correct status
 
-    def test_pre_publish_gate_runs_before_push_and_skips_duplicate_hooks(
+    def test_pre_publish_gate_runs_before_push_and_keeps_hooks_enabled(
         self,
         mock_label_adapter,
         mock_pr_adapter,
@@ -2031,7 +2031,7 @@ class TestCompletionProcessorPublishGate:
 
         assert result.success
         mock_pre_publish_gate.check.assert_called_once_with(worktree)
-        mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=True)
+        mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=False)
 
     def test_pre_publish_gate_failure_adds_validation_failed_and_blocks_push(
         self,

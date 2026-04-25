@@ -11,6 +11,10 @@ import shutil
 
 from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
 from .config import Config
+from .hooks._python_path import (
+    ORCHESTRATOR_PYTHON_ENV,
+    shell_quote_issue_orchestrator_python,
+)
 from .hooks.hooks import detect_agents_from_config, get_adapter, install_hooks_for_config
 
 logger = logging.getLogger(__name__)
@@ -392,6 +396,7 @@ def quarantine_managed_hook_file(
 
 def _render_verify_pr_script(validation_cmd: str) -> str:
     quoted = shlex.quote(validation_cmd)
+    baked_python = shell_quote_issue_orchestrator_python()
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -401,15 +406,27 @@ repo_root="$(cd "$(dirname "${{BASH_SOURCE[0]}}")/.." && pwd)"
 cd "$repo_root"
 
 validation_cmd={quoted}
+PYTHON_ENV_NAME={shlex.quote(ORCHESTRATOR_PYTHON_ENV)}
+PYTHON_BIN=""
 
-if ! git diff --quiet --exit-code -- . || ! git diff --cached --quiet --exit-code -- .; then
-  echo >&2 "verify-pr: requires a clean tracked worktree."
-  echo >&2 "Commit or stash tracked changes, then rerun scripts/verify-pr.sh."
+if [ -n "${{{ORCHESTRATOR_PYTHON_ENV}:-}}" ] && [ -x "${{{ORCHESTRATOR_PYTHON_ENV}}}" ]; then
+  PYTHON_BIN="${{{ORCHESTRATOR_PYTHON_ENV}}}"
+elif [ -x {baked_python} ]; then
+  PYTHON_BIN={baked_python}
+elif [ -x ".venv/bin/python" ]; then
+  PYTHON_BIN=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+  echo >&2 "verify-pr: could not find a Python interpreter with issue_orchestrator installed."
+  echo >&2 "Rerun issue-orchestrator setup-guardrails or export $PYTHON_ENV_NAME before pushing."
   exit 1
 fi
 
-echo "verify-pr: running $validation_cmd"
-bash -lc "$validation_cmd"
+echo "verify-pr: running cache-aware pre-push validation for $validation_cmd"
+"$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
 """
 
 

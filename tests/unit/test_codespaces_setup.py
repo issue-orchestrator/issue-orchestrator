@@ -15,6 +15,16 @@ def test_codespaces_config_loads_with_stable_web_ports() -> None:
     assert config.web_port == 8080
     assert config.control_api_port == 19081
     assert config.terminal_adapter == "subprocess"
+    assert config.validation.cmd == "make validate-pr"
+
+
+def test_main_config_uses_validate_pr_as_publish_gate() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    config_path = repo_root / ".issue-orchestrator" / "config" / "main.yaml"
+
+    config = Config.load(config_path)
+
+    assert config.validation.cmd == "make validate-pr"
 
 
 def test_devcontainer_forwards_codespaces_ports_and_bootstraps_repo() -> None:

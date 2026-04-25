@@ -15,6 +15,7 @@ from issue_orchestrator.infra.repo_guardrails import (
     LEGACY_MANAGED_PRE_PUSH_MARKER,
     LEGACY_MANAGED_VERIFY_MARKER,
     MANAGED_PRE_PUSH_MARKER,
+    _render_verify_pr_script,
     _render_repo_pre_push_hook,
     _render_helper_script,
     setup_repo_guardrails,
@@ -257,6 +258,14 @@ def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
     rendered = _render_repo_pre_push_hook(verify_script, repo_root)
 
     assert 'VERIFY_SCRIPT="$REPO_ROOT/scripts/gates/verify-pr.sh"' in rendered
+
+
+def test_render_verify_pr_script_uses_cache_aware_prepush_check() -> None:
+    rendered = _render_verify_pr_script("make validate-pr")
+
+    assert "prepush_check -v" in rendered
+    assert 'validation_cmd=\'make validate-pr\'' in rendered
+    assert 'bash -lc "$validation_cmd"' not in rendered
 
 
 def test_managed_pre_push_hook_contains_recursion_guard() -> None:

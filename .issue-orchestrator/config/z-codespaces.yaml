@@ -78,7 +78,7 @@ review:
   max_rework_cycles: 10
 
 validation:
-  cmd: make validate
+  cmd: make validate-pr
   timeout_seconds: 300
   coverage_guardrail:
     enabled: true

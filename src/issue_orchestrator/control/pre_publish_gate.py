@@ -1,8 +1,9 @@
 """Pre-publish gate that reuses the worktree's effective pre-push hook.
 
 This gate exists to catch push-time policy failures before the orchestrator
-attempts the real authenticated push. It runs the same hook wrapper Git would
-run for `git push`, then the publish path can skip the duplicate hook rerun.
+attempts the real authenticated push. The real push still keeps hooks enabled;
+the later hook pass is expected to be cheap because the validation command is
+cache-aware on the same commit.
 """
 
 from __future__ import annotations

@@ -74,7 +74,7 @@ The exchange can run via draft PR (`via-draft-pr`), an in-process local loop (`v
 
 Before the orchestrator performs the authenticated push, it runs the worktree's effective `.git/hooks/pre-push` wrapper itself. That wrapper chains the project's pre-push hook (`make validate-pr`, `scripts/verify-pr.sh`, etc.) with the orchestrator's pre-push hook (Agent-Status trailer validation, test-skipping-pattern detection such as `@Disabled` / `assumeTrue`, dirty-tracked-file rejection). This moves hook failures earlier in the lifecycle while preserving the exact same policy the real push would enforce.
 
-Because the hook chain already ran successfully in the same worktree state, the immediate orchestrator-owned push can skip the duplicate local hook rerun. Agents still cannot use `--no-verify` themselves; Layer 1 blocks that.
+The real push still keeps hooks enabled. The cache-bearing validation record is keyed by commit SHA plus the configured validation command, so the later hook pass can reuse the same passing token instead of rerunning the expensive validation command on the same commit. Agents still cannot use `--no-verify` themselves; Layer 1 blocks that.
 
 ### 5. CI and branch protection
 

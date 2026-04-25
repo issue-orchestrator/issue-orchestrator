@@ -887,24 +887,24 @@ class CompletionProcessor:
         record: CompletionRecord,
         session_name: str | None,
         issue_number: int,
-    ) -> tuple[ProcessingResult | None, bool]:
+    ) -> ProcessingResult | None:
         if self.pre_publish_gate is None:
-            return None, False
+            return None
         if RequestedAction.PUSH_BRANCH not in plan.ordered_actions:
-            return None, False
+            return None
         if session_name is None:
             return ProcessingResult(
                 success=False,
                 message="Pre-publish validation requires a session name",
                 failure_kind="validation_failed",
                 errors=["Validation: session_name is required for pre-publish validation"],
-            ), False
+            )
 
         result = self.pre_publish_gate.check(worktree)
         if not result.ran:
-            return None, False
+            return None
         if result.allowed:
-            return None, True
+            return None
 
         self._persist_pre_publish_failure_artifacts(
             worktree=worktree,
@@ -918,7 +918,7 @@ class CompletionProcessor:
             issue_number,
             result.reason,
             self._pre_publish_validation_record(worktree, session_name, result),
-        ), False
+        )
 
     def _persist_pre_publish_failure_artifacts(
         self,
@@ -1016,7 +1016,7 @@ class CompletionProcessor:
         if should_halt:
             return branch, pr_url, review_exchange_completed, False, None
 
-        pre_publish_failure, skip_push_hooks = self._run_pre_publish_gate_if_required(
+        pre_publish_failure = self._run_pre_publish_gate_if_required(
             plan=plan,
             worktree=worktree,
             record=record,
@@ -1042,7 +1042,6 @@ class CompletionProcessor:
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
             review_exchange_completed=review_exchange_completed,
-            skip_push_hooks=skip_push_hooks,
         )
         return branch, pr_url, review_exchange_completed, False, None
 
@@ -1064,7 +1063,6 @@ class CompletionProcessor:
         exchange_mode: str | None,
         exchange_result: Any | None,
         review_exchange_completed: bool,
-        skip_push_hooks: bool,
     ) -> tuple[str | None, str | None, bool]:
         pr_url: str | None = None
 
@@ -1084,7 +1082,6 @@ class CompletionProcessor:
                 error_details=error_details,
                 exchange_mode=exchange_mode,
                 exchange_result=exchange_result,
-                skip_push_hooks=skip_push_hooks,
             )
             if result is None:
                 continue
@@ -1122,7 +1119,6 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]],
         exchange_mode: str | None,
         exchange_result: Any | None,
-        skip_push_hooks: bool,
     ) -> "_ActionResult | None":
         action_start = time.monotonic()
         logger.info("Executing action: %s for issue #%d", action.value, issue_number)
@@ -1150,7 +1146,6 @@ class CompletionProcessor:
                 error_details=error_details,
                 exchange_mode=exchange_mode,
                 exchange_result=exchange_result,
-                skip_push_hooks=skip_push_hooks,
             )
         except Exception as e:
             logger.exception(
@@ -1218,7 +1213,6 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]],
         exchange_mode: str | None,
         exchange_result: Any | None,
-        skip_push_hooks: bool,
     ) -> "_ActionResult":
         """Execute a single action and return the result."""
         if action == RequestedAction.PUSH_BRANCH:
@@ -1229,7 +1223,6 @@ class CompletionProcessor:
                 actions_taken,
                 errors,
                 error_details,
-                skip_hooks=skip_push_hooks,
             )
         elif action == RequestedAction.CREATE_PR:
             return self._execute_create_pr_action(
@@ -1342,7 +1335,7 @@ class CompletionProcessor:
         errors: list[str],
         error_details: list[dict[str, Any]],
         *,
-        skip_hooks: bool,
+        skip_hooks: bool = False,
     ) -> "_ActionResult":
         """Execute push branch action."""
         skip_hooks = skip_hooks or os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"

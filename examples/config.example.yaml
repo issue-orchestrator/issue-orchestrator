@@ -168,6 +168,9 @@ cleanup:
 
 validation:
   cmd: "make validate"
+  # This should be the same command your repo treats as its authoritative
+  # pre-push / pre-publish gate. issue-orchestrator caches successful runs by
+  # HEAD SHA + command so the later git pre-push hook can reuse the same token.
   timeout_seconds: 300
   # tracked = block on staged + unstaged changes (default)
   # all = block on tracked + untracked changes

@@ -47,8 +47,7 @@ exit 0
 
         assert result.returncode == 0
         assert log_path.read_text().splitlines() == [
-            "python:-m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v",
-            "make:validate-pr",
+            "python:-m issue_orchestrator.entrypoints.cli_tools.prepush_check -v",
         ]
 
     def test_fails_when_required_pr_gate_fails(self, tmp_path: Path) -> None:
@@ -63,12 +62,6 @@ exit 0
         _write_executable(
             repo / ".venv" / "bin" / "python",
             """#!/usr/bin/env bash
-exit 0
-""",
-        )
-        _write_executable(
-            repo / "bin" / "make",
-            """#!/usr/bin/env bash
 exit 42
 """,
         )
@@ -78,7 +71,6 @@ exit 42
             cwd=repo,
             capture_output=True,
             text=True,
-            env={**os.environ, "PATH": f'{repo / "bin"}:{os.environ.get("PATH", "")}'},
         )
 
         assert result.returncode == 42
