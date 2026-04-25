@@ -1,7 +1,6 @@
 """Workspace and agent checks for doctor."""
 
 import shutil
-import subprocess
 from pathlib import Path
 
 from ..types import Check
@@ -153,17 +152,18 @@ def _check_retry_templates(config: Config) -> Check | None:
     return None
 
 
-def _run_git(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess[str] | None:
+def _run_git(
+    repo_root: Path,
+    args: list[str],
+    *,
+    runner: CommandRunner | None,
+):
+    from ....adapters.git.git_cli import GitCLI, SubprocessCommandRunner
+
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        git = GitCLI(runner=runner or SubprocessCommandRunner())
+        return git.run(repo_root, args, timeout_s=10, check=False)
+    except Exception:
         return None
 
 
@@ -183,7 +183,10 @@ def _effective_worktree_seed_ref(config: Config, repo_root: Path) -> str:
     return f"origin/{get_default_branch(repo_root)}"
 
 
-def _check_agent_prompts(config: Config) -> Check | None:
+def _check_agent_prompts(
+    config: Config,
+    runner: CommandRunner | None = None,
+) -> Check | None:
     """Ensure repo-local prompt files are available from the worktree seed ref."""
     repo_root = Path.cwd()
     if not (repo_root / ".git").exists():
@@ -198,7 +201,11 @@ def _check_agent_prompts(config: Config) -> Check | None:
         if prompt_rel is None:
             continue
 
-        head_result = _run_git(repo_root, ["cat-file", "-e", f"{seed_ref}:{prompt_rel}"])
+        head_result = _run_git(
+            repo_root,
+            ["cat-file", "-e", f"{seed_ref}:{prompt_rel}"],
+            runner=runner,
+        )
         if head_result is None:
             return Check(
                 name="Agent Prompts",
@@ -209,7 +216,11 @@ def _check_agent_prompts(config: Config) -> Check | None:
             missing_from_head.append(f"{name}: {prompt_rel}")
             continue
 
-        status_result = _run_git(repo_root, ["status", "--porcelain", "--", prompt_rel])
+        status_result = _run_git(
+            repo_root,
+            ["status", "--porcelain", "--", prompt_rel],
+            runner=runner,
+        )
         if status_result is None:
             return Check(
                 name="Agent Prompts",
@@ -244,7 +255,10 @@ def _check_agent_prompts(config: Config) -> Check | None:
     return Check(name="Agent Prompts", status="ok", detail=f"Available from seed ref {seed_ref}")
 
 
-def check_agents(config: Config) -> list[Check]:
+def check_agents(
+    config: Config,
+    runner: CommandRunner | None = None,
+) -> list[Check]:
     checks: list[Check] = []
     agent_count = len(config.agents)
 
@@ -255,7 +269,7 @@ def check_agents(config: Config) -> list[Check]:
     checks.append(Check(name="Agents", status="ok", detail=f"{agent_count} configured"))
     checks.append(_check_agent_scripts(config))
 
-    prompt_check = _check_agent_prompts(config)
+    prompt_check = _check_agent_prompts(config, runner)
     if prompt_check:
         checks.append(prompt_check)
 

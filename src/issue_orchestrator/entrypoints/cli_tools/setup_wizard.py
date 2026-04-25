@@ -116,107 +116,16 @@ def _prompt_agent_config(
 ) -> dict[str, Any]:
     """Prompt for one agent's runtime config."""
     timeout = _prompt_int(prompter, "Timeout in minutes", 45, min_value=1)
-
-    providers = list_providers()
-    available_providers = [p for p in providers if get_provider(p).is_available()]
-    agent_type: str
-    if allow_provider_autoselect and len(available_providers) == 1:
-        agent_type = available_providers[0]
-        prompter.print(f"\n  Using available provider: {agent_type}")
-    else:
-        prompter.print("\n  Agent provider options:")
-        for provider_name in providers:
-            provider_obj = get_provider(provider_name)
-            available = "✓" if provider_obj.is_available() else "✗ not installed"
-            prompter.print(
-                f"    {provider_name}  - {provider_obj.description} ({available})"
-            )
-        prompter.print("    custom  - Use a custom command/script")
-
-        provider_choices = providers + ["custom"]
-        agent_type = prompter.choice("Agent provider", provider_choices)
-
-    custom_command = None
-    permission_mode = "default"
-    selected_provider = None
-    ai_system = None
-
-    if agent_type == "custom":
-        prompter.print(
-            "\n  Enter your custom command template. Available variables:"
-        )
-        prompter.print(
-            "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
-        )
-        custom_command = prompter.input("Custom command")
-        ai_system = detect_ai_system_from_command(custom_command)
-        if ai_system:
-            prompter.print(f"  Detected ai_system: {ai_system}")
-        else:
-            prompter.print(
-                "  Couldn't infer ai_system from that command. "
-                "This is required for validation and diagnostics."
-            )
-            ai_system = prompter.input("AI system name", "claude-code")
-        model = "sonnet"
-    else:
-        selected_provider = agent_type
-        if selected_provider == "claude-code":
-            model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
-
-            prompter.print(
-                "\n  Permission mode controls how Claude handles tool permissions:"
-            )
-            prompter.print("    default          - Prompt for each action (safest)")
-            prompter.print(
-                "    acceptEdits      - Auto-accept file edits, prompt for others"
-            )
-            prompter.print(
-                "    bypassPermissions - Skip all prompts (use for trusted automation)"
-            )
-            permission_mode = prompter.choice(
-                "Permission mode", ["default", "acceptEdits", "bypassPermissions"]
-            )
-
-            if permission_mode == "bypassPermissions":
-                prompter.print(
-                    "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
-                )
-                prompter.print(
-                    "     - Execute any shell commands without confirmation"
-                )
-                prompter.print("     - Read/write any files without confirmation")
-                prompter.print(
-                    "     - Access network resources without confirmation"
-                )
-                if not prompter.yes_no(
-                    "Are you sure you want to bypass all permission prompts?",
-                    default=False,
-                ):
-                    permission_mode = "default"
-                    prompter.print("  → Using 'default' mode instead")
-        elif selected_provider == "codex":
-            prompter.print(
-                "\n  Leave the model blank to use the Codex CLI default for your account."
-            )
-            model = prompter.input("Model for Codex", "")
-        else:
-            model = prompter.input("Model name", "default")
-
-    prompter.print("\n  Does this agent do code reviews?")
-    prompter.print("    Review agents need {pr_number} in their prompt template.")
-    is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
-
-    if is_review_agent:
-        initial_prompt = (
-            "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
-            "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
-        )
-    else:
-        initial_prompt = (
-            "Work on issue #{issue_number}: {issue_title}. "
-            "Follow the instructions in {prompt}. When done, use coding-done to report completion."
-        )
+    agent_type = _choose_agent_type(
+        prompter,
+        allow_provider_autoselect=allow_provider_autoselect,
+    )
+    custom_command, permission_mode, selected_provider, ai_system, model = (
+        _prompt_agent_runtime_details(prompter, agent_type)
+    )
+    initial_prompt = _default_agent_initial_prompt(
+        prompter,
+    )
 
     return _build_agent_config(
         prompt_path=prompt_path,
@@ -227,6 +136,154 @@ def _prompt_agent_config(
         custom_command=custom_command,
         permission_mode=permission_mode,
         ai_system=ai_system,
+    )
+
+
+def _choose_agent_type(
+    prompter: Prompter,
+    *,
+    allow_provider_autoselect: bool,
+) -> str:
+    """Choose which provider or custom command backs an agent."""
+
+    providers = list_providers()
+    available_providers = [p for p in providers if get_provider(p).is_available()]
+    if allow_provider_autoselect and len(available_providers) == 1:
+        agent_type = available_providers[0]
+        prompter.print(f"\n  Using available provider: {agent_type}")
+        return agent_type
+
+    prompter.print("\n  Agent provider options:")
+    for provider_name in providers:
+        provider_obj = get_provider(provider_name)
+        available = "✓" if provider_obj.is_available() else "✗ not installed"
+        prompter.print(
+            f"    {provider_name}  - {provider_obj.description} ({available})"
+        )
+    prompter.print("    custom  - Use a custom command/script")
+
+    provider_choices = providers + ["custom"]
+    return prompter.choice("Agent provider", provider_choices)
+
+
+def _prompt_agent_runtime_details(
+    prompter: Prompter,
+    agent_type: str,
+) -> tuple[str | None, str, str | None, str | None, str]:
+    """Collect provider-specific runtime details for one agent."""
+    if agent_type == "custom":
+        custom_command, ai_system = _prompt_custom_agent_details(prompter)
+        return custom_command, "default", None, ai_system, "sonnet"
+
+    selected_provider = agent_type
+    model, permission_mode = _prompt_provider_runtime_details(
+        prompter,
+        selected_provider,
+    )
+    return None, permission_mode, selected_provider, None, model
+
+
+def _prompt_custom_agent_details(prompter: Prompter) -> tuple[str, str | None]:
+    """Collect custom command details and infer the ai_system when possible."""
+    prompter.print(
+        "\n  Enter your custom command template. Available variables:"
+    )
+    prompter.print(
+        "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
+    )
+    custom_command = prompter.input("Custom command")
+    ai_system = detect_ai_system_from_command(custom_command)
+    if ai_system:
+        prompter.print(f"  Detected ai_system: {ai_system}")
+        return custom_command, ai_system
+
+    prompter.print(
+        "  Couldn't infer ai_system from that command. "
+        "This is required for validation and diagnostics."
+    )
+    return custom_command, prompter.input("AI system name", "claude-code")
+
+
+def _prompt_provider_runtime_details(
+    prompter: Prompter,
+    provider_name: str,
+) -> tuple[str, str]:
+    """Collect runtime details for a named built-in provider."""
+    if provider_name == "claude-code":
+        return _prompt_claude_runtime_details(prompter)
+    if provider_name == "codex":
+        prompter.print(
+            "\n  Leave the model blank to use the Codex CLI default for your account."
+        )
+        return prompter.input("Model for Codex", ""), "default"
+    return prompter.input("Model name", "default"), "default"
+
+
+def _prompt_claude_runtime_details(prompter: Prompter) -> tuple[str, str]:
+    """Collect Claude model and permission preferences."""
+    model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
+
+    prompter.print(
+        "\n  Permission mode controls how Claude handles tool permissions:"
+    )
+    prompter.print("    default          - Prompt for each action (safest)")
+    prompter.print(
+        "    acceptEdits      - Auto-accept file edits, prompt for others"
+    )
+    prompter.print(
+        "    bypassPermissions - Skip all prompts (use for trusted automation)"
+    )
+    permission_mode = prompter.choice(
+        "Permission mode", ["default", "acceptEdits", "bypassPermissions"]
+    )
+    return model, _confirm_claude_permission_mode(prompter, permission_mode)
+
+
+def _confirm_claude_permission_mode(
+    prompter: Prompter,
+    permission_mode: str,
+) -> str:
+    """Confirm high-risk Claude permission settings."""
+    if permission_mode != "bypassPermissions":
+        return permission_mode
+
+    prompter.print(
+        "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
+    )
+    prompter.print(
+        "     - Execute any shell commands without confirmation"
+    )
+    prompter.print("     - Read/write any files without confirmation")
+    prompter.print(
+        "     - Access network resources without confirmation"
+    )
+    if prompter.yes_no(
+        "Are you sure you want to bypass all permission prompts?",
+        default=False,
+    ):
+        return permission_mode
+
+    prompter.print("  → Using 'default' mode instead")
+    return "default"
+
+
+def _default_agent_initial_prompt(
+    prompter: Prompter,
+) -> str:
+    """Build the default initial prompt for the selected agent role."""
+
+    prompter.print("\n  Does this agent do code reviews?")
+    prompter.print("    Review agents need {pr_number} in their prompt template.")
+    is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
+
+    if is_review_agent:
+        return (
+            "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
+            "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
+        )
+    return (
+        "Work on issue #{issue_number}: {issue_title}. "
+        "Follow the instructions in {prompt}. When done, use coding-done to report completion."
     )
 
 

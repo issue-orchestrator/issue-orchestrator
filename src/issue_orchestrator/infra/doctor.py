@@ -107,7 +107,7 @@ def run_doctor(
     _check_worktree_setup(result, config)
     _check_working_directory(result, runner)
     _check_hook_dependencies(result)
-    _check_agents(result, config)
+    _check_agents(result, config, runner)
     _check_code_review(result, config)
     _check_review_exchange(result, config, runner)
     _check_e2e_runner(result, config)
@@ -442,10 +442,15 @@ def _check_hook_dependencies(result: DoctorResult) -> None:
         ))
 
 
-def _check_agents(result: DoctorResult, config: Config) -> None:
+def _check_agents(
+    result: DoctorResult,
+    config: Config,
+    runner: CommandRunner | None,
+) -> None:
     """Check agent configuration."""
     from .doctor.checks.workspace import check_agents
-    checks = check_agents(config)
+
+    checks = check_agents(config, runner)
     result.checks.extend(checks)
 
 
