@@ -14,6 +14,7 @@ _MAX_BUFFER_CHARS = 12000
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _WHITESPACE_RE = re.compile(r"\s+")
+_SHELL_COMMAND_SEPARATORS = frozenset({"&&", ";", "||", "|"})
 
 
 def _normalize_terminal_text(text: str) -> str:
@@ -39,6 +40,8 @@ class SessionInteractionRule:
     def __post_init__(self) -> None:
         if not self.required_substrings:
             raise ValueError("SessionInteractionRule.required_substrings cannot be empty")
+        if not self.fire_once:
+            raise ValueError("SessionInteractionRule only supports fire_once=True")
 
 
 @dataclass(frozen=True)
@@ -115,7 +118,12 @@ class SessionInteractionHandler:
 
 
 def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionRule, ...]:
-    """Return built-in rules that apply to a specific session command."""
+    """Return built-in rules that apply to a specific session command.
+
+    This intentionally targets the raw interactive Claude launch shape that the
+    subprocess plugin receives from SessionLauncher, including leading shell
+    environment assignments such as ``FOO=bar && claude ...``.
+    """
     if not _looks_like_claude_command(command):
         return ()
     return (
@@ -132,12 +140,39 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
 
 
 def _looks_like_claude_command(command: str) -> bool:
+    return _claude_command_tokens(command) is not None
+
+
+def _claude_command_tokens(command: str) -> list[str] | None:
     try:
         tokens = shlex.split(command)
     except ValueError:
         tokens = command.split()
-    while tokens and (tokens[0] == "exec" or _looks_like_env_assignment(tokens[0])):
-        tokens = tokens[1:]
+
+    current: list[str] = []
+    for token in tokens:
+        if token in _SHELL_COMMAND_SEPARATORS:
+            command_tokens = _trim_command_prefix(current)
+            if _is_claude_command_tokens(command_tokens):
+                return command_tokens
+            current = []
+            continue
+        current.append(token)
+
+    command_tokens = _trim_command_prefix(current)
+    if _is_claude_command_tokens(command_tokens):
+        return command_tokens
+    return None
+
+
+def _trim_command_prefix(tokens: Sequence[str]) -> list[str] | None:
+    trimmed = list(tokens)
+    while trimmed and (trimmed[0] == "exec" or _looks_like_env_assignment(trimmed[0])):
+        trimmed = trimmed[1:]
+    return trimmed or None
+
+
+def _is_claude_command_tokens(tokens: Sequence[str] | None) -> bool:
     if not tokens:
         return False
     executable = tokens[0].rsplit("/", 1)[-1]

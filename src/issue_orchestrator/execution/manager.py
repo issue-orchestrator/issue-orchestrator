@@ -6,7 +6,7 @@ based on configuration and entry points.
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional, TypedDict
 
 import pluggy
 
@@ -25,11 +25,21 @@ UI_MODE_PLUGINS = {
 }
 
 
-def _load_plugin_class(class_path: str, **kwargs: object):
+class _BuiltinPluginKwargs(TypedDict, total=False):
+    session_interactions_enabled: bool
+    worktree_base: Path | None
+
+
+def _load_plugin_class(
+    class_path: str,
+    *,
+    constructor_kwargs: Mapping[str, object] | None = None,
+):
     """Load a plugin class by its dotted path.
 
     Args:
         class_path: Path like "package.module:ClassName"
+        constructor_kwargs: Optional kwargs forwarded to the plugin constructor.
 
     Returns:
         Instantiated plugin object.
@@ -43,7 +53,7 @@ def _load_plugin_class(class_path: str, **kwargs: object):
 
     module = importlib.import_module(module_path)
     plugin_class = getattr(module, class_name)
-    return plugin_class(**kwargs)
+    return plugin_class(**dict(constructor_kwargs or {}))
 
 
 def create_plugin_manager(
@@ -84,11 +94,11 @@ def create_plugin_manager(
         class_path = plugin_ref
 
     try:
-        plugin_kwargs: dict[str, object] = {}
+        plugin_kwargs: _BuiltinPluginKwargs = {}
         if plugin_ref in BUILTIN_PLUGINS:
             plugin_kwargs["session_interactions_enabled"] = session_interactions_enabled
             plugin_kwargs["worktree_base"] = worktree_base
-        plugin = _load_plugin_class(class_path, **plugin_kwargs)
+        plugin = _load_plugin_class(class_path, constructor_kwargs=plugin_kwargs)
         pm.register(plugin, name=f"terminal_{plugin_ref}")
         logger.info("Loaded terminal plugin: %s", plugin_ref)
     except Exception as e:

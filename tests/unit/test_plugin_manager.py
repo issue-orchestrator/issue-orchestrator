@@ -1,5 +1,7 @@
 """Unit tests for plugin manager loading."""
 
+from pathlib import Path
+
 from issue_orchestrator.execution.manager import create_plugin_manager
 
 
@@ -7,3 +9,17 @@ def test_subprocess_plugin_can_load():
     """Ensure subprocess plugin mapping resolves to a valid class."""
     pm = create_plugin_manager(terminal_plugin="subprocess", load_entry_points=False)
     assert pm is not None
+
+
+def test_subprocess_plugin_receives_session_interaction_kwargs(tmp_path):
+    pm = create_plugin_manager(
+        terminal_plugin="subprocess",
+        session_interactions_enabled=True,
+        worktree_base=tmp_path,
+        load_entry_points=False,
+    )
+
+    plugin = next(plugin for plugin in pm.get_plugins() if type(plugin).__name__ == "SubprocessPlugin")
+
+    assert plugin._session_interactions_enabled is True  # noqa: SLF001
+    assert plugin._worktree_base == Path(tmp_path).resolve()  # noqa: SLF001

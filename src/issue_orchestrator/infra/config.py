@@ -469,7 +469,7 @@ class Config:
         Returns a serializable dict with the merged configuration
         (YAML + command line overrides) for debugging.
         """
-        return {
+        result = {
             "repo": {
                 "name": self.repo,
                 "root": str(self.repo_root),
@@ -528,9 +528,6 @@ class Config:
                     "session_timeout_minutes": self.session_timeout_minutes,
                 },
                 "terminal_adapter": self.terminal_adapter,
-                "session_interactions": {
-                    "enabled": self.session_interactions.enabled,
-                },
                 "isolation": {
                     "mode": self.isolation.mode,
                 },
@@ -714,6 +711,9 @@ class Config:
                 for label, cfg in self.agents.items()
             },
         }
+        if self.session_interactions.enabled:
+            result["execution"]["session_interactions"] = {"enabled": True}
+        return result
 
     def to_dict(self) -> dict:  # noqa: C901, PLR0912 - serialization method handles many config fields
         """Convert config to a dict suitable for YAML serialization.

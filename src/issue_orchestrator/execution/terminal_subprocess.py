@@ -259,6 +259,7 @@ class SubprocessPlugin:
         self._allow_stdin = deny_stdin_val.lower() not in {"1", "true", "yes"}
         self._session_interactions_enabled = session_interactions_enabled
         self._worktree_base = worktree_base.resolve() if worktree_base is not None else None
+        self._warned_missing_worktree_base = False
 
     def _session_log_path(self, working_dir: Path, session_name: str, command: str | None = None) -> Path:
         if command:
@@ -314,9 +315,14 @@ class SubprocessPlugin:
     ) -> SessionInteractionHandler | None:
         if not self._session_interactions_enabled or not self._allow_stdin:
             return None
-        if self._worktree_base is not None and not working_dir.resolve().is_relative_to(
-            self._worktree_base
-        ):
+        if self._worktree_base is None:
+            if not self._warned_missing_worktree_base:
+                logger.warning(
+                    "[session-interactions] disabled because worktree_base is not configured"
+                )
+                self._warned_missing_worktree_base = True
+            return None
+        if not working_dir.resolve().is_relative_to(self._worktree_base):
             return None
         rules = builtin_session_interaction_rules(command)
         if not rules:

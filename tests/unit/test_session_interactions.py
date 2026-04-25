@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from unittest.mock import Mock
 
 from issue_orchestrator.execution.session_interactions import (
@@ -58,7 +59,18 @@ def test_session_interaction_handler_ignores_ansi_noise() -> None:
 
 def test_builtin_session_interaction_rules_are_scoped_to_claude() -> None:
     assert builtin_session_interaction_rules("claude --model sonnet 'fix it'")
+    assert builtin_session_interaction_rules("FOO=1 BAR=2 && claude --model sonnet 'fix it'")
     assert builtin_session_interaction_rules("exec CLAUDE --model sonnet 'fix it'") == ()
     assert builtin_session_interaction_rules("FOO=1 claude --model sonnet 'fix it'")
     assert builtin_session_interaction_rules("python -m provider_runner --command 'claude foo'") == ()
     assert builtin_session_interaction_rules("codex exec --full-auto") == ()
+
+
+def test_session_interaction_rules_only_support_one_shot_rules() -> None:
+    with pytest.raises(ValueError, match="fire_once=True"):
+        SessionInteractionRule(
+            name="repeat",
+            required_substrings=("prompt",),
+            response="y",
+            fire_once=False,
+        )

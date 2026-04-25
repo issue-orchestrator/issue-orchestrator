@@ -165,7 +165,7 @@ def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path,
 
 
 def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypatch):
-    """Built-in interaction rules can unblock Claude's initial trust prompt."""
+    """Built-in interaction rules can unblock wrapped Claude trust prompts."""
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"
     worktree.mkdir(parents=True)
@@ -186,7 +186,7 @@ def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypat
     plugin = SubprocessPlugin(session_interactions_enabled=True, worktree_base=repo_root)
     created = plugin.create_session(
         session_id=123,
-        command="claude",
+        command="ISSUE_ORCHESTRATOR_TEST=1 && claude",
         working_dir=str(worktree),
         title="Trust prompt test",
         session_name="issue-123",
@@ -216,3 +216,17 @@ def test_subprocess_session_interactions_require_worktree_under_base(tmp_path, m
     handler = plugin._interaction_handler("claude", "issue-7", outside_worktree)  # noqa: SLF001
 
     assert handler is None
+
+
+def test_subprocess_session_interactions_require_configured_worktree_base(tmp_path, monkeypatch, caplog):
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    plugin = SubprocessPlugin(session_interactions_enabled=True, worktree_base=None)
+
+    handler = plugin._interaction_handler("claude", "issue-7", worktree)  # noqa: SLF001
+
+    assert handler is None
+    assert "worktree_base is not configured" in caplog.text

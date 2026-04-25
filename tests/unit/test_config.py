@@ -872,6 +872,21 @@ worktrees:
 
         assert config.session_interactions.enabled is True
 
+    def test_session_interactions_omitted_from_to_event_dict_when_disabled(self):
+        config = Config()
+
+        result = config.to_event_dict()
+
+        assert "session_interactions" not in result["execution"]
+
+    def test_session_interactions_included_in_to_event_dict_when_enabled(self):
+        config = Config()
+        config.session_interactions.enabled = True
+
+        result = config.to_event_dict()
+
+        assert result["execution"]["session_interactions"] == {"enabled": True}
+
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""
         config = Config()
