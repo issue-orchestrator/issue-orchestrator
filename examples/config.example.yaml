@@ -112,6 +112,8 @@ execution:
     max_concurrent_sessions: 3
     session_timeout_minutes: 45
   terminal_adapter: null          # Optional: "subprocess" or custom adapter path
+  session_interactions:
+    enabled: false                # Auto-respond to trusted runner prompts (for example Claude's trust screen)
   isolation:
     mode: "standard"              # standard or hardened
 

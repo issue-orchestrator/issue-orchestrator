@@ -509,6 +509,8 @@ def build_orchestrator(
     pm = create_plugin_manager(
         terminal_plugin=config.terminal_adapter,
         ui_mode=config.ui_mode,
+        session_interactions_enabled=config.session_interactions.enabled,
+        worktree_base=config.worktree_base,
     )
     if enable_sse:
         try:

@@ -22,6 +22,10 @@ from datetime import datetime
 from pathlib import Path
 from ..control.isolation import build_isolation_prefix
 from .agent_runner import AgentRunner, AgentSession, AgentSpec
+from .session_interactions import (
+    SessionInteractionHandler,
+    builtin_session_interaction_rules,
+)
 from ..infra.env import get_env
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
@@ -241,13 +245,20 @@ class SubprocessPlugin:
     This plugin manages session lifecycle: registry, existence checks, cleanup.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        session_interactions_enabled: bool = False,
+        worktree_base: Path | None = None,
+    ) -> None:
         repo_root = Path(get_env("REPO_ROOT") or Path.cwd()).resolve()
         self._registry = _SubprocessRegistry(repo_root)
         self._sessions: dict[str, AgentSession] = {}
         self._watcher_threads: dict[str, threading.Thread] = {}
         deny_stdin_val = get_env("SUBPROCESS_DENY_STDIN") or ""
         self._allow_stdin = deny_stdin_val.lower() not in {"1", "true", "yes"}
+        self._session_interactions_enabled = session_interactions_enabled
+        self._worktree_base = worktree_base.resolve() if worktree_base is not None else None
 
     def _session_log_path(self, working_dir: Path, session_name: str, command: str | None = None) -> Path:
         if command:
@@ -295,6 +306,23 @@ class SubprocessPlugin:
         self._watcher_threads[session_name] = thread
         thread.start()
 
+    def _interaction_handler(
+        self,
+        command: str,
+        session_name: str,
+        working_dir: Path,
+    ) -> SessionInteractionHandler | None:
+        if not self._session_interactions_enabled or not self._allow_stdin:
+            return None
+        if self._worktree_base is not None and not working_dir.resolve().is_relative_to(
+            self._worktree_base
+        ):
+            return None
+        rules = builtin_session_interaction_rules(command)
+        if not rules:
+            return None
+        return SessionInteractionHandler(session_name=session_name, rules=rules)
+
     def _start_process(self, command: str, working_dir: Path, session_name: str) -> AgentSession:
         """Start an agent session via :class:`AgentRunner`.
 
@@ -303,6 +331,7 @@ class SubprocessPlugin:
         """
         full_cmd = self._build_process_command(command, working_dir)
         log_path = self._session_log_path(working_dir, session_name, command)
+        interaction_handler = self._interaction_handler(command, session_name, working_dir)
 
         spec = AgentSpec(
             command=["/bin/bash", "-lc", full_cmd],
@@ -312,7 +341,7 @@ class SubprocessPlugin:
             output_dir=log_path.parent,
         )
         runner = AgentRunner()
-        session = runner.start(spec)
+        session = runner.start(spec, interaction_handler=interaction_handler)
         logger.info(
             "[subprocess] session started: session_name=%s pid=%s log_path=%s run_dir=%s",
             session_name,

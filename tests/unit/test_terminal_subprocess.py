@@ -8,6 +8,20 @@ from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _
 from issue_orchestrator.infra.env import ENV_PREFIX
 
 
+def _read_recording_output(path):
+    output_chunks: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        event = json.loads(raw_line)
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if isinstance(data_b64, str) and data_b64:
+            output_chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+    return "".join(output_chunks)
+
+
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     """Test that subprocess output is captured to the session log file.
 
@@ -148,3 +162,57 @@ def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path,
     log_path = plugin._session_log_path(worktree, "issue-123", command)  # noqa: SLF001
 
     assert log_path == run_dir / "terminal-recording.jsonl"
+
+
+def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypatch):
+    """Built-in interaction rules can unblock Claude's initial trust prompt."""
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    fake_claude = worktree / ".venv" / "bin" / "claude"
+    fake_claude.parent.mkdir(parents=True)
+    fake_claude.write_text(
+        "#!/bin/sh\n"
+        "printf 'Quick safety check: Is this a project you created or one you trust?\\n'\n"
+        "printf '1. Yes, I trust this folder\\n'\n"
+        "printf '2. No, exit\\n'\n"
+        "read -r response\n"
+        "printf 'AUTO-RESPONSE:%s\\n' \"$response\"\n",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    plugin = SubprocessPlugin(session_interactions_enabled=True, worktree_base=repo_root)
+    created = plugin.create_session(
+        session_id=123,
+        command="claude",
+        working_dir=str(worktree),
+        title="Trust prompt test",
+        session_name="issue-123",
+    )
+    assert created is True
+
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
+
+    deadline = time.monotonic() + 5.0
+    while plugin.session_exists(123, "issue-123"):
+        assert time.monotonic() < deadline, "subprocess did not exit within 5s"
+        time.sleep(0.05)
+
+    assert "AUTO-RESPONSE:" in _read_recording_output(log_path)
+
+
+def test_subprocess_session_interactions_require_worktree_under_base(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    allowed_base = repo_root / "allowed"
+    allowed_base.mkdir(parents=True)
+    outside_worktree = repo_root / "outside"
+    outside_worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    plugin = SubprocessPlugin(session_interactions_enabled=True, worktree_base=allowed_base)
+
+    handler = plugin._interaction_handler("claude", "issue-7", outside_worktree)  # noqa: SLF001
+
+    assert handler is None

@@ -28,6 +28,7 @@ from issue_orchestrator.execution.agent_runner_base import (
     _pty_preexec,
 )
 from issue_orchestrator.execution.agent_runner_env import build_filtered_env
+from issue_orchestrator.execution.session_interactions import SessionInteractionHandler
 from issue_orchestrator.execution.agent_runner_types import (
     AgentResult,
     AgentSpec,
@@ -65,12 +66,16 @@ class AgentSession:
         log_writer: MirroredTerminalRecordingWriter | None,
         spec: AgentSpec,
         start_time: float,
+        interaction_handler: SessionInteractionHandler | None = None,
     ) -> None:
         self._child = child
         self._log_writer = log_writer
         self._spec = spec
         self._start_time = start_time
         self._closed = False
+        self._interaction_handler = interaction_handler
+        if self._interaction_handler is not None:
+            self._interaction_handler.bind_sender(self.send)
 
     @property
     def pid(self) -> int | None:
@@ -217,7 +222,11 @@ class AgentRunner(BaseAgentRunner):
         result = runner.run(spec)  # blocks until done
     """
 
-    def start(self, spec: AgentSpec) -> AgentSession:
+    def start(
+        self,
+        spec: AgentSpec,
+        interaction_handler: SessionInteractionHandler | None = None,
+    ) -> AgentSession:
         """Start an agent in a PTY. Returns a session handle.
 
         The agent runs in a pexpect PTY with:
@@ -253,6 +262,7 @@ class AgentRunner(BaseAgentRunner):
             log_writer = MirroredTerminalRecordingWriter(
                 spec.log_path,
                 mirror_path=spec.mirror_log_path,
+                on_output=interaction_handler.on_output if interaction_handler is not None else None,
                 initial_rows=rows,
                 initial_cols=cols,
             )
@@ -269,7 +279,13 @@ class AgentRunner(BaseAgentRunner):
             dimensions=(rows, cols),
         )
 
-        return AgentSession(child, log_writer, spec, time.monotonic())
+        return AgentSession(
+            child,
+            log_writer,
+            spec,
+            time.monotonic(),
+            interaction_handler=interaction_handler,
+        )
 
     def run_interactive(self, spec: AgentSpec, response_file: Path) -> AgentResult:
         """Run an interactive agent round without PTY/fork.
