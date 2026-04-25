@@ -14,7 +14,7 @@ _MAX_BUFFER_CHARS = 12000
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _WHITESPACE_RE = re.compile(r"\s+")
-_SHELL_COMMAND_SEPARATORS = frozenset({"&&", ";", "||", "|"})
+_SHELL_COMMAND_SEPARATORS = frozenset({"&&", ";", "||"})
 
 
 def _normalize_terminal_text(text: str) -> str:
@@ -35,6 +35,7 @@ class SessionInteractionRule:
     name: str
     required_substrings: tuple[str, ...]
     response: str
+    # Reserved for future cooldown/edge-trigger semantics; current rules are one-shot only.
     fire_once: bool = True
 
     def __post_init__(self) -> None:
@@ -122,7 +123,9 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
 
     This intentionally targets the raw interactive Claude launch shape that the
     subprocess plugin receives from SessionLauncher, including leading shell
-    environment assignments such as ``FOO=bar && claude ...``.
+    environment assignments such as ``FOO=bar && claude ...``. It assumes those
+    shell separators are whitespace-delimited, which matches the orchestrator's
+    SessionLauncher command shape.
     """
     if not _looks_like_claude_command(command):
         return ()
@@ -144,6 +147,7 @@ def _looks_like_claude_command(command: str) -> bool:
 
 
 def _claude_command_tokens(command: str) -> list[str] | None:
+    """Extract the whitespace-delimited Claude command segment from a shell command."""
     try:
         tokens = shlex.split(command)
     except ValueError:

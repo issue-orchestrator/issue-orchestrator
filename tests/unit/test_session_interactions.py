@@ -62,6 +62,7 @@ def test_builtin_session_interaction_rules_are_scoped_to_claude() -> None:
     assert builtin_session_interaction_rules("FOO=1 BAR=2 && claude --model sonnet 'fix it'")
     assert builtin_session_interaction_rules("exec CLAUDE --model sonnet 'fix it'") == ()
     assert builtin_session_interaction_rules("FOO=1 claude --model sonnet 'fix it'")
+    assert builtin_session_interaction_rules("cat prompt.md | claude --print") == ()
     assert builtin_session_interaction_rules("python -m provider_runner --command 'claude foo'") == ()
     assert builtin_session_interaction_rules("codex exec --full-auto") == ()
 
