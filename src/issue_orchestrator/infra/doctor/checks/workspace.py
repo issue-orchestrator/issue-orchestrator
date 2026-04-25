@@ -1,6 +1,7 @@
 """Workspace and agent checks for doctor."""
 
 import shutil
+import subprocess
 from pathlib import Path
 
 from ..types import Check
@@ -25,7 +26,10 @@ def check_working_directory(runner: CommandRunner | None) -> list[Check]:
                 checks.append(Check(
                     name="Working Directory",
                     status="warning",
-                    detail="Uncommitted changes (won't affect agent worktrees - they branch from main)",
+                    detail=(
+                        "Uncommitted changes stay only in this checkout; agent worktrees "
+                        "are seeded from a git ref, not your working tree"
+                    ),
                 ))
             else:
                 checks.append(Check(
@@ -149,6 +153,97 @@ def _check_retry_templates(config: Config) -> Check | None:
     return None
 
 
+def _run_git(repo_root: Path, args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _repo_relative_path(repo_root: Path, path: Path) -> str | None:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def _effective_worktree_seed_ref(config: Config, repo_root: Path) -> str:
+    if config.worktree_seed_ref:
+        return config.worktree_seed_ref
+
+    from ....adapters.worktree._worktree import get_default_branch
+
+    return f"origin/{get_default_branch(repo_root)}"
+
+
+def _check_agent_prompts(config: Config) -> Check | None:
+    """Ensure repo-local prompt files are available from the worktree seed ref."""
+    repo_root = Path.cwd()
+    if not (repo_root / ".git").exists():
+        return None
+
+    seed_ref = _effective_worktree_seed_ref(config, repo_root)
+    missing_from_head: list[str] = []
+    modified_locally: list[str] = []
+
+    for name, agent_cfg in config.agents.items():
+        prompt_rel = _repo_relative_path(repo_root, agent_cfg.prompt_path)
+        if prompt_rel is None:
+            continue
+
+        head_result = _run_git(repo_root, ["cat-file", "-e", f"{seed_ref}:{prompt_rel}"])
+        if head_result is None:
+            return Check(
+                name="Agent Prompts",
+                status="info",
+                detail="Could not verify whether prompt files are available from the worktree seed ref",
+            )
+        if head_result.returncode != 0:
+            missing_from_head.append(f"{name}: {prompt_rel}")
+            continue
+
+        status_result = _run_git(repo_root, ["status", "--porcelain", "--", prompt_rel])
+        if status_result is None:
+            return Check(
+                name="Agent Prompts",
+                status="info",
+                detail="Could not verify whether prompt files have local changes",
+            )
+        if status_result.stdout.strip():
+            modified_locally.append(f"{name}: {prompt_rel}")
+
+    if missing_from_head:
+        return Check(
+            name="Agent Prompts",
+            status="error",
+            detail=(
+                f"Not available from worktree seed ref {seed_ref}: {', '.join(missing_from_head[:3])}"
+                f"{'...' if len(missing_from_head) > 3 else ''}; "
+                "commit and push onboarding files to that ref, or set worktrees.seed_ref for local iteration before start"
+            ),
+        )
+
+    if modified_locally:
+        return Check(
+            name="Agent Prompts",
+            status="warning",
+            detail=(
+                f"Modified locally: {', '.join(modified_locally[:3])}"
+                f"{'...' if len(modified_locally) > 3 else ''}; "
+                f"agent worktrees use the committed seed ref version ({seed_ref})"
+            ),
+        )
+
+    return Check(name="Agent Prompts", status="ok", detail=f"Available from seed ref {seed_ref}")
+
+
 def check_agents(config: Config) -> list[Check]:
     checks: list[Check] = []
     agent_count = len(config.agents)
@@ -159,6 +254,10 @@ def check_agents(config: Config) -> list[Check]:
 
     checks.append(Check(name="Agents", status="ok", detail=f"{agent_count} configured"))
     checks.append(_check_agent_scripts(config))
+
+    prompt_check = _check_agent_prompts(config)
+    if prompt_check:
+        checks.append(prompt_check)
 
     template_check = _check_retry_templates(config)
     if template_check:

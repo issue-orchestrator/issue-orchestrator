@@ -1,5 +1,6 @@
 """Unit tests for workspace doctor checks."""
 
+import subprocess
 from pathlib import Path
 
 from issue_orchestrator.domain.models import AgentConfig
@@ -29,6 +30,20 @@ def _patch_providers(monkeypatch, providers: dict[str, _FakeProvider]) -> None:
             raise ValueError(f"Unknown provider: {name!r}") from exc
 
     monkeypatch.setattr("issue_orchestrator.agent_runner.get_provider", get_provider)
+
+
+def _git(repo_root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _agent_prompts_check(config: Config):
+    return next(check for check in check_agents(config) if check.name == "Agent Prompts")
 
 
 def test_agent_scripts_use_provider_registry_for_provider_agents(
@@ -132,3 +147,65 @@ def test_agent_scripts_still_validate_legacy_commands(monkeypatch, tmp_path: Pat
 
     assert check.status == "error"
     assert check.detail == "Missing: agent:legacy: missing-agent"
+
+
+def test_agent_prompts_error_when_prompt_not_committed_to_head(
+    monkeypatch,
+    tmp_path: Path,
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "main")
+    _git(repo_root, "config", "user.name", "Test User")
+    _git(repo_root, "config", "user.email", "test@example.com")
+    (repo_root / "README.md").write_text("hello\n")
+    _git(repo_root, "add", "README.md")
+    _git(repo_root, "commit", "-m", "init")
+
+    prompt_path = repo_root / ".prompts" / "dev.md"
+    prompt_path.parent.mkdir()
+    prompt_path.write_text("Prompt\n")
+
+    config = Config()
+    config.worktree_seed_ref = "HEAD"
+    config.agents = {
+        "agent:dev": AgentConfig(prompt_path=prompt_path, provider="codex"),
+    }
+
+    monkeypatch.chdir(repo_root)
+    check = _agent_prompts_check(config)
+
+    assert check.status == "error"
+    assert "Not available from worktree seed ref HEAD" in check.detail
+    assert ".prompts/dev.md" in check.detail
+    assert "set worktrees.seed_ref for local iteration" in check.detail
+
+
+def test_agent_prompts_warn_when_prompt_only_modified_locally(
+    monkeypatch,
+    tmp_path: Path,
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "main")
+    _git(repo_root, "config", "user.name", "Test User")
+    _git(repo_root, "config", "user.email", "test@example.com")
+    prompt_path = repo_root / ".prompts" / "dev.md"
+    prompt_path.parent.mkdir()
+    prompt_path.write_text("Prompt\n")
+    _git(repo_root, "add", ".prompts/dev.md")
+    _git(repo_root, "commit", "-m", "add prompt")
+    prompt_path.write_text("Prompt updated\n")
+
+    config = Config()
+    config.worktree_seed_ref = "HEAD"
+    config.agents = {
+        "agent:dev": AgentConfig(prompt_path=prompt_path, provider="codex"),
+    }
+
+    monkeypatch.chdir(repo_root)
+    check = _agent_prompts_check(config)
+
+    assert check.status == "warning"
+    assert ".prompts/dev.md" in check.detail
+    assert "seed ref version (HEAD)" in check.detail

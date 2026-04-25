@@ -36,8 +36,19 @@ CLAUDE_SETTINGS_FOR_AGENTS = {
 ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dry-run"
 WORKTREE_LOCAL_EXCLUDE_PATHS: tuple[Path, ...] = (
     Path(".venv"),
+    Path(".claude/settings.json"),
     Path(WORKTREE_ID_MARKER),
     ALLOW_NO_VERIFY_DRY_RUN_PATH,
+    Path(".issue-orchestrator/ai-gate-state.json"),
+    Path(".issue-orchestrator/backups"),
+    Path(".issue-orchestrator/diagnostics"),
+    Path(".issue-orchestrator/dirty-rejection-count.json"),
+    Path(".issue-orchestrator/session-latest.json"),
+    Path(".issue-orchestrator/sessions"),
+    Path(".issue-orchestrator/timeline.sqlite"),
+    Path(".issue-orchestrator/timeline.sqlite-shm"),
+    Path(".issue-orchestrator/timeline.sqlite-wal"),
+    Path(".issue-orchestrator/tool-homes"),
 )
 WORKTREE_TRACKED_RUNTIME_PATHS: tuple[Path, ...] = (
     Path(".claude/settings.json"),
@@ -182,11 +193,20 @@ def _worktree_git_dir(worktree_path: Path) -> Path | None:
     return Path(content.split(":", 1)[1].strip())
 
 
-def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> None:
+def _worktree_git_common_dir(worktree_path: Path) -> Path | None:
     git_dir = _worktree_git_dir(worktree_path)
     if git_dir is None:
         return
-    exclude_path = git_dir / "info" / "exclude"
+    commondir_file = git_dir / "commondir"
+    if not commondir_file.exists():
+        return git_dir
+    common_dir = Path(commondir_file.read_text().strip())
+    if not common_dir.is_absolute():
+        common_dir = (git_dir / common_dir).resolve()
+    return common_dir
+
+
+def _append_exclude_entries(exclude_path: Path, paths: list[Path]) -> None:
     exclude_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     existing_text = ""
@@ -203,6 +223,28 @@ def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> N
             handle.write(suffix)
         for entry in missing:
             handle.write(f"{entry}\n")
+
+
+def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> None:
+    git_dir = _worktree_git_dir(worktree_path)
+    if git_dir is None:
+        return
+    common_dir = _worktree_git_common_dir(worktree_path)
+    exclude_paths = [git_dir / "info" / "exclude"]
+    if common_dir is not None and common_dir != git_dir:
+        exclude_paths.append(common_dir / "info" / "exclude")
+    for exclude_path in exclude_paths:
+        _append_exclude_entries(exclude_path, paths)
+
+
+def _worktree_git_exclude_paths(synced_cli_tool_paths: list[Path]) -> list[Path]:
+    """Return untracked paths that should be hidden from plain git status.
+
+    This covers both runtime-only metadata and the synced CLI helper files we
+    plant into foreign worktrees so first-run agents don't misread a clean
+    session as a dirty repo before they make any user-facing change.
+    """
+    return [*WORKTREE_LOCAL_EXCLUDE_PATHS, *synced_cli_tool_paths]
 
 
 def _hide_runtime_artifacts_from_git_status(
@@ -224,7 +266,10 @@ def _hide_runtime_artifacts_from_git_status(
             ["update-index", "--skip-worktree", "--", normalized],
             check=False,
         )
-    _write_worktree_exclude_entries(worktree_path, list(WORKTREE_LOCAL_EXCLUDE_PATHS))
+    _write_worktree_exclude_entries(
+        worktree_path,
+        _worktree_git_exclude_paths(synced_cli_tool_paths),
+    )
 
 
 def install_claude_settings(worktree_path: Path) -> None:

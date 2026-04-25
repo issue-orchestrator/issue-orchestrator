@@ -86,17 +86,53 @@ def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
 def _sync_venv(worktree_path: Path) -> None:
     """Ensure the worktree venv is up-to-date (fast when deps unchanged)."""
     pyproject = worktree_path / "pyproject.toml"
+    uv_lock = worktree_path / "uv.lock"
+    venv_python = worktree_path / ".venv" / "bin" / "python"
 
     if pyproject.exists():
         logger.info("Syncing project venv in E2E worktree")
+        sync_cmd = ["uv", "sync", "--all-extras"]
+        if uv_lock.exists():
+            sync_cmd.insert(2, "--frozen")
+        else:
+            logger.info(
+                "No uv.lock in E2E worktree; resolving dependencies without --frozen"
+            )
         subprocess.run(
-            ["uv", "sync", "--frozen", "--all-extras"],
+            sync_cmd,
             cwd=worktree_path,
             capture_output=True,
             text=True,
             timeout=300,
             check=True,
         )
+        pytest_check = subprocess.run(
+            [str(venv_python), "-c", "import pytest"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if pytest_check.returncode != 0:
+            logger.info(
+                "Pytest not available in synced E2E worktree; installing fallback pytest"
+            )
+            subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(venv_python),
+                    "pytest>=8.0",
+                ],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=True,
+            )
         return
 
     logger.info("No pyproject.toml in E2E worktree; preparing minimal pytest venv")

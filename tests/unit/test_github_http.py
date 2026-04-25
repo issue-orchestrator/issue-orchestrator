@@ -7,6 +7,7 @@ import httpx
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +20,11 @@ from issue_orchestrator.adapters.github.http_client import (
     resolve_github_token,
     validate_github_token,
 )
-from issue_orchestrator.adapters.github.tokens import _read_keyring_token
+from issue_orchestrator.adapters.github.tokens import (
+    _normalize_keyring_secret,
+    _read_gh_cli_token,
+    _read_keyring_token,
+)
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import gh_audit
 
@@ -50,6 +55,24 @@ def test_resolve_github_token_allows_default_sources_without_config(
     monkeypatch.setenv("ISSUE_ORCH_GITHUB_TOKEN", "generic-token")
 
     assert resolve_github_token() == "generic-token"
+
+
+def test_resolve_github_token_uses_gh_hosts_before_default_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ISSUE_ORCH_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._read_gh_cli_token",
+        lambda *, host: "gh-hosts-token",
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._read_keyring_token",
+        lambda *, service=..., username=...: "stale-keyring-token",
+    )
+
+    assert resolve_github_token() == "gh-hosts-token"
 
 
 def test_resolve_github_token_repo_scoped_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,6 +158,16 @@ def test_read_keyring_token_falls_back_to_macos_security(monkeypatch: pytest.Mon
     assert token == "repo-keyring-token"
 
 
+def test_normalize_keyring_secret_decodes_go_keyring_base64() -> None:
+    secret = "go-keyring-base64:Z2hwX2V4YW1wbGU="
+
+    assert _normalize_keyring_secret(secret) == "ghp_example"
+
+
+def test_normalize_keyring_secret_returns_raw_secret_for_unknown_format() -> None:
+    assert _normalize_keyring_secret("plain-token") == "plain-token"
+
+
 def test_describe_github_token_sources_repo_scoped_ignores_generic_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ISSUE_ORCH_GITHUB_TOKEN", "generic-token")
     monkeypatch.delenv("TIXMEUP_GITHUB_TOKEN", raising=False)
@@ -148,6 +181,73 @@ def test_describe_github_token_sources_repo_scoped_ignores_generic_env(monkeypat
     )
 
     assert sources == []
+
+
+def test_describe_github_token_sources_includes_gh_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ISSUE_ORCH_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._read_gh_cli_token",
+        lambda *, host: "gh-hosts-token",
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._read_keyring_token",
+        lambda *, service=..., username=...: None,
+    )
+
+    sources = describe_github_token_sources()
+
+    assert sources == ["GitHub CLI auth (github.com): gh-h...oken"]
+
+
+def test_read_gh_cli_token_from_hosts_oauth_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "gh-config"
+    config_dir.mkdir()
+    hosts_path = config_dir / "hosts.yml"
+    hosts_path.write_text(
+        "github.com:\n"
+        "  oauth_token: gh-hosts-token\n"
+        "  user: octocat\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GH_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    token = _read_gh_cli_token(host="github.com")
+
+    assert token == "gh-hosts-token"
+
+
+def test_read_gh_cli_token_from_hosts_keychain_account(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "gh-config"
+    config_dir.mkdir()
+    hosts_path = config_dir / "hosts.yml"
+    hosts_path.write_text(
+        "github.com:\n"
+        "  user: octocat\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GH_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._read_keyring_token",
+        lambda *, service=..., username=...: "gh-keychain-token"
+        if service == "gh:github.com" and username == "octocat"
+        else None,
+    )
+
+    token = _read_gh_cli_token(host="github.com")
+
+    assert token == "gh-keychain-token"
 
 
 def test_validate_github_token_checks_repo_access(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-pr validate-quick validate-full verify-hooks-all _validate-impl _validate-pr-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-pr validate-quick validate-full verify-hooks-all _validate-impl _validate-pr-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -27,6 +27,8 @@ help:
 	@echo "  test-integration-core   Run fast integration slice used by local validate"
 	@echo "  test-integration-agent  Run real agent-backed integration slice"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
+	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
+	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude-dev    Test dev agent: Claude execution -> PR created"
@@ -354,6 +356,12 @@ ifdef NOFAST
 else
 	$(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
+
+test-e2e-heavy:
+	$(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+
+test-e2e-onboarding-live:
+	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Real Claude tests - layered for incremental debugging
 # test-real-claude-dev: dev agent only (faster, good for basic sanity)

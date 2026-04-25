@@ -440,7 +440,7 @@ class E2ESettings(BaseModel):
             "config_attr": "e2e.issue_agent_label",
             "yaml_path": "e2e.issue_agent_label",
             "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
-            "doctor_check_condition": "e2e.auto_create_issues",
+            "doctor_check_condition": "e2e.enabled",
             "doctor_severity": DOCTOR_SEVERITY_WARNING,
         },
     )

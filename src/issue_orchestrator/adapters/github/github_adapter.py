@@ -82,7 +82,10 @@ class GitHubAdapter:
             except GitRepoError as exc:
                 raise GitHubHttpError(f"Failed to resolve repo: {exc}") from exc
         auth_kwargs = config.github_auth_kwargs() if config else {}
-        token = resolve_github_token(**auth_kwargs)
+        token = resolve_github_token(
+            **auth_kwargs,
+            api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+        )
         if http_client is not None:
             self._client = http_client
         else:

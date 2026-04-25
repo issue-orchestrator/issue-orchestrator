@@ -2,7 +2,7 @@
 
 How the orchestrator resolves GitHub tokens at runtime. For creating a token and required scopes, see [GitHub Permissions (User Guide)](../user/github-permissions.md).
 
-The system does not use the GitHub CLI for token discovery. There are two supported patterns:
+The system does not shell out to the GitHub CLI for token discovery, but it does read GitHub CLI auth from `hosts.yml`. There are two supported patterns:
 
 1) Global auth sources
 2) Repo-scoped auth sources declared in config
@@ -11,7 +11,7 @@ The system does not use the GitHub CLI for token discovery. There are two suppor
 
 Set a token in your shell. The global fallback order is:
 
-`ISSUE_ORCH_GITHUB_TOKEN` > `GITHUB_TOKEN` > `GH_TOKEN` > the default keyring entry created by `issue-orchestrator auth store`
+`ISSUE_ORCH_GITHUB_TOKEN` > `GITHUB_TOKEN` > `GH_TOKEN` > GitHub CLI `hosts.yml` > the default keyring entry created by `issue-orchestrator auth store`
 
 ```bash
 export ISSUE_ORCH_GITHUB_TOKEN="ghp_..."

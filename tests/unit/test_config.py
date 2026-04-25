@@ -64,6 +64,52 @@ ui:
         assert config.web_port == 0
         assert config.control_api_port == 0
 
+    def test_config_load_codex_agent_without_model_uses_provider_default(self, tmp_path):
+        """Codex agents without a model should not inherit Claude's sonnet fallback."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:dev:
+    prompt: {prompt}
+    provider: codex
+    ai_system: codex
+worktrees:
+  base: {worktree_base}
+""")
+
+        config = Config.load(config_file)
+
+        assert config.agents["agent:dev"].provider == "codex"
+        assert config.agents["agent:dev"].model == ""
+
+    def test_config_load_default_agent_codex_without_model_uses_provider_default(self, tmp_path):
+        """Default-agent Codex configs should also preserve the provider CLI default model."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+default_agent:
+  provider: codex
+
+agents:
+  agent:dev:
+    prompt: {prompt}
+    ai_system: codex
+worktrees:
+  base: {worktree_base}
+""")
+
+        config = Config.load(config_file)
+
+        assert config.agents["agent:dev"].provider == "codex"
+        assert config.agents["agent:dev"].model == ""
+
     def test_config_load_from_yaml(self, mock_config_yaml, tmp_path):
         """Test loading config from YAML file."""
         # Create temporary prompt files

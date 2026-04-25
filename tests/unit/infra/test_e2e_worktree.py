@@ -196,6 +196,7 @@ class TestEnsureE2EWorktree:
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()
         (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
+        (worktree_path / "uv.lock").write_text("version = 1\n")
 
         ensure_e2e_worktree(repo_root)
 
@@ -206,6 +207,52 @@ class TestEnsureE2EWorktree:
         assert "sync" in cmd
         assert "--frozen" in cmd
         assert "--all-extras" in cmd
+
+    @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
+    def test_uv_sync_without_lock_omits_frozen(self, mock_run, repo_root: Path):
+        """Repos without uv.lock should still sync instead of failing fast."""
+        mock_run.side_effect = _make_mock_run()
+        worktree_path = get_e2e_worktree_path(repo_root)
+        worktree_path.mkdir()
+        (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
+
+        ensure_e2e_worktree(repo_root)
+
+        uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
+        assert len(uv_calls) == 1
+        cmd = uv_calls[0][0][0]
+        assert cmd == ["uv", "sync", "--all-extras"]
+
+    @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
+    def test_uv_sync_installs_pytest_when_missing(self, mock_run, repo_root: Path):
+        """Repos without pytest in their synced env should get a fallback install."""
+        worktree_path = get_e2e_worktree_path(repo_root)
+        worktree_path.mkdir()
+        (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
+
+        def side_effect(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"] and "HEAD" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{FAKE_SHA}\n", stderr="")
+            if cmd[:2] == ["git", "checkout"] or cmd[:2] == ["git", "clean"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            if cmd[:2] == ["uv", "sync"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            if cmd[0].endswith("/.venv/bin/python"):
+                return subprocess.CompletedProcess(cmd, 1, stderr="No module named pytest")
+            if cmd[:3] == ["uv", "pip", "install"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        mock_run.side_effect = side_effect
+
+        ensure_e2e_worktree(repo_root)
+
+        install_calls = [
+            c for c in mock_run.call_args_list if c[0][0][:3] == ["uv", "pip", "install"]
+        ]
+        assert len(install_calls) == 1
+        cmd = install_calls[0][0][0]
+        assert "pytest>=8.0" in cmd
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_no_pyproject_creates_minimal_pytest_venv(self, mock_run, tmp_path: Path):

@@ -22,6 +22,7 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
         configured_env=auth_kwargs.get("configured_env"),
         configured_keyring_service=auth_kwargs.get("configured_keyring_service"),
         configured_keyring_username=auth_kwargs.get("configured_keyring_username"),
+        api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
     )
 
     if token_sources:
