@@ -85,6 +85,7 @@ class TestModelDefaults:
 
     def test_advanced_defaults(self):
         m = AdvancedSettings()
+        assert m.session_interactions_enabled is False
         assert m.web_port == 0
         assert m.control_api_port == 0
         assert m.worktree_seed_ref is None
@@ -207,6 +208,7 @@ class TestFromConfig:
         cfg.max_rework_cycles = 3
         cfg.triage_review_agent = "agent:triage"
         cfg.triage_review_threshold = 5
+        cfg.session_interactions.enabled = True
         cfg.session_no_output_seconds = 60
         cfg.stale_escalation_ticks = 3
         cfg.session_output_retention_days = 21
@@ -279,6 +281,7 @@ class TestFromConfig:
         tabs = from_config(self._make_config())
         adv = tabs["advanced"]
         assert isinstance(adv, AdvancedSettings)
+        assert adv.session_interactions_enabled is True
         assert adv.session_no_output_seconds == 60
         assert adv.stale_escalation_ticks == 3
         assert adv.session_output_retention_days == 21
@@ -319,6 +322,7 @@ class TestApplyTo:
         cfg.milestone_order = ["M2"]
         cfg.review_enabled = True
         cfg.code_review_agent = "agent:rev"
+        cfg.session_interactions.enabled = True
 
         tabs = from_config(cfg)
         cfg2 = Config()
@@ -334,6 +338,7 @@ class TestApplyTo:
         assert cfg2.milestone_order == ["M2"]
         assert cfg2.review_enabled is True
         assert cfg2.code_review_agent == "agent:rev"
+        assert cfg2.session_interactions.enabled is True
 
     def test_round_trip_preserves_path_typed_values(self, tmp_path):
         """String settings forms should not erase Path-typed config values."""
@@ -524,6 +529,7 @@ class TestRestartFields:
 
     def test_restart_fields_present(self):
         fields = get_restart_fields()
+        assert "session_interactions_enabled" in fields
         assert "web_port" in fields
         assert "control_api_port" in fields
         assert "worktree_base" in fields

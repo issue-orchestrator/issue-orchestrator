@@ -5,7 +5,8 @@ based on configuration and entry points.
 """
 
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Mapping, Optional, TypedDict
 
 import pluggy
 
@@ -24,11 +25,21 @@ UI_MODE_PLUGINS = {
 }
 
 
-def _load_plugin_class(class_path: str):
+class _BuiltinPluginKwargs(TypedDict, total=False):
+    session_interactions_enabled: bool
+    worktree_base: Path | None
+
+
+def _load_plugin_class(
+    class_path: str,
+    *,
+    constructor_kwargs: Mapping[str, object] | None = None,
+):
     """Load a plugin class by its dotted path.
 
     Args:
         class_path: Path like "package.module:ClassName"
+        constructor_kwargs: Optional kwargs forwarded to the plugin constructor.
 
     Returns:
         Instantiated plugin object.
@@ -42,12 +53,14 @@ def _load_plugin_class(class_path: str):
 
     module = importlib.import_module(module_path)
     plugin_class = getattr(module, class_name)
-    return plugin_class()
+    return plugin_class(**dict(constructor_kwargs or {}))
 
 
 def create_plugin_manager(
     terminal_plugin: Optional[str] = None,
     ui_mode: str = "web",
+    session_interactions_enabled: bool = False,
+    worktree_base: Path | None = None,
     load_entry_points: bool = True,
 ) -> pluggy.PluginManager:
     """Create and configure a plugin manager.
@@ -81,7 +94,11 @@ def create_plugin_manager(
         class_path = plugin_ref
 
     try:
-        plugin = _load_plugin_class(class_path)
+        plugin_kwargs: _BuiltinPluginKwargs = {}
+        if plugin_ref in BUILTIN_PLUGINS:
+            plugin_kwargs["session_interactions_enabled"] = session_interactions_enabled
+            plugin_kwargs["worktree_base"] = worktree_base
+        plugin = _load_plugin_class(class_path, constructor_kwargs=plugin_kwargs)
         pm.register(plugin, name=f"terminal_{plugin_ref}")
         logger.info("Loaded terminal plugin: %s", plugin_ref)
     except Exception as e:
@@ -107,6 +124,8 @@ class PluginManager:
         self,
         terminal_plugin: Optional[str] = None,
         ui_mode: str = "web",
+        session_interactions_enabled: bool = False,
+        worktree_base: Path | None = None,
     ):
         """Initialize the plugin manager.
 
@@ -117,6 +136,8 @@ class PluginManager:
         self._pm = create_plugin_manager(
             terminal_plugin=terminal_plugin,
             ui_mode=ui_mode,
+            session_interactions_enabled=session_interactions_enabled,
+            worktree_base=worktree_base,
         )
 
     @property

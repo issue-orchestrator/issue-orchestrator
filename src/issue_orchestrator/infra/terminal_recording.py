@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from typing import Any, Iterator, Sequence
 
 TERMINAL_RECORDING_FILENAME = "terminal-recording.jsonl"
 TERMINAL_RECORDING_SCHEMA_VERSION = 1
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,7 @@ class MirroredTerminalRecordingWriter:
         *,
         additional_recording_paths: Sequence[Path] | None = None,
         mirror_path: Path | None = None,
+        on_output: Callable[[bytes], None] | None = None,
         initial_rows: int | None = None,
         initial_cols: int | None = None,
         clock: Callable[[], float] | None = None,
@@ -137,6 +140,7 @@ class MirroredTerminalRecordingWriter:
         effective_clock = time.monotonic if clock is None else clock
         self._clock = effective_clock
         self._started = effective_clock()
+        self._on_output = on_output
         recording_paths = [recording_path]
         for extra_path in additional_recording_paths or ():
             if extra_path not in recording_paths:
@@ -174,6 +178,11 @@ class MirroredTerminalRecordingWriter:
         if self._mirror is not None and text:
             self._mirror.write(text)
             self._mirror.flush()
+        if self._on_output is not None:
+            try:
+                self._on_output(raw)
+            except Exception:  # noqa: BLE001
+                logger.exception("Terminal output callback failed")
         return written
 
     def flush(self) -> None:

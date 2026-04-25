@@ -23,6 +23,7 @@ class TestConfig:
         assert config.repo is None
         assert config.web_port == 0
         assert config.control_api_port == 0
+        assert config.session_interactions.enabled is False
 
     def test_github_auth_kwargs(self):
         """GitHub auth helper exposes the repo-scoped auth settings."""
@@ -811,6 +812,7 @@ labels:
         """Test that queue_refresh_seconds defaults to 600."""
         config = Config()
         assert config.queue_refresh_seconds == 600
+        assert config.session_interactions.enabled is False
         assert config.fetch_layer_enabled is True
         assert config.fetch_layer_network_sync_seconds == 60
         assert config.fetch_layer_full_scan_interval_seconds == 1800
@@ -846,6 +848,44 @@ labels:
         assert config.browser_session_ttl_seconds == 900
         assert config.browser_session_max == 32
         assert config.sse_token_ttl_seconds == 15
+
+    def test_session_interactions_enabled_from_execution_config(self, tmp_path):
+        """Execution config can enable runner-managed session interactions."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+execution:
+  session_interactions:
+    enabled: true
+worktrees:
+  base: {worktree_base}
+""")
+
+        config = Config.load(config_file)
+
+        assert config.session_interactions.enabled is True
+
+    def test_session_interactions_omitted_from_to_event_dict_when_disabled(self):
+        config = Config()
+
+        result = config.to_event_dict()
+
+        assert "session_interactions" not in result["execution"]
+
+    def test_session_interactions_included_in_to_event_dict_when_enabled(self):
+        config = Config()
+        config.session_interactions.enabled = True
+
+        result = config.to_event_dict()
+
+        assert result["execution"]["session_interactions"] == {"enabled": True}
 
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""

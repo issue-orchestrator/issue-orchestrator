@@ -173,6 +173,13 @@ class IsolationConfig:
 
 
 @dataclass
+class SessionInteractionsConfig:
+    """Guardrails for orchestrator-driven session interactions."""
+
+    enabled: bool = False
+
+
+@dataclass
 class FilteringConfig:
     """Issue filtering configuration.
 

@@ -117,6 +117,7 @@ _Auto-generated from settings schema._
 | `provider_resilience.circuit_breaker.cooldown_seconds` | integer | `1800` | Cooldown window before retrying provider after outage | `600`, `1800`, `3600` | Longer cooldowns reduce repeated failures during incidents. |
 | `provider_resilience.circuit_breaker.max_cooldowns` | integer | `6` | Maximum cooldown escalation steps | `3`, `6`, `8` | Limits how long we will keep extending cooldowns. |
 | `provider_resilience.circuit_breaker.label` | string | `blocked:provider-unavailable` | Label applied when provider is unavailable | `blocked:provider-unavailable` | Use a label that is visible and searchable in your workflow. |
+| `execution.session_interactions.enabled` | boolean | `False` | Allow the orchestrator to auto-respond to trusted prompts in running agent sessions | `true`, `false` | Off by default. Enable only if you want runner-managed prompt responses such as Claude's initial trust confirmation. |
 | `observability.session_no_output_seconds` | integer | `120` | Emit event after this much idle time | `60`, `120`, `300` | Lower values surface silent sessions sooner. |
 | `observability.stale_escalation_ticks` | integer | `0` | Escalate after K consecutive stale ticks (0 = disabled) | `0`, `3`, `5` | Set to 0 to disable automatic escalation. |
 | `observability.session_output_retention_days` | integer | `7` | Retention window in days for session run artifacts | `0`, `7`, `30` | Set to 0 to expire immediately; cleanup policy may still defer deletion. |

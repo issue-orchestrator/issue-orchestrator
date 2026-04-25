@@ -32,6 +32,7 @@ from .config_models import (
     ProviderShortRetryConfig as ProviderShortRetryConfig,
     RetryConfig,
     SchedulingConfig,
+    SessionInteractionsConfig,
     SqliteBackupConfig,
     TimelineConfig,
     TriageConfig,
@@ -211,6 +212,9 @@ class Config:
     # Terminal adapter (optional - overrides ui_mode if set)
     # Can be "subprocess" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
+    session_interactions: SessionInteractionsConfig = field(
+        default_factory=SessionInteractionsConfig
+    )
 
     # Milestone sorting strategy - built-in: "milestone_number", "due_date", "pattern", "name"
     # Or provide a custom class path like "mymodule.MyStrategy"
@@ -465,7 +469,7 @@ class Config:
         Returns a serializable dict with the merged configuration
         (YAML + command line overrides) for debugging.
         """
-        return {
+        result = {
             "repo": {
                 "name": self.repo,
                 "root": str(self.repo_root),
@@ -707,6 +711,9 @@ class Config:
                 for label, cfg in self.agents.items()
             },
         }
+        if self.session_interactions.enabled:
+            result["execution"]["session_interactions"] = {"enabled": True}
+        return result
 
     def to_dict(self) -> dict:  # noqa: C901, PLR0912 - serialization method handles many config fields
         """Convert config to a dict suitable for YAML serialization.
@@ -787,6 +794,10 @@ class Config:
         }
         if self.terminal_adapter:
             execution_dict["terminal_adapter"] = self.terminal_adapter
+        if self.session_interactions.enabled:
+            execution_dict["session_interactions"] = {
+                "enabled": True,
+            }
         if self.isolation.mode != "standard":
             execution_dict["isolation"] = {"mode": self.isolation.mode}
         result["execution"] = execution_dict

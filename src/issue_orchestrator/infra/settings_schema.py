@@ -1029,6 +1029,19 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "provider_resilience.circuit_breaker.label",
         },
     )
+    session_interactions_enabled: bool = Field(
+        False,
+        title="Enable Session Interaction Rules",
+        description="Allow the orchestrator to auto-respond to trusted prompts in running agent sessions",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Off by default. Enable only if you want runner-managed prompt responses such as Claude's initial trust confirmation.",
+            "section": "Interactive Sessions",
+            "restart_required": True,
+            "config_attr": "session_interactions.enabled",
+            "yaml_path": "execution.session_interactions.enabled",
+        },
+    )
 
     session_no_output_seconds: int = Field(
         120,

@@ -169,6 +169,22 @@ def test_mirrored_terminal_recording_writer_can_mirror_to_additional_recordings(
     assert primary_events == secondary_events
 
 
+def test_mirrored_terminal_recording_writer_invokes_output_callback(tmp_path) -> None:
+    recording_path = tmp_path / "terminal-recording.jsonl"
+    seen: list[bytes] = []
+
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        on_output=seen.append,
+        initial_rows=24,
+        initial_cols=80,
+    )
+    writer.write("hello\n")
+    writer.close()
+
+    assert seen == [b"hello\n"]
+
+
 class ManualClock:
     def __init__(self, now: float) -> None:
         self._now = now
