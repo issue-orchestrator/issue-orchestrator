@@ -304,13 +304,16 @@ def _append_open_path(
     label: str,
     path: str,
     *,
-    group: str | None = None,
+    group: str,
 ) -> None:
     if not path:
         return
-    payload: dict[str, Any] = {"type": "open_path", "label": label, "path": path}
-    if group:
-        payload["group"] = _validated_session_action_group(group)
+    payload: dict[str, Any] = {
+        "type": "open_path",
+        "label": label,
+        "path": path,
+        "group": _validated_session_action_group(group),
+    }
     actions.append(payload)
 
 
@@ -320,7 +323,7 @@ def _append_run_scoped_action(
     *,
     action_type: str,
     label: str,
-    group: str | None = None,
+    group: str,
 ) -> None:
     if not ctx.run_dir:
         return
@@ -329,9 +332,8 @@ def _append_run_scoped_action(
         "label": label,
         "issue_number": ctx.issue_number,
         "run_dir": ctx.run_dir,
+        "group": _validated_session_action_group(group),
     }
-    if group:
-        payload["group"] = _validated_session_action_group(group)
     actions.append(payload)
 
 
