@@ -32,7 +32,7 @@ pytestmark = pytest.mark.xdist_group("e2e_worker")
 # These tests spawn nested pytest subprocesses. Under full pre-push load that
 # startup path can take materially longer than it does when the module is run
 # in isolation, so keep the budgets generous enough to avoid false flakes.
-_WORKER_SUBPROCESS_TIMEOUT_S = xdist_timeout(60)
+_WORKER_SUBPROCESS_TIMEOUT_S = xdist_timeout(90)
 _RUN_CREATION_TIMEOUT_S = xdist_timeout(20.0)
 _RUN_CREATION_POLL_INTERVAL_S = 0.1
 

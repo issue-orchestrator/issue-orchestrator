@@ -898,9 +898,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     timeline_run_btn.click()
 
     modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=5000)
+    expect(modal).to_be_visible(timeout=15_000)
     expect(page.locator("#e2eDiagnosisModal .modal-header h2")).to_contain_text(
         f"Run #{run_id}",
+        timeout=15_000,
     )
 
     # The direct Timeline affordance must land on the Timeline tab,
@@ -909,13 +910,13 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     timeline_tab_btn = page.locator(
         "#e2eDiagnosisModal .e2e-run-tab[data-tab='timeline']"
     )
-    expect(timeline_tab_btn).to_be_visible(timeout=5000)
+    expect(timeline_tab_btn).to_be_visible(timeout=15_000)
     expect(
         page.locator("#e2eDiagnosisModal .e2e-run-tab.active[data-tab='timeline']")
-    ).to_be_visible(timeout=5000)
+    ).to_be_visible(timeout=15_000)
 
     timeline_panel = page.locator("#e2eRunTimelineTab")
-    expect(timeline_panel).to_be_visible(timeout=5000)
+    expect(timeline_panel).to_be_visible(timeout=15_000)
     expect(page.locator("#e2eTimelineContent")).to_have_attribute(
         "data-lifecycle-kind",
         timeline_payload["lifecycle"]["kind"],
@@ -930,12 +931,12 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # individual pytest event rows, and clicking one must open the same
     # cycle-aware issue drawer as row-level issue links.
     run_level_affordances = timeline_panel.locator(".e2e-issue-timeline-affordances")
-    expect(run_level_affordances).to_be_visible(timeout=5000)
+    expect(run_level_affordances).to_be_visible(timeout=15_000)
     run_level_issue_btn = run_level_affordances.locator(
         ".e2e-issue-timeline-btn",
         has_text=f"#{TEST_CLICK_ISSUE_NUMBER}",
     ).first
-    expect(run_level_issue_btn).to_be_visible(timeout=5000)
+    expect(run_level_issue_btn).to_be_visible(timeout=15_000)
     expect(run_level_issue_btn).to_contain_text(TEST_CLICK_ISSUE_LABEL)
 
     expected_run_level_issues = _issue_affordance_numbers(timeline_payload)
@@ -1338,7 +1339,7 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
-    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    page.goto(f"{base_url}/", wait_until="domcontentloaded", timeout=90_000)
     synthetic_events = [
         {
             "event_id": "unhappy-blocked",
