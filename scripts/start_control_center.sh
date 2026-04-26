@@ -2,9 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_PATH="${ROOT_DIR}/.venv"
+VENV_PATH="${CC_VENV_PATH:-${ROOT_DIR}/.venv}"
 PYTHON_BIN="${PYTHON:-python3}"
 PORT="${CC_PORT:-19080}"
+
+# Environment overrides:
+#   CC_PORT: Control Center port (default: 19080)
+#   CC_VENV_PATH: Python environment to create, sync, and launch (default: <repo>/.venv)
 
 # ---------------------------------------------------------------------------
 # Stop all running orchestrator processes (control centers, agents, validators)
@@ -162,10 +166,121 @@ create_cc_snapshot() {
 }
 
 ensure_venv() {
+  echo "=== Ensuring Python environment ==="
+  echo "  Venv: ${VENV_PATH}"
   if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
     echo "Creating venv at ${VENV_PATH}"
     "${PYTHON_BIN}" -m venv "${VENV_PATH}"
   fi
+}
+
+deps_marker_path() {
+  printf '%s/.deps-synced\n' "${VENV_PATH}"
+}
+
+deps_fingerprint_path() {
+  printf '%s/.deps-fingerprint\n' "${VENV_PATH}"
+}
+
+dependency_fingerprint() {
+  "${PYTHON_BIN}" - "${ROOT_DIR}" "$(install_mode)" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+install_mode = sys.argv[2]
+digest = hashlib.sha256()
+digest.update(b"install-mode")
+digest.update(b"\0")
+digest.update(install_mode.encode())
+digest.update(b"\0")
+for name in ("pyproject.toml", "uv.lock"):
+    path = root / name
+    if not path.exists():
+        continue
+    digest.update(name.encode())
+    digest.update(b"\0")
+    digest.update(path.read_bytes())
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+}
+
+deps_fingerprint_changed() {
+  local fingerprint_file
+  fingerprint_file="$(deps_fingerprint_path)"
+
+  if [[ ! -f "${fingerprint_file}" ]]; then
+    return 0
+  fi
+
+  local current_fingerprint
+  current_fingerprint="$(dependency_fingerprint)"
+  local installed_fingerprint
+  installed_fingerprint="$(cat "${fingerprint_file}")"
+
+  [[ "${current_fingerprint}" != "${installed_fingerprint}" ]]
+}
+
+record_deps_synced() {
+  local fingerprint_file
+  local tmp_file
+  fingerprint_file="$(deps_fingerprint_path)"
+  tmp_file="${fingerprint_file}.tmp.$$"
+
+  dependency_fingerprint > "${tmp_file}"
+  mv "${tmp_file}" "${fingerprint_file}"
+  touch "$(deps_marker_path)"
+}
+
+uv_bin_path() {
+  if command -v uv >/dev/null 2>&1; then
+    command -v uv
+    return 0
+  fi
+  if [[ -x "${HOME}/.local/bin/uv" ]]; then
+    printf '%s\n' "${HOME}/.local/bin/uv"
+    return 0
+  fi
+  return 1
+}
+
+ensure_pip() {
+  if "${VENV_PATH}/bin/python" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+  "${VENV_PATH}/bin/python" -m ensurepip --upgrade
+}
+
+install_mode() {
+  local uv_bin
+  uv_bin="$(uv_bin_path || true)"
+
+  if [[ -n "${uv_bin}" && "${VENV_PATH}" == "${ROOT_DIR}/.venv" && -f "${ROOT_DIR}/uv.lock" ]]; then
+    printf 'uv-frozen-extra-dev\n'
+  else
+    printf 'pip-editable-dev\n'
+  fi
+}
+
+sync_deps() {
+  local uv_bin
+  local mode
+  uv_bin="$(uv_bin_path || true)"
+  mode="$(install_mode)"
+
+  if [[ "${mode}" == "uv-frozen-extra-dev" ]]; then
+    echo "Syncing Python dependencies from ${ROOT_DIR} with uv..."
+    (cd "${ROOT_DIR}" && "${uv_bin}" sync --frozen --extra dev)
+  else
+    echo "Syncing Python dependencies from ${ROOT_DIR} with pip..."
+    ensure_pip
+    (cd "${ROOT_DIR}" && "${VENV_PATH}/bin/python" -m pip install -e ".[dev]")
+  fi
+  record_deps_synced
 }
 
 ensure_deps() {
@@ -174,12 +289,14 @@ ensure_deps() {
   installed_path=$("${VENV_PATH}/bin/python" -c "import issue_orchestrator; print(issue_orchestrator.__file__)" 2>/dev/null || echo "")
 
   if [[ -z "${installed_path}" ]]; then
-    echo "Package not installed, installing from ${ROOT_DIR}..."
-    "${VENV_PATH}/bin/python" -m pip install -e ".[dev]"
+    echo "Package not installed."
+    sync_deps
   elif [[ "${installed_path}" != "${ROOT_DIR}"/* ]]; then
     echo "Stale install detected: ${installed_path}"
-    echo "Reinstalling from ${ROOT_DIR}..."
-    "${VENV_PATH}/bin/python" -m pip install -e ".[dev]"
+    sync_deps
+  elif deps_fingerprint_changed; then
+    echo "Dependency metadata changed since the last install."
+    sync_deps
   fi
 }
 
@@ -282,39 +399,44 @@ is_linked_worktree() {
   [[ -n "${git_dir}" && -n "${git_common_dir}" && "${git_dir}" != "${git_common_dir}" ]]
 }
 
-# --- Main ---
-stop_all_orchestrators
+main() {
+  stop_all_orchestrators
 
-# Pull latest code only when running from the base repo on main/master.
-if is_linked_worktree; then
-  echo "=== Skipping git pull (linked worktree detected) ==="
-else
-  git_pull
+  # Pull latest code only when running from the base repo on main/master.
+  if is_linked_worktree; then
+    echo "=== Skipping git pull (linked worktree detected) ==="
+  else
+    git_pull
+  fi
+
+  ensure_venv
+  ensure_deps
+  create_cc_snapshot
+  ensure_port_free
+  show_startup_info
+
+  # Start control center entrypoint directly for deterministic startup.
+  # IO_DEV disables static file caching so CSS/JS changes are visible immediately
+  export IO_DEV=1
+  export ISSUE_ORCHESTRATOR_CC_REPO_ROOT="${ROOT_DIR}"
+  # Prepend the frozen snapshot to PYTHONPATH. Python consults PYTHONPATH
+  # before site-packages, so every ``import issue_orchestrator`` — in the
+  # CC and in every subprocess that inherits this env (``coding-done``,
+  # agent tmux sessions, pre-push hooks, validate runners) — resolves to
+  # the frozen copy rather than the editable install's mutable target.
+  # This is the behaviour that makes the CC immune to base-repo branch
+  # drift mid-run (see issue #5950).
+  export PYTHONPATH="${SNAPSHOT_PYTHONPATH_ENTRY}${PYTHONPATH:+:${PYTHONPATH}}"
+  # ``PYTHONPATH`` does the actual import-path work; ``ISSUE_ORCHESTRATOR_CC_SNAPSHOT``
+  # is the observability companion — the CC logs it on startup and the
+  # value is inspected by operators / tests to confirm the freeze landed.
+  # Kept separate because a future change to ``PYTHONPATH`` composition
+  # (extra prefixes, cache dirs) shouldn't pollute the observability
+  # contract.
+  export ISSUE_ORCHESTRATOR_CC_SNAPSHOT="${SNAPSHOT_PYTHONPATH_ENTRY}"
+  exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
-
-ensure_venv
-ensure_deps
-create_cc_snapshot
-ensure_port_free
-show_startup_info
-
-# Start control center entrypoint directly for deterministic startup.
-# IO_DEV disables static file caching so CSS/JS changes are visible immediately
-export IO_DEV=1
-export ISSUE_ORCHESTRATOR_CC_REPO_ROOT="${ROOT_DIR}"
-# Prepend the frozen snapshot to PYTHONPATH. Python consults PYTHONPATH
-# before site-packages, so every ``import issue_orchestrator`` — in the
-# CC and in every subprocess that inherits this env (``coding-done``,
-# agent tmux sessions, pre-push hooks, validate runners) — resolves to
-# the frozen copy rather than the editable install's mutable target.
-# This is the behaviour that makes the CC immune to base-repo branch
-# drift mid-run (see issue #5950).
-export PYTHONPATH="${SNAPSHOT_PYTHONPATH_ENTRY}${PYTHONPATH:+:${PYTHONPATH}}"
-# ``PYTHONPATH`` does the actual import-path work; ``ISSUE_ORCHESTRATOR_CC_SNAPSHOT``
-# is the observability companion — the CC logs it on startup and the
-# value is inspected by operators / tests to confirm the freeze landed.
-# Kept separate because a future change to ``PYTHONPATH`` composition
-# (extra prefixes, cache dirs) shouldn't pollute the observability
-# contract.
-export ISSUE_ORCHESTRATOR_CC_SNAPSHOT="${SNAPSHOT_PYTHONPATH_ENTRY}"
-exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"
