@@ -2140,6 +2140,13 @@ class TestCompletionProcessorPublishGate:
         (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
         processor.session_output.start_run(worktree, "issue-123", issue_number=123)
         review_exchange = processor._review_exchange  # noqa: SLF001
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="approved",
+            )
+        )
 
         with patch.object(
             review_exchange,
@@ -2154,11 +2161,7 @@ class TestCompletionProcessorPublishGate:
                 False,
                 False,
             ),
-        ), patch.object(
-            review_exchange,
-            "run_review_exchange_if_needed",
-            return_value=("via-local-loop", None, False, True),
-        ) as mock_run_review_exchange:
+        ):
             result = processor.process(
                 worktree,
                 issue_number=123,
@@ -2169,10 +2172,15 @@ class TestCompletionProcessorPublishGate:
         assert result.success
         assert result.review_exchange_deferred is True
         assert result.validation_failed_rerouted is True
+        assert result.actions_taken == [
+            "Validation failed; returned to coder rework via review exchange",
+            "Review exchange passed",
+        ]
+        assert result.errors == []
         mock_git_adapter.push.assert_not_called()
         mock_label_adapter.add_label.assert_not_called()
         mock_pr_adapter.add_comment.assert_not_called()
-        validation_record_path = mock_run_review_exchange.call_args.kwargs[
+        validation_record_path = processor._run_review_exchange_loop.call_args.kwargs[
             "initial_validation_record_path"
         ]
         assert validation_record_path.exists()
@@ -2239,19 +2247,13 @@ class TestCompletionProcessorPublishGate:
         (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
         processor.session_output.start_run(worktree, "issue-123", issue_number=123)
         review_exchange = processor._review_exchange  # noqa: SLF001
-
-        def _halted_review_exchange(**kwargs):
-            kwargs["errors"].append("review_exchange: stopped (max_no_progress)")
-            return (
-                "via-local-loop",
-                ReviewExchangeOutcome(
-                    status="stopped",
-                    rounds=1,
-                    reason="max_no_progress",
-                ),
-                True,
-                False,
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="stopped",
+                rounds=1,
+                reason="max_no_progress",
             )
+        )
 
         with patch.object(
             review_exchange,
@@ -2266,10 +2268,6 @@ class TestCompletionProcessorPublishGate:
                 False,
                 False,
             ),
-        ), patch.object(
-            review_exchange,
-            "run_review_exchange_if_needed",
-            side_effect=_halted_review_exchange,
         ):
             result = processor.process(
                 worktree,
@@ -2282,9 +2280,41 @@ class TestCompletionProcessorPublishGate:
         assert result.review_exchange_halted is True
         assert result.failure_kind is None
         assert result.errors == ["review_exchange: stopped (max_no_progress)"]
+        assert result.actions_taken == []
         mock_git_adapter.push.assert_not_called()
         mock_label_adapter.add_label.assert_not_called()
         mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_reroute_pre_publish_validation_failure_requires_session_name(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+    ):
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            session_output=FileSystemSessionOutput(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+
+        result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
+            worktree=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name=None,
+            agent_label="agent:coder",
+            record=record,
+        )
+
+        assert result is None
 
 
 def test_cleanup_failure_posts_diagnostic_comment(

@@ -922,8 +922,6 @@ class CompletionProcessor:
             session_name=session_name,
             agent_label=agent_label,
             record=record,
-            actions_taken=actions_taken,
-            errors=errors,
         )
         if rerouted is not None:
             return rerouted
@@ -945,8 +943,6 @@ class CompletionProcessor:
         session_name: str | None,
         agent_label: str | None,
         record: CompletionRecord,
-        actions_taken: list[str],
-        errors: list[str],
     ) -> ProcessingResult | None:
         if session_name is None or agent_label is None:
             return None
@@ -979,8 +975,10 @@ class CompletionProcessor:
             run_review_exchange_loop=self._run_review_exchange_loop,
         )
 
+        # The review-exchange helper enforces the configured max_rounds and
+        # max_no_progress bounds. If it returns ``exchange_halt=True`` here,
+        # this reroute must terminate loudly instead of re-entering forever.
         if exchange_halt:
-            errors.extend(reroute_errors)
             return ProcessingResult(
                 success=False,
                 message=(
@@ -988,20 +986,23 @@ class CompletionProcessor:
                     "review exchange halted"
                 ),
                 errors=reroute_errors,
+                actions_taken=reroute_actions,
                 review_exchange_halted=True,
             )
 
         if deferred or (exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result):
-            actions_taken.append(
-                "Validation failed; returned to coder rework via review exchange"
-            )
-            actions_taken.extend(reroute_actions)
+            resumed_actions = [
+                "Validation failed; returned to coder rework via review exchange",
+                *reroute_actions,
+            ]
             return ProcessingResult(
                 success=True,
                 message=(
                     "Validation failed after review approval; "
                     "review exchange resumed to rework the failure"
                 ),
+                actions_taken=resumed_actions,
+                errors=reroute_errors,
                 review_exchange_deferred=True,
                 validation_failed_rerouted=True,
             )
