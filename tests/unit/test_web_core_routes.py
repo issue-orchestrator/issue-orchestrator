@@ -68,6 +68,35 @@ class TestDashboardEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_dashboard_escapes_running_timeline_snapshot_summary(self):
+        """Timeline snapshot text should be HTML-escaped in server-rendered cards."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+
+        issue = create_issue(1, "Active Issue")
+        session = create_session(issue)
+        mock_orch.state.active_sessions = [session]
+        mock_orch.deps.timeline_reader.read.return_value.to_dict.return_value = {
+            "events": [
+                {
+                    "event": "session.started",
+                    "views": ["user"],
+                    "narrative": '<img src=x onerror="alert(1)">',
+                }
+            ]
+        }
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/")
+
+            assert response.status_code == 200
+            assert '&lt;img src=x onerror=&#34;alert(1)&#34;&gt;' in response.text
+            assert '<img src=x onerror="alert(1)">' not in response.text
+        finally:
+            set_orchestrator(None)
+
     def test_dashboard_with_queue_pagination(self):
         """Test dashboard queue pagination."""
         from issue_orchestrator.entrypoints import web

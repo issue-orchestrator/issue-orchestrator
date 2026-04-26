@@ -290,6 +290,11 @@ body.column-focus-mode .column-expanded {
     margin-top: 5px;
     font-size: 11px;
     color: var(--text);
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 .card-muted { color: var(--text-muted); }
 .card-wait {

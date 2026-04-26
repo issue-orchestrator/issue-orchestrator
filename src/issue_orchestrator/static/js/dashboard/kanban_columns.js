@@ -159,7 +159,7 @@ function renderCompactCardHtml(card) {
         : '';
     let detailLine = '';
     if (card.summary && !card.queue_wait_reason) {
-        detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
+        detailLine = `<div class="card-line card-muted">${escapeHtml(String(card.summary))}</div>`;
     }
     const orchLabels = card.orchestrator_labels || [];
     const orchPills = orchLabels.map(l => `<span class="badge badge-orch">${l}</span>`).join('');

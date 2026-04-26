@@ -20,6 +20,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import (
+    _attach_running_timeline_snapshots,
     _normalize_status_reason,
     build_dashboard_view_model,
 )
@@ -146,6 +147,31 @@ def test_running_flow_card_uses_latest_timeline_snapshot():
     assert view_model.active_items[0]["summary"] == "Working on running timeline snapshot"
     running_column = next(column for column in view_model.flow_columns if column["id"] == "running")
     assert running_column["items"][0]["summary"] == "Working on running timeline snapshot"
+
+
+def test_running_timeline_snapshot_reads_each_issue_once_when_cards_repeat():
+    timeline_reader = MagicMock()
+    timeline_reader.read.return_value.to_dict.return_value = {
+        "events": [
+            {
+                "event": "session.started",
+                "views": ["user"],
+                "narrative": "Working on running timeline snapshot",
+            }
+        ]
+    }
+    orchestrator = _OrchestratorStub(state=OrchestratorState(startup_status="complete"), config=_make_config())
+    orchestrator.deps = type("_Deps", (), {"timeline_reader": timeline_reader})()
+    active_items = [
+        {"issue_number": 409, "summary": ""},
+        {"issue_number": 409, "summary": ""},
+    ]
+
+    _attach_running_timeline_snapshots(orchestrator, active_items)
+
+    assert active_items[0]["summary"] == "Working on running timeline snapshot"
+    assert active_items[1]["summary"] == "Working on running timeline snapshot"
+    timeline_reader.read.assert_called_once_with(409, limit=40)
 
 
 def test_active_item_prefers_canonical_issue_title_over_rework_title():

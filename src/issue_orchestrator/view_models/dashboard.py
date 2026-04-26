@@ -534,15 +534,23 @@ def _attach_running_timeline_snapshots(orchestrator: Any, active_items: list[dic
     if reader is None:
         return
 
+    snapshot_by_issue: dict[int, str | None] = {}
     for item in active_items:
         issue_number = item.get("issue_number")
         if not isinstance(issue_number, int):
             continue
+        if issue_number in snapshot_by_issue:
+            snapshot = snapshot_by_issue[issue_number]
+            if snapshot:
+                item["summary"] = snapshot
+            continue
         try:
-            stream = reader.read(issue_number, limit=200)
+            stream = reader.read(issue_number, limit=40)
         except RuntimeError:
+            snapshot_by_issue[issue_number] = None
             continue
         snapshot = _timeline_snapshot_text(stream.to_dict().get("events", []))
+        snapshot_by_issue[issue_number] = snapshot
         if snapshot:
             item["summary"] = snapshot
 
