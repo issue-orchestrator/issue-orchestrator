@@ -30,15 +30,14 @@ async def settings_page(orchestrator: WebOrchestratorDependency) -> HTMLResponse
     schemas = get_settings_json_schema()
     values_dump = {k: v.model_dump() for k, v in tab_values.items()}
 
-    # Serialize for JavaScript (Jinja2 env has no tojson filter)
     tabs_for_js = [{"key": t["key"], "label": t["label"]} for t in TAB_DEFINITIONS]
 
     html = template.render(
         tabs=TAB_DEFINITIONS,
         schemas=schemas,
         values=values_dump,
-        tabs_json=json.dumps(tabs_for_js),
-        schemas_json=json.dumps(schemas),
+        tabs_for_js=tabs_for_js,
+        schemas_for_js=schemas,
     )
     return HTMLResponse(content=html)
 

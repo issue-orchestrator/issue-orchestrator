@@ -628,6 +628,8 @@ def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     assert 'id="cancelSettingsBtn"' in tmpl
     assert 'onclick="cancelSettings()"' in tmpl
     assert "window.embeddedNav.buildHref('/', window.location.search)" in tmpl
+    assert "{{ tabs_for_js | tojson }}" in tmpl
+    assert "{{ schemas_for_js | tojson }}" in tmpl
     # Old ad-hoc helpers / literals must be gone.
     assert "settingsIsEmbedded" not in tmpl
     assert "'/?embedded=1'" not in tmpl
@@ -1078,6 +1080,18 @@ def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:
     assert "card-detail-chevron" not in dashboard
     assert ".card-timeline-btn" in css
     assert ".card-detail-chevron" not in css
+
+
+def test_server_rendered_issue_cards_render_summary_once() -> None:
+    """Server-rendered cards should match the client renderer's summary hierarchy."""
+    dashboard = _read(DASHBOARD_TEMPLATE)
+    web_templates = _read(ROOT / "src" / "issue_orchestrator" / "entrypoints" / "web_templates.py")
+    js = _read(DASHBOARD_JS)
+    assert "{% elif card.summary %}" not in dashboard
+    assert '{% if card.queue_wait_reason %}' in dashboard
+    assert '<div class="card-line card-muted">{{ card.summary }}</div>' in dashboard
+    assert 'select_autoescape(["html"])' in web_templates
+    assert 'escapeHtml(String(card.summary))' in js
 
 
 def test_e2e_timeline_view_switcher_refetches() -> None:

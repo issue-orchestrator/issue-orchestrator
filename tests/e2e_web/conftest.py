@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime, timedelta
 import socket
 import time
 from threading import Thread
@@ -13,7 +14,9 @@ import pytest
 import uvicorn
 from playwright.sync_api import Page
 
-from issue_orchestrator.domain.models import Issue
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.models import AgentConfig, Issue, Session
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
 import issue_orchestrator.entrypoints.web as web_module
@@ -53,6 +56,34 @@ class FlowWebMockOrchestrator(MockOrchestratorForWeb):
             labels=labels or ["agent:web"],
         )
         self.state.cached_queue_issues.append(issue)
+
+    def add_active_issue(
+        self,
+        issue_number: int,
+        title: str,
+        *,
+        repo_root: Path,
+        labels: list[str] | None = None,
+    ) -> None:
+        issue = Issue(
+            number=issue_number,
+            title=title,
+            labels=labels or ["agent:web", "in-progress"],
+        )
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=AgentConfig(
+                prompt_path=Path("/tmp/prompt.txt"),
+                model="sonnet",
+                timeout_minutes=45,
+            ),
+            terminal_id=f"issue-{issue_number}",
+            worktree_path=repo_root / "worktrees" / f"issue-{issue_number}",
+            branch_name=f"feature/issue-{issue_number}",
+            started_at=datetime.now() - timedelta(minutes=7),
+        )
+        self.state.active_sessions.append(session)
 
 
 class UvicornTestServer:
@@ -167,11 +198,49 @@ def _seed_issue_408_timeline(store: SqliteTimelineStore, repo_root: Path) -> Non
         store.append(408, record)
 
 
+def _seed_issue_409_timeline(store: SqliteTimelineStore, repo_root: Path) -> None:
+    """Populate the running issue with an in-flight coding snapshot."""
+    run_dir = repo_root / ".issue-orchestrator" / "sessions" / "flow-run-2"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "terminal-recording.jsonl").write_text(
+        '{"event_type":"resize","offset_ms":0,"rows":24,"cols":80}\n',
+        encoding="utf-8",
+    )
+    base = {
+        "issue_number": 409,
+        "timeline_schema_version": 4,
+        "logical_run": 1,
+        "logical_cycle": 1,
+        "views": ["user", "ops", "debug"],
+        "run_id": "flow-run-2",
+        "run_dir": str(run_dir),
+    }
+    store.append(
+        409,
+        TimelineRecord(
+            event_id="409-session-started",
+            timestamp="2026-01-01T12:20:00Z",
+            event="session.started",
+            source_event="session.started",
+            data={
+                **base,
+                "logical_phase": "coding",
+                "event_intent": "coding",
+                "agent": "agent:web",
+                "task": "coding",
+                "narrative": "Working on running timeline snapshot",
+                "summary": "Restoring the running issue timeline snapshot on the dashboard",
+            },
+        ),
+    )
+
+
 def _configure_flow_deps(orchestrator: FlowWebMockOrchestrator, repo_root: Path) -> None:
     state_dir = repo_root / ".issue-orchestrator" / "state"
     state_dir.mkdir(parents=True)
     store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
     _seed_issue_408_timeline(store, repo_root)
+    _seed_issue_409_timeline(store, repo_root)
 
     publish_recovery = MagicMock(spec=["can_retry_publish"])
     publish_recovery.can_retry_publish.return_value = False
@@ -198,6 +267,7 @@ def web_server(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
     _configure_flow_deps(orchestrator, repo_root)
     orchestrator.add_queue_issue(408, "Flow smoke item")
     orchestrator.add_queue_issue(177, "Blocked merge item", labels=["agent:web", "blocked-needs-human"])
+    orchestrator.add_active_issue(409, "Running flow item", repo_root=repo_root)
     port = find_free_port()
 
     # Make sure module-level auth state from an earlier test doesn't

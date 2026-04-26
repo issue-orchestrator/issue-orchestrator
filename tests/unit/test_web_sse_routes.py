@@ -19,6 +19,7 @@ class TestGetTemplates:
 
         env = get_templates()
         assert isinstance(env, Environment)
+        assert env.autoescape("dashboard.html") is True
 
 
 class TestSSEFunctionality:
