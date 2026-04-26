@@ -296,6 +296,10 @@ def launch_rework_session(
         rework_run_dir=run.run_dir,
     )
 
+    feedback_sections: list[str] = []
+    if rework.feedback:
+        feedback_sections.append(rework.feedback)
+
     reviewer_feedback = format_reviewer_feedback(
         pr_number=pr_number,
         repository_host=deps.repository_host,
@@ -304,12 +308,16 @@ def launch_rework_session(
         sleep_fn=time.sleep,
     )
     if reviewer_feedback:
-        existing_work = f"{existing_work}\n\n{reviewer_feedback}" if existing_work else reviewer_feedback
-        logger.info("[launch] Including reviewer feedback in rework session prompt")
+        feedback_sections.append(reviewer_feedback)
+
+    if feedback_sections:
+        combined_feedback = "\n\n".join(feedback_sections)
+        existing_work = f"{existing_work}\n\n{combined_feedback}" if existing_work else combined_feedback
+        logger.info("[launch] Including rework feedback in session prompt")
         deps.session_output.save_review_feedback(
             worktree_path=worktree_path,
             cycle=rework.rework_cycle,
-            feedback=reviewer_feedback,
+            feedback=combined_feedback,
             pr_number=pr_number,
         )
 

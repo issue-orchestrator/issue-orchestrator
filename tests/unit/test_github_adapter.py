@@ -551,6 +551,7 @@ class TestPROperations:
             "body": "PR description",
             "state": "open",
             "labels": [{"name": "bug"}],
+            "mergeable_state": "UNSTABLE",
         }
 
         pr = adapter.get_pr(10)
@@ -560,6 +561,7 @@ class TestPROperations:
         assert pr.title == "Test PR"
         assert pr.branch == "feature-branch"
         assert pr.labels == ["bug"]
+        assert pr.mergeable_state == "unstable"
         mock_http_client.get_pr.assert_called_once_with(10)
 
     def test_get_pr_not_found(self, adapter, mock_http_client):

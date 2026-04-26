@@ -12,6 +12,7 @@ from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredRework,
     RECONCILABLE_HISTORY_STATUSES,
     TERMINAL_AWAITING_MERGE_HISTORY_STATUSES,
 )
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
+    from .label_manager import LabelManager
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,18 @@ logger = logging.getLogger(__name__)
 AWAITING_MERGE_HISTORY_LIMIT = 50
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
+POST_PUBLISH_VALIDATION_REWORK_STATES = frozenset({"dirty", "behind", "unstable"})
+POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
+POST_PUBLISH_VALIDATION_COMMENT_MARKER = "<!-- io:post-publish-validation -->"
+
+
+@dataclass(frozen=True)
+class AwaitingMergeEntryDiscovery:
+    """Discovery result for one awaiting-merge history entry."""
+
+    outcome: ReconciliationOutcome
+    reconciliation: DiscoveredAwaitingMergeReconciliation | None = None
+    rework: DiscoveredRework | None = None
 
 
 @dataclass(frozen=True)
@@ -39,9 +53,11 @@ class AwaitingMergeReconciliationResult:
 
     checked: int = 0
     discovered: int = 0
+    rework_discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
     reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
+    reworks: tuple[DiscoveredRework, ...] = ()
 
 
 @dataclass
@@ -49,6 +65,7 @@ class AwaitingMergeReconciler:
     """Discovers lifecycle cleanup facts for history-backed awaiting-merge cards."""
 
     repository_host: RepositoryHost
+    label_manager: LabelManager | None = None
     clock: Callable[[], float] = time.time
     history_limit: int = AWAITING_MERGE_HISTORY_LIMIT
 
@@ -56,28 +73,35 @@ class AwaitingMergeReconciler:
         """Discover completed history entries that should become terminal."""
         checked = 0
         discovered = 0
+        rework_discovered = 0
         still_pending = 0
         skipped = 0
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
+        reworks: list[DiscoveredRework] = []
 
         for entry in self._awaiting_merge_entries(state):
             checked += 1
-            outcome, reconciliation = self._discover_entry(state, entry)
-            if outcome == "terminal":
+            discovery = self._discover_entry(state, entry)
+            if discovery.outcome == "terminal":
                 discovered += 1
-                if reconciliation is not None:
-                    reconciliations.append(reconciliation)
-            elif outcome == "still_pending":
+                if discovery.reconciliation is not None:
+                    reconciliations.append(discovery.reconciliation)
+            elif discovery.outcome == "still_pending":
                 still_pending += 1
             else:
                 skipped += 1
+            if discovery.rework is not None:
+                rework_discovered += 1
+                reworks.append(discovery.rework)
 
         return AwaitingMergeReconciliationResult(
             checked=checked,
             discovered=discovered,
+            rework_discovered=rework_discovered,
             still_pending=still_pending,
             skipped=skipped,
             reconciliations=tuple(reconciliations),
+            reworks=tuple(reworks),
         )
 
     def _awaiting_merge_entries(
@@ -96,7 +120,7 @@ class AwaitingMergeReconciler:
         self,
         state: OrchestratorState,
         entry: SessionHistoryEntry,
-    ) -> tuple[ReconciliationOutcome, DiscoveredAwaitingMergeReconciliation | None]:
+    ) -> AwaitingMergeEntryDiscovery:
         pr_number = pr_number_from_url(entry.pr_url or "")
         if pr_number is None:
             logger.warning(
@@ -104,18 +128,21 @@ class AwaitingMergeReconciler:
                 entry.issue_number,
                 entry.pr_url,
             )
-            return "skipped", None
+            return AwaitingMergeEntryDiscovery("skipped")
 
         pr = self._get_pr(entry.issue_number, pr_number)
         if pr is not None:
             pr_state = _normalized_state(pr.state)
             if pr_state in TERMINAL_AWAITING_MERGE_HISTORY_STATUSES:
-                return "terminal", _reconciliation_fact(
-                    entry=entry,
-                    pr_number=pr_number,
-                    status=pr_state,
-                    reason=_pr_terminal_reason(pr_state),
-                    source="pull_request",
+                return AwaitingMergeEntryDiscovery(
+                    "terminal",
+                    reconciliation=_reconciliation_fact(
+                        entry=entry,
+                        pr_number=pr_number,
+                        status=pr_state,
+                        reason=_pr_terminal_reason(pr_state),
+                        source="pull_request",
+                    ),
                 )
 
         issue = self._get_issue(entry.issue_number)
@@ -123,22 +150,73 @@ class AwaitingMergeReconciler:
             # An open PR still means "awaiting merge"; only bump issue freshness
             # after a confirmed issue refresh.
             if pr is not None:
-                return "still_pending", None
-            return "skipped", None
+                return AwaitingMergeEntryDiscovery("still_pending")
+            return AwaitingMergeEntryDiscovery("skipped")
 
         record_issue_refreshes(state, {entry.issue_number}, self.clock())
         if _normalized_state(issue.state) == "closed":
-            return "terminal", _reconciliation_fact(
-                entry=entry,
-                pr_number=pr_number,
-                status="closed",
-                reason="Issue closed; awaiting merge reconciled",
-                source="issue",
+            return AwaitingMergeEntryDiscovery(
+                "terminal",
+                reconciliation=_reconciliation_fact(
+                    entry=entry,
+                    pr_number=pr_number,
+                    status="closed",
+                    reason="Issue closed; awaiting merge reconciled",
+                    source="issue",
+                ),
             )
 
         if pr is None:
-            return "skipped", None
-        return "still_pending", None
+            return AwaitingMergeEntryDiscovery("skipped")
+        return AwaitingMergeEntryDiscovery(
+            "still_pending",
+            rework=self._discover_post_publish_validation_rework(
+                state=state,
+                entry=entry,
+                pr=pr,
+                issue=issue,
+                pr_number=pr_number,
+            ),
+        )
+
+    def _discover_post_publish_validation_rework(
+        self,
+        *,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+        issue: Issue,
+        pr_number: int,
+    ) -> DiscoveredRework | None:
+        if self.label_manager is None:
+            return None
+        if issue.agent_type is None:
+            return None
+        if self.label_manager.code_reviewed not in pr.labels:
+            return None
+        if self.label_manager.needs_rework in pr.labels:
+            return None
+        if any(session.issue.number == entry.issue_number for session in state.active_sessions):
+            return None
+        if any(
+            pending.resolve_issue_number() == entry.issue_number
+            for pending in state.pending_reworks
+        ):
+            return None
+
+        mergeable_state = _normalized_state(pr.mergeable_state)
+        if mergeable_state not in POST_PUBLISH_VALIDATION_REWORK_STATES:
+            return None
+
+        return DiscoveredRework(
+            issue_number=entry.issue_number,
+            pr_number=pr_number,
+            branch_name=pr.branch,
+            agent_type=issue.agent_type,
+            rework_cycle=_next_rework_cycle(pr.labels, self.label_manager),
+            source=POST_PUBLISH_VALIDATION_SOURCE,
+            feedback=_build_post_publish_validation_feedback(pr, mergeable_state),
+        )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
         try:
@@ -202,3 +280,34 @@ def _pr_terminal_reason(status: AwaitingMergeTerminalStatus) -> str:
 
 def _normalized_state(state: str | None) -> str:
     return (state or "").strip().lower()
+
+
+def _next_rework_cycle(labels: list[str], label_manager: LabelManager) -> int:
+    cycle = label_manager.extract_rework_cycle(labels)
+    if cycle is not None:
+        return cycle + 1
+    return 1
+
+
+def _build_post_publish_validation_feedback(pr: PRInfo, mergeable_state: str) -> str:
+    detail_map = {
+        "dirty": "GitHub reports merge conflicts against the base branch.",
+        "behind": "GitHub reports the branch is behind the base branch and must be updated before merge.",
+        "unstable": "GitHub reports failing or unstable required validation on the merge result.",
+    }
+    lines = [
+        "POST-PUBLISH VALIDATION FAILURE (address these issues):",
+        "",
+        f"PR #{pr.number} is no longer ready to merge after review approval.",
+        f"- URL: {pr.url}",
+        f"- Branch: {pr.branch}",
+        f"- Mergeability: {mergeable_state}",
+        f"- Detail: {detail_map.get(mergeable_state, 'GitHub reports the PR is no longer merge-ready.')}",
+        "",
+        "Update the branch, rerun the required validation, and leave the PR ready for merge again.",
+    ]
+    return "\n".join(lines)
+
+
+def build_post_publish_validation_comment(feedback: str) -> str:
+    return f"{POST_PUBLISH_VALIDATION_COMMENT_MARKER}\n{feedback}"

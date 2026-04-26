@@ -1234,6 +1234,8 @@ class TestUpdateStateAfterAction:
         action = QueueReworkAction(
             issue_number=42,
             rework_cycle=2,
+            source="post_publish_validation",
+            feedback="POST-PUBLISH VALIDATION FAILURE (address these issues):\n\nResolve merge conflicts.",
         )
         result = MagicMock(success=True, details={})
 
@@ -1245,6 +1247,8 @@ class TestUpdateStateAfterAction:
         rework = support_with_state.state.pending_reworks[0]
         assert rework.agent_type == "agent:developer"
         assert rework.rework_cycle == 2
+        assert rework.source == "post_publish_validation"
+        assert "POST-PUBLISH VALIDATION FAILURE" in (rework.feedback or "")
 
     def test_cleanup_session_removes_from_pending_cleanups(self, support_with_state):
         """CLEANUP_SESSION action removes cleanup from pending_cleanups."""

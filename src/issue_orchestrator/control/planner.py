@@ -50,6 +50,7 @@ from .workflows import (
 )
 from .actions import (
     Action,
+    AddCommentAction,
     AddLabelAction,
     RemoveLabelAction,
     LaunchSessionAction,
@@ -61,6 +62,10 @@ from .actions import (
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
     SessionType,
+)
+from .awaiting_merge_reconciler import (
+    POST_PUBLISH_VALIDATION_SOURCE,
+    build_post_publish_validation_comment,
 )
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
@@ -605,6 +610,33 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         for rework in snapshot.discovered_reworks:
             if rework.issue_number not in queued_issue_ids:
+                if (
+                    rework.source == POST_PUBLISH_VALIDATION_SOURCE
+                    and rework.pr_number > 0
+                ):
+                    actions.append(RemoveLabelAction(
+                        issue_number=rework.pr_number,
+                        label=self._lm.code_reviewed,
+                        reason=(
+                            "post-publish validation failed after review approval; "
+                            "clearing code-reviewed"
+                        ),
+                    ))
+                    actions.append(AddLabelAction(
+                        issue_number=rework.pr_number,
+                        label=self._lm.needs_rework,
+                        reason=(
+                            "post-publish validation failed after review approval; "
+                            "marking PR for rework"
+                        ),
+                    ))
+                    if rework.feedback:
+                        actions.append(AddCommentAction(
+                            number=rework.pr_number,
+                            is_pr=True,
+                            comment=build_post_publish_validation_comment(rework.feedback),
+                            reason="post-publish validation failed after review approval",
+                        ))
                 # Remove pr-pending so scheduler considers issue available again
                 actions.append(RemoveLabelAction(
                     issue_number=rework.issue_number,
@@ -617,6 +649,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     pr_url="",  # Not tracked in DiscoveredRework
                     branch_name=rework.branch_name,
                     rework_cycle=rework.rework_cycle,
+                    source=rework.source,
+                    feedback=rework.feedback,
                     reason=f"scan found PR needing rework (cycle {rework.rework_cycle})",
                 ))
                 logger.debug("Planner: queuing rework for issue #%d (cycle %d)",

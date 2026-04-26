@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from .label_sync import LabelSync
     from .cleanup_manager import CleanupManager
     from .state_machine_manager import StateMachineManager
+    from .label_manager import LabelManager
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
@@ -42,6 +43,7 @@ class GitHubWorkflow:
     pr_scanner: "PRScanner"
     label_sync: Optional["LabelSync"]
     event_context: EventContext
+    label_manager: "LabelManager | None" = None
 
     def fetch_all_issues(
         self,
@@ -165,12 +167,21 @@ class GitHubWorkflow:
         issue_branches = self.pr_scanner.load_issue_branches()
         self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
         self.scan_needs_rework_prs(state, issue_branches=issue_branches)
-        result = AwaitingMergeReconciler(self.repository_host).discover(state)
+        result = AwaitingMergeReconciler(
+            self.repository_host,
+            label_manager=self.label_manager,
+        ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
+        state.discovered_reworks.extend(result.reworks)
         if result.discovered:
             logger.info(
                 "Discovered %d awaiting-merge history reconciliations",
                 result.discovered,
+            )
+        if result.rework_discovered:
+            logger.info(
+                "Discovered %d post-publish validation rework(s)",
+                result.rework_discovered,
             )
 
     def update_dependency_problems(

@@ -1282,6 +1282,27 @@ class TestLaunchReworkSession:
         assert "Please add unit tests" in command
         assert "reviewer1" in command
 
+    def test_includes_post_publish_validation_feedback_in_prompt(self, launcher_bundle, mock_repo_host):
+        """Verify post-publish validation feedback is included in the rework prompt."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = []
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+            source="post_publish_validation",
+            feedback="POST-PUBLISH VALIDATION FAILURE (address these issues):\n\nResolve merge conflicts.",
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "POST-PUBLISH VALIDATION FAILURE" in command
+        assert "Resolve merge conflicts." in command
+
     def test_excludes_approved_reviews_from_feedback(self, launcher_bundle, mock_repo_host):
         """Verify APPROVED reviews are not included in feedback."""
         mock_repo_host.prs[123] = [

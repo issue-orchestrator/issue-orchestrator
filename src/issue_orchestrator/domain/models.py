@@ -1152,6 +1152,8 @@ class DiscoveredRework:
     branch_name: str
     agent_type: str
     rework_cycle: int = 1
+    source: str = "review_label"
+    feedback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1217,6 +1219,8 @@ class PendingRework:
     rework_cycle: int = 1     # Which rework iteration this is (1, 2, etc.)
     issue_number: int | None = None  # Backing store handle for GitHub rework flows
     pr_number: int | None = None  # PR number that needs rework (from scanner)
+    source: str = "review_label"
+    feedback: str | None = None
 
     def resolve_issue_number(self) -> int | None:
         """Resolve issue number for GitHub workflows, if available."""

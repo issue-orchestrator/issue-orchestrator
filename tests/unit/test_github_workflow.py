@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
+from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciliationResult
+from issue_orchestrator.domain.models import DiscoveredRework
 from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 
@@ -48,3 +51,53 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
         [],
         issue_branches=issue_branches,
     )
+
+
+def test_scan_pending_pr_work_appends_post_publish_validation_reworks() -> None:
+    pr_scanner = MagicMock()
+    pr_scanner.load_issue_branches.return_value = {}
+    pr_scanner.scan_for_reviews.return_value = []
+    pr_scanner.scan_for_reworks.return_value = ([], [])
+
+    workflow = GitHubWorkflow(
+        config=Config(),
+        events=MagicMock(),
+        repository_host=MagicMock(),
+        fact_gatherer=MagicMock(),
+        pr_scanner=pr_scanner,
+        label_sync=None,
+        event_context=EventContext(),
+    )
+    state = SimpleNamespace(
+        pending_reviews=[],
+        pending_reworks=[],
+        active_sessions=[],
+        discovered_reviews=[],
+        discovered_awaiting_merge_reconciliations=[],
+        discovered_reworks=[],
+        discovered_escalations=[],
+        session_history=[],
+        issue_refresh_timestamps={},
+        issue_last_refreshed_at={},
+    )
+    discovered = DiscoveredRework(
+        issue_number=42,
+        pr_number=1042,
+        branch_name="42-fix-validation",
+        agent_type="agent:backend",
+        rework_cycle=2,
+        source="post_publish_validation",
+        feedback="POST-PUBLISH VALIDATION FAILURE (address these issues):\n\n...",
+    )
+
+    with patch(
+        "issue_orchestrator.control.github_workflow.AwaitingMergeReconciler.discover",
+        return_value=AwaitingMergeReconciliationResult(
+            checked=1,
+            rework_discovered=1,
+            reworks=(discovered,),
+        ),
+    ):
+        workflow.scan_pending_pr_work(state)
+
+    assert state.discovered_reworks == [discovered]
