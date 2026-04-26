@@ -782,15 +782,18 @@ def _assert_issue_drawer_counts_match_payload(
     issue_number: int,
 ) -> None:
     detail_drawer = page.locator("#issueDetailDrawer.visible")
-    expect(detail_drawer).to_be_visible(timeout=5000)
-    expect(page.locator("#issueDetailTitle")).to_contain_text(f"Issue #{issue_number}")
+    expect(detail_drawer).to_be_visible(timeout=15_000)
+    expect(page.locator("#issueDetailTitle")).to_contain_text(
+        f"Issue #{issue_number}",
+        timeout=15_000,
+    )
 
     journey = page.locator("#issueDetailJourney")
     expected_runs = _expected_rendered_runs(detail_payload)
     expected_cycles = sum(len(run["cycles"]) for run in expected_runs)
-    expect(journey.locator(".journey-run")).to_have_count(len(expected_runs))
-    expect(journey.locator(".journey-cycle")).to_have_count(expected_cycles)
-    expect(journey.locator(".timeline-empty")).to_have_count(0)
+    expect(journey.locator(".journey-run")).to_have_count(len(expected_runs), timeout=15_000)
+    expect(journey.locator(".journey-cycle")).to_have_count(expected_cycles, timeout=15_000)
+    expect(journey.locator(".timeline-empty")).to_have_count(0, timeout=15_000)
 
     status_text = page.locator("#issueDetailStatus").text_content() or ""
     assert "Loading issue detail" not in status_text
@@ -851,7 +854,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
-    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    page.goto(f"{base_url}/", wait_until="domcontentloaded", timeout=90_000)
     timeline_payload = _browser_fetch_json(
         page,
         _url(

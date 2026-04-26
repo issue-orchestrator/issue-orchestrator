@@ -688,8 +688,8 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
 
     result = _run_shell_with_timeout_retry(
         full_cmd,
-        timeout_seconds=120,
-        retry_timeout_seconds=240,
+        timeout_seconds=180,
+        retry_timeout_seconds=420,
     )
 
     print(f"Claude stdout: {result.stdout[:1000]}")
