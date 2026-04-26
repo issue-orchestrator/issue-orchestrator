@@ -29,7 +29,7 @@ def test_pre_publish_gate_runs_worktree_pre_push_hook(tmp_path: Path) -> None:
     assert hook_call.kwargs["cwd"] == tmp_path
 
 
-def test_pre_publish_gate_skips_when_hook_missing(tmp_path: Path) -> None:
+def test_pre_publish_gate_fails_when_hook_resolution_fails(tmp_path: Path) -> None:
     runner = Mock()
     runner.run.side_effect = [
         CommandResult(returncode=1, stdout="", stderr="not a git repository"),
@@ -39,9 +39,25 @@ def test_pre_publish_gate_skips_when_hook_missing(tmp_path: Path) -> None:
     gate = PrePublishGate(runner)
     result = gate.check(tmp_path)
 
-    assert result.allowed is True
+    assert result.allowed is False
     assert result.ran is False
-    assert "No pre-push hook" in result.reason
+    assert "Failed to resolve worktree pre-push hook" in result.reason
+    assert result.exit_code == 1
+
+
+def test_pre_publish_gate_fails_when_resolved_hook_is_missing(tmp_path: Path) -> None:
+    runner = Mock()
+    runner.run.side_effect = [
+        CommandResult(returncode=0, stdout=".git/hooks/pre-push", stderr=""),
+        CommandResult(returncode=0, stdout="deadbeef", stderr=""),
+    ]
+
+    gate = PrePublishGate(runner)
+    result = gate.check(tmp_path)
+
+    assert result.allowed is False
+    assert result.ran is False
+    assert "Resolved pre-push hook does not exist" in result.reason
 
 
 def test_pre_publish_gate_surfaces_hook_failure_summary(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from issue_orchestrator.entrypoints.cli_tools.prepush_check import (
+    _prepush_output_dir,
     load_validation_cmd,
     run_prepush_check,
 )
@@ -266,6 +267,38 @@ validation:
         assert stdout_path.exists()
         assert stderr_path.exists()
         assert "boom" in stderr_path.read_text()
+
+    def test_prepush_output_dir_prunes_old_sha_directories(self, temp_worktree):
+        diagnostics_root = (
+            temp_worktree / ".issue-orchestrator" / "diagnostics" / "prepush"
+        )
+        diagnostics_root.mkdir(parents=True)
+        current_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=temp_worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        current_dir = diagnostics_root / current_sha
+        current_dir.mkdir()
+        os.utime(current_dir, (50, 50))
+        old_dirs = []
+        for index in range(7):
+            child = diagnostics_root / f"old-{index}"
+            child.mkdir()
+            (child / "marker").write_text(str(index))
+            old_dirs.append(child)
+            os.utime(child, (100 + index, 100 + index))
+
+        current = _prepush_output_dir(temp_worktree)
+
+        remaining = sorted(child.name for child in diagnostics_root.iterdir())
+        assert current.name in remaining
+        assert len(remaining) == 5
+        assert "old-0" not in remaining
+        assert "old-1" not in remaining
+        assert "old-2" not in remaining
 
     def test_uses_cache_on_second_run(self, temp_worktree):
         """Test uses cache on second run."""

@@ -31,6 +31,14 @@ class PrePublishGateResult:
     ran: bool = True
 
 
+@dataclass(frozen=True)
+class _ResolvedHookPath:
+    path: Path | None
+    error: str | None = None
+    exit_code: int = 0
+    stderr: str = ""
+
+
 class PrePublishGate:
     """Run the worktree's effective pre-push hook before publish."""
 
@@ -39,22 +47,23 @@ class PrePublishGate:
 
     def check(self, worktree: Path) -> PrePublishGateResult:
         started_at = datetime.now(timezone.utc)
-        hook_path = self._resolve_hook_path(worktree)
-        if hook_path is None:
+        resolved_hook = self._resolve_hook_path(worktree)
+        if resolved_hook.path is None:
             ended_at = datetime.now(timezone.utc)
             return PrePublishGateResult(
-                allowed=True,
-                reason="No pre-push hook configured for this worktree",
+                allowed=False,
+                reason=resolved_hook.error or "Failed to resolve pre-push hook",
                 command="pre-push hook",
                 started_at=started_at.isoformat(),
                 ended_at=ended_at.isoformat(),
-                exit_code=0,
+                exit_code=resolved_hook.exit_code or 1,
                 stdout="",
-                stderr="",
+                stderr=resolved_hook.stderr,
                 hook_path="",
                 head_sha=self._resolve_head_sha(worktree),
                 ran=False,
             )
+        hook_path = resolved_hook.path
 
         result = self._command_runner.run(
             [str(hook_path), "origin", "origin"],
@@ -84,22 +93,36 @@ class PrePublishGate:
             head_sha=self._resolve_head_sha(worktree),
         )
 
-    def _resolve_hook_path(self, worktree: Path) -> Path | None:
+    def _resolve_hook_path(self, worktree: Path) -> _ResolvedHookPath:
         result = self._command_runner.run(
             ["git", "rev-parse", "--git-path", "hooks/pre-push"],
             cwd=worktree,
         )
         if result.returncode != 0:
-            return None
+            detail = (result.stderr or result.stdout or "git rev-parse failed").strip()
+            return _ResolvedHookPath(
+                path=None,
+                error=f"Failed to resolve worktree pre-push hook: {detail}",
+                exit_code=result.returncode,
+                stderr=result.stderr,
+            )
         raw_path = result.stdout.strip()
         if not raw_path:
-            return None
+            return _ResolvedHookPath(
+                path=None,
+                error="Failed to resolve worktree pre-push hook: git returned an empty hook path",
+                exit_code=1,
+            )
         hook_path = Path(raw_path)
         if not hook_path.is_absolute():
             hook_path = (worktree / hook_path).resolve()
         if not hook_path.exists() or not hook_path.is_file():
-            return None
-        return hook_path
+            return _ResolvedHookPath(
+                path=None,
+                error=f"Resolved pre-push hook does not exist: {hook_path}",
+                exit_code=1,
+            )
+        return _ResolvedHookPath(path=hook_path)
 
     def _resolve_head_sha(self, worktree: Path) -> str | None:
         result = self._command_runner.run(

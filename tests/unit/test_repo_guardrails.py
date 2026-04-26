@@ -259,6 +259,23 @@ def test_setup_repo_guardrails_rejects_explicit_external_hooks_path(tmp_path: Pa
         setup_repo_guardrails(_make_config(repo), hooks_path=str(external_hooks))
 
 
+def test_setup_repo_guardrails_rejects_non_repo_local_config_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    config = _make_config(repo)
+    external_config = tmp_path / "external.yaml"
+    external_config.write_text("validation:\n  cmd: make validate-pr\n")
+    config.config_path = external_config
+
+    with pytest.raises(
+        RepoGuardrailsError,
+        match="must live under",
+    ):
+        setup_repo_guardrails(config)
+
+
 def test_checked_in_helper_matches_generated_output() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     source_path = repo_root / "src" / "issue_orchestrator" / "infra" / "hooks" / "block_no_verify.py"

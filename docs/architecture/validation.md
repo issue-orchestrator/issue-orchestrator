@@ -14,6 +14,8 @@ Validation is a **publish gate**, not a CI system.
 ```yaml
 validation:
   cmd: "make validate-pr"
+  # Allow enough time for the repo's authoritative local PR gate to finish.
+  # For issue-orchestrator this includes unit/integration/web/vscode slices.
   timeout_seconds: 1800
 
 execution:

@@ -4,7 +4,14 @@ set -euo pipefail
 # Canonical local publish gate.
 # Mirrors the required PR coverage through the cache-aware prepush_check path.
 
-export ISSUE_ORCHESTRATOR_CONFIG_NAME=main.yaml
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERIFY_SCRIPT="$REPO_ROOT/scripts/verify-pr.sh"
+
+if [ -x "$VERIFY_SCRIPT" ]; then
+  exec "$VERIFY_SCRIPT"
+fi
+
+cd "$REPO_ROOT"
 
 if [ -x ".venv/bin/python" ]; then
   .venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v

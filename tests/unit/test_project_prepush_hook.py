@@ -1,6 +1,5 @@
 """Tests for the repo's project pre-push hook."""
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -12,28 +11,21 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 class TestProjectPrepushHook:
-    def test_runs_required_pr_gate(self, tmp_path: Path) -> None:
+    def test_delegates_to_verify_pr_script(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
 
         hook_src = Path(__file__).parent.parent.parent / "hooks" / "pre-push"
-        hook_dest = repo / "pre-push"
+        hook_dest = repo / "hooks" / "pre-push"
+        hook_dest.parent.mkdir(parents=True, exist_ok=True)
         hook_dest.write_text(hook_src.read_text())
         hook_dest.chmod(0o755)
 
         log_path = repo / "hook.log"
         _write_executable(
-            repo / ".venv" / "bin" / "python",
+            repo / "scripts" / "verify-pr.sh",
             f"""#!/usr/bin/env bash
-echo "python:$*" >> "{log_path}"
-echo "config:$ISSUE_ORCHESTRATOR_CONFIG_NAME" >> "{log_path}"
-exit 0
-""",
-        )
-        _write_executable(
-            repo / "bin" / "make",
-            f"""#!/usr/bin/env bash
-echo "make:$*" >> "{log_path}"
+echo "verify:$PWD" >> "{log_path}"
 exit 0
 """,
         )
@@ -43,26 +35,23 @@ exit 0
             cwd=repo,
             capture_output=True,
             text=True,
-            env={**os.environ, "PATH": f'{repo / "bin"}:{os.environ.get("PATH", "")}'},
         )
 
         assert result.returncode == 0
-        assert log_path.read_text().splitlines() == [
-            "python:-m issue_orchestrator.entrypoints.cli_tools.prepush_check -v",
-            "config:main.yaml",
-        ]
+        assert log_path.read_text().splitlines() == [f"verify:{repo}"]
 
-    def test_fails_when_required_pr_gate_fails(self, tmp_path: Path) -> None:
+    def test_fails_when_verify_pr_script_fails(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
 
         hook_src = Path(__file__).parent.parent.parent / "hooks" / "pre-push"
-        hook_dest = repo / "pre-push"
+        hook_dest = repo / "hooks" / "pre-push"
+        hook_dest.parent.mkdir(parents=True, exist_ok=True)
         hook_dest.write_text(hook_src.read_text())
         hook_dest.chmod(0o755)
 
         _write_executable(
-            repo / ".venv" / "bin" / "python",
+            repo / "scripts" / "verify-pr.sh",
             """#!/usr/bin/env bash
 exit 42
 """,

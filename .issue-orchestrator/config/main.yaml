@@ -65,6 +65,9 @@ review:
 
 validation:
   cmd: make validate-pr
+  # This repo's local publish gate runs the full PR validation slice
+  # (unit/integration/web/vscode) and routinely exceeds 300s on busy machines,
+  # even without any live agent work in the loop.
   timeout_seconds: 1800
   coverage_guardrail:
     enabled: true

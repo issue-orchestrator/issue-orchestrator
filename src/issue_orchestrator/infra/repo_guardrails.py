@@ -473,15 +473,14 @@ def _selected_config_name(config: Config, repo_root: Path) -> str | None:
     config_path = config.config_path
     if config_path is None:
         return None
+    config_root = (repo_root / ".issue-orchestrator" / "config").resolve()
     try:
-        return config_path.resolve().relative_to((repo_root / ".issue-orchestrator" / "config").resolve()).as_posix()
+        return config_path.resolve().relative_to(config_root).as_posix()
     except ValueError:
-        logger.warning(
-            "Config path %s is outside %s; verify-pr will rely on default config discovery",
-            config_path,
-            repo_root / ".issue-orchestrator" / "config",
+        raise RepoGuardrailsError(
+            f"Config path {config_path} must live under {config_root} "
+            "so verify-pr can select the same repo-local config."
         )
-        return None
 
 
 def _render_helper_script(source_path: Path) -> str:

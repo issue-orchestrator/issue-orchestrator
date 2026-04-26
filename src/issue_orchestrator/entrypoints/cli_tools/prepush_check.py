@@ -13,6 +13,7 @@ Exit codes:
 """
 
 import logging
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -157,13 +158,37 @@ def _run_validation_gate(
 def _prepush_output_dir(worktree: Path) -> Path:
     """Return a stable worktree-local diagnostics directory for hook validation output."""
     head_sha = GitWorkingCopy().get_head_sha(worktree) or "unknown-sha"
-    return (
-        worktree
-        / ".issue-orchestrator"
-        / "diagnostics"
-        / "prepush"
-        / head_sha
+    base_dir = worktree / ".issue-orchestrator" / "diagnostics" / "prepush"
+    _prune_prepush_output_dirs(base_dir, keep_names={head_sha}, max_keep=5)
+    return base_dir / head_sha
+
+
+def _prune_prepush_output_dirs(
+    base_dir: Path,
+    *,
+    keep_names: set[str],
+    max_keep: int,
+) -> None:
+    """Bound pre-push diagnostics retention to the current SHA plus recent siblings."""
+    if not base_dir.exists():
+        return
+    children = sorted(
+        base_dir.iterdir(),
+        key=lambda child: child.stat().st_mtime,
+        reverse=True,
     )
+    keep_budget = max(max_keep - len(keep_names), 0)
+    kept_recent = 0
+    for child in children:
+        if child.name in keep_names:
+            continue
+        if kept_recent < keep_budget:
+            kept_recent += 1
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
 
 
 def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:
