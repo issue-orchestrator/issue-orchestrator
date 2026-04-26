@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -251,6 +252,13 @@ def test_checked_in_helper_matches_generated_output() -> None:
     assert helper_path.read_text() == _render_helper_script(source_path)
 
 
+def test_checked_in_verify_pr_matches_portable_generated_output() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    verify_path = repo_root / "scripts" / "verify-pr.sh"
+
+    assert verify_path.read_text() == _render_verify_pr_script("make validate-pr")
+
+
 def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
     repo_root = Path("/tmp/example-repo")
     verify_script = repo_root / "scripts" / "gates" / "verify-pr.sh"
@@ -258,6 +266,33 @@ def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
     rendered = _render_repo_pre_push_hook(verify_script, repo_root)
 
     assert 'VERIFY_SCRIPT="$REPO_ROOT/scripts/gates/verify-pr.sh"' in rendered
+
+
+def test_render_verify_pr_script_bakes_python_when_requested() -> None:
+    rendered = _render_verify_pr_script(
+        "make validate-pr",
+        baked_python="/tmp/issue-orchestrator-python",
+    )
+
+    assert '/tmp/issue-orchestrator-python' in rendered
+
+
+def test_setup_repo_guardrails_uses_portable_verify_script_for_issue_orchestrator_shape(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "src" / "issue_orchestrator" / "entrypoints").mkdir(parents=True)
+    (repo / "src" / "issue_orchestrator" / "entrypoints" / "cli.py").write_text("")
+    (repo / "hooks").mkdir()
+    (repo / "hooks" / "pre-push").write_text("#!/usr/bin/env bash\n")
+
+    result = setup_repo_guardrails(_make_config(repo))
+
+    rendered = result.verify_script.read_text()
+    assert sys.executable not in rendered
+    assert '.venv/bin/python' in rendered
 
 
 def test_render_verify_pr_script_uses_cache_aware_prepush_check() -> None:

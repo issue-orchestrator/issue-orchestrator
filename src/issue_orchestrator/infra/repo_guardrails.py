@@ -318,7 +318,10 @@ def _install_verify_script(
     result: RepoGuardrailsInstallResult,
 ) -> None:
     verify_script.parent.mkdir(parents=True, exist_ok=True)
-    rendered = _render_verify_pr_script(validation_cmd)
+    rendered = _render_verify_pr_script(
+        validation_cmd,
+        baked_python=None if _should_render_portable_verify_script(result.repo_root) else shell_quote_issue_orchestrator_python(),
+    )
     _write_executable_file(verify_script, rendered, result)
 
 
@@ -394,9 +397,32 @@ def quarantine_managed_hook_file(
     return quarantine_path
 
 
-def _render_verify_pr_script(validation_cmd: str) -> str:
+def _should_render_portable_verify_script(repo_root: Path) -> bool:
+    """Return True when the target repo should not embed a machine-specific Python path.
+
+    The issue-orchestrator repo itself checks in ``scripts/verify-pr.sh``. Its
+    managed script must stay machine-neutral so the tracked file is reviewable
+    and reproducible. External target repos, by contrast, benefit from a baked
+    fallback interpreter path because they usually do not have a local venv that
+    contains the ``issue_orchestrator`` package.
+    """
+    return (
+        (repo_root / "src" / "issue_orchestrator" / "entrypoints" / "cli.py").exists()
+        and (repo_root / "hooks" / "pre-push").exists()
+    )
+
+
+def _render_verify_pr_script(
+    validation_cmd: str,
+    *,
+    baked_python: str | None = None,
+) -> str:
     quoted = shlex.quote(validation_cmd)
-    baked_python = shell_quote_issue_orchestrator_python()
+    baked_python_branch = ""
+    if baked_python:
+        baked_python_branch = f"""elif [ -x {baked_python} ]; then
+  PYTHON_BIN={baked_python}
+"""
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -411,9 +437,7 @@ PYTHON_BIN=""
 
 if [ -n "${{{ORCHESTRATOR_PYTHON_ENV}:-}}" ] && [ -x "${{{ORCHESTRATOR_PYTHON_ENV}}}" ]; then
   PYTHON_BIN="${{{ORCHESTRATOR_PYTHON_ENV}}}"
-elif [ -x {baked_python} ]; then
-  PYTHON_BIN={baked_python}
-elif [ -x ".venv/bin/python" ]; then
+{baked_python_branch}elif [ -x ".venv/bin/python" ]; then
   PYTHON_BIN=".venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
