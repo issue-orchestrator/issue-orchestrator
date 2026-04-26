@@ -68,7 +68,7 @@ _Auto-generated from settings schema._
 |-------|------|---------|-------------|----------|-------|
 | `review.enabled` | boolean | `False` | Enable automated code review workflow | `true`, `false` | When enabled, a reviewer agent validates work agent PRs. |
 | `review.default` | string (optional) | `None` | Agent label for code reviews (e.g., agent:reviewer) | `agent:reviewer` | Must match a label defined under agents. |
-| `review.max_rework_cycles` | integer | `10` | Max times to re-queue work agent before escalating | `0`, `2`, `10` | Set to 0 to disable rework cycles (immediate escalation). |
+| `review.max_rework_cycles` | integer | `5` | Max times to re-queue work agent before escalating | `0`, `2`, `5` | Set to 0 to disable rework cycles (immediate escalation). |
 | `review.max_consecutive_publish_failures` | integer | `3` | Escalate to needs-human after this many consecutive push/PR creation failures | `2`, `3`, `5` | After N consecutive publish failures for the same issue, escalate to needs-human instead of publish-failed. |
 | `review.keep_current_approach_label` | string | `reviewer-keep-current-approach` | Label that tells reviewer to avoid alternative approaches | `reviewer-keep-current-approach` | Applied to issues where stability is preferred over refactors. |
 | `review.run_audit.min_runtime_minutes` | integer | `20` | Automatically capture a run audit when runtime meets or exceeds this threshold (0 = disable) | `0`, `20`, `60` | Long runs get a persisted audit automatically; set to 0 to keep audits label-driven only. |

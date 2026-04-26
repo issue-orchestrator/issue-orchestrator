@@ -141,7 +141,7 @@ Only do this with the claims system enabled. Each machine must set a unique `cla
 This is mainly for development/testing. Use `ui.instances` with `claims.enabled: true` so each instance has a unique claimant ID. Don't do it without claims.
 
 **Q21: How do I tune the review + rework loop?**
-A: Use `review.max_rework_cycles` to cap rework (default: 10). When review is enabled, a coder agent produces changes, then a reviewer agent evaluates them. If the reviewer requests changes, the orchestrator opens a rework cycle. This repeats until the reviewer approves or the max is reached, at which point the issue is escalated.
+A: Use `review.max_rework_cycles` to cap rework (default: 5). When review is enabled, a coder agent produces changes, then a reviewer agent evaluates them. If the reviewer requests changes, the orchestrator opens a rework cycle. This repeats until the reviewer approves or the max is reached, at which point the issue is escalated.
 
 **Q22: How do I manage issue dependencies, and what restrictions apply?**
 A: Put dependency lines in the issue body using `Depends-on:`. An issue is runnable only when **all** dependencies are closed.

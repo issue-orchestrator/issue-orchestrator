@@ -374,7 +374,7 @@ def load_review_section(config: "Config", review_section: dict) -> None:
     config.triage_failed_label = review_section.get("triage_failed_label", "triage-failed")
     config.triage_review_threshold = review_section.get("triage_review_threshold", 0)
     config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
-    config.max_rework_cycles = review_section.get("max_rework_cycles", 10)
+    config.max_rework_cycles = review_section.get("max_rework_cycles", 5)
     config.max_consecutive_publish_failures = review_section.get(
         "max_consecutive_publish_failures", 3
     )

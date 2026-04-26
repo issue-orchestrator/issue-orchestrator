@@ -262,7 +262,7 @@ class Config:
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
 
     # Rework cycle limit (when reviewer requests changes)
-    max_rework_cycles: int = 10  # Max times to re-queue work agent before escalating to needs-human
+    max_rework_cycles: int = 5  # Max times to re-queue work agent before escalating to needs-human
 
     # Publish failure limit (push/PR creation fails after agent completes)
     max_consecutive_publish_failures: int = 3  # Escalate to needs-human after N consecutive publish failures
@@ -942,7 +942,7 @@ class Config:
             review_dict["triage_reviewed_label"] = self.triage_reviewed_label
         if self.triage_review_threshold != 0:
             review_dict["triage_review_threshold"] = self.triage_review_threshold
-        if self.max_rework_cycles != 10:
+        if self.max_rework_cycles != 5:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
         if self.max_consecutive_publish_failures != 3:
             review_dict["max_consecutive_publish_failures"] = self.max_consecutive_publish_failures

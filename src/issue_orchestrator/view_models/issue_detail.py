@@ -29,7 +29,7 @@ class IssueStoryContext:
     labels: tuple[str, ...] = ()
     dependency_summary: str | None = None
     current_rework_cycle: int = 0
-    max_rework_cycles: int = 10
+    max_rework_cycles: int = 5
     pr_url: str | None = None
     pr_number: int | None = None
 

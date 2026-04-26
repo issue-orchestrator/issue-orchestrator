@@ -17,7 +17,7 @@ flowchart TD
   REWORK -->|cycle limit hit| ESCALATE["Escalated — needs human"]
 ```
 
-**Cycle limits prevent infinite loops.** The orchestrator tracks rework iterations (`rework-cycle-N` labels on GitHub). After `max_rework_cycles` (default: 10), it stops the loop and escalates to a human. For in-process exchange modes, `max_rounds` and `max_no_progress` provide additional stopping conditions — if the reviewer reports no progress for consecutive rounds, the loop stops early.
+**Cycle limits prevent infinite loops.** The orchestrator tracks rework iterations (`rework-cycle-N` labels on GitHub). After `max_rework_cycles` (default: 5), it stops the loop and escalates to a human. For in-process exchange modes, `max_rounds` and `max_no_progress` provide additional stopping conditions — if the reviewer reports no progress for consecutive rounds, the loop stops early.
 
 ## Exchange Mechanisms
 
@@ -118,7 +118,7 @@ review:
       require_validation: true         # Reviewer must confirm validation passed
 
   # Rework cycle limit (via-draft-pr mode)
-  max_rework_cycles: 10               # Escalate to needs-human after N cycles
+  max_rework_cycles: 5                # Escalate to needs-human after N cycles
 
   # Triage batch review
   triage_review_agent: "agent:triage"

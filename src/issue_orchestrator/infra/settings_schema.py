@@ -587,13 +587,13 @@ class ReviewSettings(BaseModel):
         },
     )
     max_rework_cycles: int = Field(
-        10,
+        5,
         title="Max Rework Cycles",
         description="Max times to re-queue work agent before escalating",
         ge=0,
         le=10,
         json_schema_extra={
-            "doc_examples": ["0", "2", "10"],
+            "doc_examples": ["0", "2", "5"],
             "doc_notes": "Set to 0 to disable rework cycles (immediate escalation).",
             "section": "Code Review Workflow",
             "config_attr": "max_rework_cycles",
