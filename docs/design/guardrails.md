@@ -76,6 +76,11 @@ Before the orchestrator performs the authenticated push, it runs the worktree's 
 
 The real push still keeps hooks enabled. The cache-bearing validation record is keyed by commit SHA plus the configured validation command, so the later hook pass can reuse the same passing token instead of rerunning the expensive validation command on the same commit. Agents still cannot use `--no-verify` themselves; Layer 1 blocks that.
 
+For managed target repos, `setup-guardrails` also records the selected config
+filename into `scripts/verify-pr.sh`. If the repo later switches to another
+config file, rerun `setup-guardrails` so the pre-push gate and cache token keep
+using the same validation contract.
+
 ### 5. CI and branch protection
 
 Required status checks in GitHub branch protection re-run the canonical validation gate in a clean environment, mirroring `make validate-pr` across a fast job and an agent-backed job. This is the ultimate backstop: even if every local layer were bypassed, unverified code cannot land on the protected branch. Humans still perform the merge.

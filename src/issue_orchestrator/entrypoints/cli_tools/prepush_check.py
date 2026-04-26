@@ -50,10 +50,9 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
     Returns:
         Tuple of (command, timeout_seconds, pre_push_dirty_check)
     """
-    from ...infra.config import load_validation_config
+    from ...infra.config import load_runtime_validation_config
 
-    # Read validation config from the worktree's config file
-    validation_config = load_validation_config(worktree)
+    validation_config = load_runtime_validation_config(worktree)
 
     cmd = validation_config.get("cmd")
     timeout = validation_config.get("timeout_seconds", 300)
@@ -130,10 +129,7 @@ def _run_validation_gate(
         timeout_seconds=timeout,
     )
     start = time.monotonic()
-    # Create a temp directory for validation output (prepush runs outside orchestrator sessions)
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="prepush-validation-") as tmpdir:
-        result = gate.check(session_output_dir=Path(tmpdir))
+    result = gate.check(session_output_dir=_prepush_output_dir(worktree))
     duration = time.monotonic() - start
     logger.info(
         "Pre-push validation completed in %.2fs: allowed=%s cache_hit=%s",
@@ -156,6 +152,18 @@ def _run_validation_gate(
                 print("\nValidation stderr:")
                 print(stderr_path.read_text()[:1000])
     return 1
+
+
+def _prepush_output_dir(worktree: Path) -> Path:
+    """Return a stable worktree-local diagnostics directory for hook validation output."""
+    head_sha = GitWorkingCopy().get_head_sha(worktree) or "unknown-sha"
+    return (
+        worktree
+        / ".issue-orchestrator"
+        / "diagnostics"
+        / "prepush"
+        / head_sha
+    )
 
 
 def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:

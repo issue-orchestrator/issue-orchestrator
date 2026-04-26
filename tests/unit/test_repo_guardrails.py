@@ -54,6 +54,21 @@ def _make_config(repo: Path) -> Config:
     return config
 
 
+def _make_loaded_config(repo: Path, *, config_name: str = "main.yaml") -> Config:
+    config_dir = repo / ".issue-orchestrator" / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / config_name
+    config_path.write_text(
+        """
+validation:
+  cmd: "make validate-pr"
+""".lstrip()
+    )
+    config = _make_config(repo)
+    config.config_path = config_path
+    return config
+
+
 def test_setup_repo_guardrails_installs_repo_guardrails_and_agent_hooks(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -256,7 +271,10 @@ def test_checked_in_verify_pr_matches_portable_generated_output() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     verify_path = repo_root / "scripts" / "verify-pr.sh"
 
-    assert verify_path.read_text() == _render_verify_pr_script("make validate-pr")
+    assert verify_path.read_text() == _render_verify_pr_script(
+        "make validate-pr",
+        selected_config_name="main.yaml",
+    )
 
 
 def test_render_repo_pre_push_hook_uses_repo_root_relative_path() -> None:
@@ -277,6 +295,15 @@ def test_render_verify_pr_script_bakes_python_when_requested() -> None:
     assert '/tmp/issue-orchestrator-python' in rendered
 
 
+def test_render_verify_pr_script_exports_selected_config_name() -> None:
+    rendered = _render_verify_pr_script(
+        "make validate-pr",
+        selected_config_name="main.yaml",
+    )
+
+    assert "export ISSUE_ORCHESTRATOR_CONFIG_NAME=main.yaml" in rendered
+
+
 def test_setup_repo_guardrails_uses_portable_verify_script_for_issue_orchestrator_shape(
     tmp_path: Path,
 ) -> None:
@@ -288,11 +315,12 @@ def test_setup_repo_guardrails_uses_portable_verify_script_for_issue_orchestrato
     (repo / "hooks").mkdir()
     (repo / "hooks" / "pre-push").write_text("#!/usr/bin/env bash\n")
 
-    result = setup_repo_guardrails(_make_config(repo))
+    result = setup_repo_guardrails(_make_loaded_config(repo))
 
     rendered = result.verify_script.read_text()
     assert sys.executable not in rendered
     assert '.venv/bin/python' in rendered
+    assert "export ISSUE_ORCHESTRATOR_CONFIG_NAME=main.yaml" in rendered
 
 
 def test_render_verify_pr_script_uses_cache_aware_prepush_check() -> None:

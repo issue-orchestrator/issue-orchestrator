@@ -65,7 +65,7 @@ review:
 
 validation:
   cmd: make validate-pr
-  timeout_seconds: 300
+  timeout_seconds: 1800
   coverage_guardrail:
     enabled: true
     min_percent: 85

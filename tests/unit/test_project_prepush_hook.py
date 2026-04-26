@@ -26,6 +26,7 @@ class TestProjectPrepushHook:
             repo / ".venv" / "bin" / "python",
             f"""#!/usr/bin/env bash
 echo "python:$*" >> "{log_path}"
+echo "config:$ISSUE_ORCHESTRATOR_CONFIG_NAME" >> "{log_path}"
 exit 0
 """,
         )
@@ -48,6 +49,7 @@ exit 0
         assert result.returncode == 0
         assert log_path.read_text().splitlines() == [
             "python:-m issue_orchestrator.entrypoints.cli_tools.prepush_check -v",
+            "config:main.yaml",
         ]
 
     def test_fails_when_required_pr_gate_fails(self, tmp_path: Path) -> None:

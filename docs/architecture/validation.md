@@ -24,6 +24,12 @@ execution:
 The configured command should be the same command your repository treats as its
 authoritative pre-push / pre-publish gate.
 
+When you install repo guardrails with `issue-orchestrator setup-guardrails`, the
+generated `scripts/verify-pr.sh` captures the selected config filename. If you
+switch the repo to a different `.issue-orchestrator/config/*.yaml`, rerun
+`setup-guardrails` so pre-push validation and cache lookups continue to use the
+same config.
+
 The canonical **pre-publish** gate is the worktree's effective `pre-push` hook:
 
 - project hook first (`make validate-pr`, `scripts/verify-pr.sh`, etc.)

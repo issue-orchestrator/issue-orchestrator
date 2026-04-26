@@ -1,5 +1,6 @@
 """Unit tests for the prepush_check module."""
 
+import json
 import os
 import pytest
 import tempfile
@@ -57,6 +58,36 @@ validation:
         assert cmd == "pytest"
         assert timeout == 300
         assert dirty_check == "tracked"
+
+    def test_prefers_selected_config_name_env(self, temp_worktree, monkeypatch):
+        """Test selected config name env overrides default config discovery."""
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "main.yaml").write_text("""
+validation:
+  cmd: "pytest -k selected"
+  timeout_seconds: 45
+""")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
+
+        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
+
+        assert cmd == "pytest -k selected"
+        assert timeout == 45
+        assert dirty_check == "tracked"
+
+    def test_missing_selected_config_name_raises(self, temp_worktree, monkeypatch):
+        """Test explicit selected config name fails loudly when missing."""
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "default.yaml").write_text("""
+validation:
+  cmd: "pytest"
+""")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
+
+        with pytest.raises(FileNotFoundError, match="Configured file 'main.yaml' not found under"):
+            load_validation_cmd(temp_worktree)
 
     def test_uses_default_timeout(self, temp_worktree):
         """Test uses default timeout when not specified."""
@@ -158,6 +189,27 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
+    def test_uses_selected_config_name_env_for_run(self, temp_worktree, monkeypatch):
+        """Test full prepush run honors the selected config env."""
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        marker_file = temp_worktree / "selected-validation-ran"
+        (config_dir / "main.yaml").write_text(f"""
+validation:
+  cmd: "touch {marker_file}"
+  timeout_seconds: 10
+""")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False)
+            assert result == 0
+            assert marker_file.exists()
+        finally:
+            os.chdir(orig_cwd)
+
     def test_returns_1_when_validation_fails(self, temp_worktree):
         """Test returns 1 when validation fails."""
 
@@ -178,6 +230,42 @@ validation:
             assert result == 1
         finally:
             os.chdir(orig_cwd)
+
+    def test_failed_validation_persists_hook_diagnostics(self, temp_worktree):
+        """Test pre-push failures keep stdout/stderr artifacts after the hook exits."""
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo boom >&2 && exit 1"
+  timeout_seconds: 10
+""")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False)
+            assert result == 1
+        finally:
+            os.chdir(orig_cwd)
+
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=temp_worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        record_path = (
+            temp_worktree / ".issue-orchestrator" / "validation" / f"{head_sha}.json"
+        )
+        record = json.loads(record_path.read_text())
+        stdout_path = temp_worktree / str(record["stdout_path"])
+        stderr_path = temp_worktree / str(record["stderr_path"])
+        assert stdout_path.exists()
+        assert stderr_path.exists()
+        assert "boom" in stderr_path.read_text()
 
     def test_uses_cache_on_second_run(self, temp_worktree):
         """Test uses cache on second run."""

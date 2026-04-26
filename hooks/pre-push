@@ -4,6 +4,8 @@ set -euo pipefail
 # Canonical local publish gate.
 # Mirrors the required PR coverage through the cache-aware prepush_check path.
 
+export ISSUE_ORCHESTRATOR_CONFIG_NAME=main.yaml
+
 if [ -x ".venv/bin/python" ]; then
   .venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
 elif command -v python3 >/dev/null 2>&1; then

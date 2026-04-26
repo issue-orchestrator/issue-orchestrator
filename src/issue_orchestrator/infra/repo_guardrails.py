@@ -181,7 +181,12 @@ def setup_repo_guardrails(
         helper_script=repo_root / HELPER_RELATIVE_PATH,
     )
 
-    _install_verify_script(result.verify_script, resolved_validation_cmd, result)
+    _install_verify_script(
+        result.verify_script,
+        resolved_validation_cmd,
+        selected_config_name=_selected_config_name(config, repo_root),
+        result=result,
+    )
     _install_helper_script(result.helper_script, result)
     _install_repo_pre_push_hook(result.pre_push_hook, result.verify_script, result)
 
@@ -315,11 +320,14 @@ def _set_local_hooks_path(
 def _install_verify_script(
     verify_script: Path,
     validation_cmd: str,
+    *,
+    selected_config_name: str | None,
     result: RepoGuardrailsInstallResult,
 ) -> None:
     verify_script.parent.mkdir(parents=True, exist_ok=True)
     rendered = _render_verify_pr_script(
         validation_cmd,
+        selected_config_name=selected_config_name,
         baked_python=None if _should_render_portable_verify_script(result.repo_root) else shell_quote_issue_orchestrator_python(),
     )
     _write_executable_file(verify_script, rendered, result)
@@ -415,9 +423,15 @@ def _should_render_portable_verify_script(repo_root: Path) -> bool:
 def _render_verify_pr_script(
     validation_cmd: str,
     *,
+    selected_config_name: str | None = None,
     baked_python: str | None = None,
 ) -> str:
     quoted = shlex.quote(validation_cmd)
+    config_name_export = ""
+    if selected_config_name:
+        config_name_export = (
+            f"export ISSUE_ORCHESTRATOR_CONFIG_NAME={shlex.quote(selected_config_name)}\n"
+        )
     baked_python_branch = ""
     if baked_python:
         baked_python_branch = f"""elif [ -x {baked_python} ]; then
@@ -432,7 +446,7 @@ repo_root="$(cd "$(dirname "${{BASH_SOURCE[0]}}")/.." && pwd)"
 cd "$repo_root"
 
 validation_cmd={quoted}
-PYTHON_ENV_NAME={shlex.quote(ORCHESTRATOR_PYTHON_ENV)}
+{config_name_export}PYTHON_ENV_NAME={shlex.quote(ORCHESTRATOR_PYTHON_ENV)}
 PYTHON_BIN=""
 
 if [ -n "${{{ORCHESTRATOR_PYTHON_ENV}:-}}" ] && [ -x "${{{ORCHESTRATOR_PYTHON_ENV}}}" ]; then
@@ -452,6 +466,22 @@ fi
 echo "verify-pr: running cache-aware pre-push validation for $validation_cmd"
 "$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
 """
+
+
+def _selected_config_name(config: Config, repo_root: Path) -> str | None:
+    """Return the repo-local config filename that setup-guardrails was run with."""
+    config_path = config.config_path
+    if config_path is None:
+        return None
+    try:
+        return config_path.resolve().relative_to((repo_root / ".issue-orchestrator" / "config").resolve()).as_posix()
+    except ValueError:
+        logger.warning(
+            "Config path %s is outside %s; verify-pr will rely on default config discovery",
+            config_path,
+            repo_root / ".issue-orchestrator" / "config",
+        )
+        return None
 
 
 def _render_helper_script(source_path: Path) -> str:

@@ -85,9 +85,9 @@ def load_validation_cmd(worktree: Path) -> str | None:
     Returns:
         Validation command string, or None if not configured
     """
-    from ...infra.config import load_validation_config
+    from ...infra.config import load_runtime_validation_config
 
-    validation_config = load_validation_config(worktree)
+    validation_config = load_runtime_validation_config(worktree)
     return validation_config.get("cmd")
 
 
