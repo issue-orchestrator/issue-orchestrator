@@ -82,6 +82,7 @@ class MockCompletionProcessor:
         self.process_result = MagicMock()
         self.process_result.success = True
         self.process_result.pr_url = "https://github.com/test/repo/pull/1"
+        self.process_result.failure_kind = None
         # MagicMock attributes are truthy by default; pin the async-related
         # field so existing tests still exercise the synchronous completion
         # path. Tests for the deferred branch override this explicitly.
@@ -194,6 +195,41 @@ class TestSessionControllerTerminated:
         assert decision.status == SessionStatus.COMPLETED
         assert decision.completion_processed
         assert not decision.recovered_from_timeout
+
+    def test_pre_publish_validation_failure_becomes_validation_failed(self, tmp_path: Path):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        )
+        processor.process_result.success = False
+        processor.process_result.failure_kind = "validation_failed"
+        processor.process_result.message = "Validation failed: ERROR: Test-skipping patterns detected"
+        event_sink = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=event_sink,
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert decision.completion_processed
+        validation_events = [
+            event for event in event_sink.events
+            if event.name == EventName.SESSION_VALIDATION_FAILED
+        ]
+        assert len(validation_events) == 1
 
     def test_deferred_review_exchange_keeps_session_running(self):
         """When process() defers for async review exchange, session stays active."""

@@ -1,12 +1,14 @@
 """Lightweight validation config loading for hooks and completion commands."""
 
 from dataclasses import asdict
+import os
 from pathlib import Path
 
 import yaml
 
 from .config_paths import DEFAULT_CONFIG_NAME, find_config_file
 from .config_models import ValidationConfig
+from .env import get_env
 
 
 def default_validation_config() -> dict:
@@ -81,3 +83,21 @@ def load_validation_config_from_file(config_path: Path) -> dict:
     with config_path.open() as file:
         config = yaml.safe_load(file) or {}
     return extract_validation_config(config)
+
+
+def load_runtime_validation_config(
+    start_path: Path | None = None,
+) -> dict:
+    """Load validation config honoring explicit runtime config selection.
+
+    Precedence:
+    1. ``ISSUE_ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_PATH``
+    2. ``ISSUE_ORCHESTRATOR_CONFIG_NAME`` / ``ORCHESTRATOR_CONFIG_NAME``
+    3. repo-local ``default.yaml`` search
+    """
+    config_path_env = get_env("CONFIG_PATH") or os.environ.get("ORCHESTRATOR_CONFIG_PATH")
+    if config_path_env:
+        return load_validation_config_from_file(Path(config_path_env))
+
+    config_name = get_env("CONFIG_NAME") or os.environ.get("ORCHESTRATOR_CONFIG_NAME")
+    return load_validation_config(start_path, config_name=config_name)

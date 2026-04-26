@@ -9,7 +9,7 @@ Issue-Orchestrator is designed to assist humans, not replace trust boundaries. A
 - **A passing review is required before code is published.** The orchestrator runs a reviewer agent against every completion and gates publishing on approval.
 - **Agents do not hold GitHub credentials.** The `gh` CLI is shadowed by a wrapper that rejects PR-creating and PR-merging commands unless the orchestrator injects an authorization token.
 - **Architecture boundaries are enforced.** Control, domain, and ports layers cannot perform side effects (subprocesses, HTTP calls). Violations fail fast.
-- **Validation is the single source of truth.** The same validation gate runs locally, in pre-push, and in CI.
+- **Validation is the single source of truth.** The agent gate, the repo's pre-publish hook gate, and CI all enforce the same branch-readiness policy at different points in the lifecycle.
 
 ## The guardrail pipeline
 
@@ -28,7 +28,7 @@ flowchart TB
   R -->|changes requested| RW["Rework cycle<br/>(capped by max_rework_cycles)"]
   RW --> V
   R -->|cap hit / no progress| ESC["Escalated to human"]
-  R -->|approved| P{"4. Pre-push git hook<br/>validate-pr + trailer checks"}
+  R -->|approved| P{"4. Pre-publish hook gate<br/>repo pre-push + orchestrator checks"}
 
   P -->|fails| X3["Push rejected locally"]
   P -->|passes| C{"5. CI + branch protection<br/>required status checks"}
@@ -70,9 +70,16 @@ Every completed coding session is handed to a reviewer agent before anything is 
 
 The exchange can run via draft PR (`via-draft-pr`), an in-process local loop (`via-local-loop`, default), or MCP (`via-mcp`) — the gating rule is identical in all modes: no approval, no publish. See [Review Workflow](../development/REVIEW_WORKFLOW.md) for exchange mechanisms and cycle-limit details.
 
-### 4. Pre-push git hooks
+### 4. Pre-publish hook gate
 
-`.git/hooks/pre-push` chains the project's pre-push hook (`make validate-pr`, covering tests/linters/the agent-backed slice) with the orchestrator's pre-push hook (Agent-Status trailer validation, test-skipping-pattern detection such as `@Disabled` / `assumeTrue`, dirty-tracked-file rejection). An audit trail is written to `.git/hooks/pre-push.log`. Bypassable with `--no-verify`, but Layer 1 blocks that.
+Before the orchestrator performs the authenticated push, it runs the worktree's effective `.git/hooks/pre-push` wrapper itself. That wrapper chains the project's pre-push hook (`make validate-pr`, `scripts/verify-pr.sh`, etc.) with the orchestrator's pre-push hook (Agent-Status trailer validation, test-skipping-pattern detection such as `@Disabled` / `assumeTrue`, dirty-tracked-file rejection). This moves hook failures earlier in the lifecycle while preserving the exact same policy the real push would enforce.
+
+The real push still keeps hooks enabled. The cache-bearing validation record is keyed by commit SHA plus the configured validation command, so the later hook pass can reuse the same passing token instead of rerunning the expensive validation command on the same commit. Agents still cannot use `--no-verify` themselves; Layer 1 blocks that.
+
+For managed target repos, `setup-guardrails` also records the selected config
+filename into `scripts/verify-pr.sh`. If the repo later switches to another
+config file, rerun `setup-guardrails` so the pre-push gate and cache token keep
+using the same validation contract.
 
 ### 5. CI and branch protection
 

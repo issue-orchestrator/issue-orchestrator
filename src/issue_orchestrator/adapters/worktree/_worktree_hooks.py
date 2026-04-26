@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-import shlex
 import shutil
-import sys
 from pathlib import Path
 
 from ...infra.repo_guardrails import (
@@ -14,6 +12,7 @@ from ...infra.repo_guardrails import (
     MANAGED_PRE_PUSH_MARKER,
     quarantine_managed_hook_file,
 )
+from ...infra.hooks._python_path import shell_quote_issue_orchestrator_python
 from ._worktree_git import _git_run
 
 logger = logging.getLogger(__name__)
@@ -26,13 +25,8 @@ HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 # ``hooks/pre-push`` for why baking the path beats env-var propagation.
 ORCHESTRATOR_PYTHON_PLACEHOLDER = "@@ORCHESTRATOR_PYTHON@@"
 
-# Env var the hook also honors at runtime. Kept here so render-time
-# resolution matches what the hook does when executed.
-ORCHESTRATOR_PYTHON_ENV = "ISSUE_ORCHESTRATOR_PYTHON"
-
-
 def resolve_baked_python() -> str:
-    """Return the interpreter path to bake into the installed pre-push hook.
+    """Return the shell-quoted interpreter literal for generated hooks.
 
     Prefers an operator override in ``ISSUE_ORCHESTRATOR_PYTHON`` when it
     points at an executable file, so tests and dev environments that
@@ -41,10 +35,7 @@ def resolve_baked_python() -> str:
     to ``sys.executable`` — the interpreter running the orchestrator
     itself — which is always importable-safe by construction.
     """
-    override = os.environ.get(ORCHESTRATOR_PYTHON_ENV)
-    if override and os.access(override, os.X_OK) and os.path.isfile(override):
-        return override
-    return sys.executable
+    return shell_quote_issue_orchestrator_python()
 
 
 def _render_orchestrator_pre_push(template_path: Path) -> str:
@@ -62,8 +53,7 @@ def _render_orchestrator_pre_push(template_path: Path) -> str:
     from ``shlex.quote``.
     """
     content = template_path.read_text()
-    quoted = shlex.quote(resolve_baked_python())
-    return content.replace(ORCHESTRATOR_PYTHON_PLACEHOLDER, quoted)
+    return content.replace(ORCHESTRATOR_PYTHON_PLACEHOLDER, resolve_baked_python())
 
 
 def _install_orchestrator_pre_push(src: Path, dst: Path) -> None:

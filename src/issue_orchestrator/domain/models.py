@@ -1542,6 +1542,7 @@ class PublishJobResult:
     diagnostic_path: str | None = None
     duration_seconds: float | None = None
     review_exchange_completed: bool = False
+    failure_kind: str | None = None
 
     # Validation results (if validation was run)
     validation_passed: bool | None = None

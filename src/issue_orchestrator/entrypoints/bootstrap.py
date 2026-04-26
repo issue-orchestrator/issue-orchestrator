@@ -310,6 +310,7 @@ def _create_completion_components(
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
+    from ..control.pre_publish_gate import PrePublishGate
     from ..control.session_controller import SessionController
     from ..control.label_manager import LabelManager as _LM
 
@@ -323,6 +324,7 @@ def _create_completion_components(
         session_output=session_output,
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
+        pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
         config=config,
         background_job_supervisor=background_job_supervisor,
     ) if github else None
@@ -916,6 +918,7 @@ def build_orchestrator_for_testing(
 
     # Create CompletionProcessor for testing
     from ..control.completion_processor import CompletionProcessor
+    from ..control.pre_publish_gate import PrePublishGate
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -923,6 +926,7 @@ def build_orchestrator_for_testing(
         session_output=session_output,
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
+        pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
         config=config,
     )
 

@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from tests.integration.conftest import xdist_timeout
 
 # Get the scripts directory
 SCRIPTS_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "scripts"
@@ -53,7 +54,11 @@ def isolated_env():
         }
 
 
-def run_in_isolation(ctx: dict, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
+def run_in_isolation(
+    ctx: dict,
+    script: str,
+    timeout: float = xdist_timeout(30),
+) -> subprocess.CompletedProcess:
     """Run a script in the isolated environment, simulating what an agent could do."""
     full_script = f"{ctx['isolation']} {script}"
     return subprocess.run(

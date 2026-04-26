@@ -16,6 +16,7 @@ from issue_orchestrator.execution.orchestrator_http_api import (
     OrchestratorAsyncHttpApi,
 )
 from issue_orchestrator.domain.models import SessionHistoryEntry
+from tests.integration.conftest import xdist_timeout
 
 
 def _find_free_port() -> int:
@@ -29,7 +30,7 @@ def _start_server(port: int) -> uvicorn.Server:
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    deadline = time.time() + 5
+    deadline = time.time() + xdist_timeout(5)
     while time.time() < deadline and not server.started:
         time.sleep(0.05)
     if not server.started:

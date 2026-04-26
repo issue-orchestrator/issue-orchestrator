@@ -33,7 +33,7 @@ pytestmark = pytest.mark.xdist_group("e2e_worker")
 # These tests spawn nested pytest subprocesses. Under full pre-push load that
 # startup path can take materially longer than it does when the module is run
 # in isolation, so keep the budgets generous enough to avoid false flakes.
-_WORKER_SUBPROCESS_TIMEOUT_S = xdist_timeout(60)
+_WORKER_SUBPROCESS_TIMEOUT_S = xdist_timeout(90)
 _RUN_CREATION_TIMEOUT_S = xdist_timeout(20.0)
 _RUN_CREATION_POLL_INTERVAL_S = 0.1
 
@@ -552,7 +552,7 @@ def test_api_flow(test_repo: Path):
     assert status["pid"] == pid
 
     # Wait for completion (with timeout)
-    timeout = 60
+    timeout = xdist_timeout(60)
     start_time = time.time()
     final_status = None
     while time.time() - start_time < timeout:
@@ -653,7 +653,7 @@ def test_progress_tracking(test_repo_with_slow_tests: Path):
     assert run is not None, "Worker did not create run in time"
 
     # Wait for completion
-    timeout = 60
+    timeout = xdist_timeout(60)
     start_time = time.time()
     saw_total_tests = False
     saw_current_test = False
@@ -716,7 +716,7 @@ def test_progress_with_failures(test_repo: Path):
         allow_retry_once=False,
     )
 
-    timeout = 60
+    timeout = xdist_timeout(60)
     start_time = time.time()
     while time.time() - start_time < timeout:
         status = manager.status(orchestrator_id)

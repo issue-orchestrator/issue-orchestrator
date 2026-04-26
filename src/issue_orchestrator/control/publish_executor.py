@@ -556,6 +556,7 @@ class PublishJobExecutor:
             issue_number=job.issue_number,
             session_key=job.session_key,
             success=processing_result.success,
+            failure_kind=processing_result.failure_kind,
             pr_url=processing_result.pr_url,
             pr_number=self._extract_pr_number(processing_result.pr_url),
             message=processing_result.message,

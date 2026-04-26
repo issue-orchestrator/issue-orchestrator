@@ -5,13 +5,18 @@ from __future__ import annotations
 from playwright.sync_api import Page, expect
 
 
+def _goto_dashboard(page: Page, base_url: str) -> None:
+    """Open the dashboard with a navigation budget that survives full-suite load."""
+    page.goto(base_url, wait_until="domcontentloaded", timeout=90_000)
+    page.wait_for_function("() => window.dashboardBundleLoaded === true", timeout=15_000)
+
+
 def test_dashboard_loads_without_page_errors(page: Page, web_server: dict[str, object]) -> None:
     """Dashboard JS should execute without runtime exceptions on initial load."""
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
-    page.goto(str(web_server["url"]), wait_until="domcontentloaded")
-    page.wait_for_timeout(500)
+    _goto_dashboard(page, str(web_server["url"]))
 
     expect(page.locator("#tab-dashboard")).to_be_visible()
     assert errors == []
@@ -19,7 +24,7 @@ def test_dashboard_loads_without_page_errors(page: Page, web_server: dict[str, o
 
 def test_flow_card_opens_issue_detail_drawer(page: Page, web_server: dict[str, object]) -> None:
     """Clicking a flow card focus button opens the issue detail drawer."""
-    page.goto(str(web_server["url"]), wait_until="domcontentloaded")
+    _goto_dashboard(page, str(web_server["url"]))
 
     card_focus = page.locator(".dashboard-columns .issue-card[data-issue='408'] .card-focus").first
     expect(card_focus).to_be_visible()
@@ -36,7 +41,7 @@ def test_issue_card_timeline_button_opens_cycle_timeline(
     web_server: dict[str, object],
 ) -> None:
     """The visible card Timeline affordance opens the cycle-aware drawer."""
-    page.goto(str(web_server["url"]), wait_until="domcontentloaded")
+    _goto_dashboard(page, str(web_server["url"]))
 
     timeline_btn = page.locator(
         ".dashboard-columns .issue-card[data-issue='408'] .card-timeline-btn"
@@ -63,7 +68,7 @@ def test_issue_card_timeline_button_opens_cycle_timeline(
 
 def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> None:
     """Dashboard tabs should navigate to E2E view."""
-    page.goto(str(web_server["url"]), wait_until="domcontentloaded")
+    _goto_dashboard(page, str(web_server["url"]))
 
     page.locator("#tab-e2e").click()
     page.wait_for_url("**?tab=e2e**")

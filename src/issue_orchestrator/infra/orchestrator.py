@@ -690,7 +690,7 @@ class Orchestrator:
                 self.state.discovered_failures.append(DiscoveredFailure(
                     result.issue_number,
                     f"Issue #{result.issue_number}",
-                    "publish_failed",
+                    result.failure_kind or "publish_failed",
                 ))
                 self.state.failed_this_cycle.add(result.issue_number)
 

@@ -13,6 +13,7 @@ Exit codes:
 """
 
 import logging
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -50,10 +51,9 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
     Returns:
         Tuple of (command, timeout_seconds, pre_push_dirty_check)
     """
-    from ...infra.config import load_validation_config
+    from ...infra.config import load_runtime_validation_config
 
-    # Read validation config from the worktree's config file
-    validation_config = load_validation_config(worktree)
+    validation_config = load_runtime_validation_config(worktree)
 
     cmd = validation_config.get("cmd")
     timeout = validation_config.get("timeout_seconds", 300)
@@ -130,10 +130,7 @@ def _run_validation_gate(
         timeout_seconds=timeout,
     )
     start = time.monotonic()
-    # Create a temp directory for validation output (prepush runs outside orchestrator sessions)
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="prepush-validation-") as tmpdir:
-        result = gate.check(session_output_dir=Path(tmpdir))
+    result = gate.check(session_output_dir=_prepush_output_dir(worktree))
     duration = time.monotonic() - start
     logger.info(
         "Pre-push validation completed in %.2fs: allowed=%s cache_hit=%s",
@@ -156,6 +153,42 @@ def _run_validation_gate(
                 print("\nValidation stderr:")
                 print(stderr_path.read_text()[:1000])
     return 1
+
+
+def _prepush_output_dir(worktree: Path) -> Path:
+    """Return a stable worktree-local diagnostics directory for hook validation output."""
+    head_sha = GitWorkingCopy().get_head_sha(worktree) or "unknown-sha"
+    base_dir = worktree / ".issue-orchestrator" / "diagnostics" / "prepush"
+    _prune_prepush_output_dirs(base_dir, keep_names={head_sha}, max_keep=5)
+    return base_dir / head_sha
+
+
+def _prune_prepush_output_dirs(
+    base_dir: Path,
+    *,
+    keep_names: set[str],
+    max_keep: int,
+) -> None:
+    """Bound pre-push diagnostics retention to the current SHA plus recent siblings."""
+    if not base_dir.exists():
+        return
+    children = sorted(
+        base_dir.iterdir(),
+        key=lambda child: child.stat().st_mtime,
+        reverse=True,
+    )
+    keep_budget = max(max_keep - len(keep_names), 0)
+    kept_recent = 0
+    for child in children:
+        if child.name in keep_names:
+            continue
+        if kept_recent < keep_budget:
+            kept_recent += 1
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
 
 
 def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:

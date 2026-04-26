@@ -2,16 +2,22 @@
 set -euo pipefail
 
 # Canonical local publish gate.
-# Mirrors the required PR coverage: fast validate + the agent-backed slices.
+# Mirrors the required PR coverage through the cache-aware prepush_check path.
 
-# Enforce dirty-tree policy from YAML before expensive validation.
-if [ -x ".venv/bin/python" ]; then
-  .venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v
-elif command -v python3 >/dev/null 2>&1; then
-  python3 -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v
-else
-  echo "python3 not found; cannot run dirty-tree guard" >&2
-  exit 1
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERIFY_SCRIPT="$REPO_ROOT/scripts/verify-pr.sh"
+
+if [ -x "$VERIFY_SCRIPT" ]; then
+  exec "$VERIFY_SCRIPT"
 fi
 
-make validate-pr
+cd "$REPO_ROOT"
+
+if [ -x ".venv/bin/python" ]; then
+  .venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
+elif command -v python3 >/dev/null 2>&1; then
+  python3 -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
+else
+  echo "python3 not found; cannot run pre-push validation" >&2
+  exit 1
+fi
