@@ -179,6 +179,7 @@ The dashboard uses these endpoints:
 
 Authenticated control API calls require a bearer token from
 `~/.issue-orchestrator/api-token`, the target repo root, and `config_name`.
+Older examples that omit `config_name` will no longer work.
 
 - `POST /control/e2e/start`
 - `POST /control/e2e/stop`

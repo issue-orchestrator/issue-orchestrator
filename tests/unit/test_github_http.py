@@ -22,6 +22,7 @@ from issue_orchestrator.adapters.github.http_client import (
 )
 from issue_orchestrator.adapters.github.tokens import (
     _normalize_keyring_secret,
+    _read_gh_hosts_record,
     _read_gh_cli_token,
     _read_keyring_token,
 )
@@ -248,6 +249,31 @@ def test_read_gh_cli_token_from_hosts_keychain_account(
     token = _read_gh_cli_token(host="github.com")
 
     assert token == "gh-keychain-token"
+
+
+def test_read_gh_hosts_record_logs_malformed_yaml(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config_dir = tmp_path / "gh-config"
+    config_dir.mkdir()
+    hosts_path = config_dir / "hosts.yml"
+    hosts_path.write_text("github.com: [not valid yaml\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.tokens._gh_hosts_paths",
+        lambda: [hosts_path],
+    )
+
+    with caplog.at_level("WARNING", logger="issue_orchestrator.adapters.github.tokens"):
+        record = _read_gh_hosts_record(host="github.com")
+
+    assert record is None
+    assert any(
+        "Ignoring malformed GitHub CLI hosts.yml" in entry.getMessage()
+        and str(hosts_path) in entry.getMessage()
+        for entry in caplog.records
+    )
 
 
 def test_validate_github_token_checks_repo_access(monkeypatch: pytest.MonkeyPatch) -> None:

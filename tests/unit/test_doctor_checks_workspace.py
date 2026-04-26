@@ -5,6 +5,7 @@ from pathlib import Path
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config, DefaultAgentConfig
+from issue_orchestrator.ports.command_runner import CommandResult
 from issue_orchestrator.infra.doctor.checks.workspace import check_agents
 
 
@@ -42,8 +43,10 @@ def _git(repo_root: Path, *args: str) -> None:
     )
 
 
-def _agent_prompts_check(config: Config):
-    return next(check for check in check_agents(config) if check.name == "Agent Prompts")
+def _agent_prompts_check(config: Config, runner=None):
+    return next(
+        check for check in check_agents(config, runner=runner) if check.name == "Agent Prompts"
+    )
 
 
 def test_agent_scripts_use_provider_registry_for_provider_agents(
@@ -209,3 +212,49 @@ def test_agent_prompts_warn_when_prompt_only_modified_locally(
     assert check.status == "warning"
     assert ".prompts/dev.md" in check.detail
     assert "seed ref version (HEAD)" in check.detail
+
+
+def test_agent_prompts_use_injected_runner(monkeypatch, tmp_path: Path):
+    class _RecordingRunner:
+        def __init__(self) -> None:
+            self.commands: list[list[str]] = []
+
+        def run(
+            self,
+            command: str | list[str],
+            *,
+            cwd: Path | None = None,
+            env: dict[str, str] | None = None,
+            timeout_seconds: int | None = None,
+            shell: bool = False,
+        ) -> CommandResult:
+            assert isinstance(command, list)
+            self.commands.append(command)
+            if "cat-file" in command:
+                return CommandResult(returncode=0, stdout="", stderr="")
+            if "status" in command:
+                return CommandResult(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected git command: {command}")
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+    prompt_path = repo_root / ".prompts" / "dev.md"
+    prompt_path.parent.mkdir()
+    prompt_path.write_text("Prompt\n")
+
+    config = Config()
+    config.worktree_seed_ref = "HEAD"
+    config.agents = {
+        "agent:dev": AgentConfig(prompt_path=prompt_path, provider="codex"),
+    }
+
+    runner = _RecordingRunner()
+    monkeypatch.chdir(repo_root)
+    check = _agent_prompts_check(config, runner=runner)
+
+    assert check.status == "ok"
+    assert runner.commands == [
+        ["git", "-C", str(repo_root), "cat-file", "-e", "HEAD:.prompts/dev.md"],
+        ["git", "-C", str(repo_root), "status", "--porcelain", "--", ".prompts/dev.md"],
+    ]

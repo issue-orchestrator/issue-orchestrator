@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,10 @@ import pytest
 
 from issue_orchestrator.adapters.github import resolve_github_token
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.api_token import (
+    read_existing_admin_token,
+    read_existing_agent_callback_token,
+)
 from issue_orchestrator.testing.support.test_data import _ensure_label, close_issue
 from tests.e2e.conftest import e2e_label, env_token_name, find_free_port
 from tests.e2e.fixtures.orchestrator_process import OrchestratorProcess
@@ -41,6 +46,15 @@ pytestmark = [
 ]
 
 WORK_AGENT_LABEL = "agent:onboarding"
+_DEFAULT_PROGRESS_TIMEOUT_S = 180.0
+_PROGRESS_TIMEOUT_ENV = "E2E_AGENT_GUIDED_ONBOARDING_PROGRESS_TIMEOUT_SECONDS"
+_SENSITIVE_ENV_VARS = (
+    "ISSUE_ORCH_GITHUB_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ISSUE_ORCHESTRATOR_API_TOKEN",
+    "ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN",
+)
 
 
 def _requested_providers() -> set[str]:
@@ -77,8 +91,57 @@ def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _sensitive_log_values() -> list[str]:
+    values: list[str] = []
+    for env_name in _SENSITIVE_ENV_VARS:
+        value = os.environ.get(env_name)
+        if value:
+            values.append(value)
+
+    admin_token = read_existing_admin_token()
+    if admin_token:
+        values.append(admin_token)
+
+    agent_callback_token = read_existing_agent_callback_token()
+    if agent_callback_token:
+        values.append(agent_callback_token)
+
+    try:
+        github_token = resolve_github_token(configured_token=None)
+    except Exception:
+        github_token = None
+    if github_token:
+        values.append(github_token)
+
+    unique_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if len(value) < 8 or value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
+def _scrub_sensitive_output(content: str) -> str:
+    scrubbed = re.sub(
+        r"(Authorization:\s*Bearer\s+)[^\s\"']+",
+        r"\1[REDACTED]",
+        content,
+        flags=re.IGNORECASE,
+    )
+    scrubbed = re.sub(
+        r"https://x-access-token:[^@\s]+@github\.com",
+        "https://x-access-token:[REDACTED]@github.com",
+        scrubbed,
+    )
+    for secret in _sensitive_log_values():
+        scrubbed = scrubbed.replace(secret, "[REDACTED]")
+    return scrubbed
+
+
 def _write_log(path: Path, content: str) -> Path:
-    path.write_text(content, encoding="utf-8")
+    path.write_text(_scrub_sensitive_output(content), encoding="utf-8")
     return path
 
 
@@ -107,6 +170,31 @@ def _clone_target_repo(repo_name: str, target_repo: Path) -> None:
     _git(target_repo, "checkout", "-B", "main")
     _git(target_repo, "config", "user.email", "e2e@example.com")
     _git(target_repo, "config", "user.name", "E2E Onboarding")
+
+
+def _progress_timeout_seconds() -> float:
+    raw_value = os.environ.get(_PROGRESS_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return _DEFAULT_PROGRESS_TIMEOUT_S
+    try:
+        timeout = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid %s value %r; using %.0fs default",
+            _PROGRESS_TIMEOUT_ENV,
+            raw_value,
+            _DEFAULT_PROGRESS_TIMEOUT_S,
+        )
+        return _DEFAULT_PROGRESS_TIMEOUT_S
+    if timeout <= 0:
+        logger.warning(
+            "Ignoring non-positive %s value %r; using %.0fs default",
+            _PROGRESS_TIMEOUT_ENV,
+            raw_value,
+            _DEFAULT_PROGRESS_TIMEOUT_S,
+        )
+        return _DEFAULT_PROGRESS_TIMEOUT_S
+    return timeout
 
 
 def _prepare_pristine_onboarding_state(target_repo: Path) -> None:
@@ -303,7 +391,7 @@ def _run_agent_guided_setup(
 
     stdout_log = log_dir / f"{provider_name}-setup.stdout.log"
     stderr_log = log_dir / f"{provider_name}-setup.stderr.log"
-    progress_timeout_s = 180.0
+    progress_timeout_s = _progress_timeout_seconds()
     try:
         process = subprocess.Popen(
             cmd,

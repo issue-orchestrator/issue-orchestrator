@@ -182,8 +182,18 @@ def _read_gh_hosts_record(*, host: str) -> dict[str, object] | None:
         try:
             if not hosts_path.exists():
                 continue
-            payload = yaml.safe_load(hosts_path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
+            raw_text = hosts_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.debug("Could not read GitHub CLI hosts.yml at %s: %s", hosts_path, exc)
+            continue
+        try:
+            payload = yaml.safe_load(raw_text)
+        except yaml.YAMLError as exc:
+            logger.warning(
+                "Ignoring malformed GitHub CLI hosts.yml at %s: %s",
+                hosts_path,
+                exc,
+            )
             continue
         if not isinstance(payload, dict):
             continue

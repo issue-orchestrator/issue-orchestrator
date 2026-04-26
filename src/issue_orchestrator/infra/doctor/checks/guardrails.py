@@ -1,6 +1,7 @@
 """Guardrail checks for doctor."""
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -25,8 +26,9 @@ def check_guardrails_in_worktree_impl(
 
     # Build the PATH as agents see it (wrapper dir prepended)
     wrapper_dir = Path(__file__).resolve().parents[3] / "scripts"
+    active_python_bin = Path(sys.executable).resolve().parent
     env = os.environ.copy()
-    env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
+    env["PATH"] = f"{wrapper_dir}:{active_python_bin}:{env.get('PATH', '')}"
     env.pop("ORCHESTRATOR_GH_AUTH", None)  # Ensure no auth token
 
     # Run git command guards (blocked by wrapper scripts)

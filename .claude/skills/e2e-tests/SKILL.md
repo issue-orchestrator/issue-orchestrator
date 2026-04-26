@@ -97,6 +97,8 @@ def test_entire_workflow(): ...
 
 ## API Endpoints
 
+If you have older curl snippets saved locally, add `config_name=default.yaml` (or the config file you are actually running). The E2E control endpoints now require it.
+
 ```bash
 API_TOKEN="$(cat ~/.issue-orchestrator/api-token)"
 
@@ -142,7 +144,7 @@ curl "http://localhost:8080/control/e2e/quarantine?repo_root=$(pwd)&config_name=
 ### Check Status
 ```bash
 # Via API
-curl -s "http://localhost:8080/control/e2e/status?repo_root=$(pwd)" | jq
+curl -s "http://localhost:8080/control/e2e/status?repo_root=$(pwd)&config_name=default.yaml" | jq
 
 # Check if worker is running
 ps aux | grep e2e_worker
