@@ -644,7 +644,72 @@ class TestCreateWorktree:
             "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
         ] in skip_worktree_calls
         assert ".venv" in exclude_path.read_text()
+        assert ".claude/settings.json" in exclude_path.read_text()
+        assert ".issue-orchestrator/session-latest.json" in exclude_path.read_text()
+        assert ".issue-orchestrator/sessions" in exclude_path.read_text()
         assert ".issue-orchestrator/worktree-id" in exclude_path.read_text()
+        assert "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py" in exclude_path.read_text()
+
+    @patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools")
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_create_worktree_writes_excludes_to_common_git_dir_for_linked_worktree(
+        self,
+        mock_run,
+        mock_install_hooks,
+        mock_install_claude_settings,
+        mock_sync_cli_tools,
+        tmp_path,
+    ):
+        """Linked worktrees should write ignore entries where git actually reads them."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+
+        worktree_base = tmp_path / "worktrees"
+        gitdir = repo_root / ".git" / "worktrees" / "repo-123"
+        common_exclude = repo_root / ".git" / "info" / "exclude"
+        mock_sync_cli_tools.return_value = [
+            Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"),
+        ]
+
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:2] == ["worktree", "prune"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "list"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:2] == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "main"]:
+                return MagicMock(returncode=0, stdout="main\n", stderr="")
+            if argv[:3] == ["fetch", "origin", "main"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "origin/main"]:
+                return MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            if argv[:2] == ["worktree", "add"]:
+                worktree_path = worktree_base / "repo-123"
+                worktree_path.mkdir(parents=True, exist_ok=True)
+                gitdir.mkdir(parents=True, exist_ok=True)
+                (worktree_path / ".git").write_text(f"gitdir: {gitdir}")
+                (gitdir / "commondir").write_text(str(repo_root / ".git"))
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["ls-files", "--error-unmatch"]:
+                return MagicMock(returncode=0, stdout=f"{argv[-1]}\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        create_worktree(repo_root, 123, "Test", worktree_base=worktree_base)
+
+        assert ".issue-orchestrator/sessions" in common_exclude.read_text()
+        assert "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py" in common_exclude.read_text()
+        assert ".issue-orchestrator/sessions" in (gitdir / "info" / "exclude").read_text()
 
     def test_sync_cli_tools_copies_runtime_support_files(self, tmp_path):
         worktree_path = tmp_path / "worktree"

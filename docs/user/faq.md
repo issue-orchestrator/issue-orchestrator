@@ -14,6 +14,8 @@ A: The orchestrator auto-detects the repository from the git checkout. Override 
 **Q4: Where do worktrees go by default, and can I move them?**
 A: Worktrees default to `../` via `worktrees.base`. Set `worktrees.base` to point somewhere else if you want to keep them in a dedicated directory.
 
+If you use Claude Code, enable `execution.session_interactions.enabled: true` or let the setup wizard do it for you. That lets Issue Orchestrator auto-accept Claude's initial trust prompt in orchestrator-created worktrees. A dedicated worktree directory can still make the paths easier to find, but trust is stored per worktree path, not inherited from the parent directory.
+
 **Q5: What happens if I change the worktree location after I've been running for a while?**
 A: Existing worktrees stay where they were created. Changing `worktrees.base` only affects new worktrees. If you want everything under the new base, clean up old worktrees and let the orchestrator recreate them (or move them manually and make sure any in-flight sessions are stopped first).
 
@@ -46,7 +48,7 @@ A: The guardrails are the repo's safety hooks that prevent unsafe operations (fo
 A: `issue-orchestrator` resolves GitHub auth in two modes:
 
 - If a repo config declares `repo.github.token_env` or `repo.github.keyring_service` / `repo.github.keyring_username`, those repo-scoped sources are authoritative.
-- If a repo does not declare its own source, the global fallback order is `ISSUE_ORCH_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the optional OS keychain entry created by `issue-orchestrator auth store`.
+- If a repo does not declare its own source, the global fallback order is `ISSUE_ORCH_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then GitHub CLI `hosts.yml`, then the optional OS keychain entry created by `issue-orchestrator auth store`.
 
 The common global setup is:
 

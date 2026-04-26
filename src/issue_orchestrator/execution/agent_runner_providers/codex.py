@@ -37,7 +37,7 @@ class CodexProvider(CLIProvider):
 
         Args:
             prompt: The task to perform
-            model: Model name (e.g., o3). If None, uses Codex's default.
+            model: Model name (e.g., gpt-5.3-codex). If None, uses Codex's default.
             **kwargs: Additional options:
                 - approval_mode: "full-auto" (default), "yolo", or "default"
                 - sandbox: Sandbox policy (read-only, workspace-write, danger-full-access)

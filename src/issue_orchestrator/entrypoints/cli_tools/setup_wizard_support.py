@@ -222,9 +222,23 @@ def apply_changes(
 
     # Create labels.
     if collector.labels and repo:
-        client = repository_host_factory(repo)
-        for name, color, desc in collector.labels:
-            client.create_label(name, color=color, description=desc, force=True)
+        try:
+            client = repository_host_factory(repo)
+            for name, color, desc in collector.labels:
+                client.create_label(name, color=color, description=desc, force=True)
+        except Exception as exc:
+            prompter.print("\n✗ Failed to create GitHub labels.")
+            prompter.print(f"  Repo: {repo}")
+            prompter.print(f"  Detail: {exc}")
+            prompter.print(
+                "  Verify your token can access this repo, then rerun "
+                "`issue-orchestrator doctor`."
+            )
+            prompter.print(
+                "  If you need to store a token locally, run "
+                "`issue-orchestrator auth store`."
+            )
+            raise SystemExit(1) from exc
         prompter.print(f"  ✓ Created {len(collector.labels)} GitHub labels")
 
 

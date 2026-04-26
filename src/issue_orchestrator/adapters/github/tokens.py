@@ -7,7 +7,12 @@ import os
 import shutil
 import subprocess
 import sys
+from base64 import b64decode
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlparse
+
+import yaml
 
 from .errors import GitHubAuthError
 
@@ -17,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Keyring service/username constants for token storage
 KEYRING_SERVICE = "issue-orchestrator"
 KEYRING_USERNAME = "github-token"
+_GO_KEYRING_B64_PREFIX = "go-keyring-base64:"
 
 
 def resolve_github_token(
@@ -25,6 +31,7 @@ def resolve_github_token(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    api_url: str = "https://api.github.com",
 ) -> str:
     """Resolve GitHub token from multiple sources.
 
@@ -36,7 +43,8 @@ def resolve_github_token(
     3. ISSUE_ORCH_GITHUB_TOKEN env var (primary)
     4. GITHUB_TOKEN env var (fallback)
     5. GH_TOKEN env var (fallback)
-    6. Default OS keychain entry created by issue-orchestrator auth store
+    6. GitHub CLI hosts.yml auth
+    7. Default OS keychain entry created by issue-orchestrator auth store
 
     When a repo declares repo-specific auth sources, those sources are
     authoritative. Missing repo-scoped auth is treated as an error instead of
@@ -57,6 +65,9 @@ def resolve_github_token(
         token = os.environ.get(env_name)
         if token:
             return token
+    token = _read_gh_cli_token(host=_github_host_for_api_url(api_url))
+    if token:
+        return token
     # Optional keychain via keyring library
     token = _read_keyring_token(service=KEYRING_SERVICE, username=KEYRING_USERNAME)
     if token:
@@ -86,6 +97,7 @@ def describe_github_token_sources(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    api_url: str = "https://api.github.com",
 ) -> list[str]:
     """Describe visible token sources for diagnostics.
 
@@ -115,12 +127,108 @@ def describe_github_token_sources(
         value = os.environ.get(env_name)
         if value:
             token_sources.append(f"{env_name}: {_mask_token(value)}")
+    gh_cli_token = _read_gh_cli_token(host=_github_host_for_api_url(api_url))
+    if gh_cli_token:
+        token_sources.append(
+            f"GitHub CLI auth ({_github_host_for_api_url(api_url)}): {_mask_token(gh_cli_token)}"
+        )
     value = _read_keyring_token(service=KEYRING_SERVICE, username=KEYRING_USERNAME)
     if value:
         token_sources.append(
             f"Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): {_mask_token(value)}"
         )
     return token_sources
+
+
+def _github_host_for_api_url(api_url: str) -> str:
+    """Map an API base URL to the corresponding GitHub host entry in hosts.yml."""
+    hostname = urlparse(api_url).hostname or "api.github.com"
+    if hostname == "api.github.com":
+        return "github.com"
+    return hostname
+
+
+def _gh_hosts_paths() -> list[Path]:
+    """Return candidate GitHub CLI hosts.yml locations in lookup order."""
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def _append(path: Path | None) -> None:
+        if path is None:
+            return
+        normalized = path.expanduser()
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    gh_config_dir = os.environ.get("GH_CONFIG_DIR")
+    if gh_config_dir:
+        _append(Path(gh_config_dir) / "hosts.yml")
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        _append(Path(xdg_config_home) / "gh" / "hosts.yml")
+    _append(Path.home() / ".config" / "gh" / "hosts.yml")
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        _append(Path(appdata) / "GitHub CLI" / "hosts.yml")
+    _append(Path("/etc/gh/hosts.yml"))
+    return candidates
+
+
+def _read_gh_hosts_record(*, host: str) -> dict[str, object] | None:
+    """Read a single host record from GitHub CLI's hosts.yml if available."""
+    for hosts_path in _gh_hosts_paths():
+        try:
+            if not hosts_path.exists():
+                continue
+            raw_text = hosts_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.debug("Could not read GitHub CLI hosts.yml at %s: %s", hosts_path, exc)
+            continue
+        try:
+            payload = yaml.safe_load(raw_text)
+        except yaml.YAMLError as exc:
+            logger.warning(
+                "Ignoring malformed GitHub CLI hosts.yml at %s: %s",
+                hosts_path,
+                exc,
+            )
+            continue
+        if not isinstance(payload, dict):
+            continue
+        host_data = payload.get(host)
+        if not isinstance(host_data, dict):
+            continue
+        return host_data
+    return None
+
+
+def _gh_cli_account_for_host(record: dict[str, object]) -> str | None:
+    """Return the GitHub CLI account name for a host record."""
+    user = record.get("user")
+    if isinstance(user, str) and user.strip():
+        return user.strip()
+    users = record.get("users")
+    if isinstance(users, dict):
+        for account_name in users:
+            if isinstance(account_name, str) and account_name.strip():
+                return account_name.strip()
+    return None
+
+
+def _read_gh_cli_token(*, host: str) -> str | None:
+    """Read GitHub CLI auth from hosts.yml or its paired keychain entry."""
+    record = _read_gh_hosts_record(host=host)
+    if record is None:
+        return None
+    token = record.get("oauth_token")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    account = _gh_cli_account_for_host(record)
+    if account:
+        return _read_keyring_token(service=f"gh:{host}", username=account)
+    return None
 
 
 def _resolve_repo_scoped_github_token(
@@ -176,7 +284,7 @@ def _read_keyring_token(
         try:
             token = keyring.get_password(service, username)
             if token:
-                return token
+                return _normalize_keyring_secret(token)
         except Exception as exc:  # noqa: BLE001
             # Keyring can fail for a variety of legitimate reasons — no
             # backend on headless Linux, a locked keyring, a remote
@@ -240,7 +348,26 @@ def _read_macos_security_keychain_token(*, service: str, username: str) -> str |
     if result.returncode != 0:
         return None
     token = result.stdout.strip()
-    return token or None
+    normalized = _normalize_keyring_secret(token)
+    return normalized or None
+
+
+def _normalize_keyring_secret(secret: str) -> str:
+    """Normalize secrets read from OS keychains.
+
+    GitHub CLI stores secure-storage tokens through go-keyring using the
+    ``go-keyring-base64:<base64-token>`` envelope. issue-orchestrator's own
+    keyring entries are stored as raw tokens, so only unwrap when the prefix is
+    present.
+    """
+    if not secret.startswith(_GO_KEYRING_B64_PREFIX):
+        return secret
+    encoded = secret.removeprefix(_GO_KEYRING_B64_PREFIX)
+    try:
+        decoded = b64decode(encoded.encode("ascii"), validate=True).decode("utf-8")
+    except Exception:
+        return secret
+    return decoded or secret
 
 
 def store_keyring_token(token: str) -> None:
@@ -282,6 +409,12 @@ __all__ = [
     "KEYRING_USERNAME",
     "TokenValidationResult",
     "_mask_token",
+    "_gh_cli_account_for_host",
+    "_gh_hosts_paths",
+    "_github_host_for_api_url",
+    "_normalize_keyring_secret",
+    "_read_gh_cli_token",
+    "_read_gh_hosts_record",
     "_read_keyring_token",
     "_read_macos_security_keychain_token",
     "_resolve_repo_scoped_github_token",

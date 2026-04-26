@@ -98,6 +98,7 @@ filterwarnings = [
 ]
 markers = [
     "e2e: End-to-end tests with real GitHub (requires gh auth and E2E_TEST_REPO)",
+    "heavy_e2e: Expensive journey-level tests for onboarding or full-stack orchestration flows",
     "integration: Integration tests that may exercise external adapters",
     "live: Tests that require network access and external services",
     "xdist_group(name): Group tests to run serially under pytest-xdist --dist=loadgroup",

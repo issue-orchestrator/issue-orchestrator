@@ -52,20 +52,22 @@ def resolve_github_token(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    api_url: str = "https://api.github.com",
 ) -> str:
     """Resolve GitHub token from various sources.
 
     Checks in order:
     1. Explicitly configured token
     2. Environment variable (configured or GITHUB_TOKEN)
-    3. Keyring storage
-    4. gh CLI auth
+    3. GitHub CLI hosts.yml auth
+    4. Keyring storage
 
     Args:
         configured_token: Explicitly provided token
         configured_env: Environment variable name to check
         configured_keyring_service: Keyring service name to check
         configured_keyring_username: Keyring username/account to check
+        api_url: GitHub API base URL used to derive the matching hosts.yml entry
 
     Returns:
         GitHub token string
@@ -80,6 +82,7 @@ def resolve_github_token(
         configured_env=configured_env,
         configured_keyring_service=configured_keyring_service,
         configured_keyring_username=configured_keyring_username,
+        api_url=api_url,
     )
 
 

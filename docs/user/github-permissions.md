@@ -34,4 +34,4 @@ See [ADR-0005](../architecture/ADR/0005-human-merge-and-agent-credential-isolati
 
 ## Token Resolution Details
 
-For the full resolution chain (env var, keychain, hosts.yml) and alternative storage options, see [GitHub Token Setup (Developer)](../development/GITHUB_TOKEN_SETUP.md).
+For the full resolution chain (env var, GitHub CLI `hosts.yml`, keychain) and alternative storage options, see [GitHub Token Setup (Developer)](../development/GITHUB_TOKEN_SETUP.md).

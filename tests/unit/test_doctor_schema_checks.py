@@ -102,6 +102,16 @@ class TestRunSchemaChecks:
         agent_failures = [c for c in checks if "not in configured agents" in c.detail]
         assert len(agent_failures) == 0
 
+    def test_disabled_e2e_skips_failure_issue_agent_warning(self):
+        """Disabled E2E should not warn about the default failure issue agent label."""
+        cfg = Config()
+        cfg.e2e = E2EConfig(enabled=False, auto_create_issues=True)
+        cfg.agents = {"agent:dev": AgentConfig(prompt_path=Path("test.md"))}
+
+        checks = run_schema_checks(cfg)
+
+        assert not any(check.name == "Failure issue agent label" for check in checks)
+
 
 class TestFormatSummary:
     """Test the schema-driven summary formatter."""

@@ -97,33 +97,46 @@ def test_entire_workflow(): ...
 
 ## API Endpoints
 
+If you have older curl snippets saved locally, add `config_name=default.yaml` (or the config file you are actually running). The E2E control endpoints now require it.
+
 ```bash
+API_TOKEN="$(cat ~/.issue-orchestrator/api-token)"
+
 # Start E2E (or resume interrupted)
 curl -X POST http://localhost:8080/control/e2e/start \
+  -H "Authorization: Bearer ${API_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"repo_root": "'$(pwd)'"}'
+  -d '{"repo_root": "'$(pwd)'", "config_name": "default.yaml"}'
 
 # Stop running E2E
 curl -X POST http://localhost:8080/control/e2e/stop \
+  -H "Authorization: Bearer ${API_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"repo_root": "'$(pwd)'"}'
+  -d '{"repo_root": "'$(pwd)'", "config_name": "default.yaml"}'
 
 # Get status with progress
-curl "http://localhost:8080/control/e2e/status?repo_root=$(pwd)" | jq
+curl "http://localhost:8080/control/e2e/status?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}" | jq
 
 # List recent runs
-curl "http://localhost:8080/control/e2e/runs?repo_root=$(pwd)" | jq
+curl "http://localhost:8080/control/e2e/runs?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}" | jq
 
 # Get run details with test results
-curl "http://localhost:8080/control/e2e/run/1?repo_root=$(pwd)" | jq
+curl "http://localhost:8080/control/e2e/run/1?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}" | jq
 
 # Get run timeline/logs/failed tests
-curl "http://localhost:8080/control/e2e/run/1/timeline?repo_root=$(pwd)" | jq
-curl "http://localhost:8080/control/e2e/logs/1?repo_root=$(pwd)"
-curl "http://localhost:8080/control/e2e/failed/1?repo_root=$(pwd)" | jq
+curl "http://localhost:8080/control/e2e/run/1/timeline?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}" | jq
+curl "http://localhost:8080/control/e2e/logs/1?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}"
+curl "http://localhost:8080/control/e2e/failed/1?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}" | jq
 
 # View or update quarantine list
-curl "http://localhost:8080/control/e2e/quarantine?repo_root=$(pwd)" | jq
+curl "http://localhost:8080/control/e2e/quarantine?repo_root=$(pwd)&config_name=default.yaml" \
+  -H "Authorization: Bearer ${API_TOKEN}" | jq
 ```
 
 ## Debugging E2E Failures
@@ -131,7 +144,7 @@ curl "http://localhost:8080/control/e2e/quarantine?repo_root=$(pwd)" | jq
 ### Check Status
 ```bash
 # Via API
-curl -s "http://localhost:8080/control/e2e/status?repo_root=$(pwd)" | jq
+curl -s "http://localhost:8080/control/e2e/status?repo_root=$(pwd)&config_name=default.yaml" | jq
 
 # Check if worker is running
 ps aux | grep e2e_worker
@@ -194,6 +207,8 @@ Quarantined tests still run but:
 | E2E not auto-triggering | `auto_run_interval_minutes: 0` | Set to positive value |
 | E2E not auto-triggering on this machine | role resolved to `reader` or `disabled` | Set `e2e.role: executor` on the runner |
 | Worker exits immediately | Invalid pytest args | Check `pytest_args` path exists |
+| Worker exits with `No module named 'pytest'` | Repo sync did not install pytest | Re-run on current code; the E2E worktree now bootstraps fallback pytest |
+| Worker exits with missing `uv.lock` while using `uv sync --frozen` | Old orchestrator code path | Re-run on current code; repos without `uv.lock` are supported |
 | "AlreadyRunning" error | Previous worker still running | Stop via API or kill process |
 | No progress shown | Old schema without `total_tests` | Delete e2e.db, will recreate |
 | Tests not resuming | Monolithic test structure | Split into discrete test functions |

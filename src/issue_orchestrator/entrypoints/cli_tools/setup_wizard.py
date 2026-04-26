@@ -36,6 +36,7 @@ from .setup_wizard_support import (
 
 # Schema metadata for defaults/labels/hints
 from ...infra.settings_schema import get_setup_fields
+from ...ports.session_log import detect_ai_system_from_command
 
 # Compatibility re-export for existing tests and external imports.
 PlannedWrite = _PlannedWrite
@@ -68,6 +69,432 @@ def scan_existing_repo(path: Path | None = None) -> DetectedState:
         fetch_github_labels,
         find_existing_config,
         find_prompt_candidates,
+    )
+
+
+def _build_agent_config(
+    *,
+    prompt_path: str,
+    model: str,
+    timeout_minutes: int,
+    initial_prompt: str,
+    selected_provider: str | None,
+    custom_command: str | None,
+    permission_mode: str,
+    ai_system: str | None = None,
+) -> dict[str, Any]:
+    """Build one agent config from the wizard answers."""
+    agent_config: dict[str, Any] = {
+        "prompt": prompt_path,
+        "timeout_minutes": timeout_minutes,
+        "initial_prompt": initial_prompt,
+    }
+    if model:
+        agent_config["model"] = model
+
+    if custom_command:
+        agent_config["command"] = custom_command
+        if ai_system:
+            agent_config["ai_system"] = ai_system
+        return agent_config
+
+    if selected_provider:
+        agent_config["provider"] = selected_provider
+        agent_config["ai_system"] = selected_provider
+        if selected_provider == "claude-code" and permission_mode != "default":
+            agent_config["provider_args"] = {"permission_mode": permission_mode}
+
+    return agent_config
+
+
+def _prompt_agent_config(
+    prompter: Prompter,
+    *,
+    agent_name: str,
+    prompt_path: str,
+    allow_provider_autoselect: bool = False,
+) -> dict[str, Any]:
+    """Prompt for one agent's runtime config."""
+    timeout = _prompt_int(prompter, "Timeout in minutes", 45, min_value=1)
+    agent_type = _choose_agent_type(
+        prompter,
+        allow_provider_autoselect=allow_provider_autoselect,
+    )
+    custom_command, permission_mode, selected_provider, ai_system, model = (
+        _prompt_agent_runtime_details(prompter, agent_type)
+    )
+    initial_prompt = _default_agent_initial_prompt(
+        prompter,
+    )
+
+    return _build_agent_config(
+        prompt_path=prompt_path,
+        model=model,
+        timeout_minutes=timeout,
+        initial_prompt=initial_prompt,
+        selected_provider=selected_provider,
+        custom_command=custom_command,
+        permission_mode=permission_mode,
+        ai_system=ai_system,
+    )
+
+
+def _choose_agent_type(
+    prompter: Prompter,
+    *,
+    allow_provider_autoselect: bool,
+) -> str:
+    """Choose which provider or custom command backs an agent."""
+
+    providers = list_providers()
+    available_providers = [p for p in providers if get_provider(p).is_available()]
+    if allow_provider_autoselect and len(available_providers) == 1:
+        agent_type = available_providers[0]
+        prompter.print(f"\n  Using available provider: {agent_type}")
+        return agent_type
+
+    prompter.print("\n  Agent provider options:")
+    for provider_name in providers:
+        provider_obj = get_provider(provider_name)
+        available = "✓" if provider_obj.is_available() else "✗ not installed"
+        prompter.print(
+            f"    {provider_name}  - {provider_obj.description} ({available})"
+        )
+    prompter.print("    custom  - Use a custom command/script")
+
+    provider_choices = providers + ["custom"]
+    return prompter.choice("Agent provider", provider_choices)
+
+
+def _prompt_agent_runtime_details(
+    prompter: Prompter,
+    agent_type: str,
+) -> tuple[str | None, str, str | None, str | None, str]:
+    """Collect provider-specific runtime details for one agent."""
+    if agent_type == "custom":
+        custom_command, ai_system = _prompt_custom_agent_details(prompter)
+        return custom_command, "default", None, ai_system, "sonnet"
+
+    selected_provider = agent_type
+    model, permission_mode = _prompt_provider_runtime_details(
+        prompter,
+        selected_provider,
+    )
+    return None, permission_mode, selected_provider, None, model
+
+
+def _prompt_custom_agent_details(prompter: Prompter) -> tuple[str, str | None]:
+    """Collect custom command details and infer the ai_system when possible."""
+    prompter.print(
+        "\n  Enter your custom command template. Available variables:"
+    )
+    prompter.print(
+        "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
+    )
+    custom_command = prompter.input("Custom command")
+    ai_system = detect_ai_system_from_command(custom_command)
+    if ai_system:
+        prompter.print(f"  Detected ai_system: {ai_system}")
+        return custom_command, ai_system
+
+    prompter.print(
+        "  Couldn't infer ai_system from that command. "
+        "This is required for validation and diagnostics."
+    )
+    return custom_command, prompter.input("AI system name", "claude-code")
+
+
+def _prompt_provider_runtime_details(
+    prompter: Prompter,
+    provider_name: str,
+) -> tuple[str, str]:
+    """Collect runtime details for a named built-in provider."""
+    if provider_name == "claude-code":
+        return _prompt_claude_runtime_details(prompter)
+    if provider_name == "codex":
+        prompter.print(
+            "\n  Leave the model blank to use the Codex CLI default for your account."
+        )
+        return prompter.input("Model for Codex", ""), "default"
+    return prompter.input("Model name", "default"), "default"
+
+
+def _prompt_claude_runtime_details(prompter: Prompter) -> tuple[str, str]:
+    """Collect Claude model and permission preferences."""
+    model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
+
+    prompter.print(
+        "\n  Permission mode controls how Claude handles tool permissions:"
+    )
+    prompter.print("    default          - Prompt for each action (safest)")
+    prompter.print(
+        "    acceptEdits      - Auto-accept file edits, prompt for others"
+    )
+    prompter.print(
+        "    bypassPermissions - Skip all prompts (use for trusted automation)"
+    )
+    permission_mode = prompter.choice(
+        "Permission mode", ["default", "acceptEdits", "bypassPermissions"]
+    )
+    return model, _confirm_claude_permission_mode(prompter, permission_mode)
+
+
+def _confirm_claude_permission_mode(
+    prompter: Prompter,
+    permission_mode: str,
+) -> str:
+    """Confirm high-risk Claude permission settings."""
+    if permission_mode != "bypassPermissions":
+        return permission_mode
+
+    prompter.print(
+        "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
+    )
+    prompter.print(
+        "     - Execute any shell commands without confirmation"
+    )
+    prompter.print("     - Read/write any files without confirmation")
+    prompter.print(
+        "     - Access network resources without confirmation"
+    )
+    if prompter.yes_no(
+        "Are you sure you want to bypass all permission prompts?",
+        default=False,
+    ):
+        return permission_mode
+
+    prompter.print("  → Using 'default' mode instead")
+    return "default"
+
+
+def _default_agent_initial_prompt(
+    prompter: Prompter,
+) -> str:
+    """Build the default initial prompt for the selected agent role."""
+
+    prompter.print("\n  Does this agent do code reviews?")
+    prompter.print("    Review agents need {pr_number} in their prompt template.")
+    is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
+
+    if is_review_agent:
+        return (
+            "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
+            "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
+        )
+    return (
+        "Work on issue #{issue_number}: {issue_title}. "
+        "Follow the instructions in {prompt}. When done, use coding-done to report completion."
+    )
+
+
+def _prompt_validation_settings(
+    config: dict[str, Any],
+    prompter: Prompter,
+) -> None:
+    """Prompt for validation settings when the config does not already define them."""
+    if "validation" in config and (config.get("validation") or {}).get("cmd"):
+        return
+
+    prompter.print("\n--- Validation ---")
+    prompter.print("Validation runs on coding-done and pre-push.")
+    validation_cmd = prompter.input("Validation command (optional)", "make test")
+    if validation_cmd.strip():
+        timeout = _prompt_int(
+            prompter,
+            "Validation timeout (seconds)",
+            300,
+            min_value=1,
+        )
+        config["validation"] = {
+            "cmd": validation_cmd.strip(),
+            "timeout_seconds": timeout,
+        }
+
+
+def _prompt_manual_existing_agent(
+    config: dict[str, Any],
+    prompter: Prompter,
+    *,
+    prompt_candidates: list[Path],
+) -> None:
+    """Force existing-project onboarding to end with at least one agent."""
+    prompter.print("\n--- Agent Configuration ---")
+    prompter.print(
+        "No agents are configured yet. Add at least one agent so the orchestrator "
+        "has agent labels to watch."
+    )
+
+    while not config.get("agents"):
+        agent_name = prompter.input("Agent label (e.g., 'agent:backend')")
+        if not agent_name:
+            prompter.print("You need at least one agent!")
+            continue
+        if not agent_name.startswith("agent:"):
+            if prompter.yes_no(
+                f"Add 'agent:' prefix to make it 'agent:{agent_name}'?"
+            ):
+                agent_name = f"agent:{agent_name}"
+
+        agent_short = agent_name.split(":")[-1]
+        matching_prompts = [
+            candidate
+            for candidate in prompt_candidates
+            if agent_short.lower() in candidate.name.lower()
+        ]
+        if matching_prompts:
+            prompter.print("  Possible prompt files:")
+            for i, path in enumerate(matching_prompts[:5], 1):
+                prompter.print(f"    {i}. {path.relative_to(Path.cwd())}")
+            choice = prompter.input("Choose (number) or enter path", "1")
+            try:
+                idx = int(choice) - 1
+                prompt_path = str(matching_prompts[idx].relative_to(Path.cwd()))
+            except (ValueError, IndexError):
+                prompt_path = choice
+        else:
+            prompt_path = prompter.input(
+                "Prompt file path",
+                f".prompts/{agent_short}.md",
+            )
+
+        config.setdefault("agents", {})
+        config["agents"][agent_name] = _prompt_agent_config(
+            prompter,
+            agent_name=agent_name,
+            prompt_path=prompt_path,
+        )
+        prompter.print(f"  ✓ Added {agent_name}")
+
+
+def _wizard_field_default(field: dict[str, Any]) -> Any:
+    """Override a few schema defaults for first-run setup UX."""
+    if field.get("name") == "web_port" and field.get("default") == 0:
+        return 8080
+    return field["default"]
+
+
+def _prompt_int(
+    prompter: Prompter,
+    question: str,
+    default: int,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int:
+    """Prompt for an integer and retry on invalid input."""
+    while True:
+        raw = prompter.input(question, str(default))
+        try:
+            value = int(raw)
+        except ValueError:
+            prompter.print(f"  Invalid number '{raw}'. Enter an integer.")
+            continue
+        if min_value is not None and value < min_value:
+            prompter.print(f"  Value must be at least {min_value}.")
+            continue
+        if max_value is not None and value > max_value:
+            prompter.print(f"  Value must be at most {max_value}.")
+            continue
+        return value
+
+
+def _config_uses_claude_code(config: dict[str, Any]) -> bool:
+    """Return whether any configured agent uses Claude Code."""
+    for agent_config in config.get("agents", {}).values():
+        if not isinstance(agent_config, dict):
+            continue
+        if agent_config.get("provider") == "claude-code":
+            return True
+        if agent_config.get("ai_system") == "claude-code":
+            return True
+    return False
+
+
+def _claude_session_interactions_enabled(config: dict[str, Any]) -> bool:
+    """Return whether runner-managed Claude startup interactions are enabled."""
+    execution_config = config.get("execution")
+    if not isinstance(execution_config, dict):
+        return False
+    interactions_config = execution_config.get("session_interactions")
+    if not isinstance(interactions_config, dict):
+        return False
+    return bool(interactions_config.get("enabled"))
+
+
+def _print_claude_code_worktree_note(prompter: Prompter) -> None:
+    """Explain Claude Code's per-worktree trust prompt behavior."""
+    prompter.print(
+        "  Claude Code note: trust is stored per worktree path."
+    )
+    prompter.print(
+        "  Issue Orchestrator can auto-accept Claude's initial trust prompt "
+        "when trusted session interactions are enabled."
+    )
+    prompter.print(
+        "  A dedicated worktree directory keeps those paths predictable, but "
+        "trusting the parent directory once does not automatically trust "
+        "future child worktrees."
+    )
+
+
+def _prompt_claude_session_interactions(
+    config: dict[str, Any],
+    prompter: Prompter,
+) -> None:
+    """Offer runner-managed Claude startup prompt handling during onboarding."""
+    if not _config_uses_claude_code(config):
+        return
+
+    execution_config = cast(dict[str, Any], config.setdefault("execution", {}))
+    interactions_config = execution_config.get("session_interactions")
+    if isinstance(interactions_config, dict) and "enabled" in interactions_config:
+        return
+
+    prompter.print("\n--- Claude Startup Prompts ---")
+    prompter.print(
+        "Claude Code may pause on its first worktree trust screen."
+    )
+    prompter.print(
+        "Issue Orchestrator can auto-accept this trusted startup prompt in "
+        "orchestrator-created worktrees."
+    )
+    prompter.print(
+        "Recommended for hands-free Claude onboarding."
+    )
+    if prompter.yes_no(
+        "Enable trusted session interactions for Claude startup prompts?",
+        default=True,
+    ):
+        execution_config["session_interactions"] = {"enabled": True}
+
+
+def _print_claude_code_next_steps(
+    prompter: Prompter,
+    config: dict[str, Any],
+) -> None:
+    """Call out how Claude trust prompts will behave after onboarding."""
+    prompter.print("\n  Claude Code note:")
+    if _claude_session_interactions_enabled(config):
+        prompter.print(
+            "     Trusted session interactions are enabled."
+        )
+        prompter.print(
+            "     Issue Orchestrator will auto-accept Claude's initial trust "
+            "prompt in orchestrator-created worktrees."
+        )
+    else:
+        prompter.print(
+            "     The first interactive Claude session in a new worktree may pause "
+            "for manual trust approval."
+        )
+        prompter.print(
+            "     To auto-accept this trusted startup prompt later, set "
+            "execution.session_interactions.enabled: true."
+        )
+    prompter.print(
+        "     Trust is per worktree path. A dedicated worktree base keeps paths "
+        "easy to find, but pre-approving the parent directory does not auto-trust "
+        "child worktrees."
     )
 
 
@@ -119,119 +546,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
             f"Prompt file path for {agent_name}",
             f".prompts/{agent_name.split(':')[-1]}.md",
         )
-
-        timeout = prompter.input("Timeout in minutes", "45")
-
-        # Ask about agent provider
-        providers = list_providers()
-        available_providers = [p for p in providers if get_provider(p).is_available()]
-        agent_type: str
-        if not advanced and len(available_providers) == 1:
-            agent_type = available_providers[0]
-            prompter.print(f"\n  Using available provider: {agent_type}")
-        else:
-            prompter.print("\n  Agent provider options:")
-            for p in providers:
-                provider_obj = get_provider(p)
-                available = "✓" if provider_obj.is_available() else "✗ not installed"
-                prompter.print(f"    {p}  - {provider_obj.description} ({available})")
-            prompter.print("    custom  - Use a custom command/script")
-
-            provider_choices = providers + ["custom"]
-            agent_type = prompter.choice("Agent provider", provider_choices)
-
-        custom_command = None
-        permission_mode = "default"
-        selected_provider = None
-
-        if agent_type == "custom":
-            prompter.print(
-                "\n  Enter your custom command template. Available variables:"
-            )
-            prompter.print(
-                "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
-            )
-            custom_command = prompter.input("Custom command")
-            model = "sonnet"  # Not relevant for custom, but keep a default
-        else:
-            selected_provider = agent_type
-            # Model selection depends on provider
-            if selected_provider == "claude-code":
-                model = prompter.choice(
-                    "Model for this agent", ["sonnet", "opus", "haiku"]
-                )
-
-                # Permission mode for Claude CLI
-                prompter.print(
-                    "\n  Permission mode controls how Claude handles tool permissions:"
-                )
-                prompter.print("    default          - Prompt for each action (safest)")
-                prompter.print(
-                    "    acceptEdits      - Auto-accept file edits, prompt for others"
-                )
-                prompter.print(
-                    "    bypassPermissions - Skip all prompts (use for trusted automation)"
-                )
-                permission_mode = prompter.choice(
-                    "Permission mode", ["default", "acceptEdits", "bypassPermissions"]
-                )
-
-                # Safety confirmation for bypassPermissions
-                if permission_mode == "bypassPermissions":
-                    prompter.print(
-                        "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
-                    )
-                    prompter.print(
-                        "     - Execute any shell commands without confirmation"
-                    )
-                    prompter.print("     - Read/write any files without confirmation")
-                    prompter.print(
-                        "     - Access network resources without confirmation"
-                    )
-                    if not prompter.yes_no(
-                        "Are you sure you want to bypass all permission prompts?",
-                        default=False,
-                    ):
-                        permission_mode = "default"
-                        prompter.print("  → Using 'default' mode instead")
-            elif selected_provider == "codex":
-                model = prompter.input("Model for Codex", "o3")
-            else:
-                model = prompter.input("Model name", "default")
-
-        # Ask if this agent does code reviews (affects initial_prompt template)
-        prompter.print("\n  Does this agent do code reviews?")
-        prompter.print("    Review agents need {pr_number} in their prompt template.")
-        is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
-
-        # Generate appropriate initial_prompt based on agent type
-        if is_review_agent:
-            initial_prompt = (
-                "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
-                "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
-            )
-        else:
-            initial_prompt = (
-                "Work on issue #{issue_number}: {issue_title}. "
-                "Follow the instructions in {prompt}. When done, use coding-done to report completion."
-            )
-
-        agent_config: dict[str, Any] = {
-            "prompt": prompt_path,
-            "model": model,
-            "timeout_minutes": int(timeout),
-            "initial_prompt": initial_prompt,
-        }
-
-        if custom_command:
-            agent_config["command"] = custom_command
-        elif selected_provider:
-            agent_config["provider"] = selected_provider
-            # Add provider-specific args
-            if selected_provider == "claude-code" and permission_mode != "default":
-                agent_config["provider_args"] = {"permission_mode": permission_mode}
-
-        config["agents"][agent_name] = agent_config
+        config["agents"][agent_name] = _prompt_agent_config(
+            prompter,
+            agent_name=agent_name,
+            prompt_path=prompt_path,
+            allow_provider_autoselect=not advanced,
+        )
 
         prompter.print(f"✓ Added {agent_name}\n")
 
@@ -239,8 +559,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("\n--- Concurrency Settings ---")
     concurrency_values: dict[str, Any] = {}
     for field in get_setup_fields("concurrency"):
-        raw = prompter.input(field["prompt"], str(field["default"]))
-        concurrency_values[field["name"]] = int(raw)
+        concurrency_values[field["name"]] = _prompt_int(
+            prompter,
+            field["prompt"],
+            int(field["default"]),
+            min_value=0,
+        )
     config["execution"] = {
         "concurrency": concurrency_values,
     }
@@ -313,6 +637,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print(
         "  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)"
     )
+    if _config_uses_claude_code(config):
+        _print_claude_code_worktree_note(prompter)
     _wt_fields = get_setup_fields("worktrees")
     _wt_field = (
         _wt_fields[0]
@@ -359,6 +685,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
         worktrees_config["setup"] = setup_cmds
 
+    _prompt_claude_session_interactions(config, prompter)
+
     # UI Mode
     prompter.print("\n--- UI Mode ---")
     prompter.print("How do you want to monitor agent sessions?\n")
@@ -380,8 +708,13 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
             cond = field.get("condition")
             if cond and cond.get("field") == "ui_mode" and cond.get("value") != ui_mode:
                 continue
-            raw = prompter.input(field["prompt"], str(field["default"]))
-            ui_config[field["name"]] = int(raw)
+            ui_config[field["name"]] = _prompt_int(
+                prompter,
+                field["prompt"],
+                int(_wizard_field_default(field)),
+                min_value=0,
+                max_value=65535,
+            )
         prompter.print("\n--- Terminal Backend (web mode) ---")
         prompter.print("Choose how agent sessions are executed:\n")
         prompter.print("  tmux       - Default (stable, interactive)")
@@ -409,16 +742,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
             f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc."
         )
 
-    # Validation
-    prompter.print("\n--- Validation ---")
-    prompter.print("Validation runs on coding-done and pre-push.")
-    validation_cmd = prompter.input("Validation command (optional)", "make test")
-    if validation_cmd.strip():
-        timeout = prompter.input("Validation timeout (seconds)", "300")
-        config["validation"] = {
-            "cmd": validation_cmd.strip(),
-            "timeout_seconds": int(timeout),
-        }
+    _prompt_validation_settings(config, prompter)
 
     # Filtering (optional)
     prompter.print("\n--- Filtering (Optional) ---")
@@ -557,141 +881,33 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                         "Prompt file path",
                         f".prompts/{agent_short}.md",
                     )
-
-                timeout = prompter.input("Timeout (minutes)", "45")
-
-                # Ask about agent provider
-                providers = list_providers()
-                prompter.print("\n  Agent provider options:")
-                for p in providers:
-                    provider_obj = get_provider(p)
-                    available = (
-                        "✓" if provider_obj.is_available() else "✗ not installed"
-                    )
-                    prompter.print(
-                        f"    {p}  - {provider_obj.description} ({available})"
-                    )
-                prompter.print("    custom  - Use a custom command/script")
-
-                provider_choices = providers + ["custom"]
-                agent_type = prompter.choice("Agent provider", provider_choices)
-
-                custom_command = None
-                permission_mode = "default"
-                selected_provider = None
-
-                if agent_type == "custom":
-                    prompter.print(
-                        "\n  Enter your custom command template. Available variables:"
-                    )
-                    prompter.print(
-                        "    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}"
-                    )
-                    custom_command = prompter.input("Custom command")
-                    model = "sonnet"  # Not relevant for custom, but keep a default
-                else:
-                    selected_provider = agent_type
-                    # Model selection depends on provider
-                    if selected_provider == "claude-code":
-                        model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
-
-                        # Permission mode for Claude CLI
-                        prompter.print(
-                            "\n  Permission mode controls how Claude handles tool permissions:"
-                        )
-                        prompter.print(
-                            "    default          - Prompt for each action (safest)"
-                        )
-                        prompter.print(
-                            "    acceptEdits      - Auto-accept file edits, prompt for others"
-                        )
-                        prompter.print(
-                            "    bypassPermissions - Skip all prompts (use for trusted automation)"
-                        )
-                        permission_mode = prompter.choice(
-                            "Permission mode",
-                            ["default", "acceptEdits", "bypassPermissions"],
-                        )
-
-                        # Safety confirmation for bypassPermissions
-                        if permission_mode == "bypassPermissions":
-                            prompter.print(
-                                "\n  ⚠️  WARNING: bypassPermissions allows the agent to:"
-                            )
-                            prompter.print(
-                                "     - Execute any shell commands without confirmation"
-                            )
-                            prompter.print(
-                                "     - Read/write any files without confirmation"
-                            )
-                            prompter.print(
-                                "     - Access network resources without confirmation"
-                            )
-                            if not prompter.yes_no(
-                                "Are you sure you want to bypass all permission prompts?",
-                                default=False,
-                            ):
-                                permission_mode = "default"
-                                prompter.print("  → Using 'default' mode instead")
-                    elif selected_provider == "codex":
-                        model = prompter.input("Model for Codex", "o3")
-                    else:
-                        model = prompter.input("Model name", "default")
-
-                # Ask if this agent does code reviews (affects initial_prompt template)
-                prompter.print("\n  Does this agent do code reviews?")
-                prompter.print(
-                    "    Review agents need {pr_number} in their prompt template."
+                config.setdefault("agents", {})
+                config["agents"][agent_label] = _prompt_agent_config(
+                    prompter,
+                    agent_name=agent_label,
+                    prompt_path=prompt_path,
                 )
-                is_review_agent = prompter.yes_no(
-                    "Is this a review agent?", default=False
-                )
-
-                # Generate appropriate initial_prompt based on agent type
-                if is_review_agent:
-                    initial_prompt = (
-                        "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
-                        "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
-                    )
-                else:
-                    initial_prompt = (
-                        "Work on issue #{issue_number}: {issue_title}. "
-                        "Follow the instructions in {prompt}. When done, use coding-done to report completion."
-                    )
-
-                if "agents" not in config:
-                    config["agents"] = {}
-
-                agent_cfg: dict[str, Any] = {
-                    "prompt": prompt_path,
-                    "model": model,
-                    "timeout_minutes": int(timeout),
-                    "initial_prompt": initial_prompt,
-                }
-
-                if custom_command:
-                    agent_cfg["command"] = custom_command
-                elif selected_provider:
-                    agent_cfg["provider"] = selected_provider
-                    # Add provider-specific args
-                    if (
-                        selected_provider == "claude-code"
-                        and permission_mode != "default"
-                    ):
-                        agent_cfg["provider_args"] = {
-                            "permission_mode": permission_mode
-                        }
-
-                config["agents"][agent_label] = agent_cfg
                 prompter.print(f"  ✓ Added {agent_label}")
+
+    if not config.get("agents"):
+        _prompt_manual_existing_agent(
+            config,
+            prompter,
+            prompt_candidates=state.prompt_candidates,
+        )
 
     # Ensure we have concurrency settings
     if "execution" not in config or "concurrency" not in config.get("execution", {}):
         prompter.print("\n--- Concurrency Settings ---")
-        max_sessions = prompter.input("Max concurrent sessions", "3")
+        max_sessions = _prompt_int(
+            prompter,
+            "Max concurrent sessions",
+            3,
+            min_value=1,
+        )
         config.setdefault("execution", {})
         config["execution"]["concurrency"] = {
-            "max_concurrent_sessions": int(max_sessions)
+            "max_concurrent_sessions": max_sessions
         }
 
     # Milestone sorting - only ask if not already configured
@@ -766,6 +982,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print(
             "  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)"
         )
+        if _config_uses_claude_code(config):
+            _print_claude_code_worktree_note(prompter)
         _wt_fields = get_setup_fields("worktrees")
         _wt_field = (
             _wt_fields[0]
@@ -813,6 +1031,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             wt_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
             wt_config["setup"] = setup_cmds
 
+    _prompt_claude_session_interactions(config, prompter)
+
     # UI mode
     if "ui" not in config or "mode" not in config.get("ui", {}):
         prompter.print("\n--- UI Mode ---")
@@ -840,8 +1060,13 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                     and cond.get("value") != ui_mode
                 ):
                     continue
-                raw = prompter.input(field["prompt"], str(field["default"]))
-                ui_config[field["name"]] = int(raw)
+                ui_config[field["name"]] = _prompt_int(
+                    prompter,
+                    field["prompt"],
+                    int(_wizard_field_default(field)),
+                    min_value=0,
+                    max_value=65535,
+                )
             prompter.print("\n--- Terminal Backend (web mode) ---")
             prompter.print("Choose how agent sessions are executed:\n")
             prompter.print("  tmux       - Default (stable, interactive)")
@@ -874,6 +1099,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             prompter.print(
                 f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc."
             )
+
+    _prompt_validation_settings(config, prompter)
 
     # Two-stage review workflow - ask if not already configured (default enabled)
     has_review_config = "review" in config and config["review"].get("enabled")
@@ -1024,7 +1251,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
             "\n⚠ Some prerequisites are missing. Install them before continuing."
         )
         if not prereqs["github_auth"]:
-            prompter.print("  Set a GitHub token (GITHUB_TOKEN or config)")
+            prompter.print(
+                "  Set a GitHub token (ISSUE_ORCH_GITHUB_TOKEN, GITHUB_TOKEN, or repo.github config)"
+            )
         if not prereqs.get("any_ai_provider", False):
             prompter.print("  Install at least one AI provider CLI:")
             for name in list_providers():
@@ -1347,6 +1576,38 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     for prompt_path in all_prompt_paths:
         prompter.print(f"     • {prompt_path}")
 
+    step_number = 2
+    has_validation_cmd = bool((config.get("validation") or {}).get("cmd"))
+
+    if not setup_repo_guardrails_now and has_validation_cmd:
+        prompter.print(
+            f"\n  {step_number}. Install repo guardrails + AI hooks (recommended): issue-orchestrator setup-guardrails"
+        )
+        step_number += 1
+    elif not install_hooks_now:
+        prompter.print(
+            f"\n  {step_number}. Install AI agent hooks (recommended): issue-orchestrator setup-hooks"
+        )
+        step_number += 1
+        prompter.print(
+            f"  {step_number}. Configure validation.cmd, then set up repo guardrails (recommended): issue-orchestrator setup-guardrails"
+        )
+        step_number += 1
+
+    prompter.print(f"\n  {step_number}. Run: issue-orchestrator doctor")
+    step_number += 1
+    prompter.print(f"\n  {step_number}. Run: issue-orchestrator init")
+    step_number += 1
+    prompter.print(
+        f"\n  {step_number}. Commit the generated onboarding files before start."
+    )
+    prompter.print(
+        "     Agent worktrees are seeded from the configured git ref (usually origin/main), "
+        "so local prompt/config changes must be pushed there or you must set "
+        "worktrees.seed_ref for local iteration."
+    )
+    step_number += 1
+
     # List agent labels to add to issues
     agent_labels = list(config.get("agents", {}).keys())
     # Exclude review agents from the list (they work on PRs, not issues)
@@ -1355,23 +1616,15 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         for label in agent_labels
         if label != code_review_agent and label != triage_review_agent
     ]
-    prompter.print("\n  2. Add agent labels to your GitHub issues:")
+    prompter.print(f"\n  {step_number}. Add agent labels to your GitHub issues:")
     for label in work_agent_labels:
         prompter.print(f"     • {label}")
+    step_number += 1
 
-    prompter.print("\n  3. Run: issue-orchestrator start")
+    prompter.print(f"\n  {step_number}. Run: issue-orchestrator start")
 
-    if not setup_repo_guardrails_now and (config.get("validation") or {}).get("cmd"):
-        prompter.print(
-            "\n  4. Install repo guardrails + AI hooks (recommended): issue-orchestrator setup-guardrails"
-        )
-    elif not install_hooks_now:
-        prompter.print(
-            "\n  4. Install AI agent hooks (recommended): issue-orchestrator setup-hooks"
-        )
-        prompter.print(
-            "  5. Set up repo guardrails (recommended): issue-orchestrator setup-guardrails"
-        )
+    if _config_uses_claude_code(config):
+        _print_claude_code_next_steps(prompter, config)
 
     prompter.print("\n  Advanced features (enable in config later):")
     prompter.print(

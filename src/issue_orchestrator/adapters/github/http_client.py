@@ -1215,6 +1215,7 @@ def validate_github_token(
                 configured_env=configured_env,
                 configured_keyring_service=configured_keyring_service,
                 configured_keyring_username=configured_keyring_username,
+                api_url=api_url,
             )
     except GitHubAuthError as e:
         return TokenValidationResult(valid=False, error=str(e))

@@ -64,7 +64,7 @@ def run_doctor(
     result.checks.extend(hooks.check_hook_verification(config))
     result.checks.extend(hooks.check_repo_guardrails(config))
     result.checks.extend(hooks.check_worktree_hook_corruption(config))
-    result.checks.extend(workspace.check_agents(config))
+    result.checks.extend(workspace.check_agents(config, runner))
 
     result.checks.extend(schema_checks.run_schema_checks(config))
     result.checks.extend(review.check_code_review(config))

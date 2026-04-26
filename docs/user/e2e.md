@@ -31,6 +31,33 @@ When an E2E run includes orchestrator work, the Results tab also shows `Linked i
 
 That is the critical bridge for agentic tests: a non-agentic suite is still debuggable from raw output and JUnit results, while an agentic suite additionally exposes logical cycles and UI session logs.
 
+## Test Tiers
+
+There are now two useful layers for onboarding and orchestration journeys:
+
+- regular `tests/e2e` live coverage for issue pickup, session execution, review, and PR paths
+- `heavy_e2e` journey coverage for broader flows such as onboarding, where a test may create a temp repo, run the setup wizard, install guardrails, and validate local doctor/guardrail behavior end to end
+- an opt-in live agent-guided onboarding acceptance that lets a real `codex` or `claude-code` session onboard a GitHub-backed repo, then proves the first issue can launch
+
+Run the heavy tier with:
+
+```bash
+make test-e2e-heavy
+```
+
+Keep this tier out of normal fast validation. It is intended for explicit runs, nightly coverage, or future provider-acceptance journeys.
+
+Run the live agent-guided onboarding acceptance explicitly:
+
+```bash
+make test-e2e-onboarding-live
+
+# Default provider is codex. To include Claude too:
+E2E_AGENT_GUIDED_ONBOARDING_PROVIDERS=codex,claude-code make test-e2e-onboarding-live
+```
+
+The live onboarding acceptance is collection-gated behind `E2E_AGENT_GUIDED_ONBOARDING=1` so normal `heavy_e2e` runs do not burn GitHub cleanup calls just to skip it.
+
 ## Quick Start
 
 ### Pytest runner: issue-orchestrator style
@@ -149,6 +176,10 @@ This matters because many E2E suites will not create issues on every failing tes
 ## API Endpoints
 
 The dashboard uses these endpoints:
+
+Authenticated control API calls require a bearer token from
+`~/.issue-orchestrator/api-token`, the target repo root, and `config_name`.
+Older examples that omit `config_name` will no longer work.
 
 - `POST /control/e2e/start`
 - `POST /control/e2e/stop`

@@ -161,7 +161,7 @@ class DefaultAgentConfig:
     """
 
     provider: Optional[str] = None  # "claude-code", "codex", etc.
-    model: Optional[str] = None  # Model to use (sonnet, o3, etc.)
+    model: Optional[str] = None  # Model to use (sonnet, gpt-5.3-codex, etc.)
     provider_args: dict = field(default_factory=dict)  # Provider-specific args
 
 

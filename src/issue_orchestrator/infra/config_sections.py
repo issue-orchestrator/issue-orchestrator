@@ -689,6 +689,18 @@ def parse_ai_systems_allowed(value: object) -> list[str]:
     return []
 
 
+def _implicit_model_for_provider(provider: str | None) -> str:
+    """Return the legacy implicit model for agents without an explicit model.
+
+    Historical configs without a provider implicitly meant Claude Code, so they
+    continue to receive the Claude default. Explicit non-Claude providers must
+    stay blank so their CLIs can select their own default model.
+    """
+    if provider in (None, "claude-code"):
+        return "sonnet"
+    return ""
+
+
 def load_agents_section(
     config: "Config",
     agents_section: dict,
@@ -709,7 +721,7 @@ def load_agents_section(
         if model is None and config.default_agent and config.default_agent.model:
             model = config.default_agent.model
         if model is None:
-            model = "sonnet"  # Fallback default
+            model = _implicit_model_for_provider(provider)
 
         # Merge provider_args
         provider_args = {}

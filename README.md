@@ -87,12 +87,19 @@ If you're looking at this repo as an applied-AI system rather than a general-pur
 ```bash
 make venv                              # creates .venv with uv + correct Python
 source .venv/bin/activate
+cd /path/to/your/project               # run setup/start in the repo you want to automate
 export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
 issue-orchestrator setup
+issue-orchestrator setup-guardrails    # if you skipped the wizard prompt
+issue-orchestrator init
+# review, commit, and push the generated onboarding files (or set worktrees.seed_ref: HEAD)
+issue-orchestrator doctor
 issue-orchestrator start
 ```
 
-See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/quickstart.md) for detailed setup, prerequisites, and configuration.
+Run the setup/start commands from the target repo, not from the `issue-orchestrator` checkout. Before `start`, commit and push the generated onboarding files to the worktree seed ref (by default `origin/<default-branch>`), or set `worktrees.seed_ref: HEAD` if you're doing local-only evaluation. You'll also need a supported AI coding CLI installed. See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/quickstart.md) for detailed setup, prerequisites, and configuration.
+
+If you want your AI assistant to drive the setup for you, use the [Agent-Guided Onboarding](docs/journeys/agent-guided-onboarding.md) path.
 
 ## More
 
@@ -118,6 +125,7 @@ For guidance on what is stable and where to read code, see [Evaluating the Syste
 Pick the path that fits:
 
 - **[Getting Started](docs/journeys/getting-started.md)** — Install, configure, run your first issue
+- **[Agent-Guided Onboarding](docs/journeys/agent-guided-onboarding.md)** — Let an AI assistant drive setup and first-run validation
 - **[Applied AI Evaluation](docs/journeys/applied-ai.md)** — How to present and evaluate the system as serious applied-AI engineering
 - **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** — Generate a benchmark artifact bundle from deterministic scenario coverage
 - **[Evaluating the System](docs/journeys/evaluating.md)** — Architecture, guardrails, quality signals, where to read code

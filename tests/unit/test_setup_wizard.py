@@ -3,6 +3,7 @@
 import shutil
 
 import pytest
+import issue_orchestrator.entrypoints.cli_tools.setup_wizard as setup_wizard_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -75,6 +76,58 @@ class MockPrompter:
 
     def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
         return self._get_answer(question)
+
+
+def test_prompt_int_retries_on_invalid_input() -> None:
+    """Numeric wizard prompts should recover instead of crashing."""
+    prompter = MockPrompter(["oops", "8080"])
+
+    value = setup_wizard_module._prompt_int(
+        prompter,
+        "Web Dashboard Port",
+        8080,
+        min_value=0,
+        max_value=65535,
+    )
+
+    assert value == 8080
+    assert any("Invalid number" in msg for msg in prompter.printed)
+
+
+def test_prompt_claude_session_interactions_enables_rule() -> None:
+    """Claude-backed onboarding should offer startup interactions once."""
+    config = {
+        "agents": {
+            "agent:backend": {
+                "provider": "claude-code",
+            }
+        },
+        "execution": {"concurrency": {"max_concurrent_sessions": 3}},
+    }
+    prompter = MockPrompter([True])
+
+    setup_wizard_module._prompt_claude_session_interactions(config, prompter)
+
+    assert config["execution"]["session_interactions"] == {"enabled": True}
+    printed = "\n".join(prompter.printed)
+    assert "auto-accept this trusted startup prompt" in printed
+
+
+def test_prompt_claude_session_interactions_can_be_declined() -> None:
+    """Declining startup interactions should leave the default disabled state."""
+    config = {
+        "agents": {
+            "agent:backend": {
+                "provider": "claude-code",
+            }
+        },
+        "execution": {"concurrency": {"max_concurrent_sessions": 3}},
+    }
+    prompter = MockPrompter([False])
+
+    setup_wizard_module._prompt_claude_session_interactions(config, prompter)
+
+    assert "session_interactions" not in config["execution"]
 
 
 class TestCreateStarterPrompt:
@@ -688,6 +741,37 @@ class TestScanExistingRepo:
 class TestWizardNewProject:
     """Test the wizard_new_project function."""
 
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.get_provider")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.list_providers")
+    def test_codex_blank_model_uses_cli_default(
+        self,
+        mock_list_providers,
+        mock_get_provider,
+    ):
+        """Leaving the Codex model blank should omit model pinning."""
+        mock_list_providers.return_value = ["codex"]
+        mock_get_provider.return_value = SimpleNamespace(
+            description="OpenAI Codex CLI",
+            is_available=lambda: True,
+        )
+
+        prompter = MockPrompter([
+            "45",      # timeout
+            "codex",   # provider
+            "",        # model blank => use CLI default
+            False,      # not a review agent
+        ])
+
+        config = setup_wizard_module._prompt_agent_config(
+            prompter,
+            agent_name="agent:backend",
+            prompt_path=".prompts/backend.md",
+        )
+
+        assert config["provider"] == "codex"
+        assert config["ai_system"] == "codex"
+        assert "model" not in config
+
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
     def test_creates_basic_config(self, mock_client_factory, mock_detect_repo):
@@ -712,6 +796,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",                  # worktree base
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",                  # ui mode
             "8080",                 # web port
             "tmux",                 # terminal backend
@@ -729,12 +814,17 @@ class TestWizardNewProject:
         assert config["agents"]["agent:backend"]["prompt"] == ".prompts/backend.md"
         assert config["agents"]["agent:backend"]["model"] == "sonnet"
         assert config["agents"]["agent:backend"]["timeout_minutes"] == 45
+        assert config["agents"]["agent:backend"]["provider"] == "claude-code"
+        assert config["agents"]["agent:backend"]["ai_system"] == "claude-code"
         # Non-review agent gets work-oriented initial_prompt
         assert "initial_prompt" in config["agents"]["agent:backend"]
         assert "Work on issue" in config["agents"]["agent:backend"]["initial_prompt"]
         assert "{pr_number}" not in config["agents"]["agent:backend"]["initial_prompt"]
         assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["execution"]["session_interactions"] == {"enabled": True}
         assert config["ui"]["mode"] == "web"
+        printed = "\n".join(prompter.printed)
+        assert "Claude Code note: trust is stored per worktree path." in printed
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
@@ -760,6 +850,7 @@ class TestWizardNewProject:
             "M0",
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -802,6 +893,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "tmux",                 # ui mode (tmux doesn't need port)
             "io",                   # label prefix
             "make test",            # validation command
@@ -850,6 +942,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "9000",                 # custom port
             "tmux",                 # terminal backend
@@ -882,7 +975,7 @@ class TestWizardNewProject:
             ".prompts/custom.md",
             "30",                   # timeout
             "custom",               # agent type (custom command)
-            "my-agent --issue {issue_number} --prompt {prompt}",  # custom command
+            "codex exec {prompt}",  # custom command
             False,                  # is this a review agent?
             "",                     # finish agents
             "3",
@@ -905,7 +998,8 @@ class TestWizardNewProject:
 
         assert "agent:custom" in config["agents"]
         agent_cfg = config["agents"]["agent:custom"]
-        assert agent_cfg["command"] == "my-agent --issue {issue_number} --prompt {prompt}"
+        assert agent_cfg["command"] == "codex exec {prompt}"
+        assert agent_cfg["ai_system"] == "codex"
         # Custom agents don't get permission_mode since it's Claude-specific
         assert "permission_mode" not in agent_cfg
 
@@ -933,6 +1027,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -988,6 +1083,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -1037,10 +1133,13 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             "../",                  # worktree base
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",                  # ui mode
             "8080",                 # port
             "tmux",                 # terminal backend
             "io",                   # label prefix
+            "make test",            # validation command
+            "300",                  # validation timeout
             False,                  # disable Stage 1 review
         ])
 
@@ -1048,7 +1147,12 @@ class TestWizardExistingProject:
 
         assert config["repo"]["name"] == "owner/repo"
         assert "agent:web" in config["agents"]
+        assert config["agents"]["agent:web"]["provider"] == "claude-code"
+        assert config["agents"]["agent:web"]["ai_system"] == "claude-code"
         assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["execution"]["session_interactions"] == {"enabled": True}
+        assert config["validation"]["cmd"] == "make test"
+        assert config["validation"]["timeout_seconds"] == 300
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
     def test_preserves_existing_config(self, mock_client_factory):
@@ -1095,9 +1199,12 @@ class TestWizardExistingProject:
             # Worktrees needed for backend
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             # UI mode already configured - won't ask
             # Label prefix not configured
             "io",                   # label prefix
+            "make test",            # validation command
+            "300",                  # validation timeout
             # Review not configured
             False,                  # no review
         ])
@@ -1150,6 +1257,8 @@ class TestWizardExistingProject:
             "tmux",
             # Label prefix
             "io",                   # label prefix
+            "make test",            # validation command
+            "300",                  # validation timeout
             # Review
             False,                  # disable Stage 1 review
         ])
@@ -1196,10 +1305,13 @@ class TestWizardExistingProject:
             # Worktree
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             # UI mode (fresh)
             "tmux",
             # Label prefix
             "io",                   # label prefix
+            "make test",            # validation command
+            "300",                  # validation timeout
             # Review
             False,
         ])
@@ -1227,23 +1339,34 @@ class TestWizardExistingProject:
 
         prompter = MockPrompter([
             "manual/repo",          # manual repo entry
-            # No agents to configure, so no worktree prompt
+            "agent:dev",            # manual agent label
+            ".prompts/dev.md",      # prompt path
+            "45",                   # timeout
+            "claude-code",          # agent provider
+            "sonnet",               # model
+            "default",              # permission mode
+            False,                  # is this a review agent?
             "3",                    # concurrency
             "due_date",             # milestone sort strategy
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base (now top-level config)
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",                  # ui mode
             "8080",                 # port (since web mode)
             "tmux",                 # terminal backend
             "io",                   # label prefix
+            "make test",            # validation command
+            "300",                  # validation timeout
             False,                  # disable Stage 1 review
         ])
 
         config, _ = wizard_existing_project(state, prompter)
 
         assert config["repo"]["name"] == "manual/repo"
+        assert "agent:dev" in config["agents"]
+        assert config["agents"]["agent:dev"]["ai_system"] == "claude-code"
 
 
 class TestRunWizard:
@@ -1283,6 +1406,7 @@ class TestRunWizard:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1304,6 +1428,14 @@ class TestRunWizard:
 
         # Verify files were created
         assert (target / ".issue-orchestrator.yaml").exists() or any("apply" in msg.lower() for msg in prompter.printed)
+        printed = "\n".join(prompter.printed)
+        assert "Install repo guardrails + AI hooks (recommended): issue-orchestrator setup-guardrails" in printed
+        assert "Run: issue-orchestrator doctor" in printed
+        assert printed.index("issue-orchestrator setup-guardrails") < printed.index("issue-orchestrator doctor")
+        assert printed.index("issue-orchestrator doctor") < printed.index("issue-orchestrator start")
+        assert "Trusted session interactions are enabled." in printed
+        assert "auto-accept Claude's initial trust prompt" in printed
+        assert "pre-approving the parent directory does not auto-trust child worktrees." in printed
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
@@ -1335,6 +1467,7 @@ class TestRunWizard:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1377,6 +1510,7 @@ class TestRunWizard:
         # Check that warning was printed
         assert any("prerequisites" in msg.lower() or "missing" in msg.lower()
                   for msg in prompter.printed)
+        assert any("ISSUE_ORCH_GITHUB_TOKEN" in msg for msg in prompter.printed)
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
@@ -1413,6 +1547,7 @@ class TestRunWizard:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1564,6 +1699,7 @@ class TestDryRunMode:
             "M0",  # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1612,6 +1748,7 @@ class TestDryRunMode:
             "M0",  # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
