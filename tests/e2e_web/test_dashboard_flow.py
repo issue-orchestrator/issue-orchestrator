@@ -8,6 +8,7 @@ from playwright.sync_api import Page, expect
 def _goto_dashboard(page: Page, base_url: str) -> None:
     """Open the dashboard with a navigation budget that survives full-suite load."""
     page.goto(base_url, wait_until="domcontentloaded", timeout=90_000)
+    page.wait_for_function("() => window.dashboardBundleLoaded === true", timeout=15_000)
 
 
 def test_dashboard_loads_without_page_errors(page: Page, web_server: dict[str, object]) -> None:
@@ -16,7 +17,6 @@ def test_dashboard_loads_without_page_errors(page: Page, web_server: dict[str, o
     page.on("pageerror", lambda err: errors.append(str(err)))
 
     _goto_dashboard(page, str(web_server["url"]))
-    page.wait_for_timeout(500)
 
     expect(page.locator("#tab-dashboard")).to_be_visible()
     assert errors == []
