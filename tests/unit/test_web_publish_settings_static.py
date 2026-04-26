@@ -593,6 +593,10 @@ class TestSettingsEndpoints:
         assert 'id="cancelSettingsBtn"' in html
         assert 'onclick="cancelSettings()"' in html
         assert "window.embeddedNav.buildHref('/', window.location.search)" in html
+        assert "const SCHEMA_TABS = [" in html
+        assert "const SCHEMA_FIELDS = {" in html
+        assert "const SCHEMA_TABS = [&#34;" not in html
+        assert "const SCHEMA_FIELDS = {&#34;" not in html
         # Old ad-hoc helpers and literal URLs must be gone.
         assert "settingsIsEmbedded" not in html
         assert "'/?embedded=1'" not in html
