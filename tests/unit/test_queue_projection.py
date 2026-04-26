@@ -108,35 +108,34 @@ class TestQueueChange:
 
 
 class TestComputeQueue:
-    """Tests for computing the queue from orchestrator state."""
+    """Tests for computing the in-scope issue snapshot from repository state."""
 
-    def test_compute_queue_calls_get_queue_issues(self, queue_projection, mock_repository_host):
-        """compute_queue delegates to get_queue_issues."""
+    def test_compute_queue_calls_fetch_all_issues(self, queue_projection, mock_repository_host):
+        """compute_queue delegates to fetch_all_issues."""
         expected_issues = [
             Issue(number=1, title="Issue 1", labels=["agent:backend"], body=""),
             Issue(number=2, title="Issue 2", labels=["agent:backend"], body=""),
         ]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=expected_issues,
-        ) as mock_get_queue:
+        ) as mock_fetch_all:
             state = OrchestratorState()
             result = queue_projection.compute_queue(state)
 
             assert result == expected_issues
-            mock_get_queue.assert_called_once()
+            mock_fetch_all.assert_called_once()
             # Verify it was called with the right arguments
-            call_args = mock_get_queue.call_args
+            call_args = mock_fetch_all.call_args
             # noqa: SLF001 - Verifying correct config was passed to auditor
             assert call_args[0][0] == queue_projection._config  # noqa: SLF001
-            assert call_args[0][1] == state
-            assert call_args[1]["issue_tracker"] == mock_repository_host
+            assert call_args[0][1] == mock_repository_host
 
     def test_compute_queue_returns_empty_list(self, queue_projection):
         """compute_queue returns empty list when no issues available."""
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[],
         ):
             state = OrchestratorState()
@@ -153,7 +152,7 @@ class TestComputeQueue:
         ]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=issues,
         ):
             state = OrchestratorState()
@@ -180,7 +179,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = [issue]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[issue],
         ):
             result = queue_projection.update_and_emit(state)
@@ -196,7 +195,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = [old_issue]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[old_issue, new_issue],
         ):
             result = queue_projection.update_and_emit(state)
@@ -223,7 +222,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = [old_issue]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[],
         ):
             result = queue_projection.update_and_emit(state)
@@ -250,7 +249,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = [issue1, issue2]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[issue1, issue3],
         ):
             result = queue_projection.update_and_emit(state)
@@ -269,12 +268,13 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = [issue1]
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[issue1, issue2],
         ):
             queue_projection.update_and_emit(state)
 
             assert len(state.cached_queue_issues) == 2
+            assert len(state.cached_scope_issues) == 2
             assert state.cached_queue_issues[0].number == 1
             assert state.cached_queue_issues[1].number == 2
 
@@ -286,7 +286,7 @@ class TestUpdateAndEmit:
         state.failed_this_cycle = {1, 2, 3}  # Some failed issues
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[issue],
         ):
             queue_projection.update_and_emit(state)
@@ -302,7 +302,7 @@ class TestUpdateAndEmit:
         state.failed_this_cycle = {5, 6, 7}
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[issue],
         ):
             result = queue_projection.update_and_emit(state)
@@ -320,7 +320,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = []
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             side_effect=Exception("Test error"),
         ):
             with patch("issue_orchestrator.control.queue_projection.logger") as mock_logger:
@@ -336,7 +336,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = []
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             side_effect=Exception("Test error"),
         ):
             queue_projection.update_and_emit(state)
@@ -356,7 +356,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = []
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[new_issue],
         ):
             queue_projection.update_and_emit(state)
@@ -377,7 +377,7 @@ class TestUpdateAndEmit:
         assert state.cached_queue_issues == []
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=[issue1, issue2],
         ):
             result = queue_projection.update_and_emit(state)
@@ -403,7 +403,7 @@ class TestUpdateAndEmit:
         state.cached_queue_issues = issues_old
 
         with patch(
-            "issue_orchestrator.infra.audit.get_queue_issues",
+            "issue_orchestrator.infra.audit.fetch_all_issues",
             return_value=issues_new,
         ):
             result = queue_projection.update_and_emit(state)

@@ -51,7 +51,8 @@ class QueueCache:
     def replace_from_refresh(self, issues: list["Issue"]) -> list["Issue"]:
         """Replace queue from fetched issues using canonical eligibility policy."""
         prior_count = len(self._state.cached_queue_issues)
-        queue = [issue for issue in issues if self.evaluate_issue(issue) == QueueMutationStatus.ACCEPTED]
+        scope = [issue for issue in issues if _matches_scope(self._config, issue)]
+        queue = [issue for issue in scope if self.evaluate_issue(issue) == QueueMutationStatus.ACCEPTED]
         if prior_count > 0 and not queue:
             rejected = len(issues) - len(queue)
             active_count = len(self._state.active_sessions)
@@ -63,6 +64,7 @@ class QueueCache:
                 prior_count, len(issues), rejected, active_count, history_count,
                 "".join(traceback.format_stack(limit=10)),
             )
+        self._state.cached_scope_issues = scope
         self._state.cached_queue_issues = queue
         self.prune_refresh_timestamps()
         return queue
@@ -70,9 +72,14 @@ class QueueCache:
     def upsert_refreshed_issue(self, issue: "Issue") -> QueueMutationOutcome:
         """Upsert a refreshed issue while enforcing queue eligibility policy."""
         was_present = any(cached.number == issue.number for cached in self._state.cached_queue_issues)
+        self._state.cached_scope_issues = [
+            cached for cached in self._state.cached_scope_issues if cached.number != issue.number
+        ]
         self._state.cached_queue_issues = [
             cached for cached in self._state.cached_queue_issues if cached.number != issue.number
         ]
+        if _matches_scope(self._config, issue):
+            self._state.cached_scope_issues.append(issue)
         status = self.evaluate_issue(issue)
         if status == QueueMutationStatus.ACCEPTED:
             self._state.cached_queue_issues.append(issue)
@@ -81,6 +88,9 @@ class QueueCache:
 
     def remove_issue(self, issue_number: int) -> None:
         """Remove issue from cached queue and refresh metadata."""
+        self._state.cached_scope_issues = [
+            issue for issue in self._state.cached_scope_issues if issue.number != issue_number
+        ]
         self._state.cached_queue_issues = [
             issue for issue in self._state.cached_queue_issues if issue.number != issue_number
         ]
@@ -106,7 +116,8 @@ class QueueCache:
         """Prune refresh timestamp map to currently tracked issue IDs."""
         if not self._state.issue_refresh_timestamps and not self._state.issue_last_refreshed_at:
             return
-        keep_numbers = {issue.number for issue in self._state.cached_queue_issues}
+        keep_numbers = {issue.number for issue in self._state.cached_scope_issues}
+        keep_numbers.update(issue.number for issue in self._state.cached_queue_issues)
         keep_numbers.update(session.issue.number for session in self._state.active_sessions)
         keep_numbers.update(entry.issue_number for entry in self._state.session_history)
         keep_numbers.update(self._visible_issue_numbers())

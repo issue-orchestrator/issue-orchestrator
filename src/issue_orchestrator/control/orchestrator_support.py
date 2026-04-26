@@ -732,7 +732,7 @@ def _fetch_and_update_queue(
 
         if queue_cache_store is not None:
             queue_cache_store.save_snapshot(
-                state.cached_queue_issues,
+                state.cached_scope_issues,
                 state.queue_delta_watermark,
                 repo=config.repo or "",
             )

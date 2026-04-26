@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class QueueCacheStore(Protocol):
-    """Persists queue issues across restarts."""
+    """Persists the in-scope issue snapshot across restarts."""
 
     def load_issues(self, repo: str) -> Sequence["Issue"]: ...
     def load_watermark(self) -> str | None: ...

@@ -1585,7 +1585,8 @@ class OrchestratorState:
     pending_validation_retries: list["PendingValidationRetry"] = field(default_factory=list)  # Sessions needing validation retry
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
-    cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached queue for instant pagination
+    cached_scope_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached full in-scope issue snapshot for dashboard/runtime recovery
+    cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached runnable queue for instant pagination
     queue_last_refresh_at: float = 0.0  # Unix timestamp of last queue refresh
     queue_last_network_sync_at: float = 0.0  # Unix timestamp of last network sync attempt
     queue_last_full_scan_at: float = 0.0  # Unix timestamp of last full GitHub scan

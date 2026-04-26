@@ -31,6 +31,7 @@ def test_upsert_accepts_in_scope_issue():
 
     assert outcome.status == QueueMutationStatus.ACCEPTED
     assert outcome.in_queue is True
+    assert [issue.number for issue in state.cached_scope_issues] == [1]
     assert [issue.number for issue in state.cached_queue_issues] == [1]
 
 
@@ -44,6 +45,7 @@ def test_upsert_rejects_out_of_scope_issue():
 
     assert outcome.status == QueueMutationStatus.REJECTED_OUT_OF_SCOPE
     assert outcome.in_queue is False
+    assert state.cached_scope_issues == []
     assert state.cached_queue_issues == []
 
 
@@ -59,6 +61,7 @@ def test_upsert_rejects_closed_issue_even_when_filters_match():
 
     assert outcome.status == QueueMutationStatus.REJECTED_OUT_OF_SCOPE
     assert outcome.in_queue is False
+    assert state.cached_scope_issues == []
     assert state.cached_queue_issues == []
 
 
@@ -150,12 +153,14 @@ def test_replace_from_refresh_filters_excluded_history_issue():
     )
 
     assert [issue.number for issue in queue] == [1]
+    assert [issue.number for issue in state.cached_scope_issues] == [1, 2]
     assert [issue.number for issue in state.cached_queue_issues] == [1]
 
 
 def test_prune_refresh_timestamps_keeps_only_tracked_issue_numbers():
     config = _make_config()
     state = OrchestratorState(
+        cached_scope_issues=[Issue(number=1, title="Keep", labels=["agent:web"])],
         cached_queue_issues=[Issue(number=1, title="Keep", labels=["agent:web"])],
         issue_refresh_timestamps={1: 100.0, 2: 200.0},
         issue_last_refreshed_at={1: 100.0, 2: 200.0},
@@ -166,6 +171,24 @@ def test_prune_refresh_timestamps_keeps_only_tracked_issue_numbers():
 
     assert state.issue_refresh_timestamps == {1: 100.0}
     assert state.issue_last_refreshed_at == {1: 100.0}
+
+
+def test_replace_from_refresh_tracks_blocked_scope_issues():
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    state = OrchestratorState()
+    cache = QueueCache(config, state)
+
+    queue = cache.replace_from_refresh(
+        [
+            Issue(number=1, title="Runnable", labels=["agent:web"]),
+            Issue(number=2, title="Publish failed", labels=["agent:web", "publish-failed"]),
+        ]
+    )
+
+    assert [issue.number for issue in state.cached_scope_issues] == [1, 2]
+    assert [issue.number for issue in queue] == [1, 2]
+    assert [issue.number for issue in state.cached_queue_issues] == [1, 2]
 
 
 def test_record_issue_refreshes_updates_both_freshness_maps():
