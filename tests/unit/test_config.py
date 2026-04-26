@@ -2860,6 +2860,32 @@ e2e:
         assert result["e2e"]["auto_run_interval_minutes"] == 60
         assert result["e2e"]["stop_on_first_failure"] is True
 
+    def test_to_dict_omits_default_review_rework_cycle_limit(self, tmp_path):
+        """Default review max_rework_cycles should not churn saved config."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert "review" not in result or "max_rework_cycles" not in result["review"]
+
     def test_to_dict_sqlite_backup_settings(self, tmp_path):
         """Test to_dict includes sqlite_backup settings when non-default."""
         prompt_file = tmp_path / "prompt.txt"

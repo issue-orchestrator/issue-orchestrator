@@ -135,7 +135,7 @@ review:
   triage_failed_label: "triage-failed"
   triage_review_threshold: 0
   triage_review_on_failure: true
-  max_rework_cycles: 10
+  max_rework_cycles: 5
   reviewer_feedback_cache_minutes: 5
   run_audit:
     min_runtime_minutes: 20      # 0 disables auto-audit; label-triggered audits still work

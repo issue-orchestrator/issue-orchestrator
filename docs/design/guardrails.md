@@ -66,7 +66,7 @@ This is the layer that catches test-suite regressions introduced by the agent �
 
 ### 3. Review-as-gate — required passing review before publish
 
-Every completed coding session is handed to a reviewer agent before anything is published. The reviewer emits a `CompletionRecord` with `approved` or `changes_requested`; only `approved` unlocks the publish stages below. If the reviewer requests changes, the orchestrator launches a rework session and the loop repeats up to `max_rework_cycles` (default 10) before escalating to a human. `max_no_progress` stops the loop early when consecutive rounds yield no improvement.
+Every completed coding session is handed to a reviewer agent before anything is published. The reviewer emits a `CompletionRecord` with `approved` or `changes_requested`; only `approved` unlocks the publish stages below. If the reviewer requests changes, the orchestrator launches a rework session and the loop repeats up to `max_rework_cycles` (default 5) before escalating to a human. `max_no_progress` stops the loop early when consecutive rounds yield no improvement.
 
 The exchange can run via draft PR (`via-draft-pr`), an in-process local loop (`via-local-loop`, default), or MCP (`via-mcp`) — the gating rule is identical in all modes: no approval, no publish. See [Review Workflow](../development/REVIEW_WORKFLOW.md) for exchange mechanisms and cycle-limit details.
 
