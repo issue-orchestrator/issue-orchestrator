@@ -1171,7 +1171,12 @@ class ControlAPIServer:
         # first visit (#6017 re-review P3). YAML config supplies the
         # defaults; env vars override at resolution time.
         cfg = getattr(self.orchestrator, "config", None)
+        # Derive the HMAC secret from the admin token so the dashboard
+        # process (which loads the same token) ends up with the same
+        # secret without any IPC. A cookie minted on port 19080 then
+        # validates on port 8080 — single-login UX across processes.
         browser_session.initialize(
+            admin_token=admin_token,
             session_ttl_seconds=getattr(cfg, "browser_session_ttl_seconds", None),
             sse_token_ttl_seconds=getattr(cfg, "sse_token_ttl_seconds", None),
             max_sessions=getattr(cfg, "browser_session_max", None),

@@ -24,12 +24,16 @@ def clean_session_module():
 
 
 def test_create_session_returns_distinct_values() -> None:
-    sid_a, csrf_a = browser_session.create_session()
-    sid_b, csrf_b = browser_session.create_session()
+    cookie_a, csrf_a = browser_session.create_session()
+    cookie_b, csrf_b = browser_session.create_session()
 
-    assert sid_a != sid_b
+    # Distinct sessions get distinct cookies and distinct CSRFs (the
+    # underlying random ``session_id`` differs).
+    assert cookie_a != cookie_b
     assert csrf_a != csrf_b
-    assert len(sid_a) == 64
+    # Cookie format: ``{session_id}.{expiry}.{hmac}``. Each piece is
+    # 32+ hex chars except the unix timestamp.
+    assert cookie_a.count(".") == 2
     assert len(csrf_a) == 64
 
 
@@ -226,34 +230,99 @@ class TestInitializeConfig:
         )
 
 
-def test_sessions_are_capped_and_lru_evicted(
+def test_sessions_have_no_in_memory_cap_with_stateless_cookies() -> None:
+    """Stateless cookies replaced the in-memory ``_SESSIONS`` table, so
+    ``MAX_SESSIONS`` is no longer an enforced cap — there's nothing
+    in memory to bound. The constant is still exposed for
+    back-compat with operator YAML and the settings dashboard, but
+    creating many sessions cannot evict earlier ones.
+    """
+    cookies = [browser_session.create_session()[0] for _ in range(8)]
+    # All eight remain valid — none were evicted.
+    assert all(browser_session.session_is_valid(c) for c in cookies)
+
+
+def test_cross_process_cookie_validates_with_same_admin_token() -> None:
+    """Two ``initialize`` calls with the same admin token derive the
+    same secret, so a cookie minted by one accepts in the other.
+
+    This is the contract the Control Center and Web Dashboard rely
+    on — they live in separate processes but load the same
+    ``~/.issue-orchestrator/api-token``.
+    """
+    admin = "shared-admin-token-of-decent-length"
+
+    browser_session.shutdown()
+    browser_session.initialize(admin_token=admin)
+    cookie, csrf = browser_session.create_session()
+    assert browser_session.session_is_valid(cookie)
+    assert browser_session.verify_csrf(cookie, csrf) is True
+
+    # Simulate a second process: re-initialize from scratch with the
+    # same admin token. The cookie minted before must still validate.
+    browser_session.shutdown()
+    browser_session.initialize(admin_token=admin)
+    assert browser_session.session_is_valid(cookie)
+    assert browser_session.get_csrf_token(cookie) == csrf
+    assert browser_session.verify_csrf(cookie, csrf) is True
+
+
+def test_cross_process_cookie_rejected_after_admin_token_rotation() -> None:
+    """Rotating the admin token rotates the derived secret, which
+    invalidates every existing cookie at once. That's the operator
+    kill-switch that replaces server-side revocation.
+    """
+    browser_session.shutdown()
+    browser_session.initialize(admin_token="original-admin-token")
+    cookie, _ = browser_session.create_session()
+
+    browser_session.shutdown()
+    browser_session.initialize(admin_token="rotated-admin-token")
+    assert not browser_session.session_is_valid(cookie)
+
+
+def test_cookie_with_tampered_signature_is_rejected() -> None:
+    cookie, _ = browser_session.create_session()
+    session_id, expiry, sig = cookie.split(".")
+    # Flip the last hex char of the signature.
+    flipped = sig[:-1] + ("0" if sig[-1] != "0" else "1")
+    tampered = ".".join([session_id, expiry, flipped])
+    assert not browser_session.session_is_valid(tampered)
+
+
+def test_cookie_with_tampered_expiry_is_rejected() -> None:
+    cookie, _ = browser_session.create_session()
+    session_id, expiry, sig = cookie.split(".")
+    # Push the expiry far into the future without re-signing.
+    extended = ".".join([session_id, str(int(expiry) + 10_000_000), sig])
+    assert not browser_session.session_is_valid(extended)
+
+
+def test_cookie_expires_when_timestamp_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``MAX_SESSIONS`` is enforced via LRU eviction (#6017 re-review-3 P4).
+    cookie, _ = browser_session.create_session()
+    real_now = time.time()
+    # Push current time past the cookie's expiry.
+    monkeypatch.setattr(
+        time,
+        "time",
+        lambda: real_now + browser_session.SESSION_TTL_SECONDS + 1,
+    )
+    assert not browser_session.session_is_valid(cookie)
 
-    Cap the module-level constant to a tiny value, pump sessions
-    through, and assert the first-created session is evicted when
-    the cap is reached.
+
+def test_derive_secret_is_domain_separated() -> None:
+    """The secret derived for browser sessions must not be the same as
+    the raw admin token bytes — domain separation prevents the secret
+    from colliding with any other derivative use.
     """
-    monkeypatch.setattr(browser_session, "MAX_SESSIONS", 3)
-
-    sid_a, _ = browser_session.create_session()
-    sid_b, _ = browser_session.create_session()
-    sid_c, _ = browser_session.create_session()
-
-    assert browser_session.session_is_valid(sid_a)
-    assert browser_session.session_is_valid(sid_b)
-    assert browser_session.session_is_valid(sid_c)
-
-    # Touch ``sid_a`` so it becomes most-recently-used; a fourth
-    # session should evict ``sid_b`` (now LRU), not ``sid_a``.
-    browser_session.get_csrf_token(sid_a)
-    sid_d, _ = browser_session.create_session()
-
-    assert browser_session.session_is_valid(sid_a)
-    assert not browser_session.session_is_valid(sid_b)
-    assert browser_session.session_is_valid(sid_c)
-    assert browser_session.session_is_valid(sid_d)
+    admin = "some-admin-token"
+    derived = browser_session.derive_secret(admin)
+    assert derived != admin.encode("utf-8")
+    assert len(derived) == 32
+    # Same input → same output (deterministic).
+    assert browser_session.derive_secret(admin) == derived
 
 
 def test_consumed_nonces_expire_after_ttl(
