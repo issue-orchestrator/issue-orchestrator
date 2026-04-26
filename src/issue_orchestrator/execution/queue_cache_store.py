@@ -1,4 +1,4 @@
-"""SQLite-backed queue cache store for persisting queue issues across restarts."""
+"""SQLite-backed warm cache for persisting in-scope issues across restarts."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 class QueueCacheStore:
-    """SQLite-backed store for queue cache persistence."""
+    """SQLite-backed store for the in-scope issue snapshot used for warm restarts."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
@@ -112,7 +112,7 @@ class QueueCacheStore:
         """Replace all cached issues and update watermark in a single transaction.
 
         Args:
-            issues: Issues to persist.
+            issues: Full in-scope issues to persist for warm restore.
             watermark: Delta sync watermark (ISO timestamp).
             repo: Repository identifier stored with each issue row.
         """

@@ -519,13 +519,12 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     pending_numbers: dict[str, set[int]],
     *,
     lm: LabelManager,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[int]]:
+) -> tuple[list[dict[str, Any]], int, set[int]]:
     queue_items: list[dict[str, Any]] = []
-    blocked_items: list[dict[str, Any]] = []
     queue_total = 0
 
     if state.startup_status != "complete":
-        return queue_items, blocked_items, queue_total, seen_issues
+        return queue_items, queue_total, seen_issues
 
     queue_issues = state.cached_queue_issues
     queue_total = len(queue_issues)
@@ -633,12 +632,71 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         }
-        if is_blocked:
-            blocked_items.append(item)
-        else:
+        if not is_blocked:
             queue_items.append(item)  # Dependency-blocked items stay in queue
 
-    return queue_items, blocked_items, queue_total, seen_issues
+    return queue_items, queue_total, seen_issues
+
+
+def _scope_issues_for_blocked_projection(state) -> list[Any]:
+    return state.cached_scope_issues if state.cached_scope_issues else state.cached_queue_issues
+
+
+def _build_scope_blocked_items(
+    state,
+    config,
+    seen_issues: set[int],
+    *,
+    lm: LabelManager,
+) -> tuple[list[dict[str, Any]], set[int]]:
+    blocked_items: list[dict[str, Any]] = []
+    if state.startup_status != "complete":
+        return blocked_items, seen_issues
+
+    scope_issues = _scope_issues_for_blocked_projection(state)
+    dependency_info = get_issue_dependencies(scope_issues, config)
+
+    for issue in scope_issues:
+        if issue.number in seen_issues or not issue.is_blocked:
+            continue
+        seen_issues.add(issue.number)
+        dep_info = dependency_info.get(issue.number)
+        dep_summary = dep_info.summary if dep_info else ""
+        dep_problem = state.dependency_problems.get(issue.number)
+        blocked = blocked_summary(
+            list(issue.labels),
+            lm,
+            dep_problem.summary if dep_problem else None,
+        )
+        agent_label = (issue.agent_type or "unknown").replace("agent:", "")
+        blocked_items.append({
+            "issue_number": issue.number,
+            "title": issue.title,
+            "agent_type": agent_label,
+            "status": "blocked",
+            "status_reason": _normalize_status_reason(dep_summary) or "blocked",
+            "detail_label": blocked or "blocked",
+            "detail_reason": _normalize_status_reason(dep_summary) or "blocked",
+            "time": "",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": "Click to open issue on GitHub",
+            "url": issue_url_for(config, issue.number),
+            "issue_url": issue_url_for(config, issue.number),
+            "pr_url": "",
+            "has_terminal": False,
+            "worktree_path": "",
+            "flow_stage": "blocked",
+            "flow_stage_label": flow_stage_label(flow_steps_for("blocked"), "blocked"),
+            "flow_steps": flow_steps_for("blocked"),
+            "blocked_summary": blocked,
+            "merge_pending": lm.is_pr_pending(issue.labels),
+            "dependency_blocked": False,
+            "orchestrator_labels": _display_labels(list(issue.labels), lm),
+            **_refresh_meta(state, config, issue.number),
+        })
+
+    return blocked_items, seen_issues
 
 
 def _history_status_label(status: SessionHistoryStatus) -> str:
@@ -721,6 +779,22 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             history_items.append(item)
 
     return history_items, blocked_items
+
+
+def _merge_blocked_items(
+    scope_blocked: list[dict[str, Any]],
+    history_blocked: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged_by_issue: dict[int, dict[str, Any]] = {}
+    for item in scope_blocked:
+        issue_number = _issue_number_value(item)
+        if issue_number is not None:
+            merged_by_issue[issue_number] = item
+    for item in history_blocked:
+        issue_number = _issue_number_value(item)
+        if issue_number is not None:
+            merged_by_issue[issue_number] = item
+    return list(merged_by_issue.values())
 
 
 def _normalize_status_reason(reason: str | None) -> str | None:
@@ -872,7 +946,8 @@ def build_dashboard_view_model(
 
         pending_numbers = _pending_issue_numbers(state)
         active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
-        queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
+        scope_blocked, seen_issues = _build_scope_blocked_items(state, config, seen_issues, lm=lm)
+        queue_items, queue_total, seen_issues = _build_queue_items(
             state, config, seen_issues, pending_numbers, lm=lm,
         )
         queue_order = {
@@ -882,9 +957,8 @@ def build_dashboard_view_model(
             if issue_number is not None
         }
         backlog_items = _build_backlog_items(state, config, lm=lm)
-        blocked_items.extend(queue_blocked)
         history_items, history_blocked = _build_history_items(state, config)
-        blocked_items.extend(history_blocked)
+        blocked_items.extend(_merge_blocked_items(scope_blocked, history_blocked))
 
         active_items = _sort_by_issue_number(active_items)
         queue_items = _sort_by_issue_number(queue_items)

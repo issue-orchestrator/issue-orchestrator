@@ -30,10 +30,11 @@ def test_flow_card_opens_issue_detail_drawer(page: Page, web_server: dict[str, o
     expect(card_focus).to_be_visible()
     card_focus.click()
 
-    expect(page.locator("#issueDetailDrawer.visible")).to_be_visible()
+    drawer = page.locator("#issueDetailDrawer.visible")
+    expect(drawer).to_be_visible()
+    expect(drawer).to_have_attribute("data-lifecycle-kind", "dashboard")
     expect(page.locator("#issueDetailTitle")).to_contain_text("Flow smoke item")
-    expect(page.locator("#issueDetailDrawer")).to_have_attribute("data-lifecycle-kind", "dashboard")
-    expect(page.locator("#issueDetailDrawer")).to_have_attribute("data-lifecycle-iterations", "1")
+    expect(drawer).to_have_attribute("data-lifecycle-iterations", "1")
 
 
 def test_issue_card_timeline_button_opens_cycle_timeline(

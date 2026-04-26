@@ -962,6 +962,37 @@ class TestStartupGitHubCallBudget:
         assert mock_repository_host.list_issues_delta.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_warm_start_preserves_blocked_scope_issues(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
+
+        mock_store = MagicMock()
+        mock_store.load_issues.return_value = [
+            Issue(number=1, title="Blocked", labels=["agent:test", "publish-failed"]),
+        ]
+        mock_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
+        mock_repository_host.list_issues_delta.return_value = ([], "2025-01-01T00:00:01Z")
+
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            queue_cache_store=mock_store,
+        )
+
+        state = OrchestratorState()
+        await sm.run_startup(state)
+
+        assert [issue.number for issue in state.cached_scope_issues] == [1]
+        assert [issue.number for issue in state.cached_queue_issues] == [1]
+
+    @pytest.mark.asyncio
     async def test_warm_start_empty_cache_with_watermark_forces_full_scan(
         self, mock_config, mock_events, mock_runner, mock_repository_host,
         mock_action_applier, mock_issue_branches_fn, caplog,

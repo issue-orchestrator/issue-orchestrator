@@ -826,6 +826,30 @@ def test_publish_failed_issue_routes_to_blocked_lane():
     assert blocked_item["blocked_summary"]
 
 
+def test_publish_failed_scope_issue_survives_blocked_lane_without_queue_entry():
+    config = _make_config()
+    issue = Issue(number=4057, title="Publish failed", labels=["agent:web", "publish-failed"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_scope_issues=[issue],
+        cached_queue_issues=[],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert all(item["issue_number"] != 4057 for item in view_model.queue_items)
+    blocked_item = next(item for item in view_model.blocked_items if item["issue_number"] == 4057)
+    assert blocked_item["flow_stage"] == "blocked"
+    assert blocked_item["blocked_summary"]
+
+
 def test_review_stage_queue_item_does_not_get_queue_wait_reason():
     config = _make_config()
     issue = Issue(number=4057, title="Queued", labels=["agent:web"])

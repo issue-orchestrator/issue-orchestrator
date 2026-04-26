@@ -714,7 +714,7 @@ class StartupManager:
         # Persist updated state to SQLite for next restart
         state.startup_message = "Persisting queue cache..."
         store.save_snapshot(
-            state.cached_queue_issues,
+            state.cached_scope_issues,
             state.queue_delta_watermark,
             repo=self.config.repo or "",
         )

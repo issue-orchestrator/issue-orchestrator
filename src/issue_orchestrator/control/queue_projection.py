@@ -1,4 +1,4 @@
-"""Queue projection for computing and caching available issues.
+"""Queue projection for computing and caching the in-scope issue snapshot.
 
 This module extracts queue computation logic from the orchestrator,
 following the principle that UI projections should be separate from
@@ -31,9 +31,9 @@ class QueueChange:
 
 
 class QueueProjection:
-    """Projects the current queue state from orchestrator state and repository.
+    """Projects the current in-scope issue cache from orchestrator state and repository.
 
-    This class encapsulates the logic for computing the issue queue,
+    This class encapsulates the logic for computing the in-scope issue snapshot,
     detecting changes, and emitting events. It separates UI/projection
     concerns from core orchestration.
     """
@@ -44,16 +44,17 @@ class QueueProjection:
         self._events = events
 
     def compute_queue(self, state: OrchestratorState) -> list[Issue]:
-        """Compute the current issue queue.
+        """Compute the current in-scope issue snapshot.
 
         Args:
             state: Current orchestrator state
 
         Returns:
-            List of issues available in the queue
+            List of in-scope issues used for queue and blocked projections
         """
-        from ..infra.audit import get_queue_issues
-        return get_queue_issues(self._config, state, issue_tracker=self._repository_host)
+        del state  # Scope refresh is repository-backed; runtime-only filters happen after fetch.
+        from ..infra.audit import fetch_all_issues
+        return fetch_all_issues(self._config, self._repository_host)
 
     def update_and_emit(self, state: OrchestratorState) -> QueueChange | None:
         """Update the queue cache and emit event if changed.
@@ -65,19 +66,20 @@ class QueueProjection:
             QueueChange if queue changed, None otherwise
         """
         try:
-            queue_issues = self.compute_queue(state)
-            old_numbers = {i.number for i in state.cached_queue_issues}
-            new_numbers = {i.number for i in queue_issues}
+            scope_issues = self.compute_queue(state)
+            prior_issues = state.cached_scope_issues if state.cached_scope_issues else state.cached_queue_issues
+            old_numbers = {i.number for i in prior_issues}
+            new_numbers = {i.number for i in scope_issues}
 
             added_numbers = new_numbers - old_numbers
             removed_numbers = old_numbers - new_numbers
 
             # Capture stable issue keys before the cache is replaced (needed for
             # removal events — the Issue objects won't be available afterwards).
-            old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
+            old_key_by_number = {i.number: i.key.stable_id() for i in prior_issues}
 
             # Update state through queue cache abstraction.
-            QueueCache(self._config, state).replace_from_refresh(queue_issues)
+            QueueCache(self._config, state).replace_from_refresh(scope_issues)
 
             # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
             if state.failed_this_cycle:
@@ -88,8 +90,8 @@ class QueueProjection:
                 state.failed_this_cycle.clear()
 
             if added_numbers or removed_numbers:
-                added = [i for i in queue_issues if i.number in added_numbers]
-                change = QueueChange(added=added, removed=list(removed_numbers), total=len(queue_issues))
+                added = [i for i in scope_issues if i.number in added_numbers]
+                change = QueueChange(added=added, removed=list(removed_numbers), total=len(scope_issues))
 
                 # Emit structured event with issue_key for consistent keying
                 self._events.publish(make_trace_event(EventName.QUEUE_CHANGED, {
