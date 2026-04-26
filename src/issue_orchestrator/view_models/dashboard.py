@@ -512,6 +512,41 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
     return items, seen_issues
 
 
+def _timeline_snapshot_text(events: list[dict[str, Any]]) -> str | None:
+    visible_events = []
+    for event in events:
+        views = event.get("views")
+        if views is None or "user" in views:
+            visible_events.append(event)
+    for event in reversed(visible_events):
+        narrative = str(event.get("narrative") or "").strip()
+        if narrative:
+            return narrative
+        summary = str(event.get("summary") or "").strip()
+        if summary:
+            return summary
+    return None
+
+
+def _attach_running_timeline_snapshots(orchestrator: Any, active_items: list[dict[str, Any]]) -> None:
+    deps = getattr(orchestrator, "deps", None)
+    reader = getattr(deps, "timeline_reader", None)
+    if reader is None:
+        return
+
+    for item in active_items:
+        issue_number = item.get("issue_number")
+        if not isinstance(issue_number, int):
+            continue
+        try:
+            stream = reader.read(issue_number, limit=200)
+        except RuntimeError:
+            continue
+        snapshot = _timeline_snapshot_text(stream.to_dict().get("events", []))
+        if snapshot:
+            item["summary"] = snapshot
+
+
 def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multiple state sources
     state,
     config,
@@ -946,6 +981,7 @@ def build_dashboard_view_model(
 
         pending_numbers = _pending_issue_numbers(state)
         active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
+        _attach_running_timeline_snapshots(orchestrator, active_items)
         scope_blocked, seen_issues = _build_scope_blocked_items(state, config, seen_issues, lm=lm)
         queue_items, queue_total, seen_issues = _build_queue_items(
             state, config, seen_issues, pending_numbers, lm=lm,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -101,6 +102,50 @@ def test_view_model_active_session_and_dashboard_data():
     assert dashboard_data["agents"] == ["agent:web"]
     assert "scope" in dashboard_data
     assert dashboard_data["refresh"]["fetchLayerEnabled"] is True
+
+
+def test_running_flow_card_uses_latest_timeline_snapshot():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    issue = Issue(number=409, title="Running flow item", labels=["agent:web", "in-progress"])
+    session = Session(
+        key=SessionKey(issue=FakeIssueKey("409"), task=TaskKind.CODE),
+        issue=issue,
+        agent_config=agent_config,
+        terminal_id="issue-409",
+        worktree_path=Path("/tmp/worktree-409"),
+        branch_name="feature/409",
+        started_at=datetime.now() - timedelta(minutes=7),
+    )
+
+    state = OrchestratorState(active_sessions=[session], startup_status="complete")
+    timeline_reader = MagicMock()
+    timeline_reader.read.return_value.to_dict.return_value = {
+        "events": [
+            {
+                "event": "session.started",
+                "views": ["user", "ops", "debug"],
+                "narrative": "Working on running timeline snapshot",
+                "summary": "Restoring the running issue timeline snapshot on the dashboard",
+            }
+        ]
+    }
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    orchestrator.deps = type("_Deps", (), {"timeline_reader": timeline_reader})()
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.active_items[0]["summary"] == "Working on running timeline snapshot"
+    running_column = next(column for column in view_model.flow_columns if column["id"] == "running")
+    assert running_column["items"][0]["summary"] == "Working on running timeline snapshot"
 
 
 def test_active_item_prefers_canonical_issue_title_over_rework_title():

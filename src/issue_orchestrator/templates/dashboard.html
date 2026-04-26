@@ -194,8 +194,6 @@
                                 </div>
                                 {% if card.queue_wait_reason %}
                                 <div class="card-line card-wait">{{ card.queue_wait_reason }}</div>
-                                {% elif card.summary %}
-                                <div class="card-line card-wait">{{ card.summary }}</div>
                                 {% endif %}
                                 {% if card.summary %}
                                 {% if not card.queue_wait_reason %}

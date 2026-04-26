@@ -1021,6 +1021,14 @@ def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:
     assert ".card-detail-chevron" not in css
 
 
+def test_server_rendered_issue_cards_render_summary_once() -> None:
+    """Server-rendered cards should match the client renderer's summary hierarchy."""
+    dashboard = _read(DASHBOARD_TEMPLATE)
+    assert "{% elif card.summary %}" not in dashboard
+    assert '{% if card.queue_wait_reason %}' in dashboard
+    assert '<div class="card-line card-muted">{{ card.summary }}</div>' in dashboard
+
+
 def test_e2e_timeline_view_switcher_refetches() -> None:
     """View switcher re-fetches timeline with view param."""
     js = _read(DASHBOARD_JS)
