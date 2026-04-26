@@ -1149,6 +1149,11 @@ class GitHubAdapter:
             state=str(pr.get("state", "open")).lower(),
             labels=labels,
             draft=pr.get("draft"),
+            mergeable_state=(
+                str(pr.get("mergeable_state")).lower()
+                if pr.get("mergeable_state") is not None
+                else None
+            ),
         )
 
     def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:

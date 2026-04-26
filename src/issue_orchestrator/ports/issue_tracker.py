@@ -118,7 +118,5 @@ class IssueTracker(Protocol):
         """
         ...
 
-
-
 # Backwards compatibility alias
 IssueRepository = IssueTracker

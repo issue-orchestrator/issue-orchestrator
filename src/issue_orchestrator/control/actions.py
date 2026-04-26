@@ -189,6 +189,8 @@ class QueueReworkAction(Action):
     pr_url: str = ""
     branch_name: str = ""
     rework_cycle: int = 1
+    source: str = "review_label"
+    feedback: str | None = None
     action_type: ActionType = field(default=ActionType.QUEUE_REWORK, init=False)
 
 

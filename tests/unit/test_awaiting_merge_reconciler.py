@@ -6,7 +6,11 @@ import pytest
 
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import ReconcileHistoryEntryAction
-from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciler
+from issue_orchestrator.control.awaiting_merge_reconciler import (
+    POST_PUBLISH_VALIDATION_SOURCE,
+    AwaitingMergeReconciler,
+)
+from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.domain.models import (
     Issue,
@@ -14,6 +18,7 @@ from issue_orchestrator.domain.models import (
     SessionHistoryEntry,
 )
 from issue_orchestrator.events import EventName
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.repository_host import RepositoryHostError
@@ -31,7 +36,16 @@ def _history_entry() -> SessionHistoryEntry:
     )
 
 
-def _pr(state: str) -> PRInfo:
+def _label_manager() -> LabelManager:
+    return LabelManager(Config())
+
+
+def _pr(
+    state: str,
+    *,
+    mergeable_state: str | None = None,
+    labels: list[str] | None = None,
+) -> PRInfo:
     return PRInfo(
         number=318,
         title="Add distributed coalescing for shared-cache read misses",
@@ -39,7 +53,8 @@ def _pr(state: str) -> PRInfo:
         branch="228-cache-read-misses",
         body="",
         state=state,
-        labels=[],
+        labels=labels or [],
+        mergeable_state=mergeable_state,
     )
 
 
@@ -258,4 +273,63 @@ def test_open_pr_and_open_issue_remain_awaiting_merge_with_freshness_updated() -
     assert entry.status_reason == "Recovered awaiting merge state on startup"
     assert entry.pr_url == "https://github.com/owner/repo/pull/318"
     assert state.issue_refresh_timestamps[228] == 1234.5
+    assert state.issue_last_refreshed_at[228] == 1234.5
+
+
+def test_merge_conflict_after_review_discovers_post_publish_validation_rework() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="dirty",
+        labels=["code-reviewed"],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.checked == 1
+    assert result.discovered == 0
+    assert result.rework_discovered == 1
+    assert result.still_pending == 1
+    rework = result.reworks[0]
+    assert rework.issue_number == 228
+    assert rework.pr_number == 318
+    assert rework.branch_name == "228-cache-read-misses"
+    assert rework.agent_type == "agent:backend"
+    assert rework.rework_cycle == 1
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    assert "Mergeability: dirty" in (rework.feedback or "")
+
+
+def test_post_publish_validation_rework_is_suppressed_when_rework_already_pending() -> None:
+    entry = _history_entry()
+    pending_rework = MagicMock()
+    pending_rework.resolve_issue_number.return_value = 228
+    state = OrchestratorState(
+        session_history=[entry],
+        pending_reworks=[pending_rework],
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="behind",
+        labels=["code-reviewed"],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.checked == 1
+    assert result.rework_discovered == 0
+    assert result.still_pending == 1
     assert state.issue_last_refreshed_at[228] == 1234.5

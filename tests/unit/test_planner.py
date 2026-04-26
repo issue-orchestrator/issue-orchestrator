@@ -1145,6 +1145,67 @@ class TestPlanDiscoveredReworks:
         queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REWORK]
         assert len(queue_actions) == 0
 
+    def test_post_publish_validation_rework_flips_pr_back_to_needs_rework(self):
+        """Planner removes code-reviewed, adds needs-rework, and comments on the PR."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+            source="post_publish_validation",
+            feedback=(
+                "POST-PUBLISH VALIDATION FAILURE (address these issues):\n\n"
+                "PR #100 is no longer ready to merge."
+            ),
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_reviewed = [
+            a for a in plan.actions
+            if a.action_type == ActionType.REMOVE_LABEL
+            and a.issue_number == 100
+            and a.label == "code-reviewed"
+        ]
+        add_needs_rework = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_LABEL
+            and a.issue_number == 100
+            and a.label == "needs-rework"
+        ]
+        comment_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_COMMENT
+            and a.number == 100
+            and a.is_pr
+        ]
+        queue_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.QUEUE_REWORK
+        ]
+
+        assert len(remove_reviewed) == 1
+        assert len(add_needs_rework) == 1
+        assert len(comment_actions) == 1
+        assert "<!-- io:post-publish-validation -->" in comment_actions[0].comment
+        assert "POST-PUBLISH VALIDATION FAILURE" in comment_actions[0].comment
+        assert len(queue_actions) == 1
+        assert queue_actions[0].source == "post_publish_validation"
+        assert queue_actions[0].feedback == discovered.feedback
+
 
 class TestPlanDiscoveredEscalations:
     """Tests for Planner's _plan_discovered_escalations method.

@@ -384,7 +384,15 @@ class OrchestratorSupport:
             return
         agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
         self.state.pending_reworks.append(
-            PendingRework(self.repository_host.create_issue_key(a.issue_number), agent, a.rework_cycle, issue_number=a.issue_number, pr_number=a.pr_number or None)
+            PendingRework(
+                self.repository_host.create_issue_key(a.issue_number),
+                agent,
+                a.rework_cycle,
+                issue_number=a.issue_number,
+                pr_number=a.pr_number or None,
+                source=a.source,
+                feedback=a.feedback,
+            )
         )
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 

@@ -47,6 +47,7 @@ class PRInfo:
     state: str  # "open", "closed", "merged"
     labels: list[str]
     draft: bool | None = None
+    mergeable_state: str | None = None
 
 
 class PullRequestTracker(Protocol):
