@@ -14,6 +14,7 @@ import json
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, call, patch
 
 from issue_orchestrator.domain.models import (
@@ -2079,6 +2080,241 @@ class TestCompletionProcessorPublishGate:
         comment = mock_pr_adapter.add_comment.call_args[0][1]
         assert "Validation Failed" in comment
         assert "Test-skipping patterns detected" in comment
+
+    def test_pre_publish_gate_failure_reroutes_back_into_review_exchange(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+    ):
+        coder_prompt = tmp_path / "coder.md"
+        reviewer_prompt = tmp_path / "reviewer.md"
+        coder_prompt.write_text("Coder prompt")
+        reviewer_prompt.write_text("Reviewer prompt")
+        config = Config()
+        config.review_enabled = True
+        config.review_exchange_mode = "via-local-loop"
+        config.code_review_agent = "agent:reviewer"
+        config.agents = {
+            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
+            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+        }
+
+        pre_publish_gate = Mock()
+        pre_publish_gate.check.return_value = PrePublishGateResult(
+            allowed=False,
+            reason="ERROR: Test-skipping patterns detected",
+            command="/tmp/hooks/pre-push",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            exit_code=1,
+            stdout="",
+            stderr="validation stderr\n",
+            hook_path="/tmp/hooks/pre-push",
+            head_sha="abc123",
+            ran=True,
+        )
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            pre_publish_gate=pre_publish_gate,
+            session_output=FileSystemSessionOutput(),
+            config=config,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        record_dir = worktree / ".issue-orchestrator"
+        record_dir.mkdir(parents=True, exist_ok=True)
+        completion_record = CompletionRecord(
+            session_id="issue-123",
+            timestamp=datetime.now().isoformat(),
+            outcome=CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
+        processor.session_output.start_run(worktree, "issue-123", issue_number=123)
+        review_exchange = processor._review_exchange  # noqa: SLF001
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="approved",
+            )
+        )
+
+        with patch.object(
+            review_exchange,
+            "prepare_review_exchange",
+            return_value=(
+                SimpleNamespace(
+                    ordered_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR]
+                ),
+                None,
+                None,
+                False,
+                False,
+                False,
+            ),
+        ):
+            result = processor.process(
+                worktree,
+                issue_number=123,
+                issue_title="Test Issue",
+                agent_label="agent:coder",
+            )
+
+        assert result.success
+        assert result.review_exchange_deferred is True
+        assert result.validation_failed_rerouted is True
+        assert result.actions_taken == [
+            "Validation failed; returned to coder rework via review exchange",
+            "Review exchange passed",
+        ]
+        assert result.errors == []
+        mock_git_adapter.push.assert_not_called()
+        mock_label_adapter.add_label.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+        validation_record_path = processor._run_review_exchange_loop.call_args.kwargs[
+            "initial_validation_record_path"
+        ]
+        assert validation_record_path.exists()
+        record_data = json.loads(validation_record_path.read_text())
+        assert record_data["passed"] is False
+        assert record_data["command"] == "/tmp/hooks/pre-push"
+
+    def test_pre_publish_gate_failure_review_exchange_halt_avoids_validation_failed_label(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+    ):
+        coder_prompt = tmp_path / "coder.md"
+        reviewer_prompt = tmp_path / "reviewer.md"
+        coder_prompt.write_text("Coder prompt")
+        reviewer_prompt.write_text("Reviewer prompt")
+        config = Config()
+        config.review_enabled = True
+        config.review_exchange_mode = "via-local-loop"
+        config.code_review_agent = "agent:reviewer"
+        config.agents = {
+            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
+            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+        }
+
+        pre_publish_gate = Mock()
+        pre_publish_gate.check.return_value = PrePublishGateResult(
+            allowed=False,
+            reason="ERROR: Test-skipping patterns detected",
+            command="/tmp/hooks/pre-push",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            exit_code=1,
+            stdout="",
+            stderr="validation stderr\n",
+            hook_path="/tmp/hooks/pre-push",
+            head_sha="abc123",
+            ran=True,
+        )
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            pre_publish_gate=pre_publish_gate,
+            session_output=FileSystemSessionOutput(),
+            config=config,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        record_dir = worktree / ".issue-orchestrator"
+        record_dir.mkdir(parents=True, exist_ok=True)
+        completion_record = CompletionRecord(
+            session_id="issue-123",
+            timestamp=datetime.now().isoformat(),
+            outcome=CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
+        processor.session_output.start_run(worktree, "issue-123", issue_number=123)
+        review_exchange = processor._review_exchange  # noqa: SLF001
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="stopped",
+                rounds=1,
+                reason="max_no_progress",
+            )
+        )
+
+        with patch.object(
+            review_exchange,
+            "prepare_review_exchange",
+            return_value=(
+                SimpleNamespace(
+                    ordered_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR]
+                ),
+                None,
+                None,
+                False,
+                False,
+                False,
+            ),
+        ):
+            result = processor.process(
+                worktree,
+                issue_number=123,
+                issue_title="Test Issue",
+                agent_label="agent:coder",
+            )
+
+        assert not result.success
+        assert result.review_exchange_halted is True
+        assert result.failure_kind is None
+        assert result.errors == ["review_exchange: stopped (max_no_progress)"]
+        assert result.actions_taken == []
+        mock_git_adapter.push.assert_not_called()
+        mock_label_adapter.add_label.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_reroute_pre_publish_validation_failure_requires_session_name(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+    ):
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            session_output=FileSystemSessionOutput(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+
+        result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
+            worktree=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name=None,
+            agent_label="agent:coder",
+            record=record,
+        )
+
+        assert result is None
 
 
 def test_cleanup_failure_posts_diagnostic_comment(

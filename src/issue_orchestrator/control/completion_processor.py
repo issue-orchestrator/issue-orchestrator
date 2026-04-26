@@ -1133,6 +1133,10 @@ class CompletionProcessor:
         record: CompletionRecord,
         session_name: str | None,
         issue_number: int,
+        issue_title: str,
+        agent_label: str | None,
+        actions_taken: list[str],
+        errors: list[str],
     ) -> ProcessingResult | None:
         if self.pre_publish_gate is None:
             return None
@@ -1157,6 +1161,16 @@ class CompletionProcessor:
             session_name=session_name,
             result=result,
         )
+        rerouted = self._reroute_pre_publish_validation_failure_if_possible(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            record=record,
+        )
+        if rerouted is not None:
+            return rerouted
         return self._handle_gate_failure(
             worktree,
             record,
@@ -1165,6 +1179,81 @@ class CompletionProcessor:
             result.reason,
             self._pre_publish_validation_record(worktree, session_name, result),
         )
+
+    def _reroute_pre_publish_validation_failure_if_possible(
+        self,
+        *,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        record: CompletionRecord,
+    ) -> ProcessingResult | None:
+        if session_name is None or agent_label is None:
+            return None
+        if RequestedAction.CREATE_PR not in record.requested_actions:
+            return None
+
+        validation_record_path = (
+            self.session_output.ensure_run_dir(worktree, session_name)
+            / "validation-record.json"
+        )
+        if not validation_record_path.exists():
+            return None
+
+        reroute_errors: list[str] = []
+        reroute_actions: list[str] = []
+        (
+            exchange_mode,
+            exchange_result,
+            exchange_halt,
+            deferred,
+        ) = self._review_exchange.run_review_exchange_if_needed(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            initial_validation_record_path=validation_record_path,
+            errors=reroute_errors,
+            actions_taken=reroute_actions,
+            run_review_exchange_loop=self._run_review_exchange_loop,
+        )
+
+        # The review-exchange helper enforces the configured max_rounds and
+        # max_no_progress bounds. If it returns ``exchange_halt=True`` here,
+        # this reroute must terminate loudly instead of re-entering forever.
+        if exchange_halt:
+            return ProcessingResult(
+                success=False,
+                message=(
+                    "Validation failed after review approval and the follow-up "
+                    "review exchange halted"
+                ),
+                errors=reroute_errors,
+                actions_taken=reroute_actions,
+                review_exchange_halted=True,
+            )
+
+        if deferred or (exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result):
+            resumed_actions = [
+                "Validation failed; returned to coder rework via review exchange",
+                *reroute_actions,
+            ]
+            return ProcessingResult(
+                success=True,
+                message=(
+                    "Validation failed after review approval; "
+                    "review exchange resumed to rework the failure"
+                ),
+                actions_taken=resumed_actions,
+                errors=reroute_errors,
+                review_exchange_deferred=True,
+                validation_failed_rerouted=True,
+            )
+
+        return None
 
     def _persist_pre_publish_failure_artifacts(
         self,
@@ -1268,6 +1357,10 @@ class CompletionProcessor:
             record=record,
             session_name=session_name,
             issue_number=issue_number,
+            issue_title=issue_title,
+            agent_label=agent_label,
+            actions_taken=actions_taken,
+            errors=errors,
         )
         if pre_publish_failure is not None:
             return branch, pr_url, review_exchange_completed, False, pre_publish_failure

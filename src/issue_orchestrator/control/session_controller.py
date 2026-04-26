@@ -212,6 +212,13 @@ class SessionController:
             # active so the next tick re-observes, re-enters the pipeline, and
             # resumes publish once the summary is visible. We deliberately do
             # NOT emit processing_completed here — the record is still pending.
+            if result.validation_failed_rerouted:
+                self._emit_pre_publish_validation_failure(
+                    run_dir=run_dir,
+                    session_name=validation_session_name,
+                    issue_number=issue_number,
+                    validation_reason=result.message,
+                )
             return SessionDecision(
                 status=SessionStatus.RUNNING,
                 processing_result=result,
@@ -296,6 +303,22 @@ class SessionController:
     ) -> SessionStatus:
         if run_dir is None:
             return SessionStatus.VALIDATION_FAILED
+        self._emit_pre_publish_validation_failure(
+            run_dir=run_dir,
+            session_name=session_name,
+            issue_number=issue_number,
+            validation_reason=validation_reason,
+        )
+        return SessionStatus.VALIDATION_FAILED
+
+    def _emit_pre_publish_validation_failure(
+        self,
+        *,
+        run_dir: Path,
+        session_name: str,
+        issue_number: int,
+        validation_reason: str,
+    ) -> None:
         self._emit_event(
             EventName.SESSION_VALIDATION_FAILED,
             {
@@ -307,7 +330,6 @@ class SessionController:
                 "artifacts": self._validation_record_artifacts(run_dir),
             },
         )
-        return SessionStatus.VALIDATION_FAILED
 
     def _log_completion_lookup(
         self,

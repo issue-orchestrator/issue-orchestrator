@@ -87,6 +87,7 @@ class MockCompletionProcessor:
         # field so existing tests still exercise the synchronous completion
         # path. Tests for the deferred branch override this explicitly.
         self.process_result.review_exchange_deferred = False
+        self.process_result.validation_failed_rerouted = False
 
     def read_completion_record(
         self, worktree_path: Path, completion_path: str | None = None
@@ -225,6 +226,46 @@ class TestSessionControllerTerminated:
 
         assert decision.status == SessionStatus.VALIDATION_FAILED
         assert decision.completion_processed
+        validation_events = [
+            event for event in event_sink.events
+            if event.name == EventName.SESSION_VALIDATION_FAILED
+        ]
+        assert len(validation_events) == 1
+
+    def test_pre_publish_validation_failure_rerouted_to_review_exchange_keeps_running(
+        self, tmp_path: Path
+    ):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        processor.process_result.success = True
+        processor.process_result.message = (
+            "Validation failed after review approval; review exchange resumed to rework the failure"
+        )
+        processor.process_result.review_exchange_deferred = True
+        processor.process_result.validation_failed_rerouted = True
+        event_sink = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=event_sink,
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.RUNNING
+        assert decision.completion_processed is False
         validation_events = [
             event for event in event_sink.events
             if event.name == EventName.SESSION_VALIDATION_FAILED

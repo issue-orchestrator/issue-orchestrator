@@ -27,3 +27,7 @@ class ProcessingResult:
     # record is intentionally left on disk so the next observation re-enters
     # the pipeline.
     review_exchange_deferred: bool = False
+    # True when a post-review validation failure was preserved and rerouted
+    # back into coder rework via the review-exchange path. Callers should keep
+    # the session running but still surface validation-failure evidence.
+    validation_failed_rerouted: bool = False
