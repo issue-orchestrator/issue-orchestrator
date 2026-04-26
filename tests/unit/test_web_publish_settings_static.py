@@ -557,6 +557,37 @@ class TestSettingsEndpoints:
             html = response.text
             assert "SCHEMA_TABS" in html
             assert "SCHEMA_FIELDS" in html
+            assert "const SCHEMA_TABS = [" in html
+            assert "const SCHEMA_FIELDS = {" in html
+        finally:
+            web._orchestrator = None
+
+    def test_settings_page_uses_tojson_for_inline_schema_bootstrap(self):
+        """GET /settings must neutralize script-closing text in inline schema JSON."""
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.infra.settings_schema import get_settings_json_schema
+
+        payload = '</script><script>window.__xss_probe__=1</script>'
+        custom_schema = get_settings_json_schema()
+        custom_schema["advanced"]["properties"]["dangerous"] = {
+            "type": "string",
+            "description": payload,
+        }
+        mock_orch = create_mock_orchestrator()
+
+        web._orchestrator = mock_orch
+        try:
+            with patch(
+                "issue_orchestrator.entrypoints.web_settings_routes.get_settings_json_schema",
+                return_value=custom_schema,
+            ):
+                client = TestClient(app)
+                response = client.get("/settings")
+
+            html = response.text
+            assert response.status_code == 200
+            assert payload not in html
+            assert r"\u003c/script\u003e\u003cscript\u003ewindow.__xss_probe__=1\u003c/script\u003e" in html
         finally:
             web._orchestrator = None
 

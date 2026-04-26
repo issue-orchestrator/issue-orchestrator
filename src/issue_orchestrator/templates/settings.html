@@ -465,8 +465,8 @@
     <script src="/static/js/embedded_nav.js"></script>
     <script>
         // Schema metadata embedded from server (tab keys and field types)
-        const SCHEMA_TABS = {{ tabs_json | safe }};
-        const SCHEMA_FIELDS = {{ schemas_json | safe }};
+        const SCHEMA_TABS = {{ tabs_for_js | tojson }};
+        const SCHEMA_FIELDS = {{ schemas_for_js | tojson }};
 
         let originalSettings = {};
         let currentSettings = {};

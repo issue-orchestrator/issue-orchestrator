@@ -623,8 +623,8 @@ def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     assert 'id="cancelSettingsBtn"' in tmpl
     assert 'onclick="cancelSettings()"' in tmpl
     assert "window.embeddedNav.buildHref('/', window.location.search)" in tmpl
-    assert "{{ tabs_json | safe }}" in tmpl
-    assert "{{ schemas_json | safe }}" in tmpl
+    assert "{{ tabs_for_js | tojson }}" in tmpl
+    assert "{{ schemas_for_js | tojson }}" in tmpl
     # Old ad-hoc helpers / literals must be gone.
     assert "settingsIsEmbedded" not in tmpl
     assert "'/?embedded=1'" not in tmpl
