@@ -7,10 +7,16 @@ and the winner is always deterministic.
 
 from datetime import datetime, timedelta
 
-from hypothesis import given, settings, assume
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from issue_orchestrator.domain.claim import Claim
+
+
+PROPERTY_SETTINGS = settings(
+    max_examples=200,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 
 
 # --- Strategies ---
@@ -81,7 +87,7 @@ class TestWinnerDeterminism:
     """Winner determination is a pure function: same inputs always give same output."""
 
     @given(claims=claims_list_strategy(min_size=0, max_size=8))
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_winner_is_deterministic(self, claims: list[Claim]):
         """Calling _determine_winner twice on the same claims gives the same result."""
         w1 = _determine_winner(claims)
@@ -95,7 +101,7 @@ class TestWinnerDeterminism:
             assert w1.priority == w2.priority
 
     @given(claims=claims_list_strategy(min_size=1, max_size=8))
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_winner_order_independent(self, claims: list[Claim]):
         """Winner is the same regardless of claim list ordering."""
         import random as rng
@@ -117,7 +123,7 @@ class TestAtMostOneWinner:
     """The invariant: at most one winner at any given time."""
 
     @given(claims=claims_list_strategy(min_size=0, max_size=10))
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_at_most_one_winner(self, claims: list[Claim]):
         """There is at most one winner from any set of claims."""
         winner = _determine_winner(claims)
@@ -135,7 +141,7 @@ class TestAtMostOneWinner:
                 assert (winner.priority, winner.lease_id) >= (c.priority, c.lease_id)
 
     @given(claims=claims_list_strategy(min_size=1, max_size=10))
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_winner_is_valid(self, claims: list[Claim]):
         """The winner (if any) must be a non-expired claim."""
         winner = _determine_winner(claims)
@@ -156,7 +162,7 @@ class TestHighestPriorityWins:
             unique=True,
         )
     )
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_highest_priority_always_wins(self, priorities: list[int]):
         """Among valid claims with unique priorities, the highest wins."""
         now = datetime.now()
@@ -185,7 +191,7 @@ class TestExpiredClaimsIgnored:
         valid_priority=st.integers(min_value=1, max_value=100),
         expired_priority=st.integers(min_value=101, max_value=100_000),
     )
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_expired_high_priority_loses_to_valid_low(
         self, valid_priority: int, expired_priority: int,
     ):
@@ -230,7 +236,7 @@ class TestLexicographicTiebreak:
         ),
         priority=st.integers(min_value=1, max_value=100_000),
     )
-    @settings(max_examples=200)
+    @PROPERTY_SETTINGS
     def test_largest_lease_id_wins_on_tie(
         self, lease_ids: list[str], priority: int,
     ):
