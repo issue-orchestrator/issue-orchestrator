@@ -52,7 +52,7 @@ class QueueProjection:
         Returns:
             List of in-scope issues used for queue and blocked projections
         """
-        del state  # Current projection does not need runtime exclusions when fetching scope.
+        del state  # Scope refresh is repository-backed; runtime-only filters happen after fetch.
         from ..infra.audit import fetch_all_issues
         return fetch_all_issues(self._config, self._repository_host)
 

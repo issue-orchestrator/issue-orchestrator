@@ -278,6 +278,61 @@ class TestUpdateAndEmit:
             assert state.cached_queue_issues[0].number == 1
             assert state.cached_queue_issues[1].number == 2
 
+    def test_refresh_removes_issue_that_fell_out_of_scope(self, queue_projection, sample_event_sink):
+        blocked_issue = Issue(
+            number=4057,
+            title="Publish failed",
+            labels=["agent:backend", "publish-failed"],
+            body="",
+        )
+        state = OrchestratorState()
+        state.cached_scope_issues = [blocked_issue]
+        state.cached_queue_issues = [blocked_issue]
+
+        with patch(
+            "issue_orchestrator.infra.audit.fetch_all_issues",
+            return_value=[],
+        ):
+            result = queue_projection.update_and_emit(state)
+
+        assert result is not None
+        assert result.added == []
+        assert result.removed == [4057]
+        assert state.cached_scope_issues == []
+        assert state.cached_queue_issues == []
+        event = sample_event_sink.last_event(str(EventName.QUEUE_CHANGED))
+        assert event is not None
+        assert event.data["removed"] == [{"number": 4057, "issue_key": "4057"}]
+
+    def test_refresh_uses_cached_queue_issues_when_scope_cache_is_cold(
+        self,
+        queue_projection,
+        sample_event_sink,
+    ):
+        blocked_issue = Issue(
+            number=4057,
+            title="Publish failed",
+            labels=["agent:backend", "publish-failed"],
+            body="",
+        )
+        state = OrchestratorState()
+        state.cached_scope_issues = []
+        state.cached_queue_issues = [blocked_issue]
+
+        with patch(
+            "issue_orchestrator.infra.audit.fetch_all_issues",
+            return_value=[],
+        ):
+            result = queue_projection.update_and_emit(state)
+
+        assert result is not None
+        assert result.removed == [4057]
+        assert state.cached_scope_issues == []
+        assert state.cached_queue_issues == []
+        event = sample_event_sink.last_event(str(EventName.QUEUE_CHANGED))
+        assert event is not None
+        assert event.data["removed"] == [{"number": 4057, "issue_key": "4057"}]
+
     def test_failed_this_cycle_cleared_on_queue_refresh(self, queue_projection):
         """failed_this_cycle is cleared when queue changes."""
         issue = Issue(number=1, title="Issue", labels=["agent:backend"], body="")
