@@ -94,6 +94,42 @@ def test_prompt_int_retries_on_invalid_input() -> None:
     assert any("Invalid number" in msg for msg in prompter.printed)
 
 
+def test_prompt_claude_session_interactions_enables_rule() -> None:
+    """Claude-backed onboarding should offer startup interactions once."""
+    config = {
+        "agents": {
+            "agent:backend": {
+                "provider": "claude-code",
+            }
+        },
+        "execution": {"concurrency": {"max_concurrent_sessions": 3}},
+    }
+    prompter = MockPrompter([True])
+
+    setup_wizard_module._prompt_claude_session_interactions(config, prompter)
+
+    assert config["execution"]["session_interactions"] == {"enabled": True}
+    printed = "\n".join(prompter.printed)
+    assert "auto-accept this trusted startup prompt" in printed
+
+
+def test_prompt_claude_session_interactions_can_be_declined() -> None:
+    """Declining startup interactions should leave the default disabled state."""
+    config = {
+        "agents": {
+            "agent:backend": {
+                "provider": "claude-code",
+            }
+        },
+        "execution": {"concurrency": {"max_concurrent_sessions": 3}},
+    }
+    prompter = MockPrompter([False])
+
+    setup_wizard_module._prompt_claude_session_interactions(config, prompter)
+
+    assert "session_interactions" not in config["execution"]
+
+
 class TestCreateStarterPrompt:
     """Test the create_starter_prompt function."""
 
@@ -760,6 +796,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",                  # worktree base
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",                  # ui mode
             "8080",                 # web port
             "tmux",                 # terminal backend
@@ -784,6 +821,7 @@ class TestWizardNewProject:
         assert "Work on issue" in config["agents"]["agent:backend"]["initial_prompt"]
         assert "{pr_number}" not in config["agents"]["agent:backend"]["initial_prompt"]
         assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["execution"]["session_interactions"] == {"enabled": True}
         assert config["ui"]["mode"] == "web"
         printed = "\n".join(prompter.printed)
         assert "Claude Code note: trust is stored per worktree path." in printed
@@ -812,6 +850,7 @@ class TestWizardNewProject:
             "M0",
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -854,6 +893,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "tmux",                 # ui mode (tmux doesn't need port)
             "io",                   # label prefix
             "make test",            # validation command
@@ -902,6 +942,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "9000",                 # custom port
             "tmux",                 # terminal backend
@@ -986,6 +1027,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -1041,6 +1083,7 @@ class TestWizardNewProject:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -1090,6 +1133,7 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             "../",                  # worktree base
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",                  # ui mode
             "8080",                 # port
             "tmux",                 # terminal backend
@@ -1106,6 +1150,7 @@ class TestWizardExistingProject:
         assert config["agents"]["agent:web"]["provider"] == "claude-code"
         assert config["agents"]["agent:web"]["ai_system"] == "claude-code"
         assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["execution"]["session_interactions"] == {"enabled": True}
         assert config["validation"]["cmd"] == "make test"
         assert config["validation"]["timeout_seconds"] == 300
 
@@ -1154,6 +1199,7 @@ class TestWizardExistingProject:
             # Worktrees needed for backend
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             # UI mode already configured - won't ask
             # Label prefix not configured
             "io",                   # label prefix
@@ -1259,6 +1305,7 @@ class TestWizardExistingProject:
             # Worktree
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             # UI mode (fresh)
             "tmux",
             # Label prefix
@@ -1305,6 +1352,7 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             "../",                  # worktree base (now top-level config)
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",                  # ui mode
             "8080",                 # port (since web mode)
             "tmux",                 # terminal backend
@@ -1358,6 +1406,7 @@ class TestRunWizard:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1384,7 +1433,8 @@ class TestRunWizard:
         assert "Run: issue-orchestrator doctor" in printed
         assert printed.index("issue-orchestrator setup-guardrails") < printed.index("issue-orchestrator doctor")
         assert printed.index("issue-orchestrator doctor") < printed.index("issue-orchestrator start")
-        assert "The first interactive Claude session in a new worktree may pause for manual trust approval." in printed
+        assert "Trusted session interactions are enabled." in printed
+        assert "auto-accept Claude's initial trust prompt" in printed
         assert "pre-approving the parent directory does not auto-trust child worktrees." in printed
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
@@ -1417,6 +1467,7 @@ class TestRunWizard:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1496,6 +1547,7 @@ class TestRunWizard:
             "M0",                   # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1647,6 +1699,7 @@ class TestDryRunMode:
             "M0",  # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",
@@ -1695,6 +1748,7 @@ class TestDryRunMode:
             "M0",  # foundation milestone
             "../",
             "",                     # setup commands (empty to skip)
+            True,                   # enable Claude startup interactions
             "web",
             "8080",
             "tmux",

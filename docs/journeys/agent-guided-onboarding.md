@@ -34,10 +34,11 @@ If your AI assistant supports repo-local skills, ask it to use the `onboarding` 
 
 ## Practical advice
 
-- Prefer `codex` for the first fully hands-free run when it is available.
 - If using `codex`, leave the wizard's Codex model prompt blank so the local Codex CLI can choose its current default.
 - When an agent is driving setup, prefer piping scripted stdin into `issue-orchestrator setup` rather than leaving the wizard interactive. Nested interactive prompts are a common place for otherwise-capable agents to stall.
-- If you choose `claude-code`, expect a manual workspace-trust prompt the first time Claude opens each new worktree.
+- If you choose `claude-code`, enable trusted session interactions in the setup wizard or set `execution.session_interactions.enabled: true`.
+- With trusted session interactions enabled, Issue Orchestrator auto-accepts Claude's initial trust prompt in orchestrator-created worktrees.
+- If you leave that setting disabled, expect a manual workspace-trust prompt the first time Claude opens each new worktree.
 - Claude trust is per worktree path. A dedicated worktree base keeps those paths easy to find, but pre-approving the parent worktree directory does not automatically trust future child worktrees.
 - Do not leave the default validation command in place if the target repo does not support it.
 - Publish `.prompts/` and other generated onboarding files to the worktree seed ref before `start`; by default that means commit and push to your default branch. For local-only evaluation, set `worktrees.seed_ref: HEAD`.

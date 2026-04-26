@@ -93,7 +93,7 @@ issue-orchestrator start
 
 This launches the orchestrator with the web dashboard. Open `http://localhost:8080` to watch issues move through the pipeline.
 
-If you are using `claude-code`, expect the first interactive session in each new worktree to pause for manual trust approval. A dedicated worktree base can keep those paths predictable, but pre-approving the parent worktree directory does not automatically trust future child worktrees.
+If you are using `claude-code`, let the setup wizard enable trusted session interactions. That writes `execution.session_interactions.enabled: true`, allowing orchestrator-created worktrees to auto-accept Claude's initial trust prompt. If you leave it disabled, the first interactive session in each new worktree may pause for manual trust approval. A dedicated worktree base still keeps those paths predictable, but pre-approving the parent worktree directory does not automatically trust future child worktrees.
 
 ## What happens next
 

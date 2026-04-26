@@ -14,7 +14,7 @@ A: The orchestrator auto-detects the repository from the git checkout. Override 
 **Q4: Where do worktrees go by default, and can I move them?**
 A: Worktrees default to `../` via `worktrees.base`. Set `worktrees.base` to point somewhere else if you want to keep them in a dedicated directory.
 
-If you use Claude Code, a dedicated worktree directory can make the paths easier to find, but it does not suppress Claude's trust prompt for future child worktrees. Trust is stored per worktree path, not inherited from the parent directory.
+If you use Claude Code, enable `execution.session_interactions.enabled: true` or let the setup wizard do it for you. That lets Issue Orchestrator auto-accept Claude's initial trust prompt in orchestrator-created worktrees. A dedicated worktree directory can still make the paths easier to find, but trust is stored per worktree path, not inherited from the parent directory.
 
 **Q5: What happens if I change the worktree location after I've been running for a while?**
 A: Existing worktrees stay where they were created. Changing `worktrees.base` only affects new worktrees. If you want everything under the new base, clean up old worktrees and let the orchestrator recreate them (or move them manually and make sure any in-flight sessions are stopped first).

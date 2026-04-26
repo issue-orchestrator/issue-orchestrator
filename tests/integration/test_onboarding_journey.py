@@ -110,6 +110,7 @@ def _local_onboarding_prompter() -> _QueuePrompter:
             "M0",
             "../",
             "",
+            True,
             "web",
             "8080",
             "subprocess",
@@ -167,6 +168,7 @@ def test_local_onboarding_smoke_journey(tmp_path: Path, monkeypatch: pytest.Monk
     config = Config.load(config_path)
     config.worktree_seed_ref = "HEAD"
     config.hooks.ai_gate.interval_days = 0
+    assert config.session_interactions.enabled is True
     agent = config.agents["agent:dev"]
     agent.provider = None
     agent.command = "sh -c 'echo onboarding-smoke-agent'"

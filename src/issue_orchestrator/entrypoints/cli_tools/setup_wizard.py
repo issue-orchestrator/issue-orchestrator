@@ -410,10 +410,25 @@ def _config_uses_claude_code(config: dict[str, Any]) -> bool:
     return False
 
 
+def _claude_session_interactions_enabled(config: dict[str, Any]) -> bool:
+    """Return whether runner-managed Claude startup interactions are enabled."""
+    execution_config = config.get("execution")
+    if not isinstance(execution_config, dict):
+        return False
+    interactions_config = execution_config.get("session_interactions")
+    if not isinstance(interactions_config, dict):
+        return False
+    return bool(interactions_config.get("enabled"))
+
+
 def _print_claude_code_worktree_note(prompter: Prompter) -> None:
     """Explain Claude Code's per-worktree trust prompt behavior."""
     prompter.print(
         "  Claude Code note: trust is stored per worktree path."
+    )
+    prompter.print(
+        "  Issue Orchestrator can auto-accept Claude's initial trust prompt "
+        "when trusted session interactions are enabled."
     )
     prompter.print(
         "  A dedicated worktree directory keeps those paths predictable, but "
@@ -422,20 +437,64 @@ def _print_claude_code_worktree_note(prompter: Prompter) -> None:
     )
 
 
-def _print_claude_code_next_steps(prompter: Prompter) -> None:
-    """Call out the manual Claude Code trust seam in onboarding."""
-    prompter.print("\n  Claude Code note:")
+def _prompt_claude_session_interactions(
+    config: dict[str, Any],
+    prompter: Prompter,
+) -> None:
+    """Offer runner-managed Claude startup prompt handling during onboarding."""
+    if not _config_uses_claude_code(config):
+        return
+
+    execution_config = cast(dict[str, Any], config.setdefault("execution", {}))
+    interactions_config = execution_config.get("session_interactions")
+    if isinstance(interactions_config, dict) and "enabled" in interactions_config:
+        return
+
+    prompter.print("\n--- Claude Startup Prompts ---")
     prompter.print(
-        "     The first interactive Claude session in a new worktree may pause "
-        "for manual trust approval."
+        "Claude Code may pause on its first worktree trust screen."
     )
+    prompter.print(
+        "Issue Orchestrator can auto-accept this trusted startup prompt in "
+        "orchestrator-created worktrees."
+    )
+    prompter.print(
+        "Recommended for hands-free Claude onboarding."
+    )
+    if prompter.yes_no(
+        "Enable trusted session interactions for Claude startup prompts?",
+        default=True,
+    ):
+        execution_config["session_interactions"] = {"enabled": True}
+
+
+def _print_claude_code_next_steps(
+    prompter: Prompter,
+    config: dict[str, Any],
+) -> None:
+    """Call out how Claude trust prompts will behave after onboarding."""
+    prompter.print("\n  Claude Code note:")
+    if _claude_session_interactions_enabled(config):
+        prompter.print(
+            "     Trusted session interactions are enabled."
+        )
+        prompter.print(
+            "     Issue Orchestrator will auto-accept Claude's initial trust "
+            "prompt in orchestrator-created worktrees."
+        )
+    else:
+        prompter.print(
+            "     The first interactive Claude session in a new worktree may pause "
+            "for manual trust approval."
+        )
+        prompter.print(
+            "     To auto-accept this trusted startup prompt later, set "
+            "execution.session_interactions.enabled: true."
+        )
     prompter.print(
         "     Trust is per worktree path. A dedicated worktree base keeps paths "
         "easy to find, but pre-approving the parent directory does not auto-trust "
         "child worktrees."
-    )
-    prompter.print(
-        "     If you need a fully hands-free first run, prefer Codex."
     )
 
 
@@ -625,6 +684,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     if setup_input.strip():
         setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
         worktrees_config["setup"] = setup_cmds
+
+    _prompt_claude_session_interactions(config, prompter)
 
     # UI Mode
     prompter.print("\n--- UI Mode ---")
@@ -969,6 +1030,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
             wt_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
             wt_config["setup"] = setup_cmds
+
+    _prompt_claude_session_interactions(config, prompter)
 
     # UI mode
     if "ui" not in config or "mode" not in config.get("ui", {}):
@@ -1561,7 +1624,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     prompter.print(f"\n  {step_number}. Run: issue-orchestrator start")
 
     if _config_uses_claude_code(config):
-        _print_claude_code_next_steps(prompter)
+        _print_claude_code_next_steps(prompter, config)
 
     prompter.print("\n  Advanced features (enable in config later):")
     prompter.print(

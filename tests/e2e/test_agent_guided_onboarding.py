@@ -190,6 +190,7 @@ def _build_onboarding_prompt(provider_name: str, source_root: Path) -> str:
             "M0",
             "../",
             "",
+            "y" if provider_name == "claude-code" else "",
             "web",
             "8080",
             "subprocess",
@@ -248,6 +249,7 @@ def _build_onboarding_prompt(provider_name: str, source_root: Path) -> str:
         - Use foundation milestone `M0`.
         - Use worktree base `../`.
         - Leave worktree setup commands blank.
+        - If you chose `claude-code`, enable trusted session interactions when the wizard offers them.
         - Use UI mode `web`, web port `8080`, and terminal backend `subprocess`.
         - Use label prefix `io`.
         - Set validation command to `true` with timeout `300`.
@@ -445,6 +447,7 @@ async def test_live_agent_guided_existing_repo_onboarding_launches_first_issue(
             onboarded_config.agents[work_agent_label].provider_args.get("permission_mode")
             == "bypassPermissions"
         )
+        assert onboarded_config.session_interactions.enabled is True
 
     runtime_config = copy.deepcopy(onboarded_config)
     runtime_config.repo_root = target_repo
