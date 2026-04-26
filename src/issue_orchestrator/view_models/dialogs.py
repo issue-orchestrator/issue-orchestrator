@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 
 @dataclass(frozen=True)
@@ -294,9 +294,14 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     return actions
 
 
-_SESSION_DIAGNOSTIC_ACTION_GROUPS = frozenset(
-    {"validation_artifacts", "session_evidence", "diagnostics"}
+SessionActionGroup = Literal["validation_artifacts", "session_evidence", "diagnostics"]
+
+_SESSION_DIAGNOSTIC_SECTION_TITLES: tuple[tuple[SessionActionGroup, str], ...] = (
+    ("validation_artifacts", "Validation Artifacts"),
+    ("session_evidence", "Session Evidence"),
+    ("diagnostics", "Diagnostics"),
 )
+_SESSION_DIAGNOSTIC_ACTION_GROUPS: frozenset[str] = frozenset(get_args(SessionActionGroup))
 
 
 def _append_open_path(
@@ -304,13 +309,16 @@ def _append_open_path(
     label: str,
     path: str,
     *,
-    group: str | None = None,
+    group: SessionActionGroup,
 ) -> None:
     if not path:
         return
-    payload: dict[str, Any] = {"type": "open_path", "label": label, "path": path}
-    if group:
-        payload["group"] = _validated_session_action_group(group)
+    payload: dict[str, Any] = {
+        "type": "open_path",
+        "label": label,
+        "path": path,
+        "group": _validated_session_action_group(group),
+    }
     actions.append(payload)
 
 
@@ -320,7 +328,7 @@ def _append_run_scoped_action(
     *,
     action_type: str,
     label: str,
-    group: str | None = None,
+    group: SessionActionGroup,
 ) -> None:
     if not ctx.run_dir:
         return
@@ -329,9 +337,8 @@ def _append_run_scoped_action(
         "label": label,
         "issue_number": ctx.issue_number,
         "run_dir": ctx.run_dir,
+        "group": _validated_session_action_group(group),
     }
-    if group:
-        payload["group"] = _validated_session_action_group(group)
     actions.append(payload)
 
 
@@ -537,9 +544,7 @@ def _build_validation_failure_action_sections(
     actions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     grouped_actions: dict[str, list[dict[str, Any]]] = {
-        "validation_artifacts": [],
-        "session_evidence": [],
-        "diagnostics": [],
+        group: [] for group, _title in _SESSION_DIAGNOSTIC_SECTION_TITLES
     }
 
     for action in actions:
@@ -552,27 +557,9 @@ def _build_validation_failure_action_sections(
         grouped_actions[group].append(action)
 
     sections: list[dict[str, Any]] = []
-    if grouped_actions["validation_artifacts"]:
-        sections.append(
-            {
-                "title": "Validation Artifacts",
-                "actions": grouped_actions["validation_artifacts"],
-            }
-        )
-    if grouped_actions["session_evidence"]:
-        sections.append(
-            {
-                "title": "Session Evidence",
-                "actions": grouped_actions["session_evidence"],
-            }
-        )
-    if grouped_actions["diagnostics"]:
-        sections.append(
-            {
-                "title": "Diagnostics",
-                "actions": grouped_actions["diagnostics"],
-            }
-        )
+    for group, title in _SESSION_DIAGNOSTIC_SECTION_TITLES:
+        if grouped_actions[group]:
+            sections.append({"title": title, "actions": grouped_actions[group]})
     return sections
 
 
