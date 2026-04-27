@@ -26,3 +26,8 @@ def append_unique_active_sessions(
         existing_ids.add(session.terminal_id)
         added += 1
     return added
+
+
+def has_active_terminal(active_sessions: list[Session], terminal_id: str) -> bool:
+    """Return whether a terminal id is still active in the live session list."""
+    return any(session.terminal_id == terminal_id for session in active_sessions)
