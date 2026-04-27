@@ -144,6 +144,8 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             completion_detail=completion_detail,
         )
     finally:
+        # Timeout is orchestrator-authoritative; the terminal may still be alive
+        # even though the session is terminal and must not be rediscovered.
         if status == SessionStatus.TIMED_OUT:
             _terminate_timed_out_session(session, kill_session_fn)
     if session.worktree_path:
@@ -262,6 +264,8 @@ def process_active_sessions(
     from ..observation.observation import SessionObservation
 
     for session in list(state.active_sessions):
+        # Snapshot iteration is mutation-safe; the live check filters any
+        # duplicate terminal already removed by an earlier snapshot entry.
         if not has_active_terminal(state.active_sessions, session.terminal_id):
             logger.debug(
                 "[COMPLETION] Skipping stale active-session snapshot entry: %s",

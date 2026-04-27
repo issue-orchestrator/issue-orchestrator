@@ -214,6 +214,8 @@ def observe_active_sessions(
         provider_resilience: Optional provider resilience manager for failure tracking
     """
     for session in list(state.active_sessions):
+        # Snapshot iteration is mutation-safe; the live check filters any
+        # duplicate terminal already removed by an earlier snapshot entry.
         if not has_active_terminal(state.active_sessions, session.terminal_id):
             logger.debug(
                 "[OBSERVE] Skipping stale active-session snapshot entry: %s",

@@ -2252,6 +2252,9 @@ class TestHandleSessionCompletion:
             )
 
         assert state.active_sessions == []
+        assert state.discovered_failures == []
+        assert state.session_history == []
+        assert state.immediate_cleanups == []
         kill_session.assert_called_once_with("issue-123")
 
     def test_queues_review_when_pr_created(self, sample_agent_config, tmp_path):
