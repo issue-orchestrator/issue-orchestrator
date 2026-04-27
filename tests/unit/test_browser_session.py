@@ -31,8 +31,8 @@ def test_create_session_returns_distinct_values() -> None:
     # underlying random ``session_id`` differs).
     assert cookie_a != cookie_b
     assert csrf_a != csrf_b
-    # Cookie format: ``{session_id}.{expiry}.{hmac}``. Each piece is
-    # 32+ hex chars except the unix timestamp.
+    # Cookie format: ``{session_id}.{issued_at}.{hmac}``. Each piece
+    # is 32+ hex chars except the unix timestamp.
     assert cookie_a.count(".") == 2
     assert len(csrf_a) == 64
 
@@ -242,6 +242,39 @@ def test_sessions_have_no_in_memory_cap_with_stateless_cookies() -> None:
     assert all(browser_session.session_is_valid(c) for c in cookies)
 
 
+def test_cross_process_validating_process_owns_ttl_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for #6065 re-review-1 P2.
+
+    A cookie minted by a process configured with a long TTL must
+    still expire on a process that's configured with a shorter TTL.
+    Otherwise an operator that locks the dashboard down to a 60-second
+    session can be defeated by logging in on the Control Center first
+    (which defaults to 8h) — the same ``ui.browser_session.ttl_seconds``
+    rule enforced differently by path.
+    """
+    admin = "shared-admin-cross-process-ttl-token"
+
+    # CC-like process: 1-hour session.
+    browser_session.shutdown()
+    browser_session.initialize(admin_token=admin, session_ttl_seconds=3600)
+    cookie, _ = browser_session.create_session()
+    assert browser_session.session_is_valid(cookie)
+
+    # Dashboard-like process: 60-second session, same admin token.
+    browser_session.shutdown()
+    browser_session.initialize(admin_token=admin, session_ttl_seconds=60)
+    # Right after the simulated mint the cookie is still inside the
+    # dashboard's TTL window.
+    assert browser_session.session_is_valid(cookie)
+
+    # Advance time 61 seconds. Local TTL applies — cookie rejected.
+    real_now = time.time()
+    monkeypatch.setattr(time, "time", lambda: real_now + 61)
+    assert not browser_session.session_is_valid(cookie)
+
+
 def test_cross_process_cookie_validates_with_same_admin_token() -> None:
     """Two ``initialize`` calls with the same admin token derive the
     same secret, so a cookie minted by one accepts in the other.
@@ -290,11 +323,13 @@ def test_cookie_with_tampered_signature_is_rejected() -> None:
     assert not browser_session.session_is_valid(tampered)
 
 
-def test_cookie_with_tampered_expiry_is_rejected() -> None:
+def test_cookie_with_tampered_issued_at_is_rejected() -> None:
     cookie, _ = browser_session.create_session()
-    session_id, expiry, sig = cookie.split(".")
-    # Push the expiry far into the future without re-signing.
-    extended = ".".join([session_id, str(int(expiry) + 10_000_000), sig])
+    session_id, issued_at, sig = cookie.split(".")
+    # Forward-date the issue time without re-signing.
+    extended = ".".join(
+        [session_id, str(int(issued_at) + 10_000_000), sig]
+    )
     assert not browser_session.session_is_valid(extended)
 
 

@@ -94,7 +94,7 @@ _LOCK = Lock()
 @dataclass(frozen=True)
 class _ParsedCookie:
     session_id: str
-    expiry: int
+    issued_at: int
 
 
 def _resolve_int(env_name: str, config_value: int | None, default: int) -> int:
@@ -189,9 +189,9 @@ def shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _sign_cookie(session_id: str, expiry: int) -> str:
+def _sign_cookie(session_id: str, issued_at: int) -> str:
     assert _SECRET is not None
-    payload = f"{session_id}.{expiry}"
+    payload = f"{session_id}.{issued_at}"
     sig = hmac.new(_SECRET, payload.encode("utf-8"), sha256).hexdigest()
     return f"{payload}.{sig}"
 
@@ -200,7 +200,13 @@ def _parse_cookie(cookie_value: str | None) -> _ParsedCookie | None:
     """Verify and parse a cookie value. Returns ``None`` on rejection.
 
     Rejects on any of: missing secret, malformed structure, bad HMAC,
-    unparseable expiry, or expired timestamp.
+    unparseable timestamp, or age greater than the validating process's
+    ``SESSION_TTL_SECONDS``. The cookie carries the **issue time**, not
+    a baked-in expiry, so the validating process owns the TTL policy.
+    Without that split a Control Center configured for 8h would let a
+    cookie outlive a Web Dashboard configured for 60s — the same
+    ``ui.browser_session.ttl_seconds`` rule enforced differently by
+    path (#6065 re-review-1 P2).
     """
     if not cookie_value or _SECRET is None:
         return None
@@ -211,11 +217,11 @@ def _parse_cookie(cookie_value: str | None) -> _ParsedCookie | None:
     payload_parts = payload.split(".")
     if len(payload_parts) != 2:
         return None
-    session_id, expiry_str = payload_parts
-    if not session_id or not expiry_str:
+    session_id, issued_at_str = payload_parts
+    if not session_id or not issued_at_str:
         return None
     try:
-        expiry = int(expiry_str)
+        issued_at = int(issued_at_str)
     except ValueError:
         return None
     expected_sig = hmac.new(
@@ -223,9 +229,14 @@ def _parse_cookie(cookie_value: str | None) -> _ParsedCookie | None:
     ).hexdigest()
     if not hmac.compare_digest(expected_sig, sig):
         return None
-    if int(time.time()) > expiry:
+    now = int(time.time())
+    # ``issued_at`` from the future (clock skew or a forged cookie that
+    # somehow passed the HMAC) is rejected with a small tolerance.
+    if issued_at - now > 5:
         return None
-    return _ParsedCookie(session_id=session_id, expiry=expiry)
+    if now - issued_at > SESSION_TTL_SECONDS:
+        return None
+    return _ParsedCookie(session_id=session_id, issued_at=issued_at)
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +254,11 @@ def create_session() -> tuple[str, str]:
     if _SECRET is None:
         raise RuntimeError("browser_session.initialize was never called")
     session_id = secrets.token_hex(16)
-    expiry = int(time.time()) + SESSION_TTL_SECONDS
-    cookie = _sign_cookie(session_id, expiry)
+    # Encode issue time, not a baked-in expiry — the validating
+    # process applies its own ``SESSION_TTL_SECONDS`` so operator
+    # hardening on either surface takes effect uniformly.
+    issued_at = int(time.time())
+    cookie = _sign_cookie(session_id, issued_at)
     csrf = _derive_csrf(session_id)
     return cookie, csrf
 
