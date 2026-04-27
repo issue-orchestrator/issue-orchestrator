@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-pr validate-quick validate-full verify-hooks-all _validate-impl _validate-pr-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-pr validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -471,30 +471,58 @@ validate-pr:
 # Raw validation - direct execution without output capture wrapper
 # Use this as a fallback if the Python wrapper fails
 VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
+VALIDATE_STATIC_JOBS ?= $(VALIDATE_JOBS)
+VALIDATE_TEST_JOBS ?= 1
+VALIDATE_WEB_JOBS ?= 1
+VALIDATE_AGENT_JOBS ?= 1
+VALIDATE_E2E_JOBS ?= 1
+
+define VALIDATE_CONFIG
+	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL) static_jobs=$(VALIDATE_STATIC_JOBS) test_jobs=$(VALIDATE_TEST_JOBS) web_jobs=$(VALIDATE_WEB_JOBS) agent_jobs=$(VALIDATE_AGENT_JOBS) e2e_jobs=$(VALIDATE_E2E_JOBS)"
+endef
+
 validate-raw:
-	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL)"
-	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
+	$(VALIDATE_CONFIG)
+	@$(GMAKE) --output-sync=target _validate-impl
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed!"
 
 validate-pr-raw:
-	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL)"
-	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-pr-impl
+	$(VALIDATE_CONFIG)
+	@$(GMAKE) --output-sync=target _validate-pr-impl
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ Required PR validations passed!"
 
-# Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated-core test-integration-core test-web
+# Internal phased validation targets. Invoke through validate-raw,
+# validate-pr-raw, or validate-full so timing metadata is emitted.
+# Keep pytest suite fan-out low by default:
+# each suite may already use xdist internally, so running many suites together
+# can oversubscribe local CPUs and starve browser/subprocess tests.
+_validate-impl:
+	@$(GMAKE) -j$(VALIDATE_STATIC_JOBS) --output-sync=target _validate-static-impl
+	@$(GMAKE) -j$(VALIDATE_TEST_JOBS) --output-sync=target _validate-core-tests-impl
+	@$(GMAKE) -j$(VALIDATE_WEB_JOBS) --output-sync=target test-web
 
-_validate-pr-impl: _validate-impl test-simulated-agent test-integration-agent
+_validate-static-impl: typecheck lint-arch lint-complexity
+
+_validate-core-tests-impl: test-unit test-simulated-core test-integration-core
+
+_validate-pr-impl:
+	@$(GMAKE) --output-sync=target _validate-impl
+	@$(GMAKE) -j$(VALIDATE_AGENT_JOBS) --output-sync=target _validate-agent-impl
+
+_validate-agent-impl: test-simulated-agent test-integration-agent
 
 # Full validation including e2e tests
 validate-full:
-	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-full-impl
+	$(VALIDATE_CONFIG)
+	@$(GMAKE) --output-sync=target _validate-full-impl
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed (including e2e)!"
 
-_validate-full-impl: _validate-pr-impl test-e2e
+_validate-full-impl:
+	@$(GMAKE) --output-sync=target _validate-pr-impl
+	@$(GMAKE) -j$(VALIDATE_E2E_JOBS) --output-sync=target test-e2e
 
 verify-hooks-all:
 	@.venv/bin/issue-orchestrator setup-hooks --config .issue-orchestrator/config/hooks-validate.yaml

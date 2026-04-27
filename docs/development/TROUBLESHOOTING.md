@@ -146,6 +146,14 @@ To view: cat /path/to/worktree/.issue-orchestrator/diagnostics/validation-output
 
 **Fallback:** If the Python wrapper fails, use `make validate-raw` for direct execution (no output capture).
 
+**Tuning local PR validation parallelism:** `make validate-pr` is phased so
+pytest suites that already use xdist do not also compete with each other at the
+Makefile level. `VALIDATE_JOBS` still controls the static-check phase by
+default. Use `VALIDATE_TEST_JOBS`, `VALIDATE_WEB_JOBS`,
+`VALIDATE_AGENT_JOBS`, or `VALIDATE_E2E_JOBS` when debugging local contention;
+the default `1` for these heavier phases is a deliberate stability/walltime
+tradeoff.
+
 **Environment variable:** The orchestrator sets `ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR` to direct output to the session directory. For direct runs, this is unset and output goes to the diagnostics fallback.
 
 ### Pre-Push Hook Infinite Recursion

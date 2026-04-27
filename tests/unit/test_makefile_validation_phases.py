@@ -1,0 +1,120 @@
+"""Tests for Makefile validation phase orchestration."""
+
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _gnu_make() -> str:
+    make_bin = shutil.which("gmake") or shutil.which("make")
+    if make_bin is None:
+        pytest.fail("GNU make is required to validate Makefile targets")
+    result = subprocess.run(
+        [make_bin, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or "GNU Make" not in result.stdout:
+        pytest.fail("GNU make is required to validate Makefile targets")
+    return make_bin
+
+
+def _dry_run(target: str, **overrides: str) -> list[str]:
+    env = dict(os.environ)
+    env.pop("MAKEFLAGS", None)
+    env.update(
+        {
+            "VALIDATE_JOBS": "10",
+            "VALIDATE_TEST_JOBS": "1",
+            "VALIDATE_WEB_JOBS": "1",
+            "VALIDATE_AGENT_JOBS": "1",
+            "VALIDATE_E2E_JOBS": "1",
+            **overrides,
+        }
+    )
+    result = subprocess.run(
+        [_gnu_make(), "-n", "--always-make", target],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _matching_indexes(lines: list[str], *fragments: str) -> list[int]:
+    return [
+        index
+        for index, line in enumerate(lines)
+        if all(fragment in line for fragment in fragments)
+    ]
+
+
+def _find_line(lines: list[str], *fragments: str) -> int:
+    matches = _matching_indexes(lines, *fragments)
+    if not matches:
+        raise AssertionError(f"Missing line containing {fragments!r}. Output:\n" + "\n".join(lines))
+    if len(matches) > 1:
+        raise AssertionError(f"Expected one line containing {fragments!r}, got {len(matches)}")
+    return matches[0]
+
+
+def _assert_job_count(line: str, jobs: int) -> None:
+    assert re.search(rf"(?:^|\s)-j\s*{jobs}(?:\s|$)", line), line
+
+
+def _assert_no_job_count(line: str) -> None:
+    assert not re.search(r"(?:^|\s)-j\s*\d+(?:\s|$)", line), line
+
+
+def test_validate_impl_runs_core_phases_with_separate_job_caps():
+    lines = _dry_run("_validate-impl")
+
+    static_index = _find_line(lines, "_validate-static-impl")
+    core_tests_index = _find_line(lines, "_validate-core-tests-impl")
+    web_index = _find_line(lines, "test-web")
+
+    _assert_job_count(lines[static_index], 10)
+    _assert_job_count(lines[core_tests_index], 1)
+    _assert_job_count(lines[web_index], 1)
+
+    assert static_index < core_tests_index < web_index
+
+
+def test_validate_pr_impl_runs_agent_phase_after_validate_phase():
+    lines = _dry_run("_validate-pr-impl")
+
+    validate_index = _find_line(lines, "_validate-impl")
+    agent_index = _find_line(lines, "_validate-agent-impl")
+
+    _assert_job_count(lines[agent_index], 1)
+
+    assert validate_index < agent_index
+
+
+def test_validate_full_impl_runs_e2e_after_pr_phase():
+    lines = _dry_run("_validate-full-impl")
+
+    pr_index = _find_line(lines, "_validate-pr-impl")
+    e2e_index = _find_line(lines, "test-e2e")
+
+    _assert_job_count(lines[e2e_index], 1)
+
+    assert pr_index < e2e_index
+
+
+def test_validate_pr_raw_does_not_schedule_entire_graph_at_validate_jobs():
+    lines = _dry_run("validate-pr-raw")
+    raw_pr_index = _find_line(lines, "_validate-pr-impl")
+
+    _assert_no_job_count(lines[raw_pr_index])

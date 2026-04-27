@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.entrypoints.cli_tools.validate_runner import ValidateTimingRecorder
+
 
 def _with_repo_on_pythonpath(env: dict[str, str]) -> dict[str, str]:
     repo_root = Path(__file__).resolve().parents[2]
@@ -255,7 +257,8 @@ class TestValidateRunner:
         """Timing markers should be persisted as JSONL under the shared git dir."""
         command = (
             "printf '[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto "
-            "simulated_parallel=auto integration_parallel=auto\\n'"
+            "simulated_parallel=auto integration_parallel=auto static_jobs=10 "
+            "test_jobs=1 web_jobs=1 agent_jobs=1 e2e_jobs=1\\n'"
             " && printf '[validate-timing] START target=test-unit at=2026-03-14T09:10:13-0600\\n'"
             " && printf '[validate-timing] END target=test-unit status=0 elapsed=12s "
             "at=2026-03-14T09:10:25-0600\\n'"
@@ -287,8 +290,22 @@ class TestValidateRunner:
         assert target_record["unit_parallel"] == "auto"
         assert target_record["simulated_parallel"] == "auto"
         assert target_record["integration_parallel"] == "auto"
+        assert target_record["static_jobs"] == "10"
+        assert target_record["test_jobs"] == "1"
+        assert target_record["web_jobs"] == "1"
+        assert target_record["agent_jobs"] == "1"
+        assert target_record["e2e_jobs"] == "1"
         assert target_record["started_at"] == "2026-03-14T09:10:13-0600"
         assert target_record["ended_at"] == "2026-03-14T09:10:25-0600"
+
+    def test_ignores_malformed_timing_config_lines(self, fake_git_repo: Path):
+        """Malformed CONFIG markers should not clear a previously parsed config."""
+        recorder = ValidateTimingRecorder(worktree=fake_git_repo, command="make validate")
+
+        recorder.process_line("[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto\n")
+        recorder.process_line("[validate-timing] CONFIG \n")
+
+        assert recorder.config == {"validate_jobs": "10", "unit_parallel": "auto"}
 
     def test_appends_run_summary_record_to_shared_git_dir(self, fake_git_repo: Path):
         """Each validate run should append a run summary record."""

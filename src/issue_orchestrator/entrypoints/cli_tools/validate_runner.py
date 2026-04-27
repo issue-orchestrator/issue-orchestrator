@@ -30,13 +30,12 @@ from pathlib import Path
 
 from ...infra.env import get_env
 
+_CONFIG_KEY_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
+_CONFIG_FIELD_PATTERN = rf"{_CONFIG_KEY_PATTERN}=\S+"
 _CONFIG_RE = re.compile(
-    r"\[validate-timing\] CONFIG "
-    r"validate_jobs=(?P<validate_jobs>\S+) "
-    r"unit_parallel=(?P<unit_parallel>\S+) "
-    r"simulated_parallel=(?P<simulated_parallel>\S+) "
-    r"integration_parallel=(?P<integration_parallel>\S+)"
+    rf"\[validate-timing\] CONFIG (?P<fields>{_CONFIG_FIELD_PATTERN}(?:\s+{_CONFIG_FIELD_PATTERN})*)\s*$"
 )
+_CONFIG_FIELD_RE = re.compile(rf"(?P<key>{_CONFIG_KEY_PATTERN})=(?P<value>\S+)")
 _START_RE = re.compile(r"\[validate-timing\] START target=(?P<target>\S+) at=(?P<at>\S+)")
 _END_RE = re.compile(
     r"\[validate-timing\] END target=(?P<target>\S+) "
@@ -251,7 +250,10 @@ class ValidateTimingRecorder:
     def process_line(self, line: str) -> None:
         config_match = _CONFIG_RE.search(line)
         if config_match:
-            self.config = dict(config_match.groupdict())
+            self.config = {
+                field.group("key"): field.group("value")
+                for field in _CONFIG_FIELD_RE.finditer(config_match.group("fields"))
+            }
             return
 
         start_match = _START_RE.search(line)
