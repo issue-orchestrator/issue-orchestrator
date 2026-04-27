@@ -8,10 +8,14 @@ from typing import Literal, TypeAlias
 
 from ..domain.models import (
     AwaitingMergeTerminalStatus,
+    BLOCKED_HISTORY_STATUSES,
     RECONCILABLE_HISTORY_STATUSES,
     SessionHistoryEntry,
     SessionHistoryStatus,
 )
+
+
+CLOSED_ISSUE_HISTORY_STATUS_REASON = "Issue closed; history reconciled"
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,38 @@ class HistoryReconciliationNoop:
 
 HistoryReconciliationResult: TypeAlias = (
     HistoryReconciliationMutation | HistoryReconciliationNoop
+)
+
+
+@dataclass(frozen=True)
+class ClosedIssueHistoryMutation:
+    """Details of a history mutation after a tracked issue closed."""
+
+    issue_number: int
+    previous_status: SessionHistoryStatus
+    status: AwaitingMergeTerminalStatus
+    status_reason: str
+
+
+ClosedIssueHistoryNoopReason: TypeAlias = Literal["missing", "already_terminal"]
+
+
+@dataclass(frozen=True)
+class ClosedIssueHistoryNoop:
+    """Details of a closed-issue history reconciliation no-op."""
+
+    issue_number: int
+    reason: ClosedIssueHistoryNoopReason
+    current_status: SessionHistoryStatus | None = None
+
+
+ClosedIssueHistoryResult: TypeAlias = (
+    ClosedIssueHistoryMutation | ClosedIssueHistoryNoop
+)
+
+
+ISSUE_CLOSED_RECONCILABLE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = (
+    BLOCKED_HISTORY_STATUSES | RECONCILABLE_HISTORY_STATUSES
 )
 
 
@@ -84,6 +120,33 @@ class SessionHistoryOwner:
             status_reason=status_reason,
         )
 
+    def reconcile_closed_issue(
+        self,
+        *,
+        issue_number: int,
+        status_reason: str,
+    ) -> ClosedIssueHistoryResult:
+        """Mark the latest retry-blocking history entry terminal when its issue closed."""
+        entry = self._find_latest_issue_entry(issue_number)
+        if entry is None:
+            return ClosedIssueHistoryNoop(issue_number=issue_number, reason="missing")
+        if entry.status not in ISSUE_CLOSED_RECONCILABLE_HISTORY_STATUSES:
+            return ClosedIssueHistoryNoop(
+                issue_number=issue_number,
+                reason="already_terminal",
+                current_status=entry.status,
+            )
+
+        previous_status = entry.status
+        entry.status = "closed"
+        entry.status_reason = status_reason
+        return ClosedIssueHistoryMutation(
+            issue_number=issue_number,
+            previous_status=previous_status,
+            status="closed",
+            status_reason=status_reason,
+        )
+
     def _find_latest_matching_entry(
         self,
         issue_number: int,
@@ -97,4 +160,13 @@ class SessionHistoryOwner:
             if entry.pr_url != pr_url:
                 continue
             return entry
+        return None
+
+    def _find_latest_issue_entry(
+        self,
+        issue_number: int,
+    ) -> SessionHistoryEntry | None:
+        for entry in reversed(self.session_history):
+            if entry.issue_number == issue_number:
+                return entry
         return None

@@ -23,7 +23,10 @@ from issue_orchestrator.control.orchestrator_support import (
     run_planning_cycle,
     run_tick,
     _fetch_and_update_queue,
+    _iter_blocked_history_issue_numbers,
     _record_issue_refreshes,
+    _reconcile_closed_issue_history,
+    _select_hot_issue_numbers,
     _track_stale_ticks,
 )
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
@@ -33,6 +36,7 @@ from issue_orchestrator.control.reconciliation import (
     ExternalSnapshot,
     get_pause_label,
 )
+from issue_orchestrator.control.session_history import CLOSED_ISSUE_HISTORY_STATUS_REASON
 from issue_orchestrator.control.actions import (
     ActionResult,
     ActionType,
@@ -57,6 +61,8 @@ from issue_orchestrator.domain.models import (
     DiscoveredFailure,
     AgentConfig,
     ImmediateCleanup,
+    SessionHistoryEntry,
+    SessionHistoryStatus,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -145,6 +151,20 @@ def make_issue(number: int, title: str = "Test Issue", labels: list | None = Non
         title=title,
         labels=labels or [],
         state="open",
+    )
+
+
+def make_history_entry(issue_number: int, status: SessionHistoryStatus) -> SessionHistoryEntry:
+    """Create a test session history entry."""
+    return SessionHistoryEntry(
+        issue_number=issue_number,
+        title=f"Issue {issue_number}",
+        agent_type="agent:web",
+        status=status,
+        runtime_minutes=1,
+        pr_url=None,
+        status_reason=status,
+        completed_at=datetime.now(),
     )
 
 
@@ -656,6 +676,80 @@ class TestQueueFetchPlanner:
         )
 
         assert "[FETCH-COST]" in caplog.text
+
+    def test_blocked_history_issues_are_hot_refresh_candidates(self):
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            session_history=[
+                make_history_entry(270, "needs_human"),
+                make_history_entry(271, "completed"),
+            ],
+        )
+
+        hot_numbers = _select_hot_issue_numbers(
+            state,
+            limit=10,
+            visibility_aware_enabled=False,
+        )
+
+        assert 270 in hot_numbers
+        assert 271 not in hot_numbers
+
+    def test_live_pending_work_has_hot_refresh_priority_over_blocked_history(self):
+        state = OrchestratorState(
+            pending_reviews=[
+                PendingReview(
+                    issue_key=FakeIssueKey("270"),
+                    pr_number=6073,
+                    pr_url="https://github.com/test/repo/pull/6073",
+                    branch_name="feature/270",
+                    _issue_number=270,
+                ),
+            ],
+            session_history=[make_history_entry(271, "needs_human")],
+        )
+
+        hot_numbers = _select_hot_issue_numbers(
+            state,
+            limit=1,
+            visibility_aware_enabled=False,
+        )
+
+        assert hot_numbers == [270]
+
+    def test_blocked_history_hot_refresh_candidates_are_deduplicated(self):
+        state = OrchestratorState(
+            session_history=[
+                make_history_entry(270, "blocked"),
+                make_history_entry(270, "needs_human"),
+                make_history_entry(271, "needs_human"),
+            ],
+        )
+
+        assert list(_iter_blocked_history_issue_numbers(state)) == [271, 270]
+
+    def test_closed_issue_refresh_reconciles_blocked_history(self):
+        closed_issue = make_issue(270, labels=["agent:web"])
+        closed_issue.state = "closed"
+        history_entry = make_history_entry(270, "needs_human")
+        state = OrchestratorState(session_history=[history_entry])
+
+        mutations = _reconcile_closed_issue_history(state, [closed_issue])
+
+        assert len(mutations) == 1
+        assert mutations[0].previous_status == "needs_human"
+        assert history_entry.status == "closed"
+        assert history_entry.status_reason == CLOSED_ISSUE_HISTORY_STATUS_REASON
+
+    def test_open_issue_refresh_does_not_reconcile_blocked_history(self):
+        open_issue = make_issue(270, labels=["agent:web"])
+        history_entry = make_history_entry(270, "needs_human")
+        state = OrchestratorState(session_history=[history_entry])
+
+        mutations = _reconcile_closed_issue_history(state, [open_issue])
+
+        assert mutations == []
+        assert history_entry.status == "needs_human"
 
 
 # =============================================================================
