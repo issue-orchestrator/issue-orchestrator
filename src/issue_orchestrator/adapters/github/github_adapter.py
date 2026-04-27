@@ -33,14 +33,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_not_found_error(exc: GitHubHttpError) -> bool:
+    return exc.status_code == 404
+
+
 class GitHubAdapter:
     """Adapter for GitHub operations via HTTP API.
 
     This adapter implements the IssueTracker, LabelSet, and PullRequestTracker
     protocols, providing a unified interface for GitHub operations.
 
-    The adapter uses a shared GitHubHttpClient and handles errors gracefully by
-    returning None or empty lists on failure.
+    The adapter uses a shared GitHubHttpClient. Expected absence is represented
+    as None or an empty list; GitHub access failures propagate so callers can
+    distinguish an empty result from an upstream failure.
 
     Args:
         repo: Repository in owner/repo format (e.g., "owner/repo").
@@ -301,7 +306,11 @@ class GitHubAdapter:
                 If provided and missing after cached fetch, retry without cache.
 
         Returns:
-            List of GitHubIssue objects matching the criteria. Returns empty list on error.
+            List of GitHubIssue objects matching the criteria.
+
+        Raises:
+            GitHubHttpError: If GitHub rejects the query.
+            GitHubTransportError: If the request fails before a response.
         """
         def _fetch(use_cache: bool) -> list[dict]:
             return self._client.list_issues(
@@ -312,39 +321,32 @@ class GitHubAdapter:
                 use_cache=use_cache,
             )
 
-        try:
-            # First attempt with cache
-            raw_issues = _fetch(use_cache=True)
-            issues = self._raw_issues_to_issues(raw_issues)
+        # First attempt with cache
+        raw_issues = _fetch(use_cache=True)
+        issues = self._raw_issues_to_issues(raw_issues)
 
-            # If required IDs are specified, check if any are missing
-            if required_stable_ids:
+        # If required IDs are specified, check if any are missing
+        if required_stable_ids:
+            found_ids = {i.key.stable_id() for i in issues}
+            missing = required_stable_ids - found_ids
+            if missing:
+                logger.info(
+                    "[INFLIGHT] Missing %d required IDs after cached fetch, retrying without cache: %s",
+                    len(missing), sorted(missing)
+                )
+                # Retry without cache to bypass potential stale 304
+                raw_issues = _fetch(use_cache=False)
+                issues = self._raw_issues_to_issues(raw_issues)
+
+                # Retry with backoff for eventual consistency if still missing
+                issues = self._retry_for_missing_ids(_fetch, required_stable_ids, issues)
+
+                # Final check
                 found_ids = {i.key.stable_id() for i in issues}
-                missing = required_stable_ids - found_ids
-                if missing:
-                    logger.info(
-                        "[INFLIGHT] Missing %d required IDs after cached fetch, retrying without cache: %s",
-                        len(missing), sorted(missing)
-                    )
-                    # Retry without cache to bypass potential stale 304
-                    raw_issues = _fetch(use_cache=False)
-                    issues = self._raw_issues_to_issues(raw_issues)
+                if required_stable_ids <= found_ids:
+                    logger.info("[INFLIGHT] All required IDs discovered")
 
-                    # Retry with backoff for eventual consistency if still missing
-                    issues = self._retry_for_missing_ids(_fetch, required_stable_ids, issues)
-
-                    # Final check
-                    found_ids = {i.key.stable_id() for i in issues}
-                    if required_stable_ids <= found_ids:
-                        logger.info("[INFLIGHT] All required IDs discovered")
-
-            return issues
-        except GitHubHttpError as e:
-            logger.error("Failed to list issues: %s", e)
-            return []
-        except Exception as e:
-            logger.error("Unexpected error listing issues: %s", e)
-            return []
+        return issues
 
     def list_issues_delta(
         self,
@@ -353,20 +355,13 @@ class GitHubAdapter:
         limit: int = 100,
     ) -> tuple["list[Issue]", str | None]:
         """List issues updated since watermark via repo-wide delta feed."""
-        try:
-            raw_issues, next_watermark = self._client.list_issues_since(
-                since=since,
-                state="all",
-                limit=limit,
-                use_cache=False,
-            )
-            return self._raw_issues_to_issues(raw_issues), next_watermark
-        except GitHubHttpError as e:
-            logger.error("Failed to list issue deltas since %s: %s", since, e)
-            return [], None
-        except Exception as e:
-            logger.error("Unexpected error listing issue deltas since %s: %s", since, e)
-            return [], None
+        raw_issues, next_watermark = self._client.list_issues_since(
+            since=since,
+            state="all",
+            limit=limit,
+            use_cache=False,
+        )
+        return self._raw_issues_to_issues(raw_issues), next_watermark
 
     def get_issue(self, issue_number: int) -> "Issue | None":
         """Get a specific issue by number.
@@ -394,11 +389,10 @@ class GitHubAdapter:
                 )
             return None
         except GitHubHttpError as e:
+            if _is_not_found_error(e):
+                return None
             logger.error("Failed to get issue %s: %s", issue_number, e)
-            return None
-        except Exception as e:
-            logger.error("Unexpected error getting issue %s: %s", issue_number, e)
-            return None
+            raise
 
     def get_issue_by_key(self, key: "IssueKey") -> "Issue | None":
         """Get an issue by its IssueKey.
@@ -433,24 +427,29 @@ class GitHubAdapter:
             issue_number: The issue number to get labels for.
 
         Returns:
-            List of label names. Returns empty list on error or if issue not found.
+            List of label names. Returns empty list if the issue is not found
+            or has no labels.
         """
         try:
             cached = self._get_cached_labels(issue_number)
             if cached is not None:
                 return cached
             return self._get_issue_labels_cached(issue_number)
-        except Exception as e:
+        except GitHubHttpError as e:
+            if _is_not_found_error(e):
+                return []
             logger.error(f"Failed to get labels for issue {issue_number}: {e}")
-            return []
+            raise
 
     def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
         """Get labels for a specific issue, bypassing adapter/ETag caches."""
         try:
             return self._get_issue_labels_fresh(issue_number)
-        except Exception as e:
+        except GitHubHttpError as e:
+            if _is_not_found_error(e):
+                return []
             logger.error(f"Failed to get fresh labels for issue {issue_number}: {e}")
-            return []
+            raise
 
     def _get_cached_labels(self, issue_number: int) -> list[str] | None:
         """Get cached labels for an issue, or None if not cached/stale."""
@@ -648,12 +647,8 @@ class GitHubAdapter:
         Returns:
             True if the issue has the label, False otherwise.
         """
-        try:
-            labels = self.get_issue_labels(issue_number)
-            return label in labels
-        except Exception as e:
-            logger.error(f"Failed to check label '{label}' on issue {issue_number}: {e}")
-            return False
+        labels = self.get_issue_labels(issue_number)
+        return label in labels
 
     # PRRepository implementation
 
@@ -665,27 +660,20 @@ class GitHubAdapter:
             state: Filter by PR state ("open", "closed", "merged", or "all").
 
         Returns:
-            List of PRInfo objects. Returns empty list on error.
+            List of PRInfo objects.
         """
-        try:
-            # Check cache first
-            cached_pr = self._adapter_cache.get_cached_pr_for_branch(branch, state)
-            if cached_pr:
-                return [cached_pr]
-            # Fetch from API
-            output = self._client.get_prs_for_branch(branch, state=state)
-            if isinstance(output, list):
-                prs = [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
-                for pr_info in prs:
-                    self._adapter_cache.cache_pr_info(pr_info)
-                return prs
-            return []
-        except GitHubHttpError as e:
-            logger.error("Failed to get PRs for branch '%s': %s", branch, e)
-            return []
-        except Exception as e:
-            logger.error("Unexpected error getting PRs for branch '%s': %s", branch, e)
-            return []
+        # Check cache first
+        cached_pr = self._adapter_cache.get_cached_pr_for_branch(branch, state)
+        if cached_pr:
+            return [cached_pr]
+        # Fetch from API
+        output = self._client.get_prs_for_branch(branch, state=state)
+        if isinstance(output, list):
+            prs = [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
+            for pr_info in prs:
+                self._adapter_cache.cache_pr_info(pr_info)
+            return prs
+        return []
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
         """Get all pull requests with a specific label.
@@ -698,28 +686,23 @@ class GitHubAdapter:
             state: Filter by PR state ("open", "closed", "merged", or "all").
 
         Returns:
-            List of PRInfo objects. Returns empty list on error.
+            List of PRInfo objects.
         """
         try:
             output = self._client.get_prs_with_label_graphql(label, state=state)
             return [pr for item in output if (pr := self._pr_info_from_api(item)) is not None]
+        except (GitHubHttpError, GitHubTransportError):
+            raise
         except Exception:
             logger.debug("GraphQL get_prs_with_label failed, falling back to search API", exc_info=True)
         # Fallback: search API + individual get_pr() calls
-        try:
-            output = self._client.get_prs_with_label(label, state=state)
-            prs: list[PRInfo] = []
-            for item in output:
-                pr_info = self._fetch_pr_info_from_search(item)
-                if pr_info:
-                    prs.append(pr_info)
-            return prs
-        except GitHubHttpError as e:
-            logger.error("Failed to get PRs with label '%s': %s", label, e)
-            return []
-        except Exception as e:
-            logger.error("Unexpected error getting PRs with label '%s': %s", label, e)
-            return []
+        output = self._client.get_prs_with_label(label, state=state)
+        prs: list[PRInfo] = []
+        for item in output:
+            pr_info = self._fetch_pr_info_from_search(item)
+            if pr_info:
+                prs.append(pr_info)
+        return prs
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         """Get all pull requests associated with a specific issue.
@@ -733,34 +716,27 @@ class GitHubAdapter:
             state: Filter by PR state ("open", "closed", "merged", or "all").
 
         Returns:
-            List of PRInfo objects. Returns empty list on error.
+            List of PRInfo objects.
         """
-        try:
-            # Check cache first
-            cached_pr = self._adapter_cache.get_cached_pr_for_issue(issue_number, state)
-            if cached_pr:
-                return [cached_pr]
-            # Fetch from API
-            with gh_audit.context(
-                reason=gh_audit.AuditReason.GH_READ,
-                issue_key=str(issue_number),
-                scope=gh_audit.AuditScope.UNKNOWN,
-            ):
-                prs = self._client.get_prs_for_issue(issue_number)
-            pr_infos: list[PRInfo] = []
-            for pr in prs:
-                pr_info = self._fetch_pr_info_from_search(pr)
-                if pr_info:
-                    pr_infos.append(pr_info)
-            for pr_info in pr_infos:
-                self._adapter_cache.cache_pr_info(pr_info)
-            return pr_infos
-        except GitHubHttpError as e:
-            logger.error("Failed to get PRs for issue %s: %s", issue_number, e)
-            return []
-        except Exception as e:
-            logger.error("Unexpected error getting PRs for issue %s: %s", issue_number, e)
-            return []
+        # Check cache first
+        cached_pr = self._adapter_cache.get_cached_pr_for_issue(issue_number, state)
+        if cached_pr:
+            return [cached_pr]
+        # Fetch from API
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_READ,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            prs = self._client.get_prs_for_issue(issue_number)
+        pr_infos: list[PRInfo] = []
+        for pr in prs:
+            pr_info = self._fetch_pr_info_from_search(pr)
+            if pr_info:
+                pr_infos.append(pr_info)
+        for pr_info in pr_infos:
+            self._adapter_cache.cache_pr_info(pr_info)
+        return pr_infos
 
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.
@@ -777,11 +753,10 @@ class GitHubAdapter:
                 return self._pr_info_from_api(output)
             return None
         except GitHubHttpError as e:
+            if _is_not_found_error(e):
+                return None
             logger.error("Failed to get PR %s: %s", pr_number, e)
-            return None
-        except Exception as e:
-            logger.error("Unexpected error getting PR %s: %s", pr_number, e)
-            return None
+            raise
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.
@@ -791,19 +766,12 @@ class GitHubAdapter:
             limit: Maximum number of PRs to return.
 
         Returns:
-            List of PRInfo objects. Returns empty list on error.
+            List of PRInfo objects.
         """
-        try:
-            output = self._client.list_prs(state=state, limit=limit)
-            if isinstance(output, list):
-                return [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
-            return []
-        except GitHubHttpError as e:
-            logger.error("Failed to list PRs: %s", e)
-            return []
-        except Exception as e:
-            logger.error("Unexpected error listing PRs: %s", e)
-            return []
+        output = self._client.list_prs(state=state, limit=limit)
+        if isinstance(output, list):
+            return [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
+        return []
 
     def create_pr(
         self,
@@ -993,8 +961,11 @@ class GitHubAdapter:
                 return output.get("state")
             return None
         except GitHubHttpError as e:
-            logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
-            return None
+            if _is_not_found_error(e):
+                logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
+                return None
+            logger.debug("Error checking issue %s in %s: %s", issue_number, target_repo, e)
+            raise
         except Exception as e:
             logger.debug("Error checking issue %s in %s: %s", issue_number, target_repo, e)
             raise
@@ -1022,8 +993,11 @@ class GitHubAdapter:
                     return milestone.get("title")
             return None
         except GitHubHttpError as e:
-            logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
-            return None
+            if _is_not_found_error(e):
+                logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
+                return None
+            logger.debug("Error checking milestone for issue %s in %s: %s", issue_number, target_repo, e)
+            raise
         except Exception as e:
             logger.debug("Error checking milestone for issue %s in %s: %s", issue_number, target_repo, e)
             raise
@@ -1165,7 +1139,12 @@ class GitHubAdapter:
         pr_number = pr.get("number")
         if not pr_number:
             return None
-        full = self._client.get_pr(pr_number)
+        try:
+            full = self._client.get_pr(pr_number)
+        except GitHubHttpError as exc:
+            if _is_not_found_error(exc):
+                return None
+            raise
         if not isinstance(full, dict):
             return None
         return self._pr_info_from_api(full)

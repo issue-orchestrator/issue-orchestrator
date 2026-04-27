@@ -13,6 +13,11 @@ from typing import Any, Optional, Protocol
 
 from ..infra.supervisor import SupervisorOps
 from .orchestrator_http_api import OrchestratorAsyncHttpApi
+from ..ports.repository_host import (
+    RepositoryHostError,
+    repository_host_failure_payload,
+    repository_host_failure_status,
+)
 
 
 @dataclass(frozen=True)
@@ -203,6 +208,11 @@ class AuditIssuesCommand:
                     for entry in entries
                 ],
             })
+        except RepositoryHostError as exc:
+            return ActionResult(
+                repository_host_failure_payload(exc),
+                status_code=repository_host_failure_status(exc),
+            )
         except Exception as exc:
             return ActionResult({"error": str(exc)}, status_code=500)
 

@@ -1615,6 +1615,11 @@ class OrchestratorState:
     queue_last_refresh_at: float = 0.0  # Epoch seconds of last queue refresh completion
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
+    # Candidate queue removals waiting for a targeted confirmation refresh.
+    queue_pending_shrink_missing_issue_numbers: list[int] = field(default_factory=list)
+    queue_pending_shrink_confirm_at: float = 0.0
+    queue_pending_shrink_prior_count: int = 0  # Queue size before the pending shrink
+    queue_pending_shrink_candidate_count: int = 0  # Queue size proposed by the pending shrink
     issue_last_refreshed_at: dict[int, float] = field(default_factory=dict)  # issue_number -> epoch seconds
     # Main-loop heartbeat — populated by run_tick. These let the view model
     # distinguish "refresh is old because GitHub hasn't been polled" from

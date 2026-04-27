@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
+from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.cleanup_manager import CleanupManager
 from issue_orchestrator.domain.models import PendingCleanup
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -390,6 +391,29 @@ class TestProcessDeferredCleanups:
         assert result == pending
         assert "Failed to fetch PRs" in caplog.text
 
+    def test_propagates_repository_host_pr_fetch_failure(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """Repository-host failures fail the cleanup cycle instead of looking empty."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.side_effect = GitHubHttpError(
+            "GitHub unavailable",
+            status_code=503,
+        )
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_id="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            cleanup_manager.process_deferred_cleanups(pending)
+
+        assert exc_info.value.status_code == 503
+
     def test_processes_multiple_cleanups(
         self, cleanup_manager, mock_config, mock_repository_host
     ):
@@ -518,6 +542,21 @@ class TestRecoverOrphanedCleanups:
 
         assert result == 0
         assert "Failed to fetch reviewed PRs" in caplog.text
+
+    def test_recovery_propagates_repository_host_pr_fetch_failure(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """Repository-host failures fail recovery instead of looking empty."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.side_effect = GitHubHttpError(
+            "GitHub unavailable",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            cleanup_manager.recover_orphaned_cleanups()
+
+        assert exc_info.value.status_code == 503
 
     def test_calls_startup_message_callback(
         self, cleanup_manager, mock_config, mock_repository_host

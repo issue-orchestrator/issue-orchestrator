@@ -1160,6 +1160,34 @@ class TestRunLoop:
             mock_launch.assert_called()
 
     @pytest.mark.asyncio
+    async def test_run_loop_continues_after_repository_host_error(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Repository host failures are surfaced as tick errors without stopping the loop."""
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        calls = 0
+
+        def _tick_then_recover():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise GitHubHttpError("GitHub unavailable", status_code=503)
+            orchestrator.request_shutdown()
+            return False
+
+        with patch.object(orchestrator, "tick", side_effect=_tick_then_recover):
+            await orchestrator.run_loop()
+
+        assert calls == 2
+        failures = orchestrator.deps.events.get_events_by_name(str(EventName.APPLY_FAILED))
+        assert len(failures) == 1
+        assert failures[0].data["error_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_run_loop_skips_already_claimed_issues(
         self,
         sample_config,

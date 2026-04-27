@@ -542,8 +542,15 @@ class TestToolEndpoints:
         )
 
         # This will likely fail because we don't have a real GitHub repo,
-        # but it should at least not 404 on the route
-        assert response.status_code in (200, 500)
+        # but it should at least not 404 on the route. GitHub access failures
+        # are surfaced as structured upstream errors rather than hidden behind
+        # a generic 500.
+        assert response.status_code in (200, 401, 403, 429, 500, 502, 503)
+        if response.status_code != 200:
+            data = response.json()
+            assert "error" in data
+            if response.status_code in (401, 403, 429, 502, 503):
+                assert "error_code" in data
 
     def test_trace_endpoint_exists(self, tmp_path: Path) -> None:
         """GET /control/tools/trace endpoint exists and handles missing logs."""

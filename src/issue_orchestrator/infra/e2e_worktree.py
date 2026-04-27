@@ -106,8 +106,10 @@ def _sync_venv(worktree_path: Path) -> None:
             timeout=300,
             check=True,
         )
+        # The fallback install is intentionally all-or-nothing: a partial
+        # project environment is not a usable E2E worker environment.
         pytest_check = subprocess.run(
-            [str(venv_python), "-c", "import pytest"],
+            [str(venv_python), "-c", "import defusedxml, pytest"],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -116,7 +118,7 @@ def _sync_venv(worktree_path: Path) -> None:
         )
         if pytest_check.returncode != 0:
             logger.info(
-                "Pytest not available in synced E2E worktree; installing fallback pytest"
+                "E2E worker dependencies not available in synced worktree; installing fallbacks"
             )
             subprocess.run(
                 [
@@ -125,6 +127,7 @@ def _sync_venv(worktree_path: Path) -> None:
                     "install",
                     "--python",
                     str(venv_python),
+                    "defusedxml>=0.7",
                     "pytest>=8.0",
                 ],
                 cwd=worktree_path,
@@ -151,6 +154,7 @@ def _sync_venv(worktree_path: Path) -> None:
             "install",
             "--python",
             str(worktree_path / ".venv" / "bin" / "python"),
+            "defusedxml>=0.7",
             "pytest>=8.0",
         ],
         cwd=worktree_path,

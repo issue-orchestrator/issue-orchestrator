@@ -8,7 +8,10 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.execution.control_center_actions import (
+    AuditActionRequest,
+    AuditIssuesCommand,
     InitializeLabelsCommand,
     ListStaleWorktreesCommand,
     PauseOrchestratorCommand,
@@ -177,3 +180,42 @@ async def test_initialize_labels_uses_loaded_config_for_repository_host() -> Non
 
     assert result.status_code == 200
     mock_create_host.assert_called_once_with("owner/repo", config=config)
+
+
+@pytest.mark.asyncio
+async def test_audit_command_reports_repository_host_error(tmp_path: Path) -> None:
+    config = Mock(repo="owner/repo", repo_root=tmp_path)
+    working_copy = Mock()
+    working_copy.list_remote_branches.return_value = []
+    upstream_error = GitHubHttpError(
+        "GitHub unavailable",
+        status_code=503,
+        response_text='{"message":"GitHub search is degraded"}',
+    )
+
+    with patch("issue_orchestrator.infra.config.Config.find_and_load", return_value=config):
+        with patch(
+            "issue_orchestrator.execution.providers.create_repository_host",
+            return_value=Mock(),
+        ):
+            with patch(
+                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy",
+                return_value=working_copy,
+            ):
+                with patch(
+                    "issue_orchestrator.infra.analysis.extract_issue_branches",
+                    return_value={},
+                ):
+                    with patch(
+                        "issue_orchestrator.infra.audit.audit_queue",
+                        side_effect=upstream_error,
+                    ):
+                        result = await AuditIssuesCommand().execute(
+                            AuditActionRequest(repo_root=tmp_path),
+                        )
+
+    assert result.status_code == 502
+    assert result.payload["error"] == "GitHub issue query failed"
+    assert result.payload["error_code"] == "github_http_error"
+    assert result.payload["upstream_status_code"] == 503
+    assert "GitHub search is degraded" in result.payload["detail"]

@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, call
 from pathlib import Path
 
+from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.fact_gatherer import FactGatherer
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
@@ -524,6 +525,32 @@ class TestFactGathererCleanupFacts:
         assert result is not None
         assert result.reviewed_pr_numbers == frozenset()
         assert len(result.pending_cleanups) == 1
+
+    def test_cleanup_facts_propagates_repository_host_error(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Repository-host failures should fail the snapshot instead of hiding staleness."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_reviewed_label = "triage-reviewed"
+        sample_state.pending_cleanups = [
+            PendingCleanup(
+                issue=Issue(number=1, title="Test issue", labels=[]),
+                pr_number=10,
+                pr_url="https://github.com/owner/repo/pull/10",
+                branch_name="1-issue-1",
+                terminal_id="issue-1",
+                worktree_path=Path("/tmp/wt1"),
+            )
+        ]
+        mock_repository_host.get_prs_with_label.side_effect = GitHubHttpError(
+            "GitHub unavailable",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            fact_gatherer.gather_cleanup_facts(sample_state)
+
+        assert exc_info.value.status_code == 503
 
 
 class TestFactGathererFetchIssues:

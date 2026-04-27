@@ -9,6 +9,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..control.queue_cache import QueueCache, QueueMutationStatus, clear_issue_refresh, record_issue_refreshes
+from ..ports.repository_host import (
+    RepositoryHostError,
+    repository_host_failure_payload,
+    repository_host_failure_status,
+)
 from .web_session_context import WebOrchestratorDependency
 
 web_refresh_router = APIRouter()
@@ -121,7 +126,16 @@ async def refresh_issue(
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    issue = orchestrator.repository_host.get_issue(issue_number)
+    try:
+        issue = orchestrator.repository_host.get_issue(issue_number)
+    except RepositoryHostError as exc:
+        return JSONResponse(
+            repository_host_failure_payload(
+                exc,
+                message=f"Failed to refresh issue #{issue_number} from GitHub",
+            ),
+            status_code=repository_host_failure_status(exc),
+        )
     if issue is None:
         return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
 

@@ -39,6 +39,9 @@ class QueueMutationOutcome:
 
 
 _UI_VISIBILITY_STALENESS_SECONDS = 120
+_SUSPICIOUS_SHRINK_MIN_REMOVALS = 10
+_SUSPICIOUS_SHRINK_MIN_RATIO = 0.5
+QUEUE_SHRINK_CONFIRM_DELAY_SECONDS = 60.0
 
 
 class QueueCache:
@@ -50,9 +53,46 @@ class QueueCache:
 
     def replace_from_refresh(self, issues: list["Issue"]) -> list["Issue"]:
         """Replace queue from fetched issues using canonical eligibility policy."""
-        prior_count = len(self._state.cached_queue_issues)
+        prior_scope = list(self._state.cached_scope_issues)
+        prior_queue = list(self._state.cached_queue_issues)
+        prior_count = len(prior_queue)
         scope = [issue for issue in issues if _matches_scope(self._config, issue)]
         queue = [issue for issue in scope if self.evaluate_issue(issue) == QueueMutationStatus.ACCEPTED]
+        retainable_removed_numbers = _retainable_removed_numbers(self, prior_queue, queue)
+        if _is_suspicious_shrink(prior_count, len(retainable_removed_numbers)):
+            if _pending_shrink_confirmed(self._state, retainable_removed_numbers):
+                logger.warning(
+                    "[QUEUE_CACHE] confirmed large queue shrink: prior=%d candidate=%d "
+                    "removing=%d",
+                    prior_count,
+                    len(queue),
+                    len(retainable_removed_numbers),
+                )
+                clear_queue_shrink_confirmation(self._state)
+            else:
+                _record_pending_shrink(
+                    self._state,
+                    prior_count=prior_count,
+                    candidate_count=len(queue),
+                    missing_numbers=retainable_removed_numbers,
+                )
+                logger.warning(
+                    "[QUEUE_CACHE] suspicious queue shrink retained pending confirmation: "
+                    "prior=%d candidate=%d missing=%d confirm_at=%.3f",
+                    prior_count,
+                    len(queue),
+                    len(retainable_removed_numbers),
+                    self._state.queue_pending_shrink_confirm_at,
+                )
+                self._state.cached_scope_issues = _merge_issue_lists(prior_scope, scope)
+                self._state.cached_queue_issues = _merge_issue_lists(prior_queue, queue)
+                self.prune_refresh_timestamps()
+                return self._state.cached_queue_issues
+        else:
+            if queue_shrink_confirmation_pending(self._state):
+                logger.info("[QUEUE_CACHE] clearing unconfirmed queue shrink; refresh recovered")
+            clear_queue_shrink_confirmation(self._state)
+
         if prior_count > 0 and not queue:
             rejected = len(issues) - len(queue)
             active_count = len(self._state.active_sessions)
@@ -160,6 +200,28 @@ def clear_issue_refresh(state: "OrchestratorState", issue_number: int) -> None:
     state.issue_last_refreshed_at.pop(issue_number, None)
 
 
+def queue_shrink_confirmation_pending(state: "OrchestratorState") -> bool:
+    """Whether a large queue shrink is waiting for a confirming refresh."""
+    return bool(state.queue_pending_shrink_missing_issue_numbers)
+
+
+def queue_shrink_confirmation_due(state: "OrchestratorState", now: float) -> bool:
+    """Whether the pending queue shrink should force a confirmation scan."""
+    return (
+        queue_shrink_confirmation_pending(state)
+        and state.queue_pending_shrink_confirm_at > 0
+        and now >= state.queue_pending_shrink_confirm_at
+    )
+
+
+def clear_queue_shrink_confirmation(state: "OrchestratorState") -> None:
+    """Clear any pending large-shrink confirmation state."""
+    state.queue_pending_shrink_missing_issue_numbers = []
+    state.queue_pending_shrink_confirm_at = 0.0
+    state.queue_pending_shrink_prior_count = 0
+    state.queue_pending_shrink_candidate_count = 0
+
+
 def _matches_scope(config: "Config", issue: "Issue") -> bool:
     """Apply label/milestone/exclude-label scope checks for an issue."""
     if issue.state.lower() == "closed":
@@ -173,3 +235,62 @@ def _matches_scope(config: "Config", issue: "Issue") -> bool:
     if not issue_filter.apply([issue]):
         return False
     return True
+
+
+def _is_suspicious_shrink(prior_count: int, removed_count: int) -> bool:
+    if prior_count <= 0 or removed_count < _SUSPICIOUS_SHRINK_MIN_REMOVALS:
+        return False
+    return (removed_count / prior_count) >= _SUSPICIOUS_SHRINK_MIN_RATIO
+
+
+def _retainable_removed_numbers(
+    cache: QueueCache,
+    prior_queue: list["Issue"],
+    queue: list["Issue"],
+) -> set[int]:
+    candidate_numbers = {issue.number for issue in queue}
+    return {
+        issue.number
+        for issue in prior_queue
+        if issue.number not in candidate_numbers
+        and cache.evaluate_issue(issue) == QueueMutationStatus.ACCEPTED
+    }
+
+
+def _pending_shrink_confirmed(
+    state: "OrchestratorState",
+    missing_numbers: set[int],
+) -> bool:
+    """Return true only when every pending missing issue is still missing."""
+    pending = set(state.queue_pending_shrink_missing_issue_numbers)
+    return bool(pending) and pending.issubset(missing_numbers)
+
+
+def _record_pending_shrink(
+    state: "OrchestratorState",
+    *,
+    prior_count: int,
+    candidate_count: int,
+    missing_numbers: set[int],
+) -> None:
+    existing_confirm_at = state.queue_pending_shrink_confirm_at
+    state.queue_pending_shrink_missing_issue_numbers = sorted(missing_numbers)
+    if existing_confirm_at > 0:
+        state.queue_pending_shrink_confirm_at = existing_confirm_at
+    else:
+        state.queue_pending_shrink_confirm_at = (
+            time.time() + QUEUE_SHRINK_CONFIRM_DELAY_SECONDS
+        )
+    state.queue_pending_shrink_prior_count = prior_count
+    state.queue_pending_shrink_candidate_count = candidate_count
+
+
+def _merge_issue_lists(
+    prior: list["Issue"],
+    current: list["Issue"],
+) -> list["Issue"]:
+    current_numbers = {issue.number for issue in current}
+    return [
+        *(issue for issue in current),
+        *(issue for issue in prior if issue.number not in current_numbers),
+    ]

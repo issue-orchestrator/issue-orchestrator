@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch, call
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
-from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+from issue_orchestrator.adapters.github.http_client import GitHubHttpError, GitHubTransportError
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -140,6 +140,14 @@ class TestIssueOperations:
 
         assert issue is None
 
+    def test_get_issue_http_error_propagates(self, adapter, mock_http_client):
+        """get_issue preserves upstream HTTP failures."""
+        mock_http_client.get_issue.side_effect = GitHubHttpError("API error", status_code=500)
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_issue(42)
+        assert exc_info.value.status_code == 500
+
     def test_get_issue_invalid_response(self, adapter, mock_http_client):
         """Test get_issue returns None on invalid response."""
         mock_http_client.get_issue.return_value = "not a dict"
@@ -202,13 +210,13 @@ class TestIssueOperations:
             use_cache=True,
         )
 
-    def test_list_issues_http_error_returns_empty_list(self, adapter, mock_http_client):
-        """Test list_issues returns empty list on HTTP error."""
-        mock_http_client.list_issues.side_effect = GitHubHttpError("API error")
+    def test_list_issues_http_error_propagates(self, adapter, mock_http_client):
+        """list_issues preserves upstream HTTP failures."""
+        mock_http_client.list_issues.side_effect = GitHubHttpError("API error", status_code=503)
 
-        issues = adapter.list_issues()
-
-        assert issues == []
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.list_issues()
+        assert exc_info.value.status_code == 503
 
     def test_list_issues_retries_without_cache_when_required_ids_missing(
         self, adapter, mock_http_client
@@ -269,13 +277,12 @@ class TestIssueOperations:
             use_cache=False,
         )
 
-    def test_list_issues_delta_error_returns_empty(self, adapter, mock_http_client):
-        mock_http_client.list_issues_since.side_effect = GitHubHttpError("boom")
+    def test_list_issues_delta_error_propagates(self, adapter, mock_http_client):
+        mock_http_client.list_issues_since.side_effect = GitHubHttpError("boom", status_code=502)
 
-        issues, watermark = adapter.list_issues_delta(since="2026-01-01T00:00:00Z", limit=25)
-
-        assert issues == []
-        assert watermark is None
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.list_issues_delta(since="2026-01-01T00:00:00Z", limit=25)
+        assert exc_info.value.status_code == 502
 
     def test_get_issue_by_key_github_key_numeric(self, adapter, mock_http_client):
         """Test get_issue_by_key with numeric GitHub key."""
@@ -391,13 +398,21 @@ class TestLabelOperations:
         assert labels == ["fresh"]
         mock_http_client.get_issue_labels.assert_called_once_with(42, use_cache=False)
         assert cache.get_issue_labels(42) == ["fresh"]
-    def test_get_issue_labels_error_returns_empty_list(self, adapter, mock_http_client):
-        """Test get_issue_labels returns empty list on error."""
-        mock_http_client.get_issue_labels.side_effect = GitHubHttpError("API error")
+    def test_get_issue_labels_not_found_returns_empty_list(self, adapter, mock_http_client):
+        """Test get_issue_labels returns empty list when the issue is absent."""
+        mock_http_client.get_issue_labels.side_effect = GitHubHttpError("Not found", status_code=404)
 
         labels = adapter.get_issue_labels(42)
 
         assert labels == []
+
+    def test_get_issue_labels_http_error_propagates(self, adapter, mock_http_client):
+        """Label reads preserve upstream HTTP failures."""
+        mock_http_client.get_issue_labels.side_effect = GitHubHttpError("API error", status_code=500)
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_issue_labels(42)
+        assert exc_info.value.status_code == 500
 
     def test_add_label_success(self, adapter, mock_http_client, mock_verification_service):
         """Test successfully adding a label."""
@@ -504,11 +519,13 @@ class TestLabelOperations:
 
         assert adapter.has_label(42, "feature") is False
 
-    def test_has_label_error_returns_false(self, adapter, mock_http_client):
-        """Test has_label returns False on error."""
-        mock_http_client.get_issue_labels.side_effect = GitHubHttpError("API error")
+    def test_has_label_error_propagates(self, adapter, mock_http_client):
+        """has_label preserves upstream label-read failures."""
+        mock_http_client.get_issue_labels.side_effect = GitHubHttpError("API error", status_code=500)
 
-        assert adapter.has_label(42, "bug") is False
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.has_label(42, "bug")
+        assert exc_info.value.status_code == 500
 
     def test_update_label_cache(self, adapter, cache):
         """Test update_label_cache updates both issue and PR caches."""
@@ -572,6 +589,14 @@ class TestPROperations:
 
         assert pr is None
 
+    def test_get_pr_http_error_propagates(self, adapter, mock_http_client):
+        """get_pr preserves upstream HTTP failures."""
+        mock_http_client.get_pr.side_effect = GitHubHttpError("API error", status_code=500)
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_pr(10)
+        assert exc_info.value.status_code == 500
+
     def test_list_prs_success(self, adapter, mock_http_client):
         """Test successfully listing PRs."""
         mock_http_client.list_prs.return_value = [
@@ -603,13 +628,13 @@ class TestPROperations:
         assert prs[1].number == 11
         mock_http_client.list_prs.assert_called_once_with(state="open", limit=10)
 
-    def test_list_prs_error_returns_empty_list(self, adapter, mock_http_client):
-        """Test list_prs returns empty list on error."""
-        mock_http_client.list_prs.side_effect = GitHubHttpError("API error")
+    def test_list_prs_error_propagates(self, adapter, mock_http_client):
+        """list_prs preserves upstream HTTP failures."""
+        mock_http_client.list_prs.side_effect = GitHubHttpError("API error", status_code=503)
 
-        prs = adapter.list_prs()
-
-        assert prs == []
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.list_prs()
+        assert exc_info.value.status_code == 503
 
     def test_get_prs_for_branch_from_cache(self, adapter, mock_http_client, cache):
         """Test getting PRs for branch from cache."""
@@ -650,6 +675,17 @@ class TestPROperations:
         assert len(prs) == 1
         assert prs[0].branch == "feature"
         mock_http_client.get_prs_for_branch.assert_called_once_with("feature", state="open")
+
+    def test_get_prs_for_branch_error_propagates(self, adapter, mock_http_client):
+        """Branch PR lookup preserves upstream HTTP failures."""
+        mock_http_client.get_prs_for_branch.side_effect = GitHubHttpError(
+            "API error",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_prs_for_branch("feature")
+        assert exc_info.value.status_code == 503
 
     def test_get_prs_for_issue_from_cache(self, adapter, cache):
         """Test getting PRs for issue from cache."""
@@ -699,6 +735,17 @@ class TestPROperations:
         assert len(prs) == 1
         assert prs[0].number == 10
 
+    def test_get_prs_for_issue_error_propagates(self, adapter, mock_http_client):
+        """Issue PR lookup preserves upstream HTTP failures."""
+        mock_http_client.get_prs_for_issue.side_effect = GitHubHttpError(
+            "API error",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_prs_for_issue(42)
+        assert exc_info.value.status_code == 503
+
     def test_get_prs_with_label_graphql(self, adapter, mock_http_client):
         """Test getting PRs with a specific label via GraphQL (primary path)."""
         mock_http_client.get_prs_with_label_graphql.return_value = [
@@ -719,6 +766,30 @@ class TestPROperations:
         assert "bug" in prs[0].labels
         mock_http_client.get_prs_with_label_graphql.assert_called_once_with("bug", state="open")
         # REST fallback should NOT be called
+        mock_http_client.get_prs_with_label.assert_not_called()
+
+    def test_get_prs_with_label_graphql_http_error_propagates(self, adapter, mock_http_client):
+        """GraphQL PR label lookup preserves upstream HTTP failures."""
+        mock_http_client.get_prs_with_label_graphql.side_effect = GitHubHttpError(
+            "GitHub unavailable",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_prs_with_label("bug")
+
+        assert exc_info.value.status_code == 503
+        mock_http_client.get_prs_with_label.assert_not_called()
+
+    def test_get_prs_with_label_graphql_transport_error_propagates(self, adapter, mock_http_client):
+        """GraphQL PR label lookup preserves upstream transport failures."""
+        mock_http_client.get_prs_with_label_graphql.side_effect = GitHubTransportError(
+            "connection failed",
+        )
+
+        with pytest.raises(GitHubTransportError):
+            adapter.get_prs_with_label("bug")
+
         mock_http_client.get_prs_with_label.assert_not_called()
 
     def test_get_prs_with_label(self, adapter, mock_http_client):
@@ -751,6 +822,18 @@ class TestPROperations:
 
         assert len(prs) == 1
         assert "bug" in prs[0].labels
+
+    def test_get_prs_with_label_fallback_error_propagates(self, adapter, mock_http_client):
+        """REST fallback preserves upstream HTTP failures."""
+        mock_http_client.get_prs_with_label_graphql.side_effect = Exception("GraphQL unavailable")
+        mock_http_client.get_prs_with_label.side_effect = GitHubHttpError(
+            "API error",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_prs_with_label("bug")
+        assert exc_info.value.status_code == 503
 
     def test_create_pr_success(self, adapter, mock_http_client, mock_verification_service):
         """Test creating a new PR."""
@@ -1104,11 +1187,19 @@ class TestRepositoryOperations:
 
     def test_get_issue_state_not_found_returns_none(self, adapter, mock_http_client):
         """Test get_issue_state returns None when issue not found."""
-        mock_http_client.get_issue.side_effect = GitHubHttpError("Not found")
+        mock_http_client.get_issue.side_effect = GitHubHttpError("Not found", status_code=404)
 
         state = adapter.get_issue_state(999)
 
         assert state is None
+
+    def test_get_issue_state_http_error_propagates(self, adapter, mock_http_client):
+        """Dependency issue state checks preserve upstream failures."""
+        mock_http_client.get_issue.side_effect = GitHubHttpError("API error", status_code=500)
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            adapter.get_issue_state(999)
+        assert exc_info.value.status_code == 500
 
     def test_create_issue_key_with_external_id(self, adapter, mock_http_client):
         """Test creating issue key with external ID from title."""

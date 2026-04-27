@@ -7,11 +7,11 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..domain.models import PendingReview
 from ..infra.config import Config
-from ..ports import Issue as IssueProtocol, RepositoryHost, ReviewState
+from ..ports import Issue as IssueProtocol, RepositoryHost, RepositoryHostError, ReviewState
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.worktree_manager import WorktreeInfo
 from .review_validity import ReviewValidity, evaluate_review_validity
@@ -182,6 +182,19 @@ def read_local_reviewer_feedback(
         return None
 
 
+def _read_pr_reviews_for_feedback(
+    repository_host: RepositoryHost,
+    pr_number: int,
+) -> list[dict[str, Any]] | None:
+    try:
+        return repository_host.get_pr_reviews(pr_number)
+    except RepositoryHostError:
+        raise
+    except Exception as e:
+        logger.warning("Failed to fetch PR reviews for PR #%s: %s", pr_number, e)
+        return None
+
+
 def format_reviewer_feedback(
     *,
     pr_number: int,
@@ -203,10 +216,8 @@ def format_reviewer_feedback(
     feedback_reviews = []
 
     for attempt, delay in enumerate(backoff_delays):
-        try:
-            reviews = repository_host.get_pr_reviews(pr_number)
-        except Exception as e:
-            logger.warning("Failed to fetch PR reviews for PR #%s: %s", pr_number, e)
+        reviews = _read_pr_reviews_for_feedback(repository_host, pr_number)
+        if reviews is None:
             return None
 
         feedback_reviews = [

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from ..events import EventName
 from ..ports.issue import Issue
+from ..ports.repository_host import RepositoryHostError
 from ..domain.models import OrchestratorState
 from ..ports.event_sink import EventSink,  make_trace_event
 from .queue_cache import QueueCache
@@ -111,6 +112,9 @@ class QueueProjection:
 
             return None
 
+        except RepositoryHostError as e:
+            logger.warning("Failed to update queue cache from repository host: %s", e)
+            raise
         except Exception as e:
             logger.warning("Failed to update queue cache: %s", e)
             return None

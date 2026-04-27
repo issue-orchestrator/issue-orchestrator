@@ -2,11 +2,14 @@
 
 from typing import Any
 
-from ...ports.repository_host import RepositoryHostError
+from ...ports.repository_host import RepositoryHostError, RepositoryHostErrorKind
 
 
 class GitHubHttpError(RepositoryHostError):
     """Raised when a GitHub HTTP request fails."""
+
+    host = "github"
+    kind: RepositoryHostErrorKind = "http"
 
     def __init__(
         self,
@@ -42,6 +45,9 @@ class GitHubHttpError(RepositoryHostError):
 
 class GitHubTransportError(RepositoryHostError):
     """Raised when a GitHub request fails before an HTTP response."""
+
+    host = "github"
+    kind: RepositoryHostErrorKind = "transport"
 
     def __init__(
         self,

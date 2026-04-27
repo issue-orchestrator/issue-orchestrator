@@ -82,11 +82,7 @@ class GitHubWorkflow:
         fetch_limit: int,
     ) -> tuple[list["Issue"], str | None]:
         """Fetch repo-wide issue deltas since watermark."""
-        try:
-            return self.repository_host.list_issues_delta(since=since, limit=fetch_limit)
-        except Exception as exc:
-            logger.warning("Delta issue fetch failed since %s: %s", since, exc)
-            return [], None
+        return self.repository_host.list_issues_delta(since=since, limit=fetch_limit)
 
     def issue_in_scope(self, issue: "Issue") -> bool:
         """Return True if issue is in current orchestrator queue scope."""
@@ -236,13 +232,10 @@ class GitHubWorkflow:
     def refresh_issue(self, issue_number: int) -> Optional["Issue"]:
         """Refresh a single issue from GitHub.
 
-        Returns the refreshed issue or None if failed.
+        Returns the refreshed issue, or None if the backing store reports the
+        issue is absent. Access failures propagate.
         """
-        try:
-            return self.repository_host.get_issue(issue_number)
-        except Exception as e:
-            logger.warning("Failed to refresh issue #%d: %s", issue_number, e)
-            return None
+        return self.repository_host.get_issue(issue_number)
 
     def build_labels(self, *labels: str) -> list[str]:
         """Build a label list including the filter label if configured."""

@@ -2,6 +2,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
+from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
 from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciliationResult
 from issue_orchestrator.domain.models import DiscoveredRework
@@ -101,3 +104,47 @@ def test_scan_pending_pr_work_appends_post_publish_validation_reworks() -> None:
         workflow.scan_pending_pr_work(state)
 
     assert state.discovered_reworks == [discovered]
+
+
+def test_fetch_delta_issues_propagates_repository_error() -> None:
+    repository_host = MagicMock()
+    repository_host.list_issues_delta.side_effect = GitHubHttpError(
+        "GitHub unavailable",
+        status_code=503,
+    )
+    workflow = GitHubWorkflow(
+        config=Config(),
+        events=MagicMock(),
+        repository_host=repository_host,
+        fact_gatherer=MagicMock(),
+        pr_scanner=MagicMock(),
+        label_sync=None,
+        event_context=EventContext(),
+    )
+
+    with pytest.raises(GitHubHttpError) as exc_info:
+        workflow.fetch_delta_issues(since="2026-01-01T00:00:00Z", fetch_limit=25)
+
+    assert exc_info.value.status_code == 503
+
+
+def test_refresh_issue_propagates_repository_error() -> None:
+    repository_host = MagicMock()
+    repository_host.get_issue.side_effect = GitHubHttpError(
+        "GitHub unavailable",
+        status_code=503,
+    )
+    workflow = GitHubWorkflow(
+        config=Config(),
+        events=MagicMock(),
+        repository_host=repository_host,
+        fact_gatherer=MagicMock(),
+        pr_scanner=MagicMock(),
+        label_sync=None,
+        event_context=EventContext(),
+    )
+
+    with pytest.raises(GitHubHttpError) as exc_info:
+        workflow.refresh_issue(42)
+
+    assert exc_info.value.status_code == 503
