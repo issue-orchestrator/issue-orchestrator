@@ -496,6 +496,102 @@ class TestQueueFetchPlanner:
         assert refresh_requested is False
         github_workflow.fetch_all_issues.assert_not_called()
 
+    def test_run_planning_cycle_rechecks_pending_queue_shrink_after_delay(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        config.queue_refresh_seconds = 0
+        config.fetch_layer_network_sync_seconds = 3600
+        prior_issues = [
+            make_issue(number, labels=["agent:web"]) for number in range(1, 21)
+        ]
+        state = OrchestratorState(
+            cached_scope_issues=list(prior_issues),
+            cached_queue_issues=list(prior_issues),
+            queue_pending_shrink_missing_issue_numbers=list(range(2, 21)),
+            queue_pending_shrink_confirm_at=1.0,
+            queue_last_full_scan_at=time.time(),
+        )
+        fact_gatherer = Mock()
+        fact_gatherer.create_snapshot.return_value = Mock()
+        planner = Mock()
+        planner.plan.return_value = Mock(action_count=0, actions=[])
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = list(prior_issues[1:11])
+        github_workflow.fetch_discovery_issues.return_value = []
+        last_sync = time.time()
+
+        next_sync, refresh_requested = run_planning_cycle(
+            config=config,
+            events=mock_event_sink,
+            event_context=Mock(enrich=lambda payload: payload),
+            state=state,
+            fact_gatherer=fact_gatherer,
+            planner=planner,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            apply_plan_fn=Mock(),
+            clear_discovered_facts_fn=Mock(),
+            last_network_sync=last_sync,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        assert next_sync >= last_sync
+        assert state.queue_last_network_sync_at >= last_sync
+        assert refresh_requested is False
+        assert state.queue_last_refresh_mode == "incremental"
+        github_workflow.fetch_all_issues.assert_not_called()
+        github_workflow.refresh_issues.assert_called_once_with(list(range(2, 12)))
+        assert state.queue_pending_shrink_missing_issue_numbers == []
+
+    def test_suspicious_full_scan_shrink_retains_queue_and_watermark(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_scope_issues=[
+                make_issue(number, labels=["agent:web"]) for number in range(1, 21)
+            ],
+            cached_queue_issues=[
+                make_issue(number, labels=["agent:web"]) for number in range(1, 21)
+            ],
+            queue_delta_watermark="2026-01-01T00:00:00Z",
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.return_value = [
+            make_issue(1, labels=["agent:web"])
+        ]
+        queue_cache_store = Mock()
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=True,
+            inflight_stable_ids={},
+            queue_cache_store=queue_cache_store,
+        )
+
+        assert [issue.number for issue in state.cached_queue_issues] == list(range(1, 21))
+        assert [issue.number for issue in state.cached_scope_issues] == list(range(1, 21))
+        assert state.queue_pending_shrink_missing_issue_numbers == list(range(2, 21))
+        assert state.queue_delta_watermark == "2026-01-01T00:00:00Z"
+        queue_cache_store.save_snapshot.assert_called_once_with(
+            state.cached_scope_issues,
+            "2026-01-01T00:00:00Z",
+            repo=config.repo or "",
+        )
+
     def test_fetch_logs_gh_cost_per_cycle(self, mock_event_sink, mock_repository_host, caplog):
         import logging
 

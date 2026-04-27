@@ -609,6 +609,45 @@ def test_blocked_coder_projects_as_terminal_blocked_state() -> None:
     assert cycle.outcome == "blocked"
 
 
+def test_failed_coding_attempt_ignores_stale_review_signals() -> None:
+    started = _event(
+        "agent.coding_started",
+        event_id="coding-start",
+        timestamp="2026-04-21T12:00:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+    )
+    approved = _event(
+        "review.approved",
+        event_id="review-approved",
+        timestamp="2026-04-21T12:10:00Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-1",
+    )
+    failed = _event(
+        "session.failed",
+        event_id="coding-failed",
+        timestamp="2026-04-21T12:20:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="session failed",
+    )
+
+    lifecycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=[started, approved, failed],
+        cycles=[{"cycle": 1, "events": [started, approved, failed]}],
+        review_required=True,
+    )
+
+    cycle = lifecycle.cycles[0]
+    assert isinstance(cycle.coder, FailedCodingAttempt)
+    assert isinstance(cycle.review, ReviewNotReached)
+    assert cycle.review.reason == "coding_failed"
+    assert cycle.outcome == "failed"
+
+
 def test_publish_failed_after_coding_completion_projects_publish_failed_attempt() -> (
     None
 ):

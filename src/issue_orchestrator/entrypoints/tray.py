@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
 logger = logging.getLogger(__name__)
+_API_TOKEN_ENV = "ISSUE_ORCHESTRATOR_API_TOKEN"
 
 
 def _process_exists(pid: int) -> bool:
@@ -117,10 +118,19 @@ def start_tray(
     return icon
 
 
+def _control_api_headers() -> dict[str, str]:
+    """Return headers for tray helper Control API calls."""
+    headers = {"Accept": "application/json"}
+    token = os.environ.get(_API_TOKEN_ENV)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _engine_status_from_control_center(dashboard_url: str) -> list[tuple[str, str]]:
     """Fetch engine status snapshot from Control Center HTTP API."""
     repos_url = urljoin(dashboard_url.rstrip("/") + "/", "control/repos")
-    req = urllib.request.Request(repos_url, headers={"Accept": "application/json"})
+    req = urllib.request.Request(repos_url, headers=_control_api_headers())
     try:
         with urllib.request.urlopen(req, timeout=1.5) as response:
             payload = json.loads(response.read().decode("utf-8"))

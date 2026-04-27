@@ -224,8 +224,10 @@ class TestEnsureE2EWorktree:
         assert cmd == ["uv", "sync", "--all-extras"]
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
-    def test_uv_sync_installs_pytest_when_missing(self, mock_run, repo_root: Path):
-        """Repos without pytest in their synced env should get a fallback install."""
+    def test_uv_sync_installs_missing_worker_dependencies(
+        self, mock_run, repo_root: Path
+    ):
+        """Repos missing worker deps in their synced env get fallback installs."""
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()
         (worktree_path / "pyproject.toml").write_text("[project]\nname = \"example\"\n")
@@ -252,11 +254,12 @@ class TestEnsureE2EWorktree:
         ]
         assert len(install_calls) == 1
         cmd = install_calls[0][0][0]
+        assert "defusedxml>=0.7" in cmd
         assert "pytest>=8.0" in cmd
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
-    def test_no_pyproject_creates_minimal_pytest_venv(self, mock_run, tmp_path: Path):
-        """Non-Python repos still get enough Python tooling to run pytest wrappers."""
+    def test_no_pyproject_creates_minimal_worker_venv(self, mock_run, tmp_path: Path):
+        """Non-Python repos still get enough Python tooling to run E2E wrappers."""
         mock_run.return_value = subprocess.CompletedProcess(["uv"], 0)
 
         _sync_venv(tmp_path)
@@ -269,5 +272,6 @@ class TestEnsureE2EWorktree:
             "install",
             "--python",
             str(tmp_path / ".venv" / "bin" / "python"),
+            "defusedxml>=0.7",
             "pytest>=8.0",
         ]

@@ -266,6 +266,25 @@ class TestTrayControlCenterStatus:
 
         assert result == [("repo-a", "running"), ("repo-b", "stopped")]
 
+    def test_engine_status_sends_control_api_token_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tray helper authenticates Control API polling when launched with a token."""
+        from issue_orchestrator.entrypoints import tray
+
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_API_TOKEN", "secret-token")
+        response = MagicMock()
+        response.read.return_value = b'{"repos":[]}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            tray._engine_status_from_control_center("http://localhost:19080/")  # noqa: SLF001
+
+        request = urlopen.call_args[0][0]
+        assert request.get_header("Accept") == "application/json"
+        assert request.get_header("Authorization") == "Bearer secret-token"
+
     def test_engine_status_returns_empty_on_transport_error(self) -> None:
         """Transport errors are tolerated and reported as empty status."""
         from issue_orchestrator.entrypoints import tray

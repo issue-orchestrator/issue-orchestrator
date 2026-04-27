@@ -3,9 +3,12 @@
 from pathlib import Path
 
 from issue_orchestrator.control.queue_cache import (
+    QUEUE_SHRINK_CONFIRM_DELAY_SECONDS,
     QueueCache,
     QueueMutationStatus,
     clear_issue_refresh,
+    queue_shrink_confirmation_due,
+    queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, SessionHistoryEntry
@@ -19,6 +22,13 @@ def _make_config() -> Config:
         worktree_base=Path("/tmp/worktrees"),
         agents={"agent:web": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))},
     )
+
+
+def _make_issues(numbers: range | list[int]) -> list[Issue]:
+    return [
+        Issue(number=number, title=f"Issue {number}", labels=["agent:web"])
+        for number in numbers
+    ]
 
 
 def test_upsert_accepts_in_scope_issue():
@@ -126,6 +136,106 @@ def test_replace_from_refresh_silent_when_populated():
 
     assert captured == []
     assert [i.number for i in state.cached_queue_issues] == [2]
+
+
+def test_replace_from_refresh_retains_suspicious_large_shrink_until_confirmation(
+    monkeypatch, caplog
+):
+    from issue_orchestrator.control import queue_cache as queue_cache_module
+
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    prior = _make_issues(list(range(1, 21)))
+    state = OrchestratorState(
+        cached_scope_issues=list(prior),
+        cached_queue_issues=list(prior),
+    )
+    cache = QueueCache(config, state)
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 1000.0)
+
+    with caplog.at_level("WARNING", logger="issue_orchestrator.control.queue_cache"):
+        queue = cache.replace_from_refresh(
+            [Issue(number=1, title="Issue 1 updated", labels=["agent:web"])]
+        )
+
+    assert [issue.number for issue in queue] == list(range(1, 21))
+    assert [issue.number for issue in state.cached_scope_issues] == list(range(1, 21))
+    assert queue_shrink_confirmation_pending(state) is True
+    assert state.queue_pending_shrink_missing_issue_numbers == list(range(2, 21))
+    assert (
+        state.queue_pending_shrink_confirm_at
+        == 1000.0 + QUEUE_SHRINK_CONFIRM_DELAY_SECONDS
+    )
+    assert not queue_shrink_confirmation_due(state, 1059.0)
+    assert queue_shrink_confirmation_due(state, 1060.0)
+    assert "suspicious queue shrink retained pending confirmation" in caplog.text
+
+
+def test_replace_from_refresh_confirms_repeated_large_shrink(monkeypatch):
+    from issue_orchestrator.control import queue_cache as queue_cache_module
+
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    prior = _make_issues(list(range(1, 21)))
+    state = OrchestratorState(
+        cached_scope_issues=list(prior),
+        cached_queue_issues=list(prior),
+    )
+    cache = QueueCache(config, state)
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 1000.0)
+    first_issue = Issue(number=1, title="Issue 1 updated", labels=["agent:web"])
+    cache.replace_from_refresh([first_issue])
+
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 1060.0)
+    queue = cache.replace_from_refresh([first_issue])
+
+    assert [issue.number for issue in queue] == [1]
+    assert [issue.number for issue in state.cached_scope_issues] == [1]
+    assert queue_shrink_confirmation_pending(state) is False
+    assert state.queue_pending_shrink_confirm_at == 0.0
+
+
+def test_replace_from_refresh_clears_pending_large_shrink_when_refresh_recovers(
+    monkeypatch,
+):
+    from issue_orchestrator.control import queue_cache as queue_cache_module
+
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    prior = _make_issues(list(range(1, 21)))
+    state = OrchestratorState(
+        cached_scope_issues=list(prior),
+        cached_queue_issues=list(prior),
+    )
+    cache = QueueCache(config, state)
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 1000.0)
+    cache.replace_from_refresh(
+        [Issue(number=1, title="Issue 1 updated", labels=["agent:web"])]
+    )
+
+    recovered = _make_issues(list(range(1, 21)))
+    recovered[0] = Issue(number=1, title="Issue 1 recovered", labels=["agent:web"])
+    queue = cache.replace_from_refresh(recovered)
+
+    assert [issue.number for issue in queue] == list(range(1, 21))
+    assert state.cached_queue_issues[0].title == "Issue 1 recovered"
+    assert queue_shrink_confirmation_pending(state) is False
+
+
+def test_replace_from_refresh_applies_small_shrink_without_confirmation():
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    prior = _make_issues(list(range(1, 21)))
+    state = OrchestratorState(
+        cached_scope_issues=list(prior),
+        cached_queue_issues=list(prior),
+    )
+    cache = QueueCache(config, state)
+
+    queue = cache.replace_from_refresh(_make_issues(list(range(1, 13))))
+
+    assert [issue.number for issue in queue] == list(range(1, 13))
+    assert queue_shrink_confirmation_pending(state) is False
 
 
 def test_replace_from_refresh_filters_excluded_history_issue():

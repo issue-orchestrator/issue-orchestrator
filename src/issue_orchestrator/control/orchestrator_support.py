@@ -30,7 +30,12 @@ if TYPE_CHECKING:
 from ..events import EventName, EventContext
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .actions import AddLabelAction
-from .queue_cache import QueueCache, record_issue_refreshes
+from .queue_cache import (
+    QueueCache,
+    queue_shrink_confirmation_due,
+    queue_shrink_confirmation_pending,
+    record_issue_refreshes,
+)
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .transition_log import log_transition
 from ..domain.models import (
@@ -607,7 +612,10 @@ def run_planning_cycle(
     io_claimed_label: str = "io:claimed",
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
-    should_fetch = (time.time() - last_network_sync >= config.fetch_layer_network_sync_seconds) or refresh_requested
+    now = time.time()
+    should_fetch = (
+        now - last_network_sync >= config.fetch_layer_network_sync_seconds
+    ) or refresh_requested or queue_shrink_confirmation_due(state, now)
 
     if should_fetch:
         last_network_sync, refresh_requested = _fetch_and_update_queue(
@@ -704,6 +712,7 @@ def _fetch_and_update_queue(
 
         queue_cache = QueueCache(config, state)
         new_queue = queue_cache.replace_from_refresh(all_issues)
+        shrink_confirmation_pending = queue_shrink_confirmation_pending(state)
 
         new_numbers = {i.number for i in new_queue}
         added_numbers = new_numbers - old_numbers
@@ -722,13 +731,13 @@ def _fetch_and_update_queue(
             }))
             logger.info("Queue changed: %d added, %d removed, %d total",
                         len(added), len(removed), len(new_queue))
-        state.queue_last_refresh_at = refresh_started_at
-        state.queue_last_network_sync_at = refresh_started_at
-        state.queue_refresh_count += 1
-        if full_scan:
-            state.queue_last_full_scan_at = refresh_started_at
-        state.queue_last_refresh_mode = "full" if full_scan else "incremental"
-        state.queue_delta_watermark = next_watermark
+        _update_queue_refresh_metadata(
+            state=state,
+            refresh_started_at=refresh_started_at,
+            full_scan=full_scan,
+            next_watermark=next_watermark,
+            shrink_confirmation_pending=shrink_confirmation_pending,
+        )
 
         if queue_cache_store is not None:
             queue_cache_store.save_snapshot(
@@ -760,6 +769,28 @@ def _fetch_and_update_queue(
         state.queue_refresh_in_progress = False
 
 
+def _update_queue_refresh_metadata(
+    *,
+    state: "OrchestratorState",
+    refresh_started_at: float,
+    full_scan: bool,
+    next_watermark: str | None,
+    shrink_confirmation_pending: bool,
+) -> None:
+    state.queue_last_refresh_at = refresh_started_at
+    state.queue_last_network_sync_at = refresh_started_at
+    state.queue_refresh_count += 1
+    if full_scan:
+        state.queue_last_full_scan_at = refresh_started_at
+    state.queue_last_refresh_mode = "full" if full_scan else "incremental"
+    if shrink_confirmation_pending:
+        logger.warning(
+            "[QUEUE_CACHE] not advancing queue watermark while shrink confirmation is pending"
+        )
+        return
+    state.queue_delta_watermark = next_watermark
+
+
 def _should_run_full_scan(
     config: "Config",
     state: "OrchestratorState",
@@ -773,6 +804,8 @@ def _should_run_full_scan(
         return True
     if required_stable_ids:
         return True
+    if queue_shrink_confirmation_due(state, now):
+        return False
     if not state.cached_queue_issues:
         return True
     if state.queue_last_full_scan_at <= 0:
@@ -844,11 +877,14 @@ def _fetch_incremental_issues(
     sync_plan: _SelectiveSyncPlan,
 ) -> tuple[list["Issue"], set[int], str | None]:
     issue_map = {issue.number: issue for issue in state.cached_queue_issues}
+    pending_shrink_due = queue_shrink_confirmation_due(state, time.time())
     hot_issue_numbers = _select_hot_issue_numbers(
         state,
         config.fetch_layer_max_hot_issues_per_cycle,
         config.fetch_layer_visibility_aware_enabled,
+        include_pending_shrink=pending_shrink_due,
     )
+    _log_pending_shrink_confirmation(state, hot_issue_numbers, pending_shrink_due)
     refreshed = github_workflow.refresh_issues(hot_issue_numbers)
     refreshed_numbers: set[int] = {issue.number for issue in refreshed}
     for issue in refreshed:
@@ -891,42 +927,98 @@ def _fetch_incremental_issues(
     return list(issue_map.values()), refreshed_numbers, next_watermark
 
 
+def _log_pending_shrink_confirmation(
+    state: "OrchestratorState",
+    hot_issue_numbers: list[int],
+    pending_shrink_due: bool,
+) -> None:
+    if not pending_shrink_due:
+        return
+    pending_missing = set(state.queue_pending_shrink_missing_issue_numbers)
+    selected_missing = pending_missing.intersection(hot_issue_numbers)
+    logger.info(
+        "[QUEUE_CACHE] confirming pending queue shrink with targeted issue refresh: "
+        "pending=%d selected=%d",
+        len(pending_missing),
+        len(selected_missing),
+    )
+
+
 def _iso_now_utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _select_hot_issue_numbers(state: "OrchestratorState", limit: int, visibility_aware_enabled: bool) -> list[int]:
-    if limit <= 0:
+def _select_hot_issue_numbers(
+    state: "OrchestratorState",
+    limit: int,
+    visibility_aware_enabled: bool,
+    *,
+    include_pending_shrink: bool = False,
+) -> list[int]:
+    if limit <= 0 and not include_pending_shrink:
         return []
+    effective_limit = (
+        limit if limit > 0 else len(state.queue_pending_shrink_missing_issue_numbers)
+    )
 
     hot_issue_numbers: list[int] = []
     seen: set[int] = set()
-    for issue_number in _iter_hot_issue_numbers(state, visibility_aware_enabled):
+    for issue_number in _iter_hot_issue_numbers(
+        state,
+        visibility_aware_enabled,
+        include_pending_shrink=include_pending_shrink,
+    ):
         if issue_number in seen:
             continue
         seen.add(issue_number)
         hot_issue_numbers.append(issue_number)
-        if len(hot_issue_numbers) >= limit:
+        if len(hot_issue_numbers) >= effective_limit:
             break
 
     return hot_issue_numbers
 
 
-def _iter_hot_issue_numbers(state: "OrchestratorState", visibility_aware_enabled: bool):
+def _iter_hot_issue_numbers(
+    state: "OrchestratorState",
+    visibility_aware_enabled: bool,
+    *,
+    include_pending_shrink: bool = False,
+):
+    yield from _pending_shrink_hot_numbers(state, include_pending_shrink)
     for session in state.active_sessions:
         yield session.issue.number
     for review in state.pending_reviews:
         yield review.issue_number
+    yield from _pending_rework_issue_numbers(state)
+    for issue_number in state.priority_queue:
+        yield issue_number
+    yield from _visible_hot_issue_numbers(state, visibility_aware_enabled)
+    for issue in state.cached_queue_issues:
+        yield issue.number
+
+
+def _pending_shrink_hot_numbers(
+    state: "OrchestratorState",
+    include_pending_shrink: bool,
+) -> tuple[int, ...]:
+    if not include_pending_shrink:
+        return ()
+    return tuple(state.queue_pending_shrink_missing_issue_numbers)
+
+
+def _pending_rework_issue_numbers(state: "OrchestratorState"):
     for rework in state.pending_reworks:
         if rework.issue_number is not None:
             yield rework.issue_number
-    for issue_number in state.priority_queue:
-        yield issue_number
-    if visibility_aware_enabled:
-        for issue_number in _get_visible_issue_numbers(state):
-            yield issue_number
-    for issue in state.cached_queue_issues:
-        yield issue.number
+
+
+def _visible_hot_issue_numbers(
+    state: "OrchestratorState",
+    visibility_aware_enabled: bool,
+) -> list[int]:
+    if not visibility_aware_enabled:
+        return []
+    return _get_visible_issue_numbers(state)
 
 
 def _record_issue_refreshes(

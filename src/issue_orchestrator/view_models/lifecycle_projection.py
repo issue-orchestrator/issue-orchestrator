@@ -794,6 +794,10 @@ def _project_review(
     coder: CodingAttempt,
     review_required: bool,
 ) -> ReviewStage:
+    blocked_by_coder = _review_not_reached_for_coder(coder)
+    if blocked_by_coder is not None:
+        return blocked_by_coder
+
     start = _first_event(events, _REVIEW_START_EVENTS)
     terminal = _last_event(
         events,
@@ -839,6 +843,20 @@ def _project_review(
         events=events,
         review_required=review_required,
     )
+
+
+def _review_not_reached_for_coder(coder: CodingAttempt) -> ReviewNotReached | None:
+    if isinstance(coder, RunningCodingAttempt):
+        return ReviewNotReached(reason="coding_in_progress")
+    if isinstance(coder, PublishFailedCodingAttempt):
+        return ReviewNotReached(reason="publish_failed")
+    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt):
+        return ReviewNotReached(reason="coding_failed")
+    if isinstance(coder, CompletedCodingAttempt) and isinstance(
+        coder.validation, ValidationFailed
+    ):
+        return ReviewNotReached(reason="validation_failed")
+    return None
 
 
 def _approved_review(
@@ -993,18 +1011,11 @@ def _unreached_review(
     events: Sequence[EventDict],
     review_required: bool,
 ) -> ReviewStage:
-    if isinstance(coder, RunningCodingAttempt):
-        return ReviewNotReached(reason="coding_in_progress")
-    if isinstance(coder, PublishFailedCodingAttempt):
-        return ReviewNotReached(reason="publish_failed")
-    if isinstance(
-        coder, FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence
-    ):
+    blocked_by_coder = _review_not_reached_for_coder(coder)
+    if blocked_by_coder is not None:
+        return blocked_by_coder
+    if isinstance(coder, MissingCodingEvidence):
         return ReviewNotReached(reason="coding_failed")
-    if isinstance(coder, CompletedCodingAttempt) and isinstance(
-        coder.validation, ValidationFailed
-    ):
-        return ReviewNotReached(reason="validation_failed")
     if review_required:
         return _missing_review(
             expected_state="running",
