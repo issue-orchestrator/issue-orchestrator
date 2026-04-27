@@ -214,6 +214,7 @@ def _is_agent_callback_route(path: str) -> bool:
 _CONTROL_API_SURFACE = AuthSurfaceConfig(
     sse_path="/api/events",
     public_paths=_UNAUTHENTICATED_PATHS,
+    name="control_api",
     public_prefixes=_UNAUTHENTICATED_PREFIXES,
     agent_callback_matcher=_is_agent_callback_route,
 )
@@ -867,6 +868,7 @@ async def control_center_ui(request: Request) -> HTMLResponse:
     content = template_path.read_text()
     content = content.replace("{{ version }}", __version__)
     content = content.replace("{{ commit_sha }}", commit_short)
+    content = content.replace("{{ browser_auth_required }}", "0" if auth_disabled else "1")
     content = content.replace("{{ csrf_token }}", csrf_token or "")
     # Render the dev-mode banner only when the operator has
     # explicitly disabled auth (``--dev-no-auth`` /

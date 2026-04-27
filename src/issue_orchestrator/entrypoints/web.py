@@ -109,6 +109,7 @@ _DASHBOARD_UNAUTHENTICATED_PREFIXES: tuple[str, ...] = ("/static/",)
 _DASHBOARD_SURFACE = AuthSurfaceConfig(
     sse_path="/api/events",
     public_paths=_DASHBOARD_UNAUTHENTICATED_PATHS,
+    name="web_dashboard",
     public_prefixes=_DASHBOARD_UNAUTHENTICATED_PREFIXES,
 )
 

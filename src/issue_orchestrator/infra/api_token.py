@@ -57,6 +57,7 @@ import logging
 import os
 import secrets
 from pathlib import Path
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ AGENT_CALLBACK_TOKEN_ENV_VAR = "ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"
 
 _DEFAULT_ADMIN_RELATIVE = Path(".issue-orchestrator") / "api-token"
 _DEFAULT_AGENT_RELATIVE = Path(".issue-orchestrator") / "agent-callback-token"
+_TOKEN_CREATE_LOCK_TIMEOUT_SECONDS = 10.0
+_TOKEN_CREATE_LOCK_STALE_SECONDS = 30.0
 
 
 def default_token_path() -> Path:
@@ -124,17 +127,65 @@ def load_or_create_token(path: Path | None = None) -> str:
     existing = _load_token_file(resolved)
     if existing:
         return existing
-    if resolved.exists():
-        logger.warning(
-            "Control API token file %s was empty; regenerating.", resolved
-        )
+    lock_fd, lock_path = _acquire_token_creation_lock(resolved)
+    try:
+        existing = _load_token_file(resolved)
+        if existing:
+            return existing
+        if resolved.exists():
+            logger.warning(
+                "Control API token file %s was empty; regenerating.", resolved
+            )
+        return _replace_token_file(resolved)
+    finally:
+        _release_token_creation_lock(lock_fd, lock_path)
 
+
+def _acquire_token_creation_lock(path: Path) -> tuple[int, Path]:
+    lock_path = path.with_name(f".{path.name}.lock")
+    deadline = time.monotonic() + _TOKEN_CREATE_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                age_seconds = time.time() - lock_path.stat().st_mtime
+                if age_seconds > _TOKEN_CREATE_LOCK_STALE_SECONDS:
+                    lock_path.unlink()
+                    continue
+            except FileNotFoundError:
+                # stat() or unlink() can race another process clearing the same
+                # stale lock.
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for token creation lock: {lock_path}")
+            time.sleep(0.01)
+        else:
+            return fd, lock_path
+
+
+def _release_token_creation_lock(fd: int, lock_path: Path) -> None:
+    os.close(fd)
+    lock_path.unlink(missing_ok=True)
+
+
+def _write_private_temp_token(path: Path, token: str) -> Path:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(token)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
+
+
+def _replace_token_file(path: Path) -> str:
     token = generate_token()
-    tmp = resolved.with_suffix(resolved.suffix + ".tmp")
-    tmp.write_text(token)
-    tmp.chmod(0o600)
-    tmp.replace(resolved)
-    logger.info("Generated Control API token at %s", resolved)
+    tmp = _write_private_temp_token(path, token)
+    tmp.replace(path)
+    logger.info("Generated Control API token at %s", path)
     return token
 
 

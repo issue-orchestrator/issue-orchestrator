@@ -188,7 +188,7 @@ async function toggleExcluded() {
         const waitMs = backoffMs + jitterMs;
         const seconds = Math.max(1, Math.round(waitMs / 1000));
         reconnectAttempts += 1;
-        setRestartBanner(`Engine restarting... reconnecting in ${seconds}s.`);
+        setRestartBanner(`Event stream disconnected... reconnecting in ${seconds}s.`);
         reconnectTimer = window.setTimeout(() => {
             reconnectTimer = null;
             connectEventStream();
@@ -344,14 +344,13 @@ async function toggleExcluded() {
         closeEventStream();
         try {
             // Control API requires an authenticated query-string token
-            // on /api/events (security #6017). Use the helper installed
-            // by control_center.js when it's available; fall back to
-            // the raw URL for pages/tests that haven't loaded the shim.
-            if (typeof window.openAuthenticatedSseStream === 'function') {
-                evtSource = await window.openAuthenticatedSseStream('/api/events');
-            } else {
-                evtSource = new EventSource('/api/events');
+            // on /api/events (security #6017). Fail fast if the shared
+            // helper is not loaded; a raw EventSource would produce an
+            // endless unauthenticated reconnect loop.
+            if (typeof window.openAuthenticatedSseStream !== 'function') {
+                throw new Error('authenticated SSE helper is not loaded');
             }
+            evtSource = await window.openAuthenticatedSseStream('/api/events');
             wireEventListeners(evtSource);
         } catch (err) {
             console.error('[SSE] Failed to create EventSource:', err);

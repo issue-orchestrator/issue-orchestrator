@@ -17,6 +17,7 @@
 2. **Auto-patching** - `patch_orchestrator_dependencies` fixture injects mocks into all Orchestrator instances
 3. **Use fixtures** - Leverage `conftest.py` for sample data
 4. **Thread coordination helpers** - Use `tests/unit/threading_helpers.py` instead of sleeps
+5. **Auth-enabled route tests** - Use `fake_browser_auth`, `auth_enabled_control_client`, `auth_enabled_dashboard_client`, or `logged_in_dashboard_client` when a browser/API test should exercise the real session-cookie, CSRF, bearer-token, and SSE-token middleware without using real token files.
 
 ## Key Fixtures (conftest.py)
 
@@ -26,6 +27,12 @@ patch_orchestrator_dependencies  # Injects MockEventSink, MockSessionRunner
 
 # Sample data
 sample_issues, sample_config, sample_orchestrator
+
+# Deterministic auth mode
+fake_browser_auth
+auth_enabled_control_client
+auth_enabled_dashboard_client
+logged_in_dashboard_client
 
 # Mock adapters
 mock_github_adapter, mock_terminal_plugin, mock_event_sink

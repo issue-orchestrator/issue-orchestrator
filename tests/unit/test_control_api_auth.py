@@ -10,6 +10,8 @@ unconfigured (the default in unit tests), the middleware is a no-op.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -45,13 +47,22 @@ def dual_token_client():
         configure_api_token(prev_admin, agent_callback=prev_agent)
 
 
-def test_missing_header_returns_401(authed_client: TestClient) -> None:
+def test_missing_header_returns_401(
+    authed_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(
+        logging.INFO, logger="issue_orchestrator.entrypoints._auth_middleware"
+    )
+
     resp = authed_client.get("/api/status")
 
     assert resp.status_code == 401
     # Message is "missing credentials" since neither the bearer path
     # nor the browser-session path matched.
     assert "credentials" in resp.json()["error"]
+    assert "Auth rejected GET /api/status on control_api" in caplog.text
+    assert "missing credentials" in caplog.text
+    assert any(record.levelno == logging.INFO for record in caplog.records)
 
 
 def test_wrong_scheme_returns_401(authed_client: TestClient) -> None:
@@ -65,13 +76,21 @@ def test_wrong_scheme_returns_401(authed_client: TestClient) -> None:
     assert "credentials" in resp.json()["error"]
 
 
-def test_wrong_token_returns_401(authed_client: TestClient) -> None:
+def test_wrong_token_returns_401(
+    authed_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(
+        logging.WARNING, logger="issue_orchestrator.entrypoints._auth_middleware"
+    )
+
     resp = authed_client.get(
         "/api/status", headers={"Authorization": "Bearer wrong-token"}
     )
 
     assert resp.status_code == 401
     assert resp.json() == {"error": "invalid bearer token"}
+    assert "invalid bearer token" in caplog.text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
 def test_correct_token_passes_middleware(authed_client: TestClient) -> None:
@@ -103,6 +122,23 @@ def test_mutating_route_also_requires_token(authed_client: TestClient) -> None:
     resp = authed_client.post("/api/pause")
 
     assert resp.status_code == 401
+
+
+def test_fake_auth_control_api_mode_catches_missing_csrf(
+    auth_enabled_control_client: TestClient,
+    fake_browser_auth,
+) -> None:
+    fake_browser_auth.login(auth_enabled_control_client)
+
+    missing_csrf = auth_enabled_control_client.post("/api/resume")
+    assert missing_csrf.status_code == 403
+    assert "csrf" in missing_csrf.json()["error"].lower()
+
+    with_csrf = auth_enabled_control_client.post(
+        "/api/resume",
+        headers=fake_browser_auth.csrf_headers(auth_enabled_control_client),
+    )
+    assert with_csrf.status_code not in (401, 403), with_csrf.text
 
 
 def test_sse_route_also_requires_token(authed_client: TestClient) -> None:
@@ -340,6 +376,7 @@ def test_root_with_session_serves_dashboard(
     resp = browser_auth_client.get("/")
 
     assert resp.status_code == 200
+    assert '<meta name="io-browser-auth-required" content="1">' in resp.text
     assert "io-csrf-token" in resp.text
     assert "Sign in" not in resp.text
 

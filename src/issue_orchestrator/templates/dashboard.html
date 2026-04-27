@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="io-browser-auth-required" content="{{ browser_auth_required }}">
+    <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
     <link rel="stylesheet" href="/static/css/dashboard.css">
@@ -566,6 +568,7 @@
     <script>
       window.dashboardData = {{ dashboard_data | tojson }};
     </script>
+    <script src="/static/js/browser_auth.js"></script>
     <script src="/static/js/embedded_nav.js"></script>
     <script src="/static/js/issue_row_state.js"></script>
     <script src="/static/js/expanded_column_state.js"></script>

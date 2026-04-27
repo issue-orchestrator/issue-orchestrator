@@ -1,10 +1,12 @@
 """Shared fixtures and configuration for tests."""
 
+from dataclasses import dataclass
 import os
 import pytest
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
+from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
@@ -12,6 +14,9 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+TEST_ADMIN_TOKEN = "test-admin-token"
+TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
 
 
 # =============================================================================
@@ -84,28 +89,113 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def reset_control_api_token():
-    """Reset Control API bearer-token enforcement between tests.
+    """Reset process-wide browser auth and bearer-token enforcement.
 
     ``ControlAPIServer.start`` (and tests that explicitly call
     ``configure_api_token``) install process-wide tokens on the
-    ``control_app`` module. Without an autouse reset, leftover tokens
-    from an earlier test cause unrelated TestClient calls to return
-    401 instead of the expected status. See security issue #5987 (F3)
-    + #6017 P3 (browser session module).
+    ``control_app`` module. Dashboard auth has a separate process-wide
+    token. Without an autouse reset, leftover tokens from an earlier
+    test cause unrelated TestClient calls to return 401 instead of the
+    expected status. See security issue #5987 (F3) + #6017 P3.
     """
     try:
         from issue_orchestrator.entrypoints.control_api import configure_api_token
+        from issue_orchestrator.entrypoints.web import configure_dashboard_admin_token
         from issue_orchestrator.infra import browser_session
     except Exception:
         yield
         return
     configure_api_token(None, agent_callback=None)
+    configure_dashboard_admin_token(None)
     browser_session.shutdown()
     try:
         yield
     finally:
         configure_api_token(None, agent_callback=None)
+        configure_dashboard_admin_token(None)
         browser_session.shutdown()
+
+
+@dataclass(frozen=True)
+class FakeBrowserAuth:
+    """Deterministic test auth that exercises the real browser middleware.
+
+    This is the "semi-enabled" mode for route/UI tests: no real token
+    file and no manual operator login, but requests still pass through
+    bearer-token, session-cookie, CSRF, and SSE-token checks.
+    """
+
+    admin_token: str = TEST_ADMIN_TOKEN
+    agent_callback_token: str = TEST_AGENT_CALLBACK_TOKEN
+
+    def login(self, client: TestClient) -> str:
+        """Log the TestClient in and return the session's CSRF token."""
+        from issue_orchestrator.infra import browser_session
+
+        response = client.post("/login", json={"token": self.admin_token})
+        assert response.status_code == 200, response.text
+        session_id = client.cookies.get(browser_session.SESSION_COOKIE)
+        assert session_id, "login did not set browser session cookie"
+        csrf = browser_session.get_csrf_token(session_id)
+        assert csrf, "login session did not yield a CSRF token"
+        return csrf
+
+    def csrf_headers(self, client: TestClient) -> dict[str, str]:
+        """Return the X-CSRF-Token header for a logged-in TestClient."""
+        from issue_orchestrator.infra import browser_session
+
+        session_id = client.cookies.get(browser_session.SESSION_COOKIE)
+        assert session_id, "client must be logged in before requesting CSRF headers"
+        csrf = browser_session.get_csrf_token(session_id)
+        assert csrf, "logged-in client did not yield a CSRF token"
+        return {browser_session.CSRF_HEADER: csrf}
+
+    def bearer_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.admin_token}"}
+
+
+@pytest.fixture
+def fake_browser_auth() -> FakeBrowserAuth:
+    """Enable deterministic browser auth across Control API and Dashboard.
+
+    Use this for tests that should catch auth wiring regressions without
+    depending on ``~/.issue-orchestrator/api-token``.
+    """
+    from issue_orchestrator.entrypoints.control_api import configure_api_token
+    from issue_orchestrator.entrypoints.web import configure_dashboard_admin_token
+    from issue_orchestrator.infra import browser_session
+
+    browser_session.shutdown()
+    browser_session.initialize(admin_token=TEST_ADMIN_TOKEN)
+    configure_api_token(TEST_ADMIN_TOKEN, agent_callback=TEST_AGENT_CALLBACK_TOKEN)
+    configure_dashboard_admin_token(TEST_ADMIN_TOKEN)
+    return FakeBrowserAuth()
+
+
+@pytest.fixture
+def auth_enabled_control_client(fake_browser_auth: FakeBrowserAuth) -> TestClient:
+    """Control API TestClient with auth enabled but no browser login."""
+    from issue_orchestrator.entrypoints.control_api import control_app
+
+    return TestClient(control_app)
+
+
+@pytest.fixture
+def auth_enabled_dashboard_client(fake_browser_auth: FakeBrowserAuth) -> TestClient:
+    """Dashboard TestClient with auth enabled but no browser login."""
+    from issue_orchestrator.entrypoints.web import app
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def logged_in_dashboard_client(
+    auth_enabled_dashboard_client: TestClient,
+    fake_browser_auth: FakeBrowserAuth,
+) -> TestClient:
+    """Dashboard TestClient with auth enabled and a valid browser session."""
+    fake_browser_auth.login(auth_enabled_dashboard_client)
+    return auth_enabled_dashboard_client
 
 
 class MockGitHubAdapter:

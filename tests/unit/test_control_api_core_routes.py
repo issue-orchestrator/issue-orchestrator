@@ -315,6 +315,7 @@ class TestControlCenterTemplate:
         body = response.text
         assert "Repository Engines" in body
         assert "Close Control Center" in body
+        assert '<meta name="io-browser-auth-required" content="0">' in body
         assert 'id="sidebarCloseCC"' in body
         assert 'id="sidebarAppMenuBtn"' in body
         assert 'href="/static/brand/logo.svg"' in body
@@ -324,6 +325,7 @@ class TestControlCenterTemplate:
         assert 'id="menuCloseCC"' not in body
         assert 'href="/static/css/control_center.css"' in body
         assert 'href="/static/css/control_center_setup.css"' in body
+        assert 'src="/static/js/browser_auth.js"' in body
         assert 'src="/static/js/control_center.js"' in body
         assert "Closing this window does not stop repository engines" in body
         assert ">Stopped<" not in body
@@ -333,11 +335,14 @@ class TestControlCenterTemplate:
 
     def test_control_center_static_assets_are_served(self, client_without_orchestrator):
         css_response = client_without_orchestrator.get("/static/css/control_center.css")
+        browser_auth_response = client_without_orchestrator.get("/static/js/browser_auth.js")
         js_response = client_without_orchestrator.get("/static/js/control_center.js")
         logo_response = client_without_orchestrator.get("/static/brand/logo.svg")
 
         assert css_response.status_code == 200
         assert "--sidebar-width" in css_response.text
+        assert browser_auth_response.status_code == 200
+        assert "openAuthenticatedSseStream" in browser_auth_response.text
         assert js_response.status_code == 200
         assert "start_paused: startPaused" in js_response.text
         assert logo_response.status_code == 200

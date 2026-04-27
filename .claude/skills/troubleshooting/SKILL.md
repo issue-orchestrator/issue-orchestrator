@@ -80,6 +80,24 @@ ps aux | grep -E "claude|issue-orchestrator" | grep -v grep
 curl -s http://localhost:8080/api/status | jq
 ```
 
+### Dashboard Auth / Reconnect Loops
+
+If the embedded dashboard loops through messages like `Event stream disconnected... reconnecting in 30s` or the older `Engine restarting... reconnecting in 30s` while `/api/info` or the dashboard HTML still loads, suspect the browser-session auth path before assuming the engine is down.
+
+Expected browser auth contract:
+- Dashboard and Control Center both load `static/js/browser_auth.js`.
+- Authenticated dashboard HTML includes `<meta name="io-csrf-token" ...>`.
+- HTML includes `<meta name="io-browser-auth-required" content="1|0">`; no-auth test/dev pages should use `0`.
+- Mutating dashboard fetches include `X-CSRF-Token`.
+- `/api/events` uses a fresh `/api/sse-token` value on every EventSource connect.
+- Tests can exercise this without real operator tokens via `fake_browser_auth`, `auth_enabled_control_client`, `auth_enabled_dashboard_client`, and `logged_in_dashboard_client`.
+
+Check the engine log for auth rejections:
+
+```bash
+rg "Auth rejected|/api/events|/api/resume|/api/pause" .issue-orchestrator/state/logs/orchestrator.log | tail -80
+```
+
 ### Quick Session Inspection
 
 ```bash

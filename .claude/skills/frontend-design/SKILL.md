@@ -111,6 +111,18 @@ Hidden by default (toggle reveals):
 - `src/issue_orchestrator/templates/control_center.html` - Main UI
 - `src/issue_orchestrator/static/` - Static CSS, JS, and vendor assets
 
+## Browser Auth Contract
+
+For dashboard or Control Center actions that call authenticated endpoints:
+
+- Load `static/js/browser_auth.js` before feature-specific scripts.
+- Render `<meta name="io-csrf-token" content="{{ csrf_token }}">` on authenticated HTML pages.
+- Render `<meta name="io-browser-auth-required" content="1|0">` so dev/test no-auth pages do not request SSE tokens.
+- Use normal `fetch`; the shared helper owns `X-CSRF-Token` injection and 401 reload behavior.
+- Use `window.openAuthenticatedSseStream('/api/events')` for EventSource connections; never open authenticated SSE paths directly.
+- Check `response.ok` on mutating actions and surface failures in the UI instead of optimistic state changes.
+- For route/UI tests, use `fake_browser_auth` or the `auth_enabled_*` / `logged_in_dashboard_client` fixtures so auth is real but deterministic.
+
 ## Checklist for UI Changes
 
 - [ ] Does the change preserve information hierarchy?
@@ -121,3 +133,4 @@ Hidden by default (toggle reveals):
 - [ ] Is there a UI action contract entry for each changed button/action?
 - [ ] Are action semantics verified by non-UI tests (domain/API), not just UI tests?
 - [ ] Do compact and expanded views use the same policy and display semantics?
+- [ ] Do authenticated UI actions use the shared browser auth helper and handle failed responses?
