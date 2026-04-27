@@ -228,7 +228,7 @@ class AwaitingMergeReconciler:
                 issue_number,
                 exc,
             )
-            return None
+            raise
 
     def _get_issue(self, issue_number: int) -> Issue | None:
         try:
@@ -239,7 +239,7 @@ class AwaitingMergeReconciler:
                 issue_number,
                 exc,
             )
-            return None
+            raise
 
 
 def pr_number_from_url(pr_url: str) -> int | None:

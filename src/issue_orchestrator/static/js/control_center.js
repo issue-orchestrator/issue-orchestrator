@@ -2847,6 +2847,28 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('loadKnownIssuesBtn').disabled = false;
     }
 
+    async function readJsonBody(response) {
+        try {
+            return await response.json();
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function formatIssueAuditError(response, data) {
+        if (data?.error === 'Config not found for repo') {
+            return 'No config found for this repo. Run Setup first.';
+        }
+        const message = data?.error || 'Failed to load issues';
+        const statusParts = [];
+        if (data?.error_code) statusParts.push(data.error_code);
+        if (data?.upstream_status_code) statusParts.push(`GitHub HTTP ${data.upstream_status_code}`);
+        if (!response.ok) statusParts.push(`response HTTP ${response.status}`);
+        const statusText = statusParts.length > 0 ? ` (${statusParts.join(', ')})` : '';
+        const detail = data?.detail && data.detail !== message ? `: ${data.detail}` : '';
+        return `${message}${statusText}${detail}`;
+    }
+
     function setIssueSelectOptions(entries) {
         const select = document.getElementById('issueNumberSelect');
         select.innerHTML = '<option value="">Select an issue...</option>';
@@ -2870,12 +2892,9 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const url = `/control/tools/audit?repo_root=${encodeURIComponent(issueInputRepoPath)}`;
             const response = await fetch(url);
-            const data = await response.json();
-            if (data.error) {
-                if (data.error === 'Config not found for repo') {
-                    throw new Error('No config found for this repo. Run Setup first.');
-                }
-                throw new Error(data.error);
+            const data = await readJsonBody(response);
+            if (!response.ok || data.error) {
+                throw new Error(formatIssueAuditError(response, data));
             }
             const entries = data.entries || [];
             if (entries.length === 0) {
@@ -2961,16 +2980,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     let url = `/control/tools/audit?repo_root=${encodeURIComponent(repoPath)}`;
                     if (issueNum) url += `&issue_number=${issueNum}`;
                     const response = await fetch(url);
-                    const data = await response.json();
+                    const data = await readJsonBody(response);
 
-                    if (data.error) {
-                        if (data.error === 'Config not found for repo') {
-                            document.getElementById('auditResultsContent').innerHTML =
-                                '<div class="error-message">No config found for this repo. Run Setup first.</div>';
-                            return;
-                        }
+                    if (!response.ok || data.error) {
                         document.getElementById('auditResultsContent').innerHTML =
-                            `<div class="error-message">${escapeHtml(data.error)}</div>`;
+                            `<div class="error-message">${escapeHtml(formatIssueAuditError(response, data))}</div>`;
                         return;
                     }
 

@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
+from ..ports.repository_host import RepositoryHostError
+
 if TYPE_CHECKING:
     from ..infra.config import Config, AgentConfig
     from ..domain.models import PendingCleanup
@@ -121,6 +123,8 @@ class CleanupManager:
         try:
             reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
             return {pr.number for pr in reviewed_prs}
+        except RepositoryHostError:
+            raise
         except Exception as e:
             logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
             return None
@@ -232,6 +236,8 @@ class CleanupManager:
         """Fetch PRs with the cleanup label."""
         try:
             return self.repository_host.get_prs_with_label(cleanup_label)
+        except RepositoryHostError:
+            raise
         except Exception as e:
             logger.warning(f"[CLEANUP] Failed to fetch reviewed PRs: {e}")
             return []

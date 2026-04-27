@@ -26,6 +26,7 @@ from issue_orchestrator.control.orchestrator_support import (
     _record_issue_refreshes,
     _track_stale_ticks,
 )
+from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
     ExpectedState,
@@ -428,6 +429,42 @@ class TestQueueFetchPlanner:
             fetch_limit=10,
         )
         assert state.queue_delta_watermark == "2026-01-01T01:00:00Z"
+
+    def test_delta_sync_error_propagates_without_mutating_queue(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+            queue_delta_watermark="2026-01-01T00:00:00Z",
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_delta_issues.side_effect = GitHubHttpError(
+            "GitHub unavailable",
+            status_code=503,
+        )
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            _fetch_and_update_queue(
+                config=config,
+                events=mock_event_sink,
+                state=state,
+                repository_host=mock_repository_host,
+                scheduler=scheduler,
+                github_workflow=github_workflow,
+                refresh_requested=False,
+                inflight_stable_ids={},
+            )
+
+        assert exc_info.value.status_code == 503
+        assert [issue.number for issue in state.cached_queue_issues] == [1]
+        assert state.queue_delta_watermark == "2026-01-01T00:00:00Z"
+        assert state.queue_refresh_count == 0
+        assert state.queue_refresh_in_progress is False
 
     def test_delta_sync_removes_out_of_scope_issue_from_cached_queue(
         self, mock_event_sink, mock_repository_host

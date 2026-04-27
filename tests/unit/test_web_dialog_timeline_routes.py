@@ -107,6 +107,29 @@ class TestRefreshEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_single_issue_refresh_reports_repository_error(self):
+        """Refreshing one issue reports upstream GitHub failures."""
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.repository_host.get_issue.side_effect = GitHubHttpError(
+            "GitHub unavailable",
+            status_code=503,
+            response_text='{"message":"degraded"}',
+        )
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/77/refresh")
+            assert response.status_code == 502
+            payload = response.json()
+            assert payload["error"] == "Failed to refresh issue #77 from GitHub"
+            assert payload["upstream_status_code"] == 503
+            assert "degraded" in payload["detail"]
+        finally:
+            set_orchestrator(None)
+
 
 class TestApiTimelineEndpoint:
     """Test the GET /api/timeline/{issue_number} endpoint."""

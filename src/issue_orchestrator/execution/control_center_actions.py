@@ -13,6 +13,7 @@ from typing import Any, Optional, Protocol
 
 from ..infra.supervisor import SupervisorOps
 from .orchestrator_http_api import OrchestratorAsyncHttpApi
+from ..ports.repository_host import RepositoryHostError
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,49 @@ class TraceActionRequest:
 
 class AsyncCommand(Protocol):
     async def execute(self, request: Any) -> ActionResult: ...
+
+
+def _bounded_detail(value: str) -> str:
+    max_len = 1000
+    if len(value) <= max_len:
+        return value
+    return f"{value[:max_len]}..."
+
+
+def _repository_host_failure_payload(exc: RepositoryHostError) -> dict[str, Any]:
+    status_code = getattr(exc, "status_code", None)
+    response_text = getattr(exc, "response_text", None)
+    method = getattr(exc, "method", None)
+    url = getattr(exc, "url", None)
+    is_github = exc.__class__.__name__.startswith("GitHub")
+    is_transport = exc.__class__.__name__ == "GitHubTransportError"
+    payload: dict[str, Any] = {
+        "error": "GitHub issue query failed" if is_github else "Repository issue query failed",
+        "error_code": (
+            "github_transport_error"
+            if is_transport
+            else "github_http_error"
+            if is_github
+            else "repository_host_error"
+        ),
+        "detail": _bounded_detail(str(response_text or exc)),
+    }
+    if isinstance(status_code, int):
+        payload["upstream_status_code"] = status_code
+    if method:
+        payload["method"] = method
+    if url:
+        payload["url"] = url
+    return payload
+
+
+def _repository_host_failure_status(exc: RepositoryHostError) -> int:
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {401, 403, 429}:
+        return status_code
+    if isinstance(status_code, int):
+        return 502
+    return 503
 
 
 async def _passthrough_api_call(port: int, op: str, body: Optional[dict[str, Any]] = None) -> ActionResult:
@@ -203,6 +247,11 @@ class AuditIssuesCommand:
                     for entry in entries
                 ],
             })
+        except RepositoryHostError as exc:
+            return ActionResult(
+                _repository_host_failure_payload(exc),
+                status_code=_repository_host_failure_status(exc),
+            )
         except Exception as exc:
             return ActionResult({"error": str(exc)}, status_code=500)
 

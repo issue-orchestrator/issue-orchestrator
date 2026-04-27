@@ -366,6 +366,17 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert "http://127.0.0.1:${port}" not in template
 
 
+def test_issue_audit_errors_surface_upstream_status() -> None:
+    """Control Center issue/audit loads should show GitHub status details."""
+    source_root = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"
+    script = (source_root / "static" / "js" / "control_center.js").read_text(encoding="utf-8")
+
+    assert "function formatIssueAuditError(response, data)" in script
+    assert "data?.upstream_status_code" in script
+    assert "`GitHub HTTP ${data.upstream_status_code}`" in script
+    assert "if (!response.ok || data.error)" in script
+
+
 def test_control_center_uses_packaged_brand_assets() -> None:
     """Header logo and favicon should be package-static assets."""
     source_root = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator"

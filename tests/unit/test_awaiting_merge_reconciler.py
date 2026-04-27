@@ -136,21 +136,19 @@ def test_recovered_entry_reconciles_when_pr_is_closed() -> None:
     repository_host.get_issue.assert_not_called()
 
 
-def test_open_pr_and_failed_issue_refresh_remain_awaiting_merge_without_freshness() -> None:
+def test_open_pr_and_failed_issue_refresh_propagates_without_freshness() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("open")
     repository_host.get_issue.side_effect = RepositoryHostError("github unavailable")
 
-    result = AwaitingMergeReconciler(
-        repository_host,
-        clock=lambda: 1234.5,
-    ).discover(state)
+    with pytest.raises(RepositoryHostError, match="github unavailable"):
+        AwaitingMergeReconciler(
+            repository_host,
+            clock=lambda: 1234.5,
+        ).discover(state)
 
-    assert result.checked == 1
-    assert result.still_pending == 1
-    assert result.skipped == 0
     assert entry.status == "completed"
     assert state.issue_refresh_timestamps == {}
     assert state.issue_last_refreshed_at == {}
@@ -167,27 +165,24 @@ def test_unexpected_issue_refresh_bug_propagates() -> None:
         AwaitingMergeReconciler(repository_host).discover(state)
 
 
-def test_pr_fetch_failure_can_still_reconcile_closed_linked_issue() -> None:
+def test_pr_fetch_failure_propagates_without_issue_fallback() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
     repository_host.get_pr.side_effect = RepositoryHostError("github unavailable")
     repository_host.get_issue.return_value = _issue("closed")
 
-    result = AwaitingMergeReconciler(
-        repository_host,
-        clock=lambda: 1234.5,
-    ).discover(state)
+    with pytest.raises(RepositoryHostError, match="github unavailable"):
+        AwaitingMergeReconciler(
+            repository_host,
+            clock=lambda: 1234.5,
+        ).discover(state)
 
-    assert result.checked == 1
-    assert result.discovered == 1
-    assert result.skipped == 0
     assert entry.status == "completed"
     assert entry.status_reason == "Recovered awaiting merge state on startup"
-    assert result.reconciliations[0].status == "closed"
-    assert result.reconciliations[0].status_reason == "Issue closed; awaiting merge reconciled"
-    assert state.issue_refresh_timestamps[228] == 1234.5
-    assert state.issue_last_refreshed_at[228] == 1234.5
+    assert state.issue_refresh_timestamps == {}
+    assert state.issue_last_refreshed_at == {}
+    repository_host.get_issue.assert_not_called()
 
 
 def test_invalid_pr_url_is_skipped_without_repository_fetches() -> None:

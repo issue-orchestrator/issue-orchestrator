@@ -24,7 +24,7 @@ from typing import Any, Optional, TYPE_CHECKING
 
 from ..infra.config import Config
 from ..events import EventName
-from ..ports.repository_host import RepositoryHost
+from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 
 if TYPE_CHECKING:
@@ -243,17 +243,14 @@ class FactGatherer:
         matches = re.findall(r'#(\d+)', (getattr(pr, 'body', '') or "") + " " + pr.title)
         for match in matches:
             issue_num = int(match)
-            try:
-                issue = self.repository_host.get_issue(issue_num)
-                if not issue:
-                    continue
-                all_labels.update(issue.labels)
-                if issue.milestone and issue.milestone_number:
-                    milestone_tuple = (issue.milestone_number, issue.milestone)
-                    if milestone_tuple not in source_milestones:
-                        source_milestones.append(milestone_tuple)
-            except Exception:
-                pass
+            issue = self.repository_host.get_issue(issue_num)
+            if not issue:
+                continue
+            all_labels.update(issue.labels)
+            if issue.milestone and issue.milestone_number:
+                milestone_tuple = (issue.milestone_number, issue.milestone)
+                if milestone_tuple not in source_milestones:
+                    source_milestones.append(milestone_tuple)
 
     def gather_cleanup_facts(
         self,
@@ -304,6 +301,8 @@ class FactGatherer:
             try:
                 reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
                 reviewed_pr_numbers = frozenset(pr.number for pr in reviewed_prs)
+            except RepositoryHostError:
+                raise
             except Exception as e:
                 logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
 
