@@ -493,7 +493,9 @@ validate-pr-raw:
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ Required PR validations passed!"
 
-# Internal phased validation targets. Keep pytest suite fan-out low by default:
+# Internal phased validation targets. Invoke through validate-raw,
+# validate-pr-raw, or validate-full so timing metadata is emitted.
+# Keep pytest suite fan-out low by default:
 # each suite may already use xdist internally, so running many suites together
 # can oversubscribe local CPUs and starve browser/subprocess tests.
 _validate-impl:

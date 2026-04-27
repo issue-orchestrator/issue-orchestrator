@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.entrypoints.cli_tools.validate_runner import ValidateTimingRecorder
+
 
 def _with_repo_on_pythonpath(env: dict[str, str]) -> dict[str, str]:
     repo_root = Path(__file__).resolve().parents[2]
@@ -295,6 +297,15 @@ class TestValidateRunner:
         assert target_record["e2e_jobs"] == "1"
         assert target_record["started_at"] == "2026-03-14T09:10:13-0600"
         assert target_record["ended_at"] == "2026-03-14T09:10:25-0600"
+
+    def test_ignores_malformed_timing_config_lines(self, fake_git_repo: Path):
+        """Malformed CONFIG markers should not clear a previously parsed config."""
+        recorder = ValidateTimingRecorder(worktree=fake_git_repo, command="make validate")
+
+        recorder.process_line("[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto\n")
+        recorder.process_line("[validate-timing] CONFIG \n")
+
+        assert recorder.config == {"validate_jobs": "10", "unit_parallel": "auto"}
 
     def test_appends_run_summary_record_to_shared_git_dir(self, fake_git_repo: Path):
         """Each validate run should append a run summary record."""

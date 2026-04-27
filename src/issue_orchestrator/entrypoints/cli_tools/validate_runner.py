@@ -30,8 +30,12 @@ from pathlib import Path
 
 from ...infra.env import get_env
 
-_CONFIG_RE = re.compile(r"\[validate-timing\] CONFIG (?P<fields>.*)")
-_CONFIG_FIELD_RE = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>\S+)")
+_CONFIG_KEY_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
+_CONFIG_FIELD_PATTERN = rf"{_CONFIG_KEY_PATTERN}=\S+"
+_CONFIG_RE = re.compile(
+    rf"\[validate-timing\] CONFIG (?P<fields>{_CONFIG_FIELD_PATTERN}(?:\s+{_CONFIG_FIELD_PATTERN})*)\s*$"
+)
+_CONFIG_FIELD_RE = re.compile(rf"(?P<key>{_CONFIG_KEY_PATTERN})=(?P<value>\S+)")
 _START_RE = re.compile(r"\[validate-timing\] START target=(?P<target>\S+) at=(?P<at>\S+)")
 _END_RE = re.compile(
     r"\[validate-timing\] END target=(?P<target>\S+) "
