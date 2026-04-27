@@ -17,6 +17,7 @@ from ..ports import EventSink
 from ..ports.event_sink import make_trace_event
 from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager
+from .active_sessions import has_active_terminal
 from .session_completion_diagnostics import run_session_analysis, surface_failure_context
 from .transition_log import log_transition
 
@@ -29,6 +30,21 @@ if TYPE_CHECKING:
     from .session_controller import SessionController
 
 logger = logging.getLogger(__name__)
+
+
+def _terminate_timed_out_session(
+    session: Session,
+    kill_session_fn: Callable[[str], None],
+) -> None:
+    """Best-effort runtime terminalization for sessions already marked timed out."""
+    try:
+        kill_session_fn(session.terminal_id)
+    except Exception as exc:
+        logger.warning(
+            "[COMPLETION] Failed to kill timed-out session %s: %s",
+            session.terminal_id,
+            exc,
+        )
 
 
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
@@ -116,16 +132,22 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # Process completion through CompletionHandler (includes policy decisions)
     if status == SessionStatus.COMPLETED:
         state.completed_today.append(session.issue.number)
-    result = completion_handler.process_completion(
-        session, status, pr_url_hint=pr_url_hint,
-        processing_errors=processing_errors,
-        diagnostic_path=diagnostic_path,
-        review_exchange_completed=review_exchange_completed,
-        review_exchange_halted=review_exchange_halted,
-        blocked_label=blocked_label,
-        blocked_reason=blocked_reason,
-        completion_detail=completion_detail,
-    )
+    try:
+        result = completion_handler.process_completion(
+            session, status, pr_url_hint=pr_url_hint,
+            processing_errors=processing_errors,
+            diagnostic_path=diagnostic_path,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
+            blocked_label=blocked_label,
+            blocked_reason=blocked_reason,
+            completion_detail=completion_detail,
+        )
+    finally:
+        # Timeout is orchestrator-authoritative; the terminal may still be alive
+        # even though the session is terminal and must not be rediscovered.
+        if status == SessionStatus.TIMED_OUT:
+            _terminate_timed_out_session(session, kill_session_fn)
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
         if run_dir:
@@ -242,6 +264,14 @@ def process_active_sessions(
     from ..observation.observation import SessionObservation
 
     for session in list(state.active_sessions):
+        # Snapshot iteration is mutation-safe; the live check filters any
+        # duplicate terminal already removed by an earlier snapshot entry.
+        if not has_active_terminal(state.active_sessions, session.terminal_id):
+            logger.debug(
+                "[COMPLETION] Skipping stale active-session snapshot entry: %s",
+                session.terminal_id,
+            )
+            continue
         session_start = time.monotonic()
         obs = observer.observe_session(session)
         if obs.observation == SessionObservation.RUNNING:

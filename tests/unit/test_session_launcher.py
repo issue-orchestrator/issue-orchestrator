@@ -1896,6 +1896,80 @@ class TestProcessActiveSessions:
         mock_completion_handler.process_completion.assert_not_called()
         mock_action_applier.apply_actions.assert_not_called()
 
+    def test_skips_duplicate_snapshot_entries_after_terminal_processing(
+        self,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Duplicate active-session entries cannot append duplicate timeout events."""
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=123, title="Test", labels=["agent:web"])
+        issue_key = FakeIssueKey("123")
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+        duplicate = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+        state = OrchestratorState(active_sessions=[session, duplicate])
+        mock_observer = MagicMock()
+        terminal_observation = SessionObservationResult.timed_out()
+        mock_observer.observe_session.return_value = terminal_observation
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.return_value = SessionDecision(
+            status=SessionStatus.TIMED_OUT,
+            reason="timeout",
+        )
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+        mock_controller.session_output = session_output
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=123,
+                title="Test",
+                agent_type="agent:web",
+                status="timed_out",
+                runtime_minutes=90,
+            ),
+            should_defer_cleanup=False,
+            pending_cleanup=None,
+            should_queue_review=False,
+            pr_url=None,
+            pr_number=None,
+        )
+        kill_session_fn = MagicMock()
+
+        process_active_sessions(
+            state=state,
+            observer=mock_observer,
+            session_controller=mock_controller,
+            completion_handler=mock_completion_handler,
+            action_applier=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=kill_session_fn,
+            config=MagicMock(),
+        )
+
+        assert state.active_sessions == []
+        mock_observer.observe_session.assert_called_once_with(session)
+        mock_controller.decide_outcome.assert_called_once()
+        mock_completion_handler.process_completion.assert_called_once()
+        kill_session_fn.assert_called_once_with("issue-123")
+
 
 # =============================================================================
 # Session Helper Tests
@@ -2081,6 +2155,107 @@ class TestHandleSessionCompletion:
 
         assert len(state.discovered_failures) == 1
         assert state.discovered_failures[0].issue_number == 123
+
+    def test_timed_out_session_kills_terminal_before_actions(
+        self,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Timeout terminalization happens before external completion actions."""
+        issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
+        issue_key = FakeIssueKey("123")
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+        state = OrchestratorState(active_sessions=[session])
+        calls: list[str] = []
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.side_effect = lambda *args, **kwargs: (
+            calls.append("process_completion")
+            or MagicMock(
+                actions=[AddLabelAction(issue_number=123, label="blocked-failed")],
+                history_entry=SessionHistoryEntry(
+                    issue_number=123,
+                    title="Test Issue",
+                    agent_type="agent:web",
+                    status="timed_out",
+                    runtime_minutes=90,
+                ),
+                should_defer_cleanup=False,
+                pending_cleanup=None,
+                should_queue_review=False,
+                pr_url=None,
+                pr_number=None,
+            )
+        )
+        mock_action_applier = MagicMock()
+        mock_action_applier.apply_all.side_effect = lambda _actions: calls.append("actions")
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.TIMED_OUT,
+            state=state,
+            completion_handler=mock_completion_handler,
+            action_applier=mock_action_applier,
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _name: calls.append("kill"),
+            config=MagicMock(),
+            session_output=session_output,
+        )
+
+        assert calls == ["process_completion", "kill", "actions"]
+        assert state.active_sessions == []
+        assert len(state.discovered_failures) == 1
+
+    def test_timed_out_session_kills_terminal_when_completion_processing_fails(
+        self,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """A timeout cannot be restored and reprocessed if completion handling fails."""
+        issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
+        issue_key = FakeIssueKey("123")
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+        state = OrchestratorState(active_sessions=[session])
+        kill_session = MagicMock()
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            handle_session_completion(
+                session=session,
+                status=SessionStatus.TIMED_OUT,
+                state=state,
+                completion_handler=mock_completion_handler,
+                action_applier=MagicMock(),
+                observer=MagicMock(),
+                worktree_manager=None,
+                kill_session_fn=kill_session,
+                config=MagicMock(),
+                session_output=MagicMock(spec=SessionOutput),
+            )
+
+        assert state.active_sessions == []
+        assert state.discovered_failures == []
+        assert state.session_history == []
+        assert state.immediate_cleanups == []
+        kill_session.assert_called_once_with("issue-123")
 
     def test_queues_review_when_pr_created(self, sample_agent_config, tmp_path):
         """Verify review is queued when session creates PR."""

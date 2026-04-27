@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from issue_orchestrator.control.active_sessions import append_unique_active_sessions
+from issue_orchestrator.control.active_sessions import append_unique_active_sessions, has_active_terminal
 from issue_orchestrator.control.completion_observer import ObservationDecision
 from issue_orchestrator.control.session_observation import (
     observe_active_sessions,
@@ -63,6 +63,8 @@ def test_append_unique_active_sessions_suppresses_duplicate_terminals(tmp_path: 
 
     assert added == 1
     assert [session.issue.number for session in active_sessions] == [1, 3]
+    assert has_active_terminal(active_sessions, "issue-1") is True
+    assert has_active_terminal(active_sessions, "missing") is False
 
 
 def test_observe_active_sessions_leaves_running_sessions_active(tmp_path: Path) -> None:
@@ -147,3 +149,35 @@ def test_observe_active_sessions_records_terminal_failure_and_releases_claim(
     ]
     assert events.events[0].data["session_name"] == "issue-7"
     assert events.events[1].data["lease_id"] == "lease-7"
+
+
+def test_observe_active_sessions_skips_duplicate_snapshot_entries(tmp_path: Path) -> None:
+    session = _session(tmp_path, issue_number=7, terminal_id="issue-7")
+    duplicate = _session(tmp_path, issue_number=7, terminal_id="issue-7")
+    state = OrchestratorState(active_sessions=[session, duplicate])
+    observer = MagicMock()
+    terminal_observation = SessionObservationResult(
+        observation=SessionObservation.TIMED_OUT,
+        session_exists=True,
+    )
+    observer.observe_session.return_value = terminal_observation
+    completion_observer = MagicMock()
+    completion_observer.observe_completion.return_value = ObservationDecision(
+        status=SessionStatus.TIMED_OUT,
+    )
+    kill_session = MagicMock()
+
+    observe_active_sessions(
+        state,
+        observer,
+        completion_observer,
+        kill_session,
+    )
+
+    assert state.active_sessions == []
+    observer.observe_session.assert_called_once_with(session)
+    completion_observer.observe_completion.assert_called_once_with(
+        session,
+        terminal_observation,
+    )
+    kill_session.assert_called_once_with("issue-7")
