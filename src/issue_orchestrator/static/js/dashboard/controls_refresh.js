@@ -1,8 +1,15 @@
 let isPaused = window.dashboardData.paused;
 
+function setPauseBadgeState(paused, text = null) {
+    document.querySelectorAll('.status-badge').forEach(badge => {
+        badge.textContent = text || (paused ? 'Paused' : 'Running');
+        badge.classList.remove('status-paused', 'status-running', 'status-starting');
+        badge.classList.add(paused ? 'status-paused' : 'status-running');
+    });
+    updatePauseMenuFromViewModel({ paused });
+}
+
 async function togglePause() {
-    const badge = document.querySelector('.status-badge');
-    const menuItem = document.getElementById('pauseResumeItem');
     const menu = document.getElementById('settingsMenu');
 
     // Close the menu
@@ -10,20 +17,37 @@ async function togglePause() {
 
     if (isPaused) {
         // Resume
-        badge.textContent = 'Resuming...';
-        badge.classList.remove('status-paused');
-        badge.classList.add('status-running');
+        setPauseBadgeState(false, 'Resuming...');
 
-        await fetch('/api/resume', { method: 'POST' });
+        const res = await fetch('/api/resume', { method: 'POST' });
+        if (!res.ok) {
+            setPauseBadgeState(true);
+            const message = await readActionError(res);
+            console.error('Resume failed:', message);
+            showToast(`Resume failed: ${message}`, true);
+        }
         await refreshViewModel({ reloadOnListChange: false });
     } else {
         // Pause
-        badge.textContent = 'Pausing...';
-        badge.classList.remove('status-running');
-        badge.classList.add('status-paused');
+        setPauseBadgeState(true, 'Pausing...');
 
-        await fetch('/api/pause', { method: 'POST' });
+        const res = await fetch('/api/pause', { method: 'POST' });
+        if (!res.ok) {
+            setPauseBadgeState(false);
+            const message = await readActionError(res);
+            console.error('Pause failed:', message);
+            showToast(`Pause failed: ${message}`, true);
+        }
         await refreshViewModel({ reloadOnListChange: false });
+    }
+}
+
+async function readActionError(response) {
+    try {
+        const body = await response.json();
+        return body.error || body.detail || `HTTP ${response.status}`;
+    } catch (_) {
+        return `HTTP ${response.status}`;
     }
 }
 async function refreshFromGitHub() {
@@ -789,4 +813,3 @@ tabButtons.forEach(tabBtn => {
 });
 
 // ── Blocked triage: viewed state (localStorage) ──
-

@@ -8,8 +8,10 @@ constant-time comparison.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -78,6 +80,23 @@ class TestLoadOrCreate:
 
         assert token
         assert target.read_text().strip() == token
+
+    def test_concurrent_first_start_returns_single_token(self, tmp_path: Path) -> None:
+        target = tmp_path / ".issue-orchestrator" / "agent-callback-token"
+        workers = 24
+        ready = threading.Barrier(workers)
+
+        def load() -> str:
+            ready.wait(timeout=5)
+            return load_or_create_token(target)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            tokens = list(pool.map(lambda _: load(), range(workers)))
+
+        assert len(set(tokens)) == 1
+        assert target.read_text().strip() == tokens[0]
+        assert target.stat().st_mode & 0o777 == 0o600
+        assert list(target.parent.glob("*.tmp")) == []
 
 
 class TestResolve:

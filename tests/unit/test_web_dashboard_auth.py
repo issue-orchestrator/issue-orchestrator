@@ -119,6 +119,45 @@ def test_root_renders_login_form_when_unauthenticated(
     assert 'action="/login"' in resp.text
 
 
+def test_authenticated_root_renders_csrf_meta_and_browser_auth_script(
+    logged_in_dashboard_client: TestClient,
+) -> None:
+    """The repository dashboard must bootstrap the same browser auth
+    adapter as Control Center. Otherwise embedded Resume/Pause POSTs
+    fail CSRF and EventSource reconnects fall back to unauthenticated
+    ``/api/events``.
+    """
+    session_id = logged_in_dashboard_client.cookies.get(browser_session.SESSION_COOKIE)
+    assert session_id
+    csrf = browser_session.get_csrf_token(session_id)
+    assert csrf
+
+    resp = logged_in_dashboard_client.get("/?embedded=1&theme=light")
+
+    assert resp.status_code == 200
+    assert '<meta name="io-browser-auth-required" content="1">' in resp.text
+    assert f'<meta name="io-csrf-token" content="{csrf}">' in resp.text
+    assert '<script src="/static/js/browser_auth.js"></script>' in resp.text
+    assert resp.text.index('/static/js/browser_auth.js') < resp.text.index(
+        '/static/js/dashboard/controls_refresh.js'
+    )
+
+
+def test_fake_auth_dashboard_mode_catches_missing_csrf(
+    logged_in_dashboard_client: TestClient,
+    fake_browser_auth,
+) -> None:
+    missing_csrf = logged_in_dashboard_client.post("/api/resume")
+    assert missing_csrf.status_code == 403
+    assert "csrf" in missing_csrf.json()["error"].lower()
+
+    with_csrf = logged_in_dashboard_client.post(
+        "/api/resume",
+        headers=fake_browser_auth.csrf_headers(logged_in_dashboard_client),
+    )
+    assert with_csrf.status_code not in (401, 403), with_csrf.text
+
+
 # ---------------------------------------------------------------------------
 # Login flow + session cookie
 # ---------------------------------------------------------------------------

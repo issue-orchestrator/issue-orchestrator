@@ -100,6 +100,7 @@ class AuthSurfaceConfig:
 
     sse_path: str
     public_paths: frozenset[str]
+    name: str = "unknown"
     public_prefixes: tuple[str, ...] = ()
     agent_callback_matcher: Callable[[str], bool] = field(
         default=lambda _path: False
@@ -189,10 +190,30 @@ def evaluate_request(
     if bearer_result == "ok":
         return None
     if bearer_result == "invalid":
+        logger.warning(
+            "Auth rejected %s %s on %s: invalid bearer token",
+            request.method,
+            request.url.path,
+            surface.name,
+        )
         return JSONResponse({"error": "invalid bearer token"}, status_code=401)
     ok, message, status = check_browser_session_auth(request, surface)
     if ok:
         return None
+    log_level = (
+        logging.INFO
+        if status == 401 and message.startswith("missing credentials")
+        else logging.WARNING
+    )
+    logger.log(
+        log_level,
+        "Auth rejected %s %s on %s: status=%d reason=%s",
+        request.method,
+        request.url.path,
+        surface.name,
+        status,
+        message,
+    )
     return JSONResponse({"error": message}, status_code=status)
 
 

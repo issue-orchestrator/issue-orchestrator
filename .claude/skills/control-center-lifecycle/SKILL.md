@@ -21,6 +21,7 @@ Use this skill when changing Control Center UI structure, lifecycle actions, or 
 5. Use standardized state labels: `Running`, `Paused`, `Not running`.
 6. Preserve paused observability; pause blocks execution, not visibility.
 7. If event/payload shape changes, update contracts and tests in the same change.
+8. Embedded repository dashboards must share the browser-session auth helper with Control Center; engine controls must not bypass CSRF/SSE-token handling.
 
 ## Workflow
 

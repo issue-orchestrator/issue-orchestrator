@@ -40,8 +40,10 @@ def test_login_with_valid_token_lands_on_dashboard(
     login_via_form(page, base_url, cc_admin_token)
 
     # After login we should see the dashboard shell, not the login
-    # form. The dashboard template has a distinct marker.
-    page.wait_for_load_state("networkidle")
+    # form. Authenticated dashboards keep an SSE connection open, so
+    # waiting for networkidle is no longer a valid readiness signal.
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_function("() => window.dashboardBundleLoaded === true", timeout=15_000)
     assert "Sign in" not in page.content()
 
 

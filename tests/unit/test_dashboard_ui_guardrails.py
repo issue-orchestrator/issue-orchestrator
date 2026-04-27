@@ -12,6 +12,7 @@ DASHBOARD_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dash
 DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html"
 ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
+BROWSER_AUTH_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "browser_auth.js"
 DASHBOARD_CSS = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard.css"
 
 
@@ -619,6 +620,82 @@ def test_dashboard_settings_nav_uses_shared_embedded_nav_helper() -> None:
     assert '<script src="/static/js/embedded_nav.js"></script>' in tmpl
 
 
+def test_browser_auth_helper_is_shared_by_control_center_and_dashboard() -> None:
+    dashboard = _read(DASHBOARD_TEMPLATE)
+    control_center = _read(ROOT / "src" / "issue_orchestrator" / "templates" / "control_center.html")
+
+    assert '<meta name="io-csrf-token" content="{{ csrf_token }}">' in dashboard
+    assert '<meta name="io-csrf-token" content="{{ csrf_token }}">' in control_center
+    assert '<meta name="io-browser-auth-required" content="{{ browser_auth_required }}">' in dashboard
+    assert '<meta name="io-browser-auth-required" content="{{ browser_auth_required }}">' in control_center
+    assert '<script src="/static/js/browser_auth.js"></script>' in dashboard
+    assert '<script src="/static/js/browser_auth.js"></script>' in control_center
+    assert dashboard.index('/static/js/browser_auth.js') < dashboard.index('/static/js/embedded_nav.js')
+    assert dashboard.index('/static/js/browser_auth.js') < dashboard.index("{% for chunk in dashboard_js_chunks %}")
+    assert control_center.index('/static/js/browser_auth.js') < control_center.index('/static/js/control_center.js')
+
+
+def test_dashboard_pause_resume_surfaces_auth_failures() -> None:
+    js = _read_dashboard_js_bundle()
+    body = _function_body(js, "togglePause")
+    helper_body = _function_body(js, "setPauseBadgeState")
+
+    assert "const res = await fetch('/api/resume', { method: 'POST' });" in body
+    assert "const res = await fetch('/api/pause', { method: 'POST' });" in body
+    assert "if (!res.ok)" in body
+    assert "setPauseBadgeState(false, 'Resuming...')" in body
+    assert "setPauseBadgeState(true, 'Pausing...')" in body
+    assert "readActionError(res)" in body
+    assert "showToast(`Resume failed: ${message}`, true)" in body
+    assert "showToast(`Pause failed: ${message}`, true)" in body
+    resume_fetch = "const res = await fetch('/api/resume'"
+    pause_fetch = "const res = await fetch('/api/pause'"
+    resume_failure = body[
+        body.index(resume_fetch) : body.index(
+            "await refreshViewModel", body.index(resume_fetch)
+        )
+    ]
+    pause_failure = body[
+        body.index(pause_fetch) : body.index(
+            "await refreshViewModel", body.index(pause_fetch)
+        )
+    ]
+    assert resume_failure.index("setPauseBadgeState(true);") < resume_failure.index(
+        "readActionError(res)"
+    )
+    assert pause_failure.index("setPauseBadgeState(false);") < pause_failure.index(
+        "readActionError(res)"
+    )
+    assert "document.querySelectorAll('.status-badge').forEach" in helper_body
+    assert (
+        "badge.classList.remove('status-paused', 'status-running', 'status-starting')"
+        in helper_body
+    )
+    assert (
+        "badge.classList.add(paused ? 'status-paused' : 'status-running')"
+        in helper_body
+    )
+    assert "updatePauseMenuFromViewModel({ paused })" in helper_body
+
+
+def test_dashboard_bundle_loaded_marker_supports_browser_waits() -> None:
+    legacy_wrapper = DASHBOARD_JS.read_text(encoding="utf-8")
+
+    assert "window.dashboardBundleLoaded = true;" in legacy_wrapper
+
+
+def test_dashboard_sse_requires_authenticated_stream_helper() -> None:
+    js = _read_dashboard_js_bundle()
+    connect_body = _function_body(js, "connectEventStream")
+    reconnect_body = _function_body(js, "scheduleReconnect")
+
+    assert "window.openAuthenticatedSseStream('/api/events')" in connect_body
+    assert "new EventSource('/api/events')" not in connect_body
+    assert "authenticated SSE helper is not loaded" in connect_body
+    assert "Event stream disconnected... reconnecting" in reconnect_body
+    assert "Engine restarting... reconnecting" not in reconnect_body
+
+
 def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     # Regression: Settings back-link and Cancel must go through embeddedNav
     # so the Dashboard round-trip keeps both embedded=1 and theme.
@@ -676,6 +753,29 @@ def test_embedded_nav_module_behavior_verified_by_node_test_runner() -> None:
 
     result = subprocess.run(
         [node, "--test", str(EMBEDDED_NAV_TEST_JS)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"node --test failed (exit {result.returncode})\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_browser_auth_module_behavior_verified_by_node_test_runner() -> None:
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "node runtime is required to validate browser_auth.js behavior"
+    test_file = ROOT / "tests" / "js" / "browser_auth.test.js"
+    assert BROWSER_AUTH_JS.exists(), f"shared helper missing: {BROWSER_AUTH_JS}"
+    assert test_file.exists(), f"node test missing: {test_file}"
+
+    result = subprocess.run(
+        [node, "--test", str(test_file)],
         capture_output=True,
         text=True,
         cwd=ROOT,
