@@ -9,6 +9,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..control.queue_cache import QueueCache, QueueMutationStatus, clear_issue_refresh, record_issue_refreshes
+from ..control.session_history import (
+    CLOSED_ISSUE_HISTORY_STATUS_REASON,
+    ClosedIssueHistoryMutation,
+    SessionHistoryOwner,
+)
 from ..ports.repository_host import (
     RepositoryHostError,
     repository_host_failure_payload,
@@ -148,6 +153,13 @@ async def refresh_issue(
         record_issue_refreshes(state, {issue_number}, refreshed_at)
     else:
         clear_issue_refresh(state, issue_number)
+    history_reconciled = False
+    if issue.state.lower() == "closed":
+        result = SessionHistoryOwner(state.session_history).reconcile_closed_issue(
+            issue_number=issue_number,
+            status_reason=CLOSED_ISSUE_HISTORY_STATUS_REASON,
+        )
+        history_reconciled = isinstance(result, ClosedIssueHistoryMutation)
     queue_cache.prune_refresh_timestamps()
 
     return JSONResponse({
@@ -159,4 +171,5 @@ async def refresh_issue(
         "last_refreshed_age_seconds": 0,
         "is_stale": False,
         "stale_reason": "",
+        "history_reconciled": history_reconciled,
     })

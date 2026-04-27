@@ -1311,3 +1311,41 @@ class TestApiTimelineEndpoint:
             assert 7 not in mock_orch.state.issue_refresh_timestamps
         finally:
             set_orchestrator(None)
+
+    def test_refresh_single_issue_reconciles_closed_issue_history(self):
+        """Refreshing a closed issue reconciles retry-blocking history."""
+        from datetime import datetime, timezone
+
+        from issue_orchestrator.control.session_history import (
+            CLOSED_ISSUE_HISTORY_STATUS_REASON,
+        )
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
+        mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
+        history_entry = SessionHistoryEntry(
+            issue_number=7,
+            title="old title",
+            agent_type="agent:web",
+            status="needs_human",
+            runtime_minutes=1,
+            pr_url=None,
+            status_reason="Needs input",
+            completed_at=datetime.now(timezone.utc),
+        )
+        mock_orch.state.session_history = [history_entry]
+        mock_orch.repository_host = MagicMock()
+        closed_issue = create_issue(7, "closed issue", labels=["agent:web"])
+        closed_issue.state = "closed"
+        mock_orch.repository_host.get_issue.return_value = closed_issue
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/7/refresh")
+            assert response.status_code == 200
+            assert response.json()["history_reconciled"] is True
+            assert history_entry.status == "closed"
+            assert history_entry.status_reason == CLOSED_ISSUE_HISTORY_STATUS_REASON
+        finally:
+            set_orchestrator(None)

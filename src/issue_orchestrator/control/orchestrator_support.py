@@ -37,12 +37,20 @@ from .queue_cache import (
     record_issue_refreshes,
 )
 from .reconciliation import ReconciliationRequired, get_pause_label
+from .session_history import (
+    CLOSED_ISSUE_HISTORY_STATUS_REASON,
+    ClosedIssueHistoryMutation,
+    SessionHistoryOwner,
+)
 from .transition_log import log_transition
 from ..domain.models import (
+    BLOCKED_HISTORY_STATUSES,
     PendingReview, PendingRework, PendingTriageReview,
 )
 
 logger = logging.getLogger(__name__)
+
+_BLOCKED_HISTORY_HOT_REFRESH_LOOKBACK = 200
 
 
 def init_orchestrator_components(orch: "Orchestrator") -> None:
@@ -697,6 +705,7 @@ def _fetch_and_update_queue(
         _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
         _update_label_cache(repository_host, all_issues)
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
+        _reconcile_closed_issue_history(state, all_issues)
 
         if sync_plan.run_pr_scan:
             github_workflow.scan_pending_pr_work(state)
@@ -997,6 +1006,7 @@ def _iter_hot_issue_numbers(
     yield from _visible_hot_issue_numbers(state, visibility_aware_enabled)
     for issue in state.cached_queue_issues:
         yield issue.number
+    yield from _iter_blocked_history_issue_numbers(state)
 
 
 def _pending_shrink_hot_numbers(
@@ -1021,6 +1031,46 @@ def _visible_hot_issue_numbers(
     if not visibility_aware_enabled:
         return []
     return _get_visible_issue_numbers(state)
+
+
+def _iter_blocked_history_issue_numbers(state: "OrchestratorState"):
+    seen: set[int] = set()
+    for entry in reversed(state.session_history[-_BLOCKED_HISTORY_HOT_REFRESH_LOOKBACK:]):
+        if entry.status in BLOCKED_HISTORY_STATUSES:
+            if entry.issue_number in seen:
+                continue
+            seen.add(entry.issue_number)
+            yield entry.issue_number
+
+
+def _reconcile_closed_issue_history(
+    state: "OrchestratorState",
+    issues: list["Issue"],
+) -> list[ClosedIssueHistoryMutation]:
+    """Reconcile closed issue history and return mutations for tests/logging."""
+    closed_numbers = {
+        issue.number
+        for issue in issues
+        if issue.state.lower() == "closed"
+    }
+    if not closed_numbers:
+        return []
+
+    owner = SessionHistoryOwner(state.session_history)
+    mutations: list[ClosedIssueHistoryMutation] = []
+    for issue_number in sorted(closed_numbers):
+        result = owner.reconcile_closed_issue(
+            issue_number=issue_number,
+            status_reason=CLOSED_ISSUE_HISTORY_STATUS_REASON,
+        )
+        if isinstance(result, ClosedIssueHistoryMutation):
+            mutations.append(result)
+            logger.info(
+                "[history] Reconciled closed issue history: issue=%d previous_status=%s",
+                issue_number,
+                result.previous_status,
+            )
+    return mutations
 
 
 def _record_issue_refreshes(
