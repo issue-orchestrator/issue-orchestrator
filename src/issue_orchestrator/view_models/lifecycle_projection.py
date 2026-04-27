@@ -850,7 +850,10 @@ def _review_not_reached_for_coder(coder: CodingAttempt) -> ReviewNotReached | No
         return ReviewNotReached(reason="coding_in_progress")
     if isinstance(coder, PublishFailedCodingAttempt):
         return ReviewNotReached(reason="publish_failed")
-    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt):
+    if isinstance(
+        coder,
+        FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence,
+    ):
         return ReviewNotReached(reason="coding_failed")
     if isinstance(coder, CompletedCodingAttempt) and isinstance(
         coder.validation, ValidationFailed

@@ -936,11 +936,13 @@ def _log_pending_shrink_confirmation(
         return
     pending_missing = set(state.queue_pending_shrink_missing_issue_numbers)
     selected_missing = pending_missing.intersection(hot_issue_numbers)
+    remaining = max(0, len(pending_missing) - len(selected_missing))
     logger.info(
         "[QUEUE_CACHE] confirming pending queue shrink with targeted issue refresh: "
-        "pending=%d selected=%d",
+        "pending=%d selected=%d remaining_after_limit=%d",
         len(pending_missing),
         len(selected_missing),
+        remaining,
     )
 
 

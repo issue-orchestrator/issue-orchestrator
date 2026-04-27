@@ -195,6 +195,31 @@ def test_replace_from_refresh_confirms_repeated_large_shrink(monkeypatch):
     assert state.queue_pending_shrink_confirm_at == 0.0
 
 
+def test_replace_from_refresh_preserves_deadline_for_changing_missing_sets(
+    monkeypatch,
+):
+    from issue_orchestrator.control import queue_cache as queue_cache_module
+
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    prior = _make_issues(list(range(1, 21)))
+    state = OrchestratorState(
+        cached_scope_issues=list(prior),
+        cached_queue_issues=list(prior),
+    )
+    cache = QueueCache(config, state)
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 1000.0)
+    cache.replace_from_refresh([Issue(number=1, title="Issue 1", labels=["agent:web"])])
+
+    original_confirm_at = state.queue_pending_shrink_confirm_at
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 1010.0)
+    queue = cache.replace_from_refresh([Issue(number=2, title="Issue 2", labels=["agent:web"])])
+
+    assert [issue.number for issue in queue] == [2, 1, *range(3, 21)]
+    assert state.queue_pending_shrink_missing_issue_numbers == [1, *range(3, 21)]
+    assert state.queue_pending_shrink_confirm_at == original_confirm_at
+
+
 def test_replace_from_refresh_clears_pending_large_shrink_when_refresh_recovers(
     monkeypatch,
 ):

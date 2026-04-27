@@ -261,6 +261,7 @@ def _pending_shrink_confirmed(
     state: "OrchestratorState",
     missing_numbers: set[int],
 ) -> bool:
+    """Return true only when every pending missing issue is still missing."""
     pending = set(state.queue_pending_shrink_missing_issue_numbers)
     return bool(pending) and pending.issubset(missing_numbers)
 
@@ -272,10 +273,14 @@ def _record_pending_shrink(
     candidate_count: int,
     missing_numbers: set[int],
 ) -> None:
+    existing_confirm_at = state.queue_pending_shrink_confirm_at
     state.queue_pending_shrink_missing_issue_numbers = sorted(missing_numbers)
-    state.queue_pending_shrink_confirm_at = (
-        time.time() + QUEUE_SHRINK_CONFIRM_DELAY_SECONDS
-    )
+    if existing_confirm_at > 0:
+        state.queue_pending_shrink_confirm_at = existing_confirm_at
+    else:
+        state.queue_pending_shrink_confirm_at = (
+            time.time() + QUEUE_SHRINK_CONFIRM_DELAY_SECONDS
+        )
     state.queue_pending_shrink_prior_count = prior_count
     state.queue_pending_shrink_candidate_count = candidate_count
 

@@ -775,9 +775,7 @@ def test_legacy_review_only_cycle_uses_full_event_window_for_semantics() -> None
     assert isinstance(cycle.review, ReviewApproved)
 
 
-def test_review_reached_without_coding_terminal_projects_missing_completion_evidence() -> (
-    None
-):
+def test_missing_coding_terminal_ignores_stale_review_signals() -> None:
     started = _event(
         "agent.coding_started",
         event_id="coding-start",
@@ -812,8 +810,9 @@ def test_review_reached_without_coding_terminal_projects_missing_completion_evid
     assert isinstance(cycle.coder, MissingCodingEvidence)
     assert cycle.coder.expected_state == "completed"
     assert [item.evidence for item in cycle.coder.missing] == ["coding_terminal_event"]
-    assert isinstance(cycle.review, ReviewApproved)
-    assert cycle.outcome == "approved"
+    assert isinstance(cycle.review, ReviewNotReached)
+    assert cycle.review.reason == "coding_failed"
+    assert cycle.outcome == "missing_coding_evidence"
 
 
 def test_review_required_without_review_stage_becomes_missing_evidence() -> None:
@@ -1147,7 +1146,8 @@ def test_issue_lifecycle_without_presentation_cycles_groups_by_logical_cycle() -
 
     assert [cycle.cycle_number for cycle in lifecycle.cycles] == [1, 2]
     assert isinstance(lifecycle.cycles[0].coder, MissingCodingEvidence)
-    assert isinstance(lifecycle.cycles[0].review, ReviewApproved)
+    assert isinstance(lifecycle.cycles[0].review, ReviewNotReached)
+    assert lifecycle.cycles[0].review.reason == "coding_failed"
     assert isinstance(lifecycle.cycles[1].coder, FailedCodingAttempt)
     assert isinstance(lifecycle.cycles[1].review, ReviewNotReached)
     assert lifecycle.cycles[1].review.reason == "coding_failed"

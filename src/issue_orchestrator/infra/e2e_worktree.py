@@ -106,6 +106,8 @@ def _sync_venv(worktree_path: Path) -> None:
             timeout=300,
             check=True,
         )
+        # The fallback install is intentionally all-or-nothing: a partial
+        # project environment is not a usable E2E worker environment.
         pytest_check = subprocess.run(
             [str(venv_python), "-c", "import defusedxml, pytest"],
             cwd=worktree_path,

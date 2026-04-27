@@ -9,7 +9,7 @@ issues, PRs, and labels. It combines IssueTracker, LabelSet, and
 PullRequestTracker into a single interface.
 """
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .issue_tracker import IssueTracker
 from .label_set import LabelSet
@@ -19,8 +19,76 @@ if TYPE_CHECKING:
     from ..domain.issue_key import IssueKey
 
 
+RepositoryHostErrorKind = Literal["http", "transport", "other"]
+
+
 class RepositoryHostError(Exception):
     """Base exception for repository host access failures."""
+
+    host: str = "repository"
+    kind: RepositoryHostErrorKind = "other"
+
+
+def repository_host_failure_status(exc: RepositoryHostError) -> int:
+    """Map repository-host failures to client-facing HTTP status codes."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {401, 403, 429}:
+        return status_code
+    if isinstance(status_code, int):
+        return 502
+    return 503
+
+
+def repository_host_failure_payload(
+    exc: RepositoryHostError,
+    *,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Build a stable JSON error payload for repository-host failures."""
+    status_code = getattr(exc, "status_code", None)
+    response_text = getattr(exc, "response_text", None)
+    method = getattr(exc, "method", None)
+    url = getattr(exc, "url", None)
+    payload: dict[str, Any] = {
+        "error": message or _repository_host_default_error(exc),
+        "error_code": _repository_host_error_code(exc),
+        "detail": _bounded_detail(str(response_text or exc)),
+    }
+    if isinstance(status_code, int):
+        payload["upstream_status_code"] = status_code
+    if method:
+        payload["method"] = method
+    if url:
+        payload["url"] = url
+    return payload
+
+
+def _repository_host_default_error(exc: RepositoryHostError) -> str:
+    if getattr(exc, "host", None) == "github":
+        return "GitHub issue query failed"
+    return "Repository issue query failed"
+
+
+def _repository_host_error_code(exc: RepositoryHostError) -> str:
+    host = getattr(exc, "host", "repository")
+    kind = getattr(exc, "kind", "other")
+    if host == "github":
+        if kind == "transport":
+            return "github_transport_error"
+        if kind == "http":
+            return "github_http_error"
+    if kind == "transport":
+        return "repository_transport_error"
+    if kind == "http":
+        return "repository_http_error"
+    return "repository_host_error"
+
+
+def _bounded_detail(value: str) -> str:
+    max_len = 1000
+    if len(value) <= max_len:
+        return value
+    return f"{value[:max_len]}..."
 
 
 class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
