@@ -372,6 +372,59 @@ def test_dashboard_startup_honors_browser_session_config(
         )
 
 
+def test_cookie_minted_via_cc_login_works_on_dashboard() -> None:
+    """Stateless cross-process sessions: a cookie minted by the
+    Control API ``/login`` endpoint validates against the dashboard
+    ``app`` middleware as long as both have been initialized with
+    the same admin token.
+
+    Simulates the two-process operator flow without spawning a real
+    second process: configure CC + dashboard with the shared admin
+    token, log in once via CC's ``/login``, then attach the resulting
+    cookie to a dashboard request and assert it passes auth. Before
+    the stateless-cookie change this would 401 because each process
+    held its own random secret and its own ``_SESSIONS`` dict.
+    """
+    from issue_orchestrator.entrypoints.control_api import (
+        configure_api_token,
+        control_app,
+        get_configured_agent_callback_token,
+        get_configured_api_token,
+    )
+    from issue_orchestrator.infra import browser_session as bs_module
+
+    shared_admin = "shared-admin-cross-process-token"
+
+    prev_admin = get_configured_api_token()
+    prev_agent = get_configured_agent_callback_token()
+    prev_dashboard = get_configured_dashboard_admin_token()
+
+    bs_module.shutdown()
+    bs_module.initialize(admin_token=shared_admin)
+    configure_api_token(shared_admin, agent_callback=None)
+    configure_dashboard_admin_token(shared_admin)
+    try:
+        cc_client = TestClient(control_app)
+        login = cc_client.post("/login", json={"token": shared_admin})
+        assert login.status_code == 200
+        cookie_value = login.json()["session_id"]
+        assert cookie_value
+
+        # New TestClient against the dashboard ``app`` — no shared
+        # cookie jar with the CC client. Carry only the cookie value
+        # the CC's ``/login`` returned, mimicking what the browser
+        # would send to port 8080 after authenticating on 19080.
+        dashboard_client = TestClient(app)
+        dashboard_client.cookies.set(bs_module.SESSION_COOKIE, cookie_value)
+        resp = dashboard_client.get("/api/view-model")
+        assert resp.status_code != 401, resp.text
+        assert resp.status_code != 403, resp.text
+    finally:
+        bs_module.shutdown()
+        configure_api_token(prev_admin, agent_callback=prev_agent)
+        configure_dashboard_admin_token(prev_dashboard)
+
+
 def test_dev_no_auth_still_honors_browser_session_config() -> None:
     """Even in --dev-no-auth mode the browser_session tunables should
     match what the operator configured — the session module still

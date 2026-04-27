@@ -330,7 +330,11 @@ def main() -> int:
         admin_token = resolve_api_token()
         agent_callback_token = resolve_agent_callback_token()
         configure_api_token(admin_token, agent_callback=agent_callback_token)
-        browser_session.initialize()
+        # Derive the HMAC secret from the admin token so the dashboard
+        # process accepts the same session cookie this Control Center
+        # mints. Without this, the operator would have to log in twice
+        # — once on 19080, once on 8080.
+        browser_session.initialize(admin_token=admin_token)
         os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
         os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
     # Strip SSE tokens from uvicorn access-log lines so a query param

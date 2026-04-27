@@ -1157,19 +1157,22 @@ class AdvancedSettings(BaseModel):
     )
     browser_session_max: int = Field(
         1024,
-        title="Max Concurrent Browser Sessions",
+        title="Max Concurrent Browser Sessions (deprecated, no-op)",
         description=(
-            "Upper bound on the in-memory session table. Beyond this, the "
-            "least-recently-used entries are evicted on new login."
+            "Deprecated. Browser sessions are now stateless cookies validated "
+            "by HMAC, so there is no in-memory table to cap. The field is "
+            "still accepted for back-compat with operator YAML but the value "
+            "is ignored at runtime."
         ),
         ge=16,
         le=65536,
         json_schema_extra={
-            "doc_examples": ["256", "1024", "4096"],
+            "doc_examples": ["1024"],
             "doc_notes": (
-                "Practically only relevant on long-running deployments with "
-                "many operators. The cap protects against unbounded memory "
-                "growth, not against brute force."
+                "Deprecated and ignored as of the cross-process session "
+                "change. Stateless cookies removed the in-memory cap; this "
+                "field exists only so existing YAML continues to validate. "
+                "Safe to remove from your config."
             ),
             "section": "Browser Session",
             "restart_required": True,

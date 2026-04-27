@@ -237,11 +237,13 @@ ui:
     cooldown_seconds: 120
   # Browser session knobs for the Control Center login flow.
   # Env vars override these when set: ISSUE_ORCHESTRATOR_SESSION_TTL_SECONDS,
-  # ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS, ISSUE_ORCHESTRATOR_MAX_SESSIONS.
+  # ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS.
   browser_session:
     ttl_seconds: 28800              # 8 hours; min 60
-    max: 1024                       # LRU-evicted above this
     sse_token_ttl_seconds: 60       # single-use /api/sse-token lifetime
+    # max: deprecated and ignored — browser sessions are now stateless
+    # cookies validated by HMAC, so there is no in-memory table to cap.
+    # The field is still accepted for back-compat with existing YAML.
 
 observability:
   session_no_output_seconds: 120

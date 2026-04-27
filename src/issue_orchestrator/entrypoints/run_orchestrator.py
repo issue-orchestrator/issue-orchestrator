@@ -196,7 +196,11 @@ def _configure_dashboard_auth(dev_no_auth: bool, config: Any) -> None:
         return
     admin_token = resolve_api_token()
     configure_dashboard_admin_token(admin_token)
+    # Derive the HMAC secret from the admin token so a session cookie
+    # minted by the Control Center on port 19080 validates here too —
+    # one login covers both processes.
     browser_session.initialize(
+        admin_token=admin_token,
         session_ttl_seconds=session_ttl,
         sse_token_ttl_seconds=sse_ttl,
         max_sessions=max_sessions,

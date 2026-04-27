@@ -1,34 +1,54 @@
-"""Browser session + CSRF for the Control Center UI.
+"""Browser session + CSRF for the Control Center UI and Web Dashboard.
 
-The Control API's bearer-token middleware (see ``control_api``) gates
-programmatic clients, but the browser can't send an ``Authorization:
-Bearer`` header on ``EventSource`` connections, and rendering the
-admin token into the HTML would leak it to XSS. This module adds a
-second auth path that's native to the browser:
+The Control API's bearer-token middleware gates programmatic clients,
+but the browser can't send an ``Authorization: Bearer`` header on
+``EventSource`` connections, and rendering the admin token into the
+HTML would leak it to XSS. This module adds a second auth path that's
+native to the browser:
 
 - **Session cookie** (``io_session``, HttpOnly, SameSite=Strict,
   Path=/) — set by ``POST /login`` after the admin bearer token is
-  verified. An anonymous ``GET /`` sees the login page and is
-  issued no credentials. The cookie itself is opaque random data;
-  server-side state tracks which session it maps to.
-- **CSRF token** — a separate random value bound to the session.
-  Rendered into the HTML (``<meta name="io-csrf-token" ...>``) so JS
-  can read it and send it as ``X-CSRF-Token`` on every mutating
-  fetch. ``SameSite=Strict`` already blocks cross-origin cookies;
-  the CSRF token is defense-in-depth.
-- **SSE query-string token** — ``EventSource`` can't send headers or
-  forward cookies reliably in every browser, so the SSE endpoint
-  accepts a short-lived HMAC-signed token in the query string that
-  JS obtains via the (CSRF-protected) ``/api/sse-token`` endpoint.
-  The token is **single-use** (verifying consumes its nonce) and
-  valid for ``SSE_TOKEN_TTL_SECONDS``, so a value that leaks through
-  access logs / ``Referer`` / browser history cannot be replayed
-  even within its window.
+  verified. The cookie value is **stateless**: it carries its own
+  session id, **issue time**, and an HMAC over both. Verifying a
+  cookie requires only the shared secret and the current time;
+  the validating process applies its own ``SESSION_TTL_SECONDS``
+  to that issue time, so each surface enforces its own configured
+  TTL on the same shared cookie.
+- **CSRF token** — derived deterministically from the session id and
+  the secret, then rendered into the HTML (``<meta
+  name="io-csrf-token" ...>``) so JS can read it and send it as
+  ``X-CSRF-Token`` on every mutating fetch. ``SameSite=Strict``
+  already blocks cross-origin cookies; the CSRF token is
+  defense-in-depth.
+- **SSE query-string token** — ``EventSource`` can't send headers, so
+  the SSE endpoint accepts a short-lived HMAC-signed token in the
+  query string that JS obtains via the (CSRF-protected)
+  ``/api/sse-token`` endpoint. The token is single-use within its
+  process (verifying consumes its nonce) and valid for
+  ``SSE_TOKEN_TTL_SECONDS``.
 
-All state is per-process: no persistence, no cross-restart sharing.
-Sessions are LRU-evicted once ``MAX_SESSIONS`` is hit so the table
-has a hard upper bound. For a local-dev Control Center this is fine —
-restarts invalidate sessions and the browser re-auths on next load.
+## Cross-process sharing
+
+Why stateless? The Control Center (port 19080) and the Web Dashboard
+(port 8080) are separate processes. Before this change each process
+generated its own random HMAC secret and kept its own in-memory
+``_SESSIONS`` dict, so a cookie minted by one was unverifiable by
+the other — operators had to log in twice. By deriving the secret
+deterministically from the shared admin token (``derive_secret``)
+and validating cookies purely from their HMAC, both processes accept
+the same cookie without any IPC.
+
+Trade-off: there is no server-side revocation. Sessions only
+invalidate by TTL. Rotating the admin token rotates the derived
+secret, which invalidates every existing cookie at once (an
+operational kill switch).
+
+The single-use SSE-nonce store is still per-process. A leaked SSE
+token that's been consumed in CC's process can in principle be
+replayed once in the dashboard's process within its 60-second TTL.
+Acceptable: SSE tokens only open the matching session's stream, the
+attack window is brief, and the alternative — a shared on-disk
+nonce store — is a lot of complexity for a narrow gap.
 """
 
 from __future__ import annotations
@@ -38,7 +58,6 @@ import logging
 import os
 import secrets
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import Lock
@@ -50,17 +69,18 @@ CSRF_HEADER = "X-CSRF-Token"
 CSRF_META_NAME = "io-csrf-token"
 SSE_TOKEN_QUERY = "sse_token"
 
-# Baseline defaults. The operator can override these at runtime via
-# YAML (``ui.browser_session.*``) or env vars (see the ``_ENV_*``
-# names below); the effective value lives in the module-level
-# ``_session_ttl_seconds`` etc. that the rest of the module reads.
+# Domain-separation tags so the derived secrets / tokens cannot
+# collide with any other use of the admin token or the session id.
+_SECRET_DERIVATION_TAG = b"issue-orchestrator/browser-session/v1"
+_CSRF_DERIVATION_TAG = b"csrf"
+
 _DEFAULT_SESSION_TTL_SECONDS = 8 * 3600
 _DEFAULT_SSE_TOKEN_TTL_SECONDS = 60
+# Kept as a module attribute for back-compat with operator YAML and
+# the existing settings schema. With stateless cookies the value is
+# no longer enforced — there is no in-memory session table to cap.
 _DEFAULT_MAX_SESSIONS = 1024
 
-# Back-compat module-level names — public module surface. Tests
-# reference ``SESSION_TTL_SECONDS``; resolved values live in the
-# mutable module-level state below.
 SESSION_TTL_SECONDS = _DEFAULT_SESSION_TTL_SECONDS
 SSE_TOKEN_TTL_SECONDS = _DEFAULT_SSE_TOKEN_TTL_SECONDS
 MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
@@ -70,15 +90,13 @@ _ENV_SSE_TOKEN_TTL = "ISSUE_ORCHESTRATOR_SSE_TOKEN_TTL_SECONDS"
 _ENV_MAX_SESSIONS = "ISSUE_ORCHESTRATOR_MAX_SESSIONS"
 
 _SECRET: bytes | None = None
-_SESSIONS: "OrderedDict[str, _Session]" = OrderedDict()
 _LOCK = Lock()
 
 
-@dataclass
-class _Session:
-    csrf_token: str
-    created_at: float
-    last_seen: float
+@dataclass(frozen=True)
+class _ParsedCookie:
+    session_id: str
+    issued_at: int
 
 
 def _resolve_int(env_name: str, config_value: int | None, default: int) -> int:
@@ -96,24 +114,50 @@ def _resolve_int(env_name: str, config_value: int | None, default: int) -> int:
     return default
 
 
+def derive_secret(admin_token: str) -> bytes:
+    """Derive a deterministic 32-byte secret from the admin token.
+
+    Both the Control Center and the Web Dashboard call this with the
+    same admin token (loaded from ``~/.issue-orchestrator/api-token``)
+    so they end up with the same HMAC key without sharing storage.
+    The domain-separation tag keeps this output distinct from any
+    other use of the admin token.
+    """
+    return hmac.new(
+        _SECRET_DERIVATION_TAG, admin_token.encode("utf-8"), sha256
+    ).digest()
+
+
 def initialize(
     secret: bytes | None = None,
     *,
+    admin_token: str | None = None,
     session_ttl_seconds: int | None = None,
     sse_token_ttl_seconds: int | None = None,
     max_sessions: int | None = None,
 ) -> None:
     """Initialize the process-wide HMAC secret and tunable knobs.
 
-    Called once at server startup (``ControlAPIServer.start`` /
-    ``control_center.main``). Each tunable falls through a standard
-    resolver: env var wins when set, then the passed-in value from
-    YAML config, then the module default.
+    The secret is resolved in this priority:
 
-    ``secret`` is optional so tests can inject a known value.
+    1. ``secret=`` — explicit bytes (used by tests).
+    2. ``admin_token=`` — derive deterministically. Production path.
+    3. neither — generate a random secret. Single-process fallback.
+
+    Each tunable falls through env var → passed-in value → default.
+
+    ``max_sessions`` is accepted for back-compat with operator YAML
+    but no longer enforced — there is no in-memory session table to
+    cap with stateless cookies. The value is stored on
+    ``MAX_SESSIONS`` so existing tests / dashboards can still read it.
     """
     global _SECRET, SESSION_TTL_SECONDS, SSE_TOKEN_TTL_SECONDS, MAX_SESSIONS
-    _SECRET = secret or secrets.token_bytes(32)
+    if secret is not None:
+        _SECRET = secret
+    elif admin_token is not None:
+        _SECRET = derive_secret(admin_token)
+    else:
+        _SECRET = secrets.token_bytes(32)
     SESSION_TTL_SECONDS = _resolve_int(
         _ENV_SESSION_TTL, session_ttl_seconds, _DEFAULT_SESSION_TTL_SECONDS
     )
@@ -125,7 +169,6 @@ def initialize(
     MAX_SESSIONS = _resolve_int(
         _ENV_MAX_SESSIONS, max_sessions, _DEFAULT_MAX_SESSIONS
     )
-    _SESSIONS.clear()
     _CONSUMED_SSE_NONCES.clear()
 
 
@@ -137,110 +180,154 @@ def shutdown() -> None:
     """Clear state. Used by tests between cases."""
     global _SECRET, SESSION_TTL_SECONDS, SSE_TOKEN_TTL_SECONDS, MAX_SESSIONS
     _SECRET = None
-    _SESSIONS.clear()
     _CONSUMED_SSE_NONCES.clear()
     SESSION_TTL_SECONDS = _DEFAULT_SESSION_TTL_SECONDS
     SSE_TOKEN_TTL_SECONDS = _DEFAULT_SSE_TOKEN_TTL_SECONDS
     MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
 
 
-def _expire_old(now: float) -> None:
-    stale = [
-        sid
-        for sid, sess in _SESSIONS.items()
-        if now - sess.last_seen > SESSION_TTL_SECONDS
-    ]
-    for sid in stale:
-        _SESSIONS.pop(sid, None)
+# ---------------------------------------------------------------------------
+# Cookie sign / parse
+# ---------------------------------------------------------------------------
+
+
+def _sign_cookie(session_id: str, issued_at: int) -> str:
+    assert _SECRET is not None
+    payload = f"{session_id}.{issued_at}"
+    sig = hmac.new(_SECRET, payload.encode("utf-8"), sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _parse_cookie(cookie_value: str | None) -> _ParsedCookie | None:
+    """Verify and parse a cookie value. Returns ``None`` on rejection.
+
+    Rejects on any of: missing secret, malformed structure, bad HMAC,
+    unparseable timestamp, or age greater than the validating process's
+    ``SESSION_TTL_SECONDS``. The cookie carries the **issue time**, not
+    a baked-in expiry, so the validating process owns the TTL policy.
+    Without that split a Control Center configured for 8h would let a
+    cookie outlive a Web Dashboard configured for 60s — the same
+    ``ui.browser_session.ttl_seconds`` rule enforced differently by
+    path (#6065 re-review-1 P2).
+    """
+    if not cookie_value or _SECRET is None:
+        return None
+    parts = cookie_value.rsplit(".", 1)
+    if len(parts) != 2:
+        return None
+    payload, sig = parts
+    payload_parts = payload.split(".")
+    if len(payload_parts) != 2:
+        return None
+    session_id, issued_at_str = payload_parts
+    if not session_id or not issued_at_str:
+        return None
+    try:
+        issued_at = int(issued_at_str)
+    except ValueError:
+        return None
+    expected_sig = hmac.new(
+        _SECRET, payload.encode("utf-8"), sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected_sig, sig):
+        return None
+    now = int(time.time())
+    # ``issued_at`` from the future (clock skew or a forged cookie that
+    # somehow passed the HMAC) is rejected with a small tolerance.
+    if issued_at - now > 5:
+        return None
+    if now - issued_at > SESSION_TTL_SECONDS:
+        return None
+    return _ParsedCookie(session_id=session_id, issued_at=issued_at)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def create_session() -> tuple[str, str]:
-    """Return ``(session_id, csrf_token)`` for a fresh session.
+    """Mint a fresh session. Returns ``(cookie_value, csrf_token)``.
 
-    Maintains ``len(_SESSIONS) <= MAX_SESSIONS`` by expiring TTL-stale
-    entries and, if still over the cap, evicting the
-    least-recently-used entries in insertion order. ``_SESSIONS`` is
-    an ``OrderedDict`` and ``get_csrf_token`` moves touched entries
-    to the back, so "least recently used" is a cheap pop from the
-    front.
+    The cookie value carries its session id, issue time, and an HMAC
+    over both. Validation happens against the validating process's
+    ``SESSION_TTL_SECONDS`` (not an expiry baked in here), so a
+    cookie minted by a long-TTL surface still expires on a short-TTL
+    surface that holds the same secret.
     """
     if _SECRET is None:
         raise RuntimeError("browser_session.initialize was never called")
-    with _LOCK:
-        now = time.time()
-        _expire_old(now)
-        while len(_SESSIONS) >= MAX_SESSIONS:
-            evicted_id, _ = _SESSIONS.popitem(last=False)
-            logger.info(
-                "browser_session: evicted LRU session %s… to stay under cap %d",
-                evicted_id[:8],
-                MAX_SESSIONS,
-            )
-        session_id = secrets.token_hex(32)
-        csrf_token = secrets.token_hex(32)
-        _SESSIONS[session_id] = _Session(
-            csrf_token=csrf_token, created_at=now, last_seen=now
-        )
-    return session_id, csrf_token
+    session_id = secrets.token_hex(16)
+    # Encode issue time, not a baked-in expiry — the validating
+    # process applies its own ``SESSION_TTL_SECONDS`` so operator
+    # hardening on either surface takes effect uniformly.
+    issued_at = int(time.time())
+    cookie = _sign_cookie(session_id, issued_at)
+    csrf = _derive_csrf(session_id)
+    return cookie, csrf
 
 
-def get_csrf_token(session_id: str) -> str | None:
-    """Return the CSRF token for ``session_id``, or ``None`` if unknown/expired.
+def session_is_valid(cookie_value: str | None) -> bool:
+    """Whether the cookie is well-formed, signed, and unexpired."""
+    return _parse_cookie(cookie_value) is not None
 
-    Touches the session's ``last_seen`` timestamp on hit and moves the
-    entry to the back of the LRU ordering so active sessions are
-    never evicted while they're in use.
+
+def _derive_csrf(session_id: str) -> str:
+    """Deterministic CSRF token for ``session_id``.
+
+    Returning the same token across processes is safe: the secret
+    only lives on the server, and the CSRF token is rendered into
+    HTML where JS reads it. The cookie itself remains HttpOnly.
     """
-    if _SECRET is None:
+    assert _SECRET is not None
+    payload = session_id.encode("utf-8") + b"." + _CSRF_DERIVATION_TAG
+    return hmac.new(_SECRET, payload, sha256).hexdigest()
+
+
+def get_csrf_token(cookie_value: str | None) -> str | None:
+    """Return the CSRF token bound to ``cookie_value``, or ``None``.
+
+    A valid cookie always yields the same CSRF for its session id, so
+    callers can render the result into HTML without first issuing a
+    new session.
+    """
+    parsed = _parse_cookie(cookie_value)
+    if parsed is None:
         return None
-    with _LOCK:
-        sess = _SESSIONS.get(session_id)
-        if sess is None:
-            return None
-        now = time.time()
-        if now - sess.last_seen > SESSION_TTL_SECONDS:
-            _SESSIONS.pop(session_id, None)
-            return None
-        sess.last_seen = now
-        _SESSIONS.move_to_end(session_id)
-        return sess.csrf_token
+    return _derive_csrf(parsed.session_id)
 
 
-def verify_csrf(session_id: str, provided: str | None) -> bool:
+def verify_csrf(cookie_value: str | None, provided: str | None) -> bool:
     """Constant-time comparison of a submitted CSRF token."""
     if not provided:
         return False
-    expected = get_csrf_token(session_id)
+    expected = get_csrf_token(cookie_value)
     if expected is None:
         return False
     return hmac.compare_digest(expected, provided)
 
 
-def session_is_valid(session_id: str) -> bool:
-    """Whether ``session_id`` is known and unexpired."""
-    return get_csrf_token(session_id) is not None
-
-
-def issue_sse_token(session_id: str) -> str | None:
-    """Return a short-lived signed SSE token bound to ``session_id``.
+def issue_sse_token(cookie_value: str | None) -> str | None:
+    """Return a short-lived signed SSE token bound to the session.
 
     Format: ``"{session_id}:{timestamp}:{nonce}:{hex_signature}"``.
+    The session id is extracted from the cookie's signed payload, so
+    a forged cookie cannot mint a valid SSE token.
     """
-    if _SECRET is None or not session_is_valid(session_id):
+    parsed = _parse_cookie(cookie_value)
+    if parsed is None:
         return None
+    assert _SECRET is not None
     now = int(time.time())
     nonce = secrets.token_hex(8)
-    payload = f"{session_id}:{now}:{nonce}".encode("utf-8")
+    payload = f"{parsed.session_id}:{now}:{nonce}".encode("utf-8")
     sig = hmac.new(_SECRET, payload, sha256).hexdigest()
-    return f"{session_id}:{now}:{nonce}:{sig}"
+    return f"{parsed.session_id}:{now}:{nonce}:{sig}"
 
 
-# Nonces from successfully-verified SSE tokens. Because each SSE token
-# is single-use (#6017 re-review-3 P2), we remember the consumed
-# nonces within their TTL window so a leaked ``sse_token`` in a log /
-# proxy / browser history cannot be replayed later. Nonces are 8 hex
-# chars, expire alongside their token, and live in a bounded dict
-# trimmed on every use.
+# Per-process replay guard for SSE tokens. Each successfully verified
+# token's nonce is stored here for ``SSE_TOKEN_TTL_SECONDS`` so the
+# same token cannot be replayed within its window.
 _CONSUMED_SSE_NONCES: dict[str, float] = {}
 
 
@@ -254,22 +341,22 @@ def _expire_consumed_nonces(now: float) -> None:
         _CONSUMED_SSE_NONCES.pop(nonce, None)
 
 
-def verify_sse_token(token: str | None, expected_session_id: str) -> bool:
-    """Validate an SSE query-string token for this session.
+def verify_sse_token(token: str | None, expected_cookie: str | None) -> bool:
+    """Validate an SSE query-string token for the session in ``expected_cookie``.
 
     Single-use semantics: a successful verify records the token's
     nonce in ``_CONSUMED_SSE_NONCES`` for ``SSE_TOKEN_TTL_SECONDS``.
-    A second call with the same token returns ``False`` — so a token
-    leaked via server access logs, browser history, or a
-    ``Referer`` header cannot be replayed within its TTL.
 
-    The token must also match ``expected_session_id`` (a token for
-    session A can't reach session B's stream), be signed with the
-    current process secret, and be less than
+    The token must match the session id encoded in the cookie, be
+    signed with the current process secret, and be less than
     ``SSE_TOKEN_TTL_SECONDS`` old.
     """
     if not token or _SECRET is None:
         return False
+    cookie_parsed = _parse_cookie(expected_cookie)
+    if cookie_parsed is None:
+        return False
+    expected_session_id = cookie_parsed.session_id
     parts = token.split(":")
     if len(parts) != 4:
         return False
@@ -292,8 +379,6 @@ def verify_sse_token(token: str | None, expected_session_id: str) -> bool:
     with _LOCK:
         _expire_consumed_nonces(now)
         if nonce in _CONSUMED_SSE_NONCES:
-            # Replay attempt — the signature is valid but the nonce
-            # has already been accepted once. Refuse.
             return False
         _CONSUMED_SSE_NONCES[nonce] = now
     return True
