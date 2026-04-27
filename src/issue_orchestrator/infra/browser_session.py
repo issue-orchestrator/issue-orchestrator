@@ -9,9 +9,11 @@ native to the browser:
 - **Session cookie** (``io_session``, HttpOnly, SameSite=Strict,
   Path=/) — set by ``POST /login`` after the admin bearer token is
   verified. The cookie value is **stateless**: it carries its own
-  session id, expiry, and an HMAC over both. Verifying a cookie
-  requires only the shared secret and the current time — no
-  server-side state.
+  session id, **issue time**, and an HMAC over both. Verifying a
+  cookie requires only the shared secret and the current time;
+  the validating process applies its own ``SESSION_TTL_SECONDS``
+  to that issue time, so each surface enforces its own configured
+  TTL on the same shared cookie.
 - **CSRF token** — derived deterministically from the session id and
   the secret, then rendered into the HTML (``<meta
   name="io-csrf-token" ...>``) so JS can read it and send it as
@@ -247,9 +249,11 @@ def _parse_cookie(cookie_value: str | None) -> _ParsedCookie | None:
 def create_session() -> tuple[str, str]:
     """Mint a fresh session. Returns ``(cookie_value, csrf_token)``.
 
-    The cookie value carries its own expiry and HMAC, so any process
-    holding the matching secret can validate it without any
-    server-side state.
+    The cookie value carries its session id, issue time, and an HMAC
+    over both. Validation happens against the validating process's
+    ``SESSION_TTL_SECONDS`` (not an expiry baked in here), so a
+    cookie minted by a long-TTL surface still expires on a short-TTL
+    surface that holds the same secret.
     """
     if _SECRET is None:
         raise RuntimeError("browser_session.initialize was never called")
