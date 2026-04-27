@@ -609,43 +609,106 @@ def test_blocked_coder_projects_as_terminal_blocked_state() -> None:
     assert cycle.outcome == "blocked"
 
 
-def test_failed_coding_attempt_ignores_stale_review_signals() -> None:
-    started = _event(
-        "agent.coding_started",
-        event_id="coding-start",
-        timestamp="2026-04-21T12:00:00Z",
-        agent="agent:coder",
-        run_dir="/tmp/run-1",
-    )
-    approved = _event(
-        "review.approved",
-        event_id="review-approved",
-        timestamp="2026-04-21T12:10:00Z",
-        reviewer_agent="agent:reviewer",
-        run_dir="/tmp/review-1",
-    )
+def test_failed_coding_attempt_ignores_stale_review_start() -> None:
+    started, _, _, review_start, _ = _complete_issue_events()
     failed = _event(
         "session.failed",
         event_id="coding-failed",
         timestamp="2026-04-21T12:20:00Z",
         agent="agent:coder",
         run_dir="/tmp/run-1",
-        summary="session failed",
+        summary="Exceeded timeout",
     )
 
-    lifecycle = project_issue_lifecycle(
-        issue_number=5723,
-        title="Timeline regression",
-        events=[started, approved, failed],
-        cycles=[{"cycle": 1, "events": [started, approved, failed]}],
-        review_required=True,
-    )
+    cycle = _project_first_issue_cycle((started, review_start, failed))
 
-    cycle = lifecycle.cycles[0]
     assert isinstance(cycle.coder, FailedCodingAttempt)
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "coding_failed"
     assert cycle.outcome == "failed"
+
+
+def test_failed_coding_attempt_ignores_stale_review_approved() -> None:
+    started, _, _, _, _ = _complete_issue_events()
+    failed = _event(
+        "session.failed",
+        event_id="coding-failed",
+        timestamp="2026-04-21T12:20:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Exceeded timeout",
+    )
+
+    cycle = _project_first_issue_cycle((started, _approved_review_event(), failed))
+
+    assert isinstance(cycle.coder, FailedCodingAttempt)
+    assert isinstance(cycle.review, ReviewNotReached)
+    assert cycle.review.reason == "coding_failed"
+    assert cycle.outcome == "failed"
+
+
+def test_blocked_coding_attempt_ignores_stale_review_start() -> None:
+    started, _, _, review_start, _ = _complete_issue_events()
+    blocked = _event(
+        "agent.blocked",
+        event_id="coding-blocked",
+        timestamp="2026-04-21T12:20:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Need product decision",
+    )
+
+    cycle = _project_first_issue_cycle((started, review_start, blocked))
+
+    assert isinstance(cycle.coder, BlockedCodingAttempt)
+    assert isinstance(cycle.review, ReviewNotReached)
+    assert cycle.review.reason == "coding_failed"
+    assert cycle.outcome == "blocked"
+
+
+def test_publish_failed_coding_attempt_ignores_stale_review_start() -> None:
+    started, completed, validation, review_start, _ = _complete_issue_events()
+    publish_failed = _event(
+        "publish.failed",
+        event_id="publish-failed",
+        timestamp="2026-04-21T12:20:00Z",
+        agent="agent:coder",
+        run_dir="/tmp/run-1",
+        summary="Push rejected",
+    )
+
+    cycle = _project_first_issue_cycle(
+        (started, completed, validation, review_start, publish_failed)
+    )
+
+    assert isinstance(cycle.coder, PublishFailedCodingAttempt)
+    assert isinstance(cycle.review, ReviewNotReached)
+    assert cycle.review.reason == "publish_failed"
+    assert cycle.outcome == "publish_failed"
+
+
+def test_validation_failed_attempt_ignores_stale_review_start() -> None:
+    started, completed, _, review_start, _ = _complete_issue_events()
+    validation_failed = _event(
+        "validation.failed",
+        event_id="validation-failed",
+        timestamp="2026-04-21T12:12:00Z",
+        agent="agent:validator",
+        run_dir="/tmp/run-1",
+        summary="pytest failed",
+        artifacts=[_artifact("validation", "/tmp/run-1/validation.json")],
+    )
+
+    cycle = _project_first_issue_cycle(
+        (started, completed, validation_failed, review_start),
+        review_required=True,
+    )
+
+    assert isinstance(cycle.coder, CompletedCodingAttempt)
+    assert isinstance(cycle.coder.validation, ValidationFailed)
+    assert isinstance(cycle.review, ReviewNotReached)
+    assert cycle.review.reason == "validation_failed"
+    assert cycle.outcome == "completed"
 
 
 def test_publish_failed_after_coding_completion_projects_publish_failed_attempt() -> (
