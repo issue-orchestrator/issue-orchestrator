@@ -74,6 +74,13 @@ from .lifecycle_semantics import (
 EventDict = Mapping[str, Any]
 CodingExpectedState = Literal["completed", "running", "blocked", "failed"]
 ReviewExpectedState = Literal["approved", "changes_requested", "running"]
+ReviewNotReachedReason = Literal[
+    "coding_in_progress",
+    "coding_failed",
+    "publish_failed",
+    "validation_failed",
+    "not_required",
+]
 
 _CODING_START_EVENTS = frozenset(
     {
@@ -846,19 +853,27 @@ def _project_review(
 
 
 def _review_not_reached_for_coder(coder: CodingAttempt) -> ReviewNotReached | None:
+    reason = _review_not_reached_reason_for_coder(coder)
+    if reason is not None:
+        return ReviewNotReached(reason=reason)
+    return None
+
+
+def _review_not_reached_reason_for_coder(
+    coder: CodingAttempt,
+) -> ReviewNotReachedReason | None:
     if isinstance(coder, RunningCodingAttempt):
-        return ReviewNotReached(reason="coding_in_progress")
+        return "coding_in_progress"
     if isinstance(coder, PublishFailedCodingAttempt):
-        return ReviewNotReached(reason="publish_failed")
-    if isinstance(
-        coder,
-        FailedCodingAttempt | BlockedCodingAttempt | MissingCodingEvidence,
-    ):
-        return ReviewNotReached(reason="coding_failed")
+        return "publish_failed"
+    if isinstance(coder, FailedCodingAttempt | BlockedCodingAttempt):
+        return "coding_failed"
+    if isinstance(coder, MissingCodingEvidence):
+        return "coding_failed"
     if isinstance(coder, CompletedCodingAttempt) and isinstance(
         coder.validation, ValidationFailed
     ):
-        return ReviewNotReached(reason="validation_failed")
+        return "validation_failed"
     return None
 
 
@@ -1017,8 +1032,6 @@ def _unreached_review(
     blocked_by_coder = _review_not_reached_for_coder(coder)
     if blocked_by_coder is not None:
         return blocked_by_coder
-    if isinstance(coder, MissingCodingEvidence):
-        return ReviewNotReached(reason="coding_failed")
     if review_required:
         return _missing_review(
             expected_state="running",

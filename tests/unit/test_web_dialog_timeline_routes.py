@@ -308,6 +308,42 @@ class TestApiTimelineEndpoint:
         )
         assert any(action.get("id") == "retry_publish" for action in payload["actions"])
 
+    def test_issue_detail_survives_failed_coder_with_stale_review_start(self):
+        """A failed coder terminal state owns the cycle even if review start leaked in."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="coding-start",
+                timestamp="2026-02-09T10:00:00Z",
+                agent="agent:backend",
+                run_dir="/tmp/run-330",
+            ),
+            build_timeline_event(
+                "review.started",
+                event_id="review-start",
+                timestamp="2026-02-09T10:10:00Z",
+                reviewer_agent="agent:reviewer",
+                run_dir="/tmp/review-330",
+            ),
+            build_timeline_event(
+                "session.failed",
+                event_id="coding-failed",
+                timestamp="2026-02-09T10:20:00Z",
+                status="failed",
+                agent="agent:backend",
+                run_dir="/tmp/run-330",
+                summary="Exceeded timeout",
+            ),
+        ])
+
+        cycle = payload["lifecycle"]["current"]["issue_lifecycles"][0]["cycles"][0]
+        assert cycle["coder"]["kind"] == "failed_coding_attempt"
+        assert cycle["review"] == {
+            "kind": "review_not_reached",
+            "reason": "coding_failed",
+        }
+        assert cycle["outcome"] == "failed"
+
     def test_issue_detail_starts_new_lifecycle_after_completion_without_review(self):
         """Signal path: a new coding session after completion becomes a new lifecycle."""
         payload = fetch_issue_detail_payload([
