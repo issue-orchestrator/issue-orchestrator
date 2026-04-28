@@ -408,6 +408,9 @@
     flex-direction: column;
     gap: 12px;
 }
+.trr-expand[hidden] {
+    display: none;
+}
 .trr-error-text {
     margin: 0;
     padding: 8px 10px;

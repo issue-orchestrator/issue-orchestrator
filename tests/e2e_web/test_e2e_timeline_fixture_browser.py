@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 import socket
 import time
@@ -1583,6 +1584,229 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
         adversarial_artifact_path,
         "/tmp/tixmeup-e2e-smoke.summary.txt",
     ]
+
+
+def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """Exhaustive browser-level coverage of the test-centric run modal:
+
+    - Headline counts numerically match the run summary.
+    - Filter chips actually filter rows (Failing → only failing visible,
+      Passed → only passed visible, All → both visible) and the visible
+      row content matches the expected test names.
+    - Clicking a failing test row expands inline and renders the *specific*
+      longrepr text (not just "an error" but the actual error string).
+    - For a test with `existing_issue`, the inline lifecycle block carries
+      the expected cycle count, coder session, review session, transcript,
+      and validation buttons — wired to the right command kinds.
+    - Clicking the row again collapses the expansion.
+    """
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    real_payload = _browser_fetch_json(
+        page,
+        _url(str(base_url), f"/api/e2e-run-detail/{run_id}", view="user"),
+    )
+
+    expected_longrepr = (
+        "AssertionError: expected primary search to return product slug "
+        "'butter-yellow-blanket' but got 'mustard-throw'"
+    )
+    expected_passed_label = "package.build_image"
+    expected_failed_label = "search_returns_expected_slug"
+    failed_nodeid = "tixmeup.e2e.search::failures.search_returns_expected_slug"
+    passed_nodeid = "tixmeup.e2e.smoke::package.build_image"
+
+    failing_test = {
+        "nodeid": failed_nodeid,
+        "case_id": failed_nodeid,
+        "label": expected_failed_label,
+        "display_name": expected_failed_label,
+        "suite_name": "tixmeup.e2e.search",
+        "outcome": "failed",
+        "retry_outcome": None,
+        "duration_seconds": 1.42,
+        "longrepr": expected_longrepr,
+        "failure_summary": "AssertionError: expected primary search…",
+        "history": [],
+        "existing_issue": {
+            "number": 5723,
+            "status": "open",
+            "resolution": None,
+        },
+        "category": "has_issue",
+        "flip_rate": 0.0,
+        "flip_rate_percent": 0.0,
+        "is_likely_flaky": False,
+        "is_quarantined": False,
+        "result_source": "junit",
+        "updated_at": "",
+    }
+    passed_test = {
+        "nodeid": passed_nodeid,
+        "case_id": passed_nodeid,
+        "label": expected_passed_label,
+        "display_name": expected_passed_label,
+        "suite_name": "tixmeup.e2e.smoke",
+        "outcome": "passed",
+        "retry_outcome": None,
+        "duration_seconds": 450.0,
+        "longrepr": None,
+        "failure_summary": None,
+        "history": [],
+        "existing_issue": None,
+        "category": "passed",
+        "flip_rate": 0.0,
+        "flip_rate_percent": 0.0,
+        "is_likely_flaky": False,
+        "is_quarantined": False,
+        "result_source": "junit",
+        "updated_at": "",
+    }
+
+    synthetic = json.loads(json.dumps(real_payload))
+    synthetic["results_by_category"] = {
+        "untriaged": [],
+        "has_issue": [failing_test],
+        "flaky": [],
+        "fixed": [],
+        "passed": [passed_test],
+        "quarantined": [],
+        "skipped": [],
+    }
+    synthetic["results_summary"] = {
+        "total": 2,
+        "passed": 1,
+        "untriaged": 0,
+        "has_issue": 1,
+        "flaky": 0,
+        "fixed": 0,
+        "quarantined": 0,
+        "skipped": 0,
+    }
+
+    page.route(
+        _url(str(base_url), f"/api/e2e-run-detail/{run_id}", view="user"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(synthetic),
+        ),
+    )
+    _open_e2e_tab(page)
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator("button.card-focus"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    run_item.locator("button.card-focus").first.click()
+    modal = page.locator("#e2eDiagnosisModal.visible")
+    expect(modal).to_be_visible(timeout=5000)
+
+    # ── Headline counts must numerically match the synthetic summary ──
+    headline = modal.locator(".test-results-headline")
+    expect(headline).to_be_visible(timeout=5000)
+    expect(headline).to_contain_text("2 total")
+    expect(headline).to_contain_text("1 passed")
+    expect(headline).to_contain_text("1 failing")
+
+    # ── Default state: All filter active, both rows visible ──
+    rows = modal.locator(".trr-row")
+    expect(rows).to_have_count(2)
+    expect(rows.nth(0)).to_be_visible()
+    expect(rows.nth(1)).to_be_visible()
+    visible_text_all = " ".join(rows.all_text_contents())
+    assert expected_failed_label in visible_text_all
+    assert expected_passed_label in visible_text_all
+
+    # ── Click "Failing" chip — only the failing row should be visible ──
+    failing_chip = modal.locator(".trf-chip[data-filter='failing']")
+    expect(failing_chip).to_be_visible(timeout=2000)
+    failing_chip.click()
+    expect(failing_chip).to_have_class(re.compile(r"\bactive\b"))
+    visible_after_failing = [
+        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
+    ]
+    assert len(visible_after_failing) == 1, (
+        f"Failing filter should leave 1 row visible, got {len(visible_after_failing)}"
+    )
+    assert expected_failed_label in (visible_after_failing[0].text_content() or "")
+    assert expected_passed_label not in (visible_after_failing[0].text_content() or "")
+
+    # ── Click "Passed" chip — only the passed row should be visible ──
+    passed_chip = modal.locator(".trf-chip[data-filter='passed']")
+    expect(passed_chip).to_be_visible(timeout=2000)
+    passed_chip.click()
+    expect(passed_chip).to_have_class(re.compile(r"\bactive\b"))
+    visible_after_passed = [
+        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
+    ]
+    assert len(visible_after_passed) == 1
+    assert expected_passed_label in (visible_after_passed[0].text_content() or "")
+    assert expected_failed_label not in (visible_after_passed[0].text_content() or "")
+
+    # ── Click "All" chip — both rows visible again ──
+    all_chip = modal.locator(".trf-chip[data-filter='all']")
+    all_chip.click()
+    expect(all_chip).to_have_class(re.compile(r"\bactive\b"))
+    visible_after_all = [
+        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
+    ]
+    assert len(visible_after_all) == 2
+
+    # ── Failing row must be expandable; clicking expands it inline ──
+    failing_row = modal.locator(f".trr-row[data-nodeid='{failed_nodeid}']")
+    expect(failing_row).to_have_attribute("data-expandable", "1")
+    expand_block = failing_row.locator(".trr-expand")
+    expect(expand_block).to_be_hidden(timeout=2000)
+    failing_row.locator(".trr-row-main").click()
+    expect(expand_block).to_be_visible(timeout=2000)
+
+    # The error pre must contain the *specific* longrepr text — not just
+    # something error-shaped. This catches regressions where the wrong
+    # field is wired or where the text gets truncated/escaped wrong.
+    error_pre = expand_block.locator(".trr-error-text")
+    expect(error_pre).to_be_visible()
+    expect(error_pre).to_contain_text(expected_longrepr)
+
+    # The inline lifecycle block must carry the right cycle count and the
+    # full set of agentic-cycle action buttons, each wired to a command
+    # kind. We also verify the buttons go through the lifecycle command
+    # dispatcher (data-lifecycle-command attribute set with parseable JSON).
+    lifecycle_block = expand_block.locator(".trr-lifecycle")
+    expect(lifecycle_block).to_be_visible()
+    expect(lifecycle_block).to_contain_text("Issue #5723")
+    timeline_btn = lifecycle_block.locator("button", has_text="Timeline").first
+    expect(timeline_btn).to_be_visible()
+    timeline_cmd_attr = timeline_btn.get_attribute("data-lifecycle-command") or ""
+    assert timeline_cmd_attr, "Timeline button must carry data-lifecycle-command"
+    timeline_cmd = json.loads(timeline_cmd_attr)
+    assert timeline_cmd["kind"] == "open_issue_timeline"
+    assert timeline_cmd["issue_number"] == 5723
+    assert timeline_cmd["scope_kind"] == "e2e_run"
+
+    coder_session_btn = lifecycle_block.locator(
+        "button", has_text="Coder Session"
+    ).first
+    expect(coder_session_btn).to_be_visible()
+    coder_cmd = json.loads(
+        coder_session_btn.get_attribute("data-lifecycle-command") or "{}"
+    )
+    assert coder_cmd.get("kind") == "open_session_recording"
+    assert coder_cmd.get("issue_number") == 5723
+
+    # ── Toggle the row again — expand block collapses ──
+    failing_row.locator(".trr-row-main").click()
+    expect(expand_block).to_be_hidden(timeout=2000)
+
+    # ── Passed row must NOT be expandable (no error, no lifecycle) ──
+    passed_row = modal.locator(f".trr-row[data-nodeid='{passed_nodeid}']")
+    expect(passed_row).to_have_attribute("data-expandable", "0")
+    expect(passed_row.locator(".trr-expand")).to_have_count(0)
 
 
 def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(

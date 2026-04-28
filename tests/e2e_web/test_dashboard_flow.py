@@ -90,6 +90,202 @@ def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> 
     expect(page.locator("#panel-e2e")).to_be_visible()
 
 
+def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """When the issue-detail run_diagnostic carries parsed JUnit cases, the
+    drawer renders the test-centric layout (headline + filter chips +
+    rows) and hides the legacy failed-test-name <ul>. Per-row click
+    expands inline and the rendered error text matches the longrepr.
+
+    Drives ``renderIssueDetailValidation`` directly via page.evaluate to
+    decouple the assertion from the orchestrator's payload shape: the
+    only contract this test cares about is "given a diagnostic with
+    junit_cases, the drawer renders structured content with the right
+    counts/names/errors."
+    """
+    _goto_dashboard(page, str(web_server["url"]))
+
+    expected_failed_label = "test_circuit_open"
+    expected_passed_label = "test_circuit_closed"
+    expected_skipped_label = "test_only_on_linux"
+    expected_longrepr = (
+        "AssertionError: expected 1 open circuit but got 0\n"
+        "  in tests/unit/test_circuits.py:42"
+    )
+
+    synthetic = {
+        "issue_number": 408,
+        "title": "Validation diagnostic test",
+        "actions": [
+            {
+                "id": "open_validation_failure",
+                "label": "Validation Details",
+                "run_dir": "/tmp/synthetic-run-dir",
+            }
+        ],
+        "summary": {
+            "run_diagnostic": {
+                "state": "validation_failed",
+                "run_dir": "/tmp/synthetic-run-dir",
+                "session_name": "coding-1",
+                "reason": "tests failed",
+                "suite": "publish_gate",
+                "command": "make test",
+                "exit_code": 1,
+                "failed_tests": [f"tests/unit/test_circuits.py::{expected_failed_label}"],
+                "failed_tests_preview": [f"tests/unit/test_circuits.py::{expected_failed_label}"],
+                "validation_record_path": None,
+                "validation_stderr": None,
+                "validation_stdout": None,
+                "junit_cases": [
+                    {
+                        "nodeid": f"tests/unit/test_circuits.py::{expected_failed_label}",
+                        "case_id": f"tests/unit/test_circuits.py::{expected_failed_label}",
+                        "label": expected_failed_label,
+                        "display_name": expected_failed_label,
+                        "suite_name": "tests/unit/test_circuits.py",
+                        "outcome": "failed",
+                        "retry_outcome": None,
+                        "duration_seconds": 0.42,
+                        "longrepr": expected_longrepr,
+                        "failure_summary": "AssertionError: expected 1 open circuit but got 0",
+                        "history": [],
+                        "existing_issue": None,
+                        "category": "failed",
+                        "flip_rate": 0.0,
+                        "flip_rate_percent": 0.0,
+                        "is_likely_flaky": False,
+                        "is_quarantined": False,
+                        "result_source": "junit",
+                        "updated_at": "",
+                    },
+                    {
+                        "nodeid": f"tests/unit/test_circuits.py::{expected_passed_label}",
+                        "case_id": f"tests/unit/test_circuits.py::{expected_passed_label}",
+                        "label": expected_passed_label,
+                        "display_name": expected_passed_label,
+                        "suite_name": "tests/unit/test_circuits.py",
+                        "outcome": "passed",
+                        "retry_outcome": None,
+                        "duration_seconds": 0.18,
+                        "longrepr": None,
+                        "failure_summary": None,
+                        "history": [],
+                        "existing_issue": None,
+                        "category": "passed",
+                        "flip_rate": 0.0,
+                        "flip_rate_percent": 0.0,
+                        "is_likely_flaky": False,
+                        "is_quarantined": False,
+                        "result_source": "junit",
+                        "updated_at": "",
+                    },
+                    {
+                        "nodeid": f"tests/unit/test_circuits.py::{expected_skipped_label}",
+                        "case_id": f"tests/unit/test_circuits.py::{expected_skipped_label}",
+                        "label": expected_skipped_label,
+                        "display_name": expected_skipped_label,
+                        "suite_name": "tests/unit/test_circuits.py",
+                        "outcome": "skipped",
+                        "retry_outcome": None,
+                        "duration_seconds": 0.0,
+                        "longrepr": "platform-only test",
+                        "failure_summary": None,
+                        "history": [],
+                        "existing_issue": None,
+                        "category": "skipped",
+                        "flip_rate": 0.0,
+                        "flip_rate_percent": 0.0,
+                        "is_likely_flaky": False,
+                        "is_quarantined": False,
+                        "result_source": "junit",
+                        "updated_at": "",
+                    },
+                ],
+            }
+        },
+    }
+
+    # Show the drawer container so child elements are visible during render.
+    page.evaluate(
+        """payload => {
+            const drawer = document.getElementById('issueDetailDrawer');
+            drawer.classList.add('visible');
+            drawer.setAttribute('aria-hidden', 'false');
+            window.renderIssueDetailValidation(payload);
+        }""",
+        synthetic,
+    )
+
+    drawer = page.locator("#issueDetailDrawer.visible")
+    expect(drawer).to_be_visible(timeout=5000)
+    validation = page.locator("#issueDetailValidation")
+    expect(validation).to_be_visible(timeout=5000)
+    expect(page.locator("#issueDetailValidationReason")).to_contain_text(
+        "tests failed • Command: make test"
+    )
+
+    # ── Legacy failed-test-name <ul> must be hidden when junit_cases drives the view ──
+    tests_ul = page.locator("#issueDetailValidationTests")
+    expect(tests_ul).to_have_css("display", "none")
+
+    # ── Structured panel must render with correct counts ──
+    structured = page.locator("#issueDetailValidationStructured")
+    expect(structured).to_be_visible()
+    headline = structured.locator(".test-results-headline")
+    expect(headline).to_be_visible()
+    expect(headline).to_contain_text("3 total")
+    expect(headline).to_contain_text("1 passed")
+    expect(headline).to_contain_text("1 failing")
+    expect(headline).to_contain_text("1 skipped")
+
+    # ── One row per junit_case, with right names ──
+    rows = structured.locator(".trr-row")
+    expect(rows).to_have_count(3)
+    rows_text = " ".join(rows.all_text_contents())
+    assert expected_failed_label in rows_text
+    assert expected_passed_label in rows_text
+    assert expected_skipped_label in rows_text
+
+    # ── Filter chip toggles ──
+    failing_chip = structured.locator(".trf-chip[data-filter='failing']")
+    expect(failing_chip).to_be_visible()
+    failing_chip.click()
+    visible_after_failing = [
+        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
+    ]
+    assert len(visible_after_failing) == 1
+    assert expected_failed_label in (visible_after_failing[0].text_content() or "")
+
+    # Switch back to All to set up expand assertion
+    structured.locator(".trf-chip[data-filter='all']").click()
+
+    # ── Click failing row → expand reveals the *specific* longrepr text ──
+    failing_row = structured.locator(
+        f".trr-row[data-nodeid='tests/unit/test_circuits.py::{expected_failed_label}']"
+    )
+    expect(failing_row).to_have_attribute("data-expandable", "1")
+    failing_row.locator(".trr-row-main").click()
+    error_pre = failing_row.locator(".trr-error-text")
+    expect(error_pre).to_be_visible()
+    expect(error_pre).to_contain_text("AssertionError: expected 1 open circuit but got 0")
+    expect(error_pre).to_contain_text("test_circuits.py:42")
+
+    # ── Issue-session validation must NOT render an inline lifecycle block:
+    # validation cases have no `existing_issue` (E2E flake-tracking is the
+    # only producer of those links). This keeps the drawer's row UI free
+    # of E2E-specific affordances that would not have working endpoints.
+    expect(failing_row.locator(".trr-lifecycle")).to_have_count(0)
+
+    # ── Passed row is not expandable (no error, no lifecycle) ──
+    passed_row = structured.locator(
+        f".trr-row[data-nodeid='tests/unit/test_circuits.py::{expected_passed_label}']"
+    )
+    expect(passed_row).to_have_attribute("data-expandable", "0")
+
+
 def test_validation_failure_dialog_renders_results_and_artifacts(
     page: Page,
     web_server: dict[str, object],
