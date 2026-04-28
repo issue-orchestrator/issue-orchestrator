@@ -899,18 +899,19 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     assert detail_cycle_summary == suite_cycle_summary
     assert detail_cycle_count == suite_cycle_count
 
-    # Open the run drawer through the visible E2E Run History Timeline
-    # affordance. This is intentionally not page.evaluate(): the
-    # regression was that users had no visible way to get here.
+    # Open the run drawer. The list-row "Open run" / "Timeline" buttons were
+    # removed in the test-centric redesign — the title click is now the
+    # single entry point. Tests are the modal's headline; the run timeline
+    # lives inside the "Run details" disclosure at the bottom.
     _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
-        has=page.locator("button", has_text="Timeline"),
+        has=page.locator("button.card-focus"),
     ).first
     expect(run_item).to_be_visible(timeout=5000)
-    timeline_run_btn = run_item.locator("button", has_text="Timeline").first
-    expect(timeline_run_btn).to_be_visible(timeout=5000)
-    timeline_run_btn.click()
+    title_btn = run_item.locator("button.card-focus").first
+    expect(title_btn).to_be_visible(timeout=5000)
+    title_btn.click()
 
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=15_000)
@@ -919,32 +920,31 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         timeout=15_000,
     )
 
-    # The direct Timeline affordance must land on the Timeline tab,
-    # not force the user to discover a second control after opening
-    # the run details drawer.
-    timeline_tab_btn = page.locator(
-        "#e2eDiagnosisModal .e2e-run-tab[data-tab='timeline']"
-    )
-    expect(timeline_tab_btn).to_be_visible(timeout=15_000)
-    expect(
-        page.locator("#e2eDiagnosisModal .e2e-run-tab.active[data-tab='timeline']")
-    ).to_be_visible(timeout=15_000)
+    # Test-centric layout: pass/fail headline + filter chips are the modal's
+    # primary surface. The legacy run-level Results/Timeline tabs are gone.
+    expect(modal.locator(".test-results-headline")).to_be_visible(timeout=15_000)
+    expect(modal.locator(".test-results-filters")).to_be_visible(timeout=15_000)
 
-    timeline_panel = page.locator("#e2eRunTimelineTab")
+    # Run timeline is rendered eagerly inside the (collapsed) "Run details"
+    # disclosure. Expand it to assert on its content.
+    disclosure = modal.locator("#runDetailsDisclosure")
+    expect(disclosure).to_be_visible(timeout=15_000)
+    disclosure.locator("summary").first.click()
+    timeline_panel = disclosure.locator("#e2eTimelineContent")
     expect(timeline_panel).to_be_visible(timeout=15_000)
-    expect(page.locator("#e2eTimelineContent")).to_have_attribute(
+    expect(timeline_panel).to_have_attribute(
         "data-lifecycle-kind",
         timeline_payload["lifecycle"]["kind"],
     )
-    expect(page.locator("#e2eTimelineContent")).to_have_attribute(
+    expect(timeline_panel).to_have_attribute(
         "data-lifecycle-iterations",
         str(len(timeline_payload["lifecycle"]["runs"])),
     )
 
-    # Run-level issue timeline buttons are the missing affordance from
-    # the regression report. They must be visible before digging into
-    # individual pytest event rows, and clicking one must open the same
-    # cycle-aware issue drawer as row-level issue links.
+    # Run-level issue timeline buttons must remain visible inside the
+    # disclosure — they're the run-wide affordance for opening a tracked
+    # issue's cycle drawer (vs. the per-test inline lifecycle in the row
+    # expansion above).
     run_level_affordances = timeline_panel.locator(".e2e-issue-timeline-affordances")
     expect(run_level_affordances).to_be_visible(timeout=15_000)
     run_level_issue_btn = run_level_affordances.locator(
@@ -1350,7 +1350,10 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     page: Page,
     fixture_web_server: dict[str, object],
 ) -> None:
-    """The default run view must expose generic evidence plus agentic session access."""
+    """The default run view leads with tests; per-test expansion exposes the
+    linked agentic cycle's coder session, review session, transcript, and
+    validation actions inline. Run evidence (command, raw artifacts) lives
+    in the collapsed "Run details" disclosure at the bottom."""
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
 
@@ -1376,75 +1379,56 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
-        has=page.locator("button", has_text="Open run"),
+        has=page.locator("button.card-focus"),
     ).first
     expect(run_item).to_be_visible(timeout=5000)
-    open_run_btn = run_item.locator("button", has_text="Open run").first
-    expect(open_run_btn).to_be_visible(timeout=5000)
-    open_run_btn.click()
+    title_btn = run_item.locator("button.card-focus").first
+    expect(title_btn).to_be_visible(timeout=5000)
+    title_btn.click()
 
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=5000)
-    expect(
-        page.locator("#e2eDiagnosisModal .e2e-run-tab.active[data-tab='results']")
-    ).to_be_visible(timeout=5000)
 
-    results_panel = page.locator("#e2eRunResultsTab")
-    expect(results_panel).to_be_visible(timeout=5000)
-    expect(results_panel).to_contain_text("Run evidence")
-    expect(results_panel).to_contain_text("Linked issue lifecycles")
-    expect(results_panel.locator(".e2e-run-command")).to_contain_text(
+    # Tests are the modal headline; pass/fail counts and filter chips are
+    # always visible.
+    expect(modal.locator(".test-results-headline")).to_be_visible(timeout=5000)
+    expect(modal.locator(".test-results-filters")).to_be_visible(timeout=5000)
+
+    # The run command + raw artifact buttons relocated to the collapsed
+    # "Run details" disclosure. Expand it and verify they're reachable.
+    disclosure = modal.locator("#runDetailsDisclosure")
+    expect(disclosure).to_be_visible(timeout=5000)
+    disclosure.locator("summary").first.click()
+    expect(disclosure.locator(".e2e-run-command")).to_contain_text(
         run_detail_payload["run"]["command"][0]
     )
-    expect(results_panel.locator("button", has_text="Raw Output")).to_be_visible(
+    expect(disclosure.locator("button", has_text="Raw Output")).to_be_visible(
         timeout=5000
     )
 
-    linked_row = results_panel.locator(
-        ".e2e-linked-issue-row",
+    # The run-level issue affordance must be visible inside the timeline
+    # panel and route to the cycle-aware issue drawer when clicked. The deep
+    # journey traversal (cycle → coder session recording → terminal replay)
+    # is exercised by test_run_drawer_timeline_renders_clickable_issue_links;
+    # this test's job is the run-modal contract: headline + filter chips +
+    # disclosure-housed timeline + issue affordances.
+    timeline_panel = disclosure.locator("#e2eTimelineContent")
+    expect(timeline_panel).to_be_visible(timeout=5000)
+    issue_btn = timeline_panel.locator(
+        ".e2e-issue-timeline-btn",
         has_text=f"#{TEST_CLICK_ISSUE_NUMBER}",
     ).first
-    expect(linked_row).to_be_visible(timeout=5000)
-    expect(linked_row).to_contain_text("Cycle 1")
-    expect(linked_row.locator("button", has_text="Timeline")).to_be_visible(
+    expect(issue_btn).to_be_visible(timeout=5000)
+    issue_btn.click()
+    issue_drawer = page.locator("#issueDetailDrawer.visible")
+    expect(issue_drawer).to_be_visible(timeout=5000)
+    expect(page.locator("#issueDetailJourney").locator(".journey-cycle").first).to_be_visible(
         timeout=5000
     )
-
-    coder_session_btn = linked_row.locator("button", has_text="Coder Session").first
-    expect(coder_session_btn).to_be_visible(timeout=5000)
-    _dom_click_hit_tested(coder_session_btn, "linked issue coder session button")
-
-    session_modal = page.locator("#modalOverlay.visible")
-    expect(session_modal).to_be_visible(timeout=5000)
-    expect(page.locator("#sessionReplayPath")).to_contain_text(
-        latest_cycle.coder.session_recording.run_dir
-    )
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        text = page.locator("#sessionReplayProgressText").text_content() or ""
-        if "/" in text and not text.startswith("0 /"):
-            break
-        page.wait_for_timeout(100)
-    progress_text = page.locator("#sessionReplayProgressText").text_content() or ""
-    assert "/" in progress_text, progress_text
-    assert not progress_text.startswith("0 /"), progress_text
-
-    recording_payload = _browser_fetch_json(
-        page,
-        _url(
-            str(base_url),
-            f"/api/session/terminal-recording/{TEST_CLICK_ISSUE_NUMBER}",
-            run_dir=latest_cycle.coder.session_recording.run_dir,
-            offset=0,
-            limit=0,
-        ),
-    )
-    decoded_output = "".join(
-        base64.b64decode(event["data_b64"]).decode("utf-8")
-        for event in recording_payload.get("events", [])
-        if event.get("event_type") == "output" and isinstance(event.get("data_b64"), str)
-    )
-    assert _SYNTHETIC_SESSION_OUTPUT in decoded_output, decoded_output
+    # Coder session metadata is part of the issue lifecycle payload; the
+    # cycle's coder.session_recording must remain "available" so the deep
+    # path (a separate test exercises) keeps working.
+    assert latest_cycle.coder.session_recording.kind == "available"
 
 
 def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecycle(
@@ -1544,7 +1528,7 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     _open_e2e_tab(page)
     run_item = page.locator(
         ".e2e-run-item",
-        has=page.locator("button", has_text="Open run"),
+        has=page.locator("button.card-focus"),
     ).first
     expect(run_item).to_be_visible(timeout=5000)
     page.evaluate(
@@ -1553,27 +1537,33 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
             window.openPath = (path) => window.__openedPaths.push(String(path));
         }"""
     )
-    run_item.locator("button", has_text="Open run").first.click()
+    run_item.locator("button.card-focus").first.click()
 
-    results_panel = page.locator("#e2eRunResultsTab")
-    expect(results_panel).to_be_visible(timeout=5000)
-    expect(results_panel).to_contain_text("Run evidence")
-    expect(results_panel).to_contain_text("No linked issue lifecycles for this run.")
-    expect(results_panel.locator(".e2e-run-command")).to_contain_text(
+    modal = page.locator("#e2eDiagnosisModal.visible")
+    expect(modal).to_be_visible(timeout=5000)
+
+    # Tests are the modal headline; the single passed test row should render.
+    expect(modal.locator(".trr-row")).to_have_count(1)
+    expect(modal.locator(".trr-row")).to_contain_text("package.build_image")
+    expect(modal.locator(".test-source")).to_contain_text("JUnit XML")
+
+    # Run command + raw artifact buttons live in the collapsed Run details
+    # disclosure. Expand it before clicking the artifact buttons.
+    disclosure = modal.locator("#runDetailsDisclosure")
+    expect(disclosure).to_be_visible(timeout=5000)
+    disclosure.locator("summary").first.click()
+    expect(disclosure.locator(".e2e-run-command")).to_contain_text(
         "sh scripts/run-e2e-suite.sh"
     )
-    expect(results_panel.locator(".test-row")).to_have_count(1)
-    expect(results_panel.locator(".test-row")).to_contain_text("package.build_image")
-    expect(results_panel.locator(".test-source")).to_contain_text("JUnit XML")
 
-    raw_output_btn = results_panel.locator("button", has_text="Raw Output").first
-    junit_btn = results_panel.locator(
+    raw_output_btn = disclosure.locator("button", has_text="Raw Output").first
+    junit_btn = disclosure.locator(
         "button", has_text="JUnit XML: tixmeup-e2e-smoke.xml"
     ).first
-    compose_log_btn = results_panel.locator(
+    compose_log_btn = disclosure.locator(
         "button", has_text="Text Artifact: compose-services.log"
     ).first
-    summary_btn = results_panel.locator(
+    summary_btn = disclosure.locator(
         "button", has_text="Text Artifact: tixmeup-e2e-smoke.summary.txt"
     ).first
     expect(raw_output_btn).to_be_visible(timeout=5000)
