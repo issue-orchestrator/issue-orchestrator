@@ -6,7 +6,12 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ..contracts.ui_openapi_models import E2ERunDetailPayload, IssueDetailPayload
+from ..contracts.ui_openapi_models import (
+    E2ERunDetailPayload,
+    E2ERunIssueLinkPayload,
+    E2ERunResultCategoriesPayload,
+    IssueDetailPayload,
+)
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES
 from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -170,6 +175,55 @@ def _public_e2e_run_payload(run: dict[str, Any], run_id: int) -> dict[str, Any]:
         "total_tests": run.get("total_tests"),
         "current_test": run.get("current_test"),
     }
+
+
+def _public_e2e_results_by_category(
+    results_by_category: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Project internal E2E result rows to the public UI contract."""
+    return {
+        category: [
+            _public_e2e_result_case(result)
+            for result in list(results_by_category[category])
+        ]
+        for category in E2ERunResultCategoriesPayload.model_fields
+    }
+
+
+def _public_e2e_result_case(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "nodeid": result["nodeid"],
+        "case_id": result["case_id"],
+        "label": result["label"],
+        "display_name": result["display_name"],
+        "suite_name": result["suite_name"],
+        "result_source": result["result_source"],
+        "outcome": result["outcome"],
+        "duration_seconds": result["duration_seconds"],
+        "longrepr": result["longrepr"],
+        "failure_summary": result["failure_summary"],
+        "retry_outcome": result["retry_outcome"],
+        "is_quarantined": result["is_quarantined"],
+        "updated_at": result["updated_at"],
+        "history": result["history"],
+        "existing_issue": _public_e2e_existing_issue(result["existing_issue"]),
+        "category": result["category"],
+        "flip_rate": result["flip_rate"],
+        "flip_rate_percent": result["flip_rate_percent"],
+        "is_likely_flaky": result["is_likely_flaky"],
+    }
+
+
+def _public_e2e_existing_issue(issue: dict[str, Any] | None) -> dict[str, Any] | None:
+    if issue is None:
+        return None
+    return E2ERunIssueLinkPayload.model_validate(
+        {
+            "number": issue["number"],
+            "status": issue["status"],
+            "resolution": issue["resolution"],
+        }
+    ).model_dump(mode="json")
 
 
 def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -475,7 +529,7 @@ async def get_e2e_run_detail(
             status_code=500,
         )
     results_summary = dict(run_details["summary"])
-    results_by_category = dict(run_details["tests_by_category"])
+    results_by_category = _public_e2e_results_by_category(run_details["tests_by_category"])
     payload["run"] = run_payload
     payload["results_summary"] = results_summary
     payload["results_by_category"] = results_by_category
