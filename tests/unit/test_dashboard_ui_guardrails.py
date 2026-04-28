@@ -1161,8 +1161,12 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     # Headline + filters + flat list are the primary surface.
     assert "renderTestResultsHeadline(summary" in results_body
     assert "renderTestResultsFilters(counts" in results_body
-    assert 'id="testResultsList"' in results_body
+    assert 'class="test-results-list"' in results_body
     assert "_renderTestRow(test, lifecycle)" in results_body
+    # The test-results-list MUST NOT carry a fixed id — both the E2E run
+    # modal and the issue-detail drawer render this layout, so a fixed id
+    # would create duplicates and break panel-scoped filter dispatch.
+    assert "testResultsList" not in js
 
     # Headline shows pass/fail/skipped/quarantined counts (passed/failing minimum).
     assert "passed" in headline_body
@@ -1197,6 +1201,12 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "trr-expand" in toggle_body
     assert "filterGroup" in filter_body
     assert ".trf-chip" in filter_body
+    # Filter dispatch must be panel-scoped, not global. Looking up the
+    # list/chips through document.* would target the wrong panel when the
+    # E2E run modal and the issue-detail drawer are open concurrently.
+    assert "btnEl.closest('.test-results-panel')" in filter_body
+    assert "document.getElementById" not in filter_body
+    assert "document.querySelectorAll" not in filter_body
 
 
 def test_e2e_run_details_disclosure_holds_metadata_artifacts_and_timeline() -> None:

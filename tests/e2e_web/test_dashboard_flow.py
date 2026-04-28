@@ -286,6 +286,139 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
     expect(passed_row).to_have_attribute("data-expandable", "0")
 
 
+def test_test_results_filter_is_panel_scoped_when_two_panels_coexist(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """When the issue drawer's structured validation panel and a hypothetical
+    second test-results panel both render concurrently, clicking a filter
+    chip in one must NOT toggle row visibility in the other.
+
+    Catches the bug where filterTestResults() looked up
+    document.getElementById('testResultsList') globally — fine with one
+    panel open, broken when both are. We synthesize two panels in the DOM
+    (the real drawer panel + a duplicate appended for this test) and
+    verify panel A's filter only affects panel A's rows."""
+    _goto_dashboard(page, str(web_server["url"]))
+
+    base_synthetic = {
+        "issue_number": 408,
+        "title": "Coexisting panels test",
+        "actions": [],
+        "summary": {
+            "run_diagnostic": {
+                "state": "validation_failed",
+                "run_dir": "/tmp/x",
+                "session_name": None,
+                "reason": "tests failed",
+                "suite": "publish_gate",
+                "command": "make test",
+                "exit_code": 1,
+                "failed_tests": [],
+                "failed_tests_preview": [],
+                "validation_record_path": None,
+                "validation_stderr": None,
+                "validation_stdout": None,
+                "junit_cases": [
+                    {
+                        "nodeid": "tests::a_passes",
+                        "case_id": "tests::a_passes",
+                        "label": "a_passes",
+                        "display_name": "a_passes",
+                        "suite_name": "tests",
+                        "outcome": "passed", "category": "passed",
+                        "retry_outcome": None, "duration_seconds": 0.1,
+                        "longrepr": None, "failure_summary": None,
+                        "history": [], "existing_issue": None,
+                        "flip_rate": 0.0, "flip_rate_percent": 0.0,
+                        "is_likely_flaky": False, "is_quarantined": False,
+                        "result_source": "junit", "updated_at": "",
+                    },
+                    {
+                        "nodeid": "tests::a_fails",
+                        "case_id": "tests::a_fails",
+                        "label": "a_fails",
+                        "display_name": "a_fails",
+                        "suite_name": "tests",
+                        "outcome": "failed", "category": "failed",
+                        "retry_outcome": None, "duration_seconds": 0.2,
+                        "longrepr": "panel A error", "failure_summary": "panel A error",
+                        "history": [], "existing_issue": None,
+                        "flip_rate": 0.0, "flip_rate_percent": 0.0,
+                        "is_likely_flaky": False, "is_quarantined": False,
+                        "result_source": "junit", "updated_at": "",
+                    },
+                ],
+            }
+        },
+    }
+
+    page.evaluate(
+        """payload => {
+            const drawer = document.getElementById('issueDetailDrawer');
+            drawer.classList.add('visible');
+            drawer.setAttribute('aria-hidden', 'false');
+            window.renderIssueDetailValidation(payload);
+
+            // Append a second, independent test-results panel into the
+            // page so we can verify panel-scoped filtering.
+            const second = document.createElement('div');
+            second.id = '__test_second_panel__';
+            second.innerHTML = `
+                <div class="test-results-panel">
+                    <div class="test-results-headline"></div>
+                    <div class="test-results-filters">
+                        <button type="button" class="trf-chip active" data-filter="all"
+                            onclick="filterTestResults('all', this)">All</button>
+                        <button type="button" class="trf-chip" data-filter="failing"
+                            onclick="filterTestResults('failing', this)">Failing</button>
+                    </div>
+                    <div class="test-results-list">
+                        <div class="trr-row" data-filter-group="passed" data-nodeid="b_pass">b_pass row</div>
+                        <div class="trr-row" data-filter-group="failing" data-nodeid="b_fail">b_fail row</div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(second);
+        }""",
+        base_synthetic,
+    )
+
+    panel_a = page.locator("#issueDetailValidationStructured .test-results-panel")
+    panel_b = page.locator("#__test_second_panel__ .test-results-panel")
+    expect(panel_a).to_be_visible()
+    expect(panel_b).to_be_visible()
+
+    # Both panels start with All — both rows visible in each panel.
+    assert panel_a.locator(".trr-row").count() == 2
+    assert panel_b.locator(".trr-row").count() == 2
+
+    # Click "Failing" in panel A. Panel A: only the failing row visible.
+    # Panel B: both rows still visible (filter scope did not leak).
+    panel_a.locator(".trf-chip[data-filter='failing']").click()
+
+    a_visible = [
+        r for r in panel_a.locator(".trr-row").all()
+        if r.evaluate("el => el.style.display !== 'none'")
+    ]
+    assert len(a_visible) == 1
+    assert "a_fails" in (a_visible[0].text_content() or "")
+
+    b_visible = [
+        r for r in panel_b.locator(".trr-row").all()
+        if r.evaluate("el => el.style.display !== 'none'")
+    ]
+    assert len(b_visible) == 2, (
+        "Panel B's row visibility should not change when panel A's filter "
+        "is clicked — filterTestResults must scope to the clicked panel."
+    )
+
+    # And panel B's chips' active state must not have flipped because of
+    # panel A's click — chip selection should also be panel-scoped.
+    panel_b_active_chip = panel_b.locator(".trf-chip.active")
+    expect(panel_b_active_chip).to_have_attribute("data-filter", "all")
+
+
 def test_validation_failure_dialog_renders_results_and_artifacts(
     page: Page,
     web_server: dict[str, object],

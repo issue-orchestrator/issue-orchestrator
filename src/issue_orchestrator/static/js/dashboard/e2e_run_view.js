@@ -561,7 +561,7 @@ function renderE2EResultsPanel(data) {
         <div class="test-results-panel">
             ${renderTestResultsHeadline(summary, tests.length)}
             ${renderTestResultsFilters(counts)}
-            <div class="test-results-list" id="testResultsList">${rowsHtml}</div>
+            <div class="test-results-list">${rowsHtml}</div>
             ${bulkBar}
             ${renderRunDetailsDisclosure(data)}
         </div>
@@ -620,14 +620,20 @@ function toggleTestRowExpand(headerEl) {
 }
 
 function filterTestResults(filterKey, btnEl) {
-    const list = document.getElementById('testResultsList');
+    // Scope the filter to the panel containing the clicked chip. Both the
+    // E2E run modal and the issue-detail drawer can render a
+    // .test-results-panel concurrently — looking up the list/chips
+    // globally would target the wrong panel when both are open.
+    const panel = btnEl && btnEl.closest ? btnEl.closest('.test-results-panel') : null;
+    if (!panel) return;
+    const list = panel.querySelector('.test-results-list');
     if (!list) return;
     list.querySelectorAll('.trr-row').forEach(row => {
         const group = row.dataset.filterGroup || 'other';
         const show = filterKey === 'all' || group === filterKey;
         row.style.display = show ? '' : 'none';
     });
-    document.querySelectorAll('.test-results-filters .trf-chip').forEach(chip => {
+    panel.querySelectorAll('.trf-chip').forEach(chip => {
         const active = chip === btnEl;
         chip.classList.toggle('active', active);
         chip.setAttribute('aria-selected', active ? 'true' : 'false');

@@ -690,7 +690,7 @@ function _renderIssueValidationStructured(container, junitCases) {
         <div class="test-results-panel issue-detail-validation-structured-panel">
             ${renderTestResultsHeadline(summary, cases.length)}
             ${renderTestResultsFilters(counts)}
-            <div class="test-results-list" id="testResultsList">${rows}</div>
+            <div class="test-results-list">${rows}</div>
         </div>
     `;
 }
