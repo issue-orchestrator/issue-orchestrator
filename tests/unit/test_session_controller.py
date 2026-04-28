@@ -79,6 +79,10 @@ class MockCompletionProcessor:
 
     def __init__(self):
         self.completion_record: CompletionRecord | None = None
+        self.process_calls: list[dict] = []
+        self.worktree_state_valid = True
+        self.worktree_state_reason = ""
+        self.dirty_policy_results: list[tuple[bool, str]] = []
         self.process_result = MagicMock()
         self.process_result.success = True
         self.process_result.pr_url = "https://github.com/test/repo/pull/1"
@@ -102,7 +106,26 @@ class MockCompletionProcessor:
         pr_number: int | None = None,
         completion_path: str | None = None,
     ):
+        self.process_calls.append(
+            {
+                "worktree_path": worktree_path,
+                "issue_number": issue_number,
+                "issue_title": issue_title,
+                "pr_number": pr_number,
+                "completion_path": completion_path,
+            }
+        )
         return self.process_result
+
+    def validate_worktree_state(
+        self, worktree_path: Path, record: CompletionRecord
+    ) -> tuple[bool, str]:
+        return self.worktree_state_valid, self.worktree_state_reason
+
+    def check_dirty_policy(self, worktree_path: Path) -> tuple[bool, str]:
+        if self.dirty_policy_results:
+            return self.dirty_policy_results.pop(0)
+        return self.worktree_state_valid, self.worktree_state_reason
 
 
 class RecordingEventSink:
@@ -686,6 +709,164 @@ class MockWorkingCopy:
 
 class TestSessionControllerValidationCaching:
     """Tests for validation caching via PublishGate."""
+
+    def test_dirty_preflight_returns_validation_retry_without_running_command(
+        self, tmp_path: Path
+    ):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        )
+        processor.worktree_state_valid = False
+        processor.worktree_state_reason = (
+            "Working tree is dirty; commit/add/stash before pushing. "
+            "Dirty files: scripts/dev.sh."
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        events = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=1,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY
+        assert decision.validation_passed is False
+        assert "before running command" in decision.validation_error
+        assert "scripts/dev.sh" in decision.validation_error
+        assert command_runner.run_calls == []
+        assert processor.process_calls == []
+
+        retry_prompt = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "issue-123"
+            / "retry-prompt.md"
+        )
+        assert retry_prompt.exists()
+        assert "scripts/dev.sh" in retry_prompt.read_text()
+        retry_events = [
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
+        ]
+        assert len(retry_events) == 1
+
+    def test_dirty_preflight_exhausts_without_running_command(self, tmp_path: Path):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        )
+        processor.worktree_state_valid = False
+        processor.worktree_state_reason = (
+            "Working tree is dirty; commit/add/stash before pushing. "
+            "Dirty files: scripts/dev.sh."
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=0,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert decision.validation_passed is False
+        assert command_runner.run_calls == []
+        assert processor.process_calls == []
+
+    def test_dirty_postflight_returns_validation_retry_after_command(
+        self, tmp_path: Path
+    ):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        )
+        processor.dirty_policy_results = [
+            (True, ""),
+            (
+                False,
+                "Working tree is dirty; commit/add/stash before pushing. "
+                "Dirty files: generated.txt.",
+            ),
+        ]
+
+        command_runner = MockCommandRunner(returncode=0)
+        events = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=1,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY
+        assert decision.validation_passed is False
+        assert "Validation command passed" in decision.validation_error
+        assert "generated.txt" in decision.validation_error
+        assert len(command_runner.run_calls) == 1
+        assert len(processor.process_calls) == 1
+        retry_events = [
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
+        ]
+        assert len(retry_events) == 1
 
     def test_validation_runs_with_sha_logged(self, tmp_path):
         """Validation runs and logs SHA on cache miss."""

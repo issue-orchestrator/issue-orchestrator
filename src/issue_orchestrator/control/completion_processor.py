@@ -76,6 +76,15 @@ if TYPE_CHECKING:
     from ..infra.config import Config
 
 
+def _is_dirty_policy_failure(reason: str) -> bool:
+    return reason.startswith(
+        (
+            "Working tree is dirty;",
+            "Invalid validation.pre_push_dirty_check value:",
+        )
+    )
+
+
 # Only paths under ``<worktree>/.issue-orchestrator`` are acceptable as a
 # validation-record source. Agents write to this subtree as part of normal
 # operation; anything outside it (``/etc/hosts``, a sibling worktree, a
@@ -536,8 +545,11 @@ class CompletionProcessor:
     ) -> tuple[bool, str]:
         return self._record_validator.validate_worktree_state(worktree, record)
 
-    def _check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+    def check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
         return self._record_validator.check_dirty_policy(worktree)
+
+    def _check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+        return self.check_dirty_policy(worktree)
 
     @staticmethod
     def _is_ignored_dirty_path(path: str) -> bool:
@@ -839,17 +851,12 @@ class CompletionProcessor:
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
-            tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
-            comment = build_processing_failure_comment(
-                errors=[tagged_reason],
-                actions_taken=[],
-                diagnostic_path=None,
-            )
-            self._add_issue_comment(issue_number, comment, context="processing failure")
-            return ProcessingResult(
-                success=False,
-                message=f"Validation failed: {reason}",
-                errors=[tagged_reason],
+            return self._handle_invalid_worktree_state(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                reason,
             )
 
         # Check publish gate if actions require it
@@ -999,6 +1006,42 @@ class CompletionProcessor:
                 self.session_output.attach_claude_log(run_dir)
 
         return record, session_name, None
+
+    def _handle_invalid_worktree_state(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+        reason: str,
+    ) -> ProcessingResult:
+        logger.warning(
+            "Completion worktree validation failed before publish: issue=%s reason=%s",
+            issue_number,
+            reason,
+        )
+        if _is_dirty_policy_failure(reason):
+            return self._handle_gate_failure(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                reason,
+                gate_record=None,
+            )
+
+        tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
+        comment = build_processing_failure_comment(
+            errors=[tagged_reason],
+            actions_taken=[],
+            diagnostic_path=None,
+        )
+        self._add_issue_comment(issue_number, comment, context="processing failure")
+        return ProcessingResult(
+            success=False,
+            message=f"Validation failed: {reason}",
+            errors=[tagged_reason],
+        )
 
     def _check_publish_gate_if_required(
         self,

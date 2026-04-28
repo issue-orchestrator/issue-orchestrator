@@ -158,6 +158,7 @@ class CompletionRecordValidator:
         )
 
         if mode == "off":
+            logger.info("Dirty-check skipped for %s: mode=off", worktree)
             return True, ""
         list_mode = mode
         if mode == "tracked":
@@ -172,9 +173,25 @@ class CompletionRecordValidator:
                 f"{mode!r} (expected tracked|unstaged|all|off)"
             )
 
+        logger.info(
+            "Dirty-check evaluated for %s: mode=%s dirty=%s",
+            worktree,
+            mode,
+            dirty,
+        )
         if dirty:
             dirty_files = self._git_adapter.list_dirty_files(worktree, list_mode)
             blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
+            logger.info(
+                "Dirty-check files for %s: mode=%s total=%d blocking=%d files=%s",
+                worktree,
+                mode,
+                len(dirty_files),
+                len(blocking_files),
+                ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])
+                if blocking_files
+                else "<runtime-only>",
+            )
             if dirty_files and not blocking_files:
                 logger.info(
                     "Dirty-check ignored runtime-only files for %s: %s",
