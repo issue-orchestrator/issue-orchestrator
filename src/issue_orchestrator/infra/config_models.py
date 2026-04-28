@@ -85,6 +85,11 @@ class ValidationConfig:
     timeout_seconds: int = 300  # Default 5 minutes
     pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "all" | "off"
     coverage_guardrail: CoverageGuardrailConfig = field(default_factory=CoverageGuardrailConfig)
+    # JUnit XML output paths (relative to worktree, glob-supported) emitted by
+    # the validation command. When set, the dashboard renders a structured
+    # test-results view for failing validations instead of just a list of
+    # test names. Empty by default — keeps current behavior unchanged.
+    junit_xml_paths: tuple[str, ...] = ()
 
 
 @dataclass

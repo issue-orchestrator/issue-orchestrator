@@ -157,6 +157,8 @@ def test_issue_detail_template_includes_validation_failure_section() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert 'id="issueDetailValidation"' in html
     assert 'id="issueDetailValidationBtn"' in html
+    # Container for the structured (JUnit-backed) test results view.
+    assert 'id="issueDetailValidationStructured"' in html
 
 
 def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
@@ -291,6 +293,35 @@ def test_render_issue_detail_renders_validation_failure_callout() -> None:
     assert "summary.run_diagnostic" in body
     assert "action.id === 'open_validation_failure'" in body
     assert "openValidationFailure" in body
+
+
+def test_issue_detail_validation_renders_structured_view_when_junit_cases_present() -> None:
+    """When the validation diagnostic carries parsed JUnit cases, the drawer
+    renders the same test-centric layout used by the E2E run modal — pass/fail
+    headline, filter chips, per-row error expand. Falls back to the simple
+    failed-test-name list when no JUnit data is available."""
+    js = _read(DASHBOARD_JS)
+    render_body = _function_body(js, "renderIssueDetailValidation")
+    structured_body = _function_body(js, "_renderIssueValidationStructured")
+    reset_body = _function_body(js, "resetIssueDetailValidation")
+
+    # Render branches on junit_cases.
+    assert "diagnostic.junit_cases" in render_body
+    assert "_renderIssueValidationStructured" in render_body
+    # Falls through to the existing failed_tests_preview <ul> when junit_cases is empty.
+    assert "failed_tests_preview" in render_body
+
+    # Structured renderer reuses the shared test-results primitives.
+    assert "renderTestResultsHeadline(" in structured_body
+    assert "renderTestResultsFilters(" in structured_body
+    assert "_renderTestRow(" in structured_body
+    assert "_testFilterGroup" in structured_body
+
+    # Reset clears both the simple <ul> and the structured panel.
+    assert "issueDetailValidationStructured" in reset_body
+
+    css = _read_dashboard_css_bundle()
+    assert ".issue-detail-validation-structured" in css
 
 
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
@@ -1080,27 +1111,26 @@ def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
 
 
 def test_e2e_timeline_has_view_switcher() -> None:
-    """E2E run timeline tab has Story/Ops/Debug view buttons."""
+    """The Story/Ops/Debug timeline view switcher lives in the Run details disclosure."""
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "renderUnifiedRunView")
-    assert "e2e-timeline-view-switcher" in body
-    assert "switchE2ETimelineView" in body
-    assert "'user'" in body
-    assert "'ops'" in body
-    assert "'debug'" in body
+    disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
+    assert "e2e-timeline-view-switcher" in disclosure_body
+    assert "switchE2ETimelineView" in disclosure_body
+    assert "'user'" in disclosure_body
+    assert "'ops'" in disclosure_body
+    assert "'debug'" in disclosure_body
 
 
 def test_e2e_run_timeline_is_directly_addressable() -> None:
-    """The run view exposes a first-class Timeline entrypoint and tab."""
+    """The run modal exposes a Timeline entrypoint that auto-expands the Run details disclosure."""
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "renderUnifiedRunView")
+    legacy_entry = _function_body(js, "openE2ERunTimeline")
+    render_body = _function_body(js, "renderUnifiedRunView")
     assert "function openE2ERunTimeline(runId)" in js
-    assert "showUnifiedRunView(runId, {initialTab: 'timeline'})" in js
-    assert "options.initialTab === 'timeline'" in body
-    assert "hasTimelinePanel" not in body
-    assert "timelineActive" in body
-    assert "resultsActive" in body
-    assert "renderE2ETimeline(timelineContainer, tl)" in body
+    assert "showUnifiedRunView(runId, { expandRunDetails: true })" in legacy_entry
+    assert "options.expandRunDetails" in render_body
+    assert "runDetailsDisclosure" in render_body
+    assert "renderE2ETimeline(timelineContainer, tl)" in render_body
 
 
 def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
@@ -1116,64 +1146,120 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
     assert ".e2e-issue-timeline-btn" in css
 
 
-def test_e2e_run_results_surface_evidence_and_agentic_lifecycle_actions() -> None:
-    """Results tab must expose run evidence plus linked issue lifecycle/session actions."""
+def test_e2e_run_modal_uses_test_centric_layout() -> None:
+    """Run modal: tests are the headline, with filter chips and per-row expansion."""
     js = _read(DASHBOARD_JS)
-    render_body = _function_body(js, "renderUnifiedRunView")
     results_body = _function_body(js, "renderE2EResultsPanel")
-    evidence_body = _function_body(js, "renderE2ERunEvidenceSection")
+    headline_body = _function_body(js, "renderTestResultsHeadline")
+    filters_body = _function_body(js, "renderTestResultsFilters")
+    row_body = _function_body(js, "_renderTestRow")
+    expand_body = _function_body(js, "_renderTestRowExpand")
+    actions_body = _function_body(js, "_renderTestRowActions")
+    toggle_body = _function_body(js, "toggleTestRowExpand")
+    filter_body = _function_body(js, "filterTestResults")
+
+    # Headline + filters + flat list are the primary surface.
+    assert "renderTestResultsHeadline(summary" in results_body
+    assert "renderTestResultsFilters(counts" in results_body
+    assert 'id="testResultsList"' in results_body
+    assert "_renderTestRow(test, lifecycle)" in results_body
+
+    # Headline shows pass/fail/skipped/quarantined counts (passed/failing minimum).
+    assert "passed" in headline_body
+    assert "failing" in headline_body
+    assert "trh-stat" in headline_body
+
+    # Filter chips are tablist with All/Failing/Passed/Skipped/Quarantined groups.
+    assert "trf-chip" in filters_body
+    assert "data-filter=" in filters_body
+    assert 'role="tablist"' in filters_body
+    assert "filterTestResults(" in filters_body
+
+    # Per-test rows are expandable when there's error or linked lifecycle.
+    assert "data-filter-group=" in row_body
+    assert "data-expandable=" in row_body
+    assert "toggleTestRowExpand(this)" in row_body
+
+    # Per-row expand contains error pre + linked-lifecycle inline (no separate top-level section).
+    assert "trr-error-text" in expand_body
+    assert "Linked agentic cycle" in expand_body
+    assert "Coder Session" in expand_body
+    assert "Review Session" in expand_body
+    assert "Validation" in expand_body
+
+    # Row actions still expose Create Issue / Quarantine / Copy Error for failing untriaged.
+    assert "create_issue_dropdown" in actions_body
+    assert "quarantine_test" in actions_body
+    assert "copy_test_error" in actions_body
+
+    # Toggle and filter behavior helpers exist.
+    assert ".trr-row" in toggle_body
+    assert "trr-expand" in toggle_body
+    assert "filterGroup" in filter_body
+    assert ".trf-chip" in filter_body
+
+
+def test_e2e_run_details_disclosure_holds_metadata_artifacts_and_timeline() -> None:
+    """Run details disclosure carries runner/command/raw artifacts and the full run timeline."""
+    js = _read(DASHBOARD_JS)
+    disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
     artifact_button_body = _function_body(js, "_artifactButton")
     artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
-    row_action_button_body = _function_body(js, "_e2eRowActionButton")
-    row_action_dispatch_body = _function_body(js, "runE2ERowActionFromButton")
-    row_body = _function_body(js, "renderTestRow")
-    dropdown_body = _function_body(js, "showCreateIssueDropdown")
-    result_evidence_body = _function_body(js, "_renderResultEvidenceButtons")
-    lifecycle_body = _function_body(js, "renderE2ELinkedIssueLifecycles")
-    lifecycle_row_body = _function_body(js, "_renderLinkedIssueLifecycle")
-    command_body = _function_body(js, "runE2ELifecycleCommand")
-    assert 'data-tab="results"' in render_body
-    assert "renderE2EResultsPanel(data)" in render_body
-    assert "renderE2ERunEvidenceSection(data)" in results_body
-    assert "renderE2ELinkedIssueLifecycles(data)" in results_body
-    assert "Always-visible debugging surfaces for any framework" in evidence_body
-    assert "raw output" in evidence_body.lower()
+    assert "<details" in disclosure_body
+    assert 'id="runDetailsDisclosure"' in disclosure_body
+    assert "rdd-grid" in disclosure_body
+    assert "Runner" in disclosure_body
+    assert "Command" in disclosure_body
+    assert "Run timeline" in disclosure_body
+    assert 'id="e2eTimelineContent"' in disclosure_body
+    assert "Raw artifacts" in disclosure_body
+    # Artifact buttons still go through openPath via the host action handler;
+    # the broken file:// behavior is preserved for now in the disclosure but
+    # is no longer the modal's headline.
     assert "Raw Output" in artifact_body
-    assert "Primary report" in evidence_body
     assert "data-artifact-path" in artifact_button_body
     assert "openPath('" not in artifact_button_body
     assert "button.dataset.artifactPath" in artifact_open_body
+    css = _read_dashboard_css_bundle()
+    assert ".run-details-disclosure" in css
+    assert ".test-results-headline" in css
+    assert ".test-results-filters" in css
+    assert ".trr-row" in css
+    assert ".trr-expand" in css
+    assert ".trr-lifecycle" in css
+
+
+def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
+    """Per-test action buttons use the data-e2e-action dispatch contract, not inline handlers."""
+    js = _read(DASHBOARD_JS)
+    row_action_button_body = _function_body(js, "_e2eRowActionButton")
+    row_action_dispatch_body = _function_body(js, "runE2ERowActionFromButton")
+    actions_body = _function_body(js, "_renderTestRowActions")
+    dropdown_body = _function_body(js, "showCreateIssueDropdown")
+    command_body = _function_body(js, "runE2ELifecycleCommand")
     assert "data-e2e-action" in row_action_button_body
     assert "dataset.nodeid" in row_action_dispatch_body
-    assert "closeE2EIssue(" not in row_body
-    assert "showCreateIssueDropdown(this, '" not in row_body
-    assert "quarantineSingleTest('" not in row_body
-    assert "copyTestErrorFromRun('" not in row_body
+    assert "closeE2EIssue(" not in actions_body
+    assert "showCreateIssueDropdown(this, '" not in actions_body
+    assert "quarantineSingleTest('" not in actions_body
+    assert "copyTestErrorFromRun('" not in actions_body
     assert "createSingleIssueWithAgent('" not in dropdown_body
-    assert "No run-scoped logs or reports were captured for this run." in evidence_body
-    assert "Run Log" in result_evidence_body
-    assert "Report" in result_evidence_body
-    assert "No linked issue lifecycles for this run." in lifecycle_body
-    assert "Coder Session" in lifecycle_row_body
-    assert "Review Session" in lifecycle_row_body
-    assert "Validation" in lifecycle_row_body
     assert "openIssueTimeline" in command_body
     assert "openAgentLogAction" in command_body
     assert "openReviewTranscript" in command_body
     assert "openValidationFailure" in command_body
-    css = _read_dashboard_css_bundle()
-    assert ".e2e-run-evidence-grid" in css
-    assert ".e2e-linked-issue-row" in css
-    assert ".e2e-lifecycle-chip" in css
-    assert ".e2e-run-status" in css
 
 
 def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
-    """Run history and issue rows must offer direct Timeline controls."""
+    """Issue rows still offer a direct Timeline control; run history rows route through title click."""
     dashboard = _read(DASHBOARD_TEMPLATE)
     issue_row = _read(ISSUE_ROW_TEMPLATE)
-    assert "openE2ERunTimeline({{ run.e2e_run_id }})" in dashboard
+    # Run history rows are now single-click-from-title; per-row Open run / Timeline buttons removed.
+    assert "openE2ERunTimeline({{ run.e2e_run_id }})" not in dashboard
+    assert ">Open run<" not in dashboard
+    assert 'showUnifiedRunView({{ run.e2e_run_id }})' in dashboard
+    # Issue rows continue to expose direct Timeline controls.
     assert "openE2ERunTimeline({{ issue.e2e_run_id }})" in issue_row
     assert "openIssueTimeline({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
     assert "openTimelineModal({{ issue.issue_number }})" not in issue_row

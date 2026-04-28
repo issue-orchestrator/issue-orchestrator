@@ -168,20 +168,9 @@ export interface E2EIssueAffordancePayload {
   run_id: number;
 }
 
-export interface E2ERunArtifactPayload {
-  kind: string;
-  label: string;
-  path: string;
-}
-
-export interface E2ERunCaseHistoryPayload {
-  outcome: string;
-  run_id: number;
-}
-
 export interface E2ERunDetailPayload {
   actions: IssueDetailActionPayload[];
-  artifacts: E2ERunArtifactPayload[];
+  artifacts: TestRunArtifactPayload[];
   blocked_detail: IssueDetailBlockedDetailPayload | null;
   cycles: E2ETimelineCyclePayload[];
   e2e_run_id?: number | null;
@@ -194,7 +183,7 @@ export interface E2ERunDetailPayload {
   previous_runs: Record<string, any>[];
   previous_runs_count: number;
   raw_events_count: number;
-  reports: E2ERunArtifactPayload[];
+  reports: TestRunArtifactPayload[];
   results_by_category: E2ERunResultCategoriesPayload;
   results_summary: E2ERunResultsSummaryPayload;
   run: E2ERunExecutionPayload;
@@ -226,12 +215,6 @@ export interface E2ERunExecutionPayload {
   total_tests: number | null;
 }
 
-export interface E2ERunIssueLinkPayload {
-  number: number;
-  resolution: string | null;
-  status: string;
-}
-
 export interface E2ERunIterationPayload {
   diagnostics: TimelineDiagnosticPayload[];
   e2e_run: E2ERunLifecyclePayload;
@@ -248,36 +231,14 @@ export interface E2ERunLifecyclePayload {
   tests: E2ETestExecutionPayload[];
 }
 
-export interface E2ERunResultCasePayload {
-  case_id: string;
-  category: string;
-  display_name: string | null;
-  duration_seconds: number | null;
-  existing_issue: E2ERunIssueLinkPayload | null;
-  failure_summary: string | null;
-  flip_rate: number;
-  flip_rate_percent: number;
-  history: E2ERunCaseHistoryPayload[];
-  is_likely_flaky: boolean;
-  is_quarantined: boolean;
-  label: string;
-  longrepr: string | null;
-  nodeid: string;
-  outcome: string;
-  result_source: string;
-  retry_outcome: string | null;
-  suite_name: string | null;
-  updated_at: string;
-}
-
 export interface E2ERunResultCategoriesPayload {
-  fixed: E2ERunResultCasePayload[];
-  flaky: E2ERunResultCasePayload[];
-  has_issue: E2ERunResultCasePayload[];
-  passed: E2ERunResultCasePayload[];
-  quarantined: E2ERunResultCasePayload[];
-  skipped: E2ERunResultCasePayload[];
-  untriaged: E2ERunResultCasePayload[];
+  fixed: TestCaseResultPayload[];
+  flaky: TestCaseResultPayload[];
+  has_issue: TestCaseResultPayload[];
+  passed: TestCaseResultPayload[];
+  quarantined: TestCaseResultPayload[];
+  skipped: TestCaseResultPayload[];
+  untriaged: TestCaseResultPayload[];
 }
 
 export interface E2ERunResultsSummaryPayload {
@@ -464,6 +425,7 @@ export interface IssueDetailValidationDiagnosticPayload {
   exit_code: number;
   failed_tests: string[];
   failed_tests_preview: string[];
+  junit_cases: TestCaseResultPayload[];
   reason: string;
   run_dir: string;
   session_name: string | null;
@@ -738,6 +700,45 @@ export interface ShowEventDetailsCommandPayload {
   event_ref: string;
   kind: "show_event_details";
   label: string;
+}
+
+export interface TestCaseHistoryPayload {
+  outcome: string;
+  run_id: number;
+}
+
+export interface TestCaseIssueLinkPayload {
+  number: number;
+  resolution: string | null;
+  status: string;
+}
+
+export interface TestCaseResultPayload {
+  case_id: string;
+  category: string;
+  display_name: string | null;
+  duration_seconds: number | null;
+  existing_issue: TestCaseIssueLinkPayload | null;
+  failure_summary: string | null;
+  flip_rate: number;
+  flip_rate_percent: number;
+  history: TestCaseHistoryPayload[];
+  is_likely_flaky: boolean;
+  is_quarantined: boolean;
+  label: string;
+  longrepr: string | null;
+  nodeid: string;
+  outcome: string;
+  result_source: string;
+  retry_outcome: string | null;
+  suite_name: string | null;
+  updated_at: string;
+}
+
+export interface TestRunArtifactPayload {
+  kind: string;
+  label: string;
+  path: string;
 }
 
 export interface TimelineDiagnosticPayload {

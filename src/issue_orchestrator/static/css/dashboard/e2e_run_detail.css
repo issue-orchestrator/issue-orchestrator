@@ -303,3 +303,232 @@
     background: transparent;
     border-color: var(--border);
 }
+
+/* ── Test-centric run modal layout ───────────────────────────────── */
+.test-results-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.test-results-headline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel-soft);
+}
+.trh-stat {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+}
+.trh-stat.trh-zero {
+    opacity: 0.45;
+    font-weight: 500;
+}
+.trh-passed { color: var(--success, #2da44e); }
+.trh-failed { color: var(--danger, #cf222e); }
+.trh-skipped, .trh-quarantined { color: var(--text-muted); }
+
+.test-results-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.trf-chip {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+}
+.trf-chip:hover {
+    background: var(--bg-panel);
+    color: var(--text);
+}
+.trf-chip.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+
+.test-results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.trr-row {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-panel-soft);
+    overflow: hidden;
+}
+.trr-row-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+}
+.trr-row[data-expandable="1"] .trr-row-main {
+    cursor: pointer;
+}
+.trr-row[data-expandable="1"] .trr-row-main:hover {
+    background: var(--bg-panel);
+}
+.trr-caret, .trr-caret-spacer {
+    display: inline-block;
+    width: 14px;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-align: center;
+}
+.trr-row-copy {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.trr-row-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+}
+.trr-expand {
+    padding: 10px 14px 12px 36px;
+    border-top: 1px dashed var(--border);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.trr-error-text {
+    margin: 0;
+    padding: 8px 10px;
+    background: var(--bg-panel-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    max-height: 320px;
+    overflow: auto;
+}
+.trr-lifecycle {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-panel-soft);
+}
+.trr-lifecycle-heading {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+}
+.trr-lifecycle-cycles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.trr-lifecycle-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* ── Run details disclosure ──────────────────────────────────────── */
+.run-details-disclosure {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel-soft);
+    margin-top: 8px;
+}
+.run-details-disclosure > summary {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text);
+    list-style: none;
+}
+.run-details-disclosure > summary::-webkit-details-marker { display: none; }
+.run-details-disclosure > summary::before {
+    content: '▸';
+    display: inline-block;
+    width: 14px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.run-details-disclosure[open] > summary::before {
+    content: '▾';
+}
+.rdd-summary-hint {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 12px;
+}
+.rdd-body {
+    padding: 10px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    border-top: 1px solid var(--border);
+}
+.rdd-grid {
+    display: grid;
+    gap: 8px 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.rdd-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.rdd-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+.rdd-value {
+    color: var(--text);
+}
+.rdd-command-row {
+    grid-column: 1 / -1;
+}
+.rdd-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+.rdd-artifacts, .rdd-timeline {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Issue-detail drawer: structured validation results reuse the test-results
+   layout. Slightly tighter rhythm because the drawer is narrower. */
+.issue-detail-validation-structured {
+    margin-top: 10px;
+}
+.issue-detail-validation-structured-panel .test-results-headline {
+    padding: 8px 10px;
+    font-size: 13px;
+}
+.issue-detail-validation-structured-panel .trh-stat {
+    font-size: 13px;
+}

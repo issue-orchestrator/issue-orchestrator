@@ -634,6 +634,7 @@ function resetIssueDetailValidation() {
     const validationBtn = document.getElementById('issueDetailValidationBtn');
     const reasonEl = document.getElementById('issueDetailValidationReason');
     const testsEl = document.getElementById('issueDetailValidationTests');
+    const structuredEl = document.getElementById('issueDetailValidationStructured');
     if (validationEl) validationEl.style.display = 'none';
     if (validationBtn) {
         validationBtn.style.display = 'none';
@@ -641,7 +642,57 @@ function resetIssueDetailValidation() {
         validationBtn.onclick = null;
     }
     if (reasonEl) reasonEl.textContent = '';
-    if (testsEl) testsEl.innerHTML = '';
+    if (testsEl) {
+        testsEl.innerHTML = '';
+        testsEl.style.display = '';
+    }
+    if (structuredEl) {
+        structuredEl.innerHTML = '';
+        structuredEl.style.display = 'none';
+    }
+}
+
+function _renderIssueValidationStructured(container, junitCases) {
+    if (!container) return;
+    const cases = Array.isArray(junitCases) ? junitCases : [];
+    if (!cases.length) {
+        container.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+    const counts = {
+        all: cases.length,
+        failing: cases.filter(c => _testFilterGroup(c) === 'failing').length,
+        passed: cases.filter(c => _testFilterGroup(c) === 'passed').length,
+        skipped: cases.filter(c => _testFilterGroup(c) === 'skipped').length,
+        quarantined: 0,
+    };
+    const summary = {
+        total: cases.length,
+        passed: counts.passed,
+        skipped: counts.skipped,
+        // The shared headline computes "failing" from E2E categories
+        // (untriaged + has_issue + flaky + fixed). For issue-session
+        // validation we surface failures via the catch-all "failing" filter
+        // group instead, so we synthesize the count into untriaged so the
+        // headline ✗ stat reflects reality.
+        untriaged: counts.failing,
+        has_issue: 0,
+        flaky: 0,
+        fixed: 0,
+        quarantined: 0,
+    };
+    const rows = cases
+        .map(test => _renderTestRow(test, null))
+        .join('');
+    container.style.display = '';
+    container.innerHTML = `
+        <div class="test-results-panel issue-detail-validation-structured-panel">
+            ${renderTestResultsHeadline(summary, cases.length)}
+            ${renderTestResultsFilters(counts)}
+            <div class="test-results-list" id="testResultsList">${rows}</div>
+        </div>
+    `;
 }
 
 function renderIssueDetailValidation(detail) {
@@ -649,6 +700,7 @@ function renderIssueDetailValidation(detail) {
     const validationBtn = document.getElementById('issueDetailValidationBtn');
     const reasonEl = document.getElementById('issueDetailValidationReason');
     const testsEl = document.getElementById('issueDetailValidationTests');
+    const structuredEl = document.getElementById('issueDetailValidationStructured');
     const summary = detail && typeof detail.summary === 'object' ? detail.summary : {};
     const diagnostic = summary && typeof summary.run_diagnostic === 'object' ? summary.run_diagnostic : null;
     const actions = Array.isArray(detail.actions) ? detail.actions : [];
@@ -664,21 +716,36 @@ function renderIssueDetailValidation(detail) {
     const command = diagnostic.command ? `Command: ${diagnostic.command}` : '';
     reasonEl.textContent = command ? `${reason} • ${command}` : reason;
 
-    const preview = Array.isArray(diagnostic.failed_tests_preview)
-        ? diagnostic.failed_tests_preview
-        : [];
-    const totalFailed = Array.isArray(diagnostic.failed_tests)
-        ? diagnostic.failed_tests.length
-        : preview.length;
-    if (preview.length > 0) {
-        const extraCount = Math.max(0, totalFailed - preview.length);
-        const items = preview.map((nodeid) => `<li><code>${escapeHtml(String(nodeid))}</code></li>`);
-        if (extraCount > 0) {
-            items.push(`<li>${extraCount} more failing test${extraCount === 1 ? '' : 's'}…</li>`);
-        }
-        testsEl.innerHTML = items.join('');
+    const junitCases = Array.isArray(diagnostic.junit_cases) ? diagnostic.junit_cases : [];
+    if (junitCases.length > 0) {
+        // Structured JUnit results available — render the test-centric view
+        // (same component as the E2E run modal) and hide the simple <ul>.
+        testsEl.innerHTML = '';
+        testsEl.style.display = 'none';
+        _renderIssueValidationStructured(structuredEl, junitCases);
     } else {
-        testsEl.innerHTML = '<li>No failed test names extracted from validation output.</li>';
+        // Fall back to the simple failed-test-name preview list.
+        if (structuredEl) {
+            structuredEl.innerHTML = '';
+            structuredEl.style.display = 'none';
+        }
+        testsEl.style.display = '';
+        const preview = Array.isArray(diagnostic.failed_tests_preview)
+            ? diagnostic.failed_tests_preview
+            : [];
+        const totalFailed = Array.isArray(diagnostic.failed_tests)
+            ? diagnostic.failed_tests.length
+            : preview.length;
+        if (preview.length > 0) {
+            const extraCount = Math.max(0, totalFailed - preview.length);
+            const items = preview.map((nodeid) => `<li><code>${escapeHtml(String(nodeid))}</code></li>`);
+            if (extraCount > 0) {
+                items.push(`<li>${extraCount} more failing test${extraCount === 1 ? '' : 's'}…</li>`);
+            }
+            testsEl.innerHTML = items.join('');
+        } else {
+            testsEl.innerHTML = '<li>No failed test names extracted from validation output.</li>';
+        }
     }
 
     if (validationBtn && validationAction && validationAction.run_dir) {

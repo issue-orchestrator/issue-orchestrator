@@ -311,15 +311,11 @@
                                 {% endif %}
                                 <div class="card-line card-muted">{{ run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
                                 {% if run.note %}<div class="card-line card-muted e2e-run-note">{{ run.note }}</div>{% endif %}
+                                {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
                                 <div class="attention-actions">
-                                    {% if run.e2e_run_id %}
-                                    <button class="issue-action-btn" onclick="showUnifiedRunView({{ run.e2e_run_id }});event.stopPropagation();">Open run</button>
-                                    <button class="issue-action-btn" onclick="openE2ERunTimeline({{ run.e2e_run_id }});event.stopPropagation();">Timeline</button>
-                                    {% endif %}
-                                    {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
                                     <button class="issue-action-btn" onclick="triageE2ERun();event.stopPropagation();">Triage</button>
-                                    {% endif %}
                                 </div>
+                                {% endif %}
                             </div>
                             {% endfor %}
                         {% else %}
@@ -351,6 +347,7 @@
             </div>
             <div class="issue-detail-validation-reason" id="issueDetailValidationReason"></div>
             <ul class="issue-detail-validation-tests" id="issueDetailValidationTests"></ul>
+            <div class="issue-detail-validation-structured" id="issueDetailValidationStructured" style="display:none;"></div>
         </section>
         <h3 class="issue-detail-section-title" id="issueDetailTimelineHeading" tabindex="-1">Timeline</h3>
         <div class="issue-detail-journey" id="issueDetailJourney"></div>

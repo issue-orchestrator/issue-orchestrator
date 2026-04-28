@@ -512,7 +512,8 @@
           "failed_tests_preview",
           "validation_record_path",
           "validation_stderr",
-          "validation_stdout"
+          "validation_stdout",
+          "junit_cases"
         ],
         "properties": {
           "state": {"type": "string"},
@@ -526,7 +527,8 @@
           "failed_tests_preview": {"type": "array", "items": {"type": "string"}},
           "validation_record_path": {"type": ["string", "null"]},
           "validation_stderr": {"type": ["string", "null"]},
-          "validation_stdout": {"type": ["string", "null"]}
+          "validation_stdout": {"type": ["string", "null"]},
+          "junit_cases": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}}
         }
       },
       "IssueDetailTimelineDiagnosticPayload": {
@@ -678,8 +680,8 @@
           "run": {"$ref": "#/components/schemas/E2ERunExecutionPayload"},
           "results_summary": {"$ref": "#/components/schemas/E2ERunResultsSummaryPayload"},
           "results_by_category": {"$ref": "#/components/schemas/E2ERunResultCategoriesPayload"},
-          "artifacts": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunArtifactPayload"}},
-          "reports": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunArtifactPayload"}},
+          "artifacts": {"type": "array", "items": {"$ref": "#/components/schemas/TestRunArtifactPayload"}},
+          "reports": {"type": "array", "items": {"$ref": "#/components/schemas/TestRunArtifactPayload"}},
           "issue_number": {"type": ["integer", "string"]},
           "e2e_run_id": {"type": ["integer", "null"]},
           "title": {"type": "string"},
@@ -747,7 +749,7 @@
           "current_test": {"type": ["string", "null"]}
         }
       },
-      "E2ERunArtifactPayload": {
+      "TestRunArtifactPayload": {
         "type": "object",
         "additionalProperties": false,
         "required": ["kind", "label", "path"],
@@ -757,7 +759,7 @@
           "path": {"type": "string"}
         }
       },
-      "E2ERunIssueLinkPayload": {
+      "TestCaseIssueLinkPayload": {
         "type": "object",
         "additionalProperties": false,
         "required": ["number", "status", "resolution"],
@@ -767,7 +769,7 @@
           "resolution": {"type": ["string", "null"]}
         }
       },
-      "E2ERunCaseHistoryPayload": {
+      "TestCaseHistoryPayload": {
         "type": "object",
         "additionalProperties": false,
         "required": ["outcome", "run_id"],
@@ -776,7 +778,7 @@
           "run_id": {"type": "integer"}
         }
       },
-      "E2ERunResultCasePayload": {
+      "TestCaseResultPayload": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -814,10 +816,10 @@
           "retry_outcome": {"type": ["string", "null"]},
           "is_quarantined": {"type": "boolean"},
           "updated_at": {"type": "string"},
-          "history": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunCaseHistoryPayload"}},
+          "history": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseHistoryPayload"}},
           "existing_issue": {
             "oneOf": [
-              {"$ref": "#/components/schemas/E2ERunIssueLinkPayload"},
+              {"$ref": "#/components/schemas/TestCaseIssueLinkPayload"},
               {"type": "null"}
             ]
           },
@@ -832,13 +834,13 @@
         "additionalProperties": false,
         "required": ["untriaged", "has_issue", "flaky", "fixed", "passed", "quarantined", "skipped"],
         "properties": {
-          "untriaged": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
-          "has_issue": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
-          "flaky": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
-          "fixed": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
-          "passed": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
-          "quarantined": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}},
-          "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/E2ERunResultCasePayload"}}
+          "untriaged": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}},
+          "has_issue": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}},
+          "flaky": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}},
+          "fixed": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}},
+          "passed": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}},
+          "quarantined": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}},
+          "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/TestCaseResultPayload"}}
         }
       },
       "E2ERunResultsSummaryPayload": {
