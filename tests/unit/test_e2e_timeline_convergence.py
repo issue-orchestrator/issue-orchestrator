@@ -881,6 +881,109 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_e2e_run_detail_sanitizes_result_cases_for_public_contract(self):
+        """Endpoint strips internal DB identifiers from categorized test rows."""
+        from issue_orchestrator.contracts.ui_openapi_models import E2ERunResultCasePayload
+        from issue_orchestrator.entrypoints.web import set_orchestrator
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        store_key = TimelineKey.for_e2e_run(6).to_store_key()
+        records = [
+            TimelineRecord(
+                event_id="e1",
+                timestamp="2026-01-01T00:00:00Z",
+                event="e2e.run_started",
+                data={"branch": "main"},
+                source_event="e2e.run_started",
+            ),
+            TimelineRecord(
+                event_id="e2",
+                timestamp="2026-01-01T00:01:00Z",
+                event="e2e.test_completed",
+                data={
+                    "nodeid": "tixmeup.e2e.smoke::runtime.verify_primary_search",
+                    "outcome": "passed",
+                    "duration_seconds": 0.0,
+                },
+                source_event="e2e.test_completed",
+            ),
+            TimelineRecord(
+                event_id="e3",
+                timestamp="2026-01-01T00:01:30Z",
+                event="e2e.test_completed",
+                data={
+                    "nodeid": "tixmeup.e2e.smoke::runtime.verify_checkout",
+                    "outcome": "failed",
+                    "duration_seconds": 1.0,
+                },
+                source_event="e2e.test_completed",
+            ),
+            TimelineRecord(
+                event_id="e4",
+                timestamp="2026-01-01T00:02:00Z",
+                event="e2e.run_finished",
+                data={"status": "passed", "duration_seconds": 120.0},
+                source_event="e2e.run_finished",
+            ),
+        ]
+        mock_orch, client = self._setup_orchestrator_with_timeline(store_key, records)
+        db = E2EDB(mock_orch.config.repo_root / ".issue-orchestrator" / "e2e.db")
+        db.upsert_result_case(
+            run_id=6,
+            case_id="tixmeup.e2e.smoke::runtime.verify_primary_search",
+            outcome="passed",
+            duration_seconds=0.0,
+            display_name="runtime.verify_primary_search",
+            suite_name="tixmeup.e2e.smoke",
+            result_source="junit_xml",
+        )
+        db.upsert_result_case(
+            run_id=6,
+            case_id="tixmeup.e2e.smoke::runtime.verify_checkout",
+            outcome="failed",
+            duration_seconds=1.0,
+            failure_details="checkout failed",
+            display_name="runtime.verify_checkout",
+            suite_name="tixmeup.e2e.smoke",
+            result_source="junit_xml",
+        )
+        db.record_failure_issue(
+            nodeid="tixmeup.e2e.smoke::runtime.verify_checkout",
+            github_issue_number=1234,
+            parent_issue_number=99,
+            first_failing_run_id=6,
+            first_failing_sha="abc123",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            response = client.get("/api/e2e-run-detail/6")
+            assert response.status_code == 200
+            results_by_category = response.json()["results_by_category"]
+            assert set(results_by_category) == {
+                "fixed",
+                "flaky",
+                "has_issue",
+                "passed",
+                "quarantined",
+                "skipped",
+                "untriaged",
+            }
+            passed = results_by_category["passed"]
+            assert len(passed) == 1
+            assert passed[0]["nodeid"] == "tixmeup.e2e.smoke::runtime.verify_primary_search"
+            assert set(passed[0]) == set(E2ERunResultCasePayload.model_fields)
+            has_issue = results_by_category["has_issue"]
+            assert len(has_issue) == 1
+            assert set(has_issue[0]) == set(E2ERunResultCasePayload.model_fields)
+            assert has_issue[0]["existing_issue"] == {
+                "number": 1234,
+                "status": "open",
+                "resolution": None,
+            }
+        finally:
+            set_orchestrator(None)
+
     def test_test_events_carry_issue_affordances_for_navigation(self):
         """Test events expose issue_affordances for the frontend to render as links.
 
