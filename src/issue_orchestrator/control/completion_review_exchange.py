@@ -195,6 +195,7 @@ class CompletionReviewExchange:
             worktree,
             session_name,
             require_validation=require_validation,
+            current_validation_record_path=initial_validation_record_path,
         )
         if existing_outcome:
             mode, outcome, halt = self._handle_cached_review_exchange_outcome(
@@ -560,6 +561,7 @@ class CompletionReviewExchange:
         session_name: str | None,
         *,
         require_validation: bool,
+        current_validation_record_path: Path | None = None,
     ) -> ReviewExchangeOutcome | None:
         if not session_name:
             return None
@@ -569,6 +571,15 @@ class CompletionReviewExchange:
         if require_validation and not self.review_exchange_validation_passed(
             cached.validation_record_path
         ):
+            return None
+        if not self._review_exchange_validation_matches_current(
+            cached.validation_record_path,
+            current_validation_record_path,
+        ):
+            logger.info(
+                "Ignoring cached review exchange summary for %s: validation head_sha mismatch",
+                session_name,
+            )
             return None
         status = cached.summary.get("status")
         rounds = cached.summary.get("completed_rounds")
@@ -597,6 +608,31 @@ class CompletionReviewExchange:
         except (OSError, json.JSONDecodeError):
             return False
         return bool(data.get("passed"))
+
+    @classmethod
+    def _review_exchange_validation_matches_current(
+        cls,
+        cached_record_path: Path | None,
+        current_record_path: Path | None,
+    ) -> bool:
+        current_sha = cls._validation_head_sha(current_record_path)
+        if not current_sha:
+            # Older/dev completion paths may not provide a current validation
+            # SHA; keep their cached review resume behavior unchanged.
+            return True
+        cached_sha = cls._validation_head_sha(cached_record_path)
+        return cached_sha == current_sha
+
+    @staticmethod
+    def _validation_head_sha(record_path: Path | None) -> str | None:
+        if not record_path or not record_path.exists():
+            return None
+        try:
+            data = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        head_sha = data.get("head_sha")
+        return head_sha if isinstance(head_sha, str) and head_sha else None
 
     def resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
