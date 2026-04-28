@@ -1010,6 +1010,7 @@ class Session:
     started_at: datetime = field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
     exit_sent: bool = False  # Track if we've already sent /exit
+    completion_detected_at: datetime | None = None  # First time observer saw a valid completion.json for this session
     validation_retry_count: int = 0  # Number of validation retries attempted
     original_prompt: str | None = None  # Original prompt for retry context
     last_validation_error: str | None = None  # Last validation error for retry prompt

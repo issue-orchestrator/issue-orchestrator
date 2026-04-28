@@ -194,23 +194,30 @@ class SessionObserver:
                 data = json.load(f)
             required_fields = ["session_id", "timestamp", "outcome", "summary"]
             if all(k in data for k in required_fields):
-                logger.info(
-                    issue_log(
-                        session.issue.number, "Valid completion.json detected: outcome=%s"
-                    ),
-                    data.get("outcome"),
-                )
-                self.events.publish(
-                    TraceEvent(
-                        EventName.OBSERVATION_COMPLETION_DETECTED,
-                        {
-                            "issue_number": session.issue.number,
-                            "session_name": session.terminal_id,
-                            "outcome": data.get("outcome"),
-                            "session_exists": exists,
-                        },
+                # Detection is observed every tick while the session waits in
+                # deferred states (e.g. background review exchange). Emit the
+                # event and info log only once per session — the controller
+                # still re-evaluates on every terminated() return.
+                if session.completion_detected_at is None:
+                    logger.info(
+                        issue_log(
+                            session.issue.number,
+                            "Valid completion.json detected: outcome=%s",
+                        ),
+                        data.get("outcome"),
                     )
-                )
+                    self.events.publish(
+                        TraceEvent(
+                            EventName.OBSERVATION_COMPLETION_DETECTED,
+                            {
+                                "issue_number": session.issue.number,
+                                "session_name": session.terminal_id,
+                                "outcome": data.get("outcome"),
+                                "session_exists": exists,
+                            },
+                        )
+                    )
+                    session.completion_detected_at = datetime.now()
                 return SessionObservationResult.terminated(runtime_minutes=runtime)
             else:
                 logger.debug(

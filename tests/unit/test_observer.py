@@ -727,6 +727,62 @@ class TestObserveSession:
         event = call_args[0][0]
         assert event.name == EventName.OBSERVATION_COMPLETION_DETECTED
 
+    def test_observe_session_emits_completion_event_only_once_per_session(
+        self, mock_config, mock_session_runner, mock_repository_host, sample_session, tmp_path
+    ):
+        """Regression: COMPLETION_DETECTED must not fire on every tick.
+
+        While a session waits in a deferred state (e.g. background review
+        exchange), the observer is re-invoked each tick. Without idempotency,
+        the user-facing 'Agent finished coding' event spams the timeline.
+        """
+        import json
+        from issue_orchestrator.events import EventName
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        mock_events = MagicMock()
+        monitor = SessionObserver(
+            mock_config,
+            FileSystemSessionOutput(),
+            events=mock_events,
+            session_runner=mock_session_runner,
+            repository_host=mock_repository_host,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir(parents=True)
+        sample_session.worktree_path = worktree
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir(parents=True)
+        completion_file = completion_dir / "completion.json"
+        completion_file.write_text(json.dumps({
+            "session_id": "any-session-id",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "outcome": "completed",
+            "summary": "Work done",
+        }))
+
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        # Simulate three observation ticks while the session lingers in a
+        # deferred state (e.g. background review exchange).
+        results = [monitor.observe_session(sample_session) for _ in range(3)]
+
+        # Each tick still reports termination so the controller can re-evaluate.
+        assert all(r.observation == SessionObservation.TERMINATED for r in results)
+        assert sample_session.completion_detected_at is not None
+
+        # But the user-visible event fires exactly once.
+        completion_events = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.OBSERVATION_COMPLETION_DETECTED
+        ]
+        assert len(completion_events) == 1, (
+            f"Expected COMPLETION_DETECTED once, got {len(completion_events)}: "
+            f"{[e.data for e in completion_events]}"
+        )
+
 
 # Note: TestReadLogTail class was removed as it tested private method _read_log_tail.
 # Log reading is an implementation detail.
