@@ -61,7 +61,7 @@ CODING_STATUSES = [
 ]
 
 
-def check_dirty_files() -> list[str]:
+def check_dirty_files(worktree_root: Path | None = None) -> list[str]:
     """Return dirty porcelain lines the agent is responsible for.
 
     Filters two categories:
@@ -107,7 +107,7 @@ def check_dirty_files() -> list[str]:
         status_code = line[:2]
         path = line[3:]
         is_untracked = status_code == "??"
-        if is_runtime_managed_dirty_path(path):
+        if is_runtime_managed_dirty_path(path, worktree_root):
             continue
         if is_untracked and is_orchestrator_untracked_planted(path):
             continue
@@ -236,7 +236,7 @@ def main() -> None:  # noqa: C901, PLR0912
     )
 
     # 2. Check for dirty files (coding agents must commit everything)
-    dirty_files = check_dirty_files()
+    dirty_files = check_dirty_files(worktree_root)
     if dirty_files:
         print(f"\n{'='*60}")
         print("❌ WORKING TREE IS DIRTY — coding-done cannot complete")

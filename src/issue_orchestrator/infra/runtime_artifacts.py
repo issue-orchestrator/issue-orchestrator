@@ -24,13 +24,24 @@ Two categories of paths that dirty-tree guardrails must ignore:
 
 from __future__ import annotations
 
-RUNTIME_DIRTY_IGNORE_EXACT: frozenset[str] = frozenset({
-    ".issue-orchestrator/session-latest.json",
-    ".issue-orchestrator/ai-gate-state.json",
-    ".issue-orchestrator/timeline.sqlite",
-    ".issue-orchestrator/timeline.sqlite-shm",
-    ".issue-orchestrator/timeline.sqlite-wal",
-})
+from fnmatch import fnmatch
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+RUNTIME_IGNORE_FILE = Path(".issue-orchestrator/runtime-ignore")
+
+RUNTIME_DIRTY_IGNORE_EXACT: frozenset[str] = frozenset(
+    {
+        ".issue-orchestrator/session-latest.json",
+        ".issue-orchestrator/ai-gate-state.json",
+        ".issue-orchestrator/timeline.sqlite",
+        ".issue-orchestrator/timeline.sqlite-shm",
+        ".issue-orchestrator/timeline.sqlite-wal",
+        ".claude/scheduled_tasks.lock",
+    }
+)
 
 RUNTIME_DIRTY_IGNORE_PREFIXES: tuple[str, ...] = (
     # Covers runtime artefacts git may surface from within the worktree:
@@ -54,21 +65,92 @@ ORCHESTRATOR_UNTRACKED_PLANTED_PREFIXES: tuple[str, ...] = (
 )
 
 
-def is_runtime_managed_dirty_path(path: str) -> bool:
+def _normalize_runtime_pattern(pattern: str) -> str:
+    normalized = pattern.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/")
+
+
+def load_runtime_ignore_patterns(worktree: Path | None) -> tuple[str, ...]:
+    """Load repo-local runtime artifact patterns.
+
+    The conventional file is intentionally local to the target repository
+    instead of a global orchestrator setting. Patterns are repo-relative.
+    Blank lines and comments are ignored. Negations are not supported because
+    this is an additive runtime-artifact list, not a full gitignore parser;
+    negated lines are skipped with a warning.
+    """
+    if worktree is None:
+        return ()
+    ignore_file = Path(worktree) / RUNTIME_IGNORE_FILE
+    try:
+        lines = ignore_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+
+    patterns: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("!"):
+            logger.warning(
+                "Ignoring unsupported negated runtime-ignore pattern in %s: %s",
+                ignore_file,
+                stripped,
+            )
+            continue
+        normalized = _normalize_runtime_pattern(stripped)
+        if normalized:
+            patterns.append(normalized)
+    return tuple(dict.fromkeys(patterns))
+
+
+def _matches_runtime_pattern(path: str, pattern: str) -> bool:
+    """Match a repo-relative runtime-ignore pattern.
+
+    This intentionally uses lightweight fnmatch semantics rather than full
+    gitignore parsing. In particular, ``*`` may match ``/`` here while Git's
+    exclude parser treats slash-separated path components more strictly. The
+    runtime-ignore contract is additive and conservative: in-process guards
+    may hide a broader runtime artifact set than plain Git status does.
+    """
+    normalized = path.replace("\\", "/")
+    if pattern.endswith("/"):
+        return normalized.startswith(pattern)
+    if any(char in pattern for char in "*?["):
+        return fnmatch(normalized, pattern)
+    return normalized == pattern or normalized.startswith(f"{pattern}/")
+
+
+def runtime_ignore_patterns(worktree: Path | None = None) -> tuple[str, ...]:
+    """Return built-in plus repo-local runtime artifact patterns."""
+    return (
+        *RUNTIME_DIRTY_IGNORE_EXACT,
+        *RUNTIME_DIRTY_IGNORE_PREFIXES,
+        *load_runtime_ignore_patterns(worktree),
+    )
+
+
+def is_runtime_managed_dirty_path(path: str, worktree: Path | None = None) -> bool:
     """Return True when a dirty path is runtime-managed metadata.
 
     Applies regardless of tracked/untracked status — these paths are never
     source code in any repository, orchestrator or foreign.
     """
     normalized = path.replace("\\", "/")
-    if normalized in RUNTIME_DIRTY_IGNORE_EXACT:
-        return True
-    return any(normalized.startswith(prefix) for prefix in RUNTIME_DIRTY_IGNORE_PREFIXES)
+    return any(
+        _matches_runtime_pattern(normalized, pattern)
+        for pattern in runtime_ignore_patterns(worktree)
+    )
 
 
-def filter_runtime_managed_dirty_paths(paths: list[str]) -> list[str]:
+def filter_runtime_managed_dirty_paths(
+    paths: list[str], worktree: Path | None = None
+) -> list[str]:
     """Return dirty paths excluding runtime-managed metadata files."""
-    return [path for path in paths if not is_runtime_managed_dirty_path(path)]
+    return [path for path in paths if not is_runtime_managed_dirty_path(path, worktree)]
 
 
 def is_orchestrator_untracked_planted(path: str) -> bool:
