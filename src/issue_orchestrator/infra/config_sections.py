@@ -46,7 +46,7 @@ ALLOWED_AGENT_FIELDS = {
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "provider_resilience", "ui", "observability", "timeline", "security", "filtering",
-    "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
+    "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
     "ai_systems", "retry",
     "sqlite_backup",
 )

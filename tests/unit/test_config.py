@@ -4,11 +4,44 @@ import pytest
 import yaml
 from pathlib import Path
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.domain.models import AgentConfig
 
 
 class TestConfig:
     """Test the Config class."""
+
+    @pytest.mark.parametrize(
+        "config_path",
+        [
+            "examples/config.example.yaml",
+            ".issue-orchestrator/config/hooks-validate.yaml",
+            ".issue-orchestrator/config/main.yaml",
+            ".issue-orchestrator/config/z-codespaces.yaml",
+        ],
+    )
+    def test_shipped_configs_validate_clean(self, tmp_path, config_path):
+        """Existing shipped configs must continue to load and validate."""
+        repo_root = Path(__file__).resolve().parents[2]
+        path = repo_root / config_path
+        if config_path.startswith("examples/"):
+            example_data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for agent_data in example_data.get("agents", {}).values():
+                prompt = agent_data.get("prompt")
+                if isinstance(prompt, str):
+                    prompt_path = tmp_path / prompt
+                    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+                    prompt_path.write_text("Prompt\n", encoding="utf-8")
+            installed_path = (
+                tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+            )
+            installed_path.parent.mkdir(parents=True, exist_ok=True)
+            installed_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            path = installed_path
+
+        config = Config.load(path)
+
+        assert config.validate() == [], (
+            f"{config_path} failed validation; schema likely missing fields"
+        )
 
     def test_config_creation(self):
         """Test basic Config creation with defaults."""
@@ -308,6 +341,31 @@ worktrees:
         assert e2e["junit_xml_paths"] == [
             ".issue-orchestrator/e2e-results/issue-orchestrator-e2e.xml"
         ]
+
+    def test_validate_rejects_filtering_misnested_under_e2e(self, tmp_path):
+        """A YAML indentation mistake under e2e must fail validation."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+e2e:
+  enabled: true
+  filtering:
+    label: review-audit-358
+""")
+
+        config = Config.load(config_file)
+
+        assert config.filtering.label is None
+        assert any("e2e.filtering" in error for error in config.validate())
 
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""

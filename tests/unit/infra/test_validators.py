@@ -5,7 +5,6 @@ Tests each validator in isolation with mock config objects.
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import pytest
 
 from issue_orchestrator.infra.validators import (
     AgentValidator,
@@ -259,12 +258,11 @@ class TestTemplateValidator:
 class TestUnknownFieldsValidator:
     """Tests for UnknownFieldsValidator."""
 
-    def _make_config(self, raw_data=None, raw_agents=None, strict=False):
+    def _make_config(self, raw_data=None, raw_agents=None):
         """Create a mock config with raw YAML data."""
         config = MagicMock()
         config.raw_data = raw_data or {}
         config.raw_agents = raw_agents or {}
-        config.config_strict = strict
         return config
 
     def test_no_unknown_fields_valid(self):
@@ -274,43 +272,100 @@ class TestUnknownFieldsValidator:
             raw_agents={},
         )
 
-        with patch(
-            "issue_orchestrator.infra.config.ALLOWED_TOP_LEVEL_FIELDS",
-            {"repo", "agents"},
-        ):
-            errors = UnknownFieldsValidator().validate(config)
+        errors = UnknownFieldsValidator().validate(config)
         assert errors == []
 
-    def test_unknown_top_level_field_strict(self):
-        """Verify error for unknown top-level field in strict mode."""
+    def test_unknown_top_level_field_is_error(self):
+        """Verify error for unknown top-level field."""
         config = self._make_config(
             raw_data={"repo": {}, "unknown_field": "value"},
-            strict=True,
         )
         errors = UnknownFieldsValidator().validate(config)
         assert len(errors) == 1
         assert "unknown_field" in errors[0]
 
-    def test_unknown_top_level_field_non_strict(self):
-        """Verify warning (no error) for unknown field in non-strict mode."""
+    def test_removed_config_strict_field_is_error(self):
+        """Unknown fields are always errors."""
         config = self._make_config(
-            raw_data={"repo": {}, "unknown_field": "value"},
-            strict=False,
+            raw_data={"config": {"strict": False}},
         )
         errors = UnknownFieldsValidator().validate(config)
-        # Non-strict mode logs warning but doesn't return errors
-        assert errors == []
+        assert errors == ["Unknown config field: 'config'"]
 
-    def test_unknown_agent_field_strict(self):
-        """Verify error for unknown agent field in strict mode."""
+    def test_unknown_agent_field_is_error(self):
+        """Verify error for unknown agent field."""
         config = self._make_config(
-            raw_data={},
-            raw_agents={"agent:dev": {"unknown_agent_field": "value"}},
-            strict=True,
+            raw_data={
+                "agents": {
+                    "agent:dev": {
+                        "prompt": "prompt.md",
+                        "unknown_agent_field": "value",
+                    }
+                }
+            },
         )
         errors = UnknownFieldsValidator().validate(config)
         assert len(errors) == 1
         assert "agent:dev" in errors[0]
+        assert "unknown_agent_field" in errors[0]
+
+    def test_unknown_nested_e2e_field_is_error(self):
+        """Misplaced filtering under e2e must not be silently ignored."""
+        config = self._make_config(
+            raw_data={
+                "e2e": {
+                    "enabled": True,
+                    "filtering": {"label": "review-audit-358"},
+                }
+            },
+        )
+
+        errors = UnknownFieldsValidator().validate(config)
+
+        assert errors == ["Unknown config field: 'e2e.filtering'"]
+
+    def test_unknown_nested_worktree_remediation_field_is_error(self):
+        """Nested validation applies beyond the e2e symptom path."""
+        config = self._make_config(
+            raw_data={
+                "worktrees": {
+                    "remediation": {
+                        "pr_collision": "new_branch",
+                        "bogus": True,
+                    }
+                }
+            },
+        )
+
+        errors = UnknownFieldsValidator().validate(config)
+
+        assert errors == ["Unknown config field: 'worktrees.remediation.bogus'"]
+
+    def test_open_maps_allow_user_defined_keys(self):
+        """Provider args and sort strategy config are intentionally open maps."""
+        config = self._make_config(
+            raw_data={
+                "agents": {
+                    "agent:dev": {
+                        "prompt": "prompt.md",
+                        "provider_args": {
+                            "approval_mode": "full-auto",
+                            "nested": {"custom": True},
+                        },
+                    }
+                },
+                "milestones": {
+                    "sort_config": {
+                        "pattern": "M(\\d+)",
+                        "nested": {"custom": True},
+                    }
+                },
+            },
+        )
+
+        errors = UnknownFieldsValidator().validate(config)
+
+        assert errors == []
 
 
 class TestAgentValidator:
@@ -338,7 +393,7 @@ class TestAgentValidator:
         model="sonnet",
         reviewer=None,
         prompt_exists=True,
-        ai_system="claude-code",
+        ai_system: str | None = "claude-code",
     ):
         """Create a mock agent config."""
         agent = MagicMock()

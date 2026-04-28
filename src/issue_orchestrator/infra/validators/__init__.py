@@ -11,7 +11,7 @@ Usage:
     errors.extend(ReviewWorkflowValidator().validate(config))
     errors.extend(IsolationValidator().validate(config))
     errors.extend(TemplateValidator().validate(config))
-    errors.extend(UnknownFieldsValidator().validate(config, strict=True))
+    errors.extend(UnknownFieldsValidator().validate(config))
 """
 
 from .base import ConfigValidator

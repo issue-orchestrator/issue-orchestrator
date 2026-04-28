@@ -29,11 +29,11 @@ repo:
       # file: ".issue-orchestrator/gh-audit-{pid}.log"
 
 # Optional defaults applied to agents that omit provider/model/args
-# default_agent:
-#   provider: "claude-code"
-#   model: "sonnet"
-#   provider_args:
-#     permission_mode: "bypassPermissions"
+default_agent:
+  provider: "claude-code"
+  model: "sonnet"
+  # provider_args:
+  #   permission_mode: "bypassPermissions"
 
 agents:
   "agent:backend":
@@ -91,6 +91,7 @@ agents:
     prompt: ".prompts/goal-pilot.md"
     model: "sonnet"
     timeout_minutes: 30
+    ai_system: "claude-code"
 
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
@@ -353,6 +354,3 @@ claims:
 
 state:
   # file: ".issue-orchestrator/state.json"
-
-config:
-  strict: false
