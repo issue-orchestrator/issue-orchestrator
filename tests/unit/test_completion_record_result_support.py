@@ -5,6 +5,7 @@ from pathlib import Path
 
 from issue_orchestrator.control.completion_record_validation import (
     CompletionRecordValidator,
+    WorktreeValidationFailure,
     _MAX_COMPLETION_FILE_BYTES,
 )
 from issue_orchestrator.control.completion_result_artifacts import build_pr_body
@@ -86,13 +87,14 @@ def test_validate_worktree_state_rejects_protected_push_branch(tmp_path: Path) -
         git_adapter=FakeGitAdapter(branch="main"),
     )
 
-    ok, reason = validator.validate_worktree_state(
+    result = validator.validate_worktree_state(
         tmp_path,
         _record(requested_actions=[RequestedAction.PUSH_BRANCH]),
     )
 
-    assert not ok
-    assert reason == "Cannot push: on protected branch 'main'"
+    assert not result.ok
+    assert result.failure == WorktreeValidationFailure.PROTECTED_BRANCH
+    assert result.reason == "Cannot push: on protected branch 'main'"
 
 
 def test_validate_worktree_state_applies_dirty_policy(tmp_path: Path) -> None:
@@ -103,13 +105,14 @@ def test_validate_worktree_state_applies_dirty_policy(tmp_path: Path) -> None:
         git_adapter=FakeGitAdapter(has_tracked_changes=True),
     )
 
-    ok, reason = validator.validate_worktree_state(
+    result = validator.validate_worktree_state(
         tmp_path,
         _record(requested_actions=[RequestedAction.PUSH_BRANCH]),
     )
 
-    assert not ok
-    assert "src/app.py" in reason
+    assert not result.ok
+    assert result.failure == WorktreeValidationFailure.DIRTY_POLICY
+    assert "src/app.py" in result.reason
 
 
 def test_validate_worktree_state_allows_non_push_actions_on_main(tmp_path: Path) -> None:
@@ -118,13 +121,14 @@ def test_validate_worktree_state_allows_non_push_actions_on_main(tmp_path: Path)
         git_adapter=FakeGitAdapter(branch="main"),
     )
 
-    ok, reason = validator.validate_worktree_state(
+    result = validator.validate_worktree_state(
         tmp_path,
         _record(requested_actions=[RequestedAction.CREATE_PR]),
     )
 
-    assert ok
-    assert reason == ""
+    assert result.ok
+    assert result.reason == ""
+    assert result.failure is None
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +195,7 @@ def test_observer_also_applies_file_size_gate(tmp_path: Path) -> None:
     )
 
     observer = CompletionObserver(session_output=None)  # type: ignore[arg-type]
-    # noqa: SLF001 — exercising the private loader is the point.
-    result = observer._read_completion_record(
+    result = observer._read_completion_record(  # noqa: SLF001
         worktree=tmp_path,
         completion_path=".issue-orchestrator/completion.json",
         issue_number=1,

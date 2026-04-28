@@ -50,7 +50,11 @@ from .completion_failure_reporting import (
     build_gate_failure_comment,
     build_processing_failure_comment,
 )
-from .completion_record_validation import CompletionRecordValidator
+from .completion_record_validation import (
+    CompletionRecordValidator,
+    WorktreeValidationFailure,
+    WorktreeValidationResult,
+)
 from .completion_result_artifacts import (
     build_pr_body,
     build_processing_result,
@@ -74,15 +78,6 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-
-
-def _is_dirty_policy_failure(reason: str) -> bool:
-    return reason.startswith(
-        (
-            "Working tree is dirty;",
-            "Invalid validation.pre_push_dirty_check value:",
-        )
-    )
 
 
 # Only paths under ``<worktree>/.issue-orchestrator`` are acceptable as a
@@ -542,14 +537,11 @@ class CompletionProcessor:
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
-    ) -> tuple[bool, str]:
+    ) -> WorktreeValidationResult:
         return self._record_validator.validate_worktree_state(worktree, record)
 
-    def check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+    def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
         return self._record_validator.check_dirty_policy(worktree)
-
-    def _check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
-        return self.check_dirty_policy(worktree)
 
     @staticmethod
     def _is_ignored_dirty_path(path: str) -> bool:
@@ -849,14 +841,14 @@ class CompletionProcessor:
         assert record is not None  # Guaranteed if error_result is None
 
         # Validate worktree state
-        valid, reason = self.validate_worktree_state(worktree, record)
-        if not valid:
+        worktree_state = self.validate_worktree_state(worktree, record)
+        if not worktree_state.ok:
             return self._handle_invalid_worktree_state(
                 worktree,
                 record,
                 session_name,
                 issue_number,
-                reason,
+                worktree_state,
             )
 
         # Check publish gate if actions require it
@@ -1013,24 +1005,24 @@ class CompletionProcessor:
         record: CompletionRecord,
         session_name: str | None,
         issue_number: int,
-        reason: str,
+        worktree_state: WorktreeValidationResult,
     ) -> ProcessingResult:
         logger.warning(
             "Completion worktree validation failed before publish: issue=%s reason=%s",
             issue_number,
-            reason,
+            worktree_state.reason,
         )
-        if _is_dirty_policy_failure(reason):
+        if worktree_state.failure == WorktreeValidationFailure.DIRTY_POLICY:
             return self._handle_gate_failure(
                 worktree,
                 record,
                 session_name,
                 issue_number,
-                reason,
+                worktree_state.reason,
                 gate_record=None,
             )
 
-        tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
+        tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {worktree_state.reason}"
         comment = build_processing_failure_comment(
             errors=[tagged_reason],
             actions_taken=[],
@@ -1039,7 +1031,7 @@ class CompletionProcessor:
         self._add_issue_comment(issue_number, comment, context="processing failure")
         return ProcessingResult(
             success=False,
-            message=f"Validation failed: {reason}",
+            message=f"Validation failed: {worktree_state.reason}",
             errors=[tagged_reason],
         )
 

@@ -103,6 +103,14 @@ class ValidationFailureContext:
     repo_root: Path | None
 
 
+@dataclass(frozen=True)
+class ValidationGateDecision:
+    status: SessionStatus
+    passed: bool
+    error: str | None
+    error_file: Path | None
+
+
 class SessionController:
     """Controller that decides session outcomes.
 
@@ -209,10 +217,12 @@ class SessionController:
                 completion_path,
             )
 
-        # Process completion record
+        # Recover completed work from timed-out sessions when possible.
         recovered = observation.observation == SessionObservation.TIMED_OUT
-        self._log_timeout_recovery_if_needed(recovered, issue_number, session_name, record)
+        if recovered:
+            self._log_timeout_recovery(issue_number, session_name, record)
 
+        # Phase: dirty preflight. Short-circuit before validation/publish work.
         dirty_preflight_decision = self._run_dirty_preflight_before_validation(
             record=record,
             worktree_path=worktree_path,
@@ -229,6 +239,7 @@ class SessionController:
         if dirty_preflight_decision is not None:
             return dirty_preflight_decision
 
+        # Process completion record
         pr_number = self._extract_pr_number_from_session_name(session_name)
         result = self.completion_processor.process(
             worktree_path,
@@ -237,25 +248,15 @@ class SessionController:
             pr_number=pr_number,
             completion_path=completion_path,
         )
-        if result.review_exchange_deferred:
-            # Exchange is running in a background thread. Keep the session
-            # active so the next tick re-observes, re-enters the pipeline, and
-            # resumes publish once the summary is visible. We deliberately do
-            # NOT emit processing_completed here — the record is still pending.
-            if result.validation_failed_rerouted:
-                self._emit_pre_publish_validation_failure(
-                    run_dir=run_dir,
-                    session_name=validation_session_name,
-                    issue_number=issue_number,
-                    validation_reason=result.message,
-                )
-            return SessionDecision(
-                status=SessionStatus.RUNNING,
-                processing_result=result,
-                completion_processed=False,
-                recovered_from_timeout=recovered,
-                reason="Review exchange running in background; awaiting completion",
-            )
+        deferred_decision = self._deferred_review_exchange_decision(
+            result=result,
+            run_dir=run_dir,
+            session_name=validation_session_name,
+            issue_number=issue_number,
+            recovered=recovered,
+        )
+        if deferred_decision is not None:
+            return deferred_decision
         self._emit_processing_completed_event(
             worktree_path, issue_number, session_name, run_dir, result
         )
@@ -275,25 +276,24 @@ class SessionController:
 
         # Run validation if configured
         validation_passed, validation_error, validation_error_file = None, None, None
-        if (
-            status == SessionStatus.COMPLETED
-            and self._validation_cmd
-            and self._command_runner
-        ):
-            status, validation_passed, validation_error, validation_error_file = (
-                self._run_validation_gate(
-                    worktree_path,
-                    validation_session_name,
-                    run_dir,
-                    issue_number,
-                    issue_title,
-                    record.outcome,
-                    validation_retry_count,
-                    original_prompt,
-                    retry_prompt_template,
-                    repo_root,
-                )
-            )
+        validation_decision = self._run_validation_phase_if_needed(
+            status=status,
+            worktree_path=worktree_path,
+            session_name=validation_session_name,
+            run_dir=run_dir,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            outcome=record.outcome,
+            validation_retry_count=validation_retry_count,
+            original_prompt=original_prompt,
+            retry_prompt_template=retry_prompt_template,
+            repo_root=repo_root,
+        )
+        if validation_decision is not None:
+            status = validation_decision.status
+            validation_passed = validation_decision.passed
+            validation_error = validation_decision.error
+            validation_error_file = validation_decision.error_file
 
         # Enrich manifest with CompletionRecord detail
         self._enrich_manifest_from_completion(run_dir, record)
@@ -322,16 +322,6 @@ class SessionController:
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
         )
-
-    def _log_timeout_recovery_if_needed(
-        self,
-        recovered: bool,
-        issue_number: int,
-        session_name: str,
-        record: "CompletionRecord",
-    ) -> None:
-        if recovered:
-            self._log_timeout_recovery(issue_number, session_name, record)
 
     def _run_dirty_preflight_before_validation(
         self,
@@ -362,8 +352,8 @@ class SessionController:
         ):
             return None
 
-        valid, reason = self.completion_processor.check_dirty_policy(worktree_path)
-        if valid:
+        dirty_policy = self.completion_processor.check_dirty_policy(worktree_path)
+        if dirty_policy.ok:
             logger.info(
                 issue_log(
                     issue_number,
@@ -376,7 +366,7 @@ class SessionController:
 
         validation_error = (
             "Validation blocked before running command because the worktree "
-            f"is not publishable: {reason}"
+            f"is not publishable: {dirty_policy.reason}"
         )
         logger.warning(
             issue_log(
@@ -422,6 +412,37 @@ class SessionController:
             validation_error_file=None,
         )
 
+    def _deferred_review_exchange_decision(
+        self,
+        *,
+        result: "ProcessingResult",
+        run_dir: Path,
+        session_name: str,
+        issue_number: int,
+        recovered: bool,
+    ) -> SessionDecision | None:
+        if not result.review_exchange_deferred:
+            return None
+
+        # Exchange is running in a background thread. Keep the session active
+        # so the next tick re-observes, re-enters the pipeline, and resumes
+        # publish once the summary is visible. Do not emit processing_completed:
+        # the record is still pending.
+        if result.validation_failed_rerouted:
+            self._emit_pre_publish_validation_failure(
+                run_dir=run_dir,
+                session_name=session_name,
+                issue_number=issue_number,
+                validation_reason=result.message,
+            )
+        return SessionDecision(
+            status=SessionStatus.RUNNING,
+            processing_result=result,
+            completion_processed=False,
+            recovered_from_timeout=recovered,
+            reason="Review exchange running in background; awaiting completion",
+        )
+
     def _handle_pre_publish_validation_failure(
         self,
         *,
@@ -439,6 +460,40 @@ class SessionController:
             validation_reason=validation_reason,
         )
         return SessionStatus.VALIDATION_FAILED
+
+    def _run_validation_phase_if_needed(
+        self,
+        *,
+        status: SessionStatus,
+        worktree_path: Path,
+        session_name: str,
+        run_dir: Path,
+        issue_number: int,
+        issue_title: str,
+        outcome: CompletionOutcome,
+        validation_retry_count: int,
+        original_prompt: str | None,
+        retry_prompt_template: str | None,
+        repo_root: Path | None,
+    ) -> ValidationGateDecision | None:
+        if not (
+            status == SessionStatus.COMPLETED
+            and self._validation_cmd
+            and self._command_runner
+        ):
+            return None
+        return self._run_validation_gate(
+            worktree_path,
+            session_name,
+            run_dir,
+            issue_number,
+            issue_title,
+            outcome,
+            validation_retry_count,
+            original_prompt,
+            retry_prompt_template,
+            repo_root,
+        )
 
     def _emit_pre_publish_validation_failure(
         self,
@@ -897,7 +952,7 @@ class SessionController:
         original_prompt: str | None,
         retry_prompt_template: str | None,
         repo_root: Path | None,
-    ) -> tuple[SessionStatus, Optional[bool], Optional[str], Optional[Path]]:
+    ) -> ValidationGateDecision:
         """Run validation gate and return updated status."""
         logger.info(
             issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"),
@@ -948,11 +1003,11 @@ class SessionController:
                     ),
                 },
             )
-            return (
-                SessionStatus.COMPLETED,
-                validation_passed,
-                validation_error,
-                validation_error_file,
+            return ValidationGateDecision(
+                status=SessionStatus.COMPLETED,
+                passed=validation_passed,
+                error=validation_error,
+                error_file=validation_error_file,
             )
 
         self._record_validation_failure_manifest(
@@ -961,8 +1016,8 @@ class SessionController:
             retry_count=validation_retry_count,
             validation_error=validation_error,
         )
-        return (
-            self._route_validation_failure(
+        return ValidationGateDecision(
+            status=self._route_validation_failure(
                 ValidationFailureContext(
                     worktree_path=worktree_path,
                     run_dir=run_dir,
@@ -977,9 +1032,9 @@ class SessionController:
                     repo_root=repo_root,
                 )
             ),
-            False,
-            validation_error,
-            validation_error_file,
+            passed=False,
+            error=validation_error,
+            error_file=validation_error_file,
         )
 
     def _handle_dirty_after_validation_if_needed(
@@ -995,9 +1050,9 @@ class SessionController:
         original_prompt: str | None,
         retry_prompt_template: str | None,
         repo_root: Path | None,
-    ) -> tuple[SessionStatus, bool, str, None] | None:
-        valid, reason = self.completion_processor.check_dirty_policy(worktree_path)
-        if valid:
+    ) -> ValidationGateDecision | None:
+        dirty_policy = self.completion_processor.check_dirty_policy(worktree_path)
+        if dirty_policy.ok:
             logger.info(
                 issue_log(
                     issue_number,
@@ -1010,7 +1065,7 @@ class SessionController:
 
         validation_error = (
             "Validation command passed, but the worktree became dirty before "
-            f"publish: {reason}"
+            f"publish: {dirty_policy.reason}"
         )
         logger.warning(
             issue_log(
@@ -1041,7 +1096,12 @@ class SessionController:
                 repo_root=repo_root,
             )
         )
-        return status, False, validation_error, None
+        return ValidationGateDecision(
+            status=status,
+            passed=False,
+            error=validation_error,
+            error_file=None,
+        )
 
     def _record_validation_failure_manifest(
         self,

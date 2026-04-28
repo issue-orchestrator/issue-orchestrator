@@ -6,6 +6,7 @@ These tests verify the observer/controller separation:
 No external mocking needed - pure logic tests.
 """
 
+import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,11 @@ from issue_orchestrator.control.session_controller import (
     SessionDecision,
 )
 from issue_orchestrator.control.completion_processor import CompletionProcessor
+from issue_orchestrator.control.completion_record_validation import (
+    WorktreeValidationFailure,
+    WorktreeValidationResult,
+)
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.observation.observation import (
     SessionObservation,
     SessionObservationResult,
@@ -82,7 +88,7 @@ class MockCompletionProcessor:
         self.process_calls: list[dict] = []
         self.worktree_state_valid = True
         self.worktree_state_reason = ""
-        self.dirty_policy_results: list[tuple[bool, str]] = []
+        self.dirty_policy_results: list[WorktreeValidationResult] = []
         self.process_result = MagicMock()
         self.process_result.success = True
         self.process_result.pr_url = "https://github.com/test/repo/pull/1"
@@ -119,13 +125,21 @@ class MockCompletionProcessor:
 
     def validate_worktree_state(
         self, worktree_path: Path, record: CompletionRecord
-    ) -> tuple[bool, str]:
-        return self.worktree_state_valid, self.worktree_state_reason
+    ) -> WorktreeValidationResult:
+        return self._worktree_state_result()
 
-    def check_dirty_policy(self, worktree_path: Path) -> tuple[bool, str]:
+    def check_dirty_policy(self, worktree_path: Path) -> WorktreeValidationResult:
         if self.dirty_policy_results:
             return self.dirty_policy_results.pop(0)
-        return self.worktree_state_valid, self.worktree_state_reason
+        return self._worktree_state_result()
+
+    def _worktree_state_result(self) -> WorktreeValidationResult:
+        if self.worktree_state_valid:
+            return WorktreeValidationResult.pass_()
+        return WorktreeValidationResult.fail(
+            WorktreeValidationFailure.DIRTY_POLICY,
+            self.worktree_state_reason,
+        )
 
 
 class RecordingEventSink:
@@ -823,9 +837,9 @@ class TestSessionControllerValidationCaching:
             requested_actions=[RequestedAction.PUSH_BRANCH],
         )
         processor.dirty_policy_results = [
-            (True, ""),
-            (
-                False,
+            WorktreeValidationResult.pass_(),
+            WorktreeValidationResult.fail(
+                WorktreeValidationFailure.DIRTY_POLICY,
                 "Working tree is dirty; commit/add/stash before pushing. "
                 "Dirty files: generated.txt.",
             ),
@@ -867,6 +881,51 @@ class TestSessionControllerValidationCaching:
             if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
         ]
         assert len(retry_events) == 1
+
+    def test_dirty_postflight_exhausts_after_command(self, tmp_path: Path):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        )
+        processor.dirty_policy_results = [
+            WorktreeValidationResult.pass_(),
+            WorktreeValidationResult.fail(
+                WorktreeValidationFailure.DIRTY_POLICY,
+                "Working tree is dirty; commit/add/stash before pushing. "
+                "Dirty files: generated.txt.",
+            ),
+        ]
+
+        command_runner = MockCommandRunner(returncode=0)
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=0,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert decision.validation_passed is False
+        assert "generated.txt" in decision.validation_error
+        assert len(command_runner.run_calls) == 1
+        assert len(processor.process_calls) == 1
 
     def test_validation_runs_with_sha_logged(self, tmp_path):
         """Validation runs and logs SHA on cache miss."""
@@ -1151,5 +1210,57 @@ class TestSessionControllerValidationCaching:
         assert decision.status == SessionStatus.COMPLETED
         assert decision.validation_passed is None  # Not run
 
-        # Command runner should NOT have been called
-        assert len(command_runner.run_calls) == 0
+    def test_no_validation_command_dirty_worktree_uses_processor_backstop(
+        self, tmp_path: Path
+    ):
+        """Dirty publish preconditions still fail without controller validation."""
+        worktree = tmp_path / "worktree"
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir(parents=True)
+        record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        )
+        (completion_dir / "completion.json").write_text(
+            json.dumps(record.to_dict()) + "\n"
+        )
+
+        config = Config()
+        config.validation.pre_push_dirty_check = "tracked"
+        label_adapter = MagicMock()
+        pr_adapter = MagicMock()
+        git_adapter = MagicMock()
+        git_adapter.get_current_branch.return_value = "issue-123"
+        git_adapter.has_tracked_changes.return_value = True
+        git_adapter.list_dirty_files.return_value = ["scripts/dev.sh"]
+
+        processor = CompletionProcessor(
+            label_adapter=label_adapter,
+            pr_adapter=pr_adapter,
+            git_adapter=git_adapter,
+            event_bus=None,
+            session_output=FileSystemSessionOutput(),
+            label_config={"validation_failed": "validation-failed"},
+            config=config,
+        )
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+        )
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert decision.validation_passed is None
+        label_adapter.add_label.assert_called_once_with(123, "validation-failed")
+        pr_adapter.add_comment.assert_called_once()
+        git_adapter.push.assert_not_called()
