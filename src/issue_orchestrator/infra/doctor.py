@@ -282,7 +282,7 @@ def _validate_config_schema(result: DoctorResult, config: Config) -> None:
         detail = ", ".join(field_names[:5]) + ("..." if len(field_names) > 5 else "")
         result.checks.append(Check(
             name="Config Schema",
-            status="error" if config.config_strict else "warning",
+            status="error",
             detail=f"Unknown fields: {detail}",
         ))
     else:

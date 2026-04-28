@@ -115,7 +115,8 @@ class Config:
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # Config validation
-    config_strict: bool = False  # If True, unknown fields cause validation errors; if False, warnings only
+    # Retained as a parsed config value; unknown fields are always validation errors.
+    config_strict: bool = False
 
     # AI systems allowlist (merged with built-in ai_systems.yaml)
     ai_systems_allowed: list[str] = field(default_factory=list)
@@ -1281,23 +1282,11 @@ class Config:
 
         Returns list of (field_path, level) tuples where:
         - field_path is like "repo.root" or "agents.agent:web.some_field"
-        - level is "top" or "agent"
+        - level is the nearest section that owns the path
         """
-        unknown = []
+        from .validators.unknown_fields import UnknownFieldsValidator
 
-        # Check top-level fields
-        for key in self.raw_data.keys():
-            if key not in ALLOWED_TOP_LEVEL_FIELDS:
-                unknown.append((key, "top"))
-
-        # Check per-agent fields
-        for agent_name, agent_data in self.raw_agents.items():
-            if isinstance(agent_data, dict):
-                for key in agent_data.keys():
-                    if key not in ALLOWED_AGENT_FIELDS:
-                        unknown.append((f"agents.{agent_name}.{key}", "agent"))
-
-        return unknown
+        return UnknownFieldsValidator().find_unknown_fields(self)
 
     def validate_template_variables(self) -> list[tuple[str, str, set[str]]]:
         """Check for invalid template variables in initial_prompt and command.

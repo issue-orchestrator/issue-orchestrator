@@ -353,6 +353,3 @@ claims:
 
 state:
   # file: ".issue-orchestrator/state.json"
-
-config:
-  strict: false

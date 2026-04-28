@@ -309,6 +309,31 @@ worktrees:
             ".issue-orchestrator/e2e-results/issue-orchestrator-e2e.xml"
         ]
 
+    def test_validate_rejects_filtering_misnested_under_e2e(self, tmp_path):
+        """A YAML indentation mistake under e2e must fail validation."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+e2e:
+  enabled: true
+  filtering:
+    label: review-audit-358
+""")
+
+        config = Config.load(config_file)
+
+        assert config.filtering.label is None
+        assert any("e2e.filtering" in error for error in config.validate())
+
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
         prompt = tmp_path / "prompt.md"

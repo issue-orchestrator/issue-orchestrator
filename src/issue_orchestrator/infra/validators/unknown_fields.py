@@ -1,76 +1,99 @@
 """Unknown fields validator."""
 
-import logging
-from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING
 
+from ..config_schema import (
+    DynamicMap,
+    LEAF,
+    OPEN_MAP,
+    ConfigShape,
+    allowed_config_shape,
+)
 from .base import ConfigValidator
 
 if TYPE_CHECKING:
     from ..config import Config
 
-logger = logging.getLogger(__name__)
-
 
 class UnknownFieldsValidator(ConfigValidator):
-    """Validates that no unknown fields are present in config.
-
-    In strict mode, unknown fields are errors.
-    In non-strict mode, unknown fields are warnings.
-    """
+    """Validates that no unknown fields are present in config."""
 
     def validate(self, config: "Config") -> list[str]:
-        """Validate unknown fields based on config_strict setting."""
-        return self.validate_with_strictness(config, config.config_strict)
+        """Validate unknown fields.
 
-    def validate_with_strictness(self, config: "Config", strict: bool) -> list[str]:
-        """Validate with explicit strictness setting.
-
-        Args:
-            config: The configuration to validate
-            strict: If True, unknown fields are errors. If False, warnings.
-
-        Returns:
-            List of error messages (only in strict mode)
+        Unknown fields are always errors. Config files are operator intent; a
+        typo or indentation mistake must stop startup instead of silently
+        changing orchestration scope.
         """
-        from ..config import ALLOWED_TOP_LEVEL_FIELDS, ALLOWED_AGENT_FIELDS
+        return [
+            f"Unknown config field: '{field_path}'"
+            for field_path, _ in self.find_unknown_fields(config)
+        ]
 
-        errors = []
-        unknown_fields = self._find_unknown_fields(config, ALLOWED_TOP_LEVEL_FIELDS, ALLOWED_AGENT_FIELDS)
+    def validate_with_strictness(self, config: "Config", strict: bool) -> list[str]:  # noqa: ARG002
+        """Validate unknown fields.
 
-        for field_path, _ in unknown_fields:
-            msg = f"Unknown config field: '{field_path}'"
-            if strict:
-                errors.append(msg)
-            else:
-                logger.warning(msg)
+        ``strict`` is accepted for older callers, but unknown fields are always
+        errors.
+        """
+        return self.validate(config)
 
-        return errors
-
-    def _find_unknown_fields(
-        self,
-        config: "Config",
-        allowed_top_level: AbstractSet[str],
-        allowed_agent: AbstractSet[str],
-    ) -> list[tuple[str, str]]:
+    def find_unknown_fields(self, config: "Config") -> list[tuple[str, str]]:
         """Find unknown fields in config.
 
         Returns list of (field_path, level) tuples where:
         - field_path is like "repo.root" or "agents.agent:web.some_field"
-        - level is "top" or "agent"
+        - level is the nearest section that owns the path
         """
+        if not isinstance(config.raw_data, dict):
+            return []
+        return self._find_unknown_fields(
+            data=config.raw_data,
+            shape=allowed_config_shape(),
+            path="",
+            level="top",
+        )
+
+    def _find_unknown_fields(
+        self,
+        data: object,
+        shape: ConfigShape,
+        path: str,
+        level: str,
+    ) -> list[tuple[str, str]]:
+        if shape is OPEN_MAP or shape is LEAF or not isinstance(data, dict):
+            return []
+
+        if isinstance(shape, DynamicMap):
+            unknown: list[tuple[str, str]] = []
+            for key, value in data.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                unknown.extend(
+                    self._find_unknown_fields(
+                        data=value,
+                        shape=shape.value_schema,
+                        path=child_path,
+                        level=level,
+                    )
+                )
+            return unknown
+
+        if not isinstance(shape, dict):
+            return []
+
         unknown = []
-
-        # Check top-level fields
-        for key in config.raw_data.keys():
-            if key not in allowed_top_level:
-                unknown.append((key, "top"))
-
-        # Check per-agent fields
-        for agent_name, agent_data in config.raw_agents.items():
-            if isinstance(agent_data, dict):
-                for key in agent_data.keys():
-                    if key not in allowed_agent:
-                        unknown.append((f"agents.{agent_name}.{key}", "agent"))
-
+        for key, value in data.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key not in shape:
+                unknown.append((child_path, level))
+                continue
+            child_level = child_path if not path else level
+            unknown.extend(
+                self._find_unknown_fields(
+                    data=value,
+                    shape=shape[key],
+                    path=child_path,
+                    level=child_level,
+                )
+            )
         return unknown
