@@ -43,6 +43,18 @@ keeps hooks enabled; when the commit and configured command match, the later
 hook pass reuses the cached validation record instead of rerunning the command.
 CI still mirrors the repo's required PR coverage in a clean environment.
 
+## Runtime Artifact Ignores
+
+Dirty-tree guards ignore orchestrator-managed runtime files so agents are not
+blocked by session state, local tool caches, or Claude Code scheduling locks.
+Built-in ignores cover `.issue-orchestrator/` runtime state and
+`.claude/scheduled_tasks.lock`.
+
+Target repositories can add repo-local runtime artifacts in
+`.issue-orchestrator/runtime-ignore`. See
+[`docs/user/configuration.md`](../user/configuration.md#ignore-repo-local-runtime-artifacts)
+for the supported format and operator guidance.
+
 ## Record Format
 
 Location: `.issue-orchestrator/validation/<HEAD_SHA>.json`

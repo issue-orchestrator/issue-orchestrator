@@ -40,14 +40,16 @@ If the referenced environment variable is not set, config loading fails with a c
 
 ## Common Additions
 
-**Limit concurrency**
+### Limit Concurrency
+
 ```yaml
 execution:
   concurrency:
     max_concurrent_sessions: 2
 ```
 
-**Only process specific issues**
+### Only Process Specific Issues
+
 ```yaml
 filtering:
   label: "bot-ready"
@@ -55,7 +57,8 @@ filtering:
   exclude_labels: ["test-data"]
 ```
 
-**Milestone sort strategy**
+### Milestone Sort Strategy
+
 ```yaml
 milestones:
   sort: "milestone_number"   # default: extracts first integer from title (M1 < M2 < M10)
@@ -70,7 +73,8 @@ The full sort key is `(milestone_key, priority_tier, sequence, issue.number)` â€
 
 `milestone_number` is the default because it works whether or not milestones have due dates. `due_date` only sorts meaningfully when every milestone has a `dueOn` set; otherwise due-less milestones tie on the milestone key and ordering falls through to priority tier (from `[Px-nnn]` in the title), then sequence, then issue number.
 
-**Enable code review**
+### Enable Code Review
+
 ```yaml
 review:
   enabled: true
@@ -82,7 +86,8 @@ agents:
     model: "sonnet"
 ```
 
-**Declare repo-scoped GitHub auth**
+### Declare Repo-Scoped GitHub Auth
+
 ```yaml
 repo:
   name: "BruceBGordon/tixmeup"
@@ -109,6 +114,31 @@ exports are not available to Control Center-launched engines. Use `token_env`
 only when the variable is already present in the Control Center process
 environment; add `keyring_service` and `keyring_username` for a durable
 per-repo Keychain fallback.
+
+### Ignore Repo-Local Runtime Artifacts
+
+Use `.issue-orchestrator/runtime-ignore` when a tool writes repo-local runtime
+files that should not block agent completion, pre-push dirty checks, or plain
+agent `git status` output.
+
+```text
+# .issue-orchestrator/runtime-ignore
+.tool/runtime.lock
+cache/runtime/
+*.tmp
+```
+
+Patterns are repo-relative. Blank lines and `#` comments are ignored. `!`
+negations are not supported and are logged as a warning; the file is an
+additive runtime-artifact list, not a full `.gitignore` replacement. Glob
+patterns use lightweight matching: `*` may match path separators, so
+`cache/*.json` also matches files in subdirectories of `cache/`.
+
+The orchestrator always ignores its built-in runtime artifacts, including
+`.issue-orchestrator/` session state and `.claude/scheduled_tasks.lock`. Add to
+`runtime-ignore` only for additional files created by your repo's tools or agent
+runtime. Do not list source files, generated artifacts that should be reviewed,
+or anything the agent is expected to commit.
 
 ---
 
