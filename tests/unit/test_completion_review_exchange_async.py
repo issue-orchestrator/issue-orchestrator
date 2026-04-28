@@ -537,6 +537,55 @@ def test_cached_review_is_reused_when_current_validation_sha_is_unavailable(
     assert job_runner.submitted == []
 
 
+def test_cached_review_is_ignored_when_current_validation_failed_on_same_sha(
+    tmp_path: Path,
+) -> None:
+    """Same-SHA cache hit must be rejected when the current validation
+    explicitly failed. Without this guard the validation-failed-after-approval
+    reroute would replay the cached approval forever (see #6086)."""
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="same-sha", passed=True)
+    _write_validation_record(current_validation, head_sha="same-sha", passed=False)
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError(
+            "fresh exchange should be deferred to background job, "
+            "not replayed from the stale cached approval"
+        )
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is True
+    assert halt is False
+    assert completed is False
+    assert outcome is None
+    assert actions_taken == []
+    assert len(job_runner.submitted) == 1
+
+
 def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
     # Construct without a job runner — the NullBackgroundJobRunner default must
     # short-circuit to inline execution so tests without async wiring still pass.

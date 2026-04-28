@@ -463,6 +463,12 @@ class CompletionProcessor:
             emit_review_outcome=self._emit_review_outcome,
             job_supervisor=background_job_supervisor,
         )
+        # Per-(session, head_sha) consecutive validation-failed reroute count.
+        # The reroute path can re-enter every tick when downstream rework
+        # fails to advance the SHA. Without a budget, a permanently-failing
+        # validation forms an infinite loop. Reusing review_exchange_max_rounds
+        # so the catch-all ceiling matches the in-loop bound.
+        self._validation_reroute_counts: dict[tuple[str, str], int] = {}
         self._record_validator = CompletionRecordValidator(
             config=config,
             git_adapter=git_adapter,
@@ -759,22 +765,25 @@ class CompletionProcessor:
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
         run_dir_record_path = run_dir / "validation-record.json"
-        # Only publish a manifest entry when a run-scoped artifact was
-        # actually produced (either pre-existing or copied here under
-        # symlink-safe open). If the copy refuses, the manifest must
-        # not leak the agent-supplied path — #6017 re-review-4 P2.
+        # Precedence: when an authoritative source (record_path) is
+        # supplied, it wins. The previous behavior preferred whatever was
+        # in run_dir, which silently kept stale failed snapshots from an
+        # earlier validation step — making the manifest disagree with the
+        # gate decision and poisoning downstream consumers (review-exchange
+        # cache predicate, UI). Fall back to the run_dir file only when no
+        # authoritative source is available.
+        # Symlink-safe walk: opens the source under the worktree with
+        # O_NOFOLLOW on every path component (#6017 re-review-4 P2), never
+        # reopens by path string.
         effective_record_path: Path | None = None
-        if run_dir_record_path.exists():
-            effective_record_path = run_dir_record_path
-        elif record_path is not None and record_path.exists():
-            # Symlink-safe walk: opens the source under the worktree
-            # with O_NOFOLLOW on every path component, never reopens
-            # by path string.
+        if record_path is not None and record_path.exists():
             src_fd = _open_contained_validation_record(
                 str(record_path), worktree
             )
             if src_fd is not None and _copy_from_fd(src_fd, run_dir_record_path):
                 effective_record_path = run_dir_record_path
+        if effective_record_path is None and run_dir_record_path.exists():
+            effective_record_path = run_dir_record_path
         if effective_record_path is not None:
             self.session_output.update_manifest(
                 run_dir,
@@ -1233,6 +1242,17 @@ class CompletionProcessor:
         if not validation_record_path.exists():
             return None
 
+        # Catch-all: bound consecutive reroutes per (session, head_sha) so a
+        # permanently-failing validation can't form an infinite loop even if
+        # the cache predicate is later weakened or bypassed. SHA advancing
+        # naturally resets the counter (different key).
+        budget_exhausted_result = self._consume_validation_reroute_budget(
+            session_name=session_name,
+            validation_record_path=validation_record_path,
+        )
+        if budget_exhausted_result is not None:
+            return budget_exhausted_result
+
         reroute_errors: list[str] = []
         reroute_actions: list[str] = []
         (
@@ -1285,6 +1305,62 @@ class CompletionProcessor:
             )
 
         return None
+
+    def _consume_validation_reroute_budget(
+        self,
+        *,
+        session_name: str,
+        validation_record_path: Path,
+    ) -> ProcessingResult | None:
+        """Increment the per-(session, head_sha) reroute count and halt if exhausted.
+
+        Returns a halting :class:`ProcessingResult` when the budget is spent,
+        otherwise ``None`` to let the caller proceed.
+        """
+        head_sha = self._read_validation_head_sha(validation_record_path)
+        if not head_sha:
+            # No SHA on the failing record — can't key the counter, can't
+            # safely bound the loop. Don't escalate from here; the in-loop
+            # bounds (max_rounds / max_no_progress) still apply.
+            return None
+        max_attempts = (
+            self._config.review_exchange_max_rounds if self._config is not None else 10
+        )
+        key = (session_name, head_sha)
+        attempt = self._validation_reroute_counts.get(key, 0) + 1
+        self._validation_reroute_counts[key] = attempt
+        if attempt > max_attempts:
+            logger.error(
+                "[VALIDATION_REROUTE] budget exhausted: session=%s head_sha=%s "
+                "attempts=%d max=%d — halting reroute",
+                session_name,
+                head_sha[:8],
+                attempt,
+                max_attempts,
+            )
+            return ProcessingResult(
+                success=False,
+                message=(
+                    "Validation failed after review approval and the reroute "
+                    f"budget is exhausted (attempts={attempt} max={max_attempts}); "
+                    "halting to surface the failure"
+                ),
+                errors=[
+                    f"validation_reroute: exhausted budget on {head_sha[:8]} "
+                    f"(attempts={attempt}, max={max_attempts})"
+                ],
+                review_exchange_halted=True,
+            )
+        return None
+
+    @staticmethod
+    def _read_validation_head_sha(record_path: Path) -> str | None:
+        try:
+            data = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        head_sha = data.get("head_sha")
+        return head_sha if isinstance(head_sha, str) and head_sha else None
 
     def _persist_pre_publish_failure_artifacts(
         self,

@@ -605,6 +605,55 @@ class TestPublishGate:
         assert result.record.timed_out is True
         assert "timed out" in result.reason.lower()
 
+    def test_cache_hit_writes_validation_record_to_session_dir(
+        self, temp_worktree, session_output_dir
+    ):
+        """A cache-hit publish gate must materialize the cached record into
+        the session run dir. Otherwise downstream consumers (manifest,
+        review-exchange cache predicate, UI) read whatever stale
+        ``validation-record.json`` happens to be there from an earlier
+        inline run and disagree with the gate's authoritative result."""
+        gate = PublishGate(
+            temp_worktree,
+            command_runner=LocalCommandRunner(),
+            working_copy=GitWorkingCopy(),
+            command="echo 'ok'",
+            timeout_seconds=10,
+        )
+
+        # First call runs validation and writes the record.
+        gate.check(session_output_dir=session_output_dir)
+        record_path = session_output_dir / "validation-record.json"
+        assert record_path.exists()
+
+        # Simulate a stale failed snapshot landing in the same path between
+        # runs (e.g., an inline pre-publish validation that ran and failed).
+        stale_payload = {
+            "schema_version": 1,
+            "suite": "publish_gate",
+            "head_sha": "stale",
+            "passed": False,
+            "exit_code": 1,
+            "command": "echo 'ok'",
+            "started_at": "2026-04-28T00:00:00",
+            "ended_at": "2026-04-28T00:00:01",
+            "timed_out": False,
+            "stdout_path": "stale-stdout.log",
+            "stderr_path": "stale-stderr.log",
+        }
+        record_path.write_text(json.dumps(stale_payload))
+
+        # Second call hits cache. The stale failed snapshot must be
+        # replaced by the cached pass record so the manifest agrees with
+        # the gate's allowed=True decision.
+        result = gate.check(session_output_dir=session_output_dir)
+        assert result.cache_hit is True
+        assert result.allowed is True
+
+        refreshed = json.loads(record_path.read_text())
+        assert refreshed["passed"] is True
+        assert refreshed["head_sha"] != "stale"
+
     def test_gate_reruns_on_cached_failure(self, temp_worktree, session_output_dir):
         """Test gate re-runs validation on cached failure (flaky test resilience).
 
