@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -31,7 +31,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.ports.background_job import CompletedJob
-from issue_orchestrator.ports.session_output import SessionOutput, SessionRun
+from issue_orchestrator.ports.session_output import SessionOutput
 
 
 class _FakeJobRunner:
@@ -77,6 +77,10 @@ class _FakeSessionOutput:
         self._run_dir = worktree / ".sessions" / "exchange-run"
         (self._run_dir / "review-exchange").mkdir(parents=True, exist_ok=True)
 
+    @property
+    def run_dir(self) -> Path:
+        return self._run_dir
+
     def find_run_dir(self, worktree: Path, session_name: str) -> Path | None:
         return self._run_dir
 
@@ -110,10 +114,10 @@ class _FakeSessionOutput:
         )
 
 
-def _make_config(tmp_path: Path) -> Config:
+def _make_config(tmp_path: Path, *, require_validation: bool = False) -> Config:
     cfg = Config(repo_root=tmp_path)
     cfg.review_exchange_mode = "via-local-loop"
-    cfg.review_exchange_require_validation = False
+    cfg.review_exchange_require_validation = require_validation
     cfg.code_review_agent = "agent:reviewer"
     cfg.agents = {
         "agent:backend": AgentConfig(
@@ -129,7 +133,10 @@ def _make_config(tmp_path: Path) -> Config:
     return cfg
 
 
-def _make_record(pr: bool = True) -> CompletionRecord:
+def _make_record(
+    pr: bool = True,
+    validation_record_path: Path | None = None,
+) -> CompletionRecord:
     actions = [RequestedAction.CREATE_PR, RequestedAction.PUSH_BRANCH] if pr else []
     return CompletionRecord(
         session_id="coding-1",
@@ -139,6 +146,30 @@ def _make_record(pr: bool = True) -> CompletionRecord:
         implementation="",
         problems="",
         requested_actions=actions,
+        validation_record_path=(
+            str(validation_record_path) if validation_record_path else None
+        ),
+    )
+
+
+def _write_validation_record(path: Path, *, head_sha: str, passed: bool = True) -> None:
+    path.write_text(json.dumps({"passed": passed, "head_sha": head_sha}))
+
+
+def _store_cached_approval(
+    session_output: _FakeSessionOutput,
+    worktree: Path,
+    validation_record_path: Path | None,
+) -> None:
+    session_output.store_review_exchange_summary(
+        worktree,
+        "review-exchange-230",
+        {
+            "status": "ok",
+            "completed_rounds": 1,
+            "response_text": "Looks good.",
+        },
+        validation_record_path=validation_record_path,
     )
 
 
@@ -147,6 +178,8 @@ def _build(
     job_runner: _FakeJobRunner,
     started_events: list[dict[str, Any]],
     outcome_events: list[dict[str, Any]],
+    *,
+    require_validation: bool = False,
 ) -> tuple[CompletionReviewExchange, _FakeSessionOutput]:
     from issue_orchestrator.control.background_job_supervisor import (
         BackgroundJobSupervisor,
@@ -165,11 +198,11 @@ def _build(
     # these tests because the fake runner doesn't raise; when failure paths
     # need testing, tests call `supervisor.tick()` themselves.
     review = CompletionReviewExchange(
-        config=_make_config(tmp_path),
-        session_output=session_output,  # type: ignore[arg-type]
+        config=_make_config(tmp_path, require_validation=require_validation),
+        session_output=cast(SessionOutput, session_output),
         emit_review_started=_on_started,
         emit_review_outcome=_on_outcome,
-        job_supervisor=BackgroundJobSupervisor(job_runner),  # type: ignore[arg-type]
+        job_supervisor=BackgroundJobSupervisor(job_runner),
     )
     return review, session_output
 
@@ -186,7 +219,7 @@ def test_first_pass_submits_background_job_and_returns_deferred(tmp_path: Path) 
         raise AssertionError("loop must not run synchronously when deferred")
 
     (
-        plan,
+        _plan,
         mode,
         outcome,
         completed,
@@ -265,8 +298,8 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
     recorded_on_started: list[Path] = []
 
     def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:
-        kwargs["on_started"](session_output._run_dir)  # type: ignore[attr-defined]
-        recorded_on_started.append(session_output._run_dir)  # type: ignore[attr-defined]
+        kwargs["on_started"](session_output.run_dir)
+        recorded_on_started.append(session_output.run_dir)
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
@@ -274,7 +307,7 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
             reviewer_response=ReviewExchangeResponse(
                 response_type="ok", getting_closer=True, response_text="Looks good."
             ),
-            exchange_dir=session_output._run_dir / "review-exchange",  # type: ignore[attr-defined]
+            exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "ok",
                 "completed_rounds": 1,
@@ -303,7 +336,7 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
 
     # Tick N+k — cached summary present, exchange resolves.
     actions_taken: list[str] = []
-    (_, mode, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+    (_, _mode, outcome, completed, halt, deferred) = review.prepare_review_exchange(
         requested_actions=(RequestedAction.CREATE_PR,),
         worktree=tmp_path,
         issue_number=230,
@@ -324,6 +357,186 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
     assert recorded_on_started, "emit_review_started must fire during the job"
 
 
+def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="same-sha")
+    _write_validation_record(current_validation, head_sha="same-sha")
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("matching cached approval should be reused")
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is False
+    assert halt is False
+    assert completed is True
+    assert outcome is not None and outcome.status == "ok"
+    assert actions_taken == ["Review exchange passed (cached)"]
+    assert job_runner.submitted == []
+
+
+def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="old-sha")
+    _write_validation_record(current_validation, head_sha="new-sha")
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("fresh exchange should be deferred to background job")
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is True
+    assert halt is False
+    assert completed is False
+    assert outcome is None
+    assert actions_taken == []
+    assert len(job_runner.submitted) == 1
+
+
+@pytest.mark.parametrize(
+    ("cached_record_text", "case_id"),
+    [
+        (None, "missing-file"),
+        ("{", "malformed-json"),
+        (json.dumps({"passed": True}), "missing-head-sha"),
+        (json.dumps({"passed": True, "head_sha": ""}), "empty-head-sha"),
+    ],
+)
+def test_cached_review_is_ignored_without_matching_cached_sha_even_when_validation_not_required(
+    tmp_path: Path,
+    cached_record_text: str | None,
+    case_id: str,
+) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=False,
+    )
+
+    cached_validation = tmp_path / f"cached-validation-{case_id}.json"
+    current_validation = tmp_path / "current-validation.json"
+    if cached_record_text is not None:
+        cached_validation.write_text(cached_record_text)
+    _write_validation_record(current_validation, head_sha="new-sha")
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("fresh exchange should be deferred to background job")
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is True
+    assert halt is False
+    assert completed is False
+    assert outcome is None
+    assert actions_taken == []
+    assert len(job_runner.submitted) == 1
+
+
+def test_cached_review_is_reused_when_current_validation_sha_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="cached-sha")
+    current_validation.write_text(json.dumps({"passed": True}))
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("cache should stay reusable without a current SHA")
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is False
+    assert halt is False
+    assert completed is True
+    assert outcome is not None and outcome.status == "ok"
+    assert actions_taken == ["Review exchange passed (cached)"]
+    assert job_runner.submitted == []
+
+
 def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
     # Construct without a job runner — the NullBackgroundJobRunner default must
     # short-circuit to inline execution so tests without async wiring still pass.
@@ -333,13 +546,13 @@ def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
 
     review = CompletionReviewExchange(
         config=_make_config(tmp_path),
-        session_output=session_output,  # type: ignore[arg-type]
+        session_output=cast(SessionOutput, session_output),
         emit_review_started=lambda **kw: started.append(kw),
         emit_review_outcome=lambda **kw: outcomes.append(kw),
     )
 
     def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:
-        kwargs["on_started"](session_output._run_dir)  # type: ignore[attr-defined]
+        kwargs["on_started"](session_output.run_dir)
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
@@ -347,7 +560,7 @@ def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
             reviewer_response=ReviewExchangeResponse(
                 response_type="ok", getting_closer=True, response_text="Looks good."
             ),
-            exchange_dir=session_output._run_dir / "review-exchange",  # type: ignore[attr-defined]
+            exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "ok",
                 "completed_rounds": 1,
