@@ -56,3 +56,20 @@ test('computeCompactCardFingerprint changes when rendered fields change', () => 
     });
     assert.notEqual(baseline, changed);
 });
+
+test('computeCompactCardFingerprint changes when issue label gains a logical key', () => {
+    // Without the label in the fingerprint, switching from "#4057" to
+    // "M9-009 · #4057" would skip the rebuild and leave a stale label.
+    const before = compactCardState.computeCompactCardFingerprint({
+        issue_number: 4057,
+        title: 'Surface circuit breaker',
+        issue_label: '#4057',
+    });
+    const after = compactCardState.computeCompactCardFingerprint({
+        issue_number: 4057,
+        title: 'Surface circuit breaker',
+        issue_key: 'M9-009',
+        issue_label: 'M9-009 · #4057',
+    });
+    assert.notEqual(before, after);
+});

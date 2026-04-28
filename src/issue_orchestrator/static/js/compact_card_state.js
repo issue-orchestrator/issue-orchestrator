@@ -15,6 +15,8 @@
     function computeCompactCardFingerprint(card) {
         const cardId = card?.card_id ?? '';
         const issueNumber = card?.issue_number ?? '';
+        const issueKey = card?.issue_key ?? '';
+        const issueLabel = card?.issue_label ?? '';
         const title = card?.title ?? '';
         const stateLabel = card?.state_label ?? '';
         const phase = card?.phase ?? '';
@@ -32,6 +34,8 @@
         return [
             cardId,
             issueNumber,
+            issueKey,
+            issueLabel,
             title,
             stateLabel,
             phase,

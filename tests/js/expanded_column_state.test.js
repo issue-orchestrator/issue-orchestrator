@@ -62,6 +62,21 @@ test('computeExpandedItemsFingerprint is stable for logically equal inputs', () 
     assert.equal(first, second);
 });
 
+test('computeExpandedItemsFingerprint changes when issue label gains a logical key', () => {
+    // Without the label in the fingerprint, the same issue_number with a new
+    // "M9-009 · #4057" label would be treated as identical and the rebuild
+    // would be skipped, leaving the bare "#4057" rendered.
+    const before = expandedColumnState.computeExpandedItemsFingerprint(
+        [{ issue_number: 4057, title: 'T', detail_label: 'd', status: 'queued', issue_label: '#4057' }],
+        { columnId: 'queued', viewedIssueNumbers: [] },
+    );
+    const after = expandedColumnState.computeExpandedItemsFingerprint(
+        [{ issue_number: 4057, title: 'T', detail_label: 'd', status: 'queued', issue_key: 'M9-009', issue_label: 'M9-009 · #4057' }],
+        { columnId: 'queued', viewedIssueNumbers: [] },
+    );
+    assert.notEqual(before, after);
+});
+
 test('computeExpandedItemsFingerprint reflects blocked viewed state', () => {
     const items = [{ issue_number: 10, title: 'A', detail_label: 'd', status: 'blocked' }];
 
