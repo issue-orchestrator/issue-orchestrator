@@ -75,9 +75,9 @@ def _print_dirty_files(files: list[str]) -> None:
         print(f"  ... and {len(files) - DIRTY_FILE_LIST_LIMIT} more")
 
 
-def _filter_guard_excluded_files(files: list[str]) -> list[str]:
+def _filter_guard_excluded_files(files: list[str], worktree: Path) -> list[str]:
     """Filter out orchestrator runtime metadata from dirty-tree guard checks."""
-    return filter_runtime_managed_dirty_paths(files)
+    return filter_runtime_managed_dirty_paths(files, worktree)
 
 
 def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
@@ -92,7 +92,7 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     if mode == "off":
         return None
     working_copy = GitWorkingCopy()
-    dirty_files = _filter_guard_excluded_files(working_copy.list_dirty_files(worktree, mode))
+    dirty_files = _filter_guard_excluded_files(working_copy.list_dirty_files(worktree, mode), worktree)
     if dirty_files:
         if verbose:
             if mode == "all":

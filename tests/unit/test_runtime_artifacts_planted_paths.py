@@ -14,10 +14,13 @@ developer edits.
 from __future__ import annotations
 
 from issue_orchestrator.infra.runtime_artifacts import (
+    RUNTIME_IGNORE_FILE,
     filter_orchestrator_untracked_planted,
     filter_runtime_managed_dirty_paths,
     is_orchestrator_untracked_planted,
     is_runtime_managed_dirty_path,
+    load_runtime_ignore_patterns,
+    runtime_ignore_patterns,
 )
 
 
@@ -61,9 +64,7 @@ def test_rejects_unrelated_paths() -> None:
 
 def test_rejects_sibling_prefix_outside_planted_tree() -> None:
     """``src/issue_orchestrator_tests/`` shares a prefix but is not planted."""
-    assert not is_orchestrator_untracked_planted(
-        "src/issue_orchestrator_tests/foo.py"
-    )
+    assert not is_orchestrator_untracked_planted("src/issue_orchestrator_tests/foo.py")
 
 
 def test_normalizes_windows_separators() -> None:
@@ -121,3 +122,76 @@ def test_runtime_metadata_filter_still_strips_its_targets() -> None:
         "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
         "docs/README.md",
     ]
+
+
+def test_runtime_metadata_filter_strips_claude_scheduled_tasks_lock() -> None:
+    assert is_runtime_managed_dirty_path(".claude/scheduled_tasks.lock")
+    assert filter_runtime_managed_dirty_paths(
+        [".claude/scheduled_tasks.lock", "src/app.py"]
+    ) == ["src/app.py"]
+
+
+def test_loads_repo_local_runtime_ignore_file(tmp_path, caplog) -> None:
+    ignore_file = tmp_path / RUNTIME_IGNORE_FILE
+    ignore_file.parent.mkdir(parents=True)
+    ignore_file.write_text(
+        "\n".join(
+            [
+                "# local runtime artifacts",
+                "./.tool/runtime.lock",
+                "tmp/runtime/",
+                "!not-supported",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_runtime_ignore_patterns(tmp_path) == (
+        ".tool/runtime.lock",
+        "tmp/runtime/",
+    )
+    assert "Ignoring unsupported negated runtime-ignore pattern" in caplog.text
+    assert is_runtime_managed_dirty_path(".tool/runtime.lock", tmp_path)
+    assert is_runtime_managed_dirty_path("tmp/runtime/session.json", tmp_path)
+    assert filter_runtime_managed_dirty_paths(
+        [".tool/runtime.lock", "tmp/runtime/session.json", "src/app.py"],
+        tmp_path,
+    ) == ["src/app.py"]
+
+
+def test_runtime_ignore_patterns_combines_builtins_and_repo_local(tmp_path) -> None:
+    ignore_file = tmp_path / RUNTIME_IGNORE_FILE
+    ignore_file.parent.mkdir(parents=True)
+    ignore_file.write_text("local-runtime/\n", encoding="utf-8")
+
+    patterns = runtime_ignore_patterns(tmp_path)
+
+    assert ".claude/scheduled_tasks.lock" in patterns
+    assert ".issue-orchestrator/" in patterns
+    assert "local-runtime/" in patterns
+
+
+def test_runtime_ignore_file_supports_lightweight_globs(tmp_path) -> None:
+    ignore_file = tmp_path / RUNTIME_IGNORE_FILE
+    ignore_file.parent.mkdir(parents=True)
+    ignore_file.write_text("*.tmp\ncache/*.json\n", encoding="utf-8")
+
+    assert is_runtime_managed_dirty_path("build.tmp", tmp_path)
+    assert is_runtime_managed_dirty_path("cache/a.json", tmp_path)
+    assert is_runtime_managed_dirty_path("cache/sub/b.json", tmp_path)
+    assert not is_runtime_managed_dirty_path("cache/a.txt", tmp_path)
+
+
+def test_runtime_ignore_file_drops_comments_blanks_and_negations(
+    tmp_path, caplog
+) -> None:
+    ignore_file = tmp_path / RUNTIME_IGNORE_FILE
+    ignore_file.parent.mkdir(parents=True)
+    ignore_file.write_text(
+        "# comment\n\nruntime.lock\n!important.txt\n",
+        encoding="utf-8",
+    )
+
+    assert load_runtime_ignore_patterns(tmp_path) == ("runtime.lock",)
+    assert "Ignoring unsupported negated runtime-ignore pattern" in caplog.text

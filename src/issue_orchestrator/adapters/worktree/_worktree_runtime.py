@@ -8,6 +8,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+from ...infra.runtime_artifacts import RUNTIME_IGNORE_FILE, load_runtime_ignore_patterns
 from ._worktree_git import _git_run
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,14 @@ ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dr
 WORKTREE_LOCAL_EXCLUDE_PATHS: tuple[Path, ...] = (
     Path(".venv"),
     Path(".claude/settings.json"),
+    Path(".claude/scheduled_tasks.lock"),
     Path(WORKTREE_ID_MARKER),
     ALLOW_NO_VERIFY_DRY_RUN_PATH,
     Path(".issue-orchestrator/ai-gate-state.json"),
     Path(".issue-orchestrator/backups"),
     Path(".issue-orchestrator/diagnostics"),
     Path(".issue-orchestrator/dirty-rejection-count.json"),
+    RUNTIME_IGNORE_FILE,
     Path(".issue-orchestrator/session-latest.json"),
     Path(".issue-orchestrator/sessions"),
     Path(".issue-orchestrator/timeline.sqlite"),
@@ -104,7 +107,9 @@ def _link_repo_venv_into_worktree(repo_root: Path, worktree_path: Path) -> None:
         return
 
     target_venv.symlink_to(source_venv, target_is_directory=True)
-    logger.info("Linked shared repo venv into worktree: %s -> %s", target_venv, source_venv)
+    logger.info(
+        "Linked shared repo venv into worktree: %s -> %s", target_venv, source_venv
+    )
 
 
 def sync_cli_tools(worktree_path: Path) -> list[Path]:
@@ -123,10 +128,14 @@ def sync_cli_tools(worktree_path: Path) -> list[Path]:
     """
     package_root = Path(__file__).resolve().parents[2]
     src_cli_tools = package_root / "entrypoints" / "cli_tools"
-    dst_cli_tools = worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+    dst_cli_tools = (
+        worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+    )
 
     if not src_cli_tools.exists():
-        logger.debug("No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools)
+        logger.debug(
+            "No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools
+        )
         return []
 
     dst_cli_tools.mkdir(parents=True, exist_ok=True)
@@ -214,7 +223,11 @@ def _append_exclude_entries(exclude_path: Path, paths: list[Path]) -> None:
         existing_text = exclude_path.read_text()
         existing_lines = existing_text.splitlines()
     existing = {line.strip() for line in existing_lines if line.strip()}
-    missing = [str(path).replace("\\", "/") for path in paths if str(path).replace("\\", "/") not in existing]
+    missing = [
+        str(path).replace("\\", "/")
+        for path in paths
+        if str(path).replace("\\", "/") not in existing
+    ]
     if not missing:
         return
     suffix = "\n" if existing_lines and not existing_text.endswith("\n") else ""
@@ -237,14 +250,27 @@ def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> N
         _append_exclude_entries(exclude_path, paths)
 
 
-def _worktree_git_exclude_paths(synced_cli_tool_paths: list[Path]) -> list[Path]:
+def _worktree_git_exclude_paths(
+    worktree_path: Path, synced_cli_tool_paths: list[Path]
+) -> list[Path]:
     """Return untracked paths that should be hidden from plain git status.
 
     This covers both runtime-only metadata and the synced CLI helper files we
     plant into foreign worktrees so first-run agents don't misread a clean
     session as a dirty repo before they make any user-facing change.
     """
-    return [*WORKTREE_LOCAL_EXCLUDE_PATHS, *synced_cli_tool_paths]
+    # Path normalisation intentionally widens trailing-slash patterns from
+    # directory-only to file-or-directory when writing Git excludes. The
+    # runtime-ignore file is an additive hide list, so broader exclusion is
+    # safer than leaving agent-visible runtime artifacts in plain git status.
+    repo_local_runtime_paths = [
+        Path(pattern) for pattern in load_runtime_ignore_patterns(worktree_path)
+    ]
+    return [
+        *WORKTREE_LOCAL_EXCLUDE_PATHS,
+        *repo_local_runtime_paths,
+        *synced_cli_tool_paths,
+    ]
 
 
 def _hide_runtime_artifacts_from_git_status(
@@ -268,7 +294,7 @@ def _hide_runtime_artifacts_from_git_status(
         )
     _write_worktree_exclude_entries(
         worktree_path,
-        _worktree_git_exclude_paths(synced_cli_tool_paths),
+        _worktree_git_exclude_paths(worktree_path, synced_cli_tool_paths),
     )
 
 

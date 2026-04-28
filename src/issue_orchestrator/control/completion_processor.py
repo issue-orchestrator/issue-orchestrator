@@ -543,10 +543,6 @@ class CompletionProcessor:
     def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
         return self._record_validator.check_dirty_policy(worktree)
 
-    @staticmethod
-    def _is_ignored_dirty_path(path: str) -> bool:
-        return CompletionRecordValidator.is_ignored_dirty_path(path)
-
     def _emit_review_comment_added(
         self,
         *,

@@ -8,10 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction, sanitize_agent_label
-from ..infra.runtime_artifacts import (
-    filter_runtime_managed_dirty_paths,
-    is_runtime_managed_dirty_path,
-)
+from ..infra.runtime_artifacts import filter_runtime_managed_dirty_paths
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -219,7 +216,7 @@ class CompletionRecordValidator:
         )
         if dirty:
             dirty_files = self._git_adapter.list_dirty_files(worktree, list_mode)
-            blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
+            blocking_files = filter_runtime_managed_dirty_paths(dirty_files, worktree)
             logger.info(
                 "Dirty-check files for %s: mode=%s total=%d blocking=%d files=%s",
                 worktree,
@@ -252,7 +249,3 @@ class CompletionRecordValidator:
             )
 
         return WorktreeValidationResult.pass_()
-
-    @staticmethod
-    def is_ignored_dirty_path(path: str) -> bool:
-        return is_runtime_managed_dirty_path(path)
