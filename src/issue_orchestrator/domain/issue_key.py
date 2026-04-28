@@ -129,6 +129,41 @@ class ParsedTitle:
     raw_title: str
 
 
+# =============================================================================
+# Display Labels - Combine logical key + backing-store handle for UI
+# =============================================================================
+
+# Separator between the logical key and the GitHub number in display labels
+# (e.g., "M9-009 · #274"). Centralized so the look can be tweaked in one place.
+ISSUE_LABEL_SEPARATOR = " · "
+
+
+def issue_label_parts(issue_key: str | None, issue_number: int | None) -> tuple[str, ...]:
+    """Order parts of the display label.
+
+    Swap the order of the appended parts here to flip key-first vs number-first
+    everywhere the label is rendered.
+    """
+    parts: list[str] = []
+    if issue_key:
+        parts.append(issue_key)
+    if issue_number is not None:
+        parts.append(f"#{issue_number}")
+    return tuple(parts)
+
+
+def format_issue_label(issue_number: int | None, issue_key: str | None) -> str:
+    """Render an issue display label combining logical key and GitHub number.
+
+    Examples:
+        format_issue_label(274, "M9-009") -> "M9-009 · #274"
+        format_issue_label(274, None)     -> "#274"
+        format_issue_label(None, "M9-009") -> "M9-009"
+        format_issue_label(None, None)    -> ""
+    """
+    return ISSUE_LABEL_SEPARATOR.join(issue_label_parts(issue_key, issue_number))
+
+
 def parse_external_id(title: str) -> ParsedTitle:
     """Parse external ID from an issue title.
 

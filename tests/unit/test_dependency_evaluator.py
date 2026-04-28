@@ -636,11 +636,20 @@ class TestDependencyDisplayRef:
         assert dep.display_ref == "#123"
 
     def test_display_ref_with_external_id(self):
-        """Display ref prefers external_id when set."""
+        """Display ref shows both logical key and #number when both are known."""
         dep = Dependency(
             issue_number=123,
             external_id="M1-001",
             state=DependencyState.SATISFIED,
+        )
+        assert dep.display_ref == "M1-001 · #123"
+
+    def test_display_ref_with_external_id_only(self):
+        """Display ref falls back to external_id alone when issue number missing."""
+        dep = Dependency(
+            issue_number=None,
+            external_id="M1-001",
+            state=DependencyState.UNSATISFIED,
         )
         assert dep.display_ref == "M1-001"
 
@@ -652,6 +661,16 @@ class TestDependencyDisplayRef:
             state=DependencyState.UNSATISFIED,
         )
         assert dep.display_ref == "other/repo#456"
+
+    def test_display_ref_with_cross_repo_and_external_id(self):
+        """Display ref combines logical key with cross-repo number when both known."""
+        dep = Dependency(
+            issue_number=456,
+            repository="other/repo",
+            external_id="M2-007",
+            state=DependencyState.UNSATISFIED,
+        )
+        assert dep.display_ref == "M2-007 · other/repo#456"
 
     def test_display_ref_unknown(self):
         """Display ref when nothing is set."""

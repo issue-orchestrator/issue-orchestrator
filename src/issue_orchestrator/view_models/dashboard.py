@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any, Callable, assert_never
 
+from ..domain.issue_key import format_issue_label, parse_external_id
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
 from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
@@ -177,6 +178,15 @@ class DashboardViewModel:
             "e2e_total": self.e2e_total,
             "dashboard_data": self.dashboard_data(),
         }
+
+
+def _issue_label_fields(issue_number: int, title: str) -> dict[str, Any]:
+    """Build the issue_key + issue_label pair for a card from the issue title."""
+    issue_key = parse_external_id(title).external_id
+    return {
+        "issue_key": issue_key,
+        "issue_label": format_issue_label(issue_number, issue_key),
+    }
 
 
 def issue_url_for(config, issue_number: int) -> str:
@@ -482,10 +492,12 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
         if config and config.terminal_adapter == "subprocess":
             terminal_hint = "Click to view agent UI log"
 
+        canonical_title = _canonical_issue_title(state, session.issue.number, session.issue.title)
         items.append({
             "card_id": session.terminal_id,
             "issue_number": session.issue.number,
-            "title": _canonical_issue_title(state, session.issue.number, session.issue.title),
+            **_issue_label_fields(session.issue.number, session.issue.title),
+            "title": canonical_title,
             "agent_type": agent_label,
             "status": status,
             "status_reason": status_reason,
@@ -647,6 +659,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
 
         item = {
             "issue_number": issue.number,
+            **_issue_label_fields(issue.number, issue.title),
             "title": issue.title,
             "agent_type": agent_label,
             "status": status,
@@ -714,6 +727,7 @@ def _build_scope_blocked_items(
         agent_label = (issue.agent_type or "unknown").replace("agent:", "")
         blocked_items.append({
             "issue_number": issue.number,
+            **_issue_label_fields(issue.number, issue.title),
             "title": issue.title,
             "agent_type": agent_label,
             "status": "blocked",
@@ -789,6 +803,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
 
         item = {
             "issue_number": entry.issue_number,
+            **_issue_label_fields(entry.issue_number, entry.title),
             "title": entry.title,
             "agent_type": entry.agent_type.replace("agent:", ""),
             "status": entry.status,
@@ -903,6 +918,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
         )
         cards.append({
             "issue_number": issue.number,
+            **_issue_label_fields(issue.number, issue.title),
             "title": issue.title,
             "status": "backlog",
             "detail_label": "In execution scope",
