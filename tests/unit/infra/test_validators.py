@@ -5,7 +5,6 @@ Tests each validator in isolation with mock config objects.
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import pytest
 
 from issue_orchestrator.infra.validators import (
     AgentValidator,
@@ -259,12 +258,11 @@ class TestTemplateValidator:
 class TestUnknownFieldsValidator:
     """Tests for UnknownFieldsValidator."""
 
-    def _make_config(self, raw_data=None, raw_agents=None, strict=False):
+    def _make_config(self, raw_data=None, raw_agents=None):
         """Create a mock config with raw YAML data."""
         config = MagicMock()
         config.raw_data = raw_data or {}
         config.raw_agents = raw_agents or {}
-        config.config_strict = strict
         return config
 
     def test_no_unknown_fields_valid(self):
@@ -286,15 +284,13 @@ class TestUnknownFieldsValidator:
         assert len(errors) == 1
         assert "unknown_field" in errors[0]
 
-    def test_unknown_top_level_field_ignores_config_strict_false(self):
+    def test_removed_config_strict_field_is_error(self):
         """Unknown fields are always errors."""
         config = self._make_config(
-            raw_data={"repo": {}, "unknown_field": "value"},
-            strict=False,
+            raw_data={"config": {"strict": False}},
         )
         errors = UnknownFieldsValidator().validate(config)
-        assert len(errors) == 1
-        assert "unknown_field" in errors[0]
+        assert errors == ["Unknown config field: 'config'"]
 
     def test_unknown_agent_field_is_error(self):
         """Verify error for unknown agent field."""
@@ -397,7 +393,7 @@ class TestAgentValidator:
         model="sonnet",
         reviewer=None,
         prompt_exists=True,
-        ai_system="claude-code",
+        ai_system: str | None = "claude-code",
     ):
         """Create a mock agent config."""
         agent = MagicMock()

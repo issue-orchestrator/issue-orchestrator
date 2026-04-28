@@ -30,14 +30,6 @@ class UnknownFieldsValidator(ConfigValidator):
             for field_path, _ in self.find_unknown_fields(config)
         ]
 
-    def validate_with_strictness(self, config: "Config", strict: bool) -> list[str]:  # noqa: ARG002
-        """Validate unknown fields.
-
-        ``strict`` is accepted for older callers, but unknown fields are always
-        errors.
-        """
-        return self.validate(config)
-
     def find_unknown_fields(self, config: "Config") -> list[tuple[str, str]]:
         """Find unknown fields in config.
 

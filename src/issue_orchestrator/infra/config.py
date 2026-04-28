@@ -114,10 +114,6 @@ class Config:
     worktree_seed_ref: Optional[str] = None  # Optional local ref to seed fresh issue worktrees
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
-    # Config validation
-    # Retained as a parsed config value; unknown fields are always validation errors.
-    config_strict: bool = False
-
     # AI systems allowlist (merged with built-in ai_systems.yaml)
     ai_systems_allowed: list[str] = field(default_factory=list)
 
@@ -506,7 +502,6 @@ class Config:
             },
             "config": {
                 "path": str(self.config_path) if self.config_path else None,
-                "strict": self.config_strict,
             },
             "state": {
                 "file": str(self.state_file),
@@ -1168,7 +1163,6 @@ class Config:
         # Store raw data for unknown field validation
         config.raw_data = data
         config.raw_agents = sections["agents"]
-        config.config_strict = sections["config"].get("strict", False)
         if sections["state"].get("file"):
             config.state_file = resolve_relative_path(sections["state"]["file"], repo_root)
 

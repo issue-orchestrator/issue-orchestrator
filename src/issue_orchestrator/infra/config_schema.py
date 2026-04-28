@@ -51,6 +51,15 @@ ConfigShape = dict[str, "ConfigShape"] | DynamicMap | _Leaf | _OpenMap
 LEAF = _Leaf()
 OPEN_MAP = _OpenMap()
 
+__all__ = [
+    "ConfigShape",
+    "DynamicMap",
+    "LEAF",
+    "OPEN_MAP",
+    "allowed_config_shape",
+    "dataclass_config_shape",
+]
+
 
 def _leaf_keys(*keys: str) -> dict[str, ConfigShape]:
     return {key: LEAF for key in keys}
@@ -107,7 +116,6 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "ai_systems": _leaf_keys("allowed"),
         "claims": dataclass_config_shape(ClaimsConfig),
         "cleanup": dataclass_config_shape(CleanupConfig),
-        "config": _leaf_keys("strict"),
         "default_agent": _default_agent_shape(),
         "e2e": _merge(dataclass_config_shape(E2EConfig), {"pr_labels": LEAF}),
         "filtering": dataclass_config_shape(FilteringConfig),

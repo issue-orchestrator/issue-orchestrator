@@ -110,6 +110,3 @@ hooks:
   ai_gate:
     interval_days: 7
     dangerous_allow_failure: false
-
-config:
-  strict: true

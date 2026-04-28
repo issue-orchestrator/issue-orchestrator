@@ -4,11 +4,44 @@ import pytest
 import yaml
 from pathlib import Path
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.domain.models import AgentConfig
 
 
 class TestConfig:
     """Test the Config class."""
+
+    @pytest.mark.parametrize(
+        "config_path",
+        [
+            "examples/config.example.yaml",
+            ".issue-orchestrator/config/hooks-validate.yaml",
+            ".issue-orchestrator/config/main.yaml",
+            ".issue-orchestrator/config/z-codespaces.yaml",
+        ],
+    )
+    def test_shipped_configs_validate_clean(self, tmp_path, config_path):
+        """Existing shipped configs must continue to load and validate."""
+        repo_root = Path(__file__).resolve().parents[2]
+        path = repo_root / config_path
+        if config_path.startswith("examples/"):
+            example_data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for agent_data in example_data.get("agents", {}).values():
+                prompt = agent_data.get("prompt")
+                if isinstance(prompt, str):
+                    prompt_path = tmp_path / prompt
+                    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+                    prompt_path.write_text("Prompt\n", encoding="utf-8")
+            installed_path = (
+                tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+            )
+            installed_path.parent.mkdir(parents=True, exist_ok=True)
+            installed_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            path = installed_path
+
+        config = Config.load(path)
+
+        assert config.validate() == [], (
+            f"{config_path} failed validation; schema likely missing fields"
+        )
 
     def test_config_creation(self):
         """Test basic Config creation with defaults."""
