@@ -180,13 +180,22 @@ class DashboardViewModel:
         }
 
 
-def _issue_label_fields(issue_number: int, title: str) -> dict[str, Any]:
-    """Build the issue_key + issue_label pair for a card from the issue title."""
-    issue_key = parse_external_id(title).external_id
-    return {
+def _issue_label_fields(issue_number: int, title: str) -> tuple[dict[str, Any], str]:
+    """Build the issue_key/issue_label pair and the display title for a card.
+
+    Returns (label_fields, display_title). The display title strips any
+    ``[M9-009]`` prefix already in ``title`` because the same id is rendered
+    by the label, and showing it twice ("M9-009 · #4057 [M9-009] …") is noise.
+    Falls back to the original title when no prefix is present.
+    """
+    parsed = parse_external_id(title)
+    issue_key = parsed.external_id
+    label_fields = {
         "issue_key": issue_key,
         "issue_label": format_issue_label(issue_number, issue_key),
     }
+    display_title = parsed.raw_title if issue_key else title
+    return label_fields, display_title
 
 
 def issue_url_for(config, issue_number: int) -> str:
@@ -493,11 +502,12 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             terminal_hint = "Click to view agent UI log"
 
         canonical_title = _canonical_issue_title(state, session.issue.number, session.issue.title)
+        label_fields, display_title = _issue_label_fields(session.issue.number, canonical_title)
         items.append({
             "card_id": session.terminal_id,
             "issue_number": session.issue.number,
-            **_issue_label_fields(session.issue.number, session.issue.title),
-            "title": canonical_title,
+            **label_fields,
+            "title": display_title,
             "agent_type": agent_label,
             "status": status,
             "status_reason": status_reason,
@@ -657,10 +667,11 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
         if queue_reason:
             detail_label = queue_reason
 
+        label_fields, display_title = _issue_label_fields(issue.number, issue.title)
         item = {
             "issue_number": issue.number,
-            **_issue_label_fields(issue.number, issue.title),
-            "title": issue.title,
+            **label_fields,
+            "title": display_title,
             "agent_type": agent_label,
             "status": status,
             "status_reason": status_reason,
@@ -725,10 +736,11 @@ def _build_scope_blocked_items(
             dep_problem.summary if dep_problem else None,
         )
         agent_label = (issue.agent_type or "unknown").replace("agent:", "")
+        label_fields, display_title = _issue_label_fields(issue.number, issue.title)
         blocked_items.append({
             "issue_number": issue.number,
-            **_issue_label_fields(issue.number, issue.title),
-            "title": issue.title,
+            **label_fields,
+            "title": display_title,
             "agent_type": agent_label,
             "status": "blocked",
             "status_reason": _normalize_status_reason(dep_summary) or "blocked",
@@ -801,10 +813,11 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
 
         worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
 
+        label_fields, display_title = _issue_label_fields(entry.issue_number, entry.title)
         item = {
             "issue_number": entry.issue_number,
-            **_issue_label_fields(entry.issue_number, entry.title),
-            "title": entry.title,
+            **label_fields,
+            "title": display_title,
             "agent_type": entry.agent_type.replace("agent:", ""),
             "status": entry.status,
             "status_reason": status_reason,
@@ -916,10 +929,11 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             lm,
             dep_summary if dep_summary else None,
         )
+        label_fields, display_title = _issue_label_fields(issue.number, issue.title)
         cards.append({
             "issue_number": issue.number,
-            **_issue_label_fields(issue.number, issue.title),
-            "title": issue.title,
+            **label_fields,
+            "title": display_title,
             "status": "backlog",
             "detail_label": "In execution scope",
             "flow_stage": "queued",
