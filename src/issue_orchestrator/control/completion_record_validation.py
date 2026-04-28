@@ -2,6 +2,8 @@
 
 import json
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -29,6 +31,33 @@ _DIRTY_FILES_REASON_LIMIT = 8
 # completion we have seen; tighten further if we ever shrink per-field
 # caps.
 _MAX_COMPLETION_FILE_BYTES = 2 * 1024 * 1024
+
+
+class WorktreeValidationFailure(Enum):
+    """Typed classification for publish-precondition failures."""
+
+    CURRENT_BRANCH_UNKNOWN = "current_branch_unknown"
+    PROTECTED_BRANCH = "protected_branch"
+    DIRTY_POLICY = "dirty_policy"
+
+
+@dataclass(frozen=True)
+class WorktreeValidationResult:
+    ok: bool
+    reason: str = ""
+    failure: WorktreeValidationFailure | None = None
+
+    @classmethod
+    def pass_(cls) -> "WorktreeValidationResult":
+        return cls(ok=True)
+
+    @classmethod
+    def fail(
+        cls,
+        failure: WorktreeValidationFailure,
+        reason: str,
+    ) -> "WorktreeValidationResult":
+        return cls(ok=False, reason=reason, failure=failure)
 
 
 def load_completion_record(record_path: Path) -> CompletionRecord | None:
@@ -133,23 +162,29 @@ class CompletionRecordValidator:
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
-    ) -> tuple[bool, str]:
+    ) -> WorktreeValidationResult:
         """Validate worktree state before executing requested publish actions."""
         branch = self._git_adapter.get_current_branch(worktree)
         if not branch:
-            return False, "Could not determine current branch"
+            return WorktreeValidationResult.fail(
+                WorktreeValidationFailure.CURRENT_BRANCH_UNKNOWN,
+                "Could not determine current branch",
+            )
 
         if RequestedAction.PUSH_BRANCH in record.requested_actions:
             if branch in ("main", "master"):
-                return False, f"Cannot push: on protected branch '{branch}'"
+                return WorktreeValidationResult.fail(
+                    WorktreeValidationFailure.PROTECTED_BRANCH,
+                    f"Cannot push: on protected branch '{branch}'",
+                )
 
-            ok, reason = self.check_dirty_policy(worktree)
-            if not ok:
-                return False, reason
+            dirty_policy = self.check_dirty_policy(worktree)
+            if not dirty_policy.ok:
+                return dirty_policy
 
-        return True, ""
+        return WorktreeValidationResult.pass_()
 
-    def check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+    def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
         """Apply validation.pre_push_dirty_check policy before push actions."""
         mode = (
             self._config.validation.pre_push_dirty_check
@@ -158,7 +193,8 @@ class CompletionRecordValidator:
         )
 
         if mode == "off":
-            return True, ""
+            logger.info("Dirty-check skipped for %s: mode=off", worktree)
+            return WorktreeValidationResult.pass_()
         list_mode = mode
         if mode == "tracked":
             dirty = self._git_adapter.has_tracked_changes(worktree, include_staged=True)
@@ -167,21 +203,40 @@ class CompletionRecordValidator:
         elif mode == "all":
             dirty = self._git_adapter.has_uncommitted_changes(worktree)
         else:
-            return False, (
-                "Invalid validation.pre_push_dirty_check value: "
-                f"{mode!r} (expected tracked|unstaged|all|off)"
+            return WorktreeValidationResult.fail(
+                WorktreeValidationFailure.DIRTY_POLICY,
+                (
+                    "Invalid validation.pre_push_dirty_check value: "
+                    f"{mode!r} (expected tracked|unstaged|all|off)"
+                ),
             )
 
+        logger.debug(
+            "Dirty-check evaluated for %s: mode=%s dirty=%s",
+            worktree,
+            mode,
+            dirty,
+        )
         if dirty:
             dirty_files = self._git_adapter.list_dirty_files(worktree, list_mode)
             blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
+            logger.info(
+                "Dirty-check files for %s: mode=%s total=%d blocking=%d files=%s",
+                worktree,
+                mode,
+                len(dirty_files),
+                len(blocking_files),
+                ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])
+                if blocking_files
+                else "<runtime-only>",
+            )
             if dirty_files and not blocking_files:
                 logger.info(
                     "Dirty-check ignored runtime-only files for %s: %s",
                     worktree,
                     ", ".join(dirty_files),
                 )
-                return True, ""
+                return WorktreeValidationResult.pass_()
             reason = (
                 "Working tree is dirty; commit/add/stash before pushing. "
                 "Override with validation.pre_push_dirty_check."
@@ -191,9 +246,12 @@ class CompletionRecordValidator:
                 remaining = len(blocking_files) - _DIRTY_FILES_REASON_LIMIT
                 suffix = f" (+{remaining} more)" if remaining > 0 else ""
                 reason = f"{reason} Dirty files: {preview}{suffix}."
-            return False, reason
+            return WorktreeValidationResult.fail(
+                WorktreeValidationFailure.DIRTY_POLICY,
+                reason,
+            )
 
-        return True, ""
+        return WorktreeValidationResult.pass_()
 
     @staticmethod
     def is_ignored_dirty_path(path: str) -> bool:

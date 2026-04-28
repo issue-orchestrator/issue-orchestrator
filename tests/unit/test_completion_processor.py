@@ -1602,9 +1602,16 @@ class TestCompletionProcessorDirtyPolicy:
         result = processor.process(worktree, issue_number=123, issue_title="Test")
 
         assert not result.success
+        assert result.failure_kind == "validation_failed"
         assert "working tree is dirty" in result.message.lower()
         assert "dirty files: src/feature.py, readme.md." in result.message.lower()
+        assert result.errors == [
+            "Validation: Working tree is dirty; commit/add/stash before pushing. "
+            "Override with validation.pre_push_dirty_check. "
+            "Dirty files: src/feature.py, README.md."
+        ]
         mock_git_adapter.push.assert_not_called()
+        mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
         mock_pr_adapter.add_comment.assert_called_once()
 
     def test_push_rejected_when_all_mode_and_untracked_present(

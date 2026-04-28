@@ -50,7 +50,11 @@ from .completion_failure_reporting import (
     build_gate_failure_comment,
     build_processing_failure_comment,
 )
-from .completion_record_validation import CompletionRecordValidator
+from .completion_record_validation import (
+    CompletionRecordValidator,
+    WorktreeValidationFailure,
+    WorktreeValidationResult,
+)
 from .completion_result_artifacts import (
     build_pr_body,
     build_processing_result,
@@ -533,10 +537,10 @@ class CompletionProcessor:
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
-    ) -> tuple[bool, str]:
+    ) -> WorktreeValidationResult:
         return self._record_validator.validate_worktree_state(worktree, record)
 
-    def _check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+    def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
         return self._record_validator.check_dirty_policy(worktree)
 
     @staticmethod
@@ -837,19 +841,14 @@ class CompletionProcessor:
         assert record is not None  # Guaranteed if error_result is None
 
         # Validate worktree state
-        valid, reason = self.validate_worktree_state(worktree, record)
-        if not valid:
-            tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
-            comment = build_processing_failure_comment(
-                errors=[tagged_reason],
-                actions_taken=[],
-                diagnostic_path=None,
-            )
-            self._add_issue_comment(issue_number, comment, context="processing failure")
-            return ProcessingResult(
-                success=False,
-                message=f"Validation failed: {reason}",
-                errors=[tagged_reason],
+        worktree_state = self.validate_worktree_state(worktree, record)
+        if not worktree_state.ok:
+            return self._handle_invalid_worktree_state(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                worktree_state,
             )
 
         # Check publish gate if actions require it
@@ -999,6 +998,42 @@ class CompletionProcessor:
                 self.session_output.attach_claude_log(run_dir)
 
         return record, session_name, None
+
+    def _handle_invalid_worktree_state(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+        worktree_state: WorktreeValidationResult,
+    ) -> ProcessingResult:
+        logger.warning(
+            "Completion worktree validation failed before publish: issue=%s reason=%s",
+            issue_number,
+            worktree_state.reason,
+        )
+        if worktree_state.failure == WorktreeValidationFailure.DIRTY_POLICY:
+            return self._handle_gate_failure(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                worktree_state.reason,
+                gate_record=None,
+            )
+
+        tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {worktree_state.reason}"
+        comment = build_processing_failure_comment(
+            errors=[tagged_reason],
+            actions_taken=[],
+            diagnostic_path=None,
+        )
+        self._add_issue_comment(issue_number, comment, context="processing failure")
+        return ProcessingResult(
+            success=False,
+            message=f"Validation failed: {worktree_state.reason}",
+            errors=[tagged_reason],
+        )
 
     def _check_publish_gate_if_required(
         self,
