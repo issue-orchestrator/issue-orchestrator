@@ -97,3 +97,104 @@ def test_load_validation_failure_summary_returns_none_for_non_failed_runs(tmp_pa
     )
 
     assert load_validation_failure_summary(run_dir) is None
+
+
+def _seed_failed_validation(tmp_path: Path) -> tuple[Path, Path]:
+    worktree = tmp_path / "wt"
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-junit"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_name": "coding-junit",
+                "run_dir": str(run_dir),
+                "worktree": str(worktree),
+                "validation_status": "failed",
+                "validation_reason": "tests failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "validation-record.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "suite": "publish_gate",
+                "head_sha": "cafebabe",
+                "passed": False,
+                "exit_code": 1,
+                "command": "make test",
+                "started_at": "2026-04-28T10:00:00Z",
+                "ended_at": "2026-04-28T10:01:30Z",
+                "timed_out": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return worktree, run_dir
+
+
+def test_load_validation_failure_summary_attaches_junit_cases_when_configured(
+    tmp_path: Path,
+) -> None:
+    """JUnit XML emitted by validation is parsed into structured cases."""
+    worktree, run_dir = _seed_failed_validation(tmp_path)
+    junit_path = worktree / "test-results.xml"
+    junit_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="pytest" tests="3" failures="1" errors="0" skipped="0">
+  <testcase classname="tests.unit.test_a" name="test_passes" time="0.12"/>
+  <testcase classname="tests.unit.test_b" name="test_fails" time="0.05">
+    <failure message="AssertionError: expected 2 got 1">tests/unit/test_b.py:7
+    assert 1 == 2</failure>
+  </testcase>
+  <testcase classname="tests.unit.test_c" name="test_skipped" time="0.0">
+    <skipped message="not on this platform"/>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    summary = load_validation_failure_summary(
+        run_dir, junit_xml_paths=("test-results.xml",)
+    )
+
+    assert summary is not None
+    assert len(summary.junit_cases) == 3
+    by_outcome = {case.display_name: case.outcome for case in summary.junit_cases}
+    assert by_outcome == {
+        "test_passes": "passed",
+        "test_fails": "failed",
+        "test_skipped": "skipped",
+    }
+    failing = next(c for c in summary.junit_cases if c.outcome == "failed")
+    assert failing.failure_details is not None
+    assert "AssertionError" in failing.failure_details
+
+
+def test_load_validation_failure_summary_returns_empty_junit_when_unconfigured(
+    tmp_path: Path,
+) -> None:
+    """No junit_xml_paths configured → empty junit_cases (existing behavior preserved)."""
+    _, run_dir = _seed_failed_validation(tmp_path)
+    summary = load_validation_failure_summary(run_dir)
+    assert summary is not None
+    assert summary.junit_cases == ()
+
+
+def test_load_validation_failure_summary_tolerates_missing_junit_file(
+    tmp_path: Path,
+) -> None:
+    """JUnit path configured but file not produced → empty junit_cases, no error.
+
+    Validation can fail before reaching the test step (e.g., typecheck exits
+    early). The dashboard should still render the basic failure summary.
+    """
+    _, run_dir = _seed_failed_validation(tmp_path)
+    summary = load_validation_failure_summary(
+        run_dir, junit_xml_paths=("test-results.xml",)
+    )
+    assert summary is not None
+    assert summary.junit_cases == ()

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..domain.run_manifest import RunManifest
+from ..infra.e2e_reports import JUnitCaseResult, discover_report_artifacts
 from ..ports.session_output import ValidationRecord
+
+logger = logging.getLogger(__name__)
 
 _FAILED_TEST_RE = re.compile(r"^FAILED\s+(\S+)")
 _MAX_FAILED_TESTS = 10
@@ -36,6 +40,10 @@ class ValidationFailureSummary:
     validation_record_path: str | None
     validation_stdout_path: str | None
     validation_stderr_path: str | None
+    # Parsed JUnit cases (empty when validation didn't emit JUnit XML or no
+    # paths configured). When non-empty, the dashboard renders a structured
+    # test-results view scoped to this validation run.
+    junit_cases: tuple[JUnitCaseResult, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,8 +62,18 @@ class ValidationFailureSummary:
         }
 
 
-def load_validation_failure_summary(run_dir: Path) -> ValidationFailureSummary | None:
-    """Return a concise summary when a run's validation failed."""
+def load_validation_failure_summary(
+    run_dir: Path,
+    *,
+    junit_xml_paths: tuple[str, ...] | list[str] = (),
+    junit_search_root: Path | None = None,
+) -> ValidationFailureSummary | None:
+    """Return a concise summary when a run's validation failed.
+
+    When ``junit_xml_paths`` is non-empty, also parse JUnit XML rooted at
+    ``junit_search_root`` (defaults to the manifest's worktree, or run_dir as
+    a last resort) and attach the structured cases.
+    """
     try:
         manifest = RunManifest.load(run_dir)
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -89,6 +107,11 @@ def load_validation_failure_summary(run_dir: Path) -> ValidationFailureSummary |
     stderr_lines = _read_lines(stderr_path)
     failed_tests = _extract_failed_tests(stdout_lines)
 
+    junit_cases = _load_junit_cases(
+        junit_xml_paths,
+        junit_search_root or (Path(worktree) if worktree else run_dir),
+    )
+
     return ValidationFailureSummary(
         reason=manifest.validation_reason or "Validation failed",
         suite=record.suite if record else "",
@@ -102,7 +125,33 @@ def load_validation_failure_summary(run_dir: Path) -> ValidationFailureSummary |
         validation_record_path=str(record_path) if record_path else None,
         validation_stdout_path=str(stdout_path) if stdout_path else None,
         validation_stderr_path=str(stderr_path) if stderr_path else None,
+        junit_cases=junit_cases,
     )
+
+
+def _load_junit_cases(
+    junit_xml_paths: tuple[str, ...] | list[str],
+    search_root: Path,
+) -> tuple[JUnitCaseResult, ...]:
+    paths = tuple(p for p in junit_xml_paths if p)
+    if not paths or not search_root.exists():
+        return ()
+    try:
+        cases, _ = discover_report_artifacts(
+            search_root,
+            junit_xml_paths=paths,
+            artifact_paths=(),
+        )
+    except ValueError as exc:
+        # Validation may legitimately fail before producing JUnit XML
+        # (e.g., a typecheck step exits before the test step writes its
+        # report). Treat that as "no structured results", not a fatal error.
+        logger.debug(
+            "JUnit XML not available for validation summary at %s: %s",
+            search_root, exc,
+        )
+        return ()
+    return tuple(cases)
 
 
 def _resolve_run_artifact(

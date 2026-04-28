@@ -190,6 +190,15 @@ validation:
   #   coverage_type: "branch"
   #   exclude:
   #     - "src/issue_orchestrator/generated/**"
+  # Optional JUnit XML paths emitted by `cmd` (relative to worktree, glob OK).
+  # When set, failed validations render a structured test-centric view in the
+  # dashboard issue drawer (same layout as the E2E run modal: pass/fail
+  # headline, filter chips, per-row error expand). Pytest example: pass
+  # `--junitxml=test-results.xml` to your test command and mirror the path
+  # here. Empty by default — keeps the existing failed-test-name list view.
+  # junit_xml_paths:
+  #   - "test-results.xml"
+  #   - "build/test-results/test/*.xml"
 
 retry:
   max_validation_retries: 3

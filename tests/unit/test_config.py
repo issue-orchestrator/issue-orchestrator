@@ -2742,6 +2742,60 @@ class TestValidationConfig:
         errors = config.validate()
         assert "validation.pre_push_dirty_check must be one of: tracked, unstaged, all, off" in errors
 
+    def test_junit_xml_paths_load_from_yaml(self, tmp_path):
+        """validation.junit_xml_paths must round-trip through YAML — without
+        this the documented opt-in for the structured issue-drawer JUnit
+        view silently no-ops."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+validation:
+  cmd: make test
+  junit_xml_paths:
+    - "test-results.xml"
+    - "build/test-results/test/*.xml"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        config = Config.load(config_file)
+        assert config.validation.junit_xml_paths == (
+            "test-results.xml",
+            "build/test-results/test/*.xml",
+        )
+
+    def test_junit_xml_paths_default_empty_when_omitted(self, tmp_path):
+        """Repos that don't opt in keep the empty default."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+validation:
+  cmd: make test
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        config = Config.load(config_file)
+        assert config.validation.junit_xml_paths == ()
+
+    def test_junit_xml_paths_round_trip_through_to_dict(self, tmp_path):
+        """Config.to_dict must serialize junit_xml_paths so reload preserves it."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+validation:
+  cmd: make test
+  junit_xml_paths:
+    - "test-results.xml"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+        config = Config.load(config_file)
+        round_tripped = config.to_dict()
+        assert round_tripped["validation"]["junit_xml_paths"] == ["test-results.xml"]
+
+
 class TestConfigSectionErrors:
     """Test clear error messages for invalid config sections."""
 

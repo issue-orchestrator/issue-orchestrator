@@ -600,6 +600,7 @@ class Config:
                     "coverage_type": self.validation.coverage_guardrail.coverage_type,
                     "exclude": self.validation.coverage_guardrail.exclude,
                 },
+                "junit_xml_paths": list(self.validation.junit_xml_paths),
             },
             "review": {
                 "enabled": self.review_enabled,
@@ -1052,6 +1053,8 @@ class Config:
                 "coverage_type": self.validation.coverage_guardrail.coverage_type,
                 "exclude": list(self.validation.coverage_guardrail.exclude),
             }
+        if self.validation.junit_xml_paths:
+            validation_dict["junit_xml_paths"] = list(self.validation.junit_xml_paths)
         if validation_dict:
             result["validation"] = validation_dict
 

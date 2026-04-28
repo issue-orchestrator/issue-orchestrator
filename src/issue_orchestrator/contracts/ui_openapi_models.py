@@ -178,21 +178,10 @@ class E2EIssueAffordancePayload(BaseModel):
     label: str | None = None
     run_id: int
 
-class E2ERunArtifactPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    kind: str
-    label: str
-    path: str
-
-class E2ERunCaseHistoryPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    outcome: str
-    run_id: int
-
 class E2ERunDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[IssueDetailActionPayload]
-    artifacts: list[E2ERunArtifactPayload]
+    artifacts: list[TestRunArtifactPayload]
     blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[E2ETimelineCyclePayload]
     e2e_run_id: int | None = None
@@ -205,7 +194,7 @@ class E2ERunDetailPayload(BaseModel):
     previous_runs: list[dict[str, Any]]
     previous_runs_count: int
     raw_events_count: int
-    reports: list[E2ERunArtifactPayload]
+    reports: list[TestRunArtifactPayload]
     results_by_category: E2ERunResultCategoriesPayload
     results_summary: E2ERunResultsSummaryPayload
     run: E2ERunExecutionPayload
@@ -236,12 +225,6 @@ class E2ERunExecutionPayload(BaseModel):
     status: str
     total_tests: int | None
 
-class E2ERunIssueLinkPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    number: int
-    resolution: str | None
-    status: str
-
 class E2ERunIterationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     diagnostics: list[TimelineDiagnosticPayload]
@@ -258,37 +241,15 @@ class E2ERunLifecyclePayload(BaseModel):
     started_at: str
     tests: list[E2ETestExecutionPayload]
 
-class E2ERunResultCasePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    case_id: str
-    category: str
-    display_name: str | None
-    duration_seconds: float | None
-    existing_issue: E2ERunIssueLinkPayload | None
-    failure_summary: str | None
-    flip_rate: float
-    flip_rate_percent: float
-    history: list[E2ERunCaseHistoryPayload]
-    is_likely_flaky: bool
-    is_quarantined: bool
-    label: str
-    longrepr: str | None
-    nodeid: str
-    outcome: str
-    result_source: str
-    retry_outcome: str | None
-    suite_name: str | None
-    updated_at: str
-
 class E2ERunResultCategoriesPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    fixed: list[E2ERunResultCasePayload]
-    flaky: list[E2ERunResultCasePayload]
-    has_issue: list[E2ERunResultCasePayload]
-    passed: list[E2ERunResultCasePayload]
-    quarantined: list[E2ERunResultCasePayload]
-    skipped: list[E2ERunResultCasePayload]
-    untriaged: list[E2ERunResultCasePayload]
+    fixed: list[TestCaseResultPayload]
+    flaky: list[TestCaseResultPayload]
+    has_issue: list[TestCaseResultPayload]
+    passed: list[TestCaseResultPayload]
+    quarantined: list[TestCaseResultPayload]
+    skipped: list[TestCaseResultPayload]
+    untriaged: list[TestCaseResultPayload]
 
 class E2ERunResultsSummaryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -475,6 +436,7 @@ class IssueDetailValidationDiagnosticPayload(BaseModel):
     exit_code: int
     failed_tests: list[str]
     failed_tests_preview: list[str]
+    junit_cases: list[TestCaseResultPayload]
     reason: str
     run_dir: str
     session_name: str | None
@@ -747,6 +709,45 @@ class ShowEventDetailsCommandPayload(BaseModel):
     event_ref: str
     kind: Literal['show_event_details']
     label: str
+
+class TestCaseHistoryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: str
+    run_id: int
+
+class TestCaseIssueLinkPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    number: int
+    resolution: str | None
+    status: str
+
+class TestCaseResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str
+    category: str
+    display_name: str | None
+    duration_seconds: float | None
+    existing_issue: TestCaseIssueLinkPayload | None
+    failure_summary: str | None
+    flip_rate: float
+    flip_rate_percent: float
+    history: list[TestCaseHistoryPayload]
+    is_likely_flaky: bool
+    is_quarantined: bool
+    label: str
+    longrepr: str | None
+    nodeid: str
+    outcome: str
+    result_source: str
+    retry_outcome: str | None
+    suite_name: str | None
+    updated_at: str
+
+class TestRunArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    label: str
+    path: str
 
 class TimelineDiagnosticPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

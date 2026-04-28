@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import (
     E2ERunDetailPayload,
-    E2ERunIssueLinkPayload,
+    TestCaseIssueLinkPayload,
     E2ERunResultCategoriesPayload,
     IssueDetailPayload,
 )
@@ -67,7 +67,10 @@ def _current_run_validation_diagnostic(
     run_dir = context.run_dir
     if run_dir is None:
         return None
-    summary = load_validation_failure_summary(run_dir)
+    junit_paths: tuple[str, ...] = ()
+    if orchestrator and getattr(orchestrator.config, "validation", None):
+        junit_paths = tuple(orchestrator.config.validation.junit_xml_paths or ())
+    summary = load_validation_failure_summary(run_dir, junit_xml_paths=junit_paths)
     if summary is None:
         return None
     return {
@@ -83,6 +86,52 @@ def _current_run_validation_diagnostic(
         "validation_record_path": summary.validation_record_path,
         "validation_stderr": summary.validation_stderr_path,
         "validation_stdout": summary.validation_stdout_path,
+        "junit_cases": [_validation_case_to_public(case) for case in summary.junit_cases],
+    }
+
+
+def _validation_case_to_public(case: Any) -> dict[str, Any]:
+    """Project a JUnitCaseResult into the framework-neutral TestCaseResultPayload shape.
+
+    Validation runs don't track flake history, retries, or linked GitHub
+    issues — those are E2E concepts. Stub the orchestrator-overlay fields out
+    and let the dashboard renderer (which is also used by E2E) skip the
+    E2E-specific affordances when these fields are empty.
+    """
+    outcome = case.outcome
+    # Map outcome to a category the shared filter chips understand
+    # (untriaged → "failing" filter, others map to themselves).
+    if outcome == "passed":
+        category = "passed"
+    elif outcome == "skipped":
+        category = "skipped"
+    else:
+        # Distinct from the E2E "untriaged" category — issue-session
+        # validation has no flake-tracking, no GitHub-issue affordances. The
+        # shared filter renderer maps any non-recognised category into the
+        # "failing" filter group, and the action renderer only shows
+        # E2E-specific buttons for E2E-recognised categories.
+        category = "failed"
+    return {
+        "nodeid": case.case_id,
+        "case_id": case.case_id,
+        "label": case.display_name,
+        "display_name": case.display_name,
+        "suite_name": case.suite_name,
+        "result_source": "junit",
+        "outcome": outcome,
+        "duration_seconds": case.duration_seconds,
+        "longrepr": case.failure_details,
+        "failure_summary": case.failure_summary,
+        "retry_outcome": None,
+        "is_quarantined": False,
+        "updated_at": "",
+        "history": [],
+        "existing_issue": None,
+        "category": category,
+        "flip_rate": 0.0,
+        "flip_rate_percent": 0.0,
+        "is_likely_flaky": False,
     }
 
 
@@ -217,7 +266,7 @@ def _public_e2e_result_case(result: dict[str, Any]) -> dict[str, Any]:
 def _public_e2e_existing_issue(issue: dict[str, Any] | None) -> dict[str, Any] | None:
     if issue is None:
         return None
-    return E2ERunIssueLinkPayload.model_validate(
+    return TestCaseIssueLinkPayload.model_validate(
         {
             "number": issue["number"],
             "status": issue["status"],

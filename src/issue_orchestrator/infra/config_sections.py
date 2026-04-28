@@ -641,6 +641,7 @@ def load_validation_section(config: "Config", validation_section: dict) -> None:
     """Load validation configuration."""
     if validation_section:
         coverage_data = validation_section.get("coverage_guardrail", {}) or {}
+        junit_paths_raw = validation_section.get("junit_xml_paths", []) or []
         config.validation = ValidationConfig(
             cmd=validation_section.get("cmd"),
             timeout_seconds=validation_section.get("timeout_seconds", 300),
@@ -653,6 +654,7 @@ def load_validation_section(config: "Config", validation_section: dict) -> None:
                 coverage_type=coverage_data.get("coverage_type", "line"),
                 exclude=coverage_data.get("exclude", []) or [],
             ),
+            junit_xml_paths=tuple(str(p) for p in junit_paths_raw if p),
         )
 
 

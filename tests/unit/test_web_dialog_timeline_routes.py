@@ -797,6 +797,253 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_validation_diagnostic_includes_junit_cases_when_configured(
+        self, tmp_path: Path
+    ):
+        """Almost-UI integration: when validation emits JUnit XML and the
+        config exposes its path, the issue-detail API surfaces parsed cases
+        in the run_diagnostic payload, ready for the dashboard to render
+        the test-centric view. Verifies the JSON shape just before it
+        leaves the backend — content correctness, not DOM rendering.
+
+        Asserts:
+        - junit_cases is present and contains exactly the parsed entries
+        - each case carries the right outcome, label, longrepr, suite
+        - failed cases get category='failed' so the shared filter chips
+          land them in the 'failing' bucket
+        - the contract validates against TestCaseResultPayload (drift gate)
+        """
+        from issue_orchestrator.contracts.ui_openapi_models import (
+            TestCaseResultPayload,
+        )
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        # Configure the new validation.junit_xml_paths field so the API
+        # opts into structured rendering.
+        mock_orch.config.validation.junit_xml_paths = ("test-results.xml",)
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-junit-cases"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=123)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "failed",
+                "validation_reason": "tests failed",
+                "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
+                "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
+                "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
+            },
+        )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "publish_gate",
+                    "head_sha": "deadbeef",
+                    "passed": False,
+                    "exit_code": 1,
+                    "command": "make test",
+                    "started_at": "2026-04-28T10:00:00Z",
+                    "ended_at": "2026-04-28T10:01:30Z",
+                    "timed_out": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stdout.log").write_text("", encoding="utf-8")
+        (run.run_dir / "validation-stderr.log").write_text("", encoding="utf-8")
+
+        # JUnit XML lives in the worktree (validation command writes it
+        # relative to worktree root), three cases covering the three
+        # outcomes we render: passed, failed, skipped.
+        (worktree / "test-results.xml").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="pytest" tests="3" failures="1" errors="0" skipped="1">
+  <testcase classname="tests.unit.test_circuits" name="test_passes" time="0.18"/>
+  <testcase classname="tests.unit.test_circuits" name="test_circuit_open" time="0.42">
+    <failure message="AssertionError: expected 1 open circuit but got 0">tests/unit/test_circuits.py:42
+    assert len(open_circuits) == 1</failure>
+  </testcase>
+  <testcase classname="tests.unit.test_circuits" name="test_only_on_linux" time="0.0">
+    <skipped message="not on this platform"/>
+  </testcase>
+</testsuite>
+""",
+            encoding="utf-8",
+        )
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-04-28T10:00:00Z",
+                    status="started",
+                    phase="in_progress",
+                    run_dir=str(run.run_dir),
+                ),
+            ],
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/123")
+            assert response.status_code == 200
+            payload = response.json()
+
+            diagnostic = payload["summary"]["run_diagnostic"]
+            assert diagnostic is not None
+            assert diagnostic["state"] == "validation_failed"
+
+            cases = diagnostic["junit_cases"]
+            assert isinstance(cases, list)
+            assert len(cases) == 3
+
+            # Index by display_name for stable assertions.
+            by_name = {c["display_name"]: c for c in cases}
+            assert set(by_name.keys()) == {
+                "test_passes",
+                "test_circuit_open",
+                "test_only_on_linux",
+            }
+
+            # Passed case: outcome+category, no longrepr, falls into
+            # "passed" filter group on the frontend.
+            passed = by_name["test_passes"]
+            assert passed["outcome"] == "passed"
+            assert passed["category"] == "passed"
+            assert passed["longrepr"] is None
+            assert passed["existing_issue"] is None
+            assert passed["history"] == []
+            assert passed["duration_seconds"] == 0.18
+            assert passed["result_source"] == "junit"
+
+            # Failed case: outcome+category, full longrepr preserved (this
+            # is the field the per-row expand renders verbatim), category
+            # 'failed' lands the row in the "failing" filter group.
+            failed = by_name["test_circuit_open"]
+            assert failed["outcome"] == "failed"
+            assert failed["category"] == "failed"
+            assert failed["longrepr"] is not None
+            assert "AssertionError: expected 1 open circuit but got 0" in failed["longrepr"]
+            assert "tests/unit/test_circuits.py:42" in failed["longrepr"]
+            assert failed["failure_summary"] is not None
+            assert "AssertionError" in failed["failure_summary"]
+            assert failed["existing_issue"] is None  # validation never has linked issue
+            assert failed["is_quarantined"] is False
+            assert failed["is_likely_flaky"] is False
+
+            # Skipped case: outcome+category, optional reason text in longrepr.
+            skipped = by_name["test_only_on_linux"]
+            assert skipped["outcome"] == "skipped"
+            assert skipped["category"] == "skipped"
+            assert skipped["longrepr"] is not None
+            assert "not on this platform" in skipped["longrepr"]
+
+            # Each case must satisfy the public TestCaseResultPayload schema.
+            # This is the contract gate: if the projection drops a required
+            # field, the whole payload would be invalid for the renderer.
+            for case in cases:
+                TestCaseResultPayload.model_validate(case)
+        finally:
+            set_orchestrator(None)
+
+    def test_issue_detail_validation_diagnostic_returns_empty_junit_cases_when_unconfigured(
+        self, tmp_path: Path
+    ):
+        """Backwards-compat: repos that haven't opted into junit_xml_paths
+        still see the existing failed_tests_preview view (junit_cases empty).
+        """
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        # Default ValidationConfig.junit_xml_paths is ().
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-no-junit"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=124)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "failed",
+                "validation_reason": "tests failed",
+            },
+        )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "publish_gate",
+                    "head_sha": "deadbeef",
+                    "passed": False,
+                    "exit_code": 1,
+                    "command": "make test",
+                    "started_at": "2026-04-28T10:00:00Z",
+                    "ended_at": "2026-04-28T10:01:30Z",
+                    "timed_out": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stdout.log").write_text("", encoding="utf-8")
+        (run.run_dir / "validation-stderr.log").write_text("", encoding="utf-8")
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=124,
+                title="Issue 124",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=124,
+            events=[
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-04-28T10:00:00Z",
+                    status="started",
+                    phase="in_progress",
+                    run_dir=str(run.run_dir),
+                ),
+            ],
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/124")
+            assert response.status_code == 200
+            payload = response.json()
+            diagnostic = payload["summary"]["run_diagnostic"]
+            assert diagnostic is not None
+            assert diagnostic["junit_cases"] == []
+        finally:
+            set_orchestrator(None)
+
     def test_issue_detail_prefers_validation_failure_over_timeline_missing(self, tmp_path: Path):
         """Current-run validation failure should remain the primary explanation when both diagnostics apply."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput

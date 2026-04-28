@@ -883,7 +883,7 @@ class TestE2ERunDetailEndpoint:
 
     def test_e2e_run_detail_sanitizes_result_cases_for_public_contract(self):
         """Endpoint strips internal DB identifiers from categorized test rows."""
-        from issue_orchestrator.contracts.ui_openapi_models import E2ERunResultCasePayload
+        from issue_orchestrator.contracts.ui_openapi_models import TestCaseResultPayload
         from issue_orchestrator.entrypoints.web import set_orchestrator
         from issue_orchestrator.infra.e2e_db import E2EDB
 
@@ -972,10 +972,10 @@ class TestE2ERunDetailEndpoint:
             passed = results_by_category["passed"]
             assert len(passed) == 1
             assert passed[0]["nodeid"] == "tixmeup.e2e.smoke::runtime.verify_primary_search"
-            assert set(passed[0]) == set(E2ERunResultCasePayload.model_fields)
+            assert set(passed[0]) == set(TestCaseResultPayload.model_fields)
             has_issue = results_by_category["has_issue"]
             assert len(has_issue) == 1
-            assert set(has_issue[0]) == set(E2ERunResultCasePayload.model_fields)
+            assert set(has_issue[0]) == set(TestCaseResultPayload.model_fields)
             assert has_issue[0]["existing_issue"] == {
                 "number": 1234,
                 "status": "open",

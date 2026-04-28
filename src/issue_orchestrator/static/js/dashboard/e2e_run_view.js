@@ -344,260 +344,340 @@ function runE2ELifecycleCommand(command) {
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');
 }
 
-function _renderLinkedIssueCycles(issueLifecycle) {
-    const cycles = Array.isArray(issueLifecycle && issueLifecycle.cycles) ? issueLifecycle.cycles : [];
-    if (!cycles.length) {
-        return '<div class="e2e-empty-note">No logical cycles were projected for this linked issue.</div>';
-    }
-    return `
-        <div class="e2e-linked-cycle-list">
-            ${cycles.map(cycle => `
-                <span class="e2e-lifecycle-chip">
-                    Cycle ${escapeHtml(cycle.cycle_number)} · ${escapeHtml(_humanizeSnakeCase(cycle.outcome || 'unknown'))}
-                </span>
-            `).join('')}
-        </div>
-    `;
+// ── Test-centric layout (framework-agnostic per-test rendering) ────────────
+//
+// The functions below render a flat, filterable list of tests where each row
+// is the primary unit and per-row expansion shows error detail and (when the
+// test is linked to a tracked issue) the agentic cycle history inline.
+//
+// Run-level metadata, raw artifacts, and the full run timeline live in a
+// collapsed "Run details" disclosure at the bottom — they're diagnostic
+// surfaces, not the headline.
+
+function _testFilterGroup(test) {
+    if (!test) return 'other';
+    const category = String(test.category || '').toLowerCase();
+    if (category === 'passed') return 'passed';
+    if (category === 'skipped') return 'skipped';
+    if (category === 'quarantined') return 'quarantined';
+    return 'failing';  // untriaged, has_issue, flaky, fixed
 }
 
-function _renderLinkedIssueLifecycle(issueLifecycle, runId, label = '') {
-    const cycles = Array.isArray(issueLifecycle && issueLifecycle.cycles) ? issueLifecycle.cycles : [];
-    const latestCycle = cycles.length ? cycles[cycles.length - 1] : null;
-    const issueNumber = Number(issueLifecycle.issue_number);
-    if (!Number.isInteger(issueNumber) || issueNumber <= 0) return '';
-
-    const timelineCommand = {
-        kind: 'open_issue_timeline',
-        issue_number: issueNumber,
-        scope_kind: 'e2e_run',
-        e2e_run_id: runId,
-        label: `Issue #${issueNumber}`,
-    };
-    const coderSessionCommand = latestCycle ? _lifecycleSessionCommand(latestCycle.coder && latestCycle.coder.session_recording) : null;
-    const reviewSessionCommand = latestCycle ? _lifecycleSessionCommand(latestCycle.review && latestCycle.review.session_recording) : null;
-    const transcriptCommand = latestCycle ? _lifecycleReviewTranscriptCommand(issueNumber, latestCycle) : null;
-    const validationCommand = latestCycle ? _lifecycleValidationCommand(issueNumber, latestCycle) : null;
-    const latestCoder = latestCycle && latestCycle.coder ? _humanizeSnakeCase(latestCycle.coder.kind || 'unknown') : 'Unknown';
-    const latestReview = latestCycle && latestCycle.review ? _humanizeSnakeCase(latestCycle.review.kind || 'unknown') : 'Unknown';
-
-    return `
-        <div class="e2e-linked-issue-row" data-issue-number="${issueNumber}">
-            <div class="e2e-linked-issue-copy">
-                <div class="e2e-linked-issue-heading">
-                    <span class="e2e-linked-issue-number">#${issueNumber}</span>
-                    ${label ? `<span class="e2e-linked-issue-label">${escapeHtml(label)}</span>` : ''}
-                    ${issueLifecycle.title ? `<span class="e2e-linked-issue-title">${escapeHtml(issueLifecycle.title)}</span>` : ''}
-                </div>
-                <div class="e2e-linked-issue-summary">
-                    ${cycles.length} cycle(s) · latest coder ${escapeHtml(latestCoder)} · latest review ${escapeHtml(latestReview)}
-                </div>
-                ${_renderLinkedIssueCycles(issueLifecycle)}
-            </div>
-            <div class="e2e-action-row">
-                ${_renderLifecycleCommandButton(timelineCommand, 'Timeline')}
-                ${_renderLifecycleCommandButton(coderSessionCommand, 'Coder Session')}
-                ${_renderLifecycleCommandButton(reviewSessionCommand, 'Review Session')}
-                ${_renderLifecycleCommandButton(transcriptCommand, 'Review Transcript')}
-                ${_renderLifecycleCommandButton(validationCommand, 'Validation')}
-            </div>
-        </div>
-    `;
+function _flattenTestsByCategory(data) {
+    const categories = _resultCategories(data);
+    const order = ['untriaged', 'has_issue', 'flaky', 'fixed', 'passed', 'quarantined', 'skipped'];
+    return order.flatMap(key => Array.isArray(categories[key]) ? categories[key] : []);
 }
 
-function renderE2ELinkedIssueLifecycles(data) {
+function _lifecyclesByIssueNumber(data) {
     const lifecycleInfo = _normalizeE2ERunLifecycle(data);
-    const run = data && data.run ? data.run : {};
-    const affordances = Array.isArray(data && data.issue_affordances) ? data.issue_affordances : [];
-    const labelsByIssue = new Map(
-        affordances
-            .filter(item => item && Number.isInteger(Number(item.issue_number)))
-            .map(item => [Number(item.issue_number), item.label ? String(item.label) : ''])
-    );
-    const issueLifecycles = lifecycleInfo && Array.isArray(lifecycleInfo.e2eRun.linked_issue_lifecycles)
+    const list = lifecycleInfo && Array.isArray(lifecycleInfo.e2eRun.linked_issue_lifecycles)
         ? lifecycleInfo.e2eRun.linked_issue_lifecycles
         : [];
-    if (!issueLifecycles.length) {
-        return `
-            <section class="e2e-results-section" aria-labelledby="e2eLinkedLifecycleHeading">
-                <div class="e2e-results-section-header">
-                    <h3 class="e2e-results-title" id="e2eLinkedLifecycleHeading">Linked issue lifecycles</h3>
-                    <div class="e2e-results-subtitle">Agentic coding/review cycles and session recordings stay visible here when the run exercised issues.</div>
-                </div>
-                <div class="e2e-empty-note">No linked issue lifecycles for this run.</div>
-            </section>
-        `;
+    const map = new Map();
+    for (const lifecycle of list) {
+        const issueNumber = Number(lifecycle && lifecycle.issue_number);
+        if (Number.isInteger(issueNumber) && issueNumber > 0) {
+            map.set(issueNumber, lifecycle);
+        }
     }
+    return map;
+}
+
+function renderTestResultsHeadline(summary, totalRows) {
+    const total = Number(summary.total || 0) || totalRows;
+    const passed = Number(summary.passed || 0);
+    const skipped = Number(summary.skipped || 0);
+    const quarantined = Number(summary.quarantined || 0);
+    const failing = (Number(summary.untriaged || 0) +
+        Number(summary.has_issue || 0) +
+        Number(summary.flaky || 0) +
+        Number(summary.fixed || 0));
     return `
-        <section class="e2e-results-section" aria-labelledby="e2eLinkedLifecycleHeading">
-            <div class="e2e-results-section-header">
-                <h3 class="e2e-results-title" id="e2eLinkedLifecycleHeading">Linked issue lifecycles</h3>
-                <div class="e2e-results-subtitle">Logical cycles, coder sessions, reviewer sessions, and validation stay one click away from the run results.</div>
-            </div>
-            <div class="e2e-linked-issue-list">
-                ${issueLifecycles.map(issueLifecycle => _renderLinkedIssueLifecycle(issueLifecycle, Number(run.id || 0), labelsByIssue.get(Number(issueLifecycle.issue_number)) || '')).join('')}
-            </div>
-        </section>
+        <div class="test-results-headline" role="status" aria-label="Test summary">
+            <span class="trh-stat trh-total">${total} total</span>
+            <span class="trh-stat trh-passed ${passed ? '' : 'trh-zero'}">✓ ${passed} passed</span>
+            <span class="trh-stat trh-failed ${failing ? '' : 'trh-zero'}">✗ ${failing} failing</span>
+            ${skipped ? `<span class="trh-stat trh-skipped">○ ${skipped} skipped</span>` : ''}
+            ${quarantined ? `<span class="trh-stat trh-quarantined">⊘ ${quarantined} quarantined</span>` : ''}
+        </div>
     `;
 }
 
-function renderE2ERunEvidenceSection(data) {
-    const run = data && data.run ? data.run : {};
-    const command = _formatRunCommand(run);
-    const buttons = _renderRunArtifactButtons(data);
-    const primaryReport = _primaryRunReport(data);
-    const reportHint = primaryReport && primaryReport.label
-        ? `<div class="e2e-results-subtitle">Primary report: ${escapeHtml(primaryReport.label)}</div>`
-        : '';
+function renderTestResultsFilters(counts) {
+    const chips = [
+        { key: 'all', label: `All (${counts.all})` },
+        { key: 'failing', label: `Failing (${counts.failing})`, hide: !counts.failing },
+        { key: 'passed', label: `Passed (${counts.passed})`, hide: !counts.passed },
+        { key: 'skipped', label: `Skipped (${counts.skipped})`, hide: !counts.skipped },
+        { key: 'quarantined', label: `Quarantined (${counts.quarantined})`, hide: !counts.quarantined },
+    ];
     return `
-        <section class="e2e-results-section e2e-run-evidence-section" aria-labelledby="e2eRunEvidenceHeading">
-            <div class="e2e-results-section-header">
-                <h3 class="e2e-results-title" id="e2eRunEvidenceHeading">Run evidence</h3>
-                <div class="e2e-results-subtitle">Always-visible debugging surfaces for any framework: command, raw output, and structured reports.</div>
+        <div class="test-results-filters" role="tablist" aria-label="Filter tests by outcome">
+            ${chips
+                .filter(c => !c.hide)
+                .map(c => `<button type="button" class="trf-chip ${c.key === 'all' ? 'active' : ''}" data-filter="${c.key}" role="tab" aria-selected="${c.key === 'all'}" onclick="filterTestResults('${c.key}', this); event.stopPropagation();">${escapeHtml(c.label)}</button>`)
+                .join('')}
+        </div>
+    `;
+}
+
+function _renderTestRowExpand(test, lifecycle) {
+    const errorBlock = test.longrepr
+        ? `<div class="trr-error"><pre class="trr-error-text">${escapeHtml(test.longrepr)}</pre></div>`
+        : '';
+    let lifecycleBlock = '';
+    if (test.existing_issue && lifecycle) {
+        const issueNumber = Number(lifecycle.issue_number);
+        const cycles = Array.isArray(lifecycle.cycles) ? lifecycle.cycles : [];
+        const latestCycle = cycles.length ? cycles[cycles.length - 1] : null;
+        const timelineCommand = {
+            kind: 'open_issue_timeline',
+            issue_number: issueNumber,
+            scope_kind: 'e2e_run',
+            e2e_run_id: Number(unifiedRunData && unifiedRunData.run ? unifiedRunData.run.id : 0) || 0,
+            label: `Issue #${issueNumber}`,
+        };
+        const coderCmd = latestCycle ? _lifecycleSessionCommand(latestCycle.coder && latestCycle.coder.session_recording) : null;
+        const reviewCmd = latestCycle ? _lifecycleSessionCommand(latestCycle.review && latestCycle.review.session_recording) : null;
+        const transcriptCmd = latestCycle ? _lifecycleReviewTranscriptCommand(issueNumber, latestCycle) : null;
+        const validationCmd = latestCycle ? _lifecycleValidationCommand(issueNumber, latestCycle) : null;
+        const cycleChips = cycles.map(c => `<span class="e2e-lifecycle-chip">Cycle ${escapeHtml(c.cycle_number)} · ${escapeHtml(_humanizeSnakeCase(c.outcome || 'unknown'))}</span>`).join('');
+        lifecycleBlock = `
+            <div class="trr-lifecycle">
+                <div class="trr-lifecycle-heading">Linked agentic cycle · Issue #${issueNumber}${lifecycle.title ? ` — ${escapeHtml(lifecycle.title)}` : ''}</div>
+                <div class="trr-lifecycle-cycles">${cycleChips || '<span class="e2e-empty-note">No cycles projected.</span>'}</div>
+                <div class="trr-lifecycle-actions">
+                    ${_renderLifecycleCommandButton(timelineCommand, 'Timeline', 'action-btn primary')}
+                    ${_renderLifecycleCommandButton(coderCmd, 'Coder Session', 'action-btn subtle')}
+                    ${_renderLifecycleCommandButton(reviewCmd, 'Review Session', 'action-btn subtle')}
+                    ${_renderLifecycleCommandButton(transcriptCmd, 'Review Transcript', 'action-btn subtle')}
+                    ${_renderLifecycleCommandButton(validationCmd, 'Validation', 'action-btn subtle')}
+                </div>
             </div>
-            <div class="e2e-run-evidence-grid">
-                <div class="e2e-run-evidence-row">
-                    <span class="label">Runner</span>
-                    <span class="value">${escapeHtml(_formatRunnerLabel(run))}</span>
+        `;
+    }
+    if (!errorBlock && !lifecycleBlock) {
+        return '';
+    }
+    return `<div class="trr-expand" hidden>${errorBlock}${lifecycleBlock}</div>`;
+}
+
+function _renderTestRowActions(test) {
+    const category = String(test.category || '').toLowerCase();
+    if (test.existing_issue) {
+        const issueNum = test.existing_issue.number;
+        const issueStatus = test.existing_issue.status;
+        const ghLink = `<a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}" target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">→ #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span></a>`;
+        if (category === 'fixed' && issueStatus === 'open') {
+            return `${ghLink}${_e2eRowActionButton(`Close #${issueNum}`, { action: 'close_issue', cssClass: 'action-btn success', issueNumber: issueNum, nodeid: test.nodeid })}`;
+        }
+        return ghLink;
+    }
+    if (category === 'untriaged' || category === 'flaky') {
+        return [
+            _e2eRowActionButton('Create Issue ▼', { action: 'create_issue_dropdown', cssClass: 'action-btn primary', nodeid: test.nodeid }),
+            _e2eRowActionButton('Quarantine', { action: 'quarantine_test', cssClass: 'action-btn warning', nodeid: test.nodeid }),
+            _e2eRowActionButton('Copy Error', { action: 'copy_test_error', cssClass: 'action-btn', nodeid: test.nodeid }),
+        ].join('');
+    }
+    return '';
+}
+
+function _renderTestRow(test, lifecycle) {
+    const shortName = test.label || test.display_name || (test.nodeid || '').split('::').pop() || test.nodeid;
+    const effectiveOutcome = test.retry_outcome || test.outcome;
+    const outcomeIcon = effectiveOutcome === 'passed' ? '✓' : effectiveOutcome === 'skipped' ? '○' : '✗';
+    const outcomeClass = effectiveOutcome === 'passed' ? 'passed' : effectiveOutcome === 'skipped' ? 'skipped' : 'failed';
+    const filterGroup = _testFilterGroup(test);
+    const expand = _renderTestRowExpand(test, lifecycle);
+    const expandable = Boolean(expand);
+    const historyIcons = Array.isArray(test.history) && test.history.length
+        ? `<span class="test-history">${test.history.map(h => h.outcome === 'passed' ? '<span class="hist-icon pass">✓</span>' : h.outcome === 'failed' ? '<span class="hist-icon fail">✗</span>' : '<span class="hist-icon skip">○</span>').reverse().join('')}</span>`
+        : '';
+    const flipRate = test.flip_rate_percent && test.flip_rate_percent > 0
+        ? `<span class="flip-rate" title="Flip rate across recent runs">${test.flip_rate_percent}%</span>`
+        : '';
+    const duration = test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
+    const sourceTag = test.result_source && test.result_source !== 'runtime'
+        ? `<span class="test-source">${escapeHtml(_humanizeSnakeCase(test.result_source))}</span>`
+        : '';
+    const suiteHtml = test.suite_name ? `<div class="test-suite" title="${escapeHtml(test.suite_name)}">${escapeHtml(test.suite_name)}</div>` : '';
+    const actions = _renderTestRowActions(test);
+    return `
+        <div class="trr-row test-row" data-nodeid="${escapeAttr(test.nodeid)}" data-filter-group="${filterGroup}" data-expandable="${expandable ? '1' : '0'}">
+            <div class="trr-row-main test-row-main" ${expandable ? `onclick="toggleTestRowExpand(this); event.stopPropagation();"` : ''} ${expandable ? 'role="button" tabindex="0" aria-expanded="false"' : ''}>
+                ${expandable ? '<span class="trr-caret" aria-hidden="true">▸</span>' : '<span class="trr-caret-spacer" aria-hidden="true"></span>'}
+                <span class="status-icon ${outcomeClass}">${outcomeIcon}</span>
+                <div class="trr-row-copy test-row-copy">
+                    <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
+                    ${suiteHtml}
                 </div>
-                <div class="e2e-run-evidence-row">
-                    <span class="label">Status</span>
-                    <span class="value"><span class="e2e-run-status ${_runStatusClass(run.status)}">${escapeHtml(_humanizeSnakeCase(run.status || 'unknown'))}</span></span>
-                </div>
-                <div class="e2e-run-evidence-row">
-                    <span class="label">Started</span>
-                    <span class="value">${escapeHtml(formatTimestamp(run.started_at) || 'Unknown')}</span>
-                </div>
-                <div class="e2e-run-evidence-row">
-                    <span class="label">Duration</span>
-                    <span class="value">${escapeHtml(_formatDurationSeconds(run.duration_seconds) || '—')}</span>
-                </div>
-                <div class="e2e-run-evidence-row e2e-run-command-row">
-                    <span class="label">Command</span>
-                    <span class="value">${command ? `<code class="e2e-run-command">${escapeHtml(command)}</code>` : 'Unavailable'}</span>
-                </div>
+                ${sourceTag}
+                ${historyIcons}
+                ${flipRate}
+                ${duration}
+                ${actions ? `<div class="test-actions trr-row-actions">${actions}</div>` : ''}
             </div>
-            ${buttons ? `<div class="e2e-action-row e2e-run-evidence-actions">${buttons}</div>` : '<div class="e2e-empty-note">No run-scoped logs or reports were captured for this run.</div>'}
-            ${reportHint}
-        </section>
+            ${expand}
+        </div>
     `;
 }
 
 function renderE2EResultsPanel(data) {
-    const tests = _resultCategories(data);
-    let html = `
-        <div class="e2e-results-layout">
-            ${renderE2ERunEvidenceSection(data)}
-            ${renderE2ELinkedIssueLifecycles(data)}
-            <section class="e2e-results-section" aria-labelledby="e2eCategorizedResultsHeading">
-                <div class="e2e-results-section-header">
-                    <h3 class="e2e-results-title" id="e2eCategorizedResultsHeading">Categorized results</h3>
-                    <div class="e2e-results-subtitle">Framework-neutral case outcomes. Issue creation, quarantine, and close-out actions remain below.</div>
-                </div>
-    `;
+    const tests = _flattenTestsByCategory(data);
+    const summary = data && data.results_summary ? data.results_summary : {};
+    const lifecycleMap = _lifecyclesByIssueNumber(data);
+    const counts = {
+        all: tests.length,
+        failing: tests.filter(t => _testFilterGroup(t) === 'failing').length,
+        passed: tests.filter(t => _testFilterGroup(t) === 'passed').length,
+        skipped: tests.filter(t => _testFilterGroup(t) === 'skipped').length,
+        quarantined: tests.filter(t => _testFilterGroup(t) === 'quarantined').length,
+    };
 
-    html += renderCategorySection('untriaged', 'UNTRIAGED', tests.untriaged,
-        'Consistently failing tests with no GitHub issue',
-        'warning');
-    html += renderCategorySection('has_issue', 'HAS ISSUE', tests.has_issue,
-        'Failing tests already tracked by a GitHub issue',
-        'info');
-    html += renderCategorySection('flaky', 'FLAKY', tests.flaky,
-        'Unstable tests (flip rate > threshold) - passed OR failed this run',
-        'flaky');
-    html += renderCategorySection('fixed', 'FIXED', tests.fixed,
-        'Passed this run but has an open issue that should be closed',
-        'success');
-    html += renderCategorySection('passed', 'PASSED', tests.passed,
-        'Stable passing tests',
-        'passed', true);
-    if (tests.quarantined.length > 0) {
-        html += renderCategorySection('quarantined', 'QUARANTINED', tests.quarantined,
-            'Tests excluded from E2E failure counts',
-            'quarantined', true);
-    }
-    if (tests.skipped.length > 0) {
-        html += renderCategorySection('skipped', 'SKIPPED', tests.skipped,
-            'Tests that were skipped during this run',
-            'skipped', true);
-    }
-    if (tests.untriaged.length > 0) {
-        html += `
-            <div class="bulk-action-bar">
-                <span class="bulk-info">${tests.untriaged.length} untriaged test(s)</span>
-                <div class="bulk-actions">
-                    <select id="unifiedRunAgent" class="agent-select">
-                        <option value="">Select agent...</option>
-                        ${window.dashboardData.agents.map(a => `<option value="${a}">${a}</option>`).join('')}
-                    </select>
-                    <button class="btn-primary" onclick="createIssuesForUntriaged()">
-                        Create Issues
-                    </button>
+    const rowsHtml = tests.length
+        ? tests.map(test => {
+            const lifecycle = test.existing_issue ? lifecycleMap.get(Number(test.existing_issue.number)) : null;
+            return _renderTestRow(test, lifecycle);
+        }).join('')
+        : '<div class="empty-state">No test cases recorded for this run.</div>';
+
+    const untriaged = (data.results_by_category && data.results_by_category.untriaged) || [];
+    const bulkBar = untriaged.length ? `
+        <div class="bulk-action-bar">
+            <span class="bulk-info">${untriaged.length} untriaged test(s)</span>
+            <div class="bulk-actions">
+                <select id="unifiedRunAgent" class="agent-select">
+                    <option value="">Select agent...</option>
+                    ${window.dashboardData.agents.map(a => `<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join('')}
+                </select>
+                <button class="btn-primary" onclick="createIssuesForUntriaged()">Create Issues</button>
+            </div>
+        </div>
+    ` : '';
+
+    return `
+        <div class="test-results-panel">
+            ${renderTestResultsHeadline(summary, tests.length)}
+            ${renderTestResultsFilters(counts)}
+            <div class="test-results-list">${rowsHtml}</div>
+            ${bulkBar}
+            ${renderRunDetailsDisclosure(data)}
+        </div>
+    `;
+}
+
+function renderRunDetailsDisclosure(data) {
+    const run = data && data.run ? data.run : {};
+    const command = _formatRunCommand(run);
+    const buttons = _renderRunArtifactButtons(data);
+    return `
+        <details class="run-details-disclosure" id="runDetailsDisclosure">
+            <summary>Run details<span class="rdd-summary-hint"> · command, raw artifacts, full timeline</span></summary>
+            <div class="rdd-body">
+                <div class="rdd-grid">
+                    <div class="rdd-row"><span class="rdd-label">Runner</span><span class="rdd-value">${escapeHtml(_formatRunnerLabel(run))}</span></div>
+                    <div class="rdd-row"><span class="rdd-label">Status</span><span class="rdd-value"><span class="e2e-run-status ${_runStatusClass(run.status)}">${escapeHtml(_humanizeSnakeCase(run.status || 'unknown'))}</span></span></div>
+                    <div class="rdd-row"><span class="rdd-label">Started</span><span class="rdd-value">${escapeHtml(formatTimestamp(run.started_at) || 'Unknown')}</span></div>
+                    <div class="rdd-row"><span class="rdd-label">Duration</span><span class="rdd-value">${escapeHtml(_formatDurationSeconds(run.duration_seconds) || '—')}</span></div>
+                    ${run.commit_sha ? `<div class="rdd-row"><span class="rdd-label">Commit</span><span class="rdd-value"><code>${escapeHtml(String(run.commit_sha).substring(0, 12))}</code></span></div>` : ''}
+                    ${run.branch ? `<div class="rdd-row"><span class="rdd-label">Branch</span><span class="rdd-value"><code>${escapeHtml(run.branch)}</code></span></div>` : ''}
+                    <div class="rdd-row rdd-command-row"><span class="rdd-label">Command</span><span class="rdd-value">${command ? `<code class="e2e-run-command">${escapeHtml(command)}</code>` : 'Unavailable'}</span></div>
+                </div>
+                ${buttons ? `<div class="rdd-artifacts"><div class="rdd-section-title">Raw artifacts</div><div class="e2e-action-row">${buttons}</div></div>` : ''}
+                <div class="rdd-timeline">
+                    <div class="rdd-section-title">Run timeline</div>
+                    <div class="e2e-timeline-view-switcher">
+                        <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this); event.stopPropagation();" data-view="user">Story</button>
+                        <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this); event.stopPropagation();" data-view="ops">Ops</button>
+                        <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this); event.stopPropagation();" data-view="debug">Debug</button>
+                    </div>
+                    <div id="e2eTimelineContent"></div>
                 </div>
             </div>
-        `;
-    }
+        </details>
+    `;
+}
 
-    html += '</section></div>';
-    return html;
+function toggleTestRowExpand(headerEl) {
+    const row = headerEl && headerEl.closest ? headerEl.closest('.trr-row') : null;
+    if (!row || row.dataset.expandable !== '1') return;
+    const expand = row.querySelector('.trr-expand');
+    if (!expand) return;
+    const isExpanded = !expand.hasAttribute('hidden');
+    if (isExpanded) {
+        expand.setAttribute('hidden', '');
+        headerEl.setAttribute('aria-expanded', 'false');
+        const caret = headerEl.querySelector('.trr-caret');
+        if (caret) caret.textContent = '▸';
+    } else {
+        expand.removeAttribute('hidden');
+        headerEl.setAttribute('aria-expanded', 'true');
+        const caret = headerEl.querySelector('.trr-caret');
+        if (caret) caret.textContent = '▾';
+    }
+}
+
+function filterTestResults(filterKey, btnEl) {
+    // Scope the filter to the panel containing the clicked chip. Both the
+    // E2E run modal and the issue-detail drawer can render a
+    // .test-results-panel concurrently — looking up the list/chips
+    // globally would target the wrong panel when both are open.
+    const panel = btnEl && btnEl.closest ? btnEl.closest('.test-results-panel') : null;
+    if (!panel) return;
+    const list = panel.querySelector('.test-results-list');
+    if (!list) return;
+    list.querySelectorAll('.trr-row').forEach(row => {
+        const group = row.dataset.filterGroup || 'other';
+        const show = filterKey === 'all' || group === filterKey;
+        row.style.display = show ? '' : 'none';
+    });
+    panel.querySelectorAll('.trf-chip').forEach(chip => {
+        const active = chip === btnEl;
+        chip.classList.toggle('active', active);
+        chip.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
 }
 
 function openE2ERunTimeline(runId) {
-    return showUnifiedRunView(runId, {initialTab: 'timeline'});
+    // Legacy entry point: open run modal and auto-expand the Run details
+    // disclosure (which holds the timeline).
+    return showUnifiedRunView(runId, { expandRunDetails: true });
 }
 
 /**
- * Render the unified run view with results grouped by category.
+ * Render the run modal with a test-centric layout: tests are the headline,
+ * run metadata + raw artifacts + full timeline live in a Run details
+ * disclosure at the bottom.
  */
 function renderUnifiedRunView(data, runId, options) {
     options = options || {};
     const content = document.getElementById('e2eDiagnosisContent');
     const modalTitle = document.getElementById('e2eDiagnosisModal').querySelector('.modal-header h2');
     const run = data && data.run ? data.run : {};
-    const summary = data && data.results_summary ? data.results_summary : { total: 0, passed: 0, untriaged: 0, has_issue: 0, flaky: 0, fixed: 0, quarantined: 0, skipped: 0 };
-    const attentionCount = (summary.untriaged || 0) + (summary.has_issue || 0) + (summary.flaky || 0) + (summary.fixed || 0);
-
     const runDate = run.started_at ? new Date(run.started_at).toLocaleString() : 'Unknown';
-    modalTitle.textContent = `Run #${run.id} - ${runDate}`;
+    const commitFragment = run.commit_sha ? ` · ${String(run.commit_sha).substring(0, 7)}` : '';
+    modalTitle.textContent = `Run #${run.id || runId} · ${runDate}${commitFragment}`;
 
     const tl = normalizeE2ETimelineData(data);
-    const activeTab = options.initialTab === 'timeline' ? 'timeline' : 'results';
-    const resultsActive = activeTab === 'results';
-    const timelineActive = activeTab === 'timeline';
-
-    let html = `
+    const html = `
         <div class="unified-run-view">
-            <div class="unified-run-header">
-                <div class="run-meta">
-                    ${run.commit_sha ? `<span class="commit">Commit: <code>${run.commit_sha.substring(0, 7)}</code></span>` : ''}
-                    <span class="stat runner">${escapeHtml(_formatRunnerLabel(run))}</span>
-                    <span class="stat">${summary.total || 0} results</span>
-                    ${summary.passed > 0 ? `<span class="stat passed">${summary.passed} passed</span>` : ''}
-                    ${attentionCount > 0 ? `<span class="stat failed">${attentionCount} attention</span>` : ''}
-                </div>
-                <div class="e2e-run-tabs">
-                    <button class="e2e-run-tab ${resultsActive ? 'active' : ''}" onclick="switchE2ERunTab('results', this)" data-tab="results">Results</button>
-                    <button class="e2e-run-tab ${timelineActive ? 'active' : ''}" onclick="switchE2ERunTab('timeline', this)" data-tab="timeline">Timeline</button>
-                </div>
-            </div>
             ${run.note ? `<div class="e2e-run-note-banner">${escapeHtml(run.note)}</div>` : ''}
-            <div id="e2eRunResultsTab" class="e2e-run-tab-panel" style="${resultsActive ? '' : 'display: none;'}">
-                ${renderE2EResultsPanel(data)}
-            </div>
-            <div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="${timelineActive ? '' : 'display: none;'}">
-                <div class="e2e-timeline-view-switcher">
-                    <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this)" data-view="user">Story</button>
-                    <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this)" data-view="ops">Ops</button>
-                    <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this)" data-view="debug">Debug</button>
-                </div>
-                <div id="e2eTimelineContent"></div>
-            </div>
+            ${renderE2EResultsPanel(data)}
         </div>
     `;
-
     content.innerHTML = html;
 
     const timelineContainer = document.getElementById('e2eTimelineContent');
-    renderE2ETimeline(timelineContainer, tl);
+    if (timelineContainer) {
+        renderE2ETimeline(timelineContainer, tl);
+    }
+
+    if (options.expandRunDetails) {
+        const disclosure = document.getElementById('runDetailsDisclosure');
+        if (disclosure) disclosure.open = true;
+    }
 }
 
 function renderE2ETimeline(container, timelineData) {
@@ -637,172 +717,6 @@ function renderE2EIssueTimelineAffordances(affordances) {
     </section>`;
 }
 
-function renderCategorySection(categoryKey, title, tests, description, styleClass, collapsed = false) {
-    if (!tests || tests.length === 0) return '';
-
-    const isCollapsible = collapsed || tests.length > 5;
-    const expanded = !collapsed;
-
-    let html = `
-        <div class="category-section ${categoryKey}" data-category="${categoryKey}">
-            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCategorySection('${categoryKey}');}" role="button" tabindex="0" aria-expanded="${expanded}"` : ''}>
-                <span class="title">${title}</span>
-                <span class="count">${tests.length}</span>
-                ${isCollapsible ? `<span class="toggle-icon" id="toggle-${categoryKey}"></span>` : ''}
-            </div>
-            <div class="category-description">${description}</div>
-            <div class="category-tests" id="tests-${categoryKey}" style="${collapsed ? 'display: none;' : ''}">
-    `;
-
-    for (const test of tests) {
-        html += renderTestRow(test, categoryKey);
-    }
-
-    html += '</div></div>';
-    return html;
-}
-
-function _renderResultEvidenceButtons(category) {
-    if (!unifiedRunData) return '';
-    if (category === 'passed' || category === 'skipped' || category === 'quarantined') return '';
-    const run = unifiedRunData.run || {};
-    const primaryReport = _primaryRunReport(unifiedRunData);
-    const buttons = [];
-    if (run.log_path) {
-        buttons.push(_artifactButton(run.log_path, 'Run Log', 'action-btn subtle'));
-    }
-    if (primaryReport && primaryReport.path) {
-        buttons.push(_artifactButton(primaryReport.path, primaryReport.label || 'Report', 'action-btn subtle'));
-    }
-    return buttons.join('');
-}
-
-function renderTestRow(test, category) {
-    const shortName = test.display_name || test.nodeid.split('::').pop() || test.nodeid;
-    const effectiveOutcome = test.retry_outcome || test.outcome;
-    const outcomeIcon = effectiveOutcome === 'passed' ? '✓' : effectiveOutcome === 'skipped' ? '○' : '✗';
-    const outcomeClass = effectiveOutcome === 'passed' ? 'passed' : effectiveOutcome === 'skipped' ? 'skipped' : 'failed';
-
-    let historyHtml = '';
-    if (test.history && test.history.length > 0) {
-        const icons = test.history.map(h => {
-            if (h.outcome === 'passed') return '<span class="hist-icon pass">✓</span>';
-            if (h.outcome === 'failed') return '<span class="hist-icon fail">✗</span>';
-            return '<span class="hist-icon skip">○</span>';
-        }).reverse().join('');
-        historyHtml = `<span class="test-history">${icons}</span>`;
-    }
-
-    const flipRateHtml = test.flip_rate_percent && test.flip_rate_percent > 0
-        ? `<span class="flip-rate">${test.flip_rate_percent}%</span>`
-        : '';
-    const durationHtml = test.duration_seconds
-        ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>`
-        : '';
-    const suiteHtml = test.suite_name
-        ? `<div class="test-suite" title="${escapeHtml(test.suite_name)}">${escapeHtml(test.suite_name)}</div>`
-        : '';
-    const sourceHtml = test.result_source && test.result_source !== 'runtime'
-        ? `<span class="test-source">${escapeHtml(_humanizeSnakeCase(test.result_source))}</span>`
-        : '';
-
-    let actionsHtml = _renderResultEvidenceButtons(category);
-    if (test.existing_issue) {
-        const issueNum = test.existing_issue.number;
-        const issueStatus = test.existing_issue.status;
-        if (category === 'fixed' && issueStatus === 'open') {
-            actionsHtml = `
-                <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}"
-                   target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">
-                    → #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span>
-                </a>
-                <div class="test-actions">
-                    ${_e2eRowActionButton(`Close #${issueNum}`, {
-                        action: 'close_issue',
-                        cssClass: 'action-btn success',
-                        issueNumber: issueNum,
-                        nodeid: test.nodeid,
-                    })}
-                    ${actionsHtml}
-                </div>
-            `;
-        } else {
-            actionsHtml = `
-                <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}"
-                   target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">
-                    → #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span>
-                </a>
-                ${actionsHtml ? `<div class="test-actions">${actionsHtml}</div>` : ''}
-            `;
-        }
-    } else if (category === 'untriaged' || category === 'flaky') {
-        actionsHtml = `
-            <div class="test-actions">
-                ${_e2eRowActionButton('Create Issue ▼', {
-                    action: 'create_issue_dropdown',
-                    cssClass: 'action-btn primary',
-                    nodeid: test.nodeid,
-                })}
-                ${_e2eRowActionButton('Quarantine', {
-                    action: 'quarantine_test',
-                    cssClass: 'action-btn warning',
-                    nodeid: test.nodeid,
-                })}
-                ${_e2eRowActionButton('Copy Error', {
-                    action: 'copy_test_error',
-                    cssClass: 'action-btn',
-                    nodeid: test.nodeid,
-                })}
-                ${actionsHtml}
-            </div>
-        `;
-    } else if (actionsHtml) {
-        actionsHtml = `<div class="test-actions">${actionsHtml}</div>`;
-    }
-
-    let errorPreviewHtml = '';
-    if (test.longrepr && (category === 'untriaged' || category === 'has_issue' || category === 'flaky')) {
-        const lines = test.longrepr.split('\n');
-        const preview = lines.slice(0, 2).join('\n');
-        const hasMore = lines.length > 2;
-        errorPreviewHtml = `
-            <div class="test-error-preview" data-nodeid="${escapeAttr(test.nodeid)}">
-                <pre class="error-text">${escapeHtml(preview)}</pre>
-                ${hasMore ? `<button class="expand-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
-            </div>
-        `;
-    }
-
-    return `
-        <div class="test-row" data-nodeid="${escapeAttr(test.nodeid)}">
-            <div class="test-row-main">
-                <span class="status-icon ${outcomeClass}">${outcomeIcon}</span>
-                <div class="test-row-copy">
-                    <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
-                    ${suiteHtml}
-                </div>
-                ${sourceHtml}
-                ${historyHtml}
-                ${flipRateHtml}
-                ${durationHtml}
-                ${actionsHtml}
-            </div>
-            ${errorPreviewHtml}
-        </div>
-    `;
-}
-
-function switchE2ERunTab(tabName, btn) {
-    const tabs = document.querySelectorAll('.e2e-run-tab');
-    tabs.forEach(t => t.classList.remove('active'));
-    if (btn) btn.classList.add('active');
-
-    const resultsPanel = document.getElementById('e2eRunResultsTab');
-    const timelinePanel = document.getElementById('e2eRunTimelineTab');
-    if (resultsPanel) resultsPanel.style.display = tabName === 'results' ? '' : 'none';
-    if (timelinePanel) timelinePanel.style.display = tabName === 'timeline' ? '' : 'none';
-}
-
 async function switchE2ETimelineView(view, btn) {
     const btns = document.querySelectorAll('.e2e-view-btn');
     btns.forEach(b => b.classList.remove('active'));
@@ -824,60 +738,6 @@ async function switchE2ETimelineView(view, btn) {
     }
 }
 
-function toggleCategorySection(categoryKey) {
-    const testsDiv = document.getElementById(`tests-${categoryKey}`);
-    const toggleSpan = document.getElementById(`toggle-${categoryKey}`);
-    const section = document.querySelector(`.category-section[data-category="${categoryKey}"]`);
-    const header = section?.querySelector('.category-header');
-    if (!testsDiv || !toggleSpan) return;
-
-    const isCollapsed = testsDiv.classList.contains('collapsed');
-    testsDiv.classList.toggle('collapsed');
-    toggleSpan.textContent = isCollapsed ? '▼' : '▶';
-    if (header) {
-        header.setAttribute('aria-expanded', isCollapsed ? 'true' : 'false');
-    }
-}
-
-/**
- * Toggle error preview/full view.
- */
-function toggleTestError(button) {
-    const preview = button.closest('.test-error-preview');
-    if (!preview) return;
-
-    const isExpanded = preview.classList.contains('expanded');
-    const nodeid = preview.dataset.nodeid;
-
-    if (isExpanded) {
-        // Collapse: show first 2 lines
-        preview.classList.remove('expanded');
-        button.textContent = 'Expand ▼';
-        const errorText = preview.querySelector('.error-text');
-        if (errorText && unifiedRunData) {
-            const test = _findResultCase(nodeid);
-            if (test && test.longrepr) {
-                const lines = test.longrepr.split('\n');
-                errorText.textContent = lines.slice(0, 2).join('\n');
-            }
-        }
-    } else {
-        // Expand: show full error
-        preview.classList.add('expanded');
-        button.textContent = 'Collapse ▲';
-        const errorText = preview.querySelector('.error-text');
-        if (errorText && unifiedRunData) {
-            const test = _findResultCase(nodeid);
-            if (test && test.longrepr) {
-                errorText.textContent = test.longrepr;
-            }
-        }
-    }
-}
-
-/**
- * Copy error text for a specific test.
- */
 function copyTestErrorFromRun(nodeid) {
     if (!unifiedRunData) return;
 
