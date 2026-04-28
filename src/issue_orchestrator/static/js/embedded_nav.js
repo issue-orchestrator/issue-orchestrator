@@ -23,6 +23,11 @@
     }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const EMBEDDED_CONTEXT_PARAMS = Object.freeze(['embedded', 'theme']);
+    const VALID_THEME_VALUES = new Set(['light', 'dark', 'system']);
+
+    function normalizedTheme(value) {
+        return VALID_THEME_VALUES.has(value) ? value : null;
+    }
 
     function buildHref(basePath, search) {
         const source = new URLSearchParams(search || '');
@@ -47,7 +52,12 @@
     function resolveEffectiveTheme(opts) {
         const { override, search, storedTheme, prefersDark } = opts || {};
         const urlTheme = new URLSearchParams(search || '').get('theme');
-        const raw = override || urlTheme || storedTheme || 'system';
+        const raw = (
+            normalizedTheme(override)
+            || normalizedTheme(urlTheme)
+            || normalizedTheme(storedTheme)
+            || 'system'
+        );
         if (raw === 'system') {
             return prefersDark ? 'dark' : 'light';
         }

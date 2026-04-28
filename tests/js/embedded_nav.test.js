@@ -166,6 +166,18 @@ test('resolveEffectiveTheme propagates explicit "system" through matchMedia', ()
     );
 });
 
+test('resolveEffectiveTheme ignores invalid theme values', () => {
+    assert.equal(
+        embeddedNav.resolveEffectiveTheme({
+            override: 'sepia',
+            search: '?theme=solarized',
+            storedTheme: 'light',
+            prefersDark: true,
+        }),
+        'light',
+    );
+});
+
 test('resolveEffectiveTheme is robust to missing opts', () => {
     // No opts at all: treat as fully unspecified → system → depends on prefersDark
     // (defaults to falsy prefersDark → light).

@@ -130,3 +130,34 @@ def test_settings_theme_survives_round_trip_from_dashboard(
     page.evaluate("goToSettings()")
     page.wait_for_url("**/settings?**")
     expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+
+
+def test_dashboard_prepaint_theme_uses_stored_light_preference(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    base_url = str(web_server["url"])
+    page.emulate_media(color_scheme="dark")
+
+    page.goto(base_url, wait_until="domcontentloaded")
+    page.evaluate("localStorage.setItem('theme', 'light')")
+
+    _goto(page, base_url, "/")
+    expect(page.locator("html")).to_have_attribute("data-theme", "light")
+    background_image = page.locator("body").evaluate(
+        "el => getComputedStyle(el).backgroundImage"
+    )
+    assert "rgb(220, 233, 248)" in background_image
+    assert "rgb(15, 23, 34)" not in background_image
+
+
+def test_embedded_dashboard_uses_embedded_chrome_before_bundle_waits(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    base_url = str(web_server["url"])
+
+    _goto(page, base_url, "/?embedded=1&theme=light")
+
+    expect(page.locator("html")).to_have_attribute("data-theme", "light")
+    expect(page.locator("html")).to_have_attribute("data-embedded", "true")
+    expect(page.locator("body > .container > header")).to_be_hidden()
+    expect(page.locator("#embeddedBack")).to_be_visible()

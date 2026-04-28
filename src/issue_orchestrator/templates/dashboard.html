@@ -7,6 +7,7 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
+    <script src="/static/js/dashboard_boot.js"></script>
     <link rel="stylesheet" href="/static/css/dashboard.css">
     <link rel="stylesheet" href="/static/css/ui_primitives.css">
     <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
@@ -98,20 +99,20 @@
 
         <nav class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
             <!-- Embedded-only: back button + repo info (shown when inside CC iframe) -->
-            <button class="embedded-back" id="embeddedBack" aria-label="Back to repositories" style="display:none;">
+            <button class="embedded-back" id="embeddedBack" aria-label="Back to repositories">
                 <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
                 </svg>
                 <span id="embeddedBackLabel">Back to repositories</span>
             </button>
-            <span class="embedded-repo" id="embeddedRepoName" style="display:none;"></span>
-            <span class="embedded-badge status-badge status-running" id="embeddedBadge" style="display:none;">Running</span>
-            <button class="embedded-scope-btn" id="embeddedScopeBtn" aria-label="Toggle scope info" style="display:none;">
+            <span class="embedded-repo" id="embeddedRepoName"></span>
+            <span class="embedded-badge status-badge status-running" id="embeddedBadge">Running</span>
+            <button class="embedded-scope-btn" id="embeddedScopeBtn" aria-label="Toggle scope info">
                 <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1v4.25a.75.75 0 01-1.5 0V8.5h-.25A.75.75 0 016.5 7.75zM8 6a1 1 0 110-2 1 1 0 010 2z"/>
                 </svg>
             </button>
-            <span class="embedded-sep" style="display:none;" aria-hidden="true"></span>
+            <span class="embedded-sep" aria-hidden="true"></span>
             <button class="tab {% if active_tab != 'e2e' %}active{% endif %}" id="tab-dashboard" data-tab="kanban" onclick="switchTab('kanban')" role="tab" aria-controls="panel-dashboard" aria-selected="{% if active_tab != 'e2e' %}true{% else %}false{% endif %}">
                 Dashboard
             </button>
@@ -138,6 +139,14 @@
                 </div>
             </div>
         </nav>
+
+        <div class="dashboard-init-status {% if startup_status != 'complete' %}is-active{% endif %}" id="dashboardInitStatus" role="status" aria-live="polite">
+            <span class="dashboard-init-pulse" aria-hidden="true"></span>
+            <span class="dashboard-init-copy">
+                <span class="dashboard-init-title">Initializing dashboard</span>
+                <span class="dashboard-init-detail">Preparing live state</span>
+            </span>
+        </div>
 
         <main id="mainContent">
             {% if active_tab != 'e2e' %}

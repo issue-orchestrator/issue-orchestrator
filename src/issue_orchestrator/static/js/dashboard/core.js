@@ -90,13 +90,37 @@ if (!uiActionContract) {
 function applyDashboardTheme(theme) {
     // Delegate to the shared resolver so Dashboard and Settings apply the
     // same precedence (see static/js/embedded_nav.js).
+    let storedTheme = null;
+    let prefersDark = false;
+    try {
+        storedTheme = localStorage.getItem('theme');
+        prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch (_error) {
+        storedTheme = null;
+        prefersDark = false;
+    }
     const effectiveTheme = window.embeddedNav.resolveEffectiveTheme({
         override: theme,
         search: window.location.search,
-        storedTheme: localStorage.getItem('theme'),
-        prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+        storedTheme,
+        prefersDark,
     });
     document.documentElement.setAttribute('data-theme', effectiveTheme);
+}
+
+function setDashboardInitializing(isInitializing) {
+    const status = document.getElementById('dashboardInitStatus');
+    if (!status) return;
+    status.classList.toggle('is-active', Boolean(isInitializing));
+}
+
+function markDashboardBooted() {
+    const finish = () => document.documentElement.removeAttribute('data-booting');
+    if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
+    } else {
+        finish();
+    }
 }
 
 function navigateBackToRepositories() {
@@ -105,6 +129,9 @@ function navigateBackToRepositories() {
 
 // When embedded in CC iframe, hide dashboard header and show embedded header in tab bar
 const isEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+if (isEmbedded) {
+    document.documentElement.setAttribute('data-embedded', 'true');
+}
 
 const embeddedNav = window.embeddedNav;
 if (!embeddedNav) {
@@ -116,16 +143,6 @@ function goToSettings() {
 }
 if (isEmbedded) {
     document.addEventListener('DOMContentLoaded', () => {
-        // Hide standalone header (dashboard owns the header via tab bar now)
-        const header = document.querySelector('header');
-        if (header) header.style.display = 'none';
-        // Hide scope-summary by default (toggled via (i) button as dropdown)
-        const scopeSummary = document.querySelector('.scope-summary');
-        if (scopeSummary) scopeSummary.classList.add('scope-embedded');
-        // Show embedded header elements in tab bar
-        document.querySelectorAll('.embedded-back, .embedded-repo, .embedded-badge, .embedded-scope-btn, .embedded-sep').forEach(el => {
-            el.style.display = '';
-        });
         // Populate repo name from server-rendered data
         const repoEl = document.getElementById('embeddedRepoName');
         if (repoEl) repoEl.textContent = window.dashboardData?.repo || '';
@@ -434,6 +451,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         updateStatusBadgeFromViewModel(viewModel);
         updatePauseMenuFromViewModel(viewModel);
         updateRefreshStatusFromViewModel(viewModel);
+        setDashboardInitializing(viewModel.startup_status && viewModel.startup_status !== 'complete');
         applyNetworkSyncScheduler();
         renderGitHubUsage();
 
@@ -519,6 +537,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 
 document.addEventListener('DOMContentLoaded', () => {
     applyDashboardTheme();
+    setDashboardInitializing(window.dashboardData?.startupComplete === false);
     updateActionHints();
     initFlowLazyVisibleRefresh();
     applyGitHubUsagePrefs();
@@ -537,6 +556,7 @@ document.addEventListener('DOMContentLoaded', () => {
             nextRun.textContent = formatted;
         }
     }
+    markDashboardBooted();
 });
 
 document.addEventListener('change', (event) => {
