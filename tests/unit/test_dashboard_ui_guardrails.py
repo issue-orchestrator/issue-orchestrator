@@ -197,6 +197,22 @@ def test_dashboard_refreshes_on_history_reconciled_sse() -> None:
     assert "refreshViewModel({ reloadOnListChange: true })" in body
 
 
+def test_card_focus_renders_combined_issue_label_in_template() -> None:
+    """Cards must show the formatted label (M9-009 · #274) instead of bare #number."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "card.issue_label or '#' ~ card.issue_number" in html
+    # Bare "#{{ card.issue_number }}" used to lead the focus button;
+    # ensure the regression doesn't sneak back into the focus title/body.
+    assert "#{{ card.issue_number }} {{ card.title }}" not in html
+
+
+def test_card_focus_renders_combined_issue_label_in_js() -> None:
+    """Client-side card renderers must mirror the template's label fallback."""
+    js = _read(DASHBOARD_JS)
+    assert "card.issue_label" in js
+    assert "item.issue_label" in js
+
+
 def test_compact_cards_use_fingerprint_delta_path() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderCompactCards")

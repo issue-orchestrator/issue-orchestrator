@@ -195,7 +195,7 @@ def test_active_item_prefers_canonical_issue_title_over_rework_title():
         active_sessions=[session],
         startup_status="complete",
         cached_queue_issues=[
-            Issue(number=4057, title="UI: Surface provider circuit breaker status", labels=["agent:web"]),
+            Issue(number=4057, title="[M9-009] UI: Surface provider circuit breaker status", labels=["agent:web"]),
         ],
     )
     orchestrator = _OrchestratorStub(state=state, config=config)
@@ -208,7 +208,12 @@ def test_active_item_prefers_canonical_issue_title_over_rework_title():
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
-    assert view_model.active_items[0]["title"] == "UI: Surface provider circuit breaker status"
+    active = view_model.active_items[0]
+    assert active["title"] == "UI: Surface provider circuit breaker status"
+    # Synthetic session titles like "Rework #4124" have no external_id prefix —
+    # the label must derive from the canonical issue title, not the raw session title.
+    assert active["issue_key"] == "M9-009"
+    assert active["issue_label"] == "M9-009 · #4057"
 
 
 def test_view_model_queue_and_blocked_items():

@@ -167,10 +167,13 @@ function renderCompactCardHtml(card) {
     const badgesDiv = allBadges
         ? `<div class="card-badges">${allBadges}</div>`
         : '';
+    const issueLabel = card.issue_label || `#${n}`;
+    const issueLabelHtml = escapeHtml(String(issueLabel));
+    const issueLabelAttr = escapeAttr(String(issueLabel));
     return `<div class="issue-card" data-card-id="${cardId}" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
         <div class="card-top">
-            <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue #${n}">
-                #${n} ${card.title}
+            <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue ${issueLabelAttr}">
+                ${issueLabelHtml} ${escapeHtml(String(card.title || ''))}
             </button>
             <div class="card-head-actions">
                 ${staleDot}
@@ -353,13 +356,16 @@ async function loadExpandedColumn(columnId, options = {}) {
                 const prLink = item.pr_url
                     ? `<a class="card-action-btn card-pr-link" href="${escapeAttr(String(item.pr_url))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();" title="Open PR for issue #${n} on GitHub" aria-label="Open PR for issue #${n} on GitHub">PR ↗</a>`
                     : '';
+                const itemLabel = item.issue_label || `#${n}`;
+                const itemLabelHtml = escapeHtml(String(itemLabel));
+                const itemLabelAttr = escapeAttr(String(itemLabel));
                 return `
                 <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
                     <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
                     <div class="card-content">
                         <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();"
-                                title="Focus issue #${n}">
-                            #${n} ${item.title || ''}
+                                title="Focus issue ${itemLabelAttr}">
+                            ${itemLabelHtml} ${escapeHtml(String(item.title || ''))}
                         </button>
                         ${detailDiv}
                         ${badgesDiv}

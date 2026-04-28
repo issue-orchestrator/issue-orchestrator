@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .issue_key import ISSUE_LABEL_SEPARATOR
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,13 +64,24 @@ class Dependency:
 
     @property
     def display_ref(self) -> str:
-        """Human-readable reference for logging/display."""
+        """Human-readable reference for logging/display.
+
+        When both a logical key (external_id) and a backing-store number are
+        known, show both ("M9-009 · #274") so the same dependency reads the
+        same here as in dashboard cards. Cross-repo deps keep the owner/repo
+        prefix on the numeric part.
+        """
+        if self.issue_number:
+            number_part = (
+                f"{self.repository}#{self.issue_number}"
+                if self.repository
+                else f"#{self.issue_number}"
+            )
+            if self.external_id:
+                return f"{self.external_id}{ISSUE_LABEL_SEPARATOR}{number_part}"
+            return number_part
         if self.external_id:
             return self.external_id
-        if self.issue_number:
-            if self.repository:
-                return f"{self.repository}#{self.issue_number}"
-            return f"#{self.issue_number}"
         return "(unknown)"
 
 

@@ -34,6 +34,8 @@
             const isViewed = columnId === 'blocked' && viewed.has(issueNumber);
             return [
                 issueNumber,
+                item.issue_key || '',
+                item.issue_label || '',
                 item.title || '',
                 item.detail_label || '',
                 item.status || '',

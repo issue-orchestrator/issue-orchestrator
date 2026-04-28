@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..domain.issue_key import format_issue_label
+
 
 def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[str, Any]:
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
@@ -11,6 +13,8 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
     blocked = item.get("blocked_summary") or ""
     summary_text = item.get("queue_wait_reason") or item.get("summary") or (f"Summary: {blocked}" if blocked else "")
     issue_number = item.get("issue_number")
+    issue_key = item.get("issue_key") or None
+    issue_label = item.get("issue_label") or format_issue_label(issue_number, issue_key)
     issue_url = item.get("issue_url") or item.get("url") or ""
     pr_url = item.get("pr_url") or ""
     resolved_state_label = state_label or item.get("status", "")
@@ -26,6 +30,8 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
     return {
         "card_id": item.get("card_id") or f"issue-{issue_number}",
         "issue_number": issue_number,
+        "issue_key": issue_key,
+        "issue_label": issue_label,
         "title": item.get("title", ""),
         "agent_type": item.get("agent_type", ""),
         "state_label": resolved_state_label,

@@ -159,8 +159,8 @@
                             {% for card in column["items"] %}
                             <div class="issue-card" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
                                 <div class="card-top">
-                                    <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">
-                                        #{{ card.issue_number }} {{ card.title }}
+                                    <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue {{ card.issue_label or '#' ~ card.issue_number }}">
+                                        {{ card.issue_label or '#' ~ card.issue_number }} {{ card.title }}
                                     </button>
                                     <div class="card-head-actions">
                                         {% if card.is_stale %}
