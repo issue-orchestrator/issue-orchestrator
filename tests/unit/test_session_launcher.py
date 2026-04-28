@@ -1896,6 +1896,93 @@ class TestProcessActiveSessions:
         mock_completion_handler.process_completion.assert_not_called()
         mock_action_applier.apply_actions.assert_not_called()
 
+    def test_completion_event_fires_once_across_many_ticks_of_deferred_session(
+        self, sample_agent_config, tmp_path
+    ):
+        """Regression for #6082: OBSERVATION_COMPLETION_DETECTED must fire
+        exactly once per session, even when the controller keeps the session
+        active across many ticks (e.g. a background review exchange that
+        returns SessionStatus.RUNNING).
+
+        This test deliberately uses a real SessionObserver — the bug lives
+        at the seam between observer (re-reads completion.json each tick),
+        controller (says RUNNING during deferred work), and
+        process_active_sessions (keeps RUNNING sessions in active_sessions).
+        Each component is individually correct; the cardinality invariant
+        only emerges from running them together across ticks.
+        """
+        import json
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.events import EventName
+        from issue_orchestrator.observation.observer import SessionObserver
+
+        issue = Issue(number=359, title="Test", labels=["agent:backend"])
+        issue_key = FakeIssueKey("359")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir(parents=True)
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir(parents=True)
+        (completion_dir / "completion.json").write_text(json.dumps({
+            "session_id": "any-session-id",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "outcome": "completed",
+            "summary": "Work done",
+        }))
+
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-359",
+            worktree_path=worktree,
+            branch_name="359-feature",
+        )
+        state = OrchestratorState(active_sessions=[session])
+
+        events = MockEventSink()
+        mock_session_runner = MagicMock()
+        mock_session_runner.session_exists_by_name.return_value = True
+        observer = SessionObserver(
+            MagicMock(),
+            FileSystemSessionOutput(),
+            events=events,
+            session_runner=mock_session_runner,
+            repository_host=MagicMock(),
+        )
+
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.return_value = SessionDecision(
+            status=SessionStatus.RUNNING,
+            reason="Review exchange running in background; awaiting completion",
+        )
+
+        # Simulate ten observation ticks while the session lingers in a
+        # deferred state — exactly the live tixmeup #359 scenario.
+        for _ in range(10):
+            process_active_sessions(
+                state=state,
+                observer=observer,
+                session_controller=mock_controller,
+                completion_handler=MagicMock(),
+                action_applier=MagicMock(),
+                worktree_manager=None,
+                kill_session_fn=MagicMock(),
+                config=MagicMock(),
+            )
+
+        # Session stayed active because the controller deferred…
+        assert state.active_sessions == [session]
+        # …and the controller saw a terminated observation each tick…
+        assert mock_controller.decide_outcome.call_count == 10
+        # …but the user-facing event fired exactly once.
+        completion_events = events.get_events_by_name(
+            EventName.OBSERVATION_COMPLETION_DETECTED
+        )
+        assert len(completion_events) == 1, (
+            "OBSERVATION_COMPLETION_DETECTED must fire once per session, not "
+            f"once per tick. Got {len(completion_events)} emissions."
+        )
+
     def test_skips_duplicate_snapshot_entries_after_terminal_processing(
         self,
         sample_agent_config,
