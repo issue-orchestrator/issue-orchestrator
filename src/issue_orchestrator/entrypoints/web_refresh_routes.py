@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from fastapi import APIRouter, Request
@@ -20,6 +21,8 @@ from ..ports.repository_host import (
     repository_host_failure_status,
 )
 from .web_session_context import WebOrchestratorDependency
+
+logger = logging.getLogger(__name__)
 
 web_refresh_router = APIRouter()
 
@@ -155,11 +158,27 @@ async def refresh_issue(
         clear_issue_refresh(state, issue_number)
     history_reconciled = False
     if issue.state.lower() == "closed":
+        logger.info(
+            "Web refresh: issue=#%d is closed on GitHub; attempting history reconciliation",
+            issue_number,
+        )
         result = SessionHistoryOwner(state.session_history).reconcile_closed_issue(
             issue_number=issue_number,
             status_reason=CLOSED_ISSUE_HISTORY_STATUS_REASON,
         )
         history_reconciled = isinstance(result, ClosedIssueHistoryMutation)
+        logger.info(
+            "Web refresh: issue=#%d reconcile result=%s history_reconciled=%s",
+            issue_number,
+            type(result).__name__,
+            history_reconciled,
+        )
+    else:
+        logger.debug(
+            "Web refresh: issue=#%d state=%r — no closed-issue reconciliation",
+            issue_number,
+            issue.state,
+        )
     queue_cache.prune_refresh_timestamps()
 
     return JSONResponse({

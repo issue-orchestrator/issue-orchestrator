@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import MutableSequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
@@ -13,6 +14,9 @@ from ..domain.models import (
     SessionHistoryEntry,
     SessionHistoryStatus,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 CLOSED_ISSUE_HISTORY_STATUS_REASON = "Issue closed; history reconciled"
@@ -96,12 +100,32 @@ class SessionHistoryOwner:
         """Mark the latest matching awaiting-merge history entry terminal."""
         entry = self._find_latest_matching_entry(issue_number, pr_url)
         if entry is None:
+            # Likely cause: pr_url string mismatch (trailing slash, scheme, etc.)
+            # — not necessarily an actually-missing history row.
+            known_for_issue = [
+                e.pr_url for e in self.session_history if e.issue_number == issue_number
+            ]
+            logger.warning(
+                "reconcile_awaiting_merge: no entry for issue=#%d pr_url=%r; "
+                "known pr_urls for issue=%r",
+                issue_number,
+                pr_url,
+                known_for_issue,
+            )
             return HistoryReconciliationNoop(
                 issue_number=issue_number,
                 pr_url=pr_url,
                 reason="missing",
             )
         if entry.status not in RECONCILABLE_HISTORY_STATUSES:
+            logger.info(
+                "reconcile_awaiting_merge: not reconcilable issue=#%d pr_url=%s "
+                "current_status=%s (expected one of %s)",
+                issue_number,
+                pr_url,
+                entry.status,
+                sorted(RECONCILABLE_HISTORY_STATUSES),
+            )
             return HistoryReconciliationNoop(
                 issue_number=issue_number,
                 pr_url=pr_url,
@@ -112,6 +136,14 @@ class SessionHistoryOwner:
         previous_status = entry.status
         entry.status = status
         entry.status_reason = status_reason
+        logger.info(
+            "reconcile_awaiting_merge: mutated issue=#%d pr_url=%s %s -> %s (%s)",
+            issue_number,
+            pr_url,
+            previous_status,
+            status,
+            status_reason,
+        )
         return HistoryReconciliationMutation(
             issue_number=issue_number,
             pr_url=pr_url,
@@ -129,8 +161,16 @@ class SessionHistoryOwner:
         """Mark the latest retry-blocking history entry terminal when its issue closed."""
         entry = self._find_latest_issue_entry(issue_number)
         if entry is None:
+            logger.info(
+                "reconcile_closed_issue: no history entry for issue=#%d", issue_number
+            )
             return ClosedIssueHistoryNoop(issue_number=issue_number, reason="missing")
         if entry.status not in ISSUE_CLOSED_RECONCILABLE_HISTORY_STATUSES:
+            logger.info(
+                "reconcile_closed_issue: already terminal issue=#%d status=%s",
+                issue_number,
+                entry.status,
+            )
             return ClosedIssueHistoryNoop(
                 issue_number=issue_number,
                 reason="already_terminal",
@@ -140,6 +180,12 @@ class SessionHistoryOwner:
         previous_status = entry.status
         entry.status = "closed"
         entry.status_reason = status_reason
+        logger.info(
+            "reconcile_closed_issue: mutated issue=#%d %s -> closed (%s)",
+            issue_number,
+            previous_status,
+            status_reason,
+        )
         return ClosedIssueHistoryMutation(
             issue_number=issue_number,
             previous_status=previous_status,

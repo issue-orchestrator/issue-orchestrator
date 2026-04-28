@@ -79,7 +79,13 @@ class AwaitingMergeReconciler:
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
         reworks: list[DiscoveredRework] = []
 
-        for entry in self._awaiting_merge_entries(state):
+        candidates = self._awaiting_merge_entries(state)
+        logger.debug(
+            "Awaiting-merge scan: %d candidate entries (history_limit=%d)",
+            len(candidates),
+            self.history_limit,
+        )
+        for entry in candidates:
             checked += 1
             discovery = self._discover_entry(state, entry)
             if discovery.outcome == "terminal":
@@ -94,6 +100,13 @@ class AwaitingMergeReconciler:
                 rework_discovered += 1
                 reworks.append(discovery.rework)
 
+        logger.debug(
+            "Awaiting-merge scan complete: checked=%d terminal=%d still_pending=%d skipped=%d",
+            checked,
+            discovered,
+            still_pending,
+            skipped,
+        )
         return AwaitingMergeReconciliationResult(
             checked=checked,
             discovered=discovered,
@@ -133,7 +146,21 @@ class AwaitingMergeReconciler:
         pr = self._get_pr(entry.issue_number, pr_number)
         if pr is not None:
             pr_state = _normalized_state(pr.state)
+            logger.debug(
+                "Awaiting-merge entry issue=#%d pr=#%d state=%r terminal=%s pr_url=%s",
+                entry.issue_number,
+                pr_number,
+                pr_state,
+                pr_state in TERMINAL_AWAITING_MERGE_HISTORY_STATUSES,
+                entry.pr_url,
+            )
             if pr_state in TERMINAL_AWAITING_MERGE_HISTORY_STATUSES:
+                logger.info(
+                    "Awaiting-merge terminal via PR: issue=#%d pr=#%d state=%s",
+                    entry.issue_number,
+                    pr_number,
+                    pr_state,
+                )
                 return AwaitingMergeEntryDiscovery(
                     "terminal",
                     reconciliation=_reconciliation_fact(
@@ -144,6 +171,13 @@ class AwaitingMergeReconciler:
                         source="pull_request",
                     ),
                 )
+        else:
+            logger.debug(
+                "Awaiting-merge PR fetch returned None: issue=#%d pr=#%d pr_url=%s",
+                entry.issue_number,
+                pr_number,
+                entry.pr_url,
+            )
 
         issue = self._get_issue(entry.issue_number)
         if issue is None:
@@ -155,6 +189,11 @@ class AwaitingMergeReconciler:
 
         record_issue_refreshes(state, {entry.issue_number}, self.clock())
         if _normalized_state(issue.state) == "closed":
+            logger.info(
+                "Awaiting-merge terminal via issue closure: issue=#%d pr=#%d",
+                entry.issue_number,
+                pr_number,
+            )
             return AwaitingMergeEntryDiscovery(
                 "terminal",
                 reconciliation=_reconciliation_fact(
