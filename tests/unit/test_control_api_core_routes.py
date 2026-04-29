@@ -59,6 +59,7 @@ class TestRouteRegistration:
             "/api/issues/{issue_number}/debug-session",
             "/api/issues/{issue_number}/retry",
             "/api/issues/{issue_number}/dismiss",
+            "/api/issues/{issue_number}/close",
         }
         counts = Counter(
             route.path

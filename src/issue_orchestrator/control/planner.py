@@ -62,6 +62,7 @@ from .actions import (
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
     SessionType,
+    SyncLabelsAction,
 )
 from .awaiting_merge_reconciler import (
     POST_PUBLISH_VALIDATION_SOURCE,
@@ -337,6 +338,18 @@ class Planner:
                 source=reconciliation.source,
                 issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
                 reason=reconciliation.status_reason,
+            ))
+
+        for drift in snapshot.discovered_awaiting_merge_drifts:
+            actions.append(SyncLabelsAction(
+                issue_number=drift.issue_number,
+                add_labels=(self._lm.blocked_pr_closed,),
+                remove_labels=(self._lm.pr_pending,),
+                issue_key=drift.issue_key or str(drift.issue_number),
+                reason=drift.status_reason,
+                expected=build_expected_for_mutation(
+                    required={self._lm.pr_pending},
+                ),
             ))
 
         return actions

@@ -37,7 +37,14 @@ def _base_of(label: str) -> str:
 def _is_blocking_label(label: str) -> bool:
     """Pure string check for blocking labels — handles both prefixed and unprefixed."""
     base = _base_of(label)
-    if base == "blocked" or base.startswith("blocked-") or base.startswith("blocked:"):
+    if (
+        # _base_of("blocked:claim-lost") returns "claim-lost", so keep the
+        # unprefixed semantic-colon form before checking prefix-stripped bases.
+        label.startswith("blocked:")
+        or base == "blocked"
+        or base.startswith("blocked-")
+        or base.startswith("blocked:")
+    ):
         return True
     return base in ("needs-human", "failed", "publish-failed")
 
@@ -1125,6 +1132,21 @@ class DiscoveredAwaitingMergeReconciliation:
 
 
 @dataclass(frozen=True)
+class DiscoveredAwaitingMergeDrift:
+    """An open issue still labeled awaiting-merge after its PR left that state.
+
+    This is a fact. The Planner decides whether to move the issue into a
+    blocked reconciliation state and which labels to mutate.
+    """
+
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    status_reason: str
+    issue_key: str = ""  # stable_id; falls back to str(issue_number) when empty
+
+
+@dataclass(frozen=True)
 class TriageFacts:
     """Facts about triage review trigger conditions.
 
@@ -1601,6 +1623,7 @@ class OrchestratorState:
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
     discovered_awaiting_merge_reconciliations: list[DiscoveredAwaitingMergeReconciliation] = field(default_factory=list)  # Awaiting-merge history transitions from scans
+    discovered_awaiting_merge_drifts: list[DiscoveredAwaitingMergeDrift] = field(default_factory=list)  # Open issues whose pr-pending label drifted from PR state
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
@@ -1616,6 +1639,7 @@ class OrchestratorState:
     queue_last_refresh_at: float = 0.0  # Epoch seconds of last queue refresh completion
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
+    awaiting_merge_drift_scan_timestamps: dict[int, float] = field(default_factory=dict)  # issue_number -> last PR-list drift scan
     # Candidate queue removals waiting for a targeted confirmation refresh.
     queue_pending_shrink_missing_issue_numbers: list[int] = field(default_factory=list)
     queue_pending_shrink_confirm_at: float = 0.0

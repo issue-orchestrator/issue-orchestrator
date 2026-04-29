@@ -263,6 +263,14 @@ class SupersedePullRequestAction(Action):
 
 
 @dataclass(frozen=True)
+class CloseIssueAction(Action):
+    """Close an issue through the repository host."""
+
+    issue_number: int = 0
+    action_type: ActionType = field(default=ActionType.CLOSE_ISSUE, init=False)
+
+
+@dataclass(frozen=True)
 class CleanupSessionAction(Action):
     """Clean up a completed session (close tab, remove worktree).
 

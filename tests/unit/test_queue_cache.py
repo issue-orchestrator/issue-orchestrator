@@ -299,6 +299,7 @@ def test_prune_refresh_timestamps_keeps_only_tracked_issue_numbers():
         cached_queue_issues=[Issue(number=1, title="Keep", labels=["agent:web"])],
         issue_refresh_timestamps={1: 100.0, 2: 200.0},
         issue_last_refreshed_at={1: 100.0, 2: 200.0},
+        awaiting_merge_drift_scan_timestamps={1: 300.0, 2: 400.0},
     )
     cache = QueueCache(config, state)
 
@@ -306,6 +307,7 @@ def test_prune_refresh_timestamps_keeps_only_tracked_issue_numbers():
 
     assert state.issue_refresh_timestamps == {1: 100.0}
     assert state.issue_last_refreshed_at == {1: 100.0}
+    assert state.awaiting_merge_drift_scan_timestamps == {1: 300.0}
 
 
 def test_replace_from_refresh_tracks_blocked_scope_issues():
@@ -339,12 +341,14 @@ def test_clear_issue_refresh_removes_both_freshness_maps():
     state = OrchestratorState(
         issue_refresh_timestamps={4057: 1234.5},
         issue_last_refreshed_at={4057: 1234.5},
+        awaiting_merge_drift_scan_timestamps={4057: 1234.5},
     )
 
     clear_issue_refresh(state, 4057)
 
     assert state.issue_refresh_timestamps == {}
     assert state.issue_last_refreshed_at == {}
+    assert state.awaiting_merge_drift_scan_timestamps == {}
 
 
 def test_prune_refresh_timestamps_keeps_recently_visible_issue_numbers(monkeypatch):
@@ -352,6 +356,7 @@ def test_prune_refresh_timestamps_keeps_recently_visible_issue_numbers(monkeypat
     state = OrchestratorState(
         issue_refresh_timestamps={1: 100.0, 2: 200.0},
         issue_last_refreshed_at={1: 100.0, 2: 200.0},
+        awaiting_merge_drift_scan_timestamps={1: 300.0, 2: 400.0},
         ui_visible_issue_numbers=[2],
         ui_visible_updated_at=50_000.0,
     )
@@ -365,6 +370,7 @@ def test_prune_refresh_timestamps_keeps_recently_visible_issue_numbers(monkeypat
 
     assert state.issue_refresh_timestamps == {2: 200.0}
     assert state.issue_last_refreshed_at == {2: 200.0}
+    assert state.awaiting_merge_drift_scan_timestamps == {2: 400.0}
 
 
 def test_prune_refresh_timestamps_discards_stale_visible_issue_numbers(monkeypatch):
@@ -372,6 +378,7 @@ def test_prune_refresh_timestamps_discards_stale_visible_issue_numbers(monkeypat
     state = OrchestratorState(
         issue_refresh_timestamps={1: 100.0, 2: 200.0},
         issue_last_refreshed_at={1: 100.0, 2: 200.0},
+        awaiting_merge_drift_scan_timestamps={1: 300.0, 2: 400.0},
         ui_visible_issue_numbers=[2],
         ui_visible_updated_at=50_000.0,
     )
@@ -385,3 +392,4 @@ def test_prune_refresh_timestamps_discards_stale_visible_issue_numbers(monkeypat
 
     assert state.issue_refresh_timestamps == {}
     assert state.issue_last_refreshed_at == {}
+    assert state.awaiting_merge_drift_scan_timestamps == {}

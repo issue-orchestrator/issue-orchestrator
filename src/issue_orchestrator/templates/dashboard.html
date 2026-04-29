@@ -196,6 +196,7 @@
                                                 data-row-action="{{ 'focus' if card.state_label == 'running' else 'open' }}"
                                                 data-agent="{{ card.agent_type | default('', true) | e }}"
                                                 data-has-terminal="{{ 'true' if card.state_label == 'running' else 'false' }}"
+                                                data-orchestrator-labels='{{ card.orchestrator_labels | tojson }}'
                                                 onclick="openCompactCardActionsMenu(event, this)"
                                                 title="More actions for issue #{{ card.issue_number }}"
                                                 aria-label="More actions for issue #{{ card.issue_number }}">&#x22EE;</button>
@@ -566,6 +567,7 @@
         <div id="menuHistoryDivider" class="context-menu-divider" style="display:none;"></div>
         <button id="menuUnblock" class="context-menu-item" role="menuitem" style="display:none;">Unblock</button>
         <button id="menuRetry" class="context-menu-item" role="menuitem" style="display:none;">Retry</button>
+        <button id="menuCloseIssue" class="context-menu-item" role="menuitem" style="display:none;">Close Issue</button>
         <button id="menuResetRetry" class="context-menu-item" role="menuitem" style="display:none;">Reset &amp; Retry</button>
         <button id="menuResetRetryScratch" class="context-menu-item" role="menuitem" style="display:none;">Reset and Retry From Scratch</button>
     </div>

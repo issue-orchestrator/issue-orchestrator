@@ -17,6 +17,7 @@
         REVEAL_WORKTREE: (issueNumber) => `/api/host/reveal-worktree/${issueNumber}`,
         TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
         RETRY_PUBLISH: (issueNumber) => `/api/issues/${issueNumber}/retry-publish`,
+        CLOSE_ISSUE: (issueNumber) => `/api/issues/${issueNumber}/close`,
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -101,6 +102,18 @@
         };
     }
 
+    function buildCloseIssueRequest(issueNumber) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for close-issue action: ${issueNumber}`);
+        }
+        return {
+            endpoint: ENDPOINTS.CLOSE_ISSUE(normalized[0]),
+            method: 'POST',
+            body: {},
+        };
+    }
+
     function buildRevealWorktreeRequest(issueNumber) {
         const normalized = normalizeIssueNumbers([issueNumber]);
         if (normalized.length !== 1) {
@@ -159,6 +172,7 @@
         buildBulkCancelQueuedRequest,
         buildIssueRetryRequest,
         buildRetryPublishRequest,
+        buildCloseIssueRequest,
         buildHostOpenPathRequest,
         buildRevealWorktreeRequest,
         buildTerminalRecordingRequest,

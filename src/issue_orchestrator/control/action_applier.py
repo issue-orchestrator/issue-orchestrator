@@ -62,6 +62,7 @@ from .actions import (
     EscalateToHumanAction,
     AddCommentAction,
     SupersedePullRequestAction,
+    CloseIssueAction,
     CreateTriageIssueAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
@@ -237,6 +238,7 @@ class ActionApplier:
             # Comments
             ActionType.ADD_COMMENT: self._apply_add_comment,
             ActionType.SUPERSEDE_PR: self._apply_supersede_pr,
+            ActionType.CLOSE_ISSUE: self._apply_close_issue,
             # History operations
             ActionType.RECONCILE_HISTORY_ENTRY: self._apply_reconcile_history_entry,
         }
@@ -439,6 +441,29 @@ class ActionApplier:
                 e,
             )
             return ActionResult.fail(action, str(e), pr_number=action.pr_number)
+
+    def _apply_close_issue(self, action: Action) -> ActionResult:
+        """Close an issue through the repository host."""
+        assert isinstance(action, CloseIssueAction)
+        assert self.repository_host is not None, "repository_host required for close_issue"
+
+        self._require_expected(action, action.issue_number)
+        self._verify_claim_before_write(action, action.issue_number)
+
+        try:
+            self.repository_host.update_issue_state(action.issue_number, "closed")
+            logger.info(issue_log(action.issue_number, "Issue closed"))
+            return ActionResult.ok(
+                action,
+                issue_number=action.issue_number,
+                state="closed",
+            )
+        except Exception as e:
+            logger.error(
+                issue_log(action.issue_number, "Failed to close issue: %s"),
+                e,
+            )
+            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
 
     def _fetch_current_labels(self, issue_number: int) -> set[str] | None:
         """Fetch current labels for an issue if fresh_issue_reader is available.

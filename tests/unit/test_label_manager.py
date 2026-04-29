@@ -108,6 +108,9 @@ class TestNamedProperties:
     def test_blocked_stale_claim(self, lm: LabelManager) -> None:
         assert lm.blocked_stale_claim == "blocked:stale-claim"
 
+    def test_blocked_pr_closed(self, lm: LabelManager) -> None:
+        assert lm.blocked_pr_closed == "blocked:pr-closed"
+
     def test_needs_reconcile(self, lm: LabelManager) -> None:
         assert lm.needs_reconcile == "needs-reconcile"
 
@@ -141,6 +144,9 @@ class TestNamedPropertiesPrefixed:
 
     def test_blocked_claim_lost(self, plm: LabelManager) -> None:
         assert plm.blocked_claim_lost == "bot:blocked:claim-lost"
+
+    def test_blocked_pr_closed(self, plm: LabelManager) -> None:
+        assert plm.blocked_pr_closed == "bot:blocked:pr-closed"
 
     def test_provider_unavailable(self, plm: LabelManager) -> None:
         assert plm.provider_unavailable == "bot:blocked:provider-unavailable"
@@ -213,6 +219,7 @@ class TestBlocking:
 
     def test_blocked_colon_prefix(self, lm: LabelManager) -> None:
         assert lm.is_blocking("blocked:claim-lost") is True
+        assert lm.is_blocking("blocked:pr-closed") is True
 
     def test_non_blocking(self, lm: LabelManager) -> None:
         assert lm.is_blocking("in-progress") is False
@@ -232,6 +239,7 @@ class TestBlocking:
 
     def test_prefixed_blocked_colon(self, plm: LabelManager) -> None:
         assert plm.is_blocking("bot:blocked:claim-lost") is True
+        assert plm.is_blocking("bot:blocked:pr-closed") is True
 
     def test_is_blocking_any(self, lm: LabelManager) -> None:
         assert lm.is_blocking_any(["in-progress", "blocked-failed"]) is True

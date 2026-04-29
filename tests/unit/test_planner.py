@@ -25,6 +25,7 @@ from issue_orchestrator.control.actions import (
     LaunchSessionAction,
     ReconcileHistoryEntryAction,
     SessionType,
+    SyncLabelsAction,
 )
 from issue_orchestrator.domain.models import (
     Issue,
@@ -36,6 +37,7 @@ from issue_orchestrator.domain.models import (
     AgentConfig,
     CompletionRecord,
     CompletionOutcome,
+    DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     RequestedAction,
     ObservedCompletion,
@@ -766,6 +768,36 @@ class TestPlanAwaitingMergeReconciliations:
         assert action.reason == "PR merged; awaiting merge reconciled"
         assert action.source == "pull_request"
         assert action.issue_key == "M1-228"
+
+    def test_plans_pr_closed_drift_label_sync_action(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        drift = DiscoveredAwaitingMergeDrift(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="PR closed; issue remains open",
+            issue_key="M1-228",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_drifts=(drift,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        actions = plan.actions_of_type(ActionType.SYNC_LABELS)
+        assert len(actions) == 1
+        action = actions[0]
+        assert isinstance(action, SyncLabelsAction)
+        assert action.issue_number == 228
+        assert action.add_labels == ("blocked:pr-closed",)
+        assert action.remove_labels == ("pr-pending",)
+        assert action.issue_key == "M1-228"
+        assert action.reason == "PR closed; issue remains open"
+        assert action.expected is not None
+        assert action.expected.required_labels == frozenset({"pr-pending"})
 
 
 class TestPlanTriageIssueCreation:
@@ -2341,6 +2373,12 @@ class TestSnapshotFromState:
             status_reason="PR merged; awaiting merge reconciled",
             source="pull_request",
         )
+        discovered_awaiting_merge_drift = DiscoveredAwaitingMergeDrift(
+            issue_number=10,
+            pr_number=110,
+            pr_url="url",
+            status_reason="PR closed; issue remains open",
+        )
         discovered_rework = DiscoveredRework(issue_number=11, pr_number=111, branch_name="b", agent_type="a", rework_cycle=1)
         discovered_escalation = DiscoveredEscalation(issue_number=12, pr_number=112, rework_cycle=5)
         discovered_failure = DiscoveredFailure(issue_number=13, issue_title="F", failure_reason="failed")
@@ -2354,6 +2392,9 @@ class TestSnapshotFromState:
             discovered_reviews=[discovered_review],
             discovered_awaiting_merge_reconciliations=[
                 discovered_awaiting_merge_reconciliation
+            ],
+            discovered_awaiting_merge_drifts=[
+                discovered_awaiting_merge_drift
             ],
             discovered_reworks=[discovered_rework],
             discovered_escalations=[discovered_escalation],
@@ -2373,6 +2414,7 @@ class TestSnapshotFromState:
         assert len(snapshot.pending_triage) == 1
         assert len(snapshot.discovered_reviews) == 1
         assert len(snapshot.discovered_awaiting_merge_reconciliations) == 1
+        assert len(snapshot.discovered_awaiting_merge_drifts) == 1
         assert len(snapshot.discovered_reworks) == 1
         assert len(snapshot.discovered_escalations) == 1
         assert len(snapshot.discovered_failures) == 1

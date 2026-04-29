@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 from ..domain.models import (
     CleanupFacts,
+    DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
@@ -48,6 +49,9 @@ class OrchestratorSnapshot:
     discovered_awaiting_merge_reconciliations: tuple[
         DiscoveredAwaitingMergeReconciliation, ...
     ] = field(default_factory=tuple)
+    discovered_awaiting_merge_drifts: tuple[
+        DiscoveredAwaitingMergeDrift, ...
+    ] = field(default_factory=tuple)
     discovered_reworks: tuple[DiscoveredRework, ...] = field(default_factory=tuple)
     discovered_escalations: tuple[DiscoveredEscalation, ...] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
@@ -84,6 +88,9 @@ class OrchestratorSnapshot:
         discovered_awaiting_merge_reconciliations: Sequence[
             DiscoveredAwaitingMergeReconciliation
         ] = (),
+        discovered_awaiting_merge_drifts: Sequence[
+            DiscoveredAwaitingMergeDrift
+        ] = (),
         discovered_reworks: Sequence[DiscoveredRework] = (),
         discovered_escalations: Sequence[DiscoveredEscalation] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
@@ -102,6 +109,8 @@ class OrchestratorSnapshot:
             discovered_reviews: Reviews discovered from session completions/scans
             discovered_awaiting_merge_reconciliations: Awaiting-merge history
                 transitions discovered from scans
+            discovered_awaiting_merge_drifts: Open issues whose pr-pending label
+                no longer matches PR state
             discovered_reworks: Reworks discovered from scans
             discovered_escalations: Escalations discovered from scans
             discovered_failures: Failures discovered from session completions (for triage)
@@ -124,6 +133,9 @@ class OrchestratorSnapshot:
             discovered_reviews=tuple(discovered_reviews),
             discovered_awaiting_merge_reconciliations=tuple(
                 discovered_awaiting_merge_reconciliations
+            ),
+            discovered_awaiting_merge_drifts=tuple(
+                discovered_awaiting_merge_drifts
             ),
             discovered_reworks=tuple(discovered_reworks),
             discovered_escalations=tuple(discovered_escalations),

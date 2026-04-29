@@ -154,7 +154,11 @@ class QueueCache:
 
     def prune_refresh_timestamps(self) -> None:
         """Prune refresh timestamp map to currently tracked issue IDs."""
-        if not self._state.issue_refresh_timestamps and not self._state.issue_last_refreshed_at:
+        if (
+            not self._state.issue_refresh_timestamps
+            and not self._state.issue_last_refreshed_at
+            and not self._state.awaiting_merge_drift_scan_timestamps
+        ):
             return
         keep_numbers = {issue.number for issue in self._state.cached_scope_issues}
         keep_numbers.update(issue.number for issue in self._state.cached_queue_issues)
@@ -169,6 +173,11 @@ class QueueCache:
         self._state.issue_last_refreshed_at = {
             issue_number: refreshed_at
             for issue_number, refreshed_at in self._state.issue_last_refreshed_at.items()
+            if issue_number in keep_numbers
+        }
+        self._state.awaiting_merge_drift_scan_timestamps = {
+            issue_number: scanned_at
+            for issue_number, scanned_at in self._state.awaiting_merge_drift_scan_timestamps.items()
             if issue_number in keep_numbers
         }
 
@@ -198,6 +207,7 @@ def clear_issue_refresh(state: "OrchestratorState", issue_number: int) -> None:
     """Clear freshness metadata for an issue from both dashboard freshness maps."""
     state.issue_refresh_timestamps.pop(issue_number, None)
     state.issue_last_refreshed_at.pop(issue_number, None)
+    state.awaiting_merge_drift_scan_timestamps.pop(issue_number, None)
 
 
 def queue_shrink_confirmation_pending(state: "OrchestratorState") -> bool:

@@ -11,6 +11,7 @@ const menuUnblock = document.getElementById('menuUnblock');
 const menuResetRetry = document.getElementById('menuResetRetry');
 const menuResetRetryScratch = document.getElementById('menuResetRetryScratch');
 const menuRetry = document.getElementById('menuRetry');
+const menuCloseIssue = document.getElementById('menuCloseIssue');
 const menuHistoryDivider = document.getElementById('menuHistoryDivider');
 const menuDepsDivider = document.getElementById('menuDepsDivider');
 const menuDepsLabel = document.getElementById('menuDepsLabel');
@@ -21,9 +22,18 @@ const contextMenuEnabled = Boolean(contextMenu);
 
 // Add keyboard support to all context menu items
 if (contextMenuEnabled) {
-    [menuFocus, menuRevealWorktree, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuIssue, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry]
+    [menuFocus, menuRevealWorktree, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuIssue, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry, menuCloseIssue]
         .filter(Boolean)
         .forEach(addKeyboardSupport);
+}
+
+function parseOrchestratorLabels(rawLabels) {
+    try {
+        const parsed = JSON.parse(rawLabels || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
 }
 
 function showContextMenu(e, row) {
@@ -38,6 +48,9 @@ function showContextMenu(e, row) {
     const columnId = String(row.dataset.columnId || '').toLowerCase();
     const hasDeps = row.dataset.hasDependencies === 'true';
     const isCompactCardMenu = row.dataset.compactMenu === 'true';
+    const isPrClosedBlock = hasPrClosedBlock({
+        orchestrator_labels: parseOrchestratorLabels(row.dataset.orchestratorLabels),
+    });
     const statusLower = String(status || '').toLowerCase();
     const normalizedStatus = statusLower.replace(/_/g, '-');
     const effectiveHistoryStatus = (isCompactCardMenu && columnId) ? columnId : normalizedStatus;
@@ -126,24 +139,34 @@ function showContextMenu(e, row) {
     const resetRetryStatuses = new Set(['blocked', 'awaiting-merge']);
     const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out']);
     if (menuHistoryDivider && menuRetry && menuUnblock && menuResetRetry && menuResetRetryScratch) {
-        if (resetRetryStatuses.has(effectiveHistoryStatus) || isBlockedHistory) {
+        if (isPrClosedBlock) {
+            menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
+            menuUnblock.style.display = 'none';
+            menuResetRetry.style.display = 'none';
+            menuResetRetryScratch.style.display = 'none';
+            menuRetry.style.display = '';
+            if (menuCloseIssue) menuCloseIssue.style.display = '';
+        } else if (resetRetryStatuses.has(effectiveHistoryStatus) || isBlockedHistory) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
             menuUnblock.style.display = isBlockedHistory ? '' : 'none';
             menuResetRetry.style.display = '';
             menuResetRetryScratch.style.display = '';
             menuRetry.style.display = '';
+            if (menuCloseIssue) menuCloseIssue.style.display = 'none';
         } else if (otherRetryStatuses.has(effectiveHistoryStatus)) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
             menuUnblock.style.display = 'none';
             menuResetRetry.style.display = 'none';
             menuResetRetryScratch.style.display = 'none';
             menuRetry.style.display = '';
+            if (menuCloseIssue) menuCloseIssue.style.display = 'none';
         } else {
             menuHistoryDivider.style.display = 'none';
             menuUnblock.style.display = 'none';
             menuResetRetry.style.display = 'none';
             menuResetRetryScratch.style.display = 'none';
             menuRetry.style.display = 'none';
+            if (menuCloseIssue) menuCloseIssue.style.display = 'none';
         }
     }
 
@@ -181,6 +204,7 @@ function openCompactCardActionsMenu(event, button) {
     const action = String(button?.dataset?.rowAction || '');
     const agentType = String(button?.dataset?.agent || '');
     const hasTerminal = button?.dataset?.hasTerminal === 'true';
+    const orchestratorLabels = String(button?.dataset?.orchestratorLabels || '[]');
     const columnId = String(button?.closest('.kanban-column')?.dataset?.column || '').toLowerCase();
     if (!contextMenuEnabled) {
         showToast('Actions menu unavailable: context menu not initialized', 'error');
@@ -212,6 +236,7 @@ function openCompactCardActionsMenu(event, button) {
             action: String(action || ''),
             agent: String(agentType || ''),
             hasTerminal: hasTerminal ? 'true' : 'false',
+            orchestratorLabels,
             hasDependencies: 'false',
             dependencies: '[]',
             compactMenu: 'true',
@@ -350,6 +375,17 @@ if (contextMenuEnabled) {
             const issueNumber = Number(currentRow.dataset.issue);
             if (!Number.isNaN(issueNumber)) {
                 await unblockSingle(issueNumber, lastContextMenuPoint);
+            }
+        }
+    });
+
+    menuCloseIssue?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = Number(currentRow.dataset.issue);
+            if (!Number.isNaN(issueNumber)) {
+                await closePrClosedIssue(issueNumber, lastContextMenuPoint);
             }
         }
     });

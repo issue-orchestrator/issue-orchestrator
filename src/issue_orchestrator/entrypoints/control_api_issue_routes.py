@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..control.actions import ActionResultType, CloseIssueAction
+from ..control.claim_gate import ClaimLostError
 from ..control.queue_cache import QueueCache
+from ..control.reconciliation import ReconciliationRequired, build_expected_for_mutation
 from ..control.worktree_manager import get_worktree_path
 from ..domain.models import get_completion_path
 from ..infra.env import ENV_PREFIX
@@ -349,6 +352,74 @@ async def dismiss_issue(
 
     except Exception as exc:
         logger.exception("Error dismissing issue #%d: %s", issue_number, exc)
+        return JSONResponse({
+            "success": False,
+            "error": str(exc),
+        }, status_code=500)
+
+
+@control_issue_router.post("/api/issues/{issue_number}/close")
+async def close_issue(
+    issue_number: int,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Close an issue that is blocked because its awaiting-merge PR is gone."""
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503,
+        )
+
+    try:
+        lm = orchestrator.deps.label_manager
+        action = CloseIssueAction(
+            issue_number=issue_number,
+            reason="user closed issue from pr-closed blocked state",
+            expected=build_expected_for_mutation(
+                required={lm.blocked_pr_closed},
+            ),
+        )
+        result = orchestrator.deps.action_applier.apply(action)
+        if result.result_type != ActionResultType.SUCCESS:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": result.error or "Issue close action failed",
+                },
+                status_code=500,
+            )
+
+        def _prune_state() -> None:
+            QueueCache(orchestrator.config, orchestrator.state).remove_issue(issue_number)
+
+        deps.with_state_lock(_prune_state)
+        logger.info("[close] Issue #%d closed from pr-closed blocked state", issue_number)
+        return JSONResponse({
+            "success": True,
+            "message": f"Issue #{issue_number} closed",
+            "issue_number": issue_number,
+        })
+    except ReconciliationRequired as exc:
+        logger.info("[close] Issue #%d close requires reconciliation: %s", issue_number, exc)
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Issue state changed; refresh before closing",
+            },
+            status_code=409,
+        )
+    except ClaimLostError as exc:
+        logger.info("[close] Issue #%d claim lost before close: %s", issue_number, exc)
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Issue claim changed; refresh before closing",
+            },
+            status_code=409,
+        )
+    except Exception as exc:
+        logger.exception("Error closing issue #%d: %s", issue_number, exc)
         return JSONResponse({
             "success": False,
             "error": str(exc),

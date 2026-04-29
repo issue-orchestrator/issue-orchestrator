@@ -100,6 +100,7 @@ class LabelManager:
             LabelEntry("io_claimed", "io:claimed", LabelCategory.CLAIM, "Claimed by orchestrator"),
             LabelEntry("blocked_claim_lost", "blocked:claim-lost", LabelCategory.BLOCKING, "Claim lost"),
             LabelEntry("blocked_stale_claim", "blocked:stale-claim", LabelCategory.BLOCKING, "Stale claim"),
+            LabelEntry("blocked_pr_closed", "blocked:pr-closed", LabelCategory.BLOCKING, "PR closed or missing"),
             LabelEntry("needs_reconcile", "needs-reconcile", LabelCategory.CLAIM, "Needs reconciliation"),
             LabelEntry("provider_unavailable", self._provider_unavailable_base, LabelCategory.BLOCKING, "Provider unavailable"),
             LabelEntry("run_audit_requested", "needs-run-audit", LabelCategory.INFORMATIONAL, "Run audit requested"),
@@ -189,6 +190,10 @@ class LabelManager:
     @property
     def blocked_stale_claim(self) -> str:
         return self._resolved["blocked_stale_claim"]
+
+    @property
+    def blocked_pr_closed(self) -> str:
+        return self._resolved["blocked_pr_closed"]
 
     @property
     def needs_reconcile(self) -> str:

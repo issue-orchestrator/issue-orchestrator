@@ -168,11 +168,17 @@ class GitHubWorkflow:
             label_manager=self.label_manager,
         ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
+        state.discovered_awaiting_merge_drifts.extend(result.drifts)
         state.discovered_reworks.extend(result.reworks)
         if result.discovered:
             logger.info(
                 "Discovered %d awaiting-merge history reconciliations",
                 result.discovered,
+            )
+        if result.drift_discovered:
+            logger.info(
+                "Discovered %d awaiting-merge issue/PR drift(s)",
+                result.drift_discovered,
             )
         if result.rework_discovered:
             logger.info(
