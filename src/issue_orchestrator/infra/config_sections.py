@@ -152,7 +152,6 @@ def parse_claims_config(data: dict) -> ClaimsConfig:
         convergence_timeout_seconds=data.get("convergence_timeout_seconds", 5.0),
         convergence_poll_min_ms=data.get("convergence_poll_min_ms", 250),
         convergence_poll_max_ms=data.get("convergence_poll_max_ms", 500),
-        convergence_required_wins=data.get("convergence_required_wins", 2),
     )
 
 

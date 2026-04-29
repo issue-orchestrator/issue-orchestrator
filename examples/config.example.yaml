@@ -359,7 +359,6 @@ claims:
   convergence_timeout_seconds: 5.0
   convergence_poll_min_ms: 250
   convergence_poll_max_ms: 500
-  convergence_required_wins: 2
 
 state:
   # file: ".issue-orchestrator/state.json"

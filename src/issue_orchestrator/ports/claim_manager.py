@@ -25,8 +25,9 @@ class ClaimManager(Protocol):
     """Protocol for managing issue claims.
 
     The ClaimManager coordinates which orchestrator instance is allowed to
-    work on a particular issue. Claims are stored as comments on GitHub issues
-    and resolved through a convergence protocol.
+    work on a particular issue. Implementations hide the backing coordination
+    primitive, such as GitHub refs or issue comments, behind this behavior-level
+    port.
 
     Implementations must be thread-safe as the orchestrator may call these
     methods from multiple contexts (tick loop, completion handler, etc.).
@@ -35,8 +36,10 @@ class ClaimManager(Protocol):
     def attempt_claim(self, issue_number: int) -> ClaimResult:
         """Attempt to claim an issue.
 
-        This creates a claim comment on the issue and adds the claim label.
-        Does NOT run convergence - caller must call run_convergence() after.
+        This attempts to acquire the backing claim record and adds the claim
+        label when acquisition succeeds. Some implementations may acquire
+        atomically; callers still invoke run_convergence() as the confirmation
+        step.
 
         Args:
             issue_number: The GitHub issue number to claim.
@@ -50,9 +53,11 @@ class ClaimManager(Protocol):
     def run_convergence(self, issue_number: int, lease_id: str) -> bool:
         """Run the convergence protocol to confirm claim ownership.
 
-        Polls the issue comments to verify we are the winner. Requires
-        seeing ourselves as winner for N consecutive polls (configured via
-        LeaseConfig.convergence_required_wins).
+        Confirms that the given lease is the current winner. Atomic
+        compare-and-swap implementations should treat this as post-write
+        confirmation with bounded read retries for transient backing-store
+        failures, not as another race-arbitration step. Legacy comment-backed
+        implementations may require repeated winner reads before confirming.
 
         Args:
             issue_number: The GitHub issue number.
@@ -67,8 +72,8 @@ class ClaimManager(Protocol):
     def renew_claim(self, issue_number: int, lease_id: str) -> bool:
         """Renew an existing claim's lease.
 
-        Updates the claim comment with a new expiry time. Should be called
-        periodically for long-running sessions.
+        Updates the backing claim record with a new expiry time. Should be
+        called periodically for long-running sessions.
 
         Args:
             issue_number: The GitHub issue number.
@@ -87,7 +92,7 @@ class ClaimManager(Protocol):
     def release_claim(self, issue_number: int, lease_id: str) -> None:
         """Release a claim on an issue.
 
-        Removes the claim label and optionally deletes/edits the claim comment.
+        Removes the claim label and releases the backing claim record.
         Called when a session completes or is terminated.
 
         Args:
@@ -117,7 +122,7 @@ class ClaimManager(Protocol):
     def get_current_claim(self, issue_number: int) -> Claim | None:
         """Get the current winning claim for an issue.
 
-        Reads all claim comments and determines the current winner.
+        Reads the backing coordination store and determines the current winner.
 
         Args:
             issue_number: The GitHub issue number.

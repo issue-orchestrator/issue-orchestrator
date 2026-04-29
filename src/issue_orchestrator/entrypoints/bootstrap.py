@@ -61,7 +61,7 @@ from ..control.action_applier import ActionApplier
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
 from ..adapters.github import GitHubIssueResolver, GitHubCache
-from ..adapters.github.claim_adapter import GitHubClaimAdapter
+from ..adapters.github.ref_claim_adapter import GitHubRefClaimAdapter
 from ..execution.verification_service import DefaultVerificationService
 from ..ports.verification import VerificationBudget
 from ..execution.worktree_adapter import GitWorktreeManager
@@ -198,7 +198,7 @@ def _create_claim_components(
     github: GitHubAdapter | None,
     events: EventSink,
     io_claimed_label: str = "io:claimed",
-) -> tuple[ClaimGate, LeaseRenewer, LeaseConfig, NullClaimManager | GitHubClaimAdapter]:
+) -> tuple[ClaimGate, LeaseRenewer, LeaseConfig, ClaimManager]:
     """Create claim management components."""
     if github and config.claims.enabled:
         lease_config = LeaseConfig(
@@ -207,10 +207,9 @@ def _create_claim_components(
             convergence_timeout_seconds=config.claims.convergence_timeout_seconds,
             convergence_poll_min_ms=config.claims.convergence_poll_min_ms,
             convergence_poll_max_ms=config.claims.convergence_poll_max_ms,
-            convergence_required_wins=config.claims.convergence_required_wins,
         )
         claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
-        claim_manager = GitHubClaimAdapter(
+        claim_manager = GitHubRefClaimAdapter(
             client=github.http_client,
             claimant_id=claimant_id,
             config=lease_config,

@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from .inflight_tracker import trigger_refresh
+from .inflight_tracker import control_api_headers, trigger_refresh
 
 if TYPE_CHECKING:
     from issue_orchestrator.infra.config import Config
@@ -32,12 +33,12 @@ E2E_LOG_DIR = Path("/tmp/e2e-orchestrator-logs")
 E2E_LOG_DIR.mkdir(exist_ok=True)
 
 
-def _keep_artifacts() -> bool:
+def keep_artifacts() -> bool:
     """Return True if e2e cleanup should be skipped."""
     return os.environ.get("E2E_KEEP_ARTIFACTS") == "1"
 
 
-def _keep_remote_artifacts() -> bool:
+def keep_remote_artifacts() -> bool:
     """Return True if remote cleanup (PRs/branches/issues) should be skipped."""
     return os.environ.get("E2E_KEEP_REMOTE_ARTIFACTS") == "1"
 
@@ -45,9 +46,16 @@ def _keep_remote_artifacts() -> bool:
 class OrchestratorProcess:
     """Wrapper for orchestrator subprocess with IPC support."""
 
-    def __init__(self, config: "Config", project_root: Path):
+    def __init__(
+        self,
+        config: "Config",
+        project_root: Path,
+        *,
+        source_root: Path | None = None,
+    ):
         self.config = config
         self.project_root = project_root
+        self.source_root = source_root or project_root
         self.process: subprocess.Popen | None = None
         self.ipc_socket_path: Path | None = None
         self._output_lines: list[str] = []
@@ -56,14 +64,29 @@ class OrchestratorProcess:
         self._log_file: Path | None = None
         self._orchestrator_log_file: Path | None = None
         self._log_handle: "open | None" = None
+        self._config_dir: Path | None = None
         self._config_path: Path | None = None
         self._last_log_time: float | None = None
 
     def _write_e2e_config(self) -> Path:
         """Write an ephemeral config file so the CLI uses the e2e config."""
-        config_dir = Path("/tmp/e2e-orchestrator-configs")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / f"issue-orchestrator.e2e.{os.getpid()}.yaml"
+        if self._config_dir is None or not self._config_dir.exists():
+            self._config_dir = Path(
+                tempfile.mkdtemp(prefix=f"e2e-orchestrator-config-{os.getpid()}-")
+            )
+        config_dir = self._config_dir
+        instance_hint = (
+            self.config.claims.claimant_id
+            or str(self.config.control_api_port)
+            or str(id(self))
+        )
+        safe_hint = "".join(
+            ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in instance_hint
+        )
+        config_path = (
+            config_dir
+            / f"issue-orchestrator.e2e.{os.getpid()}.{safe_hint}.{id(self)}.yaml"
+        )
         data = {
             "repo": {
                 "name": self.config.repo,
@@ -237,8 +260,8 @@ class OrchestratorProcess:
         print(f"    Orchestrator file: {orchestrator_log_file}", flush=True)
         print(f"    Worktrees:        {worktree_dir}", flush=True)
         print(f"    Claude logs:      {claude_logs}", flush=True)
-        print(f"    Keep artifacts:   {_keep_artifacts()}", flush=True)
-        print(f"    Keep remote:      {_keep_remote_artifacts()}", flush=True)
+        print(f"    Keep artifacts:   {keep_artifacts()}", flush=True)
+        print(f"    Keep remote:      {keep_remote_artifacts()}", flush=True)
         if os.environ.get("E2E_CLAUDE_ARGS"):
             print(f"    E2E_CLAUDE_ARGS:  {os.environ.get('E2E_CLAUDE_ARGS')}", flush=True)
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
@@ -250,8 +273,8 @@ class OrchestratorProcess:
         self._log_handle.write(f"Orchestrator file: {orchestrator_log_file}\n")
         self._log_handle.write(f"Worktrees: {worktree_dir}\n")
         self._log_handle.write(f"Claude logs: {claude_logs}\n")
-        self._log_handle.write(f"Keep artifacts: {_keep_artifacts()}\n")
-        self._log_handle.write(f"Keep remote: {_keep_remote_artifacts()}\n")
+        self._log_handle.write(f"Keep artifacts: {keep_artifacts()}\n")
+        self._log_handle.write(f"Keep remote: {keep_remote_artifacts()}\n")
         self._log_handle.write(f"E2E_KEEP_ARTIFACTS: {os.environ.get('E2E_KEEP_ARTIFACTS', '')}\n")
         self._log_handle.write(f"E2E_KEEP_REMOTE_ARTIFACTS: {os.environ.get('E2E_KEEP_REMOTE_ARTIFACTS', '')}\n")
         self._log_handle.write(f"E2E_CONTROL_API_PORT: {os.environ.get('E2E_CONTROL_API_PORT', '')}\n")
@@ -262,8 +285,10 @@ class OrchestratorProcess:
         self._log_handle.write("=" * 60 + "\n\n")
         self._log_handle.flush()
 
-        # Prefer project .venv (has e2e deps like fastapi); fall back to pytest venv
-        preferred_bin = self.project_root / ".venv" / "bin" / "issue-orchestrator"
+        # Prefer source .venv (has e2e deps like fastapi); fall back to pytest venv.
+        # Some tests run the engine against isolated local repo roots while
+        # still executing the issue-orchestrator source under test.
+        preferred_bin = self.source_root / ".venv" / "bin" / "issue-orchestrator"
         venv_bin = preferred_bin if preferred_bin.exists() else Path(sys.executable).parent / "issue-orchestrator"
 
         # UI mode is always web (subprocess backend)
@@ -304,7 +329,7 @@ class OrchestratorProcess:
         # Skip doctor checks in E2E — they create test worktrees using a fixed
         # branch name which conflicts when multiple orchestrators share a repo.
         env["ISSUE_ORCHESTRATOR_SKIP_DOCTOR"] = "1"
-        env["PYTHONPATH"] = f"{self.project_root / 'src'}:{env.get('PYTHONPATH', '')}"
+        env["PYTHONPATH"] = f"{self.source_root / 'src'}:{env.get('PYTHONPATH', '')}"
         env["ORCHESTRATOR_NO_BROWSER"] = "1"
         if os.environ.get("E2E_CLAUDE_ARGS"):
             env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
@@ -338,9 +363,29 @@ class OrchestratorProcess:
         self._log_thread = threading.Thread(target=self._log_reader, daemon=True)
         self._log_thread.start()
 
-        # Give it time to start
-        time.sleep(3)
+        self.wait_until_ready()
         print(f"  [E2E] Orchestrator started (pid={self.process.pid})", flush=True)
+
+    def wait_until_ready(self, timeout_seconds: float = 30.0) -> None:
+        """Wait until the control API is serving requests."""
+        if self.process is None:
+            raise RuntimeError("Orchestrator process was not started")
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise RuntimeError(
+                    f"Orchestrator exited before readiness check passed "
+                    f"(returncode={self.process.returncode})"
+                )
+            if self._check_api_running():
+                return
+            time.sleep(0.25)
+
+        raise TimeoutError(
+            f"Orchestrator control API did not become ready on port "
+            f"{self.config.control_api_port} within {timeout_seconds:.1f}s"
+        )
 
     def stop(self) -> tuple[str, str]:
         """Stop the orchestrator and return stdout/stderr."""
@@ -407,10 +452,16 @@ class OrchestratorProcess:
                 self._config_path.unlink()
             except OSError:
                 pass
+        if self._config_dir and self._config_dir.exists():
+            try:
+                self._config_dir.rmdir()
+                self._config_dir = None
+            except OSError:
+                pass
 
     def _cleanup_log_tailers(self) -> None:
         """Stop lingering session.log tail processes from tmux pipe-pane."""
-        if _keep_artifacts():
+        if keep_artifacts():
             return
         try:
             result = subprocess.run(
@@ -452,7 +503,11 @@ class OrchestratorProcess:
             # No API port configured, assume running if we got this far
             return True
         try:
-            resp = httpx.get(f"http://127.0.0.1:{api_port}/api/status", timeout=2)
+            resp = httpx.get(
+                f"http://127.0.0.1:{api_port}/api/status",
+                timeout=2,
+                headers=control_api_headers(),
+            )
             return resp.status_code == 200
         except Exception:
             return False

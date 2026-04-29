@@ -5,35 +5,137 @@ multiple orchestrator instances working on the same GitHub repository.
 
 Tests require:
 - Two orchestrator processes with different ports and worktree bases
+- Two isolated local repo roots/state directories
 - Both pointing to the same repo with claims enabled
 - Racing for the same issue to verify only one wins
+
+This is an automated distributed-claim test harness, not a supported
+human-facing workflow for running two local orchestrators on one repo.
 """
 
 import asyncio
 import os
+import shutil
+import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator
 
+import httpx
 import pytest
 
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.testing.support.test_data import create_issue, cleanup_issues_by_label
+from issue_orchestrator.testing.support.test_data import (
+    create_issue,
+    cleanup_issues_by_label,
+)
 
 from .fixtures import (
     find_free_port,
     OrchestratorProcess,
     trigger_refresh,
+    control_api_headers,
     env_token_name,
     get_issue_labels,
+    get_test_repo,
+    keep_artifacts,
 )
 
 
 CLAIM_E2E_LABEL = "io-e2e-claim-test"
 
 
+@dataclass(frozen=True)
+class ControlApiSessionEntry:
+    """Active session reported by one orchestrator control API."""
+
+    claimant_id: str
+    session_name: str
+    issue_number: int
+    api_port: int
+
+    def debug_summary(self) -> dict[str, str | int]:
+        return {
+            "claimant_id": self.claimant_id,
+            "session_name": self.session_name,
+            "issue_number": self.issue_number,
+            "api_port": self.api_port,
+        }
+
+
+def _clone_repo_for_claim_orchestrator(source_root: Path, target_root: Path) -> Path:
+    """Create an isolated local repo root for one claim-test orchestrator.
+
+    The clone gives each process its own `.issue-orchestrator/state` directory.
+    The process still runs the source tree under test via OrchestratorProcess's
+    source_root so uncommitted test harness changes do not need to be copied.
+    """
+    if target_root.exists():
+        shutil.rmtree(target_root, ignore_errors=True)
+    target_root.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--no-hardlinks",
+            str(source_root),
+            str(target_root),
+        ],
+        check=True,
+        cwd=source_root,
+    )
+    return target_root
+
+
+def _active_control_api_sessions(
+    processes: tuple[OrchestratorProcess, ...],
+    issue_number: int,
+) -> list[ControlApiSessionEntry]:
+    """Read matching active sessions from each orchestrator's control API."""
+    entries: list[ControlApiSessionEntry] = []
+    for proc in processes:
+        if not proc.is_running():
+            continue
+        api_port = proc.config.control_api_port
+        response = httpx.get(
+            f"http://127.0.0.1:{api_port}/api/status",
+            timeout=5,
+            headers=control_api_headers(),
+        )
+        response.raise_for_status()
+        claimant_id = proc.config.claims.claimant_id or str(proc.project_root)
+        for session in response.json().get("sessions", []):
+            if session.get("issue_number") != issue_number:
+                continue
+            entries.append(
+                ControlApiSessionEntry(
+                    claimant_id=claimant_id,
+                    session_name=str(session.get("session_name") or ""),
+                    issue_number=int(session["issue_number"]),
+                    api_port=api_port,
+                )
+            )
+    return entries
+
+
+def _assert_at_most_one_active_issue_session(
+    processes: tuple[OrchestratorProcess, ...],
+    issue_number: int,
+) -> list[ControlApiSessionEntry]:
+    """Assert duplicate sessions are absent across independent orchestrator APIs."""
+    active_entries = _active_control_api_sessions(processes, issue_number)
+    assert len(active_entries) <= 1, (
+        f"Expected at most 1 active issue session across isolated orchestrator APIs, "
+        f"found {len(active_entries)}: {[entry.debug_summary() for entry in active_entries]}"
+    )
+    return active_entries
+
+
 def create_claim_enabled_config(
-    project_root: Path,
+    repo_root: Path,
+    source_root: Path,
     worktree_base: Path,
     repo_name: str,
     claimant_id: str,
@@ -42,7 +144,7 @@ def create_claim_enabled_config(
     """Create a config with claims enabled for E2E testing."""
     config = Config()
     config.repo = repo_name
-    config.repo_root = project_root
+    config.repo_root = repo_root
     config.worktree_base = worktree_base
     config.github_token_env = env_token_name()
     config.control_api_port = find_free_port()
@@ -61,9 +163,10 @@ def create_claim_enabled_config(
 
     # Use test agent
     from issue_orchestrator.infra.config import AgentConfig
+
     config.agents = {
         "agent:e2e-test": AgentConfig(
-            prompt_path=project_root / "tests/e2e/fixtures/prompts/simple_task.md",
+            prompt_path=source_root / "tests/e2e/fixtures/prompts/simple_task.md",
             model="sonnet",
             timeout_minutes=5,
             command="claude",
@@ -96,21 +199,31 @@ def e2e_project_root() -> Path:
 @pytest.fixture
 def repo_name() -> str:
     """Repository name for E2E tests."""
-    return os.environ.get("E2E_REPO", "BruceBGordon/issue-orchestrator")
+    return os.environ.get("E2E_REPO", get_test_repo())
 
 
 @pytest.fixture
 def dual_orchestrator_configs(
     e2e_project_root: Path,
+    tmp_path: Path,
     repo_name: str,
 ) -> tuple[Config, Config]:
-    """Create two configs with isolated ports and worktree bases."""
-    worktree_base_a = Path("/tmp/e2e-claim-worktrees/orchestrator-a")
-    worktree_base_b = Path("/tmp/e2e-claim-worktrees/orchestrator-b")
+    """Create two configs with isolated repo roots, ports, and worktree bases."""
+    repo_root_a = _clone_repo_for_claim_orchestrator(
+        e2e_project_root,
+        tmp_path / "repos" / "orchestrator-a",
+    )
+    repo_root_b = _clone_repo_for_claim_orchestrator(
+        e2e_project_root,
+        tmp_path / "repos" / "orchestrator-b",
+    )
+    worktree_base_a = tmp_path / "worktrees" / "orchestrator-a"
+    worktree_base_b = tmp_path / "worktrees" / "orchestrator-b"
     worktree_base_a.mkdir(parents=True, exist_ok=True)
     worktree_base_b.mkdir(parents=True, exist_ok=True)
 
     config_a = create_claim_enabled_config(
+        repo_root_a,
         e2e_project_root,
         worktree_base_a,
         repo_name,
@@ -118,6 +231,7 @@ def dual_orchestrator_configs(
     )
 
     config_b = create_claim_enabled_config(
+        repo_root_b,
         e2e_project_root,
         worktree_base_b,
         repo_name,
@@ -134,29 +248,25 @@ def dual_orchestrators(
     claim_test_label: str,
     claim_test_issue: int,  # Must resolve before orchestrators start (cleans stale issues)
 ) -> Generator[tuple[OrchestratorProcess, OrchestratorProcess], None, None]:
-    """Start two orchestrator instances for claim testing."""
-    import shutil
-    from pathlib import Path
-
+    """Start two claim-test orchestrators with independent local state."""
     config_a, config_b = dual_orchestrator_configs
 
-    # Clean up the shared state directory to avoid session conflicts from previous runs
-    # Both orchestrators share the same repo_root, so they would share the session registry
-    # We need to clear this to avoid "session already running" errors from stale entries
-    state_dir = e2e_project_root / ".issue-orchestrator" / "state"
-    if state_dir.exists():
-        shutil.rmtree(state_dir, ignore_errors=True)
-    state_dir.mkdir(parents=True, exist_ok=True)
+    assert config_a.repo_root != config_b.repo_root
+    assert config_a.worktree_base != config_b.worktree_base
 
-    proc_a = OrchestratorProcess(config_a, e2e_project_root)
-    proc_b = OrchestratorProcess(config_b, e2e_project_root)
+    proc_a = OrchestratorProcess(
+        config_a, config_a.repo_root, source_root=e2e_project_root
+    )
+    proc_b = OrchestratorProcess(
+        config_b, config_b.repo_root, source_root=e2e_project_root
+    )
 
     # Start both orchestrators
     proc_a.start(max_issues=5, extra_args=["--label", claim_test_label])
     proc_b.start(max_issues=5, extra_args=["--label", claim_test_label])
 
-    # Wait for both to be ready
-    time.sleep(5)
+    proc_a.wait_until_ready()
+    proc_b.wait_until_ready()
 
     yield proc_a, proc_b
 
@@ -164,9 +274,15 @@ def dual_orchestrators(
     proc_a.stop()
     proc_b.stop()
 
+    if not keep_artifacts():
+        shutil.rmtree(config_a.repo_root, ignore_errors=True)
+        shutil.rmtree(config_b.repo_root, ignore_errors=True)
+
 
 @pytest.fixture
-def claim_test_issue(repo_name: str, claim_test_label: str) -> Generator[int, None, None]:
+def claim_test_issue(
+    repo_name: str, claim_test_label: str
+) -> Generator[int, None, None]:
     """Create a test issue for claim coordination tests."""
     # Clean up any existing test issues
     cleanup_issues_by_label(repo_name, claim_test_label)
@@ -194,7 +310,9 @@ class TestClaimCoordination:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(
+        test_gh_activity_limit=200, system_gh_activity_limit=100
+    )
     async def test_only_one_orchestrator_claims_issue(
         self,
         dual_orchestrators: tuple[OrchestratorProcess, OrchestratorProcess],
@@ -204,11 +322,9 @@ class TestClaimCoordination:
     ):
         """Two orchestrators racing for same issue - only one should win.
 
-        The claim convergence protocol is probabilistic: both orchestrators may
-        acquire claims if their convergence windows don't overlap.  The session
-        registry serves as the definitive lock — only one session with a given
-        name can be created.  We verify that exactly one session is running by
-        checking the shared session registry.
+        Each orchestrator has its own local repo root and state directory.
+        This test aggregates each process's public control API session list so
+        the assertion matches the multi-machine claim contract.
         """
         proc_a, proc_b = dual_orchestrators
         config_a, config_b = dual_orchestrator_configs
@@ -221,10 +337,15 @@ class TestClaimCoordination:
         claim_labels = {"io:claimed", "in-progress", "blocked:claim-lost"}
         claim_deadline = time.time() + 60
         labels: list[str] = []
+        active_entries: list[ControlApiSessionEntry] = []
         while time.time() < claim_deadline:
             await asyncio.sleep(5)
             labels = get_issue_labels(repo_name, claim_test_issue)
-            if claim_labels & set(labels):
+            active_entries = _active_control_api_sessions(
+                (proc_a, proc_b),
+                claim_test_issue,
+            )
+            if claim_labels & set(labels) or active_entries:
                 break
 
         # Both orchestrators should still be running (no crashes)
@@ -232,40 +353,37 @@ class TestClaimCoordination:
         assert proc_b.is_running(), "Orchestrator B should be running"
 
         found = claim_labels & set(labels)
-        assert found, (
+        assert found or active_entries, (
             f"Issue #{claim_test_issue} should have at least one claim/session label "
-            f"({claim_labels}), got {labels}"
+            f"or active control API session ({claim_labels}), got labels={labels}, "
+            f"active_entries={[entry.debug_summary() for entry in active_entries]}"
         )
 
-        # The definitive check: at most one session is registered in the
-        # shared session registry.  This is the real coordination mechanism.
-        import sqlite3
-        registry_path = Path(proc_a.project_root) / ".issue-orchestrator" / "state" / "session_registry.sqlite"
-        session_name = f"issue-{claim_test_issue}"
-        with sqlite3.connect(str(registry_path)) as conn:
-            rows = conn.execute(
-                "SELECT session_name, pid FROM sessions WHERE session_name = ?",
-                (session_name,),
-            ).fetchall()
-        assert len(rows) <= 1, (
-            f"Expected at most 1 session registry entry for {session_name}, "
-            f"found {len(rows)}: {rows}"
+        active_entries = _assert_at_most_one_active_issue_session(
+            (proc_a, proc_b),
+            claim_test_issue,
         )
 
-        print(f"\n[CLAIM E2E] Test passed: claim coordination worked for issue #{claim_test_issue}")
+        print(
+            f"\n[CLAIM E2E] Test passed: claim coordination worked for issue #{claim_test_issue}"
+        )
         print(f"  Labels: {labels}")
-        print(f"  Registry entries: {len(rows)}")
+        print(
+            f"  Active session entries: {[entry.debug_summary() for entry in active_entries]}"
+        )
 
 
 @pytest.mark.e2e
 @pytest.mark.live
 class TestClaimTakeover:
-    """Tests for claim takeover when orchestrator stops."""
+    """Tests for stale claim handling when an orchestrator stops."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(180)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=150)
-    async def test_second_orchestrator_claims_after_first_crashes(
+    @pytest.mark.gh_activity_limit(
+        test_gh_activity_limit=300, system_gh_activity_limit=150
+    )
+    async def test_second_orchestrator_detects_stale_claim_after_first_crashes(
         self,
         dual_orchestrator_configs: tuple[Config, Config],
         e2e_project_root: Path,
@@ -273,19 +391,13 @@ class TestClaimTakeover:
         claim_test_label: str,
         repo_name: str,
     ):
-        """When first orchestrator crashes, second should detect stale claim."""
-        import shutil
-
+        """When first orchestrator crashes, second should detect the stale claim."""
         config_a, config_b = dual_orchestrator_configs
 
-        # Clean up the shared state directory to avoid stale session registry entries
-        state_dir = e2e_project_root / ".issue-orchestrator" / "state"
-        if state_dir.exists():
-            shutil.rmtree(state_dir, ignore_errors=True)
-        state_dir.mkdir(parents=True, exist_ok=True)
-
         # Start only orchestrator A
-        proc_a = OrchestratorProcess(config_a, e2e_project_root)
+        proc_a = OrchestratorProcess(
+            config_a, config_a.repo_root, source_root=e2e_project_root
+        )
         proc_a.start(max_issues=5, extra_args=["--label", claim_test_label])
 
         # Poll until A claims the issue — startup scan + claim convergence + session
@@ -311,30 +423,45 @@ class TestClaimTakeover:
         print("\n[CLAIM E2E] Orchestrator A crashed (killed)")
 
         # Start B
-        proc_b = OrchestratorProcess(config_b, e2e_project_root)
+        proc_b = OrchestratorProcess(
+            config_b, config_b.repo_root, source_root=e2e_project_root
+        )
         proc_b.start(max_issues=5, extra_args=["--label", claim_test_label])
         trigger_refresh(port=config_b.control_api_port)
 
-        # Poll for B to detect stale claim after lease expiry.
-        # With 30s lease, B should detect stale claim within ~30-60s.
-        takeover_deadline = time.time() + 90
+        # Wait for A's lease to expire, then explicitly refresh B. The old
+        # io:claimed label is not evidence of B doing anything; under the
+        # current policy B must mark the stale claim rather than start work.
+        await asyncio.sleep(config_b.claims.lease_seconds + 2)
+        trigger_refresh(port=config_b.control_api_port)
+
+        takeover_deadline = time.time() + 60
         labels = []
+        b_active_entries: list[ControlApiSessionEntry] = []
         while time.time() < takeover_deadline:
             await asyncio.sleep(5)
             labels = get_issue_labels(repo_name, claim_test_issue)
-            if "io:claimed" in labels or "blocked:stale-claim" in labels:
+            b_active_entries = _active_control_api_sessions((proc_b,), claim_test_issue)
+            if "blocked:stale-claim" in labels:
                 break
 
-        # Should have either:
-        # - io:claimed (B took over)
-        # - blocked:stale-claim (stale claim detected)
-        has_claim_activity = "io:claimed" in labels or "blocked:stale-claim" in labels
-        assert has_claim_activity, f"Expected claim activity after crash, got labels: {labels}"
+        assert "blocked:stale-claim" in labels, (
+            f"Expected B to mark stale claim after crash; labels={labels}, "
+            f"b_active_entries={[entry.debug_summary() for entry in b_active_entries]}"
+        )
+        assert not b_active_entries, (
+            "Current stale-claim policy should block rather than start a B session; "
+            f"b_active_entries={[entry.debug_summary() for entry in b_active_entries]}"
+        )
+        _assert_at_most_one_active_issue_session((proc_a, proc_b), claim_test_issue)
 
-        print(f"\n[CLAIM E2E] Test passed: claim activity detected after crash")
+        print("\n[CLAIM E2E] Test passed: stale claim handled after crash")
 
         # Cleanup
         proc_b.stop()
+        if not keep_artifacts():
+            shutil.rmtree(config_a.repo_root, ignore_errors=True)
+            shutil.rmtree(config_b.repo_root, ignore_errors=True)
 
 
 @pytest.mark.e2e
@@ -344,14 +471,15 @@ class TestNoDuplicateSessions:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(
+        test_gh_activity_limit=200, system_gh_activity_limit=100
+    )
     async def test_claim_prevents_duplicate_sessions(
         self,
         dual_orchestrators: tuple[OrchestratorProcess, OrchestratorProcess],
         dual_orchestrator_configs: tuple[Config, Config],
         claim_test_issue: int,
         repo_name: str,
-        e2e_project_root: Path,
     ):
         """Claim system prevents two sessions from starting on same issue."""
         proc_a, proc_b = dual_orchestrators
@@ -362,36 +490,32 @@ class TestNoDuplicateSessions:
         trigger_refresh(port=config_b.control_api_port)
 
         # Poll until at least one orchestrator processes the issue (label change
-        # or session registry entry), then verify no duplicates.
-        import sqlite3
-
-        registry_path = e2e_project_root / ".issue-orchestrator" / "state" / "session_registry.sqlite"
-        session_name = f"issue-{claim_test_issue}"
+        # or per-process control API session entry), then verify no duplicates.
         claim_labels = {"io:claimed", "in-progress", "blocked:claim-lost"}
         poll_deadline = time.time() + 60
-        rows: list[tuple[str, int]] = []
+        labels: list[str] = []
+        active_entries: list[ControlApiSessionEntry] = []
         while time.time() < poll_deadline:
             await asyncio.sleep(5)
             labels = get_issue_labels(repo_name, claim_test_issue)
-            if claim_labels & set(labels):
+            active_entries = _active_control_api_sessions(
+                (proc_a, proc_b), claim_test_issue
+            )
+            if claim_labels & set(labels) or active_entries:
                 break
 
-        # Use proc_a, proc_b for potential debugging
-        _ = proc_a, proc_b
-
-        # Verify at most one session is registered in the shared registry.
-        # Both orchestrators may create worktrees (the claim protocol is
-        # probabilistic), but the session registry is the definitive lock —
-        # only one session can be registered with a given name.
-        with sqlite3.connect(str(registry_path)) as conn:
-            rows = conn.execute(
-                "SELECT session_name, pid FROM sessions WHERE session_name = ?",
-                (session_name,),
-            ).fetchall()
-        assert len(rows) <= 1, (
-            f"Expected at most 1 session registry entry for {session_name}, "
-            f"found {len(rows)}: {rows}"
+        assert claim_labels & set(labels) or active_entries, (
+            f"Issue #{claim_test_issue} should have claim/session activity; "
+            f"labels={labels}, active_entries={[entry.debug_summary() for entry in active_entries]}"
+        )
+        active_entries = _assert_at_most_one_active_issue_session(
+            (proc_a, proc_b),
+            claim_test_issue,
         )
 
-        print(f"\n[CLAIM E2E] Test passed: no duplicate sessions for issue #{claim_test_issue}")
-        print(f"  Registry entries: {len(rows)}")
+        print(
+            f"\n[CLAIM E2E] Test passed: no duplicate sessions for issue #{claim_test_issue}"
+        )
+        print(
+            f"  Active session entries: {[entry.debug_summary() for entry in active_entries]}"
+        )

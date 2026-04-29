@@ -1,7 +1,8 @@
-"""Parser for claim YAML blocks in GitHub issue comments.
+"""Parser for claim YAML blocks in GitHub-backed claim records.
 
 This module handles parsing and formatting of claim metadata stored in
-issue comments for multi-orchestrator coordination.
+GitHub claim comments or Git ref commit messages for multi-orchestrator
+coordination.
 
 Claim format:
 ```io-claim
@@ -24,7 +25,7 @@ from ...domain.claim import Claim
 
 logger = logging.getLogger(__name__)
 
-# Regex to extract io-claim fenced blocks from comment body
+# Regex to extract io-claim fenced blocks from claim record text
 # Matches ```io-claim ... ``` blocks (case-insensitive, multiline)
 CLAIM_BLOCK_PATTERN = re.compile(
     r"```io-claim\s*\n(.*?)\n```",
@@ -41,13 +42,13 @@ DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
 def parse_claim_comment(body: str, issue_number: int = 0) -> Claim | None:
-    """Parse a claim from a comment body.
+    """Parse a claim from text containing a claim block.
 
     Extracts the io-claim YAML block and parses it into a Claim object.
     If multiple claim blocks exist, uses the last one (most recent edit).
 
     Args:
-        body: The full comment body text.
+        body: The full claim record text.
         issue_number: The issue number (for the Claim object).
 
     Returns:
