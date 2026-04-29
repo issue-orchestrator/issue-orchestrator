@@ -158,6 +158,22 @@ class CompletionReviewExchange:
     ) -> bool:
         return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
 
+    def is_review_exchange_running(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+    ) -> bool:
+        """Report whether a background review-exchange job is in flight.
+
+        The reroute budget on the consumer side uses this to distinguish
+        polling ticks (no new work, just waiting for an existing job) from
+        fresh attempts. Counting polling ticks would let a slow exchange
+        exhaust the budget before it finishes.
+        """
+        job_id = _review_exchange_job_id(issue_number, session_name)
+        return self._job_supervisor.is_running(job_id)
+
     def run_review_exchange_if_needed(
         self,
         *,
@@ -581,6 +597,17 @@ class CompletionReviewExchange:
                 session_name,
             )
             return None
+        # Same commit, cached approval, but the *current* validation explicitly
+        # failed — the prior approval no longer holds. Replaying the cached
+        # "ok" here is the bug that loops the validation-failed reroute: the
+        # caller would treat the cached approval as authoritative and never
+        # invoke the coder to fix the failure. Force a fresh exchange instead.
+        if self._current_validation_explicitly_failed(current_validation_record_path):
+            logger.info(
+                "Ignoring cached review exchange summary for %s: current validation failed",
+                session_name,
+            )
+            return None
         status = cached.summary.get("status")
         rounds = cached.summary.get("completed_rounds")
         if not status or rounds is None:
@@ -608,6 +635,22 @@ class CompletionReviewExchange:
         except (OSError, json.JSONDecodeError):
             return False
         return bool(data.get("passed"))
+
+    @staticmethod
+    def _current_validation_explicitly_failed(record_path: Path | None) -> bool:
+        """Return True iff the record exists and explicitly says ``passed=False``.
+
+        Distinct from ``not review_exchange_validation_passed``: a missing or
+        unreadable record is treated as "no signal" (False), so this only
+        rejects the cache when the caller produced a definitive failure.
+        """
+        if not record_path or not record_path.exists():
+            return False
+        try:
+            data = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return data.get("passed") is False
 
     @classmethod
     def _review_exchange_validation_matches_current(

@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ..infra.atomic_json import atomic_write_json
 from ..infra.emit import emit_event
 from ..ports import CommandRunner, CommandResult, WorkingCopy
 from ..ports.session_output import ValidationRecord
@@ -77,7 +78,13 @@ class ValidationRecordStore:
         return self.base_dir / f"{sha}.json"
 
     def write(self, record: ValidationRecord) -> Path:
-        """Write a validation record to disk.
+        """Write a validation record to disk atomically.
+
+        Atomicity matters because two gates (agent_gate, publish_gate) may
+        write the same per-SHA file concurrently in different threads, and
+        readers (cache lookups, the review-exchange predicate) parse the
+        file as JSON — a torn write would surface as JSONDecodeError or,
+        worse, a partial-but-syntactically-valid prefix.
 
         Args:
             record: The validation record to write
@@ -86,11 +93,7 @@ class ValidationRecordStore:
             Path to the written file
         """
         path = self.get_record_path(record.head_sha)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(path, "w") as f:
-            json.dump(record.to_dict(), f, indent=2)
-
+        atomic_write_json(path, record.to_dict())
         logger.debug("Wrote validation record to %s", path)
         return path
 
@@ -254,8 +257,10 @@ class ValidationRunner:
         self.store.write(record)
         # Persist run-scoped validation record only for real session run dirs.
         if _is_session_run_dir(session_output_dir, self.store.worktree):
-            run_record_path = session_output_dir / "validation-record.json"
-            run_record_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
+            atomic_write_json(
+                session_output_dir / "validation-record.json",
+                record.to_dict(),
+            )
 
         logger.info(
             "Validation suite '%s' %s (exit_code=%d)",
@@ -451,6 +456,18 @@ class PublishGate:
         cached = self.cache.lookup(head_sha, self.command)
         if cached is not None and cached.passed:
             logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
+            # Materialize the cached record into the session run dir so
+            # downstream consumers (manifest, review-exchange predicate, UI)
+            # see the gate's authoritative result. Without this, a stale
+            # ``validation-record.json`` from an earlier inline run remains
+            # in place and silently contradicts the cache hit.
+            if session_output_dir is not None and _is_session_run_dir(
+                session_output_dir, self.store.worktree
+            ):
+                atomic_write_json(
+                    session_output_dir / "validation-record.json",
+                    cached.to_dict(),
+                )
             return PublishGateResult(
                 allowed=True,
                 reason=f"Cached validation passed for {head_sha[:8]}",
