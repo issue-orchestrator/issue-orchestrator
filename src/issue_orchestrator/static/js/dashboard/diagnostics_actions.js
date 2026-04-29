@@ -116,7 +116,7 @@ async function resetSelectedIssuesFromScratch() {
 
     if (issueNumbers.length === 0) return;
 
-    const confirmMsg = `Full reset and requeue ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''} from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nNext launch will force NEW branches from base (main), not prior issue branch history.`;
+    const confirmMsg = `Full reset and requeue ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''} from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nThis will also supersede open orchestrator PRs by commenting and closing them.\n\nPrior review approvals and validation artifacts will not be reused. Next launch will force NEW branches from base (main), not prior issue branch history.`;
     if (!await showConfirm(confirmMsg, blockedResetBtn)) return;
 
     blockedResetBtn.disabled = true;

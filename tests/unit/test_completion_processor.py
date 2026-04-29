@@ -762,7 +762,16 @@ class TestReviewExchangeExecution:
                 "timestamp": "2026-02-01T00:00:00Z",
             })
         )
-        (run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
+        validation_record = run_dir / "validation-record.json"
+        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            validation_record_path=str(validation_record),
+        )
         completion_path = (
             ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
             "completion-coder.json"
@@ -848,7 +857,16 @@ class TestReviewExchangeExecution:
                 "timestamp": "2026-02-01T00:00:00Z",
             })
         )
-        (run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
+        validation_record = run_dir / "validation-record.json"
+        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            validation_record_path=str(validation_record),
+        )
         completion_path = (
             ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
             "completion-coder.json"
@@ -999,7 +1017,16 @@ class TestReviewExchangeExecution:
                 "timestamp": "2026-02-01T00:00:00Z",
             })
         )
-        (issue_run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
+        validation_record = issue_run_dir / "validation-record.json"
+        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            validation_record_path=str(validation_record),
+        )
         session_output.update_manifest(
             issue_run_dir,
             {"review_exchange_dir": str(exchange_dir)},

@@ -624,6 +624,8 @@ Timestamp: {self._now_iso()}
         self,
         worktree_path: Path,
         session_name: str,
+        *,
+        not_before_started_at: str | None = None,
     ) -> ReviewExchangeSummary | None:
         # Resolve against the newest run that has a review-exchange summary.
         # Prefer runs associated with the requested session name, but also
@@ -641,13 +643,29 @@ Timestamp: {self._now_iso()}
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        all_candidates = sorted(d for d in base_dir.iterdir() if d.is_dir())
+        all_candidates = sorted(
+            (d for d in base_dir.iterdir() if d.is_dir()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
         if not all_candidates:
             return None
 
         for candidates in (session_candidates, all_candidates):
             for run_dir in candidates:
                 manifest = self.read_manifest(run_dir) or {}
+                if not_before_started_at is not None:
+                    started_at = manifest.get("started_at")
+                    if not isinstance(started_at, str) or started_at < not_before_started_at:
+                        logger.info(
+                            "[session_output] Ignoring review exchange summary before boundary: "
+                            "session=%s run_dir=%s started_at=%s boundary=%s",
+                            session_name,
+                            run_dir,
+                            started_at,
+                            not_before_started_at,
+                        )
+                        continue
                 manifest_dir = manifest.get("review_exchange_dir")
                 exchange_dir = (
                     Path(manifest_dir)

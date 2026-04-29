@@ -250,6 +250,45 @@ def test_build_issue_detail_view_model_returns_runs() -> None:
     assert payload["runs"][1]["expanded"] is True
 
 
+def test_scratch_retry_surfaces_run_and_cycle_labels() -> None:
+    events = [
+        {
+            **_evt(
+                "issue.unblocked",
+                timestamp="2026-04-29T12:00:00Z",
+                logical_run=1,
+                logical_cycle=1,
+            ),
+            "from_scratch": True,
+        },
+        {
+            **_evt(
+                "session.started",
+                timestamp="2026-04-29T12:01:00Z",
+                logical_run=1,
+                logical_cycle=1,
+                agent="agent:backend",
+            ),
+            "reset_from_scratch": True,
+        },
+    ]
+    payload = build_issue_detail_view_model(
+        issue_number=359,
+        title="Scratch retry",
+        issue_url="https://github.com/org/repo/issues/359",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        context=_ctx(flow_stage="in_progress"),
+    )
+
+    latest_run = payload["runs"][-1]
+    assert latest_run["reset_from_scratch"] is True
+    assert latest_run["run_label"] == "Run 1 (scratch retry)"
+    assert latest_run["cycles"][0]["reset_from_scratch"] is True
+    assert latest_run["cycles"][0]["cycle_label"] == "Cycle 1 (scratch)"
+
+
 def test_latest_run_without_review_events_not_marked_completed() -> None:
     events = [
         _evt("session.started", timestamp="2026-02-16T10:00:00Z", logical_run=1, logical_cycle=1, agent="agent:backend"),

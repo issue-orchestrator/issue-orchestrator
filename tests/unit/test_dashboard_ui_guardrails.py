@@ -443,6 +443,19 @@ def test_bulk_reset_from_scratch_handler_uses_ui_action_contract() -> None:
     assert "/api/reset-retry" not in body
 
 
+def test_reset_from_scratch_confirmations_disclose_full_boundary() -> None:
+    js = _read(DASHBOARD_JS)
+    for fn_name in (
+        "bulkResetRetryFromScratch",
+        "resetRetrySingleFromScratch",
+        "resetSelectedIssuesFromScratch",
+    ):
+        body = _function_body(js, fn_name)
+        assert "supersede open orchestrator PRs" in body
+        assert "Prior review approvals and validation artifacts will not be reused" in body
+        assert "NEW branch" in body
+
+
 def test_single_reset_handler_uses_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     marker = "async function performResetRetry("
@@ -964,6 +977,22 @@ def test_journey_cycle_labels_use_run_local_numbering() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")
     assert "const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);" in body
+
+
+def test_journey_renders_server_supplied_scratch_run_and_cycle_labels() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert "const runLabel = run.run_label" in body
+    assert "escapeHtml(runLabel)" in body
+    assert "const cycleLabel = c.cycle_label" in body
+    assert "escapeHtml(cycleLabel)" in body
+
+
+def test_journey_copy_uses_server_supplied_scratch_run_and_cycle_labels() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "copyJourneyTimeline")
+    assert "run.run_label" in body
+    assert "c.cycle_label" in body
 
 
 def test_journey_renders_phase_group_headers() -> None:

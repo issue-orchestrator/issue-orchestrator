@@ -48,7 +48,7 @@ from ..ports import (
     CommandRunner,
 )
 from ..ports.session_output import SessionOutput
-from ..ports.event_sink import make_session_started_event
+from ..ports.event_sink import SessionStartedEventPayload, make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from ..ports.session_log import detect_ai_system_from_command
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
@@ -689,11 +689,18 @@ class SessionLauncher:
             "issue_key": issue_key.stable_id(),
             "session_key": session_key.stable_id(),
             "agent": issue.agent_type,
+            "reset_from_scratch": from_scratch_pending,
             **self._session_identity_launch_metadata(
                 agent_config,
                 extra_provider_args=extra_args,
             ),
         })
+        if from_scratch_pending:
+            ctx.update_manifest({
+                "reset_from_scratch": True,
+                "review_cache_boundary": "scratch_reset",
+                "review_cache_boundary_started_at": run.started_at,
+            })
 
         # For triage sessions, prepare manifest with PRs to review
         triage_manifest: TriageManifest | None = None
@@ -924,19 +931,23 @@ class SessionLauncher:
 
         # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(make_session_started_event({
+        session_started_payload: SessionStartedEventPayload = {
             "issue_number": issue.number,
             "session_id": session_name,
             "agent": issue.agent_type,
             "task": "code",
             "worktree_path": str(worktree_path),
             "branch_name": branch_name,
+            "reset_from_scratch": from_scratch_pending,
             "run_id": run.run_id,
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
             "session_prompt_path": prompt_path,
-        }))
+        }
+        if from_scratch_pending:
+            session_started_payload["review_cache_boundary_started_at"] = run.started_at
+        self.events.publish(make_session_started_event(session_started_payload))
 
         # State machine transitions
         self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)

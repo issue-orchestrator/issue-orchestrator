@@ -55,9 +55,9 @@ class GitWorktreeManager:
             commits_discarded=commits_discarded,
         )
 
-    def remove(self, worktree_path: Path) -> None:
+    def remove(self, worktree_path: Path, *, force: bool = False) -> None:
         """Remove a git worktree."""
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, force=force)
 
     def extract_issue_number(self, branch_name: str) -> int | None:
         """Extract issue number from a branch name."""

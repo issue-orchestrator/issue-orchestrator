@@ -13,6 +13,18 @@ def test_first_event_starts_run_and_cycle_one() -> None:
     assert out.logical_phase == "coding"
 
 
+def test_initial_issue_unblocked_does_not_skip_run_one() -> None:
+    out = enrich_logical_semantics(
+        event_name="issue.unblocked",
+        event_data={"from_scratch": True},
+        previous_event_name=None,
+        previous_data=None,
+    )
+    assert out.logical_run == 1
+    assert out.logical_cycle == 1
+    assert out.logical_phase == "orchestrator"
+
+
 def test_rework_cycle_signal_sets_logical_cycle() -> None:
     out = enrich_logical_semantics(
         event_name="rework.started",

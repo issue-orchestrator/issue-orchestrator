@@ -34,6 +34,10 @@ def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
     return f"{base}:{session_name}" if session_name else base
 
 
+def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> dict[str, str]:
+    return dict(exchange_outcome.cache_metadata or {})
+
+
 class CompletionReviewExchange:
     """Owns review-exchange mode selection, caching, execution, and artifacts."""
 
@@ -75,6 +79,7 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
+        review_cache_boundary_started_at: str | None = None,
     ) -> tuple[Any, str | None, ReviewExchangeOutcome | None, bool, bool, bool]:
         """Resolve mode, run/poll review exchange, and report status.
 
@@ -121,6 +126,7 @@ class CompletionReviewExchange:
             initial_validation_record_path=(
                 Path(record.validation_record_path) if record.validation_record_path else None
             ),
+            review_cache_boundary_started_at=review_cache_boundary_started_at,
             errors=errors,
             actions_taken=actions_taken,
             run_review_exchange_loop=run_review_exchange_loop,
@@ -186,6 +192,7 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
+        review_cache_boundary_started_at: str | None = None,
     ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool]:
         """Return (exchange_mode, outcome, halt, deferred).
 
@@ -212,6 +219,7 @@ class CompletionReviewExchange:
             session_name,
             require_validation=require_validation,
             current_validation_record_path=initial_validation_record_path,
+            not_before_started_at=review_cache_boundary_started_at,
         )
         if existing_outcome:
             mode, outcome, halt = self._handle_cached_review_exchange_outcome(
@@ -381,12 +389,14 @@ class CompletionReviewExchange:
             session_name=session_name,
             issue_number=issue_number,
         )
+        cache_metadata = _cached_review_event_metadata(existing_outcome)
         self._emit_review_started(
             issue_number=issue_number,
             reviewer_label=reviewer_label,
             exchange_mode=exchange_mode,
             run_dir=review_run_dir,
             cached=True,
+            **cache_metadata,
         )
         if existing_outcome.status == "ok":
             actions_taken.append("Review exchange passed (cached)")
@@ -404,6 +414,7 @@ class CompletionReviewExchange:
                 summary=reviewer_summary,
                 run_dir=review_run_dir,
                 cached=True,
+                **cache_metadata,
             )
             return exchange_mode, existing_outcome, False
         self._emit_review_outcome(
@@ -415,6 +426,7 @@ class CompletionReviewExchange:
             summary=f"Review exchange halted: {existing_outcome.reason}",
             run_dir=review_run_dir,
             cached=True,
+            **cache_metadata,
         )
         errors.append(f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})")
         return exchange_mode, existing_outcome, True
@@ -578,23 +590,62 @@ class CompletionReviewExchange:
         *,
         require_validation: bool,
         current_validation_record_path: Path | None = None,
+        not_before_started_at: str | None = None,
     ) -> ReviewExchangeOutcome | None:
         if not session_name:
             return None
-        cached = self._session_output.load_review_exchange_summary(worktree, session_name)
+        cached = self._session_output.load_review_exchange_summary(
+            worktree,
+            session_name,
+            not_before_started_at=not_before_started_at,
+        )
         if not cached:
             return None
+        cached_head_sha = self._validation_head_sha(cached.validation_record_path)
+        current_head_sha = self._validation_head_sha(current_validation_record_path)
+        logger.info(
+            "[REVIEW_EXCHANGE] Evaluating cached summary: session=%s summary=%s "
+            "validation=%s cached_head_sha=%s current_head_sha=%s require_validation=%s "
+            "boundary=%s",
+            session_name,
+            cached.summary_path,
+            cached.validation_record_path,
+            cached_head_sha or "(none)",
+            current_head_sha or "(none)",
+            require_validation,
+            not_before_started_at or "(none)",
+        )
         if require_validation and not self.review_exchange_validation_passed(
             cached.validation_record_path
         ):
+            logger.info(
+                "[REVIEW_EXCHANGE] Ignoring cached summary without passing validation: "
+                "session=%s summary=%s validation=%s",
+                session_name,
+                cached.summary_path,
+                cached.validation_record_path,
+            )
+            return None
+        if require_validation and not current_head_sha:
+            logger.info(
+                "[REVIEW_EXCHANGE] Ignoring cached summary without current validation head_sha: "
+                "session=%s summary=%s current_validation=%s",
+                session_name,
+                cached.summary_path,
+                current_validation_record_path,
+            )
             return None
         if not self._review_exchange_validation_matches_current(
             cached.validation_record_path,
             current_validation_record_path,
         ):
             logger.info(
-                "Ignoring cached review exchange summary for %s: validation head_sha mismatch",
+                "[REVIEW_EXCHANGE] Ignoring cached summary due to head_sha mismatch: "
+                "session=%s summary=%s cached_head_sha=%s current_head_sha=%s",
                 session_name,
+                cached.summary_path,
+                cached_head_sha or "(none)",
+                current_head_sha or "(none)",
             )
             return None
         # Same commit, cached approval, but the *current* validation explicitly
@@ -604,14 +655,35 @@ class CompletionReviewExchange:
         # invoke the coder to fix the failure. Force a fresh exchange instead.
         if self._current_validation_explicitly_failed(current_validation_record_path):
             logger.info(
-                "Ignoring cached review exchange summary for %s: current validation failed",
+                "[REVIEW_EXCHANGE] Ignoring cached summary because current validation failed: "
+                "session=%s summary=%s current_validation=%s",
                 session_name,
+                cached.summary_path,
+                current_validation_record_path,
             )
             return None
         status = cached.summary.get("status")
         rounds = cached.summary.get("completed_rounds")
         if not status or rounds is None:
             return None
+        cache_metadata = {
+            "review_cache_summary_path": str(cached.summary_path),
+        }
+        if cached.validation_record_path:
+            cache_metadata["review_cache_validation_record_path"] = str(
+                cached.validation_record_path
+            )
+        if cached_head_sha:
+            cache_metadata["review_cache_head_sha"] = cached_head_sha
+        logger.info(
+            "[REVIEW_EXCHANGE] Reusing cached summary: session=%s summary=%s status=%s "
+            "rounds=%s head_sha=%s",
+            session_name,
+            cached.summary_path,
+            status,
+            rounds,
+            cached_head_sha or "(none)",
+        )
         from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
 
         return ReviewExchangeOutcome(
@@ -623,7 +695,8 @@ class CompletionReviewExchange:
                 response_text=cached.summary.get("response_text") or "",
             ),
             exchange_dir=cached.exchange_dir,
-            summary=cached.summary,
+            summary=dict(cached.summary),
+            cache_metadata=cache_metadata,
         )
 
     @staticmethod
@@ -660,8 +733,8 @@ class CompletionReviewExchange:
     ) -> bool:
         current_sha = cls._validation_head_sha(current_record_path)
         if not current_sha:
-            # Older/dev completion paths may not provide a current validation
-            # SHA; keep their cached review resume behavior unchanged.
+            # Strict cache callers reject missing current validation before this
+            # helper. Older/dev resume paths keep their prior cache behavior.
             return True
         cached_sha = cls._validation_head_sha(cached_record_path)
         return cached_sha == current_sha

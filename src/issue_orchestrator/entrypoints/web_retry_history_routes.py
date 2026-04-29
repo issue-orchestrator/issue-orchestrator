@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -22,6 +22,10 @@ from ..events import EventName
 from ..history import latest_history_entries_by_issue
 from ..ports.event_sink import make_trace_event
 from .web_session_context import WebOrchestratorDependency
+
+if TYPE_CHECKING:
+    from ..control.maintenance import ResetResult
+    from ..domain.models import OrchestratorState
 
 logger = logging.getLogger(__name__)
 
@@ -304,10 +308,10 @@ def _reset_and_retry_issue(  # noqa: PLR0913
     scratch_pending_label: str,
     repository_host: Any,
     queue_cache: QueueCache,
-    state: Any,
+    state: "OrchestratorState",
     deps: Any,
     config: Any,
-    reset_issue_fn: Callable[..., Any],
+    reset_issue_fn: Callable[..., "ResetResult"],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
     from ..control.actions import AddLabelAction
@@ -326,6 +330,8 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             completed_today=state.completed_today,
             label_store=deps.label_store,
             timeline_store=deps.timeline_store if from_scratch else None,
+            from_scratch=from_scratch,
+            repository_host=repository_host,
         )
         if not result.success:
             return None, _make_reset_failure(
@@ -333,6 +339,8 @@ def _reset_and_retry_issue(  # noqa: PLR0913
                 result,
                 result.error or "Unknown error",
             )
+        if from_scratch:
+            _clear_scratch_retry_pending_state(state, issue_number, result)
 
         pending_labels_to_add = _pending_labels_for_retry(
             from_scratch=from_scratch,
@@ -394,6 +402,29 @@ def _reset_and_retry_issue(  # noqa: PLR0913
     except Exception as exc:
         logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, exc)
         return None, {"issue": issue_number, "error": str(exc)}
+
+
+def _clear_scratch_retry_pending_state(
+    state: "OrchestratorState",
+    issue_number: int,
+    result: "ResetResult",
+) -> None:
+    clear_result = RetryHistoryState(state).clear_scratch_retry_pending_state(
+        issue_number=issue_number,
+        superseded_prs=result.superseded_prs or (),
+    )
+    logger.info(
+        "[reset-retry] Cleared scratch retry pending state for issue #%d: "
+        "reviews %d->%d reworks %d->%d cleanups %d->%d superseded_prs=%s",
+        issue_number,
+        clear_result.review_count_before,
+        clear_result.review_count_after,
+        clear_result.rework_count_before,
+        clear_result.rework_count_after,
+        clear_result.cleanup_count_before,
+        clear_result.cleanup_count_after,
+        list(clear_result.superseded_prs),
+    )
 
 
 def _pending_labels_for_retry(
@@ -492,7 +523,7 @@ def _emit_reset_retry_unblocked(
 
 def _make_reset_success(
     issue_number: int,
-    result: Any,
+    result: "ResetResult",
     from_scratch: bool,
     pending_label: str,
     pending_labels_to_add: list[str],
@@ -501,6 +532,9 @@ def _make_reset_success(
         "issue": issue_number,
         "deleted_worktree": result.deleted_worktree,
         "deleted_branch": result.deleted_branch,
+        "deleted_branches": result.deleted_branches,
+        "superseded_prs": result.superseded_prs,
+        "timeline_events_deleted": result.timeline_events_deleted,
         "labels_removed": result.labels_removed,
         "pending_label": pending_label,
         "pending_labels": pending_labels_to_add,
@@ -511,7 +545,7 @@ def _make_reset_success(
 
 def _make_reset_failure(
     issue_number: int,
-    result: Any,
+    result: "ResetResult",
     error: str,
     *,
     pending_labels: list[str] | None = None,
@@ -520,6 +554,9 @@ def _make_reset_failure(
     partial: dict[str, Any] = {
         "deleted_worktree": result.deleted_worktree,
         "deleted_branch": result.deleted_branch,
+        "deleted_branches": result.deleted_branches,
+        "superseded_prs": result.superseded_prs,
+        "timeline_events_deleted": result.timeline_events_deleted,
         "labels_removed": result.labels_removed,
     }
     if pending_labels:

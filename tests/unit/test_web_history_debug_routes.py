@@ -232,12 +232,66 @@ class TestHistoryEndpoints:
         assert payload["reset"][0]["from_scratch"] is True
         assert lm.reset_retry_pending in payload["reset"][0]["pending_labels"]
         assert lm.reset_retry_scratch_pending in payload["reset"][0]["pending_labels"]
+        assert reset_issue_mock.call_args.kwargs["from_scratch"] is True
+        assert reset_issue_mock.call_args.kwargs["repository_host"] is mock_orch.repository_host
 
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
         assert lm.reset_retry_pending in added_labels
         assert lm.reset_retry_scratch_pending in added_labels
         event_arg = mock_orch.deps.events.publish.call_args.args[0]
         assert event_arg.data["from_scratch"] is True
+
+    def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
+        """Scratch reset should remove stale in-memory PR/rework state before requeue."""
+        from issue_orchestrator.control.maintenance import ResetResult
+        from issue_orchestrator.entrypoints.web_retry_history_routes import _clear_scratch_retry_pending_state
+
+        state = SimpleNamespace(
+            pending_reviews=[
+                PendingReview(
+                    issue_key=FakeIssueKey("4057"),
+                    pr_number=376,
+                    pr_url="https://example/pr/376",
+                    branch_name="4057-old",
+                    _issue_number=4057,
+                ),
+                PendingReview(
+                    issue_key=FakeIssueKey("999"),
+                    pr_number=999,
+                    pr_url="https://example/pr/999",
+                    branch_name="999-other",
+                    _issue_number=999,
+                ),
+            ],
+            pending_reworks=[
+                PendingRework(
+                    issue_key=FakeIssueKey("4057"),
+                    agent_type="agent:web",
+                    issue_number=4057,
+                    pr_number=376,
+                ),
+                PendingRework(
+                    issue_key=FakeIssueKey("999"),
+                    agent_type="agent:web",
+                    issue_number=999,
+                    pr_number=999,
+                ),
+            ],
+            pending_cleanups=[
+                SimpleNamespace(issue_number=4057, pr_number=376),
+                SimpleNamespace(issue_number=999, pr_number=999),
+            ],
+        )
+
+        _clear_scratch_retry_pending_state(
+            state,
+            4057,
+            ResetResult(success=True, issue_number=4057, superseded_prs=[376]),
+        )
+
+        assert [review.pr_number for review in state.pending_reviews] == [999]
+        assert [rework.pr_number for rework in state.pending_reworks] == [999]
+        assert [cleanup.pr_number for cleanup in state.pending_cleanups] == [999]
 
     def test_reset_retry_reports_error_when_pending_label_cannot_be_set(self):
         """Reset+retry should fail the issue when pending label persistence fails."""

@@ -624,7 +624,7 @@ class TestNarrativeEnrichment:
             EventName.REVIEW_APPROVED,
             {"rounds": 2, "cached": True},
         )
-        assert narrative == "Review approval reused for current code"
+        assert narrative == "Cached review approval reused for unchanged commit"
         assert "rounds" not in narrative
         assert "prior run" not in narrative.lower()
 
@@ -644,7 +644,7 @@ class TestNarrativeEnrichment:
                 ),
             },
         )
-        assert narrative == "Review result reused for current code"
+        assert narrative == "Cached review result reused for unchanged commit"
 
     def test_review_started_fresh_uses_default_narrative(self, tmp_path) -> None:
         narrative = self._write_and_get_narrative(
@@ -657,12 +657,29 @@ class TestNarrativeEnrichment:
         )
         assert narrative == "Code review started"
 
+    def test_issue_unblocked_from_scratch_uses_scratch_narrative(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.ISSUE_UNBLOCKED,
+            {"from_scratch": True},
+        )
+        assert narrative == "Scratch reset requested"
+
+    def test_session_started_from_scratch_uses_scratch_narrative(self, tmp_path) -> None:
+        run_dir = tmp_path / "scratch-run"
+        run_dir.mkdir()
+        (run_dir / "terminal-recording.jsonl").write_text("")
+        narrative = self._write_and_get_narrative(
+            EventName.SESSION_STARTED,
+            {"reset_from_scratch": True, "run_dir": str(run_dir)},
+        )
+        assert narrative == "Scratch coding agent started"
+
     def test_changes_requested_cached_replay_uses_replay_narrative(self) -> None:
         narrative = self._write_and_get_narrative(
             EventName.REVIEW_CHANGES_REQUESTED,
             {"rounds": 3, "cached": True},
         )
-        assert narrative == "Changes-requested verdict reused for current code"
+        assert narrative == "Cached changes-requested verdict reused for unchanged commit"
         assert "round 3" not in narrative.lower()
 
     def test_pr_created_includes_pr_number(self) -> None:
@@ -792,14 +809,14 @@ def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(
     fresh_narrative = approved_records[0].data["narrative"]
     cached_narrative = approved_records[1].data["narrative"]
     assert fresh_narrative == "Review approved after 2 rounds"
-    assert cached_narrative == "Review approval reused for current code"
+    assert cached_narrative == "Cached review approval reused for unchanged commit"
     assert "after 2 rounds" not in cached_narrative
     assert "prior run" not in cached_narrative.lower()
 
     review_started_records = [r for r in store.records if r.event == "review.started"]
     assert len(review_started_records) == 2
     assert review_started_records[0].data.get("narrative") == "Code review started"
-    assert review_started_records[1].data.get("narrative") == "Review result reused for current code"
+    assert review_started_records[1].data.get("narrative") == "Cached review result reused for unchanged commit"
 
     # The cached flag must survive from emission into the stored record so
     # downstream consumers (UI, SSE) can key off it.

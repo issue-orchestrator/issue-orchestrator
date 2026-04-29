@@ -95,6 +95,27 @@ Session FAILED/BLOCKED/TIMEOUT
   - Helps identify patterns in failures
 ```
 
+## Reset From Scratch Boundaries
+
+Reset and retry from scratch is a hard lifecycle boundary, not a normal rework
+cycle. The reset path must:
+
+- Remove the local worktree and fail the reset if it remains on disk.
+- Delete the local/remote issue branch, and fail the scratch reset if remote
+  branch deletion reports failure.
+- Close/comment any open orchestrator PRs for the issue as superseded. GitHub
+  has no native "superseded" PR state, so this is represented as a comment plus
+  closed PR.
+- Clear stale pending review, rework, and cleanup queues for the issue and any
+  superseded PRs before requeueing.
+- Start the next coding session on a fresh branch from base, mark the session
+  manifest as `reset_from_scratch`, and set a review-cache boundary timestamp.
+
+Cached local review approvals may only be reused for the same unchanged head SHA
+and only when their review-exchange summary and validation record are at or
+after the active review-cache boundary. Scratch retries must not reuse review or
+validation artifacts from runs before the scratch boundary.
+
 ## Key Runtime Touchpoints
 
 | Method | Purpose |

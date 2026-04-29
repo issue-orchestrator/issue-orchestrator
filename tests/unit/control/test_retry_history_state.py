@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.control.retry_history_state import RetryHistoryState
-from issue_orchestrator.domain.models import OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.models import (
+    OrchestratorState,
+    PendingCleanup,
+    PendingReview,
+    PendingRework,
+    SessionHistoryEntry,
+)
 
 
 def _history_entry(issue_number: int) -> SessionHistoryEntry:
@@ -56,3 +66,93 @@ def test_deprioritize_and_prioritize_issue_front_own_priority_queue_mutation() -
     assert inserted is True
     assert duplicate_inserted is False
     assert state.priority_queue == [4, 1, 3]
+
+
+def test_clear_scratch_retry_pending_state_removes_issue_and_superseded_prs() -> None:
+    state = OrchestratorState(
+        pending_reviews=[
+            PendingReview(
+                issue_key=FakeIssueKey("10"),
+                pr_number=100,
+                pr_url="url",
+                branch_name="branch",
+                _issue_number=10,
+            ),
+            PendingReview(
+                issue_key=FakeIssueKey("99"),
+                pr_number=376,
+                pr_url="url",
+                branch_name="branch",
+                _issue_number=99,
+            ),
+            PendingReview(
+                issue_key=FakeIssueKey("11"),
+                pr_number=101,
+                pr_url="url",
+                branch_name="branch",
+                _issue_number=11,
+            ),
+        ],
+        pending_reworks=[
+            PendingRework(
+                issue_key=FakeIssueKey("10"),
+                agent_type="agent:backend",
+                issue_number=10,
+                pr_number=100,
+            ),
+            PendingRework(
+                issue_key=FakeIssueKey("99"),
+                agent_type="agent:backend",
+                issue_number=99,
+                pr_number=376,
+            ),
+            PendingRework(
+                issue_key=FakeIssueKey("11"),
+                agent_type="agent:backend",
+                issue_number=11,
+                pr_number=101,
+            ),
+        ],
+        pending_cleanups=[
+            PendingCleanup(
+                issue=GitHubIssue(number=10, repo="owner/repo", title="Issue 10"),
+                pr_number=100,
+                pr_url="url",
+                branch_name="branch",
+                terminal_id="issue-10",
+                worktree_path=Path("/tmp/issue-10"),
+            ),
+            PendingCleanup(
+                issue=GitHubIssue(number=99, repo="owner/repo", title="Issue 99"),
+                pr_number=376,
+                pr_url="url",
+                branch_name="branch",
+                terminal_id="issue-99",
+                worktree_path=Path("/tmp/issue-99"),
+            ),
+            PendingCleanup(
+                issue=GitHubIssue(number=11, repo="owner/repo", title="Issue 11"),
+                pr_number=101,
+                pr_url="url",
+                branch_name="branch",
+                terminal_id="issue-11",
+                worktree_path=Path("/tmp/issue-11"),
+            ),
+        ],
+    )
+
+    result = RetryHistoryState(state).clear_scratch_retry_pending_state(
+        issue_number=10,
+        superseded_prs=[376],
+    )
+
+    assert result.review_count_before == 3
+    assert result.review_count_after == 1
+    assert result.rework_count_before == 3
+    assert result.rework_count_after == 1
+    assert result.cleanup_count_before == 3
+    assert result.cleanup_count_after == 1
+    assert result.superseded_prs == (376,)
+    assert [review.pr_number for review in state.pending_reviews] == [101]
+    assert [rework.pr_number for rework in state.pending_reworks] == [101]
+    assert [cleanup.pr_number for cleanup in state.pending_cleanups] == [101]

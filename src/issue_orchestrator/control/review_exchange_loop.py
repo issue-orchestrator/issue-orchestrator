@@ -67,6 +67,7 @@ class ReviewExchangeOutcome:
     reviewer_response: ReviewExchangeResponse | None = None
     exchange_dir: Path | None = None
     summary: dict[str, Any] | None = None
+    cache_metadata: dict[str, str] | None = None
 
 
 def run_review_exchange_loop(
