@@ -425,24 +425,42 @@ async function refreshIssueRows(vm, rowsOverride = null) {
     initFlowLazyVisibleRefresh();
 }
 
-let _refreshInFlight = null;
+// Tracked per request mode: a snapshot fetch (`/api/view-model-snapshot`)
+// is a strict superset of a view-model fetch (`/api/view-model`) — it
+// also carries the rows refreshIssueRows needs. So a snapshot can stand
+// in for any caller, but a view-model-only call must NOT be reused by a
+// caller asking for a snapshot, otherwise refreshIssueRows is silently
+// skipped on list-changing SSE events (queue.changed, session.started, ...).
+let _refreshInFlight = { snapshot: null, viewModel: null };
 
 async function refreshViewModel({ reloadOnListChange = true } = {}) {
-    // Coalesce concurrent calls so the DOMContentLoaded refresh and the
-    // SSE `onopen` refresh (which fire within milliseconds of each other
-    // on dashboard open) share a single in-flight request rather than
-    // each rebuilding the kanban DOM on its own.
-    if (_refreshInFlight) {
-        return _refreshInFlight;
+    // Coalesce concurrent calls of the same mode so the DOMContentLoaded
+    // refresh and the SSE `onopen` refresh (which fire within
+    // milliseconds of each other on dashboard open) share a single
+    // request rather than each rebuilding the kanban DOM on its own.
+    if (reloadOnListChange) {
+        if (_refreshInFlight.snapshot) return _refreshInFlight.snapshot;
+        _refreshInFlight.snapshot = (async () => {
+            try {
+                return await _refreshViewModelImpl({ reloadOnListChange: true });
+            } finally {
+                _refreshInFlight.snapshot = null;
+            }
+        })();
+        return _refreshInFlight.snapshot;
     }
-    _refreshInFlight = (async () => {
+    // view-model: prefer a snapshot already in flight (it returns a
+    // superset and will satisfy any view-model-only caller).
+    if (_refreshInFlight.snapshot) return _refreshInFlight.snapshot;
+    if (_refreshInFlight.viewModel) return _refreshInFlight.viewModel;
+    _refreshInFlight.viewModel = (async () => {
         try {
-            return await _refreshViewModelImpl({ reloadOnListChange });
+            return await _refreshViewModelImpl({ reloadOnListChange: false });
         } finally {
-            _refreshInFlight = null;
+            _refreshInFlight.viewModel = null;
         }
     })();
-    return _refreshInFlight;
+    return _refreshInFlight.viewModel;
 }
 
 async function _refreshViewModelImpl({ reloadOnListChange = true } = {}) {

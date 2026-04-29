@@ -283,12 +283,25 @@ def test_refresh_view_model_coalesces_concurrent_calls() -> None:
     we issue two `/api/view-model` requests and trigger two waves of DOM
     mutations — even if both find matching fingerprints, that's wasted
     work and a needless second pass over status badges / refresh status.
+
+    The dedup must be split by request mode: a snapshot caller (which
+    needs the row payload for refreshIssueRows) must not be handed a
+    view-model-only promise, otherwise list-changing SSE events
+    (queue.changed, session.started, ...) silently skip refreshIssueRows.
     """
     js = _read(DASHBOARD_JS)
     assert "_refreshInFlight" in js, "expected concurrent-call dedup state in refreshViewModel"
-    # The dedup must short-circuit before the actual fetch path runs.
-    assert "if (_refreshInFlight)" in js
-    assert "return _refreshInFlight" in js
+    assert "_refreshInFlight.snapshot" in js
+    assert "_refreshInFlight.viewModel" in js
+    # The view-model branch may piggyback on a snapshot (snapshot is a
+    # superset), but the snapshot branch must NEVER reuse a view-model.
+    snapshot_branch_start = js.index("if (reloadOnListChange) {")
+    snapshot_branch_end = js.index("// view-model:", snapshot_branch_start)
+    snapshot_branch = js[snapshot_branch_start:snapshot_branch_end]
+    assert "_refreshInFlight.viewModel" not in snapshot_branch, (
+        "snapshot caller must not be served by a view-model-only in-flight "
+        "promise — refreshIssueRows would be skipped"
+    )
 
 
 def test_expanded_cards_render_label_badges() -> None:
