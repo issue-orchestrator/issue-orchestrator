@@ -115,11 +115,10 @@ function setDashboardInitializing(isInitializing) {
 }
 
 function markDashboardBooted() {
-    const finish = () => document.documentElement.removeAttribute('data-booting');
-    if (typeof window.requestAnimationFrame === 'function') {
-        window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
+    if (typeof window.dashboardBoot?.clearBootingWhenStable === 'function') {
+        window.dashboardBoot.clearBootingWhenStable(window);
     } else {
-        finish();
+        document.documentElement.removeAttribute('data-booting');
     }
 }
 
@@ -536,27 +535,30 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    applyDashboardTheme();
-    setDashboardInitializing(window.dashboardData?.startupComplete === false);
-    updateActionHints();
-    initFlowLazyVisibleRefresh();
-    applyGitHubUsagePrefs();
-    renderGitHubUsage();
-    applyNetworkSyncScheduler();
-    refreshViewModel({ reloadOnListChange: false });
-    initVisibilityObserver();
-    const nextRun = document.getElementById('e2eNextRun');
-    if (nextRun && nextRun.dataset.nextRunReason) {
-        const nextInfo = {
-            next_run_at: nextRun.dataset.nextRunAt,
-            next_run_reason: nextRun.dataset.nextRunReason,
-        };
-        const formatted = formatNextRun(nextInfo);
-        if (formatted) {
-            nextRun.textContent = formatted;
+    try {
+        applyDashboardTheme();
+        setDashboardInitializing(window.dashboardData?.startupComplete === false);
+        updateActionHints();
+        initFlowLazyVisibleRefresh();
+        applyGitHubUsagePrefs();
+        renderGitHubUsage();
+        applyNetworkSyncScheduler();
+        refreshViewModel({ reloadOnListChange: false });
+        initVisibilityObserver();
+        const nextRun = document.getElementById('e2eNextRun');
+        if (nextRun && nextRun.dataset.nextRunReason) {
+            const nextInfo = {
+                next_run_at: nextRun.dataset.nextRunAt,
+                next_run_reason: nextRun.dataset.nextRunReason,
+            };
+            const formatted = formatNextRun(nextInfo);
+            if (formatted) {
+                nextRun.textContent = formatted;
+            }
         }
+    } finally {
+        markDashboardBooted();
     }
-    markDashboardBooted();
 });
 
 document.addEventListener('change', (event) => {

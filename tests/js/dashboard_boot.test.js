@@ -2,22 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const dashboardBoot = require('../../src/issue_orchestrator/static/js/dashboard_boot.js');
-const embeddedNav = require('../../src/issue_orchestrator/static/js/embedded_nav.js');
+const themeResolution = require('../../src/issue_orchestrator/static/js/theme_resolution.js');
 
-test('resolveEffectiveTheme matches embedded nav for valid dashboard theme inputs', () => {
-    const cases = [
-        { search: '?theme=light', storedTheme: 'dark', prefersDark: true },
-        { search: '?theme=dark', storedTheme: 'light', prefersDark: false },
-        { search: '', storedTheme: 'system', prefersDark: true },
-        { search: '', storedTheme: 'system', prefersDark: false },
-        { override: 'light', search: '?theme=dark', storedTheme: 'dark', prefersDark: true },
-    ];
-    for (const opts of cases) {
-        assert.equal(
-            dashboardBoot.resolveEffectiveTheme(opts),
-            embeddedNav.resolveEffectiveTheme(opts),
-        );
-    }
+test('dashboard boot delegates theme resolution to the shared helper', () => {
+    assert.equal(dashboardBoot.resolveEffectiveTheme, themeResolution.resolveEffectiveTheme);
 });
 
 test('resolveInitialDocumentState resolves theme and embedded mode from first-paint inputs', () => {
@@ -86,4 +74,65 @@ test('readStoredTheme returns null when localStorage is unavailable', () => {
         }),
         null,
     );
+});
+
+test('getLocalStorage returns null when window property access is blocked', () => {
+    const root = {};
+    Object.defineProperty(root, 'localStorage', {
+        get() {
+            throw new Error('blocked');
+        },
+    });
+
+    assert.equal(dashboardBoot.getLocalStorage(root), null);
+});
+
+test('clearBootingWhenStable removes data-booting after two animation frames', () => {
+    const removed = [];
+    const frameCallbacks = [];
+    const root = {
+        document: {
+            documentElement: {
+                removeAttribute(name) {
+                    removed.push(name);
+                },
+            },
+        },
+        requestAnimationFrame(callback) {
+            frameCallbacks.push(callback);
+        },
+    };
+
+    dashboardBoot.clearBootingWhenStable(root);
+    assert.deepEqual(removed, []);
+    frameCallbacks.shift()();
+    assert.deepEqual(removed, []);
+    frameCallbacks.shift()();
+    assert.deepEqual(removed, ['data-booting']);
+});
+
+test('installBootCleanup installs a load fallback while document is loading', () => {
+    let loadHandler = null;
+    const removed = [];
+    const root = {
+        document: {
+            readyState: 'loading',
+            documentElement: {
+                removeAttribute(name) {
+                    removed.push(name);
+                },
+            },
+        },
+        addEventListener(type, handler, options) {
+            assert.equal(type, 'load');
+            assert.deepEqual(options, { once: true });
+            loadHandler = handler;
+        },
+    };
+
+    dashboardBoot.installBootCleanup(root);
+    assert.equal(typeof loadHandler, 'function');
+    assert.deepEqual(removed, []);
+    loadHandler();
+    assert.deepEqual(removed, ['data-booting']);
 });

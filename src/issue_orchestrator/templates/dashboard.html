@@ -7,6 +7,7 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
+    <script src="/static/js/theme_resolution.js"></script>
     <script src="/static/js/dashboard_boot.js"></script>
     <link rel="stylesheet" href="/static/css/dashboard.css">
     <link rel="stylesheet" href="/static/css/ui_primitives.css">
@@ -143,8 +144,8 @@
         <div class="dashboard-init-status {% if startup_status != 'complete' %}is-active{% endif %}" id="dashboardInitStatus" role="status" aria-live="polite">
             <span class="dashboard-init-pulse" aria-hidden="true"></span>
             <span class="dashboard-init-copy">
-                <span class="dashboard-init-title">Initializing dashboard</span>
-                <span class="dashboard-init-detail">Preparing live state</span>
+                <span class="dashboard-init-title">Initializing orchestrator</span>
+                <span class="dashboard-init-detail">Preparing live dashboard state</span>
             </span>
         </div>
 

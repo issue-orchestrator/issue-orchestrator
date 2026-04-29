@@ -618,7 +618,11 @@ class TestSettingsEndpoints:
         assert response.status_code == 200
         html = response.text
         # Shared helper must be loaded before the inline script.
+        assert '<script src="/static/js/theme_resolution.js"></script>' in html
         assert '<script src="/static/js/embedded_nav.js"></script>' in html
+        assert html.index('/static/js/theme_resolution.js') < html.index(
+            '/static/js/embedded_nav.js'
+        )
         # Back link and Cancel must delegate to the helper.
         assert 'id="backToDashboardLink"' in html
         assert 'id="cancelSettingsBtn"' in html

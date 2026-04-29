@@ -1,5 +1,8 @@
 (function (root, factory) {
-    const api = factory();
+    const themeResolution = typeof module === 'object' && module.exports
+        ? require('./theme_resolution.js')
+        : root.themeResolution;
+    const api = factory(themeResolution);
     if (typeof module === 'object' && module.exports) {
         module.exports = api;
     }
@@ -9,21 +12,36 @@
             api.applyInitialDocumentState({
                 documentElement: root.document.documentElement,
                 search: root.location ? root.location.search : '',
-                storedTheme: api.readStoredTheme(root.localStorage),
-                prefersDark: api.prefersDark(root.matchMedia),
+                storedTheme: api.readStoredTheme(api.getLocalStorage(root)),
+                prefersDark: api.prefersDark(api.getMatchMedia(root)),
             });
+            api.installBootCleanup(root);
         }
     }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-    const VALID_THEME_VALUES = new Set(['light', 'dark', 'system']);
-
-    function normalizedTheme(value) {
-        return VALID_THEME_VALUES.has(value) ? value : null;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (themeResolution) {
+    if (!themeResolution) {
+        throw new Error('themeResolution helper not loaded');
     }
 
     function readStoredTheme(storage) {
         try {
             return storage ? storage.getItem('theme') : null;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function getLocalStorage(root) {
+        try {
+            return root?.localStorage || null;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function getMatchMedia(root) {
+        try {
+            return root?.matchMedia || null;
         } catch (_error) {
             return null;
         }
@@ -40,27 +58,12 @@
         }
     }
 
-    function resolveEffectiveTheme(opts) {
-        const { override, search, storedTheme, prefersDark: darkPreferred } = opts || {};
-        const urlTheme = new URLSearchParams(search || '').get('theme');
-        const rawTheme = (
-            normalizedTheme(override)
-            || normalizedTheme(urlTheme)
-            || normalizedTheme(storedTheme)
-            || 'system'
-        );
-        if (rawTheme === 'system') {
-            return darkPreferred ? 'dark' : 'light';
-        }
-        return rawTheme;
-    }
-
     function resolveInitialDocumentState(opts) {
         const search = opts?.search || '';
         const params = new URLSearchParams(search);
         return {
             embedded: params.get('embedded') === '1',
-            theme: resolveEffectiveTheme(opts),
+            theme: themeResolution.resolveEffectiveTheme(opts),
         };
     }
 
@@ -80,11 +83,39 @@
         return state;
     }
 
+    function clearBootingWhenStable(root) {
+        const documentElement = root?.document?.documentElement;
+        if (!documentElement) return;
+        const finish = () => documentElement.removeAttribute('data-booting');
+        if (typeof root.requestAnimationFrame === 'function') {
+            root.requestAnimationFrame(() => root.requestAnimationFrame(finish));
+        } else {
+            finish();
+        }
+    }
+
+    function installBootCleanup(root) {
+        if (!root?.document) return;
+        if (root.document.readyState === 'loading') {
+            root.addEventListener?.(
+                'load',
+                () => clearBootingWhenStable(root),
+                { once: true },
+            );
+        } else {
+            clearBootingWhenStable(root);
+        }
+    }
+
     return {
         applyInitialDocumentState,
+        clearBootingWhenStable,
+        getLocalStorage,
+        getMatchMedia,
+        installBootCleanup,
         prefersDark,
         readStoredTheme,
-        resolveEffectiveTheme,
+        resolveEffectiveTheme: themeResolution.resolveEffectiveTheme,
         resolveInitialDocumentState,
     };
 });

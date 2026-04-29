@@ -373,7 +373,7 @@ def test_starting_dashboard_renders_initializing_status(jinja_env):
     init_status = soup.select_one("#dashboardInitStatus")
     assert init_status is not None
     assert "is-active" in init_status.get("class", [])
-    assert "Initializing dashboard" in init_status.get_text(" ")
+    assert "Initializing orchestrator" in init_status.get_text(" ")
 
 
 def test_e2e_tab_and_panels_render(jinja_env):

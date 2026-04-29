@@ -369,7 +369,6 @@ html[data-embedded="true"] .scope-summary.scope-open {
     background: color-mix(in srgb, var(--bg-panel) 86%, var(--accent) 14%);
     color: var(--text);
 }
-html[data-booting="true"] .dashboard-init-status,
 .dashboard-init-status.is-active {
     display: flex;
 }

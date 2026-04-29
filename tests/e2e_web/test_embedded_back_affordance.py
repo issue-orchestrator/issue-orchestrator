@@ -142,7 +142,9 @@ def test_dashboard_prepaint_theme_uses_stored_light_preference(
     page.evaluate("localStorage.setItem('theme', 'light')")
 
     _goto(page, base_url, "/")
+    page.wait_for_function("() => !document.documentElement.hasAttribute('data-booting')")
     expect(page.locator("html")).to_have_attribute("data-theme", "light")
+    expect(page.locator("#dashboardInitStatus")).to_be_hidden()
     background_image = page.locator("body").evaluate(
         "el => getComputedStyle(el).backgroundImage"
     )
@@ -156,6 +158,7 @@ def test_embedded_dashboard_uses_embedded_chrome_before_bundle_waits(
     base_url = str(web_server["url"])
 
     _goto(page, base_url, "/?embedded=1&theme=light")
+    page.wait_for_function("() => !document.documentElement.hasAttribute('data-booting')")
 
     expect(page.locator("html")).to_have_attribute("data-theme", "light")
     expect(page.locator("html")).to_have_attribute("data-embedded", "true")
