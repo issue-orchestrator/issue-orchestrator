@@ -425,7 +425,27 @@ async function refreshIssueRows(vm, rowsOverride = null) {
     initFlowLazyVisibleRefresh();
 }
 
+let _refreshInFlight = null;
+
 async function refreshViewModel({ reloadOnListChange = true } = {}) {
+    // Coalesce concurrent calls so the DOMContentLoaded refresh and the
+    // SSE `onopen` refresh (which fire within milliseconds of each other
+    // on dashboard open) share a single in-flight request rather than
+    // each rebuilding the kanban DOM on its own.
+    if (_refreshInFlight) {
+        return _refreshInFlight;
+    }
+    _refreshInFlight = (async () => {
+        try {
+            return await _refreshViewModelImpl({ reloadOnListChange });
+        } finally {
+            _refreshInFlight = null;
+        }
+    })();
+    return _refreshInFlight;
+}
+
+async function _refreshViewModelImpl({ reloadOnListChange = true } = {}) {
     try {
         const endpoint = reloadOnListChange ? '/api/view-model-snapshot' : '/api/view-model';
         const url = new URL(endpoint, window.location.origin);
@@ -534,7 +554,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     try {
         applyDashboardTheme();
         setDashboardInitializing(window.dashboardData?.startupComplete === false);
@@ -543,7 +563,11 @@ document.addEventListener('DOMContentLoaded', () => {
         applyGitHubUsagePrefs();
         renderGitHubUsage();
         applyNetworkSyncScheduler();
-        refreshViewModel({ reloadOnListChange: false });
+        // Await the first refresh so `data-booting` (which suppresses CSS
+        // transitions) stays set through the initial DOM mutations. Without
+        // this await, transitions are re-enabled mid-render and users see
+        // the kanban cards flash as they're replaced.
+        await refreshViewModel({ reloadOnListChange: false });
         initVisibilityObserver();
         const nextRun = document.getElementById('e2eNextRun');
         if (nextRun && nextRun.dataset.nextRunReason) {
@@ -556,6 +580,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 nextRun.textContent = formatted;
             }
         }
+    } catch (err) {
+        console.error('[boot] Dashboard initialization failed:', err);
     } finally {
         markDashboardBooted();
     }

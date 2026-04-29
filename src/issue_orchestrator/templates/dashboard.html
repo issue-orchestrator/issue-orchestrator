@@ -169,7 +169,7 @@
                     <div class="column-cards">
                         {% if column["items"] %}
                             {% for card in column["items"] %}
-                            <div class="issue-card" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
+                            <div class="issue-card" data-card-id="{{ card.card_id }}" data-card-fingerprint="{{ card.fingerprint }}" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
                                 <div class="card-top">
                                     <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue {{ card.issue_label or '#' ~ card.issue_number }}">
                                         {{ card.issue_label or '#' ~ card.issue_number }} {{ card.title }}
@@ -202,10 +202,7 @@
                                         <button class="card-timeline-btn" onclick="openIssueTimeline({{ card.issue_number }}, this);event.stopPropagation();" title="Open timeline for issue #{{ card.issue_number }}" aria-label="Open timeline for issue #{{ card.issue_number }}">&#x1F9ED;</button>
                                     </div>
                                 </div>
-                                <div class="card-line">
-                                    {% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}
-                                    {% if card.phase_age %} &middot; {{ card.phase_age }}{% endif %}
-                                </div>
+                                <div class="card-line"><span class="card-phase-text">{% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}</span><span class="card-phase-age">{% if card.phase_age %} &middot; {{ card.phase_age }}{% endif %}</span></div>
                                 {% if card.queue_wait_reason %}
                                 <div class="card-line card-wait">{{ card.queue_wait_reason }}</div>
                                 {% endif %}

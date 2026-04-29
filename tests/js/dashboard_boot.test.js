@@ -111,9 +111,18 @@ test('clearBootingWhenStable removes data-booting after two animation frames', (
     assert.deepEqual(removed, ['data-booting']);
 });
 
-test('installBootCleanup installs a load fallback while document is loading', () => {
-    let loadHandler = null;
+test('installBootCleanup schedules a setTimeout fallback (no load handler)', () => {
+    // The boot path now relies on core.js (dashboard.js) clearing
+    // `data-booting` *after* the first refreshViewModel resolves; clearing
+    // on the `load` event would re-enable CSS transitions mid-render and
+    // re-introduce the dashboard-open flash. This test guards against
+    // re-introducing a load-event clear and verifies a setTimeout is
+    // scheduled as a safety fallback in case core.js never runs.
+    let timeoutHandler = null;
+    let timeoutMs = null;
+    let loadHandlerAttached = false;
     const removed = [];
+    let frameCallbacks = [];
     const root = {
         document: {
             readyState: 'loading',
@@ -123,16 +132,30 @@ test('installBootCleanup installs a load fallback while document is loading', ()
                 },
             },
         },
-        addEventListener(type, handler, options) {
-            assert.equal(type, 'load');
-            assert.deepEqual(options, { once: true });
-            loadHandler = handler;
+        addEventListener() {
+            loadHandlerAttached = true;
+        },
+        setTimeout(handler, ms) {
+            timeoutHandler = handler;
+            timeoutMs = ms;
+        },
+        requestAnimationFrame(callback) {
+            frameCallbacks.push(callback);
         },
     };
 
     dashboardBoot.installBootCleanup(root);
-    assert.equal(typeof loadHandler, 'function');
+    assert.equal(loadHandlerAttached, false, 'must not attach a load handler');
+    assert.equal(typeof timeoutHandler, 'function');
+    assert.ok(timeoutMs >= 5000, `fallback timeout must be >=5s, was ${timeoutMs}ms`);
     assert.deepEqual(removed, []);
-    loadHandler();
+
+    // When the fallback fires it should clear via clearBootingWhenStable
+    // (i.e. two RAFs before removing the attribute).
+    timeoutHandler();
+    assert.deepEqual(removed, []);
+    frameCallbacks.shift()();
+    assert.deepEqual(removed, []);
+    frameCallbacks.shift()();
     assert.deepEqual(removed, ['data-booting']);
 });

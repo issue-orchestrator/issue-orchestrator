@@ -96,13 +96,18 @@
 
     function installBootCleanup(root) {
         if (!root?.document) return;
-        if (root.document.readyState === 'loading') {
-            root.addEventListener?.(
-                'load',
-                () => clearBootingWhenStable(root),
-                { once: true },
-            );
-        } else {
+        // Safety net only: if the dashboard boot path (core.js's
+        // DOMContentLoaded handler that awaits the first refresh) never
+        // runs to completion — for instance because a script failed to
+        // load — clear `data-booting` after this fallback so the UI is
+        // not permanently locked into the no-transitions state. Under
+        // normal boot, core.js calls `clearBootingWhenStable` itself
+        // after the first `refreshViewModel` resolves; if that races
+        // with this fallback, both calls are idempotent.
+        const FALLBACK_MS = 8000;
+        try {
+            (root.setTimeout || setTimeout)(() => clearBootingWhenStable(root), FALLBACK_MS);
+        } catch (_error) {
             clearBootingWhenStable(root);
         }
     }

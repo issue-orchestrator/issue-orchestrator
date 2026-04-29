@@ -227,6 +227,70 @@ def test_compact_cards_use_fingerprint_delta_path() -> None:
     assert "dataset.cardId" in body
 
 
+def test_compact_cards_sync_phase_age_in_place_when_fingerprint_matches() -> None:
+    """phase_age is excluded from the fingerprint to avoid replacing every
+    running card on every tick. The fingerprint-matched branch must still
+    keep the displayed time string current — sync .card-phase-age
+    textContent in place rather than replacing the node.
+    """
+    js = _read(DASHBOARD_JS)
+    sync_body = _function_body(js, "syncCompactCardPhaseAge")
+    assert ".card-phase-age" in sync_body
+    assert "card.phase_age" in sync_body
+    render_body = _function_body(js, "renderCompactCards")
+    assert "syncCompactCardPhaseAge" in render_body
+    # The HTML the JS produces must wrap phase + age in spans the sync helper
+    # can target without replacing the line.
+    card_html_body = _function_body(js, "renderCompactCardHtml")
+    assert "card-phase-text" in card_html_body
+    assert "card-phase-age" in card_html_body
+
+
+def test_first_refresh_holds_data_booting_through_dom_mutations() -> None:
+    """`data-booting` suppresses CSS transitions during boot. The boot
+    handler must `await` the first refreshViewModel before clearing
+    `data-booting` — otherwise transitions re-enable while cards are
+    being placed and the user sees the dashboard-open flash.
+    """
+    js = _read(DASHBOARD_JS)
+    # The DOMContentLoaded handler must be async (awaiting refreshViewModel).
+    needle = "document.addEventListener('DOMContentLoaded', async () =>"
+    assert needle in js, "DOMContentLoaded handler must be async to await first refresh"
+    handler_start = js.index(needle)
+    # Walk braces to find matching close so we don't misinterpret nested
+    # closures as the handler boundary.
+    depth = 0
+    body_start = js.index("{", handler_start)
+    i = body_start
+    while i < len(js):
+        ch = js[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    handler = js[handler_start:i + 1]
+    assert "await refreshViewModel" in handler
+    assert "markDashboardBooted" in handler
+    assert handler.index("await refreshViewModel") < handler.index("markDashboardBooted")
+
+
+def test_refresh_view_model_coalesces_concurrent_calls() -> None:
+    """DOMContentLoaded and SSE `onopen` both fire `refreshViewModel`
+    within milliseconds of each other on dashboard open. Without dedup
+    we issue two `/api/view-model` requests and trigger two waves of DOM
+    mutations — even if both find matching fingerprints, that's wasted
+    work and a needless second pass over status badges / refresh status.
+    """
+    js = _read(DASHBOARD_JS)
+    assert "_refreshInFlight" in js, "expected concurrent-call dedup state in refreshViewModel"
+    # The dedup must short-circuit before the actual fetch path runs.
+    assert "if (_refreshInFlight)" in js
+    assert "return _refreshInFlight" in js
+
+
 def test_expanded_cards_render_label_badges() -> None:
     js = _read(DASHBOARD_JS)
     marker = "async function loadExpandedColumn"

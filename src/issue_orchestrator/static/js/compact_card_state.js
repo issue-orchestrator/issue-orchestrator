@@ -13,6 +13,8 @@
     }
 
     function computeCompactCardFingerprint(card) {
+        // phase_age is intentionally excluded — see compute_compact_card_fingerprint
+        // in view_models/dashboard_flow.py for the rationale.
         const cardId = card?.card_id ?? '';
         const issueNumber = card?.issue_number ?? '';
         const issueKey = card?.issue_key ?? '';
@@ -20,7 +22,6 @@
         const title = card?.title ?? '';
         const stateLabel = card?.state_label ?? '';
         const phase = card?.phase ?? '';
-        const phaseAge = card?.phase_age ?? '';
         const summary = card?.summary ?? '';
         const stale = Boolean(card?.is_stale);
         const staleReason = card?.stale_reason ?? '';
@@ -39,7 +40,6 @@
             title,
             stateLabel,
             phase,
-            phaseAge,
             summary,
             stale,
             staleReason,
