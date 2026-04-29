@@ -414,3 +414,114 @@ def test_attach_overwrites_stale_run_dir_record_with_authoritative_source(
 
     manifest = json.loads(manifest_path.read_text())
     assert manifest["validation_record_path"] == str(stale_run_dir_record)
+
+
+def test_attach_does_not_truncate_when_record_path_is_run_dir_record(
+    tmp_path: Path,
+) -> None:
+    """When the caller supplies the run-dir record itself as
+    ``record_path`` (e.g., a gate that already wrote the authoritative
+    result there), ``_attach_validation_artifacts`` must not invoke the
+    fd-copy: ``_copy_from_fd`` opens the destination with ``"wb"``,
+    which truncates it before the source fd finishes streaming and
+    leaves an empty JSON file. The helper must detect source==destination
+    and just attach the existing file."""
+    import json
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.completion_processor import CompletionProcessor
+
+    worktree = tmp_path
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir.mkdir(parents=True)
+    record_path = run_dir / "validation-record.json"
+    payload = {"passed": True, "head_sha": "abc", "exit_code": 0}
+    record_path.write_text(json.dumps(payload))
+
+    manifest_path = run_dir / "manifest.json"
+    session_output = MagicMock()
+    session_output.ensure_run_dir.return_value = run_dir
+
+    def _update_manifest(_run_dir: Path, updates: dict) -> None:
+        existing: dict = {}
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text())
+        existing.update(updates)
+        manifest_path.write_text(json.dumps(existing))
+
+    session_output.update_manifest.side_effect = _update_manifest
+
+    processor = CompletionProcessor.__new__(CompletionProcessor)
+    processor.session_output = session_output  # type: ignore[attr-defined]
+
+    processor._attach_validation_artifacts(  # noqa: SLF001
+        worktree=worktree,
+        session_name="run-1",
+        record=None,
+        record_path=record_path,
+    )
+
+    # File contents must be preserved (not truncated to empty JSON).
+    assert json.loads(record_path.read_text()) == payload
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["validation_record_path"] == str(record_path)
+
+
+def test_attach_refused_copy_does_not_fall_back_to_stale_run_dir_record(
+    tmp_path: Path,
+) -> None:
+    """When an authoritative ``record_path`` is supplied but the
+    symlink-safe walk refuses it (e.g., out-of-tree path), the helper
+    must NOT publish a stale run-dir snapshot as if it were the
+    authoritative result. Same path-leak class as #6017 re-review-4 P2
+    in reverse: the caller asked to honor a specific source; honoring
+    "whatever happens to be on disk instead" is wrong."""
+    import json
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.completion_processor import CompletionProcessor
+
+    worktree = tmp_path
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir.mkdir(parents=True)
+    stale_run_dir_record = run_dir / "validation-record.json"
+    stale_run_dir_record.write_text(
+        json.dumps({"passed": False, "head_sha": "stale-local"})
+    )
+
+    # Authoritative source lives outside .issue-orchestrator — the
+    # symlink-safe walk refuses it.
+    outside = worktree / "outside"
+    outside.mkdir()
+    rejected_source = outside / "rec.json"
+    rejected_source.write_text(json.dumps({"passed": True, "head_sha": "rejected"}))
+
+    manifest_path = run_dir / "manifest.json"
+    session_output = MagicMock()
+    session_output.ensure_run_dir.return_value = run_dir
+
+    def _update_manifest(_run_dir: Path, updates: dict) -> None:
+        existing: dict = {}
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text())
+        existing.update(updates)
+        manifest_path.write_text(json.dumps(existing))
+
+    session_output.update_manifest.side_effect = _update_manifest
+
+    processor = CompletionProcessor.__new__(CompletionProcessor)
+    processor.session_output = session_output  # type: ignore[attr-defined]
+
+    processor._attach_validation_artifacts(  # noqa: SLF001
+        worktree=worktree,
+        session_name="run-1",
+        record=None,
+        record_path=rejected_source,
+    )
+
+    # Stale local file is preserved on disk (we don't delete it), but
+    # must NOT be advertised as the authoritative result.
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        assert "validation_record_path" not in manifest, manifest
+    assert not (run_dir / "validation-record.path").exists()
