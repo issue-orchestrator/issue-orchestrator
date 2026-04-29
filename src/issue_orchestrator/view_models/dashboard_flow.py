@@ -7,6 +7,48 @@ from typing import Any
 from ..domain.issue_key import format_issue_label
 
 
+def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
+    """Mirror of `compactCardState.computeCompactCardFingerprint` in
+    `static/js/compact_card_state.js`. Output must match exactly so the
+    server-rendered `data-card-fingerprint` attribute is interpreted as
+    "no change" by the client during the first refresh and the JS skips
+    replacing the DOM node.
+
+    `phase_age` (a relative time string that ticks every few seconds) is
+    intentionally excluded — including it would force every running card
+    to be replaced on every tick, which causes visible flashes. The
+    client syncs the phase-age text in place when a card is reused.
+    """
+
+    def _s(value: Any) -> str:
+        return "" if value is None else str(value)
+
+    raw_labels = card.get("orchestrator_labels")
+    labels: list[Any] = raw_labels if isinstance(raw_labels, list) else []
+    labels_str = ",".join(str(label) for label in labels)
+    stale = "true" if bool(card.get("is_stale")) else "false"
+    parts = [
+        _s(card.get("card_id")),
+        _s(card.get("issue_number")),
+        _s(card.get("issue_key")),
+        _s(card.get("issue_label")),
+        _s(card.get("title")),
+        _s(card.get("state_label")),
+        _s(card.get("phase")),
+        _s(card.get("summary")),
+        stale,
+        _s(card.get("stale_reason")),
+        _s(card.get("issue_url")),
+        _s(card.get("pr_url")),
+        _s(card.get("github_url")),
+        _s(card.get("github_label")),
+        _s(card.get("github_title")),
+        _s(card.get("github_aria_label")),
+        labels_str,
+    ]
+    return "|".join(parts)
+
+
 def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[str, Any]:
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
@@ -27,7 +69,7 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         if primary_is_pr
         else f"Open issue #{issue_number} on GitHub"
     )
-    return {
+    card: dict[str, Any] = {
         "card_id": item.get("card_id") or f"issue-{issue_number}",
         "issue_number": issue_number,
         "issue_key": issue_key,
@@ -56,6 +98,8 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "stale_reason": item.get("stale_reason", ""),
         "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
     }
+    card["fingerprint"] = compute_compact_card_fingerprint(card)
+    return card
 
 
 def exclude_flow_overlaps(

@@ -425,3 +425,105 @@ def test_e2e_tab_and_panels_render(jinja_env):
     assert soup.select_one("#panel-e2e") is not None
     assert soup.select_one("#e2eHeaderBadge") is not None
     assert soup.select_one("#e2eControls") is not None
+
+
+def test_server_rendered_card_carries_fingerprint_for_first_paint_no_flash(jinja_env):
+    """When the first refreshViewModel runs after DOMContentLoaded, the JS
+    diff (`existing.dataset.cardFingerprint !== nextFingerprint`) decides
+    whether to keep or replace each card. The server MUST stamp the same
+    fingerprint string the JS will compute, otherwise every card on the
+    page is replaced once on open and the user sees a flash.
+    """
+    from issue_orchestrator.view_models.dashboard_flow import (
+        compute_compact_card_fingerprint,
+    )
+
+    config = make_config()
+    config.agents = {"agent:web": make_agent_config()}
+    issue = Issue(number=101, title="Ship board", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        active_sessions=[make_session(issue)],
+        cached_queue_issues=[Issue(number=102, title="Queued item", labels=["agent:web"])],
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+
+    cards = soup.select(".issue-card[data-issue]")
+    assert cards, "expected at least one server-rendered issue card"
+    for card_el in cards:
+        assert card_el.get("data-card-id"), (
+            "card missing data-card-id; JS lookup falls back to issue-N but "
+            "explicit id avoids drift if card_id ever differs"
+        )
+        assert card_el.get("data-card-fingerprint"), (
+            "card missing data-card-fingerprint; first JS refresh will replace "
+            "every card on open and re-introduce the dashboard flash"
+        )
+        # The phase line must be split into separate spans so the JS can
+        # update phase_age in place without replacing the whole card.
+        assert card_el.select_one(".card-phase-text") is not None
+        assert card_el.select_one(".card-phase-age") is not None
+
+
+def test_server_rendered_fingerprint_matches_js_helper_output(jinja_env):
+    """Cross-check: the fingerprint stamped on the DOM must equal what the
+    JS helper would compute for the *same* card payload the server passed
+    to the template. If this drifts, every initial card-replacement
+    returns and the flash returns with it.
+    """
+    import json
+    import subprocess
+    import textwrap
+
+    config = make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[Issue(number=4242, title="Render cleanly", labels=["agent:web"])],
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+    card_el = soup.select_one(".issue-card[data-issue]")
+    assert card_el is not None
+    server_fp = card_el.get("data-card-fingerprint")
+
+    # Pluck the exact card dict the template received so the JS helper sees
+    # the same payload — anything else risks false positives or negatives.
+    ctx = vm.template_context()
+    card = next(
+        (
+            c
+            for column in ctx["flow_columns"]
+            for c in column["items"]
+            if c.get("issue_number") == 4242
+        ),
+        None,
+    )
+    assert card is not None, "expected the queued card in flow_columns"
+
+    helper_path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "issue_orchestrator" / "static" / "js" / "compact_card_state.js"
+    )
+    js = textwrap.dedent(
+        f"""
+        const helper = require('{helper_path}');
+        const card = JSON.parse(process.argv[1]);
+        process.stdout.write(helper.computeCompactCardFingerprint(card));
+        """
+    )
+    js_fp = subprocess.run(
+        ["node", "-e", js, json.dumps(card)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert server_fp == js_fp

@@ -73,3 +73,26 @@ test('computeCompactCardFingerprint changes when issue label gains a logical key
     });
     assert.notEqual(before, after);
 });
+
+test('computeCompactCardFingerprint ignores phase_age tick changes', () => {
+    // Including phase_age (a relative time string that ticks every few
+    // seconds) in the fingerprint forces every running card's DOM node
+    // to be replaced on every refresh, which the user perceives as a
+    // flash. The phase-age text is synced in place by renderCompactCards
+    // when the rest of the fingerprint matches.
+    const before = compactCardState.computeCompactCardFingerprint({
+        issue_number: 10,
+        title: 'Running task',
+        phase: 'Coding',
+        phase_age: '2s',
+        state_label: 'running',
+    });
+    const after = compactCardState.computeCompactCardFingerprint({
+        issue_number: 10,
+        title: 'Running task',
+        phase: 'Coding',
+        phase_age: '12s',
+        state_label: 'running',
+    });
+    assert.equal(before, after);
+});

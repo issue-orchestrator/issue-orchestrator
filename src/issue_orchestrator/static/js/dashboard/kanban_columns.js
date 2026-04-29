@@ -154,6 +154,7 @@ function renderCompactCardHtml(card) {
         aria-label="More actions for issue #${n}">&#x22EE;</button>`;
     const phaseLine = card.phase || card.state_label || '';
     const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
+    const phaseLineHtml = `<span class="card-phase-text">${escapeHtml(String(phaseLine))}</span><span class="card-phase-age">${ageStr}</span>`;
     const queueWaitLine = card.queue_wait_reason
         ? `<div class="card-line card-wait">${escapeHtml(String(card.queue_wait_reason))}</div>`
         : '';
@@ -183,11 +184,23 @@ function renderCompactCardHtml(card) {
                 <button class="card-timeline-btn" onclick="openIssueTimeline(${n}, this);event.stopPropagation();" title="Open timeline for issue #${n}" aria-label="Open timeline for issue #${n}">&#x1F9ED;</button>
             </div>
         </div>
-        <div class="card-line">${phaseLine}${ageStr}</div>
+        <div class="card-line">${phaseLineHtml}</div>
         ${queueWaitLine}
         ${detailLine}
         ${badgesDiv}
     </div>`;
+}
+
+function syncCompactCardPhaseAge(node, card) {
+    // phase_age is excluded from the fingerprint so that the relative-time
+    // string ticking ("2s ago" → "5s ago") doesn't force the whole node to
+    // be replaced on every refresh. Instead, sync it in place.
+    const ageEl = node.querySelector('.card-phase-age');
+    if (!ageEl) return;
+    const desired = card.phase_age ? ' · ' + String(card.phase_age) : '';
+    if (ageEl.textContent !== desired) {
+        ageEl.textContent = desired;
+    }
 }
 
 function renderCompactCards(container, items) {
@@ -232,6 +245,7 @@ function renderCompactCards(container, items) {
             node = newNode;
         } else {
             existing.dataset.cardFingerprint = nextFingerprint;
+            syncCompactCardPhaseAge(existing, card);
         }
 
         if (!node) continue;

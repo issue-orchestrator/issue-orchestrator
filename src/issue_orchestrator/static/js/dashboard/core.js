@@ -425,7 +425,45 @@ async function refreshIssueRows(vm, rowsOverride = null) {
     initFlowLazyVisibleRefresh();
 }
 
+// Tracked per request mode: a snapshot fetch (`/api/view-model-snapshot`)
+// is a strict superset of a view-model fetch (`/api/view-model`) — it
+// also carries the rows refreshIssueRows needs. So a snapshot can stand
+// in for any caller, but a view-model-only call must NOT be reused by a
+// caller asking for a snapshot, otherwise refreshIssueRows is silently
+// skipped on list-changing SSE events (queue.changed, session.started, ...).
+let _refreshInFlight = { snapshot: null, viewModel: null };
+
 async function refreshViewModel({ reloadOnListChange = true } = {}) {
+    // Coalesce concurrent calls of the same mode so the DOMContentLoaded
+    // refresh and the SSE `onopen` refresh (which fire within
+    // milliseconds of each other on dashboard open) share a single
+    // request rather than each rebuilding the kanban DOM on its own.
+    if (reloadOnListChange) {
+        if (_refreshInFlight.snapshot) return _refreshInFlight.snapshot;
+        _refreshInFlight.snapshot = (async () => {
+            try {
+                return await _refreshViewModelImpl({ reloadOnListChange: true });
+            } finally {
+                _refreshInFlight.snapshot = null;
+            }
+        })();
+        return _refreshInFlight.snapshot;
+    }
+    // view-model: prefer a snapshot already in flight (it returns a
+    // superset and will satisfy any view-model-only caller).
+    if (_refreshInFlight.snapshot) return _refreshInFlight.snapshot;
+    if (_refreshInFlight.viewModel) return _refreshInFlight.viewModel;
+    _refreshInFlight.viewModel = (async () => {
+        try {
+            return await _refreshViewModelImpl({ reloadOnListChange: false });
+        } finally {
+            _refreshInFlight.viewModel = null;
+        }
+    })();
+    return _refreshInFlight.viewModel;
+}
+
+async function _refreshViewModelImpl({ reloadOnListChange = true } = {}) {
     try {
         const endpoint = reloadOnListChange ? '/api/view-model-snapshot' : '/api/view-model';
         const url = new URL(endpoint, window.location.origin);
@@ -534,7 +572,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     try {
         applyDashboardTheme();
         setDashboardInitializing(window.dashboardData?.startupComplete === false);
@@ -543,7 +581,11 @@ document.addEventListener('DOMContentLoaded', () => {
         applyGitHubUsagePrefs();
         renderGitHubUsage();
         applyNetworkSyncScheduler();
-        refreshViewModel({ reloadOnListChange: false });
+        // Await the first refresh so `data-booting` (which suppresses CSS
+        // transitions) stays set through the initial DOM mutations. Without
+        // this await, transitions are re-enabled mid-render and users see
+        // the kanban cards flash as they're replaced.
+        await refreshViewModel({ reloadOnListChange: false });
         initVisibilityObserver();
         const nextRun = document.getElementById('e2eNextRun');
         if (nextRun && nextRun.dataset.nextRunReason) {
@@ -556,6 +598,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 nextRun.textContent = formatted;
             }
         }
+    } catch (err) {
+        console.error('[boot] Dashboard initialization failed:', err);
     } finally {
         markDashboardBooted();
     }
