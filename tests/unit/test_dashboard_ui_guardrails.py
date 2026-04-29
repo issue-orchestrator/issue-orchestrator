@@ -13,6 +13,8 @@ DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashbo
 ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
 BROWSER_AUTH_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "browser_auth.js"
+THEME_RESOLUTION_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "theme_resolution.js"
+DASHBOARD_BOOT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard_boot.js"
 DASHBOARD_CSS = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard.css"
 
 
@@ -731,6 +733,37 @@ def test_dashboard_bundle_loaded_marker_supports_browser_waits() -> None:
     assert "window.dashboardBundleLoaded = true;" in legacy_wrapper
 
 
+def test_dashboard_first_paint_boot_runs_before_stylesheets() -> None:
+    tmpl = _read(DASHBOARD_TEMPLATE)
+    css = _read_dashboard_css_bundle()
+    js = _read(DASHBOARD_JS)
+    boot_js = _read(DASHBOARD_BOOT_JS)
+    embedded_nav_js = _read(EMBEDDED_NAV_JS)
+
+    assert '<script src="/static/js/theme_resolution.js"></script>' in tmpl
+    assert '<script src="/static/js/dashboard_boot.js"></script>' in tmpl
+    assert tmpl.index('/static/js/theme_resolution.js') < tmpl.index(
+        '/static/js/dashboard_boot.js'
+    )
+    assert tmpl.index('/static/js/dashboard_boot.js') < tmpl.index(
+        '/static/css/dashboard.css'
+    )
+    assert "id=\"dashboardInitStatus\"" in tmpl
+    assert "Initializing orchestrator" in tmpl
+    assert ".dashboard-init-status.is-active" in css
+    assert "html[data-booting=\"true\"] .dashboard-init-status" not in css
+    assert "html[data-embedded=\"true\"] body > .container > header" in css
+    assert "html[data-embedded=\"true\"] .scope-summary" in css
+    assert "window.dashboardBoot.clearBootingWhenStable(window)" in js
+    assert "try {" in js
+    assert "finally" in js
+    assert "VALID_THEME_VALUES" in _read(THEME_RESOLUTION_JS)
+    assert "VALID_THEME_VALUES" not in boot_js
+    assert "VALID_THEME_VALUES" not in embedded_nav_js
+    assert "header.style.display" not in js
+    assert "scope-embedded" not in js
+
+
 def test_dashboard_sse_requires_authenticated_stream_helper() -> None:
     js = _read_dashboard_js_bundle()
     connect_body = _function_body(js, "connectEventStream")
@@ -747,7 +780,11 @@ def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     # Regression: Settings back-link and Cancel must go through embeddedNav
     # so the Dashboard round-trip keeps both embedded=1 and theme.
     tmpl = _read(SETTINGS_TEMPLATE)
+    assert '<script src="/static/js/theme_resolution.js"></script>' in tmpl
     assert '<script src="/static/js/embedded_nav.js"></script>' in tmpl
+    assert tmpl.index('/static/js/theme_resolution.js') < tmpl.index(
+        '/static/js/embedded_nav.js'
+    )
     assert 'id="backToDashboardLink"' in tmpl
     assert 'id="cancelSettingsBtn"' in tmpl
     assert 'onclick="cancelSettings()"' in tmpl
@@ -795,11 +832,19 @@ def test_embedded_nav_module_behavior_verified_by_node_test_runner() -> None:
 
     node = shutil.which("node")
     assert node, "node runtime is required to validate embedded_nav.js behavior"
+    assert THEME_RESOLUTION_JS.exists(), f"theme resolver missing: {THEME_RESOLUTION_JS}"
     assert EMBEDDED_NAV_JS.exists(), f"shared helper missing: {EMBEDDED_NAV_JS}"
     assert EMBEDDED_NAV_TEST_JS.exists(), f"node test missing: {EMBEDDED_NAV_TEST_JS}"
+    assert DASHBOARD_BOOT_JS.exists(), f"dashboard boot helper missing: {DASHBOARD_BOOT_JS}"
 
     result = subprocess.run(
-        [node, "--test", str(EMBEDDED_NAV_TEST_JS)],
+        [
+            node,
+            "--test",
+            str(ROOT / "tests" / "js" / "theme_resolution.test.js"),
+            str(EMBEDDED_NAV_TEST_JS),
+            str(ROOT / "tests" / "js" / "dashboard_boot.test.js"),
+        ],
         capture_output=True,
         text=True,
         cwd=ROOT,

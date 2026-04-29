@@ -14,14 +14,20 @@
 // Node's test runner via require() so URL transformations are verified as
 // real behavior, not template strings.
 (function (root, factory) {
-    const api = factory();
+    const themeResolution = typeof module === 'object' && module.exports
+        ? require('./theme_resolution.js')
+        : root.themeResolution;
+    const api = factory(themeResolution);
     if (typeof module === 'object' && module.exports) {
         module.exports = api;
     }
     if (root) {
         root.embeddedNav = api;
     }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (themeResolution) {
+    if (!themeResolution) {
+        throw new Error('themeResolution helper not loaded');
+    }
     const EMBEDDED_CONTEXT_PARAMS = Object.freeze(['embedded', 'theme']);
 
     function buildHref(basePath, search) {
@@ -45,13 +51,7 @@
     // Kept pure (no DOM / localStorage / matchMedia access) so it can be
     // verified under Node's test runner alongside buildHref.
     function resolveEffectiveTheme(opts) {
-        const { override, search, storedTheme, prefersDark } = opts || {};
-        const urlTheme = new URLSearchParams(search || '').get('theme');
-        const raw = override || urlTheme || storedTheme || 'system';
-        if (raw === 'system') {
-            return prefersDark ? 'dark' : 'light';
-        }
-        return raw;
+        return themeResolution.resolveEffectiveTheme(opts);
     }
 
     return {

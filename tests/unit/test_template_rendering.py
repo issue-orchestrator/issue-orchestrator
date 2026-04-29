@@ -350,15 +350,30 @@ def test_embedded_header_elements_in_tab_bar(jinja_env):
         e2e_status_provider=e2e_disabled,
     )
     soup = render_dashboard(jinja_env, vm)
-    # Embedded header elements exist in the tab bar (hidden by default, shown by JS when embedded)
+    # Embedded header elements exist in the tab bar and are hidden by CSS
+    # until the pre-paint boot state marks the page as embedded.
     tab_bar = soup.select_one(".dashboard-tabs")
     assert tab_bar.select_one("#embeddedBack") is not None
     assert tab_bar.select_one("#embeddedBackLabel") is not None
     assert tab_bar.select_one("#embeddedRepoName") is not None
     assert tab_bar.select_one("#embeddedBadge") is not None
     assert tab_bar.select_one("#embeddedScopeBtn") is not None
-    # They're hidden by default (style="display:none;")
-    assert tab_bar.select_one("#embeddedBack")["style"] == "display:none;"
+    assert "style" not in tab_bar.select_one("#embeddedBack").attrs
+
+
+def test_starting_dashboard_renders_initializing_status(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="starting")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+    init_status = soup.select_one("#dashboardInitStatus")
+    assert init_status is not None
+    assert "is-active" in init_status.get("class", [])
+    assert "Initializing orchestrator" in init_status.get_text(" ")
 
 
 def test_e2e_tab_and_panels_render(jinja_env):

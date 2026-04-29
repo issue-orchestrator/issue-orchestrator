@@ -61,6 +61,11 @@
 * { box-sizing: border-box; }
 :root { color-scheme: dark; }
 [data-theme="light"] { color-scheme: light; }
+html[data-booting="true"] *,
+html[data-booting="true"] *::before,
+html[data-booting="true"] *::after {
+    transition: none !important;
+}
 html,
 body {
     min-height: 100%;
@@ -70,6 +75,9 @@ body {
     font-family: "Segoe UI", "SF Pro Text", "Helvetica Neue", sans-serif;
     color: var(--text);
     background: radial-gradient(circle at top, var(--bg-hero) 0%, var(--bg) 56%);
+}
+html[data-embedded="true"] body > .container > header {
+    display: none;
 }
 
 /* Themed scrollbars */
@@ -321,13 +329,13 @@ h1 {
     background: var(--scope-bg);
 }
 /* When embedded, scope-summary acts as a togglable dropdown overlaying the kanban */
-.scope-summary.scope-embedded {
+html[data-embedded="true"] .scope-summary {
     display: none;
     position: relative;
     z-index: 40;
     box-shadow: 0 8px 24px rgba(0,0,0,0.3);
 }
-.scope-summary.scope-embedded.scope-open {
+html[data-embedded="true"] .scope-summary.scope-open {
     display: block;
 }
 .scope-line {
@@ -349,6 +357,53 @@ h1 {
     margin-bottom: 14px;
     position: relative;
 }
+.dashboard-init-status {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    margin: -2px 0 12px;
+    padding: 10px 12px;
+    min-height: 42px;
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-panel) 86%, var(--accent) 14%);
+    color: var(--text);
+}
+.dashboard-init-status.is-active {
+    display: flex;
+}
+.dashboard-init-pulse {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
+    flex: 0 0 auto;
+    animation: dashboard-init-pulse 1.4s ease-in-out infinite;
+}
+.dashboard-init-copy {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    font-size: 13px;
+}
+.dashboard-init-title {
+    font-weight: 700;
+}
+.dashboard-init-detail {
+    color: var(--text-muted);
+}
+@keyframes dashboard-init-pulse {
+    0%, 100% {
+        opacity: 0.68;
+        transform: scale(0.86);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
 .dashboard-tabs .tab.is-loading {
     opacity: 0.75;
     position: relative;
@@ -361,8 +416,14 @@ body.tab-nav-pending .dashboard-tabs .tab {
     pointer-events: none;
 }
 /* Embedded header elements (shown when inside CC iframe) */
+.embedded-back,
+.embedded-repo,
+.embedded-badge,
+.embedded-scope-btn,
+.embedded-sep {
+    display: none;
+}
 .embedded-back {
-    display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
@@ -378,6 +439,9 @@ body.tab-nav-pending .dashboard-tabs .tab {
     font-size: 13px;
     font-weight: 600;
     box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.18) inset;
+}
+html[data-embedded="true"] .embedded-back {
+    display: inline-flex;
 }
 .embedded-back:hover {
     background: color-mix(in srgb, var(--bg-panel) 60%, var(--accent) 40%);
@@ -401,12 +465,17 @@ body.tab-nav-pending .dashboard-tabs .tab {
     text-overflow: ellipsis;
     max-width: 220px;
 }
+html[data-embedded="true"] .embedded-repo {
+    display: inline-block;
+}
 .embedded-badge {
     font-size: 11px;
     padding: 2px 8px;
 }
+html[data-embedded="true"] .embedded-badge {
+    display: inline-flex;
+}
 .embedded-scope-btn {
-    display: flex;
     align-items: center;
     justify-content: center;
     width: 26px;
@@ -418,12 +487,18 @@ body.tab-nav-pending .dashboard-tabs .tab {
     cursor: pointer;
     flex-shrink: 0;
 }
+html[data-embedded="true"] .embedded-scope-btn {
+    display: flex;
+}
 .embedded-scope-btn:hover { background: var(--bg-panel); color: var(--text); }
 .embedded-sep {
     width: 1px;
     height: 20px;
     background: var(--border);
     flex-shrink: 0;
+}
+html[data-embedded="true"] .embedded-sep {
+    display: block;
 }
 .tab-spacer { flex: 1; }
 .tab-menu-wrap { position: relative; }
