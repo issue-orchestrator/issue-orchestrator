@@ -624,8 +624,9 @@ class TestNarrativeEnrichment:
             EventName.REVIEW_APPROVED,
             {"rounds": 2, "cached": True},
         )
-        assert "reused" in narrative.lower()
+        assert narrative == "Review approval reused for current code"
         assert "rounds" not in narrative
+        assert "prior run" not in narrative.lower()
 
     def _make_run_dir_with_recording(self, tmp_path, name: str) -> str:
         run_dir = tmp_path / name
@@ -643,7 +644,7 @@ class TestNarrativeEnrichment:
                 ),
             },
         )
-        assert "reused" in narrative.lower()
+        assert narrative == "Review result reused for current code"
 
     def test_review_started_fresh_uses_default_narrative(self, tmp_path) -> None:
         narrative = self._write_and_get_narrative(
@@ -661,7 +662,7 @@ class TestNarrativeEnrichment:
             EventName.REVIEW_CHANGES_REQUESTED,
             {"rounds": 3, "cached": True},
         )
-        assert "reused" in narrative.lower()
+        assert narrative == "Changes-requested verdict reused for current code"
         assert "round 3" not in narrative.lower()
 
     def test_pr_created_includes_pr_number(self) -> None:
@@ -791,13 +792,14 @@ def test_cached_replay_across_logical_runs_narrates_reuse_not_rounds(
     fresh_narrative = approved_records[0].data["narrative"]
     cached_narrative = approved_records[1].data["narrative"]
     assert fresh_narrative == "Review approved after 2 rounds"
-    assert "reused" in cached_narrative.lower()
+    assert cached_narrative == "Review approval reused for current code"
     assert "after 2 rounds" not in cached_narrative
+    assert "prior run" not in cached_narrative.lower()
 
     review_started_records = [r for r in store.records if r.event == "review.started"]
     assert len(review_started_records) == 2
     assert review_started_records[0].data.get("narrative") == "Code review started"
-    assert "reused" in review_started_records[1].data.get("narrative", "").lower()
+    assert review_started_records[1].data.get("narrative") == "Review result reused for current code"
 
     # The cached flag must survive from emission into the stored record so
     # downstream consumers (UI, SSE) can key off it.

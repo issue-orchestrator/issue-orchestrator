@@ -149,13 +149,13 @@ def _enrich_round_completed(data: dict[str, Any]) -> str | None:
 
 def _enrich_review_started(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Review result reused from prior run (no new review needed)"
+        return "Review result reused for current code"
     return None
 
 
 def _enrich_review_approved(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Review approval reused from prior run (code unchanged since approval)"
+        return "Review approval reused for current code"
     rounds = data.get("rounds")
     return f"Review approved after {rounds} rounds" if isinstance(rounds, int) and rounds > 1 else None
 
@@ -172,7 +172,7 @@ def _enrich_review_rework_completed(data: dict[str, Any]) -> str | None:
 
 def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Changes-requested verdict reused from prior run (rework still pending)"
+        return "Changes-requested verdict reused for current code"
     rounds = data.get("rounds")
     return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
 

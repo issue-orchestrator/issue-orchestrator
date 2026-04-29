@@ -243,6 +243,12 @@
     gap: 6px;
     margin-top: 6px;
 }
+.timeline-event-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
 .timeline-artifact,
 .timeline-action-btn {
     border: 1px solid var(--border);
@@ -253,6 +259,9 @@
     padding: 3px 8px;
     cursor: pointer;
     text-decoration: none;
+}
+.timeline-event-actions > .timeline-action-btn {
+    white-space: nowrap;
 }
 .timeline-artifact:hover,
 .timeline-action-btn:hover {

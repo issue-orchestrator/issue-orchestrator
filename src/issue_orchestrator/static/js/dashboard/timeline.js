@@ -105,7 +105,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
         `;
     }).join('');
 
-    const affordanceHint = '<div class="timeline-actions-hint">Use the ⋯ button on any event for actions and diagnostics.</div>';
+    const affordanceHint = '<div class="timeline-actions-hint">Use visible row buttons for common artifacts; ⋯ opens details and additional diagnostics.</div>';
     container.innerHTML = `${tocHtml}${cycleHtml}${affordanceHint}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
     if (detailIds.length > 0) {
         container.dataset.timelineDetailIds = detailIds.join(' ');
@@ -243,14 +243,20 @@ function renderTimelineEventActions(actions, eventDetail = null, detailIds = nul
     }
     const secondary = items.filter(item => !used.has(item));
 
-    let html = '<details class="timeline-event-menu">';
-    html += '<summary class="timeline-event-menu-trigger" aria-label="Event actions and details" title="Event actions and details">⋯</summary>';
+    const menuHasItems = Boolean(detailsAction) || secondary.length > 0;
+    let html = '<div class="timeline-event-actions">';
+    for (const item of primary) {
+        html += renderBtn(item.action, item.label);
+    }
+    if (!menuHasItems) {
+        html += '</div>';
+        return html;
+    }
+    html += '<details class="timeline-event-menu">';
+    html += '<summary class="timeline-event-menu-trigger" aria-label="Event details and more actions" title="Event details and more actions">⋯</summary>';
     html += '<div class="timeline-event-menu-items">';
     if (detailsAction) {
         html += renderBtn(detailsAction, 'Event Details', 'timeline-more-item timeline-detail-action');
-    }
-    for (const item of primary) {
-        html += renderBtn(item.action, item.label);
     }
     if (secondary.length > 0) {
         html += '<details class="timeline-more-menu">';
@@ -261,7 +267,7 @@ function renderTimelineEventActions(actions, eventDetail = null, detailIds = nul
         }
         html += '</div></details>';
     }
-    html += '</div></details>';
+    html += '</div></details></div>';
     return html;
 }
 

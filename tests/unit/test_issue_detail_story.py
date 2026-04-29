@@ -362,6 +362,139 @@ def test_review_exchange_rework_events_surface_coder_step_between_review_rounds(
     assert "Coder finished review rework" in narratives[3]
 
 
+def test_user_story_hides_outer_coding_completion_during_review_round() -> None:
+    events = [
+        _evt("review_exchange.round_started", timestamp="2026-04-29T00:57:40Z", logical_run=6, logical_cycle=2, task="review"),
+        {
+            **_evt("agent.coding_completed", timestamp="2026-04-29T00:58:57Z", logical_run=6, logical_cycle=2, task="code", status="completed"),
+            "event_intent": "coding",
+            "logical_phase": "coding",
+            "narrative": "Agent finished coding",
+        },
+        _evt(
+            "review_exchange.round_completed",
+            timestamp="2026-04-29T00:59:11Z",
+            logical_run=6,
+            logical_cycle=2,
+            task="review",
+            status="completed",
+            summary="ok",
+        ),
+        _evt(
+            "review.approved",
+            timestamp="2026-04-29T00:59:14Z",
+            logical_run=6,
+            logical_cycle=2,
+            task="review",
+            status="completed",
+            summary="Looks good.",
+        ),
+    ]
+
+    story_payload = build_issue_detail_view_model(
+        issue_number=361,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/361",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="user",
+    )
+    ops_payload = build_issue_detail_view_model(
+        issue_number=361,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/361",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="ops",
+    )
+
+    story_step_events = [step["event"] for step in story_payload["timeline_steps"]]
+    ops_step_events = [step["event"] for step in ops_payload["timeline_steps"]]
+    assert "agent.coding_completed" not in story_step_events
+    assert "agent.coding_completed" in ops_step_events
+
+    latest_cycle = story_payload["runs"][-1]["cycles"][0]
+    assert [group["label"] for group in latest_cycle["phase_groups"]] == ["Review"]
+
+
+def test_user_story_review_exchange_completed_closes_round_before_later_coding_completion() -> None:
+    events = [
+        _evt("review_exchange.round_started", timestamp="2026-04-29T00:57:40Z", logical_run=6, logical_cycle=2, task="review"),
+        _evt(
+            "review_exchange.completed",
+            timestamp="2026-04-29T00:59:11Z",
+            logical_run=6,
+            logical_cycle=2,
+            task="review",
+            status="completed",
+            summary="review exchange complete",
+        ),
+        {
+            **_evt("agent.coding_completed", timestamp="2026-04-29T00:59:20Z", logical_run=6, logical_cycle=2, task="code", status="completed"),
+            "event_intent": "coding",
+            "logical_phase": "coding",
+            "narrative": "Agent finished coding",
+        },
+    ]
+
+    payload = build_issue_detail_view_model(
+        issue_number=361,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/361",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="user",
+    )
+
+    step_events = [step["event"] for step in payload["timeline_steps"]]
+    assert step_events == [
+        "review_exchange.round_started",
+        "review_exchange.completed",
+        "agent.coding_completed",
+    ]
+
+
+def test_user_story_review_round_projection_uses_source_event_boundaries() -> None:
+    events = [
+        {
+            **_evt("review.started", timestamp="2026-04-29T00:57:40Z", logical_run=6, logical_cycle=2, task="review"),
+            "source_event": "review_exchange.round_started",
+        },
+        {
+            **_evt("agent.coding_completed", timestamp="2026-04-29T00:58:57Z", logical_run=6, logical_cycle=2, task="code", status="completed"),
+            "source_event": "observation.completion_detected",
+            "event_intent": "coding",
+            "logical_phase": "coding",
+            "narrative": "Agent finished coding",
+        },
+        _evt(
+            "review_exchange.round_completed",
+            timestamp="2026-04-29T00:59:11Z",
+            logical_run=6,
+            logical_cycle=2,
+            task="review",
+            status="completed",
+            summary="ok",
+        ),
+    ]
+
+    payload = build_issue_detail_view_model(
+        issue_number=361,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/361",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="user",
+    )
+
+    step_events = [step["event"] for step in payload["timeline_steps"]]
+    assert "agent.coding_completed" not in step_events
+
+
 def test_user_story_collapses_initial_review_start_cluster_to_single_step() -> None:
     events = [
         _evt("review.started", timestamp="2026-02-16T10:00:00Z", logical_run=1, logical_cycle=1, task="review"),
