@@ -19,3 +19,11 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "e2e_triage.js",
     "e2e_run_view.js",
 )
+
+DASHBOARD_CSS_CHUNKS: tuple[str, ...] = (
+    "base.css",
+    "cards.css",
+    "issue_detail.css",
+    "overlays.css",
+    "e2e_run_detail.css",
+)

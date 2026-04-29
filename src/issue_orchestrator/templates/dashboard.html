@@ -9,7 +9,9 @@
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
     <script src="/static/js/theme_resolution.js"></script>
     <script src="/static/js/dashboard_boot.js"></script>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
+    {% for chunk in dashboard_css_chunks %}
+    <link rel="stylesheet" href="/static/css/dashboard/{{ chunk }}">
+    {% endfor %}
     <link rel="stylesheet" href="/static/css/ui_primitives.css">
     <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
 </head>

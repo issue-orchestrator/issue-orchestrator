@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlparse
 
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_CSS_CHUNKS
 from playwright.sync_api import Page, expect
 
 
@@ -150,6 +151,29 @@ def test_dashboard_prepaint_theme_uses_stored_light_preference(
     )
     assert "rgb(220, 233, 248)" in background_image
     assert "rgb(15, 23, 34)" not in background_image
+
+
+def test_dashboard_loads_split_css_without_import_entrypoint(
+    page: Page, web_server: dict[str, object]
+) -> None:
+    base_url = str(web_server["url"])
+    css_paths: list[str] = []
+
+    def record_css_request(request) -> None:
+        path = urlparse(request.url).path
+        if path.startswith("/static/css/"):
+            css_paths.append(path)
+
+    page.on("request", record_css_request)
+
+    _goto(page, base_url, "/?embedded=1&theme=dark")
+
+    expected_chunks = {
+        f"/static/css/dashboard/{chunk}"
+        for chunk in DASHBOARD_CSS_CHUNKS
+    }
+    assert expected_chunks.issubset(set(css_paths))
+    assert "/static/css/dashboard.css" not in css_paths
 
 
 def test_embedded_dashboard_uses_embedded_chrome_before_bundle_waits(

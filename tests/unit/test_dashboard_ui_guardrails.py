@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_CSS_CHUNKS
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 
 
@@ -32,10 +33,9 @@ def _read_dashboard_js_bundle() -> str:
 
 
 def _read_dashboard_css_bundle() -> str:
-    wrapper = _read(DASHBOARD_CSS)
-    bundle = [wrapper]
-    for match in re.finditer(r'@import url\("/static/css/(?P<path>dashboard/[^"]+)"\);', wrapper):
-        bundle.append(_read(DASHBOARD_CSS.parent / match.group("path")))
+    bundle = [_read(DASHBOARD_CSS)]
+    for chunk in DASHBOARD_CSS_CHUNKS:
+        bundle.append(_read(DASHBOARD_CSS.parent / "dashboard" / chunk))
     return "\n".join(bundle)
 
 
@@ -59,16 +59,17 @@ def _function_body(source: str, name: str) -> str:
     raise AssertionError(f"Function '{name}' body end not found")
 
 
-def test_dashboard_css_entrypoint_imports_split_stylesheets() -> None:
+def test_dashboard_css_entrypoint_does_not_import_split_stylesheets() -> None:
     wrapper = _read(DASHBOARD_CSS)
 
-    assert wrapper.splitlines() == [
-        '@import url("/static/css/dashboard/base.css");',
-        '@import url("/static/css/dashboard/cards.css");',
-        '@import url("/static/css/dashboard/issue_detail.css");',
-        '@import url("/static/css/dashboard/overlays.css");',
-        '@import url("/static/css/dashboard/e2e_run_detail.css");',
-    ]
+    assert "@import" not in wrapper
+    assert DASHBOARD_CSS_CHUNKS == (
+        "base.css",
+        "cards.css",
+        "issue_detail.css",
+        "overlays.css",
+        "e2e_run_detail.css",
+    )
     assert ".issue-detail-drawer" in _read_dashboard_css_bundle()
 
 
@@ -745,8 +746,11 @@ def test_dashboard_first_paint_boot_runs_before_stylesheets() -> None:
     assert tmpl.index('/static/js/theme_resolution.js') < tmpl.index(
         '/static/js/dashboard_boot.js'
     )
+    assert '<link rel="stylesheet" href="/static/css/dashboard.css">' not in tmpl
+    assert "{% for chunk in dashboard_css_chunks %}" in tmpl
+    assert '<link rel="stylesheet" href="/static/css/dashboard/{{ chunk }}">' in tmpl
     assert tmpl.index('/static/js/dashboard_boot.js') < tmpl.index(
-        '/static/css/dashboard.css'
+        '/static/css/dashboard/'
     )
     assert "id=\"dashboardInitStatus\"" in tmpl
     assert "Initializing orchestrator" in tmpl
