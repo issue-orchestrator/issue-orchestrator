@@ -286,7 +286,7 @@ def test_review_exchange_cache_requires_validation(scenario_repo: Path):
         .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
         .validation(cmd=script("validate_pass.sh")) \
         .review_exchange(mode="via-local-loop", require_validation=True) \
-        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .run()
     assert ctx2 is not None
 

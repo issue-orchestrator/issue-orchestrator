@@ -22,6 +22,7 @@ from issue_orchestrator.control.actions import (
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
+    SupersedePullRequestAction,
 )
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
@@ -557,6 +558,40 @@ class TestAddCommentAction:
         assert payload.get("comment_excerpt") == long_comment
 
 
+class TestSupersedePullRequestAction:
+    """Tests for SUPERSEDE_PR action."""
+
+    def test_supersede_pr_comments_then_closes_pr(self, applier, mock_repository_host):
+        """Superseding a PR is an ActionApplier-owned GitHub mutation."""
+        mock_repository_host.add_comment.return_value = "https://github.com/owner/repo/pull/376#issuecomment-1"
+        action = SupersedePullRequestAction(
+            issue_number=559,
+            pr_number=376,
+            comment="Superseded by reset and retry from scratch.",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert result.details["pr_number"] == 376
+        mock_repository_host.add_comment.assert_called_once_with(376, action.comment)
+        mock_repository_host.close_pr.assert_called_once_with(376)
+
+    def test_supersede_pr_fails_when_close_fails(self, applier, mock_repository_host):
+        """Scratch reset callers must see PR supersession failures."""
+        mock_repository_host.close_pr.side_effect = RuntimeError("GitHub refused")
+        action = SupersedePullRequestAction(
+            issue_number=559,
+            pr_number=376,
+            comment="Superseded by reset and retry from scratch.",
+        )
+
+        result = applier.apply(action)
+
+        assert not result.success
+        assert "GitHub refused" in (result.error or "")
+
+
 class TestEscalateToHumanAction:
     """Tests for ESCALATE_TO_HUMAN action."""
 
@@ -1042,6 +1077,7 @@ class TestClaimGateAudit:
         ActionType.REMOVE_LABEL,
         ActionType.SYNC_LABELS,
         ActionType.ADD_COMMENT,
+        ActionType.SUPERSEDE_PR,
         ActionType.ESCALATE_TO_HUMAN,
         ActionType.QUEUE_REVIEW,
     }
@@ -1092,6 +1128,7 @@ class TestClaimGateAudit:
             ActionType.REMOVE_LABEL: "_apply_remove_label",
             ActionType.SYNC_LABELS: "_apply_sync_labels",
             ActionType.ADD_COMMENT: "_apply_add_comment",
+            ActionType.SUPERSEDE_PR: "_apply_supersede_pr",
             ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
         }

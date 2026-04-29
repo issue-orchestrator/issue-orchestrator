@@ -212,6 +212,7 @@ class MockGitHubAdapter:
         self.prs: dict[str, list[PRInfo]] = {}  # branch -> PRs
         self.comments: list[dict] = []
         self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
+        self.close_pr_calls: list[int] = []
 
         # Call tracking for assertions
         self.add_label_calls: list[tuple] = []
@@ -355,6 +356,13 @@ class MockGitHubAdapter:
     def get_pr_reviews(self, pr_number: int) -> list[dict]:
         """Get reviews for a PR (mock)."""
         return self.pr_reviews.get(pr_number, [])
+
+    def close_pr(self, pr_number: int) -> None:
+        """Close a PR (mock)."""
+        self.close_pr_calls.append(pr_number)
+        pr = self.get_pr(pr_number)
+        if pr is not None:
+            pr.state = "closed"
 
     def create_issue(
         self,

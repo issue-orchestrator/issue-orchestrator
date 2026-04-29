@@ -10,6 +10,7 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+import json
 import os
 import pytest
 from dataclasses import dataclass, field
@@ -643,6 +644,7 @@ class TestLaunchIssueSession:
         launcher_bundle,
         sample_issue,
         mock_worktree_manager,
+        mock_events,
     ):
         """Scratch pending label should force fresh worktree + fresh branch from base."""
         scratch_label = launcher_bundle.launcher._lm.reset_retry_scratch_pending  # noqa: SLF001
@@ -660,6 +662,13 @@ class TestLaunchIssueSession:
         branch_name = create_call["branch_name"]
         assert isinstance(branch_name, str)
         assert branch_name.startswith(f"{sample_issue.number}-scratch-")
+        started = next(e for e in mock_events.events if str(e.name) == "session.started")
+        assert started.data["reset_from_scratch"] is True
+        run_dir = Path(started.data["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert manifest["reset_from_scratch"] is True
+        assert manifest["review_cache_boundary"] == "scratch_reset"
+        assert manifest["review_cache_boundary_started_at"] == manifest["started_at"]
 
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(

@@ -448,12 +448,17 @@ class SessionOutput(Protocol):
         self,
         worktree_path: Path,
         session_name: str,
+        *,
+        not_before_started_at: str | None = None,
     ) -> ReviewExchangeSummary | None:
         """Load stored review exchange summary for a session.
 
         Args:
             worktree_path: Path to the worktree
             session_name: Session name to load summary
+            not_before_started_at: Optional ISO timestamp boundary. When set,
+                summaries from runs that started before this timestamp are
+                ignored so fresh retry boundaries cannot reuse older reviews.
 
         Returns:
             ReviewExchangeSummary if found, None otherwise

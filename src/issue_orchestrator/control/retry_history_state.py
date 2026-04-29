@@ -25,6 +25,19 @@ class HistoryIssueRemovalResult:
     removed_completed_today: bool
 
 
+@dataclass(frozen=True)
+class PendingStateClearResult:
+    """Outcome for removing stale queued review/rework/cleanup state."""
+
+    review_count_before: int
+    review_count_after: int
+    rework_count_before: int
+    rework_count_after: int
+    cleanup_count_before: int
+    cleanup_count_after: int
+    superseded_prs: tuple[int, ...]
+
+
 class RetryHistoryState:
     """Owns retry/history mutations that make issues launchable again."""
 
@@ -85,3 +98,43 @@ class RetryHistoryState:
             return False
         self._state.priority_queue.insert(0, issue_number)
         return True
+
+    def clear_scratch_retry_pending_state(
+        self,
+        issue_number: int,
+        superseded_prs: Iterable[int],
+    ) -> PendingStateClearResult:
+        """Remove stale pending review/rework/cleanup items after a scratch reset."""
+        superseded_pr_numbers = set(superseded_prs)
+        review_count_before = len(self._state.pending_reviews)
+        rework_count_before = len(self._state.pending_reworks)
+        cleanup_count_before = len(self._state.pending_cleanups)
+
+        self._state.pending_reviews = [
+            review
+            for review in self._state.pending_reviews
+            if review.issue_number != issue_number
+            and review.pr_number not in superseded_pr_numbers
+        ]
+        self._state.pending_reworks = [
+            rework
+            for rework in self._state.pending_reworks
+            if rework.resolve_issue_number() != issue_number
+            and rework.pr_number not in superseded_pr_numbers
+        ]
+        self._state.pending_cleanups = [
+            cleanup
+            for cleanup in self._state.pending_cleanups
+            if cleanup.issue_number != issue_number
+            and cleanup.pr_number not in superseded_pr_numbers
+        ]
+
+        return PendingStateClearResult(
+            review_count_before=review_count_before,
+            review_count_after=len(self._state.pending_reviews),
+            rework_count_before=rework_count_before,
+            rework_count_after=len(self._state.pending_reworks),
+            cleanup_count_before=cleanup_count_before,
+            cleanup_count_after=len(self._state.pending_cleanups),
+            superseded_prs=tuple(sorted(superseded_pr_numbers)),
+        )

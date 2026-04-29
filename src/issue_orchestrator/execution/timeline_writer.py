@@ -147,15 +147,27 @@ def _enrich_round_completed(data: dict[str, Any]) -> str | None:
     return f"Review round {ri} completed{suffix}"
 
 
+def _enrich_session_started(data: dict[str, Any]) -> str | None:
+    if data.get("reset_from_scratch"):
+        return "Scratch coding agent started"
+    return None
+
+
+def _enrich_issue_unblocked(data: dict[str, Any]) -> str | None:
+    if data.get("from_scratch"):
+        return "Scratch reset requested"
+    return None
+
+
 def _enrich_review_started(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Review result reused for current code"
+        return "Cached review result reused for unchanged commit"
     return None
 
 
 def _enrich_review_approved(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Review approval reused for current code"
+        return "Cached review approval reused for unchanged commit"
     rounds = data.get("rounds")
     return f"Review approved after {rounds} rounds" if isinstance(rounds, int) and rounds > 1 else None
 
@@ -172,7 +184,7 @@ def _enrich_review_rework_completed(data: dict[str, Any]) -> str | None:
 
 def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
     if data.get("cached"):
-        return "Changes-requested verdict reused for current code"
+        return "Cached changes-requested verdict reused for unchanged commit"
     rounds = data.get("rounds")
     return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
 
@@ -188,6 +200,8 @@ def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
 
 
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
+    "session.started": _enrich_session_started,
+    "issue.unblocked": _enrich_issue_unblocked,
     "review.started": _enrich_review_started,
     "review_exchange.round_started": _enrich_round_started,
     "review_exchange.round_completed": _enrich_round_completed,

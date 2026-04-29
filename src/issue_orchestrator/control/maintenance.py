@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+    from ..ports.pull_request_tracker import PullRequestTracker
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
     from ..ports.timeline_store import TimelineStore
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
     from ..ports.label_store import LabelStore
 
-from .actions import RemoveLabelAction
+from .actions import RemoveLabelAction, SupersedePullRequestAction
 from .worktree_manager import get_worktree_path
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,9 @@ class ResetResult:
     issue_number: int
     deleted_worktree: str | None = None
     deleted_branch: str | None = None
+    deleted_branches: list[str] | None = None
+    superseded_prs: list[int] | None = None
+    timeline_events_deleted: int | None = None
     labels_removed: list[str] | None = None
     error: str | None = None
 
@@ -82,6 +86,8 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
     completed_today: list[int],
     label_store: "LabelStore | None" = None,
     timeline_store: "TimelineStore | None" = None,
+    from_scratch: bool = False,
+    repository_host: "PullRequestTracker | None" = None,
 ) -> ResetResult:
     """Reset an issue to pristine state for fresh retry.
 
@@ -110,30 +116,84 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
     deleted_worktree: str | None = None
     deleted_branch: str | None = None
     deleted_branches: list[str] = []
+    superseded_prs: list[int] = []
+    timeline_events_deleted: int | None = None
     labels_removed: list[str] = []
 
     try:
         # 1. Delete local worktree
         worktree_path = get_worktree_path(config, issue_number)
+        logger.info(
+            "[reset] Begin issue reset: issue=%d from_scratch=%s worktree=%s exists=%s",
+            issue_number,
+            from_scratch,
+            worktree_path,
+            worktree_path.exists(),
+        )
         if worktree_path.exists():
             try:
                 worktree_manager.remove(worktree_path)
                 deleted_worktree = str(worktree_path)
-                logger.info("[reset] Deleted worktree: %s", worktree_path)
+                if worktree_path.exists():
+                    message = f"Worktree still exists after removal: {worktree_path}"
+                    if from_scratch:
+                        raise RuntimeError(message)
+                    logger.warning("[reset] %s", message)
+                else:
+                    logger.info("[reset] Deleted worktree: %s", worktree_path)
             except Exception as e:
                 logger.warning("[reset] Failed to delete worktree %s: %s", worktree_path, e)
+                if from_scratch:
+                    raise RuntimeError(f"Scratch reset failed to delete worktree {worktree_path}: {e}") from e
 
-        # 2. Delete remote branch
+        # 2. Supersede existing PRs before deleting their branches. GitHub has
+        # no native "superseded" PR state, so the orchestrator comments and
+        # closes open issue PRs to make the boundary visible.
+        if from_scratch:
+            if repository_host is None:
+                raise RuntimeError("Scratch reset requires repository_host to supersede open PRs")
+            for pr in repository_host.get_prs_for_issue(issue_number, state="open"):
+                comment = (
+                    "Superseded by reset and retry from scratch.\n\n"
+                    "The orchestrator is discarding prior work, branch state, "
+                    "validation, and review approvals for this issue. A future "
+                    "attempt will use a fresh branch from the configured base."
+                )
+                result = action_applier.apply(
+                    SupersedePullRequestAction(
+                        issue_number=issue_number,
+                        pr_number=pr.number,
+                        comment=comment,
+                        reason="reset and retry from scratch",
+                    )
+                )
+                if not result.success:
+                    raise RuntimeError(
+                        f"failed to supersede PR #{pr.number}: "
+                        f"{result.error or 'unknown error'}"
+                    )
+                superseded_prs.append(pr.number)
+                logger.info(
+                    "[reset] Superseded PR #%d for scratch reset of issue #%d",
+                    pr.number,
+                    issue_number,
+                )
+
+        # 3. Delete remote branches
         branch_names = _find_issue_branches(working_copy, config.repo_root, issue_number)
         for branch_name in branch_names:
             try:
-                working_copy.delete_remote_branch(config.repo_root, branch_name)
+                deleted = working_copy.delete_remote_branch(config.repo_root, branch_name)
+                if deleted is False:
+                    raise RuntimeError("delete_remote_branch returned False")
                 if deleted_branch is None:
                     deleted_branch = branch_name
                 deleted_branches.append(branch_name)
                 logger.info("[reset] Deleted remote branch: %s", branch_name)
             except Exception as e:
                 logger.warning("[reset] Failed to delete remote branch %s: %s", branch_name, e)
+                if from_scratch:
+                    raise RuntimeError(f"Scratch reset failed to delete remote branch {branch_name}: {e}") from e
         if len(deleted_branches) > 1:
             logger.info(
                 "[reset] Deleted %d remote branches for issue #%d: %s",
@@ -142,7 +202,7 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
                 deleted_branches,
             )
 
-        # 3. Remove ALL orchestrator-owned labels (not just blocking)
+        # 4. Remove ALL orchestrator-owned labels (not just blocking)
         ours = label_manager.get_ours(current_labels)
         for label in ours:
             action = RemoveLabelAction(
@@ -159,15 +219,22 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
                     "[reset] Failed to remove label '%s' from #%d: %s",
                     label, issue_number, result.error or "unknown error"
                 )
+                if from_scratch:
+                    raise RuntimeError(
+                        f"Scratch reset failed to remove label '{label}' from issue #{issue_number}: "
+                        f"{result.error or 'unknown error'}"
+                    )
 
-        # 4. Clear label persistence store
+        # 5. Clear label persistence store
         if label_store is not None:
             try:
                 label_store.remove_issue(issue_number)
             except Exception as e:
                 logger.warning("[reset] Failed to clear label store for #%d: %s", issue_number, e)
+                if from_scratch:
+                    raise RuntimeError(f"Scratch reset failed to clear label store for #{issue_number}: {e}") from e
 
-        # 5. Remove from session history
+        # 6. Remove from session history
         session_history[:] = [
             entry for entry in session_history
             if entry.issue_number != issue_number
@@ -175,20 +242,26 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
         if issue_number in completed_today:
             completed_today.remove(issue_number)
 
-        # 6. Clear timeline data
+        # 7. Clear timeline data
         if timeline_store is not None:
             try:
-                deleted_count = timeline_store.delete(issue_number)
-                logger.info("[reset] Cleared %d timeline events for issue #%d", deleted_count, issue_number)
+                timeline_events_deleted = timeline_store.delete(issue_number)
+                logger.info("[reset] Cleared %d timeline events for issue #%d", timeline_events_deleted, issue_number)
             except Exception as e:
                 logger.warning("[reset] Failed to clear timeline for #%d: %s", issue_number, e)
+                if from_scratch:
+                    raise RuntimeError(f"Scratch reset failed to clear timeline for #{issue_number}: {e}") from e
 
         logger.info(
-            "[reset] Issue #%d reset complete: worktree=%s branch=%s labels=%s",
+            "[reset] Issue #%d reset complete: from_scratch=%s worktree=%s branches=%s "
+            "superseded_prs=%s labels=%s timeline_events_deleted=%s",
             issue_number,
+            from_scratch,
             deleted_worktree or "(none)",
-            deleted_branch or "(none)",
+            deleted_branches or "(none)",
+            superseded_prs or "(none)",
             labels_removed or "(none)",
+            timeline_events_deleted,
         )
 
         return ResetResult(
@@ -196,6 +269,9 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
             issue_number=issue_number,
             deleted_worktree=deleted_worktree,
             deleted_branch=deleted_branch,
+            deleted_branches=deleted_branches,
+            superseded_prs=superseded_prs,
+            timeline_events_deleted=timeline_events_deleted,
             labels_removed=labels_removed,
         )
 
@@ -206,6 +282,9 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
             issue_number=issue_number,
             deleted_worktree=deleted_worktree,
             deleted_branch=deleted_branch,
+            deleted_branches=deleted_branches,
+            superseded_prs=superseded_prs,
+            timeline_events_deleted=timeline_events_deleted,
             labels_removed=labels_removed,
             error=str(e),
         )

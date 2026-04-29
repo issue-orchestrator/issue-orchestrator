@@ -326,6 +326,8 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             completed_today=state.completed_today,
             label_store=deps.label_store,
             timeline_store=deps.timeline_store if from_scratch else None,
+            from_scratch=from_scratch,
+            repository_host=repository_host,
         )
         if not result.success:
             return None, _make_reset_failure(
@@ -333,6 +335,8 @@ def _reset_and_retry_issue(  # noqa: PLR0913
                 result,
                 result.error or "Unknown error",
             )
+        if from_scratch:
+            _clear_scratch_retry_pending_state(state, issue_number, result)
 
         pending_labels_to_add = _pending_labels_for_retry(
             from_scratch=from_scratch,
@@ -394,6 +398,25 @@ def _reset_and_retry_issue(  # noqa: PLR0913
     except Exception as exc:
         logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, exc)
         return None, {"issue": issue_number, "error": str(exc)}
+
+
+def _clear_scratch_retry_pending_state(state: Any, issue_number: int, result: Any) -> None:
+    clear_result = RetryHistoryState(state).clear_scratch_retry_pending_state(
+        issue_number=issue_number,
+        superseded_prs=getattr(result, "superseded_prs", None) or (),
+    )
+    logger.info(
+        "[reset-retry] Cleared scratch retry pending state for issue #%d: "
+        "reviews %d->%d reworks %d->%d cleanups %d->%d superseded_prs=%s",
+        issue_number,
+        clear_result.review_count_before,
+        clear_result.review_count_after,
+        clear_result.rework_count_before,
+        clear_result.rework_count_after,
+        clear_result.cleanup_count_before,
+        clear_result.cleanup_count_after,
+        list(clear_result.superseded_prs),
+    )
 
 
 def _pending_labels_for_retry(
@@ -501,6 +524,9 @@ def _make_reset_success(
         "issue": issue_number,
         "deleted_worktree": result.deleted_worktree,
         "deleted_branch": result.deleted_branch,
+        "deleted_branches": getattr(result, "deleted_branches", None),
+        "superseded_prs": getattr(result, "superseded_prs", None),
+        "timeline_events_deleted": getattr(result, "timeline_events_deleted", None),
         "labels_removed": result.labels_removed,
         "pending_label": pending_label,
         "pending_labels": pending_labels_to_add,
@@ -520,6 +546,9 @@ def _make_reset_failure(
     partial: dict[str, Any] = {
         "deleted_worktree": result.deleted_worktree,
         "deleted_branch": result.deleted_branch,
+        "deleted_branches": getattr(result, "deleted_branches", None),
+        "superseded_prs": getattr(result, "superseded_prs", None),
+        "timeline_events_deleted": getattr(result, "timeline_events_deleted", None),
         "labels_removed": result.labels_removed,
     }
     if pending_labels:

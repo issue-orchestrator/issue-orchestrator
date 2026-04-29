@@ -1241,9 +1241,10 @@ def remove_worktree(worktree_path: Path) -> None:
         repo_root = _resolve_repo_root_from_worktree(worktree_path)
         if repo_root is None:
             raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
+        branch_name = get_worktree_branch(worktree_path)
 
         # Remove the worktree
-        cmd = ["worktree", "remove", str(worktree_path)]
+        cmd = ["worktree", "remove", "--force", str(worktree_path)]
         result = _git_run(
             repo_root,
             cmd,
@@ -1251,17 +1252,18 @@ def remove_worktree(worktree_path: Path) -> None:
         )
 
         if result.returncode != 0:
-            logger.error(
-                "Worktree removal failed: path=%s stderr=%s",
+            logger.warning(
+                "Worktree removal via git failed; deleting directory: path=%s stderr=%s",
                 worktree_path,
                 result.stderr.strip(),
             )
+            shutil.rmtree(worktree_path, ignore_errors=True)
+
+        if worktree_path.exists():
             raise WorktreeError(
-                f"Failed to remove worktree: {result.stderr}"
+                f"Failed to remove worktree path after git/rmtree cleanup: {worktree_path}"
             )
 
-        # Get the branch name from the worktree
-        branch_name = get_worktree_branch(worktree_path)
         if branch_name:
             # Delete the branch
             cmd = ["branch", "-D", branch_name]

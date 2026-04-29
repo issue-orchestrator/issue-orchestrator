@@ -9,8 +9,9 @@ from issue_orchestrator.control.maintenance import (
     ResetResult,
     reset_issue,
 )
-from issue_orchestrator.control.actions import RemoveLabelAction
+from issue_orchestrator.control.actions import RemoveLabelAction, SupersedePullRequestAction
 from issue_orchestrator.domain.models import SessionHistoryEntry
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
 
 # =============================================================================
@@ -761,6 +762,124 @@ class TestResetIssue:
 
         assert result.success is True
         timeline_store.delete.assert_called_once_with(555)
+
+    def test_reset_issue_from_scratch_closes_prs_and_reports_full_cleanup(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        worktree_path = mock_config.worktree_base / f"{mock_config.repo_root.name}-559"
+        worktree_path.mkdir(parents=True)
+        mock_worktree_manager.remove.side_effect = lambda path: path.rmdir()
+        mock_working_copy.list_remote_branches.return_value = ["origin/559-scratch-old"]
+        mock_working_copy.delete_remote_branch.return_value = True
+        timeline_store = MagicMock()
+        timeline_store.delete.return_value = 9
+        repository_host = MagicMock()
+        repository_host.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=376,
+                title="#559: old attempt",
+                url="https://github.com/owner/repo/pull/376",
+                branch="559-scratch-old",
+                body="",
+                state="open",
+                labels=[],
+            )
+        ]
+
+        result = reset_issue(
+            issue_number=559,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            timeline_store=timeline_store,
+            from_scratch=True,
+            repository_host=repository_host,
+        )
+
+        assert result.success is True
+        assert result.deleted_worktree == str(worktree_path)
+        assert result.deleted_branch == "559-scratch-old"
+        assert result.deleted_branches == ["559-scratch-old"]
+        assert result.superseded_prs == [376]
+        assert result.timeline_events_deleted == 9
+        supersede_actions = [
+            applier_call.args[0]
+            for applier_call in mock_action_applier.apply.call_args_list
+            if isinstance(applier_call.args[0], SupersedePullRequestAction)
+        ]
+        assert len(supersede_actions) == 1
+        assert supersede_actions[0].issue_number == 559
+        assert supersede_actions[0].pr_number == 376
+        assert "Superseded by reset and retry from scratch" in supersede_actions[0].comment
+
+    def test_reset_issue_from_scratch_fails_when_worktree_survives(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        worktree_path = mock_config.worktree_base / f"{mock_config.repo_root.name}-560"
+        worktree_path.mkdir(parents=True)
+        mock_working_copy.list_remote_branches.return_value = []
+
+        result = reset_issue(
+            issue_number=560,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            from_scratch=True,
+            repository_host=MagicMock(),
+        )
+
+        assert result.success is False
+        assert "Worktree still exists after removal" in result.error
+
+    def test_reset_issue_from_scratch_fails_when_remote_branch_delete_returns_false(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        mock_working_copy.list_remote_branches.return_value = ["origin/561-old"]
+        mock_working_copy.delete_remote_branch.return_value = False
+        repository_host = MagicMock()
+        repository_host.get_prs_for_issue.return_value = []
+
+        result = reset_issue(
+            issue_number=561,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            from_scratch=True,
+            repository_host=repository_host,
+        )
+
+        assert result.success is False
+        assert "Scratch reset failed to delete remote branch 561-old" in result.error
 
     def test_reset_issue_skips_timeline_when_store_is_none(
         self,

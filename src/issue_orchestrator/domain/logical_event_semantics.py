@@ -78,7 +78,7 @@ def enrich_logical_semantics(
         (previous_event_name in _TERMINAL_EVENTS or prev_restart_pending)
         and event_name in _ITERATION_START_EVENTS
     )
-    restart_due_to_event = event_name in _RUN_RESTART_EVENTS
+    restart_due_to_event = prev_run is not None and event_name in _RUN_RESTART_EVENTS
     # Orchestrator restart: instance_id changed between consecutive events
     restart_due_to_instance = bool(
         current_instance_id

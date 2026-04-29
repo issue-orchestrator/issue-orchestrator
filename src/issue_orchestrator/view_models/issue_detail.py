@@ -618,6 +618,19 @@ def _build_runs(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     not individual physical session launches.
     """
     runs = _logical_run_projector.build_runs(cycles)
+    for run in runs:
+        run_number = run.get("run_number") or "?"
+        reset_from_scratch = any(
+            bool(cycle.get("reset_from_scratch"))
+            for cycle in run.get("cycles", [])
+            if isinstance(cycle, dict)
+        )
+        run["reset_from_scratch"] = reset_from_scratch
+        run["run_label"] = (
+            f"Run {run_number} (scratch retry)"
+            if reset_from_scratch
+            else f"Run {run_number}"
+        )
     if not runs:
         return runs
 
@@ -765,6 +778,10 @@ def _finalize_cycle_from_events(
 
     # Outcome from last significant event
     outcome = _derive_cycle_outcome(raw_events, iteration, context)
+    reset_from_scratch = any(
+        bool(evt.get("from_scratch") or evt.get("reset_from_scratch"))
+        for evt in raw_events
+    )
 
     # Artifacts
     artifacts = _collect_cycle_artifacts(raw_events)
@@ -783,6 +800,8 @@ def _finalize_cycle_from_events(
         "agent": agent,
         "reviewer_agent": reviewer_agent,
         "retry_count": retry_count,
+        "reset_from_scratch": reset_from_scratch,
+        "cycle_label": f"Cycle {iteration} (scratch)" if reset_from_scratch else f"Cycle {iteration}",
         "outcome": outcome,
         "time_label": time_label,
         "expanded": False,

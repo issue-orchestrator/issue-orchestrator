@@ -61,6 +61,7 @@ from .actions import (
     QueueReviewAction,
     EscalateToHumanAction,
     AddCommentAction,
+    SupersedePullRequestAction,
     CreateTriageIssueAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
@@ -235,6 +236,7 @@ class ActionApplier:
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
             # Comments
             ActionType.ADD_COMMENT: self._apply_add_comment,
+            ActionType.SUPERSEDE_PR: self._apply_supersede_pr,
             # History operations
             ActionType.RECONCILE_HISTORY_ENTRY: self._apply_reconcile_history_entry,
         }
@@ -408,6 +410,35 @@ class ActionApplier:
         except Exception as e:
             logger.error(issue_log(action.number, "Failed to add comment: %s"), e)
             return ActionResult.fail(action, str(e))
+
+    def _apply_supersede_pr(self, action: Action) -> ActionResult:
+        """Comment on and close a PR that has been superseded by a reset."""
+        assert isinstance(action, SupersedePullRequestAction)
+        assert self.repository_host is not None, "repository_host required for supersede_pr"
+
+        self._require_expected(action, action.issue_number)
+        self._verify_claim_before_write(action, action.issue_number)
+
+        try:
+            comment_url = self.repository_host.add_comment(action.pr_number, action.comment)
+            self.repository_host.close_pr(action.pr_number)
+            logger.info(
+                issue_log(action.issue_number, "Superseded PR #%d"),
+                action.pr_number,
+            )
+            return ActionResult.ok(
+                action,
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+                comment_url=comment_url,
+            )
+        except Exception as e:
+            logger.error(
+                issue_log(action.issue_number, "Failed to supersede PR #%d: %s"),
+                action.pr_number,
+                e,
+            )
+            return ActionResult.fail(action, str(e), pr_number=action.pr_number)
 
     def _fetch_current_labels(self, issue_number: int) -> set[str] | None:
         """Fetch current labels for an issue if fresh_issue_reader is available.

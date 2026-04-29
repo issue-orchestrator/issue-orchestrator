@@ -634,6 +634,9 @@ class CompletionProcessor:
         exchange_mode: str,
         run_dir: Path,
         cached: bool = False,
+        review_cache_summary_path: str | None = None,
+        review_cache_validation_record_path: str | None = None,
+        review_cache_head_sha: str | None = None,
     ) -> None:
         """Emit trace event when local review exchange starts.
 
@@ -654,6 +657,12 @@ class CompletionProcessor:
         }
         if cached:
             payload["cached"] = True
+        if review_cache_summary_path:
+            payload["review_cache_summary_path"] = review_cache_summary_path
+        if review_cache_validation_record_path:
+            payload["review_cache_validation_record_path"] = review_cache_validation_record_path
+        if review_cache_head_sha:
+            payload["review_cache_head_sha"] = review_cache_head_sha
         self._trace_events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, payload))
 
     def _emit_review_outcome(
@@ -667,6 +676,9 @@ class CompletionProcessor:
         summary: str,
         run_dir: Path | None = None,
         cached: bool = False,
+        review_cache_summary_path: str | None = None,
+        review_cache_validation_record_path: str | None = None,
+        review_cache_head_sha: str | None = None,
     ) -> None:
         """Emit review terminal event from local exchange outcome.
 
@@ -689,6 +701,12 @@ class CompletionProcessor:
             payload["run_dir"] = str(run_dir)
         if cached:
             payload["cached"] = True
+        if review_cache_summary_path:
+            payload["review_cache_summary_path"] = review_cache_summary_path
+        if review_cache_validation_record_path:
+            payload["review_cache_validation_record_path"] = review_cache_validation_record_path
+        if review_cache_head_sha:
+            payload["review_cache_head_sha"] = review_cache_head_sha
         event_name = EventName.REVIEW_APPROVED if approved else EventName.REVIEW_CHANGES_REQUESTED
         self._trace_events.publish(
             make_trace_event(
@@ -1468,6 +1486,10 @@ class CompletionProcessor:
         """
         pr_url: str | None = None
         requested_actions = tuple(record.requested_actions)
+        review_cache_boundary_started_at = self._review_cache_boundary_started_at(
+            worktree,
+            session_name,
+        )
         (
             plan,
             exchange_mode,
@@ -1483,6 +1505,7 @@ class CompletionProcessor:
             session_name=session_name,
             agent_label=agent_label,
             record=record,
+            review_cache_boundary_started_at=review_cache_boundary_started_at,
             errors=errors,
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
@@ -1524,6 +1547,30 @@ class CompletionProcessor:
             review_exchange_completed=review_exchange_completed,
         )
         return branch, pr_url, review_exchange_completed, False, None
+
+    def _review_cache_boundary_started_at(
+        self,
+        worktree: Path,
+        session_name: str | None,
+    ) -> str | None:
+        if not session_name:
+            return None
+        run_dir = self.session_output.find_run_dir(worktree, session_name)
+        if not run_dir:
+            return None
+        manifest = self.session_output.read_manifest(run_dir) or {}
+        if not manifest.get("reset_from_scratch"):
+            return None
+        boundary = manifest.get("review_cache_boundary_started_at") or manifest.get("started_at")
+        if not isinstance(boundary, str) or not boundary:
+            return None
+        logger.info(
+            "[REVIEW_EXCHANGE] Scratch reset review-cache boundary active: session=%s run_dir=%s boundary=%s",
+            session_name,
+            run_dir,
+            boundary,
+        )
+        return boundary
 
     def _execute_planned_actions(
         self,

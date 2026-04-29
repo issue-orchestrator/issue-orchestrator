@@ -63,6 +63,11 @@ class RunScopedEventPayload(TypedDict):
     pr_url: NotRequired[str | None]
     rework_cycle: NotRequired[int]
     review_exchange_mode: NotRequired[str]
+    reset_from_scratch: NotRequired[bool]
+    review_cache_boundary_started_at: NotRequired[str]
+    review_cache_summary_path: NotRequired[str]
+    review_cache_validation_record_path: NotRequired[str]
+    review_cache_head_sha: NotRequired[str]
     # True when a review lifecycle event (review.started / review.approved /
     # review.changes_requested) is replayed from a persisted prior-run summary
     # rather than produced by a fresh reviewer in this orchestrator run. The

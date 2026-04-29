@@ -97,8 +97,16 @@ class _FakeSessionOutput:
             validation_record_path=validation_record_path,
         )
 
-    def load_review_exchange_summary(self, worktree: Path, session_name: str):
+    def load_review_exchange_summary(
+        self,
+        worktree: Path,
+        session_name: str,
+        *,
+        not_before_started_at: str | None = None,
+    ):
         if self._summary is None:
+            return None
+        if not_before_started_at == "future-boundary":
             return None
 
         @dataclass
@@ -106,11 +114,13 @@ class _FakeSessionOutput:
             summary: dict[str, Any]
             validation_record_path: Path | None
             exchange_dir: Path | None
+            summary_path: Path
 
         return _Cached(
             summary=self._summary.summary,
             validation_record_path=self._summary.validation_record_path,
             exchange_dir=self._run_dir / "review-exchange",
+            summary_path=self._run_dir / "review-exchange" / "summary.json",
         )
 
 
@@ -439,6 +449,48 @@ def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) ->
     assert len(job_runner.submitted) == 1
 
 
+def test_cached_review_before_scratch_boundary_is_ignored(tmp_path: Path) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="same-sha")
+    _write_validation_record(current_validation, head_sha="same-sha")
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("fresh exchange should be deferred to background job")
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=fake_loop,
+        review_cache_boundary_started_at="future-boundary",
+    )
+
+    assert deferred is True
+    assert halt is False
+    assert completed is False
+    assert outcome is None
+    assert actions_taken == []
+    assert len(job_runner.submitted) == 1
+
+
 @pytest.mark.parametrize(
     ("cached_record_text", "case_id"),
     [
@@ -494,7 +546,7 @@ def test_cached_review_is_ignored_without_matching_cached_sha_even_when_validati
     assert len(job_runner.submitted) == 1
 
 
-def test_cached_review_is_reused_when_current_validation_sha_is_unavailable(
+def test_cached_review_is_ignored_when_current_validation_sha_is_unavailable(
     tmp_path: Path,
 ) -> None:
     job_runner = _FakeJobRunner()
@@ -513,7 +565,7 @@ def test_cached_review_is_reused_when_current_validation_sha_is_unavailable(
     _store_cached_approval(session_output, tmp_path, cached_validation)
 
     def fake_loop(**_: Any) -> ReviewExchangeOutcome:
-        raise AssertionError("cache should stay reusable without a current SHA")
+        raise AssertionError("fresh exchange should be deferred to background job")
 
     actions_taken: list[str] = []
     (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
@@ -529,12 +581,12 @@ def test_cached_review_is_reused_when_current_validation_sha_is_unavailable(
         run_review_exchange_loop=fake_loop,
     )
 
-    assert deferred is False
+    assert deferred is True
     assert halt is False
-    assert completed is True
-    assert outcome is not None and outcome.status == "ok"
-    assert actions_taken == ["Review exchange passed (cached)"]
-    assert job_runner.submitted == []
+    assert completed is False
+    assert outcome is None
+    assert actions_taken == []
+    assert len(job_runner.submitted) == 1
 
 
 def test_cached_review_is_ignored_when_current_validation_failed_on_same_sha(

@@ -49,6 +49,7 @@ class ActionType(Enum):
     # GitHub operations
     CREATE_PR = "create_pr"
     ADD_COMMENT = "add_comment"
+    SUPERSEDE_PR = "supersede_pr"
     CLOSE_ISSUE = "close_issue"
 
     # Worktree operations
@@ -249,6 +250,16 @@ class AddCommentAction(Action):
     comment: str = ""
     is_pr: bool = False
     action_type: ActionType = field(default=ActionType.ADD_COMMENT, init=False)
+
+
+@dataclass(frozen=True)
+class SupersedePullRequestAction(Action):
+    """Comment on and close a PR that belongs to discarded work."""
+
+    issue_number: int = 0
+    pr_number: int = 0
+    comment: str = ""
+    action_type: ActionType = field(default=ActionType.SUPERSEDE_PR, init=False)
 
 
 @dataclass(frozen=True)

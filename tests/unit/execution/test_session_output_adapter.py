@@ -370,6 +370,61 @@ class TestReviewExchangeSummary:
         assert loaded.summary == summary
         assert loaded.exchange_dir == review_exchange_dir
 
+    def test_load_review_exchange_summary_respects_started_at_boundary(
+        self, session_output, tmp_path
+    ):
+        import time
+
+        worktree = tmp_path
+        coding_session = "coding-1"
+        old_run = session_output.start_run(
+            worktree,
+            "review-exchange-3-old",
+            issue_number=3,
+        )
+        old_exchange = old_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
+        old_exchange.mkdir(parents=True, exist_ok=True)
+        (old_exchange / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
+            json.dumps({"status": "ok", "completed_rounds": 1, "response_text": "old"})
+        )
+        session_output.update_manifest(old_run.run_dir, {"review_exchange_dir": str(old_exchange)})
+
+        time.sleep(1.1)
+        boundary_run = session_output.start_run(worktree, coding_session, issue_number=3)
+        boundary = session_output.read_manifest(boundary_run.run_dir)["started_at"]
+
+        assert (
+            session_output.load_review_exchange_summary(
+                worktree,
+                coding_session,
+                not_before_started_at=boundary,
+            )
+            is None
+        )
+
+        time.sleep(1.1)
+        new_run = session_output.start_run(
+            worktree,
+            "review-exchange-3-new",
+            issue_number=3,
+        )
+        new_exchange = new_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
+        new_exchange.mkdir(parents=True, exist_ok=True)
+        (new_exchange / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
+            json.dumps({"status": "ok", "completed_rounds": 1, "response_text": "new"})
+        )
+        session_output.update_manifest(new_run.run_dir, {"review_exchange_dir": str(new_exchange)})
+
+        loaded = session_output.load_review_exchange_summary(
+            worktree,
+            coding_session,
+            not_before_started_at=boundary,
+        )
+
+        assert loaded is not None
+        assert loaded.summary["response_text"] == "new"
+        assert loaded.exchange_dir == new_exchange
+
 
 class TestRunRetentionMetadata:
     """Tests for retention metadata persisted in run manifests."""

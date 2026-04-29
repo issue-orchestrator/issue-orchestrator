@@ -688,7 +688,7 @@ async function bulkResetRetry() {
 async function bulkResetRetryFromScratch() {
     const numbers = getSelectedIssueNumbers('blocked').concat(getSelectedIssueNumbers('awaiting-merge'));
     if (!numbers.length) return;
-    const confirmMsg = `Full reset and requeue ${numbers.length} issue(s) from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nNext launch will force NEW branches from base (main), not prior issue branch history.`;
+    const confirmMsg = `Full reset and requeue ${numbers.length} issue(s) from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nThis will also supersede open orchestrator PRs by commenting and closing them.\n\nPrior review approvals and validation artifacts will not be reused. Next launch will force NEW branches from base (main), not prior issue branch history.`;
     if (!await showConfirm(confirmMsg)) return;
     try {
         const req = uiActionContract.buildResetRetryRequest(numbers, { fromScratch: true });
@@ -720,7 +720,7 @@ async function resetRetrySingle(issueNumber, btn) {
 }
 
 async function resetRetrySingleFromScratch(issueNumber, btn) {
-    const confirmMsg = `Full reset and requeue issue #${issueNumber} from scratch?\n\nThis will DELETE:\n• Local worktree\n• Remote branch\n• Orchestrator labels\n\nNext launch will force a NEW branch from base (main), not prior issue branch history.`;
+    const confirmMsg = `Full reset and requeue issue #${issueNumber} from scratch?\n\nThis will DELETE:\n• Local worktree\n• Remote branch\n• Orchestrator labels\n\nThis will also supersede open orchestrator PRs by commenting and closing them.\n\nPrior review approvals and validation artifacts will not be reused. Next launch will force a NEW branch from base (main), not prior issue branch history.`;
     if (!await showConfirm(confirmMsg, btn || lastContextMenuPoint)) return;
     await performResetRetry(issueNumber, btn, { fromScratch: true });
 }

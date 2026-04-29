@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -869,8 +870,14 @@ class TestRemoveWorktree:
         # Mock branch name
         mock_get_branch.return_value = "123-test-branch"
 
-        # Mock successful git commands
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        # Mock successful git commands; git worktree remove deletes the path.
+        def mock_git_command(*args, **kwargs):
+            cmd = args[0]
+            if "worktree" in cmd and "remove" in cmd:
+                shutil.rmtree(worktree_path)
+            return MagicMock(returncode=0, stderr="")
+
+        mock_run.side_effect = mock_git_command
 
         # Execute
         remove_worktree(worktree_path)
@@ -885,7 +892,8 @@ class TestRemoveWorktree:
         assert first_call[2] == str(repo_root)
         assert first_call[3] == "worktree"
         assert first_call[4] == "remove"
-        assert first_call[5] == str(worktree_path)
+        assert first_call[5] == "--force"
+        assert first_call[6] == str(worktree_path)
 
         # Second call: delete branch
         second_call = mock_run.call_args_list[1][0][0]
@@ -912,7 +920,7 @@ class TestRemoveWorktree:
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_git_fails(self, mock_run, mock_get_branch, tmp_path):
-        """Test error when git worktree remove fails."""
+        """Test fallback cleanup when git worktree remove fails."""
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
@@ -923,14 +931,42 @@ class TestRemoveWorktree:
             f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
         )
 
-        # Mock failed git command
+        mock_get_branch.return_value = "123-test-branch"
+
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="fatal: worktree is locked"),
+            MagicMock(returncode=0, stderr=""),
+        ]
+
+        remove_worktree(worktree_path)
+
+        assert not worktree_path.exists()
+        assert mock_run.call_count == 2
+
+    @patch("issue_orchestrator.adapters.worktree._worktree.shutil.rmtree")
+    @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_remove_worktree_git_and_fallback_fail(
+        self, mock_run, mock_get_branch, mock_rmtree, tmp_path
+    ):
+        """Test error when neither git nor fallback removal deletes the path."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "worktree-123"
+        worktree_path.mkdir()
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
+        )
+        mock_get_branch.return_value = "123-test-branch"
         mock_run.return_value = MagicMock(
             returncode=1, stderr="fatal: worktree is locked"
         )
 
-        # Execute & Verify
-        with pytest.raises(WorktreeError, match="Failed to remove worktree"):
+        with pytest.raises(WorktreeError, match="Failed to remove worktree path"):
             remove_worktree(worktree_path)
+
+        mock_rmtree.assert_called_once_with(worktree_path, ignore_errors=True)
 
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -950,11 +986,16 @@ class TestRemoveWorktree:
 
         mock_get_branch.return_value = "123-test-branch"
 
-        # First call succeeds (remove worktree), second fails (delete branch)
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stderr=""),
-            MagicMock(returncode=1, stderr="error: branch not found"),
-        ]
+        def mock_git_command(*args, **kwargs):
+            cmd = args[0]
+            if "worktree" in cmd and "remove" in cmd:
+                shutil.rmtree(worktree_path)
+                return MagicMock(returncode=0, stderr="")
+            if "branch" in cmd and "-D" in cmd:
+                return MagicMock(returncode=1, stderr="error: branch not found")
+            return MagicMock(returncode=0, stderr="")
+
+        mock_run.side_effect = mock_git_command
 
         # Execute - should not raise
         remove_worktree(worktree_path)
@@ -978,8 +1019,13 @@ class TestRemoveWorktree:
 
         mock_get_branch.return_value = None
 
-        # Mock successful worktree removal
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        def mock_git_command(*args, **kwargs):
+            cmd = args[0]
+            if "worktree" in cmd and "remove" in cmd:
+                shutil.rmtree(worktree_path)
+            return MagicMock(returncode=0, stderr="")
+
+        mock_run.side_effect = mock_git_command
 
         # Execute
         remove_worktree(worktree_path)
@@ -1343,6 +1389,7 @@ class TestIntegrationScenarios:
             elif "rev-parse" in cmd:
                 return MagicMock(returncode=0, stdout="123-test-feature\n", stderr="")
             elif "worktree" in cmd and "remove" in cmd:
+                shutil.rmtree(worktree_path)
                 return MagicMock(returncode=0, stderr="")
             elif "branch" in cmd and "-D" in cmd:
                 return MagicMock(returncode=0, stderr="")

@@ -144,7 +144,13 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
         def find_run_dir(self, worktree, session_name):  # noqa: ARG002
             return self._run_dir
 
-        def load_review_exchange_summary(self, worktree, session_name):  # noqa: ARG002
+        def load_review_exchange_summary(  # noqa: ARG002
+            self,
+            worktree,
+            session_name,
+            *,
+            not_before_started_at=None,
+        ):
             return None
 
     runner = ThreadBackgroundJobRunner()

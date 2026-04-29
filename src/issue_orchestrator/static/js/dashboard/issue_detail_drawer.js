@@ -161,10 +161,11 @@ function _renderJourneyRuns(container, allRuns) {
         const runToggle = runExpanded ? '\u25be' : '\u25b8';
         const runId = `journey-run-${runIndex}`;
         const runBodyClass = runExpanded ? '' : ' collapsed';
+        const runLabel = run.run_label || `Run ${run.run_number || (runIndex + 1)}`;
         html += `<div class="journey-run" id="${runId}">
             <div class="journey-cycle-header" onclick="toggleJourneyCycle('${runId}')">
                 <span class="journey-cycle-toggle">${runToggle}</span>
-                <span class="journey-cycle-label">Run ${run.run_number || (runIndex + 1)}</span>
+                <span class="journey-cycle-label">${escapeHtml(runLabel)}</span>
                 <span class="journey-cycle-outcome ${_cycleOutcomeClass(run.outcome || '')}">\u2014 ${escapeHtml(run.outcome || 'In progress')}</span>
                 <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || ''))}</span>
             </div>
@@ -178,6 +179,7 @@ function _renderJourneyRuns(container, allRuns) {
             const toggle = cycleExpanded ? '\u25be' : '\u25b8';
             const bodyClass = cycleExpanded ? '' : ' collapsed';
             const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);
+            const cycleLabel = c.cycle_label || `Cycle ${displayCycleNumber}`;
             const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
             const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
             const outcomeClass = _cycleOutcomeClass(c.outcome || '');
@@ -187,7 +189,7 @@ function _renderJourneyRuns(container, allRuns) {
             html += `<div class="journey-cycle" id="${cycleId}">
             <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
                 <span class="journey-cycle-toggle">${toggle}</span>
-                <span class="journey-cycle-label">Cycle ${displayCycleNumber}</span>
+                <span class="journey-cycle-label">${escapeHtml(cycleLabel)}</span>
                 ${agentPill}
                 ${retryInfo}
                 <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
@@ -409,11 +411,11 @@ function copyJourneyTimeline() {
     const title = issueDetailData.title || '';
     let text = `Issue #${issueNum}: ${title}\n`;
     for (const run of runs) {
-        text += `\nRun ${run.run_number || '?'} \u2014 ${run.outcome || 'In progress'}  ${run.time_label || ''}\n`;
+        text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${run.outcome || 'In progress'}  ${run.time_label || ''}\n`;
         for (const c of (run.cycles || [])) {
             const agent = c.agent ? ` (${c.agent})` : '';
             const cycleNum = c.cycle_in_run || c.cycle || '?';
-            text += `  Cycle ${cycleNum}${agent} \u2014 ${c.outcome || 'In progress'}  ${c.time_label || ''}\n`;
+            text += `  ${c.cycle_label || `Cycle ${cycleNum}`}${agent} \u2014 ${c.outcome || 'In progress'}  ${c.time_label || ''}\n`;
             for (const s of (c.steps || [])) {
                 const time = s.time_label || '';
                 const narrative = s.narrative || s.event || '';

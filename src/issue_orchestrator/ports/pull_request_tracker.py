@@ -178,6 +178,17 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def close_pr(self, pr_number: int) -> None:
+        """Close a pull request.
+
+        Args:
+            pr_number: The PR number to close.
+
+        Raises:
+            RepositoryError: If there's an error closing the PR.
+        """
+        ...
+
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
         """Add a comment to an issue or pull request.
 
