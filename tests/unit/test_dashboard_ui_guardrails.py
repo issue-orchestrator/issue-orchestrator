@@ -949,6 +949,7 @@ def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimelineEventActions")
     assert "primaryTypes" in body
+    assert "timeline-event-actions" in body
     assert "timeline-event-menu-trigger" in body
     assert "Event Details" in body
     assert "timeline-more-menu" in body

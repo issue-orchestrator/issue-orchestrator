@@ -7,12 +7,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..domain.event_taxonomy import (
+    REVIEW_ROUND_CLOSE_EVENT_NAMES,
     REVIEW_START_CLUSTER_EVENT_NAMES,
     REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
     EventIntent,
     infer_event_intent,
 )
 from ..domain.logical_run_projection import LogicalRunProjector
+from ..events import EventName
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +123,11 @@ def _story_projection_events(events: list[dict[str, Any]], view: str) -> list[di
     """Apply user-story-specific event collapsing without affecting ops/debug views."""
     if view != "user":
         return events
-    return _collapse_review_terminal_clusters(_collapse_review_start_clusters(events))
+    return _collapse_review_terminal_clusters(
+        _drop_outer_coding_completion_during_review_rounds(
+            _collapse_review_start_clusters(events)
+        )
+    )
 
 
 def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -135,7 +141,7 @@ def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[s
     idx = 0
     while idx < len(events):
         event = events[idx]
-        event_name = str(event.get("event") or "")
+        event_name = _canonical_event_name(event)
         if event_name not in _REVIEW_START_CLUSTER_EVENTS:
             collapsed.append(event)
             idx += 1
@@ -145,7 +151,7 @@ def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[s
         next_idx = idx + 1
         while next_idx < len(events):
             candidate = events[next_idx]
-            candidate_name = str(candidate.get("event") or "")
+            candidate_name = _canonical_event_name(candidate)
             if candidate_name not in _REVIEW_START_CLUSTER_EVENTS:
                 break
             cluster.append(candidate)
@@ -153,7 +159,7 @@ def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[s
 
         if (
             len(cluster) == 1
-            and str(cluster[0].get("event") or "") == "review_exchange.round_started"
+            and _canonical_event_name(cluster[0]) == EventName.REVIEW_EXCHANGE_ROUND_STARTED.value
         ):
             collapsed.append(cluster[0])
             idx = next_idx
@@ -171,12 +177,12 @@ def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[s
 def _preferred_review_start_story_event(cluster: list[dict[str, Any]]) -> dict[str, Any]:
     """Pick the best single event to represent a review-start cluster in Story."""
     for preferred_name in (
-        "review_exchange.round_started",
-        "review_exchange.started",
-        "review.started",
+        EventName.REVIEW_EXCHANGE_ROUND_STARTED.value,
+        EventName.REVIEW_EXCHANGE_STARTED.value,
+        EventName.REVIEW_STARTED.value,
     ):
         for event in reversed(cluster):
-            if str(event.get("event") or "") == preferred_name:
+            if _canonical_event_name(event) == preferred_name:
                 return event
     return cluster[-1]
 
@@ -187,7 +193,7 @@ def _collapse_review_terminal_clusters(events: list[dict[str, Any]]) -> list[dic
     idx = 0
     while idx < len(events):
         event = events[idx]
-        event_name = str(event.get("event") or "")
+        event_name = _canonical_event_name(event)
         if event_name not in _REVIEW_TERMINAL_CLUSTER_EVENTS:
             collapsed.append(event)
             idx += 1
@@ -197,7 +203,7 @@ def _collapse_review_terminal_clusters(events: list[dict[str, Any]]) -> list[dic
         next_idx = idx + 1
         while next_idx < len(events):
             candidate = events[next_idx]
-            candidate_name = str(candidate.get("event") or "")
+            candidate_name = _canonical_event_name(candidate)
             if candidate_name not in _REVIEW_TERMINAL_CLUSTER_EVENTS:
                 break
             cluster.append(candidate)
@@ -215,11 +221,46 @@ def _collapse_review_terminal_clusters(events: list[dict[str, Any]]) -> list[dic
 
 def _preferred_review_terminal_story_event(cluster: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pick the single user-facing event for a terminal review cluster when possible."""
-    for preferred_name in ("review.approved", "review.changes_requested"):
+    for preferred_name in (
+        EventName.REVIEW_APPROVED.value,
+        EventName.REVIEW_CHANGES_REQUESTED.value,
+    ):
         for event in reversed(cluster):
-            if str(event.get("event") or "") == preferred_name:
+            if _canonical_event_name(event) == preferred_name:
                 return event
     return None
+
+
+def _drop_outer_coding_completion_during_review_rounds(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Hide redundant outer coding completion rows while a review round is active."""
+    projected: list[dict[str, Any]] = []
+    review_round_open = False
+    for event in events:
+        event_name = str(event.get("event") or "")
+        source_event = _canonical_event_name(event)
+        if source_event == EventName.REVIEW_EXCHANGE_ROUND_STARTED.value:
+            review_round_open = True
+            projected.append(event)
+            continue
+        if review_round_open and _is_outer_coding_completion_event(event_name, source_event):
+            continue
+        projected.append(event)
+        if source_event in REVIEW_ROUND_CLOSE_EVENT_NAMES:
+            review_round_open = False
+    return projected
+
+
+def _is_outer_coding_completion_event(event_name: str, source_event: str) -> bool:
+    return (
+        event_name == EventName.AGENT_CODING_COMPLETED.value
+        or source_event == EventName.OBSERVATION_COMPLETION_DETECTED.value
+    )
+
+
+def _canonical_event_name(event: dict[str, Any]) -> str:
+    return str(event.get("source_event") or event.get("event") or "")
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,14 @@ REVIEW_TERMINAL_CLUSTER_EVENT_NAMES: frozenset[str] = frozenset({
     EventName.REVIEW_CHANGES_REQUESTED.value,
 })
 
+REVIEW_ROUND_CLOSE_EVENT_NAMES: frozenset[str] = frozenset({
+    EventName.REVIEW_EXCHANGE_ROUND_COMPLETED.value,
+    EventName.REVIEW_EXCHANGE_COMPLETED.value,
+    EventName.REVIEW_APPROVED.value,
+    EventName.REVIEW_CHANGES_REQUESTED.value,
+    EventName.REVIEW_EXCHANGE_FAILED.value,
+})
+
 
 class EventIntent(str, Enum):
     """Typed semantic intent carried with timeline events."""

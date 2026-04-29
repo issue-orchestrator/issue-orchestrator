@@ -1239,18 +1239,8 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         timeout=5000,
     )
 
-    session_recording_menu = journey.locator(
-        ".timeline-event-menu",
-        has=page.locator(".timeline-action-btn", has_text="Session Recording"),
-    ).first
-    expect(
-        session_recording_menu.locator(".timeline-event-menu-trigger")
-    ).to_be_visible(
-        timeout=5000,
-    )
-    session_recording_menu.locator(".timeline-event-menu-trigger").click()
-    session_recording_btn = session_recording_menu.locator(
-        ".timeline-action-btn",
+    session_recording_btn = journey.locator(
+        ".timeline-event-actions > .timeline-action-btn",
         has_text="Session Recording",
     ).first
     expect(session_recording_btn).to_be_visible(timeout=5000)

@@ -10,6 +10,7 @@ Domains:
 - plan: Planning phase (computed, noop)
 - apply: Action execution (started, step_applied, completed, failed)
 - session: Agent session lifecycle (started, observed, completed, failed)
+- agent: User-facing agent lifecycle projections (coding_completed)
 - issue: Issue state changes (blocked, needs_human)
 - dependency: Issue dependencies (blocked, unblocked)
 - review: Code review workflow (started, queued, escalated)
@@ -106,6 +107,11 @@ class EventName(str, Enum):
     GH_RATE_LIMIT = "gh.rate_limit"
     GH_RATE_LIMIT_WARNING = "gh.rate_limit_warning"
     GH_SEARCH_ITEM_MALFORMED = "gh.search_item_malformed"
+
+    # =========================================================================
+    # Agent lifecycle projections
+    # =========================================================================
+    AGENT_CODING_COMPLETED = "agent.coding_completed"
 
     # =========================================================================
     # Worktree operations
