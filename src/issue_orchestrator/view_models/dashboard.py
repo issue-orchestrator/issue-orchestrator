@@ -19,6 +19,7 @@ from .dashboard_e2e import E2E_PAGE_SIZE
 from .dashboard_e2e import build_e2e_items
 from .dashboard_e2e import build_e2e_view_model
 from .dashboard_e2e import get_e2e_status
+from .dashboard_assets import DASHBOARD_CSS_CHUNKS
 from .dashboard_assets import DASHBOARD_JS_CHUNKS
 from .dashboard_flow import apply_lane_precedence
 from .dashboard_flow import build_awaiting_merge_items
@@ -114,6 +115,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "dashboard_css_chunks": DASHBOARD_CSS_CHUNKS,
             "dashboard_js_chunks": DASHBOARD_JS_CHUNKS,
             "dashboard_data": self.dashboard_data(),
         }

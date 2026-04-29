@@ -14,6 +14,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, Session, SessionHistoryEntry
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_CSS_CHUNKS
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 
@@ -133,6 +134,32 @@ def test_dashboard_renders_manifest_js_chunks_in_order(jinja_env):
     assert script_sources[chunk_start : chunk_start + len(expected_chunks)] == expected_chunks
     assert script_sources[chunk_start - 1] == "/static/vendor/xterm/addon-fit.js"
     assert script_sources[chunk_start + len(expected_chunks)] == "/static/js/dashboard.js"
+
+
+def test_dashboard_renders_manifest_css_chunks_before_late_styles(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    stylesheet_hrefs = [
+        link.get("href")
+        for link in soup.find_all("link", rel="stylesheet")
+        if link.get("href")
+    ]
+    expected_chunks = [
+        f"/static/css/dashboard/{chunk}"
+        for chunk in DASHBOARD_CSS_CHUNKS
+    ]
+    chunk_start = stylesheet_hrefs.index(expected_chunks[0])
+    assert stylesheet_hrefs[chunk_start : chunk_start + len(expected_chunks)] == expected_chunks
+    assert "/static/css/dashboard.css" not in stylesheet_hrefs
+    assert stylesheet_hrefs[chunk_start + len(expected_chunks)] == "/static/css/ui_primitives.css"
 
 
 def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():

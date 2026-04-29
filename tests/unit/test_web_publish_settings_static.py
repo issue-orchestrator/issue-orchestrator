@@ -868,12 +868,13 @@ class TestStaticFilesSecurity:
     def test_valid_css_file_served(self):
         """Valid CSS files should be served correctly."""
         client = TestClient(app)
-        response = client.get("/static/css/dashboard.css")
+        response = client.get("/static/css/ui_primitives.css")
         assert response.status_code == 200
         assert "text/css" in response.headers.get("content-type", "")
+        assert ".ui-btn" in response.text
 
     def test_valid_dashboard_css_chunk_served(self):
-        """Dashboard CSS imports should resolve through static serving."""
+        """Dashboard CSS chunks should resolve through static serving."""
         client = TestClient(app)
         response = client.get("/static/css/dashboard/base.css")
         assert response.status_code == 200
