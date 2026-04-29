@@ -35,17 +35,7 @@ def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
 
 
 def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> dict[str, str]:
-    summary = exchange_outcome.summary or {}
-    metadata: dict[str, str] = {}
-    for source_key, event_key in (
-        ("_cache_summary_path", "review_cache_summary_path"),
-        ("_cache_validation_record_path", "review_cache_validation_record_path"),
-        ("_cache_head_sha", "review_cache_head_sha"),
-    ):
-        value = summary.get(source_key)
-        if isinstance(value, str) and value:
-            metadata[event_key] = value
-    return metadata
+    return dict(exchange_outcome.cache_metadata or {})
 
 
 class CompletionReviewExchange:
@@ -676,12 +666,15 @@ class CompletionReviewExchange:
         rounds = cached.summary.get("completed_rounds")
         if not status or rounds is None:
             return None
-        summary = dict(cached.summary)
-        summary["_cache_summary_path"] = str(cached.summary_path)
-        summary["_cache_validation_record_path"] = (
-            str(cached.validation_record_path) if cached.validation_record_path else ""
-        )
-        summary["_cache_head_sha"] = cached_head_sha or ""
+        cache_metadata = {
+            "review_cache_summary_path": str(cached.summary_path),
+        }
+        if cached.validation_record_path:
+            cache_metadata["review_cache_validation_record_path"] = str(
+                cached.validation_record_path
+            )
+        if cached_head_sha:
+            cache_metadata["review_cache_head_sha"] = cached_head_sha
         logger.info(
             "[REVIEW_EXCHANGE] Reusing cached summary: session=%s summary=%s status=%s "
             "rounds=%s head_sha=%s",
@@ -702,7 +695,8 @@ class CompletionReviewExchange:
                 response_text=cached.summary.get("response_text") or "",
             ),
             exchange_dir=cached.exchange_dir,
-            summary=summary,
+            summary=dict(cached.summary),
+            cache_metadata=cache_metadata,
         )
 
     @staticmethod
@@ -739,8 +733,8 @@ class CompletionReviewExchange:
     ) -> bool:
         current_sha = cls._validation_head_sha(current_record_path)
         if not current_sha:
-            # Older/dev completion paths may not provide a current validation
-            # SHA; keep their cached review resume behavior unchanged.
+            # Strict cache callers reject missing current validation before this
+            # helper. Older/dev resume paths keep their prior cache behavior.
             return True
         cached_sha = cls._validation_head_sha(cached_record_path)
         return cached_sha == current_sha

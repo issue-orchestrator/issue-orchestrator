@@ -773,7 +773,7 @@ class TestResetIssue:
     ):
         worktree_path = mock_config.worktree_base / f"{mock_config.repo_root.name}-559"
         worktree_path.mkdir(parents=True)
-        mock_worktree_manager.remove.side_effect = lambda path: path.rmdir()
+        mock_worktree_manager.remove.side_effect = lambda path, *, force=False: path.rmdir()
         mock_working_copy.list_remote_branches.return_value = ["origin/559-scratch-old"]
         mock_working_copy.delete_remote_branch.return_value = True
         timeline_store = MagicMock()
@@ -812,6 +812,7 @@ class TestResetIssue:
         assert result.deleted_branches == ["559-scratch-old"]
         assert result.superseded_prs == [376]
         assert result.timeline_events_deleted == 9
+        mock_worktree_manager.remove.assert_called_once_with(worktree_path, force=True)
         supersede_actions = [
             applier_call.args[0]
             for applier_call in mock_action_applier.apply.call_args_list
@@ -821,6 +822,59 @@ class TestResetIssue:
         assert supersede_actions[0].issue_number == 559
         assert supersede_actions[0].pr_number == 376
         assert "Superseded by reset and retry from scratch" in supersede_actions[0].comment
+
+    def test_reset_issue_from_scratch_reports_partial_superseded_prs_on_failure(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        repository_host = MagicMock()
+        repository_host.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=376,
+                title="#559: old attempt",
+                url="https://github.com/owner/repo/pull/376",
+                branch="559-scratch-old",
+                body="",
+                state="open",
+                labels=[],
+            ),
+            PRInfo(
+                number=377,
+                title="#559: second old attempt",
+                url="https://github.com/owner/repo/pull/377",
+                branch="559-scratch-second",
+                body="",
+                state="open",
+                labels=[],
+            ),
+        ]
+        mock_action_applier.apply.side_effect = [
+            MagicMock(success=True, error=None),
+            MagicMock(success=False, error="permission denied"),
+        ]
+
+        result = reset_issue(
+            issue_number=559,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            from_scratch=True,
+            repository_host=repository_host,
+        )
+
+        assert result.success is False
+        assert result.superseded_prs == [376]
+        assert "failed to supersede PR #377" in result.error
+        mock_working_copy.delete_remote_branch.assert_not_called()
 
     def test_reset_issue_from_scratch_fails_when_worktree_survives(
         self,

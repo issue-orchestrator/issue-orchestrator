@@ -369,11 +369,13 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
 
 def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> None:
     job_runner = _FakeJobRunner()
+    started_events: list[dict[str, Any]] = []
+    outcome_events: list[dict[str, Any]] = []
     review, session_output = _build(
         tmp_path,
         job_runner,
-        [],
-        [],
+        started_events,
+        outcome_events,
         require_validation=True,
     )
 
@@ -404,6 +406,17 @@ def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> 
     assert halt is False
     assert completed is True
     assert outcome is not None and outcome.status == "ok"
+    assert outcome.summary is not None
+    assert not any(key.startswith("_cache_") for key in outcome.summary)
+    assert outcome.cache_metadata == {
+        "review_cache_summary_path": str(
+            session_output.run_dir / "review-exchange" / "summary.json"
+        ),
+        "review_cache_validation_record_path": str(cached_validation),
+        "review_cache_head_sha": "same-sha",
+    }
+    assert started_events[0]["review_cache_head_sha"] == "same-sha"
+    assert outcome_events[0]["review_cache_head_sha"] == "same-sha"
     assert actions_taken == ["Review exchange passed (cached)"]
     assert job_runner.submitted == []
 

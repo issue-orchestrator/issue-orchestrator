@@ -1221,12 +1221,49 @@ def _recover_stale_branch_worktree_registration(
     return True
 
 
-def remove_worktree(worktree_path: Path) -> None:
+def _remove_worktree_path(repo_root: Path, worktree_path: Path, *, force: bool) -> None:
+    cmd = ["worktree", "remove"]
+    if force:
+        cmd.append("--force")
+    cmd.append(str(worktree_path))
+    result = _git_run(
+        repo_root,
+        cmd,
+        check=False,
+    )
+
+    if result.returncode == 0:
+        return
+    if not force:
+        raise WorktreeError(f"Failed to remove worktree: {result.stderr}")
+    logger.warning(
+        "Forced worktree removal via git failed; deleting directory: path=%s stderr=%s",
+        worktree_path,
+        result.stderr.strip(),
+    )
+    shutil.rmtree(worktree_path, ignore_errors=True)
+
+
+def _delete_worktree_branch(repo_root: Path, branch_name: str | None) -> None:
+    if not branch_name:
+        return
+    # Branch deletion is best effort; stale branch cleanup should not mask a
+    # successfully removed worktree.
+    _git_run(
+        repo_root,
+        ["branch", "-D", branch_name],
+        check=False,
+    )
+
+
+def remove_worktree(worktree_path: Path, *, force: bool = False) -> None:
     """
     Remove a git worktree and its associated branch.
 
     Args:
         worktree_path: Path to the worktree to remove
+        force: If true, use ``git worktree remove --force`` and fallback to
+            deleting the directory when git cannot remove it cleanly.
 
     Raises:
         WorktreeError: If removal fails
@@ -1243,40 +1280,18 @@ def remove_worktree(worktree_path: Path) -> None:
             raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
         branch_name = get_worktree_branch(worktree_path)
 
-        # Remove the worktree
-        cmd = ["worktree", "remove", "--force", str(worktree_path)]
-        result = _git_run(
-            repo_root,
-            cmd,
-            check=False,
-        )
-
-        if result.returncode != 0:
-            logger.warning(
-                "Worktree removal via git failed; deleting directory: path=%s stderr=%s",
-                worktree_path,
-                result.stderr.strip(),
-            )
-            shutil.rmtree(worktree_path, ignore_errors=True)
-
+        _remove_worktree_path(repo_root, worktree_path, force=force)
         if worktree_path.exists():
             raise WorktreeError(
                 f"Failed to remove worktree path after git/rmtree cleanup: {worktree_path}"
             )
 
-        if branch_name:
-            # Delete the branch
-            cmd = ["branch", "-D", branch_name]
-            result = _git_run(
-                repo_root,
-                cmd,
-                check=False,
-            )
-
-            if result.returncode != 0:
-                # Log but don't fail if branch deletion fails
-                pass
-        logger.info("Worktree removed: path=%s branch=%s", worktree_path, branch_name or "(unknown)")
+        _delete_worktree_branch(repo_root, branch_name)
+        logger.info(
+            "Worktree removed: path=%s branch=%s",
+            worktree_path,
+            branch_name or "(unknown)",
+        )
 
     except Exception as e:
         if isinstance(e, WorktreeError):

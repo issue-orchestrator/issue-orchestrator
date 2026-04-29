@@ -78,11 +78,14 @@ class WorktreeManager(Protocol):
         """
         ...
 
-    def remove(self, worktree_path: Path) -> None:
+    def remove(self, worktree_path: Path, *, force: bool = False) -> None:
         """Remove a git worktree.
 
         Args:
             worktree_path: Path to the worktree to remove
+            force: If true, use forced worktree removal and fallback directory
+                cleanup. This is reserved for hard lifecycle boundaries where
+                the orchestrator intentionally discards local state.
 
         Raises:
             WorktreeError: If removal fails

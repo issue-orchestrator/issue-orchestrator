@@ -892,8 +892,7 @@ class TestRemoveWorktree:
         assert first_call[2] == str(repo_root)
         assert first_call[3] == "worktree"
         assert first_call[4] == "remove"
-        assert first_call[5] == "--force"
-        assert first_call[6] == str(worktree_path)
+        assert first_call[5] == str(worktree_path)
 
         # Second call: delete branch
         second_call = mock_run.call_args_list[1][0][0]
@@ -920,7 +919,7 @@ class TestRemoveWorktree:
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_git_fails(self, mock_run, mock_get_branch, tmp_path):
-        """Test fallback cleanup when git worktree remove fails."""
+        """Test default cleanup raises when git worktree remove fails."""
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
@@ -935,13 +934,48 @@ class TestRemoveWorktree:
 
         mock_run.side_effect = [
             MagicMock(returncode=1, stderr="fatal: worktree is locked"),
+        ]
+
+        with pytest.raises(WorktreeError, match="Failed to remove worktree"):
+            remove_worktree(worktree_path)
+
+        assert worktree_path.exists()
+        assert mock_run.call_count == 1
+
+    @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_remove_worktree_force_falls_back_to_rmtree(
+        self,
+        mock_run,
+        mock_get_branch,
+        tmp_path,
+    ):
+        """Test force cleanup falls back to directory deletion."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_path = tmp_path / "worktree-123"
+        worktree_path.mkdir()
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
+        )
+        mock_get_branch.return_value = "123-test-branch"
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="fatal: worktree is locked"),
             MagicMock(returncode=0, stderr=""),
         ]
 
-        remove_worktree(worktree_path)
+        remove_worktree(worktree_path, force=True)
 
         assert not worktree_path.exists()
         assert mock_run.call_count == 2
+        first_call = mock_run.call_args_list[0][0][0]
+        assert first_call[3:7] == [
+            "worktree",
+            "remove",
+            "--force",
+            str(worktree_path),
+        ]
 
     @patch("issue_orchestrator.adapters.worktree._worktree.shutil.rmtree")
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
@@ -964,7 +998,7 @@ class TestRemoveWorktree:
         )
 
         with pytest.raises(WorktreeError, match="Failed to remove worktree path"):
-            remove_worktree(worktree_path)
+            remove_worktree(worktree_path, force=True)
 
         mock_rmtree.assert_called_once_with(worktree_path, ignore_errors=True)
 
