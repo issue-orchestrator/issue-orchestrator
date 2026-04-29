@@ -158,6 +158,22 @@ class CompletionReviewExchange:
     ) -> bool:
         return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
 
+    def is_review_exchange_running(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+    ) -> bool:
+        """Report whether a background review-exchange job is in flight.
+
+        The reroute budget on the consumer side uses this to distinguish
+        polling ticks (no new work, just waiting for an existing job) from
+        fresh attempts. Counting polling ticks would let a slow exchange
+        exhaust the budget before it finishes.
+        """
+        job_id = _review_exchange_job_id(issue_number, session_name)
+        return self._job_supervisor.is_running(job_id)
+
     def run_review_exchange_if_needed(
         self,
         *,

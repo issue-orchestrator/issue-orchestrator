@@ -2403,6 +2403,74 @@ class TestCompletionProcessorPublishGate:
         # The exchange must not be invoked once the budget is exhausted.
         assert run_review_exchange_if_needed.call_count == 3
 
+    def test_validation_reroute_budget_does_not_count_polling_ticks(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+    ):
+        """While the background review-exchange job is still running,
+        the reroute is just polling — no new attempt was made. Counting
+        these polls would let a slow exchange exhaust the budget before
+        it has a chance to finish, halting issues that are actually
+        making progress in the background."""
+        from issue_orchestrator.control.background_job_supervisor import (
+            BackgroundJobSupervisor,
+        )
+
+        config = Config()
+        config.review_exchange_max_rounds = 2
+        # A fake runner that always reports the job as running, so
+        # ``is_review_exchange_running`` returns True every tick.
+        fake_runner = MagicMock()
+        fake_runner.is_running.return_value = True
+        fake_runner.submit.return_value = False
+        fake_runner.take_failure.return_value = None
+        fake_runner.drain_completed.return_value = []
+        supervisor = BackgroundJobSupervisor(fake_runner)
+
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            session_output=FileSystemSessionOutput(),
+            config=config,
+            background_job_supervisor=supervisor,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run = processor.session_output.start_run(worktree, "issue-1", issue_number=1)
+        validation_record = run.run_dir / "validation-record.json"
+        validation_record.write_text(json.dumps({"passed": False, "head_sha": "aaa"}))
+
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        # Stub the inner exchange call to mirror what the real one does on
+        # a polling tick: returns deferred=True without doing new work.
+        processor._review_exchange.run_review_exchange_if_needed = MagicMock(  # noqa: SLF001
+            return_value=("via-local-loop", None, False, True)
+        )
+
+        # Many polling ticks well past the configured budget — none halt.
+        for _ in range(10):
+            result = processor._reroute_pre_publish_validation_failure_if_possible(  # noqa: SLF001
+                worktree=worktree,
+                issue_number=1,
+                issue_title="Test",
+                session_name=run.session_name,
+                agent_label="agent:coder",
+                record=record,
+            )
+            assert result is not None
+            assert result.success is True
+            assert result.review_exchange_halted is False
+
     def test_validation_reroute_budget_resets_when_sha_advances(
         self,
         tmp_path,

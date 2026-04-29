@@ -1272,13 +1272,20 @@ class CompletionProcessor:
         # Catch-all: bound consecutive reroutes per (session, head_sha) so a
         # permanently-failing validation can't form an infinite loop even if
         # the cache predicate is later weakened or bypassed. SHA advancing
-        # naturally resets the counter (different key).
-        budget_exhausted_result = self._consume_validation_reroute_budget(
+        # naturally resets the counter (different key). Polling ticks
+        # (background exchange still running from a prior submission) must
+        # NOT consume the budget — they did no new work, and counting them
+        # would halt a slow-but-progressing exchange before it finishes.
+        if not self._review_exchange.is_review_exchange_running(
+            issue_number=issue_number,
             session_name=session_name,
-            validation_record_path=validation_record_path,
-        )
-        if budget_exhausted_result is not None:
-            return budget_exhausted_result
+        ):
+            budget_exhausted_result = self._consume_validation_reroute_budget(
+                session_name=session_name,
+                validation_record_path=validation_record_path,
+            )
+            if budget_exhausted_result is not None:
+                return budget_exhausted_result
 
         reroute_errors: list[str] = []
         reroute_actions: list[str] = []
