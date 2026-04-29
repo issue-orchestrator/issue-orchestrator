@@ -765,45 +765,11 @@ class CompletionProcessor:
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
         run_dir_record_path = run_dir / "validation-record.json"
-        # Precedence: when an authoritative source (record_path) is
-        # supplied, it wins over a stale run-dir snapshot from an earlier
-        # step. Symlink-safe walk: opens the source under the worktree
-        # with O_NOFOLLOW on every path component (#6017 re-review-4 P2),
-        # never reopens by path string.
-        effective_record_path: Path | None = None
-        if record_path is not None and record_path.exists():
-            # Source/destination identity check. ``_copy_from_fd`` opens
-            # ``dst`` with ``open(dst, "wb")`` which truncates it before
-            # reading completes, so a same-file copy ends up as empty
-            # JSON. When the caller already wrote the authoritative record
-            # into run_dir (the common case post-PublishGate fix), there's
-            # nothing to copy — just attach.
-            try:
-                same_file = (
-                    record_path.resolve(strict=False)
-                    == run_dir_record_path.resolve(strict=False)
-                )
-            except OSError:
-                same_file = False
-            if same_file:
-                effective_record_path = run_dir_record_path
-            else:
-                src_fd = _open_contained_validation_record(
-                    str(record_path), worktree
-                )
-                if src_fd is not None and _copy_from_fd(src_fd, run_dir_record_path):
-                    effective_record_path = run_dir_record_path
-                # If the copy was refused (out-of-tree path, etc.) we must
-                # NOT silently fall back to the run-dir file: the caller
-                # supplied an authoritative source and asked us to honor
-                # it. Publishing a stale local snapshot is the same
-                # path-leak class as #6017 re-review-4 P2 in reverse —
-                # the manifest would advertise an authoritative result
-                # that this call never produced.
-        elif run_dir_record_path.exists():
-            # No authoritative source supplied; the run-dir file is the
-            # only signal we have, so attach it.
-            effective_record_path = run_dir_record_path
+        effective_record_path = self._materialize_validation_record(
+            worktree=worktree,
+            record_path=record_path,
+            run_dir_record_path=run_dir_record_path,
+        )
         if effective_record_path is not None:
             self.session_output.update_manifest(
                 run_dir,
@@ -826,6 +792,47 @@ class CompletionProcessor:
 
         if updates:
             self.session_output.update_manifest(run_dir, updates)
+
+    def _materialize_validation_record(
+        self,
+        *,
+        worktree: Path,
+        record_path: Path | None,
+        run_dir_record_path: Path,
+    ) -> Path | None:
+        """Resolve the run-dir record's authoritative content and return its path.
+
+        Precedence: when ``record_path`` is supplied, the caller is asking
+        the helper to publish that source as the run-dir's authoritative
+        record. Falls back to a pre-existing run-dir file ONLY when no
+        source was supplied — refusing the caller's source and silently
+        publishing a stale local snapshot would be the #6017 P2 path-leak
+        class in reverse. Returns ``None`` when nothing can be attached.
+        """
+        if record_path is None or not record_path.exists():
+            return run_dir_record_path if run_dir_record_path.exists() else None
+        # Source/destination identity check. ``_copy_from_fd`` opens
+        # ``dst`` with ``open(dst, "wb")`` which truncates the file
+        # before reading completes, so a same-file copy ends up as empty
+        # JSON. When the caller already wrote the authoritative record
+        # into run_dir (the common case post-PublishGate fix), there's
+        # nothing to copy — just attach.
+        try:
+            same_file = (
+                record_path.resolve(strict=False)
+                == run_dir_record_path.resolve(strict=False)
+            )
+        except OSError:
+            same_file = False
+        if same_file:
+            return run_dir_record_path
+        # Symlink-safe walk: opens the source under the worktree with
+        # O_NOFOLLOW on every path component (#6017 re-review-4 P2),
+        # never reopens by path string.
+        src_fd = _open_contained_validation_record(str(record_path), worktree)
+        if src_fd is not None and _copy_from_fd(src_fd, run_dir_record_path):
+            return run_dir_record_path
+        return None
 
     def process(
         self,
