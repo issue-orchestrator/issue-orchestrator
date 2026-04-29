@@ -52,6 +52,7 @@ ISSUE_4057_VALIDATION_CMD = f"pytest {ISSUE_4057_TARGET_TEST} -q"
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
+    pytest.mark.heavy_e2e,
     pytest.mark.asyncio,
     pytest.mark.timeout(E2E_TIMEOUT_MINUTES * 60),
 ]

@@ -26,8 +26,8 @@ help:
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-integration-core   Run fast integration slice used by local validate"
 	@echo "  test-integration-agent  Run real agent-backed integration slice"
-	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
-	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
+	@echo "  test-e2e            Run standard e2e tests excluding heavy_e2e (use NOFAST=1 to run all)"
+	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/production-parity tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
@@ -347,14 +347,15 @@ else
 	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
 endif
 
-# E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
+# E2E tests stop on first failure by default and exclude heavy_e2e tests.
+# Use test-e2e-heavy for expensive journey-level/production-parity tests.
 # Usage: make test-e2e        (stops on first failure)
-#        make test-e2e NOFAST=1  (runs all tests even if some fail)
+#        make test-e2e NOFAST=1  (runs all standard tests even if some fail)
 test-e2e:
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/e2e -m "not heavy_e2e" -v -s --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	$(PYTEST) tests/e2e -m "not heavy_e2e" -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 test-e2e-heavy:
