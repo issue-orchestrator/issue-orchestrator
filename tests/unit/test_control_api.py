@@ -90,6 +90,7 @@ def create_mock_orchestrator():
     lm.blocked = "blocked"
     lm.needs_human = "blocked-needs-human"
     lm.blocked_failed = "blocked-failed"
+    lm.blocked_pr_closed = "blocked:pr-closed"
     lm.pr_pending = "pr-pending"
     lm.in_progress = "in-progress"
     lm.get_blocking = MagicMock(
@@ -147,4 +148,3 @@ def mock_supervisor():
     set_supervisor(mock)
     yield mock
     set_supervisor(DefaultSupervisorOps())
-

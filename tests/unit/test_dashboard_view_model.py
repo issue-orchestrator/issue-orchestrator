@@ -543,6 +543,39 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
+def test_pr_closed_blocked_issue_is_blocked_not_awaiting_merge():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    drifted_issue = Issue(
+        number=4072,
+        title="PR pending merge",
+        labels=["agent:web", "pr-pending", "blocked:pr-closed"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[drifted_issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    blocked_numbers = {item["issue_number"] for item in view_model.blocked_items}
+    awaiting_numbers = {item["issue_number"] for item in view_model.awaiting_merge_items}
+    assert 4072 in blocked_numbers
+    assert 4072 not in awaiting_numbers
+    blocked_item = next(item for item in view_model.blocked_items if item["issue_number"] == 4072)
+    assert "blocked:pr-closed" in blocked_item["orchestrator_labels"]
+    assert blocked_item["blocked_summary"] == "PR closed or missing"
+
+
 def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     config = _make_config()
     state = OrchestratorState(

@@ -315,6 +315,30 @@ def test_expanded_cards_render_label_badges() -> None:
     assert "card-badges" in snippet
     assert "resetRetrySingle" in snippet
     assert "retryExpandedSingle" in snippet
+    assert "hasPrClosedBlock(item)" in snippet
+    assert "retryPrClosedSingle" in snippet
+    assert "closePrClosedIssue" in snippet
+
+
+def test_pr_closed_block_cards_offer_only_retry_and_close() -> None:
+    js = _read(DASHBOARD_JS)
+    marker = "async function loadExpandedColumn"
+    start = js.find(marker)
+    assert start != -1
+    snippet = js[start : start + 6000]
+    assert "columnId === 'blocked' && isPrClosedBlock" in snippet
+    assert "Close Issue" in snippet
+    assert "columnId === 'blocked' && !isPrClosedBlock" in snippet
+    assert "Reset & Retry From Scratch" in snippet
+    assert "retryPrClosedSingle" in snippet
+    assert "closePrClosedIssue" in snippet
+
+
+def test_pr_closed_block_detector_handles_prefixed_labels() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "hasPrClosedBlock")
+    assert "blocked:pr-closed" in body
+    assert "endsWith(':blocked:pr-closed')" in body
 
 
 def test_session_replay_seek_reuses_terminal_for_forward_progress() -> None:
@@ -347,10 +371,26 @@ def test_session_replay_resize_event_does_not_fit_over_recorded_geometry() -> No
 
 def test_unblock_handlers_use_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
-    for fn in ("unblockSingle", "bulkUnblock", "unblockFromDrawer", "unblockSelectedIssues"):
+    for fn in (
+        "unblockSingle",
+        "retryPrClosedSingle",
+        "bulkUnblock",
+        "unblockFromDrawer",
+        "unblockSelectedIssues",
+    ):
         body = _function_body(js, fn)
         assert "uiActionContract.buildUnblockRequest" in body
         assert "/api/unblock-retry" not in body
+
+
+def test_close_issue_handler_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    contract_js = _read(UI_ACTION_CONTRACT_JS)
+    body = _function_body(js, "closePrClosedIssue")
+    assert "buildCloseIssueRequest" in contract_js
+    assert "CLOSE_ISSUE" in contract_js
+    assert "uiActionContract.buildCloseIssueRequest" in body
+    assert "/api/issues/" not in body
 
 
 def test_retry_publish_handler_uses_ui_action_contract() -> None:
@@ -581,6 +621,7 @@ def test_requeue_paths_use_optimistic_requeue_helper() -> None:
         "bulkUnblock",
         "bulkResetRetry",
         "bulkResetRetryFromScratch",
+        "retryPrClosedSingle",
         "retryExpandedSingle",
         "bulkRetryAwaitingMerge",
         "bulkRetryCompleted",
@@ -649,12 +690,17 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "showContextMenu")
     assert "const isBlockedHistory = effectiveHistoryStatus === 'blocked' || effectiveHistoryStatus === 'needs-human';" in body
+    assert "const isPrClosedBlock = hasPrClosedBlock" in body
     assert "const resetRetryStatuses = new Set(['blocked', 'awaiting-merge']);" in body
     assert "const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out']);" in body
+    assert "if (isPrClosedBlock)" in body
+    assert "menuCloseIssue.style.display = '';" in body
+    assert "menuResetRetry.style.display = 'none';" in body
     assert "menuUnblock.style.display = isBlockedHistory ? '' : 'none';" in body
     assert "menuResetRetry.style.display = '';" in body
     assert "menuResetRetryScratch.style.display = '';" in body
     assert "menuRetry.style.display = '';" in body
+    assert "menuCloseIssue.style.display = 'none';" in body
     assert "setMenuVisible(menuLog, !isCompactCardMenu && !isBlockedHistory);" in body
     assert "setMenuVisible(menuAgentLog, !isCompactCardMenu && !isBlockedHistory);" in body
     assert "setMenuVisible(menuPR, Boolean(prUrl || row.dataset.issueUrl));" in body
@@ -672,6 +718,14 @@ def test_compact_menu_infers_column_id_from_parent_column() -> None:
     body = _function_body(js, "openCompactCardActionsMenu")
     assert "button?.closest('.kanban-column')?.dataset?.column" in body
     assert "columnId: String(columnId || '')" in body
+
+
+def test_compact_menu_preserves_orchestrator_labels() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openCompactCardActionsMenu")
+    assert "button?.dataset?.orchestratorLabels" in body
+    assert "const orchestratorLabels =" in body
+    assert "orchestratorLabels," in body
 
 
 def test_overlay_positioning_uses_shared_clamp_helpers() -> None:

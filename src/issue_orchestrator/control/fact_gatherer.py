@@ -155,6 +155,9 @@ class FactGatherer:
             discovered_awaiting_merge_reconciliations=tuple(
                 state.discovered_awaiting_merge_reconciliations
             ),
+            discovered_awaiting_merge_drifts=tuple(
+                state.discovered_awaiting_merge_drifts
+            ),
             discovered_reworks=tuple(state.discovered_reworks),
             discovered_escalations=tuple(state.discovered_escalations),
             discovered_failures=tuple(state.discovered_failures),

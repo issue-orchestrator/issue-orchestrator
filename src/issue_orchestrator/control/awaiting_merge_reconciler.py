@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
+    DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredRework,
     RECONCILABLE_HISTORY_STATUSES,
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AWAITING_MERGE_HISTORY_LIMIT = 50
+AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
 POST_PUBLISH_VALIDATION_REWORK_STATES = frozenset({"dirty", "behind", "unstable"})
@@ -44,6 +46,7 @@ class AwaitingMergeEntryDiscovery:
 
     outcome: ReconciliationOutcome
     reconciliation: DiscoveredAwaitingMergeReconciliation | None = None
+    drift: DiscoveredAwaitingMergeDrift | None = None
     rework: DiscoveredRework | None = None
 
 
@@ -53,10 +56,12 @@ class AwaitingMergeReconciliationResult:
 
     checked: int = 0
     discovered: int = 0
+    drift_discovered: int = 0
     rework_discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
     reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
+    drifts: tuple[DiscoveredAwaitingMergeDrift, ...] = ()
     reworks: tuple[DiscoveredRework, ...] = ()
 
 
@@ -68,16 +73,22 @@ class AwaitingMergeReconciler:
     label_manager: LabelManager | None = None
     clock: Callable[[], float] = time.time
     history_limit: int = AWAITING_MERGE_HISTORY_LIMIT
+    label_drift_scan_interval_seconds: float = (
+        AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
+    )
 
     def discover(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
         """Discover completed history entries that should become terminal."""
         checked = 0
         discovered = 0
+        drift_discovered = 0
         rework_discovered = 0
         still_pending = 0
         skipped = 0
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
+        drifts: list[DiscoveredAwaitingMergeDrift] = []
         reworks: list[DiscoveredRework] = []
+        pending_issue_numbers: set[int] = set()
 
         candidates = self._awaiting_merge_entries(state)
         logger.debug(
@@ -94,26 +105,41 @@ class AwaitingMergeReconciler:
                     reconciliations.append(discovery.reconciliation)
             elif discovery.outcome == "still_pending":
                 still_pending += 1
+                pending_issue_numbers.add(entry.issue_number)
             else:
                 skipped += 1
+            if discovery.drift is not None:
+                drift_discovered += 1
+                drifts.append(discovery.drift)
             if discovery.rework is not None:
                 rework_discovered += 1
                 reworks.append(discovery.rework)
 
+        label_drifts = self._discover_label_drifts(
+            state,
+            excluded_issue_numbers=pending_issue_numbers
+            | {drift.issue_number for drift in drifts},
+        )
+        drift_discovered += len(label_drifts)
+        drifts.extend(label_drifts)
+
         logger.debug(
-            "Awaiting-merge scan complete: checked=%d terminal=%d still_pending=%d skipped=%d",
+            "Awaiting-merge scan complete: checked=%d terminal=%d drift=%d still_pending=%d skipped=%d",
             checked,
             discovered,
+            drift_discovered,
             still_pending,
             skipped,
         )
         return AwaitingMergeReconciliationResult(
             checked=checked,
             discovered=discovered,
+            drift_discovered=drift_discovered,
             rework_discovered=rework_discovered,
             still_pending=still_pending,
             skipped=skipped,
             reconciliations=tuple(reconciliations),
+            drifts=tuple(drifts),
             reworks=tuple(reworks),
         )
 
@@ -161,6 +187,14 @@ class AwaitingMergeReconciler:
                     pr_number,
                     pr_state,
                 )
+                drift = None
+                if pr_state == "closed":
+                    drift = self._discover_terminal_pr_issue_drift(
+                        state=state,
+                        entry=entry,
+                        pr=pr,
+                        pr_number=pr_number,
+                    )
                 return AwaitingMergeEntryDiscovery(
                     "terminal",
                     reconciliation=_reconciliation_fact(
@@ -170,6 +204,7 @@ class AwaitingMergeReconciler:
                         reason=_pr_terminal_reason(pr_state),
                         source="pull_request",
                     ),
+                    drift=drift,
                 )
         else:
             logger.debug(
@@ -217,6 +252,131 @@ class AwaitingMergeReconciler:
                 pr_number=pr_number,
             ),
         )
+
+    def _discover_terminal_pr_issue_drift(
+        self,
+        *,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+        pr_number: int,
+    ) -> DiscoveredAwaitingMergeDrift | None:
+        if self.label_manager is None:
+            return None
+        try:
+            issue = self._get_issue(entry.issue_number)
+        except RepositoryHostError:
+            logger.warning(
+                "Unable to check issue state for closed PR drift: issue=#%d pr=#%d",
+                entry.issue_number,
+                pr_number,
+            )
+            return None
+        if issue is None:
+            return None
+
+        record_issue_refreshes(state, {entry.issue_number}, self.clock())
+        if _normalized_state(issue.state) == "closed":
+            return None
+        if not self.label_manager.is_pr_pending(issue.labels):
+            return None
+
+        return _drift_fact(
+            issue_number=entry.issue_number,
+            pr=pr,
+            status_reason="PR closed; issue remains open",
+        )
+
+    def _discover_label_drifts(
+        self,
+        state: OrchestratorState,
+        *,
+        excluded_issue_numbers: set[int],
+    ) -> list[DiscoveredAwaitingMergeDrift]:
+        if self.label_manager is None:
+            return []
+
+        active_issue_numbers = {session.issue.number for session in state.active_sessions}
+        now = self.clock()
+        drifts: list[DiscoveredAwaitingMergeDrift] = []
+        for issue in _unique_cached_issues(state):
+            if not self._should_scan_label_drift_issue(
+                state=state,
+                issue=issue,
+                active_issue_numbers=active_issue_numbers,
+                excluded_issue_numbers=excluded_issue_numbers,
+                now=now,
+            ):
+                continue
+
+            drift = self._discover_label_drift_for_issue(
+                state=state,
+                issue=issue,
+                scanned_at=now,
+            )
+            if drift is not None:
+                drifts.append(drift)
+
+        return drifts
+
+    def _should_scan_label_drift_issue(
+        self,
+        *,
+        state: OrchestratorState,
+        issue: Issue,
+        active_issue_numbers: set[int],
+        excluded_issue_numbers: set[int],
+        now: float,
+    ) -> bool:
+        if self.label_manager is None:
+            return False
+        if issue.number in excluded_issue_numbers or issue.number in active_issue_numbers:
+            return False
+        if _normalized_state(issue.state) == "closed":
+            return False
+        if not self.label_manager.is_pr_pending(issue.labels):
+            return False
+        return not _recent_label_drift_scan(
+            state=state,
+            issue_number=issue.number,
+            now=now,
+            interval_seconds=self.label_drift_scan_interval_seconds,
+        )
+
+    def _discover_label_drift_for_issue(
+        self,
+        *,
+        state: OrchestratorState,
+        issue: Issue,
+        scanned_at: float,
+    ) -> DiscoveredAwaitingMergeDrift | None:
+        state.awaiting_merge_drift_scan_timestamps[issue.number] = scanned_at
+        try:
+            prs = self._get_prs_for_issue(issue.number)
+        except RepositoryHostError:
+            return None
+
+        if any(_normalized_state(pr.state) == "open" for pr in prs):
+            return None
+
+        closed_prs = [
+            pr for pr in prs if _normalized_state(pr.state) == "closed"
+        ]
+        if closed_prs:
+            pr = max(closed_prs, key=lambda item: item.number)
+            return _drift_fact(
+                issue_number=issue.number,
+                pr=pr,
+                status_reason="PR closed; issue remains open",
+            )
+        if not prs:
+            return DiscoveredAwaitingMergeDrift(
+                issue_number=issue.number,
+                pr_number=0,
+                pr_url="",
+                status_reason="PR missing; issue remains open",
+            )
+        return None
 
     def _discover_post_publish_validation_rework(
         self,
@@ -280,6 +440,17 @@ class AwaitingMergeReconciler:
             )
             raise
 
+    def _get_prs_for_issue(self, issue_number: int) -> list[PRInfo]:
+        try:
+            return self.repository_host.get_prs_for_issue(issue_number, state="all")
+        except RepositoryHostError as exc:
+            logger.warning(
+                "Failed to scan PRs for awaiting-merge label drift on issue #%d: %s",
+                issue_number,
+                exc,
+            )
+            raise
+
 
 def pr_number_from_url(pr_url: str) -> int | None:
     """Extract a PR number from a GitHub-style pull request URL."""
@@ -309,6 +480,38 @@ def _reconciliation_fact(
         status_reason=reason,
         source=source,
     )
+
+
+def _drift_fact(
+    *,
+    issue_number: int,
+    pr: PRInfo,
+    status_reason: str,
+) -> DiscoveredAwaitingMergeDrift:
+    return DiscoveredAwaitingMergeDrift(
+        issue_number=issue_number,
+        pr_number=pr.number,
+        pr_url=pr.url,
+        status_reason=status_reason,
+    )
+
+
+def _unique_cached_issues(state: OrchestratorState) -> list[Issue]:
+    issues_by_number: dict[int, Issue] = {}
+    for issue in [*state.cached_scope_issues, *state.cached_queue_issues]:
+        issues_by_number[issue.number] = issue
+    return list(issues_by_number.values())
+
+
+def _recent_label_drift_scan(
+    *,
+    state: OrchestratorState,
+    issue_number: int,
+    now: float,
+    interval_seconds: float,
+) -> bool:
+    last_scanned_at = state.awaiting_merge_drift_scan_timestamps.get(issue_number, 0.0)
+    return last_scanned_at > 0 and (now - last_scanned_at) < interval_seconds
 
 
 def _pr_terminal_reason(status: AwaitingMergeTerminalStatus) -> str:

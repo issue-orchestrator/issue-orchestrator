@@ -179,6 +179,7 @@ class OrchestratorSupport:
         for attr in (
             "discovered_reviews",
             "discovered_awaiting_merge_reconciliations",
+            "discovered_awaiting_merge_drifts",
             "discovered_reworks",
             "discovered_escalations",
             "discovered_failures",
@@ -464,6 +465,7 @@ def clear_discovered_facts(state: "OrchestratorState") -> None:
     """Clear discovered facts from state - moved per method table."""
     state.discovered_reviews.clear()
     state.discovered_awaiting_merge_reconciliations.clear()
+    state.discovered_awaiting_merge_drifts.clear()
     state.discovered_reworks.clear()
     state.discovered_escalations.clear()
     state.discovered_failures.clear()

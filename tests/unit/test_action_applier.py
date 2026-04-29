@@ -23,6 +23,7 @@ from issue_orchestrator.control.actions import (
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
     SupersedePullRequestAction,
+    CloseIssueAction,
 )
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
@@ -592,6 +593,35 @@ class TestSupersedePullRequestAction:
         assert "GitHub refused" in (result.error or "")
 
 
+class TestCloseIssueAction:
+    """Tests for CLOSE_ISSUE action."""
+
+    def test_close_issue_updates_repository_state(self, applier, mock_repository_host):
+        """Closing an issue is an ActionApplier-owned GitHub mutation."""
+        action = CloseIssueAction(issue_number=559)
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert result.details["issue_number"] == 559
+        assert result.details["state"] == "closed"
+        mock_repository_host.update_issue_state.assert_called_once_with(559, "closed")
+
+    def test_close_issue_fails_when_repository_update_fails(
+        self,
+        applier,
+        mock_repository_host,
+    ):
+        """Close failures are returned to callers."""
+        mock_repository_host.update_issue_state.side_effect = RuntimeError("GitHub refused")
+        action = CloseIssueAction(issue_number=559)
+
+        result = applier.apply(action)
+
+        assert not result.success
+        assert "GitHub refused" in (result.error or "")
+
+
 class TestEscalateToHumanAction:
     """Tests for ESCALATE_TO_HUMAN action."""
 
@@ -1078,6 +1108,7 @@ class TestClaimGateAudit:
         ActionType.SYNC_LABELS,
         ActionType.ADD_COMMENT,
         ActionType.SUPERSEDE_PR,
+        ActionType.CLOSE_ISSUE,
         ActionType.ESCALATE_TO_HUMAN,
         ActionType.QUEUE_REVIEW,
     }
@@ -1090,7 +1121,7 @@ class TestClaimGateAudit:
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
-    # - CREATE_PR / CLOSE_ISSUE: not implemented in action_applier
+    # - CREATE_PR: not implemented in action_applier
     EXEMPT_ACTIONS = {
         ActionType.LAUNCH_SESSION,
         ActionType.STOP_SESSION,
@@ -1102,7 +1133,6 @@ class TestClaimGateAudit:
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,
-        ActionType.CLOSE_ISSUE,
     }
 
     def test_all_action_types_accounted_for(self):
@@ -1129,6 +1159,7 @@ class TestClaimGateAudit:
             ActionType.SYNC_LABELS: "_apply_sync_labels",
             ActionType.ADD_COMMENT: "_apply_add_comment",
             ActionType.SUPERSEDE_PR: "_apply_supersede_pr",
+            ActionType.CLOSE_ISSUE: "_apply_close_issue",
             ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
         }

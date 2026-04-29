@@ -43,13 +43,14 @@ def _label_manager() -> LabelManager:
 def _pr(
     state: str,
     *,
+    number: int = 318,
     mergeable_state: str | None = None,
     labels: list[str] | None = None,
 ) -> PRInfo:
     return PRInfo(
-        number=318,
+        number=number,
         title="Add distributed coalescing for shared-cache read misses",
-        url="https://github.com/owner/repo/pull/318",
+        url=f"https://github.com/owner/repo/pull/{number}",
         branch="228-cache-read-misses",
         body="",
         state=state,
@@ -58,9 +59,9 @@ def _pr(
     )
 
 
-def _issue(state: str) -> Issue:
+def _issue(state: str, *, number: int = 228) -> Issue:
     return Issue(
-        number=228,
+        number=number,
         title="Shared cache read misses",
         labels=["agent:backend", "pr-pending"],
         state=state,
@@ -134,6 +135,179 @@ def test_recovered_entry_reconciles_when_pr_is_closed() -> None:
     assert result.reconciliations[0].source == "pull_request"
     assert entry.pr_url == "https://github.com/owner/repo/pull/318"
     repository_host.get_issue.assert_not_called()
+
+
+def test_closed_pr_with_open_pr_pending_issue_discovers_label_drift() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr("closed")
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.checked == 1
+    assert result.discovered == 1
+    assert result.drift_discovered == 1
+    drift = result.drifts[0]
+    assert drift.issue_number == 228
+    assert drift.pr_number == 318
+    assert drift.pr_url == "https://github.com/owner/repo/pull/318"
+    assert drift.status_reason == "PR closed; issue remains open"
+    assert state.issue_refresh_timestamps[228] == 1234.5
+    assert state.issue_last_refreshed_at[228] == 1234.5
+
+
+def test_closed_pr_with_closed_issue_does_not_discover_label_drift() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr("closed")
+    repository_host.get_issue.return_value = _issue("closed")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.discovered == 1
+    assert result.drift_discovered == 0
+    assert result.drifts == ()
+    assert state.issue_refresh_timestamps[228] == 1234.5
+
+
+def test_label_only_pr_pending_issue_with_closed_pr_discovers_drift() -> None:
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [_pr("closed")]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+    ).discover(state)
+
+    assert result.checked == 0
+    assert result.drift_discovered == 1
+    drift = result.drifts[0]
+    assert drift.issue_number == 228
+    assert drift.pr_number == 318
+    assert drift.status_reason == "PR closed; issue remains open"
+    assert state.awaiting_merge_drift_scan_timestamps[228] > 0
+    repository_host.get_prs_for_issue.assert_called_once_with(228, state="all")
+
+
+def test_label_only_pr_pending_issue_without_pr_discovers_missing_pr_drift() -> None:
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = []
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+    ).discover(state)
+
+    assert result.checked == 0
+    assert result.drift_discovered == 1
+    drift = result.drifts[0]
+    assert drift.issue_number == 228
+    assert drift.pr_number == 0
+    assert drift.pr_url == ""
+    assert drift.status_reason == "PR missing; issue remains open"
+    assert state.awaiting_merge_drift_scan_timestamps[228] > 0
+
+
+def test_recent_label_only_pr_pending_issue_scan_is_throttled() -> None:
+    issue = _issue("open")
+    state = OrchestratorState(
+        cached_queue_issues=[issue],
+        awaiting_merge_drift_scan_timestamps={228: 1000.0},
+    )
+    repository_host = MagicMock()
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1200.0,
+        label_drift_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.checked == 0
+    assert result.drift_discovered == 0
+    repository_host.get_prs_for_issue.assert_not_called()
+
+
+def test_stale_label_only_pr_pending_issue_scan_runs_and_updates_timestamp() -> None:
+    issue = _issue("open")
+    state = OrchestratorState(
+        cached_queue_issues=[issue],
+        awaiting_merge_drift_scan_timestamps={228: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [_pr("closed")]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1400.0,
+        label_drift_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.drift_discovered == 1
+    assert state.awaiting_merge_drift_scan_timestamps[228] == 1400.0
+    repository_host.get_prs_for_issue.assert_called_once_with(228, state="all")
+
+
+def test_label_only_pr_scan_error_skips_issue_and_continues() -> None:
+    issues = [_issue("open", number=228), _issue("open", number=229)]
+    state = OrchestratorState(cached_queue_issues=issues)
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.side_effect = [
+        RepositoryHostError("github unavailable"),
+        [_pr("closed", number=319)],
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drift_discovered == 1
+    assert result.drifts[0].issue_number == 229
+    assert result.drifts[0].pr_number == 319
+    assert state.awaiting_merge_drift_scan_timestamps == {228: 1234.5, 229: 1234.5}
+    assert repository_host.get_prs_for_issue.call_count == 2
+
+
+def test_failed_label_only_pr_scan_is_throttled() -> None:
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.side_effect = RepositoryHostError("github unavailable")
+    reconciler = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        label_drift_scan_interval_seconds=300.0,
+    )
+
+    first_result = reconciler.discover(state)
+
+    assert first_result.drift_discovered == 0
+    assert state.awaiting_merge_drift_scan_timestamps == {228: 1234.5}
+    repository_host.get_prs_for_issue.assert_called_once_with(228, state="all")
+
+    second_result = reconciler.discover(state)
+
+    assert second_result.drift_discovered == 0
+    repository_host.get_prs_for_issue.assert_called_once_with(228, state="all")
 
 
 def test_open_pr_and_failed_issue_refresh_propagates_without_freshness() -> None:

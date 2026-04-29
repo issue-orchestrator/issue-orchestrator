@@ -53,6 +53,14 @@ function filterSuppressedItems(items, columnId) {
     return (items || []).filter((item) => !isIssueSuppressedInColumn(Number(item.issue_number), columnId));
 }
 
+function hasPrClosedBlock(item) {
+    const labels = Array.isArray(item?.orchestrator_labels) ? item.orchestrator_labels : [];
+    return labels.some((label) => {
+        const value = String(label || '');
+        return value === 'blocked:pr-closed' || value.endsWith(':blocked:pr-closed');
+    });
+}
+
 function ensureCompactEmptyState(cardsEl) {
     if (!cardsEl) return;
     const hasCards = cardsEl.querySelector('.issue-card');
@@ -149,6 +157,7 @@ function renderCompactCardHtml(card) {
         data-row-action="${escapeAttr(String(action || ''))}"
         data-agent="${escapeAttr(String(card.agent_type || ''))}"
         data-has-terminal="${hasTerminal}"
+        data-orchestrator-labels="${escapeAttr(JSON.stringify(card.orchestrator_labels || []))}"
         onclick="openCompactCardActionsMenu(event, this)"
         title="More actions for issue #${n}"
         aria-label="More actions for issue #${n}">&#x22EE;</button>`;
@@ -353,6 +362,7 @@ async function loadExpandedColumn(columnId, options = {}) {
             expandedList.innerHTML = items.map(item => {
                 const isViewed = viewed.has(item.issue_number);
                 const n = item.issue_number;
+                const isPrClosedBlock = columnId === 'blocked' && hasPrClosedBlock(item);
                 const orchLabels = item.orchestrator_labels || [];
                 const orchPills = orchLabels.map((label) => `<span class="badge badge-orch">${label}</span>`).join('');
                 const badgesDiv = orchPills
@@ -385,9 +395,11 @@ async function loadExpandedColumn(columnId, options = {}) {
                         ${badgesDiv}
                     </div>
                     <div class="card-actions">
-                        ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
-                        ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
-                        ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
+                        ${columnId === 'blocked' && isPrClosedBlock ? `<button class="card-action-btn card-action-unblock" onclick="retryPrClosedSingle(${n}, this);event.stopPropagation();" title="Remove stale PR labels and requeue issue #${n}">Retry</button>` : ''}
+                        ${columnId === 'blocked' && isPrClosedBlock ? `<button class="card-action-btn card-action-reset" onclick="closePrClosedIssue(${n}, this);event.stopPropagation();" title="Close issue #${n}">Close Issue</button>` : ''}
+                        ${columnId === 'blocked' && !isPrClosedBlock ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
+                        ${columnId === 'blocked' && !isPrClosedBlock ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
+                        ${columnId === 'blocked' && !isPrClosedBlock ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
                         ${columnId === 'running' ? `<button class="card-action-btn card-action-reset" onclick="killExpandedSingle(${n}, this);event.stopPropagation();" title="Terminate issue #${n} and place on hold">Cancel</button>` : ''}
                         ${columnId === 'queued' ? `<button class="card-action-btn card-action-reset" onclick="cancelQueuedSingle(${n}, this);event.stopPropagation();" title="Place queued issue #${n} on hold">Cancel</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'awaiting-merge', this);event.stopPropagation();" title="Remove pr-pending and requeue issue #${n}">Retry</button>` : ''}
@@ -641,6 +653,60 @@ async function unblockSingle(issueNumber, btn) {
     } catch (e) {
         console.error('Unblock failed:', e);
         showToast('Unblock failed: network error', true);
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function retryPrClosedSingle(issueNumber, btn) {
+    const confirmMsg = `Retry issue #${issueNumber}?\n\nThis will REMOVE stale PR labels and requeue the issue.\n\nIt will not delete the local worktree or remote branch.`;
+    if (!await showConfirm(confirmMsg, btn || lastContextMenuPoint)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const req = uiActionContract.buildUnblockRequest([issueNumber]);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        if (resp.ok) {
+            applyOptimisticRequeue([issueNumber], ['blocked']);
+            showToast(`Retrying #${issueNumber}`);
+            await refreshViewModel();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || `Retry failed (${resp.status})`, true);
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        console.error('Retry failed:', e);
+        showToast('Retry failed: network error', true);
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function closePrClosedIssue(issueNumber, btn) {
+    const confirmMsg = `Close issue #${issueNumber}?\n\nUse this when the linked PR was closed or is gone and no more work is needed.`;
+    if (!await showConfirm(confirmMsg, btn || lastContextMenuPoint)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const req = uiActionContract.buildCloseIssueRequest(issueNumber);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.success) {
+            applyOptimisticRequeue([issueNumber], ['blocked']);
+            showToast(`Closed issue #${issueNumber}`);
+            await refreshViewModel();
+        } else {
+            showToast(data.error || `Close failed (${resp.status})`, true);
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        console.error('Close issue failed:', e);
+        showToast('Close failed: network error', true);
         if (btn) btn.disabled = false;
     }
 }

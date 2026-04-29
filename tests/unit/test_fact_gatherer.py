@@ -17,6 +17,7 @@ from issue_orchestrator.domain.models import (
     PendingRework,
     PendingCleanup,
     PendingTriageReview,
+    DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -142,6 +143,25 @@ class TestFactGathererCreateSnapshot:
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
 
         assert snapshot.discovered_awaiting_merge_reconciliations == (fact,)
+
+    def test_create_snapshot_includes_awaiting_merge_drift_facts(
+        self,
+        fact_gatherer,
+        sample_state,
+        sample_issues,
+    ):
+        """Snapshot carries awaiting-merge label drift facts to the planner."""
+        fact = DiscoveredAwaitingMergeDrift(
+            issue_number=1,
+            pr_number=10,
+            pr_url="https://github.com/owner/repo/pull/10",
+            status_reason="PR closed; issue remains open",
+        )
+        sample_state.discovered_awaiting_merge_drifts = [fact]
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.discovered_awaiting_merge_drifts == (fact,)
 
     def test_create_snapshot_with_priority_queue(
         self, fact_gatherer, sample_state, sample_issues

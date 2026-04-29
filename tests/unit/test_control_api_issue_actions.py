@@ -5,6 +5,12 @@
 from tests.unit import test_control_api as _support
 from tests.unit.test_control_api import *  # noqa: F403
 
+from issue_orchestrator.control.actions import (
+    ActionResult as PlanActionResult,
+    CloseIssueAction,
+)
+from issue_orchestrator.domain.models import Issue
+
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
 )
@@ -581,6 +587,66 @@ class TestRetryIssueEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
+
+
+class TestCloseIssueEndpoint:
+    """Test the POST /api/issues/{issue_number}/close endpoint."""
+
+    def test_close_returns_503_when_orchestrator_not_initialized(
+        self, client_without_orchestrator
+    ):
+        """Returns 503 when orchestrator is None."""
+        response = client_without_orchestrator.post("/api/issues/123/close")
+
+        assert response.status_code == 503
+        assert response.json()["error"] == "Orchestrator not initialized"
+
+    def test_close_applies_close_action_and_prunes_cached_issue(
+        self, client_with_orchestrator
+    ):
+        """Close delegates to ActionApplier and removes the issue from UI caches."""
+        client, mock_orch = client_with_orchestrator
+        cached_issue = Issue(
+            number=123,
+            title="Stale PR pending issue",
+            labels=["agent:web", "pr-pending", "blocked:pr-closed"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = [cached_issue]
+        mock_orch.deps.action_applier.apply.return_value = PlanActionResult.ok(
+            CloseIssueAction(issue_number=123),
+            issue_number=123,
+            state="closed",
+        )
+
+        response = client.post("/api/issues/123/close")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["issue_number"] == 123
+        action = mock_orch.deps.action_applier.apply.call_args.args[0]
+        assert isinstance(action, CloseIssueAction)
+        assert action.issue_number == 123
+        assert action.expected is not None
+        assert action.expected.required_labels == frozenset({"blocked:pr-closed"})
+        assert mock_orch.state.cached_scope_issues == []
+        assert mock_orch.state.cached_queue_issues == []
+
+    def test_close_returns_500_when_action_fails(self, client_with_orchestrator):
+        """Failed close actions are surfaced to the UI."""
+        client, mock_orch = client_with_orchestrator
+        mock_orch.deps.action_applier.apply.return_value = PlanActionResult.fail(
+            CloseIssueAction(issue_number=123),
+            "GitHub refused",
+        )
+
+        response = client.post("/api/issues/123/close")
+
+        assert response.status_code == 500
+        data = response.json()
+        assert data["success"] is False
+        assert data["error"] == "GitHub refused"
 
 
 # --- Test: Dismiss Issue Endpoint ---

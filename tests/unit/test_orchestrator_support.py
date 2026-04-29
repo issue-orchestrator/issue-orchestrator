@@ -54,6 +54,7 @@ from issue_orchestrator.domain.models import (
     PendingRework,
     PendingTriageReview,
     PendingCleanup,
+    DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredReview,
     DiscoveredRework,
@@ -891,6 +892,14 @@ class TestClearDiscoveredFacts:
                 source="pull_request",
             )
         ]
+        sample_orchestrator_state.discovered_awaiting_merge_drifts = [
+            DiscoveredAwaitingMergeDrift(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                status_reason="PR closed; issue remains open",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
         ]
@@ -906,6 +915,7 @@ class TestClearDiscoveredFacts:
         # All lists should be empty
         assert len(sample_orchestrator_state.discovered_reviews) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
+        assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1331,6 +1341,14 @@ class TestOrchestratorSupportClearDiscoveredFacts:
                 source="pull_request",
             )
         ]
+        sample_orchestrator_state.discovered_awaiting_merge_drifts = [
+            DiscoveredAwaitingMergeDrift(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                status_reason="PR closed; issue remains open",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
         ]
@@ -1348,6 +1366,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
 
         assert len(sample_orchestrator_state.discovered_reviews) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
+        assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
