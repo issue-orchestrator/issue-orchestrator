@@ -36,7 +36,7 @@ class ClaimState(Enum):
 class Claim:
     """Represents a claim on an issue by an orchestrator instance.
 
-    Claims are stored as YAML blocks in issue comments and used to coordinate
+    Claims are stored by ClaimManager implementations and used to coordinate
     which orchestrator is allowed to work on an issue.
 
     Attributes:

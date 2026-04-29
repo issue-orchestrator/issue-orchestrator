@@ -2151,6 +2151,20 @@ agents:
 class TestConfigValidation:
     """Tests for config validation at startup."""
 
+    def test_removed_convergence_required_wins_is_unknown(self, tmp_path):
+        """claims.convergence_required_wins is no longer accepted."""
+        config_content = """
+claims:
+  enabled: true
+  convergence_required_wins: 2
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert "Unknown config field: 'claims.convergence_required_wins'" in config.validate()
+
     def test_validate_missing_prompt_file(self, tmp_path):
         """Test validation catches missing prompt files."""
         config_content = """

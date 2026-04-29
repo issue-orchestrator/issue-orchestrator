@@ -2,6 +2,8 @@
 
 # ruff: noqa: F403,F405,SLF001
 
+from types import SimpleNamespace
+
 from tests.unit import test_control_api as _support
 from tests.unit.test_control_api import *  # noqa: F403
 
@@ -602,7 +604,30 @@ class TestStatusEndpoint:
 
         # Set up state with some data
         mock_orch.state.paused = True
-        mock_orch.state.active_sessions = [MagicMock(), MagicMock()]
+        mock_orch.state.active_sessions = [
+            SimpleNamespace(
+                terminal_id="issue-42",
+                issue=SimpleNamespace(
+                    number=42,
+                    title="Test issue",
+                    agent_type="agent:test",
+                ),
+                runtime_minutes=3,
+                agent_config=SimpleNamespace(timeout_minutes=10),
+                branch_name="issue-42-test",
+            ),
+            SimpleNamespace(
+                terminal_id="issue-43",
+                issue=SimpleNamespace(
+                    number=43,
+                    title="Slow issue",
+                    agent_type="agent:test",
+                ),
+                runtime_minutes=11,
+                agent_config=SimpleNamespace(timeout_minutes=10),
+                branch_name="issue-43-test",
+            ),
+        ]
         mock_orch.state.pending_reviews = [MagicMock()]
         mock_orch.state.pending_reworks = []
         mock_orch.state.completed_today = [1, 2, 3]
@@ -614,6 +639,26 @@ class TestStatusEndpoint:
         data = response.json()
         assert data["paused"] is True
         assert data["active_sessions"] == 2
+        assert data["sessions"] == [
+            {
+                "session_name": "issue-42",
+                "issue_number": 42,
+                "title": "Test issue",
+                "runtime_minutes": 3,
+                "agent_type": "agent:test",
+                "status": "running",
+                "branch": "issue-42-test",
+            },
+            {
+                "session_name": "issue-43",
+                "issue_number": 43,
+                "title": "Slow issue",
+                "runtime_minutes": 11,
+                "agent_type": "agent:test",
+                "status": "slow",
+                "branch": "issue-43-test",
+            },
+        ]
         assert data["pending_reviews"] == 1
         assert data["pending_reworks"] == 0
         assert data["completed_today"] == 3

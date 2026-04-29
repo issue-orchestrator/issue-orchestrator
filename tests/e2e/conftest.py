@@ -39,8 +39,8 @@ from .fixtures import (
     get_control_api_port,
     OrchestratorProcess,
     E2E_LOG_DIR,
-    _keep_artifacts,
-    _keep_remote_artifacts,
+    keep_artifacts,
+    keep_remote_artifacts,
     _github_adapter,
     get_issue_comments,
     wait_with_process_check,
@@ -260,7 +260,7 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
     logger.info("[E2E RECONCILIATION] worktree_base=%s", e2e_worktree_base)
     logger.info("=" * 60)
 
-    if _keep_artifacts():
+    if keep_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping local cleanup (E2E_KEEP_ARTIFACTS=1)")
     else:
         # Clean up default locations (from non-isolated runs)
@@ -268,7 +268,7 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
         # Clean up this session's isolated resources
         cleanup_local_worktrees(e2e_worktree_base)
 
-    if _keep_remote_artifacts():
+    if keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
         prs_closed = branches_deleted = issues_closed = labels_deleted = 0
         ensure_required_pr_labels(repo)
@@ -289,12 +289,12 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
     logger.info("[E2E RECONCILIATION] Cleaning up artifacts from completed run...")
     logger.info("=" * 60)
 
-    if _keep_artifacts():
+    if keep_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping post-run local cleanup (E2E_KEEP_ARTIFACTS=1)")
     else:
         cleanup_local_worktrees(e2e_worktree_base)
 
-    if _keep_remote_artifacts():
+    if keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping post-run remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
         prs_closed = issues_closed = labels_deleted = 0
     else:
@@ -477,7 +477,7 @@ def e2e_session_config(
         cmd="true",
         timeout_seconds=30,
     )
-    if _keep_artifacts():
+    if keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
         config.cleanup.with_triage.remove_worktrees = False
         config.cleanup.without_triage.close_ai_session_tabs = False
@@ -758,7 +758,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
         cmd="true",
         timeout_seconds=30,
     )
-    if _keep_artifacts():
+    if keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
         config.cleanup.with_triage.remove_worktrees = False
         config.cleanup.without_triage.close_ai_session_tabs = False

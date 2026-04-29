@@ -654,6 +654,100 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
+    # -------------------- Git refs / commits --------------------
+
+    def get_default_branch(self) -> str:
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}",
+            caller="get_default_branch",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub repository payload was not an object")
+        default_branch = payload.get("default_branch")
+        if not isinstance(default_branch, str) or not default_branch:
+            raise GitHubHttpError("GitHub repository payload missing default_branch")
+        return default_branch
+
+    def get_git_ref(self, ref: str) -> dict[str, Any] | None:
+        encoded = quote(_api_ref_path(ref), safe="/")
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/git/ref/{encoded}",
+                use_cache=False,
+                caller="get_git_ref",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return payload if isinstance(payload, dict) else None
+
+    def create_git_ref(self, *, ref: str, sha: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/git/refs",
+            json_body={"ref": ref, "sha": sha},
+            use_cache=False,
+            caller="create_git_ref",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub create ref payload was not an object")
+        return payload
+
+    def update_git_ref(self, *, ref: str, sha: str, force: bool = False) -> dict[str, Any]:
+        encoded = quote(_api_ref_path(ref), safe="/")
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/git/refs/{encoded}",
+            json_body={"sha": sha, "force": force},
+            use_cache=False,
+            caller="update_git_ref",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub update ref payload was not an object")
+        return payload
+
+    def delete_git_ref(self, ref: str) -> None:
+        encoded = quote(_api_ref_path(ref), safe="/")
+        self._request_json(
+            "DELETE",
+            f"/repos/{self._config.repo}/git/refs/{encoded}",
+            use_cache=False,
+            caller="delete_git_ref",
+        )
+
+    def get_git_commit(self, sha: str) -> dict[str, Any]:
+        encoded = quote(sha, safe="")
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/git/commits/{encoded}",
+            use_cache=False,
+            caller="get_git_commit",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub commit payload was not an object")
+        return payload
+
+    def create_git_commit(
+        self,
+        *,
+        message: str,
+        tree_sha: str,
+        parents: list[str],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/git/commits",
+            json_body={"message": message, "tree": tree_sha, "parents": parents},
+            use_cache=False,
+            caller="create_git_commit",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub create commit payload was not an object")
+        return payload
+
     def update_issue_state(self, issue_number: int, state: str) -> None:
         self._request_json(
             "PATCH",
@@ -1256,6 +1350,12 @@ def validate_github_token(
             )
     except Exception as e:
         return TokenValidationResult(valid=False, error=str(e))
+
+
+def _api_ref_path(ref: str) -> str:
+    if ref.startswith("refs/"):
+        return ref.removeprefix("refs/")
+    return ref
 
 
 def _search_items(payload: Any) -> list[dict[str, Any]]:

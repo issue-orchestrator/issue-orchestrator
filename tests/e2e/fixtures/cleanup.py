@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .github_client import _github_adapter
-from .orchestrator_process import _keep_artifacts, _keep_remote_artifacts
+from .orchestrator_process import keep_artifacts, keep_remote_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +289,6 @@ __all__ = [
     "ensure_required_pr_labels",
     "cleanup_e2e_labels",
     "cleanup_issues",
-    "_keep_artifacts",
-    "_keep_remote_artifacts",
+    "keep_artifacts",
+    "keep_remote_artifacts",
 ]

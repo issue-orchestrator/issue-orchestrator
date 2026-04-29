@@ -357,9 +357,8 @@ class TimelineConfig:
 class ClaimsConfig:
     """Claims/lease configuration for multi-orchestrator coordination.
 
-    When enabled, orchestrators coordinate via GitHub issue comments to ensure
-    only one orchestrator works on each issue at a time. Uses a convergence
-    protocol with tie-breaking for distributed consensus.
+    When enabled, orchestrators coordinate through the configured repository
+    host to ensure only one orchestrator works on each issue at a time.
 
     Single-orchestrator deployments should leave this disabled (the default).
     """
@@ -375,7 +374,6 @@ class ClaimsConfig:
     convergence_timeout_seconds: float = 5.0  # Max time to wait for convergence
     convergence_poll_min_ms: int = 250  # Min poll interval (randomized)
     convergence_poll_max_ms: int = 500  # Max poll interval (randomized)
-    convergence_required_wins: int = 2  # Consecutive wins needed
 
 
 @dataclass

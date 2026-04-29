@@ -17,7 +17,7 @@ class TestLeaseConfig:
         assert config.convergence_timeout_seconds == 5.0
         assert config.convergence_poll_min_ms == 250
         assert config.convergence_poll_max_ms == 500
-        assert config.convergence_required_wins == 2
+        assert config.convergence_max_polls == 15
 
     def test_for_testing_factory(self):
         """LeaseConfig.for_testing creates config with short times."""
@@ -28,7 +28,7 @@ class TestLeaseConfig:
         assert config.convergence_timeout_seconds == 3.0
         assert config.convergence_poll_min_ms == 100
         assert config.convergence_poll_max_ms == 200
-        assert config.convergence_required_wins == 2
+        assert config.convergence_max_polls == 15
 
     def test_renewal_trigger_threshold(self):
         """renewal_trigger_threshold returns when to trigger renewal."""

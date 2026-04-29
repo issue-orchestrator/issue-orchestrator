@@ -691,7 +691,6 @@ class Config:
                 "convergence_timeout_seconds": self.claims.convergence_timeout_seconds,
                 "convergence_poll_min_ms": self.claims.convergence_poll_min_ms,
                 "convergence_poll_max_ms": self.claims.convergence_poll_max_ms,
-                "convergence_required_wins": self.claims.convergence_required_wins,
             },
             "hooks": {
                     "ai_gate": {

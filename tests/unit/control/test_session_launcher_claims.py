@@ -85,6 +85,44 @@ class TestSessionLauncherClaimAcquisition:
     def mock_events(self):
         return MockEventSink()
 
+    def test_claim_expiry_uses_nested_claims_lease_seconds(
+        self, mock_claim_manager, mock_events
+    ):
+        """Session-local claim expiry honors claims.lease_seconds."""
+        from issue_orchestrator.control.session_launcher import SessionLauncher
+        from issue_orchestrator.infra.config import Config
+
+        config = Config()
+        config.claims.lease_seconds = 30
+
+        launcher = SessionLauncher(
+            config=config,
+            events=mock_events,
+            repository_host=MagicMock(),
+            action_applier=MagicMock(),
+            session_manager=MagicMock(),
+            worktree_manager=MagicMock(),
+            working_copy=MagicMock(),
+            command_runner=MagicMock(),
+            session_output=MagicMock(),
+            manifest_downloader=MagicMock(),
+            session_exists_fn=lambda name: False,
+            create_session_fn=lambda *args: True,
+            get_issue_machine=lambda issue: MagicMock(state="AVAILABLE"),
+            get_session_machine=lambda *args: MagicMock(),
+            get_review_machine=lambda *args: MagicMock(),
+            claim_manager=mock_claim_manager,
+        )
+
+        claim = launcher._acquire_issue_claim(MockIssue())  # noqa: SLF001
+
+        assert claim.success is True
+        assert claim.lease_acquired_at is not None
+        assert claim.lease_expires_at is not None
+        assert (
+            claim.lease_expires_at - claim.lease_acquired_at
+        ).total_seconds() == 30
+
     def test_launch_acquires_claim_before_worktree(
         self, mock_claim_manager, mock_events
     ):
@@ -131,6 +169,7 @@ class TestSessionLauncherClaimAcquisition:
                 from issue_orchestrator.infra.config import Config
 
                 mock_config = MagicMock(spec=Config)
+                mock_config.claims = MagicMock(lease_seconds=900)
                 mock_config.repo = "test/repo"
                 mock_config.agents = {"test-agent": MagicMock(
                     timeout_minutes=30,
@@ -199,6 +238,7 @@ class TestSessionLauncherClaimAcquisition:
         from issue_orchestrator.infra.config import Config
 
         mock_config = MagicMock(spec=Config)
+        mock_config.claims = MagicMock(lease_seconds=900)
         mock_config.repo = "test/repo"
         mock_config.agents = {"test-agent": MagicMock(provider=None)}
         mock_config.provider_resilience = MagicMock(short_retry=MagicMock(
@@ -243,6 +283,7 @@ class TestSessionLauncherClaimAcquisition:
         from issue_orchestrator.infra.config import Config
 
         mock_config = MagicMock(spec=Config)
+        mock_config.claims = MagicMock(lease_seconds=900)
         mock_config.repo = "test/repo"
         mock_config.agents = {"test-agent": MagicMock(provider=None)}
         mock_config.provider_resilience = MagicMock(short_retry=MagicMock(

@@ -2,6 +2,7 @@
 
 from .inflight_tracker import (
     find_free_port,
+    control_api_headers,
     trigger_refresh,
     register_inflight_issue,
     ensure_inflight_refresh,
@@ -11,8 +12,8 @@ from .inflight_tracker import (
 from .orchestrator_process import (
     OrchestratorProcess,
     E2E_LOG_DIR,
-    _keep_artifacts,
-    _keep_remote_artifacts,
+    keep_artifacts,
+    keep_remote_artifacts,
 )
 from .github_client import (
     _github_adapter,
@@ -90,6 +91,7 @@ from .wait_helpers import (
 __all__ = [
     # inflight_tracker
     "find_free_port",
+    "control_api_headers",
     "trigger_refresh",
     "register_inflight_issue",
     "ensure_inflight_refresh",
@@ -100,8 +102,8 @@ __all__ = [
     # orchestrator_process
     "OrchestratorProcess",
     "E2E_LOG_DIR",
-    "_keep_artifacts",
-    "_keep_remote_artifacts",
+    "keep_artifacts",
+    "keep_remote_artifacts",
     # github_client
     "_github_adapter",
     "get_issue_comments",

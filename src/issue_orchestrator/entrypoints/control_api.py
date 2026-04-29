@@ -619,6 +619,20 @@ async def resume() -> JSONResponse:
     return JSONResponse({"status": "resumed"})
 
 
+def _active_session_status_payload(session: Any) -> dict[str, Any]:
+    runtime_minutes = session.runtime_minutes
+    timeout_minutes = session.agent_config.timeout_minutes
+    return {
+        "session_name": session.terminal_id,
+        "issue_number": session.issue.number,
+        "title": session.issue.title,
+        "runtime_minutes": runtime_minutes,
+        "agent_type": session.issue.agent_type,
+        "status": "running" if runtime_minutes < timeout_minutes else "slow",
+        "branch": session.branch_name,
+    }
+
+
 @control_app.get("/api/status")
 async def status() -> JSONResponse:
     """Get current orchestrator status."""
@@ -626,9 +640,14 @@ async def status() -> JSONResponse:
         return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
     state = _orchestrator.state
+    sessions = [
+        _active_session_status_payload(session)
+        for session in state.active_sessions
+    ]
     return JSONResponse({
         "paused": state.paused,
         "active_sessions": len(state.active_sessions),
+        "sessions": sessions,
         "pending_reviews": len(state.pending_reviews),
         "pending_reworks": len(state.pending_reworks),
         "completed_today": len(state.completed_today),

@@ -17,7 +17,6 @@ class LeaseConfig:
         convergence_timeout_seconds: Max time to wait for convergence
         convergence_poll_min_ms: Minimum poll interval during convergence
         convergence_poll_max_ms: Maximum poll interval (jitter range)
-        convergence_required_wins: Consecutive wins needed to confirm claim
     """
 
     lease_seconds: int = 900  # 15 minutes
@@ -25,7 +24,6 @@ class LeaseConfig:
     convergence_timeout_seconds: float = 5.0
     convergence_poll_min_ms: int = 250
     convergence_poll_max_ms: int = 500
-    convergence_required_wins: int = 2
     convergence_max_polls: int = 15  # Safety limit on API calls during convergence
 
     @classmethod
@@ -37,7 +35,6 @@ class LeaseConfig:
             convergence_timeout_seconds=3.0,
             convergence_poll_min_ms=100,
             convergence_poll_max_ms=200,
-            convergence_required_wins=2,
         )
 
     def renewal_trigger_threshold(self) -> int:

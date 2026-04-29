@@ -469,7 +469,7 @@ class SessionLauncher:
             )
 
         # Claim acquired successfully
-        lease_seconds = self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900
+        lease_seconds = self.config.claims.lease_seconds
         acquired_at = datetime.now()
         logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), claim_result.lease_id)
         self.events.publish(make_trace_event(

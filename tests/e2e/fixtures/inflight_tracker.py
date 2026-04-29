@@ -14,8 +14,17 @@ import urllib.error
 import urllib.request
 
 from issue_orchestrator.domain.issue_key import IssueKey
+from issue_orchestrator.infra.api_token import TOKEN_ENV_VAR, read_existing_token
 
 logger = logging.getLogger(__name__)
+
+
+def control_api_headers() -> dict[str, str]:
+    """Return Control API auth headers for e2e helper requests."""
+    token = os.environ.get(TOKEN_ENV_VAR) or read_existing_token()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
 
 
 def find_free_port() -> int:
@@ -52,7 +61,7 @@ def trigger_refresh(
 
     # Prepare request body with inflight IDs if provided
     body: bytes | None = None
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = control_api_headers()
     if inflight_stable_ids:
         payload = {"inflight_stable_ids": sorted(inflight_stable_ids)}
         body = json.dumps(payload).encode("utf-8")

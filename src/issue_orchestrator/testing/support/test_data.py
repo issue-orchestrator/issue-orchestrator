@@ -13,6 +13,8 @@ from typing import Optional
 from ...infra import gh_audit
 from ...infra.config import Config
 from ...adapters.github import GitHubAdapter
+from ...adapters.github.errors import GitHubHttpError
+from ...adapters.github.ref_claim_adapter import CLAIM_REF_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +172,19 @@ def close_issue(repo: str, issue_number: int, comment: str | None = None) -> Non
         adapter.update_issue_state(issue_number, "closed")
 
 
+def _delete_claim_ref_if_present(repo: str, issue_number: int) -> None:
+    """Remove test claim refs for issues being cleaned up."""
+    try:
+        _adapter_for(repo).http_client.delete_git_ref(
+            f"{CLAIM_REF_PREFIX}/issue-{issue_number}"
+        )
+    except GitHubHttpError as exc:
+        if exc.status_code != 404:
+            logger.warning("Failed to delete claim ref for issue #%d: %s", issue_number, exc)
+    except Exception as exc:
+        logger.warning("Failed to delete claim ref for issue #%d: %s", issue_number, exc)
+
+
 def cleanup_issues_by_label(repo: str, label: str) -> int:
     """Close all issues with a specific label.
 
@@ -189,6 +204,7 @@ def cleanup_issues_by_label(repo: str, label: str) -> int:
     gh_audit.update_last_call(items_returned=len(issues))
     for issue in issues:
         close_issue(repo, issue.number, f"Cleaned up by test: {label}")
+        _delete_claim_ref_if_present(repo, issue.number)
 
     return len(issues)
 
@@ -229,6 +245,7 @@ def cleanup_test_issues(repo: str) -> int:
                             logger.warning("Failed to add comment to issue #%d: %s", num, exc)
                         # Always try to close even if comment failed
                         adapter.update_issue_state(num, "closed")
+                        _delete_claim_ref_if_present(repo, num)
                     count += 1
                 except Exception as exc:
                     logger.warning("Failed to close issue #%d: %s", num, exc)
