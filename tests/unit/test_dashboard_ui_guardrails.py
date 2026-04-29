@@ -10,13 +10,13 @@ from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 ROOT = Path(__file__).resolve().parents[2]
 DASHBOARD_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
 DASHBOARD_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard"
+DASHBOARD_CSS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard"
 DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html"
 ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
 BROWSER_AUTH_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "browser_auth.js"
 THEME_RESOLUTION_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "theme_resolution.js"
 DASHBOARD_BOOT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dashboard_boot.js"
-DASHBOARD_CSS = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard.css"
 
 
 def _read(path: Path) -> str:
@@ -33,10 +33,10 @@ def _read_dashboard_js_bundle() -> str:
 
 
 def _read_dashboard_css_bundle() -> str:
-    bundle = [_read(DASHBOARD_CSS)]
-    for chunk in DASHBOARD_CSS_CHUNKS:
-        bundle.append(_read(DASHBOARD_CSS.parent / "dashboard" / chunk))
-    return "\n".join(bundle)
+    return "\n".join(
+        _read(DASHBOARD_CSS_DIR / chunk)
+        for chunk in DASHBOARD_CSS_CHUNKS
+    )
 
 
 def _function_body(source: str, name: str) -> str:
@@ -59,10 +59,10 @@ def _function_body(source: str, name: str) -> str:
     raise AssertionError(f"Function '{name}' body end not found")
 
 
-def test_dashboard_css_entrypoint_does_not_import_split_stylesheets() -> None:
-    wrapper = _read(DASHBOARD_CSS)
+def test_dashboard_css_uses_direct_split_stylesheets_without_compat_entrypoint() -> None:
+    compat_entrypoint = DASHBOARD_CSS_DIR.parent / "dashboard.css"
 
-    assert "@import" not in wrapper
+    assert not compat_entrypoint.exists()
     assert DASHBOARD_CSS_CHUNKS == (
         "base.css",
         "cards.css",
