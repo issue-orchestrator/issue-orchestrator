@@ -909,7 +909,13 @@ body {
 .activity-iframe-container {
     flex: 1;
     position: relative;
-    background: var(--bg-main);
+    /* Transparent so the brief window between Open click and the
+       dashboard's "ready" postMessage shows the page background
+       instead of var(--bg-main) — which is solid white in light
+       theme and reads as a flash of white. The iframe itself
+       (display:block once revealed) covers this with the dashboard's
+       own theme-correct background. */
+    background: transparent;
 }
 
 .activity-iframe-container iframe {

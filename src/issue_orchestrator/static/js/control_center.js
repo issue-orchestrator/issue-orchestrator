@@ -451,6 +451,22 @@ function initializeActiveRepo() {
 // View Navigation
 // ============================================
 function switchView(viewName, repoPath = null) {
+    // Owner-boundary readiness gate. The repo-card "Open dashboard"
+    // button is disabled when isRepoFullyReady is false, but other
+    // paths reach switchView('activity', path) without that check —
+    // ?repo= deep links, the reconnect-to-active-engine helper, etc.
+    // If we let those through while the engine is mid-startup, the
+    // iframe loads against a not-yet-settled engine and produces the
+    // SSE-driven flash sequence the readiness gate exists to avoid.
+    // Route to the repositories view instead so the user sees the
+    // "Initializing…" badge and can re-open when ready.
+    if (viewName === 'activity' && repoPath) {
+        const targetRepo = state.repos.find((r) => r.path === repoPath);
+        if (targetRepo && !isRepoFullyReady(targetRepo)) {
+            viewName = 'repositories';
+            repoPath = null;
+        }
+    }
     state.currentView = viewName;
 
     // Exit maximize mode when leaving activity view
@@ -1266,8 +1282,16 @@ function loadActivityView(repoPath) {
         loading.innerHTML = '<div class="spinner"></div><p>Starting repository engine...</p><p>Waiting for engine to become ready.</p>';
         loading.style.display = 'block';
     } else if (port && repoState !== 'not running') {
-        loading.innerHTML = '<div class="spinner"></div><p>Loading activity...</p>';
-        loading.style.display = 'block';
+        // No loading spinner during normal repo open: the repo card
+        // already kept Open disabled until startup_complete, so the
+        // wait inside the iframe is just the brief boot window
+        // (data-booting suppresses content visibility), then the
+        // dashboard postMessages ready and we reveal. A spinner card
+        // appearing/disappearing on top of that is itself a visible
+        // event. The pendingRepoStarts branch above keeps the
+        // "Starting repository engine..." spinner because the user
+        // shouldn't reach this code path before that's resolved.
+        loading.style.display = 'none';
 
         let loadTimedOut = false;
         const timeout = setTimeout(() => {
@@ -1278,12 +1302,19 @@ function loadActivityView(repoPath) {
             `;
         }, 8000);
 
+        // Reveal on iframe.onload. The dashboard's own
+        // visibility:hidden-on-.container suppression (active while
+        // data-booting=true) keeps the inner content invisible across
+        // the brief post-onload boot window, so revealing here shows
+        // the iframe's themed body bg, not raw mutations. Open is
+        // already gated on startup_status === complete via the
+        // repo-card readiness check, so the SSE reconnect storm that
+        // used to drive cold-engine flashes is not in play here.
         iframe.onload = () => {
             clearTimeout(timeout);
             if (!loadTimedOut) {
                 loading.style.display = 'none';
                 iframe.style.display = 'block';
-                // Send repo display name to dashboard for embedded header
                 try {
                     iframe.contentWindow.postMessage({
                         type: 'cc-repo-info',
@@ -1435,12 +1466,9 @@ async function startRepo(path, configName = null, startPaused = false) {
 
         await waitForRepoToBeReady(path);
         await loadRepos();
-        showToast(
-            startPaused
-                ? `Repository engine started paused with ${config}`
-                : `Repository engine started with ${config}`,
-            'success',
-        );
+        // No success toast: the repo card's badge already shows the
+        // engine transitioning Initializing… → Running / Paused, and
+        // the Open button enabling. A duplicate toast is just noise.
     } catch (error) {
         showToast(error.message, 'error');
     } finally {
