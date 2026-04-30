@@ -778,6 +778,17 @@ body {
     color: var(--accent-green);
 }
 
+.repo-card-badge.starting {
+    background: rgba(56, 139, 253, 0.15);
+    color: var(--accent-blue);
+    animation: repo-card-badge-starting-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes repo-card-badge-starting-pulse {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 1; }
+}
+
 .repo-card-badge.legacy {
     background: rgba(210, 153, 34, 0.15);
     color: var(--accent-yellow);
@@ -898,7 +909,13 @@ body {
 .activity-iframe-container {
     flex: 1;
     position: relative;
-    background: var(--bg-main);
+    /* Transparent so the brief window between Open click and the
+       dashboard's "ready" postMessage shows the page background
+       instead of var(--bg-main) — which is solid white in light
+       theme and reads as a flash of white. The iframe itself
+       (display:block once revealed) covers this with the dashboard's
+       own theme-correct background. */
+    background: transparent;
 }
 
 .activity-iframe-container iframe {

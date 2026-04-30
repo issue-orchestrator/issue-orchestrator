@@ -10,6 +10,26 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
+    <!-- Flash diagnostic probe - same two-path strategy as dashboard.html.
+         URL-param path is server-rendered as a parser-blocking <script>
+         (so the e2e test sees boot mutations); localStorage path uses the
+         inline gate below (acceptable async load for ad-hoc debugging).
+         Empty string when disabled - the probe is not fetched at all on
+         normal loads. This template is served via raw .replace() in
+         control_api.py, so Jinja comments would be served literally. -->
+    {{ flash_debug_script }}
+    <script>
+    (function () {
+        try {
+            if (window.localStorage
+                && window.localStorage.getItem('flashDebug') === '1') {
+                var s = document.createElement('script');
+                s.src = '/static/js/flash_debug.js';
+                document.head.appendChild(s);
+            }
+        } catch (_e) { /* probe never blocks page load */ }
+    }());
+    </script>
     <link rel="stylesheet" href="/static/css/control_center.css">
     <link rel="stylesheet" href="/static/css/ui_primitives.css">
     <link rel="stylesheet" href="/static/css/control_center_setup.css">

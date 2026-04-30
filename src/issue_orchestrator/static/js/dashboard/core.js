@@ -105,7 +105,12 @@ function applyDashboardTheme(theme) {
         storedTheme,
         prefersDark,
     });
-    document.documentElement.setAttribute('data-theme', effectiveTheme);
+    // Same-value writes on <html> still trigger a global style invalidation,
+    // which on initial boot is visible as a whole-screen flash. Only write
+    // when the value actually differs from what dashboard_boot.js stamped.
+    if (document.documentElement.getAttribute('data-theme') !== effectiveTheme) {
+        document.documentElement.setAttribute('data-theme', effectiveTheme);
+    }
 }
 
 function setDashboardInitializing(isInitializing) {
@@ -128,7 +133,9 @@ function navigateBackToRepositories() {
 
 // When embedded in CC iframe, hide dashboard header and show embedded header in tab bar
 const isEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
-if (isEmbedded) {
+if (isEmbedded && document.documentElement.getAttribute('data-embedded') !== 'true') {
+    // Same-value writes still invalidate <html>-keyed CSS globally, so skip
+    // when dashboard_boot.js already stamped this during head parse.
     document.documentElement.setAttribute('data-embedded', 'true');
 }
 
@@ -144,7 +151,14 @@ if (isEmbedded) {
     document.addEventListener('DOMContentLoaded', () => {
         // Populate repo name from server-rendered data
         const repoEl = document.getElementById('embeddedRepoName');
-        if (repoEl) repoEl.textContent = window.dashboardData?.repo || '';
+        const desiredRepo = window.dashboardData?.repo || '';
+        // The template now SSRs the repo name into this span. Skip the
+        // write when it already matches so the first JS init doesn't
+        // unnecessarily replace the text node and fire a MutationObserver
+        // event during boot.
+        if (repoEl && repoEl.textContent !== desiredRepo) {
+            repoEl.textContent = desiredRepo;
+        }
         // Back button: repositories in normal mode, collapse in expanded mode
         document.getElementById('embeddedBack')?.addEventListener('click', () => {
             const expanded = document.querySelector('.kanban-column.expanded[data-expanded="true"]');
@@ -178,9 +192,15 @@ function updateEmbeddedBackButtonVisibility() {
     const label = document.getElementById('embeddedBackLabel');
     if (!back || !label) return;
     const hasExpandedColumn = Boolean(document.querySelector('.kanban-column.expanded[data-expanded="true"]'));
-    back.style.display = '';
-    label.textContent = hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories';
-    back.setAttribute('aria-label', hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories');
+    const desiredText = hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories';
+    // Same-value writes still fire MutationObservers and trigger style
+    // invalidation; this function gets called on every refresh, so guard
+    // each write to avoid header flashes.
+    if (back.style.display !== '') back.style.display = '';
+    if (label.textContent !== desiredText) label.textContent = desiredText;
+    if (back.getAttribute('aria-label') !== desiredText) {
+        back.setAttribute('aria-label', desiredText);
+    }
 }
 
 // Listen for messages from parent (CC iframe embedding)
@@ -200,7 +220,9 @@ window.addEventListener('message', (event) => {
             // Parent CC sends repo display name and config info
             if (event.data.repoName) {
                 const el = document.getElementById('embeddedRepoName');
-                if (el) el.textContent = event.data.repoName;
+                if (el && el.textContent !== event.data.repoName) {
+                    el.textContent = event.data.repoName;
+                }
             }
             break;
     }
@@ -292,20 +314,50 @@ function updateStatusBadgeFromViewModel(vm) {
         className = 'status-badge status-paused';
     }
 
-    // Update all status badges (standalone header + embedded tab bar)
+    // Update all status badges (standalone header + embedded tab bar).
+    //
+    // Two bugs to avoid:
+    //  1. Unconditional textContent / class writes fire MutationObserver
+    //     events and trigger style invalidation on every view-model refresh,
+    //     even when the value is unchanged — visible as a periodic flash.
+    //  2. `badge.className = className` REPLACES the full class string, so
+    //     auxiliary classes the server stamped (like `embedded-badge` on
+    //     #embeddedBadge) get silently wiped on the first refresh. Only the
+    //     state class (status-running / status-paused / status-starting)
+    //     should be swapped; everything else must be left alone.
+    const stateClasses = ['status-running', 'status-paused', 'status-starting'];
+    const desiredState = className.split(/\s+/)
+        .find((cls) => stateClasses.includes(cls)) || null;
     document.querySelectorAll('.status-badge').forEach(badge => {
-        badge.textContent = text;
-        badge.className = className;
+        if (badge.textContent !== text) {
+            badge.textContent = text;
+        }
+        const currentState = stateClasses.find((cls) => badge.classList.contains(cls)) || null;
+        if (currentState !== desiredState) {
+            // Build the final class string and write it once, instead of
+            // calling classList.remove three times + classList.add once
+            // (each call fires its own MutationObserver event, stacking
+            // four invalidations for one logical state change). Atomic
+            // write = one MO event = one paint.
+            const others = Array.from(badge.classList).filter(
+                (cls) => !stateClasses.includes(cls)
+            );
+            const next = desiredState ? [...others, desiredState] : others;
+            badge.className = next.join(' ');
+        }
     });
 }
 
 function updatePauseMenuFromViewModel(vm) {
     const menuItem = document.getElementById('pauseResumeItem');
     if (!menuItem || !vm) return;
-    if (vm.paused) {
-        menuItem.innerHTML = '<span aria-hidden="true">▶</span> Resume';
-    } else {
-        menuItem.innerHTML = '<span aria-hidden="true">⏸</span> Pause';
+    const desired = vm.paused
+        ? '<span aria-hidden="true">▶</span> Resume'
+        : '<span aria-hidden="true">⏸</span> Pause';
+    // Same-value innerHTML writes still tear down and rebuild the subtree,
+    // firing childList mutations on every refresh — skip when unchanged.
+    if (menuItem.innerHTML !== desired) {
+        menuItem.innerHTML = desired;
     }
 }
 

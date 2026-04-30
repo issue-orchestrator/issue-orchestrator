@@ -362,7 +362,13 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert 'data-action="stop-force"' not in script
     assert "getRepoDashboardUrl(repo, { embedded: true, theme: iframeTheme })" in script
     assert "buildDashboardUrlFromBase(repo.dashboard_url, options)" in script
+    # isRepoDashboardReady = engine process alive and serving (used by
+    # the start-RPC's wait loop). isRepoFullyReady additionally gates on
+    # repo.status.startup_status === "complete" — the CC backend probes
+    # each engine's /api/status and stamps that field on the snapshot.
     assert "Boolean(repo.dashboard_url)" in script
+    assert "function isRepoFullyReady" in script
+    assert "repo.status?.startup_status === 'complete'" in script
     assert "http://127.0.0.1:${port}" not in template
 
 

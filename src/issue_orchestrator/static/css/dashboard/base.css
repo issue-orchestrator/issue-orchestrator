@@ -66,6 +66,14 @@ html[data-booting="true"] *::before,
 html[data-booting="true"] *::after {
     transition: none !important;
 }
+/* Standalone dashboard suppression: hide .container during boot. JS does
+   its initial fetches + DOM updates behind this curtain so the user sees
+   one paint of the settled UI when data-booting clears. The CC iframe
+   path doesn't rely on this — see control_center.js, where the iframe
+   is kept hidden until the dashboard postMessages "ready". */
+html[data-booting="true"] body > .container {
+    visibility: hidden;
+}
 html,
 body {
     min-height: 100%;

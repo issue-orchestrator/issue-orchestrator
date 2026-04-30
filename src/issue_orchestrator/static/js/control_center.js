@@ -451,6 +451,22 @@ function initializeActiveRepo() {
 // View Navigation
 // ============================================
 function switchView(viewName, repoPath = null) {
+    // Owner-boundary readiness gate. The repo-card "Open dashboard"
+    // button is disabled when isRepoFullyReady is false, but other
+    // paths reach switchView('activity', path) without that check —
+    // ?repo= deep links, the reconnect-to-active-engine helper, etc.
+    // If we let those through while the engine is mid-startup, the
+    // iframe loads against a not-yet-settled engine and produces the
+    // SSE-driven flash sequence the readiness gate exists to avoid.
+    // Route to the repositories view instead so the user sees the
+    // "Initializing…" badge and can re-open when ready.
+    if (viewName === 'activity' && repoPath) {
+        const targetRepo = state.repos.find((r) => r.path === repoPath);
+        if (targetRepo && !isRepoFullyReady(targetRepo)) {
+            viewName = 'repositories';
+            repoPath = null;
+        }
+    }
     state.currentView = viewName;
 
     // Exit maximize mode when leaving activity view
@@ -666,6 +682,7 @@ async function loadRepos(silent = false) {
         updateRecoveryBanner();
         updateDropdownDisplay();
         updateToolsScopeNote();
+        maybeStartFastRepoPoll();
 
         // Check for deep-link in URL (only on first load)
         if (!deepLinkHandled) {
@@ -805,9 +822,53 @@ function getRepoPort(repo) {
 }
 
 function isRepoDashboardReady(repo) {
+    // "Engine process is alive and serving" — used by waitForRepoToBeReady
+    // to decide when the start-up RPC has succeeded. Does NOT require
+    // startup_status === complete (the supervisor flips to running
+    // before the engine's initial GitHub fetch finishes; that fetch
+    // can outlast the start-RPC timeout).
     if (!repo) return false;
     const repoState = getRepoState(repo);
     return (repoState === 'running' || repoState === 'paused') && Boolean(repo.dashboard_url);
+}
+
+function isRepoFullyReady(repo) {
+    // "Engine has finished its startup sequence" — used to gate the
+    // per-repo Open dashboard button. The Control Center server
+    // probes each engine's /api/status (cross-process, in-supervisor)
+    // and stamps startup_status onto repo.status, so the frontend
+    // just reads it from the existing /control/repos snapshot.
+    if (!isRepoDashboardReady(repo)) return false;
+    return repo.status?.startup_status === 'complete';
+}
+
+// While any repo is alive but mid-startup (state===running/paused but
+// startup_status not yet "complete"), poll /control/repos faster than
+// the default 30 s interval so the Open button transitions to enabled
+// shortly after the engine reports ready, instead of after the next
+// long poll. Self-stops as soon as no repo is in that transitional
+// state.
+const FAST_REPO_POLL_INTERVAL_MS = 2000;
+let fastRepoPollTimer = null;
+
+function anyRepoStillStarting() {
+    return state.repos.some((r) => {
+        const s = getRepoState(r);
+        if (!(s === 'running' || s === 'paused')) return false;
+        return r.status?.startup_status !== 'complete';
+    });
+}
+
+function maybeStartFastRepoPoll() {
+    if (fastRepoPollTimer !== null) return;
+    if (!anyRepoStillStarting()) return;
+    fastRepoPollTimer = window.setInterval(async () => {
+        await loadRepos(true);
+        if (!anyRepoStillStarting()) {
+            window.clearInterval(fastRepoPollTimer);
+            fastRepoPollTimer = null;
+        }
+    }, FAST_REPO_POLL_INTERVAL_MS);
 }
 
 async function waitForRepoToBeReady(path) {
@@ -968,11 +1029,20 @@ function renderRepoCard(repo) {
     const isPaused = repoState === 'paused';
     const isNotRunning = repoState === 'not running';
     const isNeedsSetup = needsSetup(repo);
+    const fullyReady = isRepoFullyReady(repo);
 
     let badgeClass = 'stopped';
     let badgeText = 'Not running';
     if (isRunning) { badgeClass = 'running'; badgeText = 'Running'; }
     if (isPaused) { badgeClass = 'paused'; badgeText = 'Paused'; }
+    // While the engine is alive but mid-startup, the badge does double
+    // duty as a status + readiness indicator: "Initializing" reads
+    // clearly, and the Open button below stays disabled until it
+    // transitions to "Running" / "Paused".
+    if ((isRunning || isPaused) && !fullyReady) {
+        badgeClass = 'starting';
+        badgeText = 'Initializing…';
+    }
     if (isNeedsSetup) { badgeClass = 'needs-setup'; badgeText = 'Needs Setup'; }
 
     const port = getRepoPort(repo);
@@ -1010,9 +1080,19 @@ function renderRepoCard(repo) {
         `;
     } else {
         const pendingStop = isRepoStopPending(repo.path);
+        // Engine process is alive (state===running/paused), but the
+        // engine's startup sequence (initial GitHub fetch + reconcile)
+        // may still be in flight. Keep Open disabled until ready;
+        // the badge above reads "Initializing…" during the wait.
+        // Pause/Resume is also disabled during Initializing — the
+        // engine isn't ready to cleanly handle a state-change RPC
+        // mid-startup. Stop stays enabled as an escape hatch in case
+        // the user decides not to wait.
+        const openDisabled = fullyReady ? '' : 'disabled';
+        const pauseResumeDisabled = fullyReady ? '' : 'disabled';
         actions = `
-            <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open dashboard</button>
-            <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
+            <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" ${openDisabled}>Open dashboard</button>
+            <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}" ${pauseResumeDisabled}>${isPaused ? 'Resume engine' : 'Pause engine'}</button>
             <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}" ${pendingStop ? 'disabled' : ''}>${pendingStop ? 'Stopping...' : 'Stop engine'}</button>
         `;
     }
@@ -1202,8 +1282,16 @@ function loadActivityView(repoPath) {
         loading.innerHTML = '<div class="spinner"></div><p>Starting repository engine...</p><p>Waiting for engine to become ready.</p>';
         loading.style.display = 'block';
     } else if (port && repoState !== 'not running') {
-        loading.innerHTML = '<div class="spinner"></div><p>Loading activity...</p>';
-        loading.style.display = 'block';
+        // No loading spinner during normal repo open: the repo card
+        // already kept Open disabled until startup_complete, so the
+        // wait inside the iframe is just the brief boot window
+        // (data-booting suppresses content visibility), then the
+        // dashboard postMessages ready and we reveal. A spinner card
+        // appearing/disappearing on top of that is itself a visible
+        // event. The pendingRepoStarts branch above keeps the
+        // "Starting repository engine..." spinner because the user
+        // shouldn't reach this code path before that's resolved.
+        loading.style.display = 'none';
 
         let loadTimedOut = false;
         const timeout = setTimeout(() => {
@@ -1212,14 +1300,26 @@ function loadActivityView(repoPath) {
                 <p>Engine on port ${port} is not responding.</p>
                 <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
             `;
+            // The normal-open path keeps loading hidden (no spinner
+            // during a healthy reveal). On failure we have to make the
+            // error UI visible — otherwise the user gets a blank pane
+            // instead of the "not responding" / Retry message.
+            loading.style.display = 'block';
         }, 8000);
 
+        // Reveal on iframe.onload. The dashboard's own
+        // visibility:hidden-on-.container suppression (active while
+        // data-booting=true) keeps the inner content invisible across
+        // the brief post-onload boot window, so revealing here shows
+        // the iframe's themed body bg, not raw mutations. Open is
+        // already gated on startup_status === complete via the
+        // repo-card readiness check, so the SSE reconnect storm that
+        // used to drive cold-engine flashes is not in play here.
         iframe.onload = () => {
             clearTimeout(timeout);
             if (!loadTimedOut) {
                 loading.style.display = 'none';
                 iframe.style.display = 'block';
-                // Send repo display name to dashboard for embedded header
                 try {
                     iframe.contentWindow.postMessage({
                         type: 'cc-repo-info',
@@ -1234,6 +1334,9 @@ function loadActivityView(repoPath) {
                 <p>Failed to connect to engine on port ${port}.</p>
                 <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
             `;
+            // Same reason as the timeout path above: surface the error
+            // since the normal-open path leaves loading hidden.
+            loading.style.display = 'block';
         };
         const iframeTheme = state.theme === 'system'
             ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
@@ -1371,12 +1474,9 @@ async function startRepo(path, configName = null, startPaused = false) {
 
         await waitForRepoToBeReady(path);
         await loadRepos();
-        showToast(
-            startPaused
-                ? `Repository engine started paused with ${config}`
-                : `Repository engine started with ${config}`,
-            'success',
-        );
+        // No success toast: the repo card's badge already shows the
+        // engine transitioning Initializing… → Running / Paused, and
+        // the Open button enabling. A duplicate toast is just noise.
     } catch (error) {
         showToast(error.message, 'error');
     } finally {

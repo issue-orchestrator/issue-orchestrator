@@ -253,7 +253,13 @@ function renderCompactCards(container, items) {
             }
             node = newNode;
         } else {
-            existing.dataset.cardFingerprint = nextFingerprint;
+            // Fingerprint already matches (line 232 just checked) — do NOT
+            // re-write the attribute. Even a same-value write fires a
+            // MutationObserver and forces an attribute-selector style
+            // invalidation, which on initial dashboard boot stacks 8 cards
+            // × 3 view-model fetch cycles into a visible flash. Only the
+            // phase-age string (excluded from the fingerprint by design)
+            // needs an in-place sync.
             syncCompactCardPhaseAge(existing, card);
         }
 

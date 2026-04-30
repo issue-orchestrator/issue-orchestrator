@@ -363,7 +363,12 @@ async function toggleExcluded() {
     healthPollTimer = window.setInterval(() => {
         checkEngineHealth();
     }, HEALTH_POLL_MS);
-    checkEngineHealth();
+    // No eager checkEngineHealth() here: at init time evtSource is still
+    // null because connectEventStream() is async, so an eager call paints
+    // the "Engine reachable. Reconnecting event stream..." banner that
+    // SSE's onopen clears ~10ms later — a visible whole-screen flicker on
+    // every dashboard load. Real disconnects are caught by the periodic
+    // health poll above and by scheduleReconnect() on SSE failure.
 
     window.addEventListener('beforeunload', () => {
         if (healthPollTimer !== null) {
