@@ -1300,6 +1300,11 @@ function loadActivityView(repoPath) {
                 <p>Engine on port ${port} is not responding.</p>
                 <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
             `;
+            // The normal-open path keeps loading hidden (no spinner
+            // during a healthy reveal). On failure we have to make the
+            // error UI visible — otherwise the user gets a blank pane
+            // instead of the "not responding" / Retry message.
+            loading.style.display = 'block';
         }, 8000);
 
         // Reveal on iframe.onload. The dashboard's own
@@ -1329,6 +1334,9 @@ function loadActivityView(repoPath) {
                 <p>Failed to connect to engine on port ${port}.</p>
                 <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
             `;
+            // Same reason as the timeout path above: surface the error
+            // since the normal-open path leaves loading hidden.
+            loading.style.display = 'block';
         };
         const iframeTheme = state.theme === 'system'
             ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
