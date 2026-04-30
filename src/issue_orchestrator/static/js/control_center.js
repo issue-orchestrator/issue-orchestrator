@@ -1191,7 +1191,14 @@ function loadActivityView(repoPath) {
     // Load iframe
     const iframe = document.getElementById('activityIframe');
     const loading = document.getElementById('activityLoading');
-    iframe.style.display = 'none';
+    // Hide via opacity rather than display:none so the iframe stays in
+    // the layout and Chromium continues to run requestAnimationFrame
+    // inside it. The dashboard's ready handshake schedules its
+    // postMessage from a 2-rAF deferral inside the iframe; with
+    // display:none, those rAFs never fire and the handshake stalls
+    // until the 4s fallback timer reveals an empty/half-loaded UI.
+    iframe.style.opacity = '0';
+    iframe.style.pointerEvents = 'none';
     iframe.src = 'about:blank';
 
     // Set iframe source to orchestrator dashboard
@@ -1229,7 +1236,11 @@ function loadActivityView(repoPath) {
             revealed = true;
             clearTimeout(timeout);
             loading.style.display = 'none';
-            iframe.style.display = 'block';
+            // Iframe stayed display:block (opacity:0); flipping opacity
+            // to 1 reveals the already-rendered, ready-state dashboard
+            // in one paint.
+            iframe.style.opacity = '1';
+            iframe.style.pointerEvents = 'auto';
             // Send repo display name to dashboard for embedded header
             try {
                 iframe.contentWindow.postMessage({
