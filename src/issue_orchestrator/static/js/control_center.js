@@ -1206,6 +1206,7 @@ function loadActivityView(repoPath) {
         loading.style.display = 'block';
 
         let loadTimedOut = false;
+        let revealed = false;
         const timeout = setTimeout(() => {
             loadTimedOut = true;
             loading.innerHTML = `
@@ -1214,19 +1215,46 @@ function loadActivityView(repoPath) {
             `;
         }, 8000);
 
-        iframe.onload = () => {
+        // Reveal the iframe in one of three cases:
+        //   1. Dashboard postMessages 'orchestrator-dashboard:ready' (the
+        //      happy path: dashboard finished its boot dance behind the
+        //      curtain, settled UI is ready to show).
+        //   2. Reveal-fallback timer fires 4s after iframe.onload — guards
+        //      against an older dashboard that doesn't postMessage, or any
+        //      bug that prevents the message from arriving.
+        //   3. Engine timeout (above) fires first — leaves the loading
+        //      message in place and never reveals.
+        const revealIframe = () => {
+            if (revealed || loadTimedOut) return;
+            revealed = true;
             clearTimeout(timeout);
-            if (!loadTimedOut) {
-                loading.style.display = 'none';
-                iframe.style.display = 'block';
-                // Send repo display name to dashboard for embedded header
-                try {
-                    iframe.contentWindow.postMessage({
-                        type: 'cc-repo-info',
-                        repoName: repo.name,
-                    }, '*');
-                } catch (e) { /* cross-origin */ }
-            }
+            loading.style.display = 'none';
+            iframe.style.display = 'block';
+            // Send repo display name to dashboard for embedded header
+            try {
+                iframe.contentWindow.postMessage({
+                    type: 'cc-repo-info',
+                    repoName: repo.name,
+                }, '*');
+            } catch (e) { /* cross-origin */ }
+        };
+
+        const onDashboardReady = (event) => {
+            if (event.source !== iframe.contentWindow) return;
+            if (event.data?.type !== 'orchestrator-dashboard:ready') return;
+            window.removeEventListener('message', onDashboardReady);
+            revealIframe();
+        };
+        window.addEventListener('message', onDashboardReady);
+
+        iframe.onload = () => {
+            // Fallback: if the dashboard never sends the ready message
+            // (older build, JS error, etc.), reveal anyway after a short
+            // grace period so the user isn't stuck on the loader.
+            setTimeout(() => {
+                window.removeEventListener('message', onDashboardReady);
+                revealIframe();
+            }, 4000);
         };
         iframe.onerror = () => {
             clearTimeout(timeout);

@@ -66,30 +66,13 @@ html[data-booting="true"] *::before,
 html[data-booting="true"] *::after {
     transition: none !important;
 }
-/* Hide the dashboard during boot. The page is server-rendered with
-   correct initial state, then JS does additional updates (first-fetch
-   value fills, engine state corrections, etc.) before clearing
-   data-booting. By keeping the contents invisible while these mutations
-   land, the user sees one paint of the final settled UI instead of
-   ~3-4 visible flashes as state arrives. dashboard_boot.js already
-   guarantees data-booting clears (with an 8s fallback safety net), so
-   the longest the dashboard can stay hidden is bounded. */
+/* Standalone dashboard suppression: hide .container during boot. JS does
+   its initial fetches + DOM updates behind this curtain so the user sees
+   one paint of the settled UI when data-booting clears. The CC iframe
+   path doesn't rely on this — see control_center.js, where the iframe
+   is kept hidden until the dashboard postMessages "ready". */
 html[data-booting="true"] body > .container {
     visibility: hidden;
-}
-/* Keep the server-rendered Initializing-orchestrator status visible during
-   boot. It has its own pulse animation + copy, so slow loads (where the
-   first /api/view-model takes time, or stalls all the way to the 8s
-   data-booting fallback) show "Initializing orchestrator" instead of a
-   blank page. visibility:visible on the descendant overrides the
-   inherited visibility:hidden from .container. We also force display:flex
-   during boot — the element is normally only display:flex while
-   .is-active, which the server only stamps when startup_status !=
-   "complete"; during a complete-startup cold reload we still want it
-   visible so the user always has a load indicator. */
-html[data-booting="true"] body > .container #dashboardInitStatus {
-    visibility: visible;
-    display: flex;
 }
 html,
 body {

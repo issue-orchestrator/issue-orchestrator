@@ -125,6 +125,19 @@ function markDashboardBooted() {
     } else {
         document.documentElement.removeAttribute('data-booting');
     }
+    // When embedded inside the CC iframe, signal the parent that the
+    // dashboard is fully booted and ready to be revealed. The CC keeps
+    // the iframe hidden behind its own loading overlay until it receives
+    // this — without it, the iframe.onload reveal happens mid-boot and
+    // the user sees JS-driven mutations as a series of flashes.
+    if (window.parent && window.parent !== window) {
+        try {
+            window.parent.postMessage(
+                { type: 'orchestrator-dashboard:ready' },
+                '*',
+            );
+        } catch (_error) { /* cross-origin parent: ignore */ }
+    }
 }
 
 function navigateBackToRepositories() {
