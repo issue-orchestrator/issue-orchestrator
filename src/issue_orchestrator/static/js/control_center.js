@@ -1209,8 +1209,12 @@ function loadActivityView(repoPath) {
         loading.innerHTML = '<div class="spinner"></div><p>Starting repository engine...</p><p>Waiting for engine to become ready.</p>';
         loading.style.display = 'block';
     } else if (port && repoState !== 'not running') {
-        loading.innerHTML = '<div class="spinner"></div><p>Loading activity...</p>';
-        loading.style.display = 'block';
+        // No loading spinner during normal repo open — the iframe is
+        // opacity:0 while it boots, then opacity:1 once the dashboard
+        // postMessages ready, so the user sees a brief blank then the
+        // settled dashboard rather than a spinner that itself adds a
+        // visible state change.
+        loading.style.display = 'none';
 
         let loadTimedOut = false;
         let revealed = false;
