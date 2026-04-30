@@ -123,6 +123,13 @@ def _info_payload(
         "max_sessions": config.max_concurrent_sessions,
         "active_sessions": len(state.active_sessions),
         "completed_today": len(state.completed_today),
+        # Whether the engine has finished its initial GitHub fetch and
+        # state reconcile. The Control Center polls this so it can keep
+        # the per-repo "Open dashboard" button disabled until the engine
+        # would render a settled view — without this, opening during
+        # the ~10 s cold-start window shows a procession of SSE-driven
+        # UI updates as the dashboard catches up to the engine state.
+        "startup_status": state.startup_status,
     }
 
 

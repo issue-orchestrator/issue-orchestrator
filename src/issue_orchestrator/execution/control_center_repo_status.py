@@ -200,6 +200,11 @@ def _apply_internal_runtime_state(status_payload: dict[str, Any], port: int) -> 
     active_sessions = internal.get("active_sessions", [])
     status_payload["active_session_count"] = len(active_sessions)
     status_payload["e2e_role"] = internal.get("e2e_role")
+    # The CC frontend uses startup_status to keep the Open button in an
+    # "Initializing…" state until the engine has finished its first
+    # GitHub fetch + reconcile. Without it, opening mid-startup shows
+    # SSE-driven UI updates as visible flashes.
+    status_payload["startup_status"] = internal.get("startup_status")
 
 
 __all__ = ["build_repos_status"]

@@ -666,6 +666,7 @@ async function loadRepos(silent = false) {
         updateRecoveryBanner();
         updateDropdownDisplay();
         updateToolsScopeNote();
+        maybeStartFastRepoPoll();
 
         // Check for deep-link in URL (only on first load)
         if (!deepLinkHandled) {
@@ -805,9 +806,53 @@ function getRepoPort(repo) {
 }
 
 function isRepoDashboardReady(repo) {
+    // "Engine process is alive and serving" — used by waitForRepoToBeReady
+    // to decide when the start-up RPC has succeeded. Does NOT require
+    // startup_status === complete (the supervisor flips to running
+    // before the engine's initial GitHub fetch finishes; that fetch
+    // can outlast the start-RPC timeout).
     if (!repo) return false;
     const repoState = getRepoState(repo);
     return (repoState === 'running' || repoState === 'paused') && Boolean(repo.dashboard_url);
+}
+
+function isRepoFullyReady(repo) {
+    // "Engine has finished its startup sequence" — used to gate the
+    // per-repo Open dashboard button. The Control Center server
+    // probes each engine's /api/status (cross-process, in-supervisor)
+    // and stamps startup_status onto repo.status, so the frontend
+    // just reads it from the existing /control/repos snapshot.
+    if (!isRepoDashboardReady(repo)) return false;
+    return repo.status?.startup_status === 'complete';
+}
+
+// While any repo is alive but mid-startup (state===running/paused but
+// startup_status not yet "complete"), poll /control/repos faster than
+// the default 30 s interval so the Open button transitions to enabled
+// shortly after the engine reports ready, instead of after the next
+// long poll. Self-stops as soon as no repo is in that transitional
+// state.
+const FAST_REPO_POLL_INTERVAL_MS = 2000;
+let fastRepoPollTimer = null;
+
+function anyRepoStillStarting() {
+    return state.repos.some((r) => {
+        const s = getRepoState(r);
+        if (!(s === 'running' || s === 'paused')) return false;
+        return r.status?.startup_status !== 'complete';
+    });
+}
+
+function maybeStartFastRepoPoll() {
+    if (fastRepoPollTimer !== null) return;
+    if (!anyRepoStillStarting()) return;
+    fastRepoPollTimer = window.setInterval(async () => {
+        await loadRepos(true);
+        if (!anyRepoStillStarting()) {
+            window.clearInterval(fastRepoPollTimer);
+            fastRepoPollTimer = null;
+        }
+    }, FAST_REPO_POLL_INTERVAL_MS);
 }
 
 async function waitForRepoToBeReady(path) {
@@ -968,11 +1013,20 @@ function renderRepoCard(repo) {
     const isPaused = repoState === 'paused';
     const isNotRunning = repoState === 'not running';
     const isNeedsSetup = needsSetup(repo);
+    const fullyReady = isRepoFullyReady(repo);
 
     let badgeClass = 'stopped';
     let badgeText = 'Not running';
     if (isRunning) { badgeClass = 'running'; badgeText = 'Running'; }
     if (isPaused) { badgeClass = 'paused'; badgeText = 'Paused'; }
+    // While the engine is alive but mid-startup, the badge does double
+    // duty as a status + readiness indicator: "Initializing" reads
+    // clearly, and the Open button below stays disabled until it
+    // transitions to "Running" / "Paused".
+    if ((isRunning || isPaused) && !fullyReady) {
+        badgeClass = 'starting';
+        badgeText = 'Initializing…';
+    }
     if (isNeedsSetup) { badgeClass = 'needs-setup'; badgeText = 'Needs Setup'; }
 
     const port = getRepoPort(repo);
@@ -1010,9 +1064,19 @@ function renderRepoCard(repo) {
         `;
     } else {
         const pendingStop = isRepoStopPending(repo.path);
+        // Engine process is alive (state===running/paused), but the
+        // engine's startup sequence (initial GitHub fetch + reconcile)
+        // may still be in flight. Keep Open disabled until ready;
+        // the badge above reads "Initializing…" during the wait.
+        // Pause/Resume is also disabled during Initializing — the
+        // engine isn't ready to cleanly handle a state-change RPC
+        // mid-startup. Stop stays enabled as an escape hatch in case
+        // the user decides not to wait.
+        const openDisabled = fullyReady ? '' : 'disabled';
+        const pauseResumeDisabled = fullyReady ? '' : 'disabled';
         actions = `
-            <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open dashboard</button>
-            <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
+            <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" ${openDisabled}>Open dashboard</button>
+            <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}" ${pauseResumeDisabled}>${isPaused ? 'Resume engine' : 'Pause engine'}</button>
             <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}" ${pendingStop ? 'disabled' : ''}>${pendingStop ? 'Stopping...' : 'Stop engine'}</button>
         `;
     }

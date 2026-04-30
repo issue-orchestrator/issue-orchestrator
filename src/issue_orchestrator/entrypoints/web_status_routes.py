@@ -79,6 +79,13 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     return JSONResponse({
         "paused": state.paused,
         "shutdown_requested": orchestrator.shutdown_requested,
+        # Exposed so the Control Center's server-to-server probe (in
+        # control_center_repo_status._apply_internal_runtime_state) can
+        # see whether the engine has finished its initial reconcile,
+        # and the CC frontend can keep the per-repo "Open dashboard"
+        # button disabled until the dashboard would render a settled
+        # view rather than a procession of SSE-driven updates.
+        "startup_status": state.startup_status,
         "active_sessions": sessions,
         "max_sessions": config.max_concurrent_sessions,
         "completed_today": state.completed_today,
