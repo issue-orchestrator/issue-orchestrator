@@ -1,10 +1,22 @@
 let isPaused = window.dashboardData.paused;
 
 function setPauseBadgeState(paused, text = null) {
+    const desiredText = text || (paused ? 'Paused' : 'Running');
+    const desiredClass = paused ? 'status-paused' : 'status-running';
+    const stateClasses = ['status-paused', 'status-running', 'status-starting'];
     document.querySelectorAll('.status-badge').forEach(badge => {
-        badge.textContent = text || (paused ? 'Paused' : 'Running');
-        badge.classList.remove('status-paused', 'status-running', 'status-starting');
-        badge.classList.add(paused ? 'status-paused' : 'status-running');
+        if (badge.textContent !== desiredText) {
+            badge.textContent = desiredText;
+        }
+        const currentState = stateClasses.find((cls) => badge.classList.contains(cls)) || null;
+        if (currentState !== desiredClass) {
+            // Atomic single-write class swap; see comment in core.js
+            // updateStatusBadgeFromViewModel for rationale.
+            const others = Array.from(badge.classList).filter(
+                (cls) => !stateClasses.includes(cls)
+            );
+            badge.className = [...others, desiredClass].join(' ');
+        }
     });
     updatePauseMenuFromViewModel({ paused });
 }
@@ -230,9 +242,19 @@ function applyGitHubUsagePrefs() {
     const panel = document.getElementById('ghUsagePanel');
     const pill = document.getElementById('ghUsagePill');
     if (!wrap || !panel || !pill) return;
-    wrap.style.display = prefs.hidden ? 'none' : '';
-    panel.classList.toggle('visible', !prefs.hidden && prefs.expanded);
-    pill.setAttribute('aria-expanded', (!prefs.hidden && prefs.expanded) ? 'true' : 'false');
+    const desiredDisplay = prefs.hidden ? 'none' : '';
+    const desiredVisible = !prefs.hidden && prefs.expanded;
+    const desiredExpandedAttr = desiredVisible ? 'true' : 'false';
+    // Same-value writes still trigger style invalidation and (for class
+    // toggles) MutationObserver. Guard each so this function — invoked on
+    // every refresh — doesn't contribute to the periodic header flash.
+    if (wrap.style.display !== desiredDisplay) wrap.style.display = desiredDisplay;
+    if (panel.classList.contains('visible') !== desiredVisible) {
+        panel.classList.toggle('visible', desiredVisible);
+    }
+    if (pill.getAttribute('aria-expanded') !== desiredExpandedAttr) {
+        pill.setAttribute('aria-expanded', desiredExpandedAttr);
+    }
 }
 
 function toggleGitHubUsagePanel() {
@@ -268,24 +290,30 @@ function renderGitHubUsage() {
     const limitEl = document.getElementById('ghUsageRateLimit');
     const resetEl = document.getElementById('ghUsageReset');
 
-    if (summary) {
-        summary.textContent = `${callsPerMinute}/min`;
-    }
-    if (cpmEl) cpmEl.textContent = callsPerMinute.toLocaleString();
-    if (totalEl) totalEl.textContent = totalCalls.toLocaleString();
-    if (errEl) errEl.textContent = errors.toLocaleString();
+    // Same-value textContent writes replace the underlying text node and
+    // fire a childList MutationObserver event, which on every periodic
+    // view-model refresh stacks 6 spans into a visible header flash.
+    // Guard each write with a value check.
+    const setText = (el, value) => {
+        if (el && el.textContent !== value) el.textContent = value;
+    };
+
+    setText(summary, `${callsPerMinute}/min`);
+    setText(cpmEl, callsPerMinute.toLocaleString());
+    setText(totalEl, totalCalls.toLocaleString());
+    setText(errEl, errors.toLocaleString());
     if (limitEl) {
+        let limitText;
         if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
             const used = Number.isFinite(Number(rate.used)) ? Number(rate.used) : Math.max(0, limit - remaining);
             const resource = rate.resource ? ` (${String(rate.resource)})` : '';
-            limitEl.textContent = `${used.toLocaleString()} used · ${remaining.toLocaleString()} left${resource}`;
+            limitText = `${used.toLocaleString()} used · ${remaining.toLocaleString()} left${resource}`;
         } else {
-            limitEl.textContent = 'No rate header yet';
+            limitText = 'No rate header yet';
         }
+        setText(limitEl, limitText);
     }
-    if (resetEl) {
-        resetEl.textContent = formatResetLabel(Number(rate.reset || 0));
-    }
+    setText(resetEl, formatResetLabel(Number(rate.reset || 0)));
 }
 
 function updateRefreshStatusFromViewModel(vm) {
@@ -294,26 +322,37 @@ function updateRefreshStatusFromViewModel(vm) {
     window.dashboardData = window.dashboardData || {};
     window.dashboardData.refresh = refresh;
 
+    // Guard each write so periodic view-model refreshes don't replace the
+    // text node when the value is unchanged (every replace is a childList
+    // mutation that compounds with sibling refreshes into a visible flash).
+    const setText = (el, value) => {
+        if (el && el.textContent !== value) el.textContent = value;
+    };
+
     const statusText = document.getElementById('refreshStatusText');
-    const statusMeta = document.getElementById('refreshStatusMeta');
     if (statusText) {
+        let textValue;
         if (refresh.inProgress) {
-            statusText.textContent = 'Refreshing from GitHub...';
+            textValue = 'Refreshing from GitHub...';
         } else if (refresh.requested) {
-            statusText.textContent = 'Refresh requested...';
+            textValue = 'Refresh requested...';
         } else {
-            statusText.textContent = `Last GitHub sync: ${refresh.lastRefreshLabel || 'unknown'}`;
+            textValue = `Last GitHub sync: ${refresh.lastRefreshLabel || 'unknown'}`;
         }
+        setText(statusText, textValue);
     }
+    const statusMeta = document.getElementById('refreshStatusMeta');
     if (statusMeta) {
         const cfg = currentRefreshConfig();
         const flowSource = cfg.source === 'override' ? 'override' : 'config';
         const network = currentNetworkSyncCadence();
+        let metaValue;
         if (cfg.enabled) {
-            statusMeta.textContent = `· ${cfg.freshnessMode}/${cfg.apiBudget}/${cfg.attentionPriority} · stale>${cfg.staleSeconds}s (${flowSource}) · network ${network.seconds}s (${network.source})`;
+            metaValue = `· ${cfg.freshnessMode}/${cfg.apiBudget}/${cfg.attentionPriority} · stale>${cfg.staleSeconds}s (${flowSource}) · network ${network.seconds}s (${network.source})`;
         } else {
-            statusMeta.textContent = `· lazy visible refresh off (${flowSource}) · network ${network.seconds}s (${network.source})`;
+            metaValue = `· lazy visible refresh off (${flowSource}) · network ${network.seconds}s (${network.source})`;
         }
+        setText(statusMeta, metaValue);
     }
 }
 

@@ -39,15 +39,31 @@
             </div>
             <div class="controls">
                 <div class="gh-usage-wrap" id="ghUsageWrap">
+                    {# SSR the gh-usage values so renderGitHubUsage()'s first
+                       run sees matching textContent and skips the writes (with
+                       JS guards). Strings must match what JS computes byte-for-
+                       byte: integer thousands-separator via "{:,}", reset
+                       fallback "-" (formatResetLabel returns "-" for reset=0),
+                       rate limit fallback "No rate header yet". #}
+                    {% set gh_usage = dashboard_data.githubUsage if dashboard_data.githubUsage else {} %}
+                    {% set gh_calls_per_minute = (gh_usage.get('calls_per_minute') or 0) | int %}
+                    {% set gh_total_calls = (gh_usage.get('total_calls') or 0) | int %}
+                    {% set gh_errors = (gh_usage.get('errors') or 0) | int %}
+                    {% set gh_rate = gh_usage.get('last_rate_limit_from_headers') or {} %}
+                    {% set gh_rate_remaining_raw = gh_rate.get('remaining') %}
+                    {% set gh_rate_limit_raw = gh_rate.get('limit') %}
+                    {% set gh_rate_used_raw = gh_rate.get('used') %}
+                    {% set gh_rate_resource = gh_rate.get('resource') %}
+                    {% set gh_rate_known = gh_rate_remaining_raw is not none and gh_rate_limit_raw is not none and (gh_rate_limit_raw | int) > 0 %}
                     <button class="gh-usage-pill" id="ghUsagePill" onclick="toggleGitHubUsagePanel()" aria-expanded="false" aria-controls="ghUsagePanel">
                         <span class="gh-usage-label">GH calls</span>
-                        <span class="gh-usage-summary" id="ghUsageSummary">Usage</span>
+                        <span class="gh-usage-summary" id="ghUsageSummary">{{ gh_calls_per_minute }}/min</span>
                     </button>
                     <section class="gh-usage-panel" id="ghUsagePanel" aria-label="GitHub API usage">
-                        <div class="gh-usage-row"><span class="label">Calls/min</span><span class="value" id="ghUsageCallsPerMinute">-</span></div>
-                        <div class="gh-usage-row"><span class="label">Total calls</span><span class="value" id="ghUsageTotalCalls">-</span></div>
-                        <div class="gh-usage-row"><span class="label">Errors</span><span class="value" id="ghUsageErrors">-</span></div>
-                        <div class="gh-usage-row"><span class="label">Rate limit (per hour)</span><span class="value" id="ghUsageRateLimit">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Calls/min</span><span class="value" id="ghUsageCallsPerMinute">{{ "{:,}".format(gh_calls_per_minute) }}</span></div>
+                        <div class="gh-usage-row"><span class="label">Total calls</span><span class="value" id="ghUsageTotalCalls">{{ "{:,}".format(gh_total_calls) }}</span></div>
+                        <div class="gh-usage-row"><span class="label">Errors</span><span class="value" id="ghUsageErrors">{{ "{:,}".format(gh_errors) }}</span></div>
+                        <div class="gh-usage-row"><span class="label">Rate limit (per hour)</span><span class="value" id="ghUsageRateLimit">{% if gh_rate_known %}{% set gh_rate_remaining = gh_rate_remaining_raw | int %}{% set gh_rate_limit = gh_rate_limit_raw | int %}{% set gh_rate_used = (gh_rate_used_raw | int) if gh_rate_used_raw is not none else ([0, gh_rate_limit - gh_rate_remaining] | max) %}{{ "{:,}".format(gh_rate_used) }} used · {{ "{:,}".format(gh_rate_remaining) }} left{% if gh_rate_resource %} ({{ gh_rate_resource }}){% endif %}{% else %}No rate header yet{% endif %}</span></div>
                         <div class="gh-usage-row"><span class="label">Resets</span><span class="value" id="ghUsageReset">-</span></div>
                         <div class="gh-usage-actions">
                             <button class="issue-action-btn" onclick="setGitHubUsageHidden(true)">Hide</button>
@@ -109,8 +125,26 @@
                 </svg>
                 <span id="embeddedBackLabel">Back to repositories</span>
             </button>
-            <span class="embedded-repo" id="embeddedRepoName"></span>
+            <span class="embedded-repo" id="embeddedRepoName">{{ repo }}</span>
+            {# Mirror the conditional used for the standalone header badge so the
+               initial server-rendered state class matches what the first JS
+               refresh will compute. With JS guards in place
+               (updateStatusBadgeFromViewModel only writes when state differs),
+               a matching SSR value means zero mutations on first fetch — i.e.
+               no whole-screen flash from the running→paused initial swap. #}
+            {% if startup_status != 'complete' %}
+            <span class="embedded-badge status-badge status-starting" id="embeddedBadge">Starting...</span>
+            {% elif shutdown_requested and active_session_count > 0 %}
+            <span class="embedded-badge status-badge status-paused" id="embeddedBadge">Shutting down... ({{ active_session_count }})</span>
+            {% elif shutdown_requested %}
+            <span class="embedded-badge status-badge status-paused" id="embeddedBadge">Stopped</span>
+            {% elif paused and active_session_count > 0 %}
+            <span class="embedded-badge status-badge status-paused" id="embeddedBadge">Pausing... ({{ active_session_count }})</span>
+            {% elif paused %}
+            <span class="embedded-badge status-badge status-paused" id="embeddedBadge">Paused</span>
+            {% else %}
             <span class="embedded-badge status-badge status-running" id="embeddedBadge">Running</span>
+            {% endif %}
             <button class="embedded-scope-btn" id="embeddedScopeBtn" aria-label="Toggle scope info">
                 <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1v4.25a.75.75 0 01-1.5 0V8.5h-.25A.75.75 0 016.5 7.75zM8 6a1 1 0 110-2 1 1 0 010 2z"/>

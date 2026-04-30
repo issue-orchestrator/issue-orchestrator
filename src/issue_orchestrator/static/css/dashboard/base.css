@@ -66,6 +66,17 @@ html[data-booting="true"] *::before,
 html[data-booting="true"] *::after {
     transition: none !important;
 }
+/* Hide the dashboard during boot. The page is server-rendered with
+   correct initial state, then JS does additional updates (first-fetch
+   value fills, engine state corrections, etc.) before clearing
+   data-booting. By keeping the contents invisible while these mutations
+   land, the user sees one paint of the final settled UI instead of
+   ~3-4 visible flashes as state arrives. dashboard_boot.js already
+   guarantees data-booting clears (with an 8s fallback safety net), so
+   the longest the dashboard can stay hidden is bounded. */
+html[data-booting="true"] body > .container {
+    visibility: hidden;
+}
 html,
 body {
     min-height: 100%;

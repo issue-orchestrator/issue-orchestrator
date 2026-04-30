@@ -44,11 +44,24 @@
 
     if (root.__cardFlash) return;
     const probe = {
+        issueCardsAdded: 0,
         issueCardsRemoved: 0,
+        cardAttrMutations: 0,
         columnRebuilds: 0,
+        columnInserts: 0,
+        mainAttrMutations: [],
         htmlAttrMutations: [],
+        // bodyAttrMutations / bodyChildChanges = direct children of <body>
+        // only. These are the canonical "whole-window flash" signals (a
+        // top-level structure swap or a class flip on body itself) and the
+        // e2e regression test asserts they stay at zero. Subtree mutations
+        // (header, banner, status badges) live in the *Subtree counters
+        // below — they're useful for live debugging but legitimately
+        // non-zero during init even on a clean boot.
         bodyAttrMutations: [],
         bodyChildChanges: 0,
+        bodyAttrSubtreeMutations: [],
+        bodyChildSubtreeChanges: 0,
         longAnimationFrames: [],
         stylesheetLoads: [],
         ready: false,
@@ -57,6 +70,16 @@
         firstViewModelFetchEnd: null,
     };
     root.__cardFlash = probe;
+
+    const describeTarget = (el) => {
+        if (!el || el.nodeType !== 1) return '?';
+        const tag = el.tagName?.toLowerCase() || '?';
+        const id = el.id ? '#' + el.id : '';
+        const cls = el.classList?.length
+            ? '.' + Array.from(el.classList).slice(0, 3).join('.')
+            : '';
+        return tag + id + cls;
+    };
 
     const t0 = (root.performance || Date).now();
     const now = () => (root.performance || Date).now();
@@ -73,17 +96,42 @@
         root.__fetchHooked = true;
         root.fetch = async (...args) => {
             const url = String(args[0] || '');
+            const isApi = url.includes('/api/');
             const isVm = url.includes('/api/view-model');
-            if (isVm) log('fetch.start', { url });
+            if (isApi) log('fetch.start', { url });
             const response = await origFetch(...args);
-            if (isVm) {
+            if (isApi) {
                 log('fetch.end', { url, status: response.status });
-                if (probe.firstViewModelFetchEnd === null) {
+                if (isVm && probe.firstViewModelFetchEnd === null) {
                     probe.firstViewModelFetchEnd = now() - t0;
                 }
             }
             return response;
         };
+    }
+
+    // Hook EventSource so SSE message arrivals show up in the timeline.
+    if (root.EventSource && !root.__eventSourceHooked) {
+        root.__eventSourceHooked = true;
+        const OrigEventSource = root.EventSource;
+        const HookedEventSource = function (url, opts) {
+            const es = new OrigEventSource(url, opts);
+            log('sse.open', { url: String(url) });
+            es.addEventListener('message', (e) => {
+                let kind = '?';
+                try {
+                    const data = JSON.parse(e.data);
+                    kind = data?.event || data?.type || data?.schema || '?';
+                } catch (_error) { /* not JSON */ }
+                log('sse.msg', { kind });
+            });
+            return es;
+        };
+        HookedEventSource.prototype = OrigEventSource.prototype;
+        HookedEventSource.CONNECTING = OrigEventSource.CONNECTING;
+        HookedEventSource.OPEN = OrigEventSource.OPEN;
+        HookedEventSource.CLOSED = OrigEventSource.CLOSED;
+        root.EventSource = HookedEventSource;
     }
 
     let summaryPrinted = false;
@@ -122,6 +170,18 @@
         } catch (_error) { /* console may be unavailable */ }
     };
 
+    // Fallback: even if data-booting is never used (e.g. on the Control
+    // Center, which doesn't include dashboard_boot.js), print a summary
+    // after the page settles so the user always gets data.
+    const FALLBACK_SUMMARY_MS = 3000;
+    setTimeout(() => printSummary(), FALLBACK_SUMMARY_MS);
+    if (root.addEventListener) {
+        root.addEventListener('load', () => {
+            // Wait one tick after load so any onload-triggered work lands.
+            setTimeout(() => printSummary(), 250);
+        }, { once: true });
+    }
+
     if (typeof root.PerformanceObserver === 'function') {
         try {
             new root.PerformanceObserver((list) => {
@@ -140,6 +200,7 @@
     let documentElementObserved = false;
     let bodyObserved = false;
     let mainObserved = false;
+    let stylesheetsObserved = false;
 
     const observeDocumentElement = () => {
         if (documentElementObserved) return;
@@ -188,40 +249,64 @@
         if (!body) return false;
         if (root.document?.readyState === 'loading') return false;
         bodyObserved = true;
+        const main = root.document?.querySelector('main#mainContent');
         new MutationObserver((mutations) => {
             for (const mutation of mutations) {
+                const target = mutation.target;
+                // Skip mutations inside main — observeMain() already covers
+                // those at higher fidelity and we don't want double-counts.
+                if (main && main !== target && main.contains(target)) continue;
+                const isDirectBody = target === body;
                 if (mutation.type === 'attributes') {
                     const attr = mutation.attributeName;
-                    const newValue = attr ? body.getAttribute(attr) : null;
                     const entry = {
                         t: Number((now() - t0).toFixed(1)),
+                        target: isDirectBody ? 'body' : describeTarget(target),
                         attr,
                         oldValue: mutation.oldValue,
-                        newValue,
+                        newValue: target.getAttribute?.(attr) ?? null,
                     };
-                    probe.bodyAttrMutations.push(entry);
-                    log('body-attr', entry);
+                    if (isDirectBody) {
+                        probe.bodyAttrMutations.push(entry);
+                        log('body-attr', entry);
+                    } else {
+                        probe.bodyAttrSubtreeMutations.push(entry);
+                        log('body-attr-subtree', entry);
+                    }
                 } else if (mutation.type === 'childList') {
-                    probe.bodyChildChanges
-                        += mutation.addedNodes.length + mutation.removedNodes.length;
-                    log('body-child', {
-                        added: mutation.addedNodes.length,
-                        removed: mutation.removedNodes.length,
-                    });
+                    const delta = mutation.addedNodes.length + mutation.removedNodes.length;
+                    if (isDirectBody) {
+                        probe.bodyChildChanges += delta;
+                        log('body-child', {
+                            target: describeTarget(target),
+                            added: mutation.addedNodes.length,
+                            removed: mutation.removedNodes.length,
+                        });
+                    } else {
+                        probe.bodyChildSubtreeChanges += delta;
+                        log('body-child-subtree', {
+                            target: describeTarget(target),
+                            added: mutation.addedNodes.length,
+                            removed: mutation.removedNodes.length,
+                        });
+                    }
                 }
             }
         }).observe(body, {
             attributes: true,
             attributeOldValue: true,
             childList: true,
+            subtree: true,
         });
         return true;
     };
 
     const observeStylesheets = () => {
+        if (stylesheetsObserved) return;
         try {
             const links = root.document?.querySelectorAll('link[rel="stylesheet"]');
             if (!links) return;
+            stylesheetsObserved = true;
             for (const link of links) {
                 const stamp = (eventKind) => {
                     probe.stylesheetLoads.push({
@@ -245,21 +330,53 @@
         const main = root.document?.querySelector('main#mainContent');
         if (!main) return false;
         mainObserved = true;
+        const isCard = (el) => el?.nodeType === 1 && el.classList?.contains('issue-card');
+        const isColumn = (el) => el?.nodeType === 1 && el.classList?.contains('column-cards');
         new MutationObserver((mutations) => {
             for (const mutation of mutations) {
+                if (mutation.type === 'attributes') {
+                    const target = mutation.target;
+                    const attr = mutation.attributeName;
+                    if (isCard(target)) {
+                        probe.cardAttrMutations += 1;
+                        log('mutation', { kind: 'issue-card.attr', attr });
+                    } else {
+                        const entry = {
+                            t: Number((now() - t0).toFixed(1)),
+                            target: describeTarget(target),
+                            attr,
+                            oldValue: mutation.oldValue,
+                            newValue: target.getAttribute?.(attr) ?? null,
+                        };
+                        probe.mainAttrMutations.push(entry);
+                        log('main-attr', entry);
+                    }
+                    continue;
+                }
+                for (const added of mutation.addedNodes) {
+                    if (isCard(added)) {
+                        probe.issueCardsAdded += 1;
+                        log('mutation', { kind: 'issue-card.added' });
+                    } else if (isColumn(added)) {
+                        probe.columnInserts += 1;
+                        log('mutation', { kind: 'column-cards.added' });
+                    }
+                }
                 for (const removed of mutation.removedNodes) {
-                    if (removed?.nodeType !== 1) continue;
-                    if (removed.classList?.contains('issue-card')) {
+                    if (isCard(removed)) {
                         probe.issueCardsRemoved += 1;
                         log('mutation', { kind: 'issue-card.removed' });
-                    }
-                    if (removed.classList?.contains('column-cards')) {
+                    } else if (isColumn(removed)) {
                         probe.columnRebuilds += 1;
                         log('mutation', { kind: 'column-cards.removed' });
                     }
                 }
             }
-        }).observe(main, { childList: true, subtree: true });
+        }).observe(main, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+        });
         return true;
     };
 

@@ -713,7 +713,15 @@ def test_bulk_open_prs_uses_pr_links_not_issue_links() -> None:
 def test_embedded_back_hidden_when_column_expanded() -> None:
     js = _read(DASHBOARD_JS)
     assert "function updateEmbeddedBackButtonVisibility()" in js
-    assert "label.textContent = hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories';" in js
+    # The label/aria-label writes are guarded with a value check (only write
+    # when different) to avoid same-value MutationObserver fires that compound
+    # into a header flash on every refresh. The desired text is computed once
+    # then applied conditionally; assert on both halves.
+    assert (
+        "const desiredText = hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories';"
+        in js
+    )
+    assert "if (label.textContent !== desiredText) label.textContent = desiredText;" in js
     assert "embeddedBackLabel" in _read(DASHBOARD_TEMPLATE)
     body = _function_body(js, "toggleColumnExpand")
     assert "updateEmbeddedBackButtonVisibility();" in body
@@ -807,14 +815,16 @@ def test_dashboard_pause_resume_surfaces_auth_failures() -> None:
         "readActionError(res)"
     )
     assert "document.querySelectorAll('.status-badge').forEach" in helper_body
+    # State class swap is now atomic (single className= write, preserving
+    # auxiliary classes like embedded-badge) instead of three classList
+    # removes + one add — that fired four MutationObserver events per
+    # refresh and stacked into a visible header flash. Assert the new
+    # state-only computation + atomic write are present.
     assert (
-        "badge.classList.remove('status-paused', 'status-running', 'status-starting')"
+        "const stateClasses = ['status-paused', 'status-running', 'status-starting'];"
         in helper_body
     )
-    assert (
-        "badge.classList.add(paused ? 'status-paused' : 'status-running')"
-        in helper_body
-    )
+    assert "badge.className = [...others, desiredClass].join(' ');" in helper_body
     assert "updatePauseMenuFromViewModel({ paused })" in helper_body
 
 
