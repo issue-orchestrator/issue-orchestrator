@@ -1191,14 +1191,7 @@ function loadActivityView(repoPath) {
     // Load iframe
     const iframe = document.getElementById('activityIframe');
     const loading = document.getElementById('activityLoading');
-    // Hide via opacity rather than display:none so the iframe stays in
-    // the layout and Chromium continues to run requestAnimationFrame
-    // inside it. The dashboard's ready handshake schedules its
-    // postMessage from a 2-rAF deferral inside the iframe; with
-    // display:none, those rAFs never fire and the handshake stalls
-    // until the 4s fallback timer reveals an empty/half-loaded UI.
-    iframe.style.opacity = '0';
-    iframe.style.pointerEvents = 'none';
+    iframe.style.display = 'none';
     iframe.src = 'about:blank';
 
     // Set iframe source to orchestrator dashboard
@@ -1209,15 +1202,10 @@ function loadActivityView(repoPath) {
         loading.innerHTML = '<div class="spinner"></div><p>Starting repository engine...</p><p>Waiting for engine to become ready.</p>';
         loading.style.display = 'block';
     } else if (port && repoState !== 'not running') {
-        // No loading spinner during normal repo open — the iframe is
-        // opacity:0 while it boots, then opacity:1 once the dashboard
-        // postMessages ready, so the user sees a brief blank then the
-        // settled dashboard rather than a spinner that itself adds a
-        // visible state change.
-        loading.style.display = 'none';
+        loading.innerHTML = '<div class="spinner"></div><p>Loading activity...</p>';
+        loading.style.display = 'block';
 
         let loadTimedOut = false;
-        let revealed = false;
         const timeout = setTimeout(() => {
             loadTimedOut = true;
             loading.innerHTML = `
@@ -1226,50 +1214,19 @@ function loadActivityView(repoPath) {
             `;
         }, 8000);
 
-        // Reveal the iframe in one of three cases:
-        //   1. Dashboard postMessages 'orchestrator-dashboard:ready' (the
-        //      happy path: dashboard finished its boot dance behind the
-        //      curtain, settled UI is ready to show).
-        //   2. Reveal-fallback timer fires 4s after iframe.onload — guards
-        //      against an older dashboard that doesn't postMessage, or any
-        //      bug that prevents the message from arriving.
-        //   3. Engine timeout (above) fires first — leaves the loading
-        //      message in place and never reveals.
-        const revealIframe = () => {
-            if (revealed || loadTimedOut) return;
-            revealed = true;
-            clearTimeout(timeout);
-            loading.style.display = 'none';
-            // Iframe stayed display:block (opacity:0); flipping opacity
-            // to 1 reveals the already-rendered, ready-state dashboard
-            // in one paint.
-            iframe.style.opacity = '1';
-            iframe.style.pointerEvents = 'auto';
-            // Send repo display name to dashboard for embedded header
-            try {
-                iframe.contentWindow.postMessage({
-                    type: 'cc-repo-info',
-                    repoName: repo.name,
-                }, '*');
-            } catch (e) { /* cross-origin */ }
-        };
-
-        const onDashboardReady = (event) => {
-            if (event.source !== iframe.contentWindow) return;
-            if (event.data?.type !== 'orchestrator-dashboard:ready') return;
-            window.removeEventListener('message', onDashboardReady);
-            revealIframe();
-        };
-        window.addEventListener('message', onDashboardReady);
-
         iframe.onload = () => {
-            // Fallback: if the dashboard never sends the ready message
-            // (older build, JS error, etc.), reveal anyway after a short
-            // grace period so the user isn't stuck on the loader.
-            setTimeout(() => {
-                window.removeEventListener('message', onDashboardReady);
-                revealIframe();
-            }, 4000);
+            clearTimeout(timeout);
+            if (!loadTimedOut) {
+                loading.style.display = 'none';
+                iframe.style.display = 'block';
+                // Send repo display name to dashboard for embedded header
+                try {
+                    iframe.contentWindow.postMessage({
+                        type: 'cc-repo-info',
+                        repoName: repo.name,
+                    }, '*');
+                } catch (e) { /* cross-origin */ }
+            }
         };
         iframe.onerror = () => {
             clearTimeout(timeout);
