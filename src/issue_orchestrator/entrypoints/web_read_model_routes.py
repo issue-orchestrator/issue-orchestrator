@@ -124,11 +124,19 @@ async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -
     )
     vm_elapsed = time.time() - vm_start
     render_start = time.time()
+    # Render the flash diagnostic probe as a parser-blocking <script> tag
+    # only when ?debug=flash is in the URL. The localStorage-based toggle
+    # is handled by an inline gate in the template (which is allowed to
+    # load the script asynchronously — that path is for ad-hoc debugging,
+    # not the e2e regression test that needs to observe the very first
+    # mutations).
+    flash_debug = request.query_params.get("debug") == "flash"
     html = await asyncio.to_thread(
         template.render,
         **view_model.template_context(),
         browser_auth_required="1" if admin_token is not None else "0",
         csrf_token=csrf_token or "",
+        flash_debug=flash_debug,
     )
     render_elapsed = time.time() - render_start
     total_elapsed = time.time() - request_start

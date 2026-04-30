@@ -898,6 +898,18 @@ async def control_center_ui(request: Request) -> HTMLResponse:
         "{{ dev_no_auth_banner }}",
         _DEV_NO_AUTH_BANNER_HTML if auth_disabled else "",
     )
+    # Server-render the flash diagnostic probe as a parser-blocking
+    # <script> tag only when ?debug=flash is in the URL. The
+    # localStorage-based toggle is handled by an inline gate in the
+    # template (loads the script asynchronously, fine for ad-hoc
+    # debugging where a slightly-late install is acceptable).
+    flash_debug_enabled = request.query_params.get("debug") == "flash"
+    flash_debug_script = (
+        '<script src="/static/js/flash_debug.js"></script>'
+        if flash_debug_enabled
+        else ""
+    )
+    content = content.replace("{{ flash_debug_script }}", flash_debug_script)
     return HTMLResponse(content)
 
 

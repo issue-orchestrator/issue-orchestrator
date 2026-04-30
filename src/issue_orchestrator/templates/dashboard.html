@@ -7,21 +7,26 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
-    {# Gate flash_debug.js so it isn't fetched/parsed on normal loads. The
-       diagnostic only matters when ?debug=flash or localStorage.flashDebug
-       is set; otherwise loading it as a blocking head <script> on every
-       request just delays dashboard_boot.js's pre-paint state stamp. #}
+    {# Flash diagnostic probe. Two paths so we never fetch it on normal
+       loads:
+         - URL param (?debug=flash): server-rendered as a parser-blocking
+           <script src> right here. This is what the e2e regression test
+           uses, so the probe must install observers BEFORE
+           dashboard_boot.js / the first refresh — async loading would
+           let the test miss the boot mutations it's meant to observe.
+         - localStorage flag: handled by the inline gate below, which
+           loads the script asynchronously. Acceptable for ad-hoc live
+           debugging where the user is just inspecting probe output and
+           a slightly-late install is fine.
+       The probe's IIFE deduplicates if both paths fire. #}
+    {% if flash_debug %}
+    <script src="/static/js/flash_debug.js"></script>
+    {% endif %}
     <script>
     (function () {
         try {
-            var enabled = false;
-            var p = new URLSearchParams(window.location.search || '');
-            if (p.get('debug') === 'flash') enabled = true;
-            if (!enabled && window.localStorage
+            if (window.localStorage
                 && window.localStorage.getItem('flashDebug') === '1') {
-                enabled = true;
-            }
-            if (enabled) {
                 var s = document.createElement('script');
                 s.src = '/static/js/flash_debug.js';
                 document.head.appendChild(s);

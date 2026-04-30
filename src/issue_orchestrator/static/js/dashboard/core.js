@@ -126,17 +126,34 @@ function markDashboardBooted() {
         document.documentElement.removeAttribute('data-booting');
     }
     // When embedded inside the CC iframe, signal the parent that the
-    // dashboard is fully booted and ready to be revealed. The CC keeps
-    // the iframe hidden behind its own loading overlay until it receives
-    // this — without it, the iframe.onload reveal happens mid-boot and
-    // the user sees JS-driven mutations as a series of flashes.
-    if (window.parent && window.parent !== window) {
-        try {
-            window.parent.postMessage(
-                { type: 'orchestrator-dashboard:ready' },
-                '*',
-            );
-        } catch (_error) { /* cross-origin parent: ignore */ }
+    // dashboard is fully booted and ready to be revealed.
+    //
+    // Crucially, clearBootingWhenStable schedules the actual
+    // data-booting attribute removal across two requestAnimationFrames
+    // (see dashboard_boot.js). Posting the ready message synchronously
+    // would let the CC reveal the iframe while data-booting is still
+    // "true" — i.e. while the dashboard's own
+    // visibility:hidden-on-.container suppression is still in force —
+    // and the user briefly sees the iframe with hidden content. Match
+    // the same 2-rAF schedule so the postMessage fires only after
+    // data-booting has actually been removed and the next paint shows
+    // the settled UI.
+    const signalReady = () => {
+        if (window.parent && window.parent !== window) {
+            try {
+                window.parent.postMessage(
+                    { type: 'orchestrator-dashboard:ready' },
+                    '*',
+                );
+            } catch (_error) { /* cross-origin parent: ignore */ }
+        }
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(signalReady);
+        });
+    } else {
+        signalReady();
     }
 }
 

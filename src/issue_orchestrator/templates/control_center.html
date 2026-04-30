@@ -10,19 +10,18 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
-    {# Same lazy gate as dashboard.html — only fetch flash_debug.js when
-       the toggle is set. #}
+    {# Flash diagnostic probe — same two-path strategy as dashboard.html.
+       URL-param path is server-rendered as a parser-blocking <script>
+       (so the e2e test sees boot mutations); localStorage path uses the
+       inline gate below (acceptable async load for ad-hoc debugging).
+       Empty string when disabled — the probe is not fetched at all on
+       normal loads. #}
+    {{ flash_debug_script }}
     <script>
     (function () {
         try {
-            var enabled = false;
-            var p = new URLSearchParams(window.location.search || '');
-            if (p.get('debug') === 'flash') enabled = true;
-            if (!enabled && window.localStorage
+            if (window.localStorage
                 && window.localStorage.getItem('flashDebug') === '1') {
-                enabled = true;
-            }
-            if (enabled) {
                 var s = document.createElement('script');
                 s.src = '/static/js/flash_debug.js';
                 document.head.appendChild(s);
