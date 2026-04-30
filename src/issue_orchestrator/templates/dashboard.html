@@ -7,7 +7,28 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
-    <script src="/static/js/flash_debug.js"></script>
+    {# Gate flash_debug.js so it isn't fetched/parsed on normal loads. The
+       diagnostic only matters when ?debug=flash or localStorage.flashDebug
+       is set; otherwise loading it as a blocking head <script> on every
+       request just delays dashboard_boot.js's pre-paint state stamp. #}
+    <script>
+    (function () {
+        try {
+            var enabled = false;
+            var p = new URLSearchParams(window.location.search || '');
+            if (p.get('debug') === 'flash') enabled = true;
+            if (!enabled && window.localStorage
+                && window.localStorage.getItem('flashDebug') === '1') {
+                enabled = true;
+            }
+            if (enabled) {
+                var s = document.createElement('script');
+                s.src = '/static/js/flash_debug.js';
+                document.head.appendChild(s);
+            }
+        } catch (_e) { /* probe never blocks page load */ }
+    }());
+    </script>
     <script src="/static/js/theme_resolution.js"></script>
     <script src="/static/js/dashboard_boot.js"></script>
     {% for chunk in dashboard_css_chunks %}

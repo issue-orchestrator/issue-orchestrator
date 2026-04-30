@@ -10,7 +10,26 @@
     <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
-    <script src="/static/js/flash_debug.js"></script>
+    {# Same lazy gate as dashboard.html — only fetch flash_debug.js when
+       the toggle is set. #}
+    <script>
+    (function () {
+        try {
+            var enabled = false;
+            var p = new URLSearchParams(window.location.search || '');
+            if (p.get('debug') === 'flash') enabled = true;
+            if (!enabled && window.localStorage
+                && window.localStorage.getItem('flashDebug') === '1') {
+                enabled = true;
+            }
+            if (enabled) {
+                var s = document.createElement('script');
+                s.src = '/static/js/flash_debug.js';
+                document.head.appendChild(s);
+            }
+        } catch (_e) { /* probe never blocks page load */ }
+    }());
+    </script>
     <link rel="stylesheet" href="/static/css/control_center.css">
     <link rel="stylesheet" href="/static/css/ui_primitives.css">
     <link rel="stylesheet" href="/static/css/control_center_setup.css">

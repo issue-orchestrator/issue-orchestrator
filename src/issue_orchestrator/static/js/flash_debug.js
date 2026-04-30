@@ -302,10 +302,16 @@
     };
 
     const observeStylesheets = () => {
+        // Don't latch `stylesheetsObserved` until we've actually found at
+        // least one <link rel=stylesheet>. Because flash_debug now lazy-
+        // loads from an inline gate and may execute before the parser has
+        // discovered the stylesheet links, an early call would otherwise
+        // mark itself "done" against an empty list and never record any
+        // loads. Allow re-entry while no links are visible yet.
         if (stylesheetsObserved) return;
         try {
             const links = root.document?.querySelectorAll('link[rel="stylesheet"]');
-            if (!links) return;
+            if (!links || !links.length) return;
             stylesheetsObserved = true;
             for (const link of links) {
                 const stamp = (eventKind) => {
@@ -398,10 +404,17 @@
     }
 
     // Body observer is gated on DOMContentLoaded so parser-driven inserts
-    // (header, container, main, etc.) don't count as flashes.
-    if (root.document?.readyState !== 'loading') {
+    // (header, container, main, etc.) don't count as flashes. Also re-run
+    // observeStylesheets here — by DCL all <link rel=stylesheet> elements
+    // are guaranteed parsed, so the early-call edge case (lazy-loaded
+    // probe running before head finishes) is safely covered.
+    const onDcl = () => {
         observeBody();
+        observeStylesheets();
+    };
+    if (root.document?.readyState !== 'loading') {
+        onDcl();
     } else {
-        root.document.addEventListener('DOMContentLoaded', () => observeBody(), { once: true });
+        root.document.addEventListener('DOMContentLoaded', onDcl, { once: true });
     }
 }());

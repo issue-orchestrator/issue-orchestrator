@@ -77,6 +77,20 @@ html[data-booting="true"] *::after {
 html[data-booting="true"] body > .container {
     visibility: hidden;
 }
+/* Keep the server-rendered Initializing-orchestrator status visible during
+   boot. It has its own pulse animation + copy, so slow loads (where the
+   first /api/view-model takes time, or stalls all the way to the 8s
+   data-booting fallback) show "Initializing orchestrator" instead of a
+   blank page. visibility:visible on the descendant overrides the
+   inherited visibility:hidden from .container. We also force display:flex
+   during boot — the element is normally only display:flex while
+   .is-active, which the server only stamps when startup_status !=
+   "complete"; during a complete-startup cold reload we still want it
+   visible so the user always has a load indicator. */
+html[data-booting="true"] body > .container #dashboardInitStatus {
+    visibility: visible;
+    display: flex;
+}
 html,
 body {
     min-height: 100%;
