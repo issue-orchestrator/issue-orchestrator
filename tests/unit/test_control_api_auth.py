@@ -339,6 +339,8 @@ def test_root_without_session_serves_login_page(
 
     assert resp.status_code == 200
     assert "Sign in" in resp.text
+    assert "Paste the local admin token" in resp.text
+    assert "This is not your GitHub token" in resp.text
     assert "io-csrf-token" not in resp.text
     from issue_orchestrator.infra import browser_session
 

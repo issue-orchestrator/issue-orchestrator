@@ -93,6 +93,8 @@ issue-orchestrator start
 
 This launches the orchestrator with the web dashboard. Open `http://localhost:8080` to watch issues move through the pipeline.
 
+The browser may ask for the local admin token from `~/.issue-orchestrator/api-token` the first time you open the Control Center. This is not another GitHub credential; it protects the local Control API that can manage repository engines, worktrees, agent sessions, logs, and configuration.
+
 If you are using `claude-code`, let the setup wizard enable trusted session interactions. That writes `execution.session_interactions.enabled: true`, allowing orchestrator-created worktrees to auto-accept Claude's initial trust prompt. If you leave it disabled, the first interactive session in each new worktree may pause for manual trust approval. A dedicated worktree base still keeps those paths predictable, but pre-approving the parent worktree directory does not automatically trust future child worktrees.
 
 ## What happens next

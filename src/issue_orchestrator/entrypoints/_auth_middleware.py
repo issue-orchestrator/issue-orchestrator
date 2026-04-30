@@ -266,7 +266,10 @@ code {{ background: #0f1419; padding: 2px 6px; border-radius: 3px;
 <body>
 <form method="POST" action="{action_url}">
 <h1>Issue Orchestrator</h1>
-<p>Paste the admin token from <code>~/.issue-orchestrator/api-token</code>.</p>
+<p>Paste the local admin token from <code>~/.issue-orchestrator/api-token</code>.</p>
+<p>This is not your GitHub token. It protects the Control Center on this
+machine, including repository engines, worktrees, agent sessions, logs,
+and configuration.</p>
 {error_html}
 <input type="password" name="token" autofocus autocomplete="off"
        placeholder="Admin token" required>
