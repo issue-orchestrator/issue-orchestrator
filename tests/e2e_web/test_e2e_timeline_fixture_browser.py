@@ -1486,6 +1486,8 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
                 "history": [],
                 "existing_issue": None,
                 "flip_rate_percent": 0,
+                "category": "healthy",
+                "result_category": "passed",
                 "result_source": "junit_xml",
                 "is_quarantined": False,
             }
@@ -1583,7 +1585,7 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     """Exhaustive browser-level coverage of the test-centric run modal:
 
     - Headline counts numerically match the run summary.
-    - Filter chips actually filter rows (Failing → only failing visible,
+    - Filter chips actually filter rows (Tracked failures → only tracked failure visible,
       Passed → only passed visible, All → both visible) and the visible
       row content matches the expected test names.
     - Clicking a failing test row expands inline and renders the *specific*
@@ -1628,7 +1630,8 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
             "status": "open",
             "resolution": None,
         },
-        "category": "has_issue",
+        "category": "new_failure",
+        "result_category": "has_issue",
         "flip_rate": 0.0,
         "flip_rate_percent": 0.0,
         "is_likely_flaky": False,
@@ -1649,7 +1652,8 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
         "failure_summary": None,
         "history": [],
         "existing_issue": None,
-        "category": "passed",
+        "category": "healthy",
+        "result_category": "passed",
         "flip_rate": 0.0,
         "flip_rate_percent": 0.0,
         "is_likely_flaky": False,
@@ -1700,9 +1704,9 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     # ── Headline counts must numerically match the synthetic summary ──
     headline = modal.locator(".test-results-headline")
     expect(headline).to_be_visible(timeout=5000)
-    expect(headline).to_contain_text("2 total")
+    expect(headline).to_contain_text("2 tests")
     expect(headline).to_contain_text("1 passed")
-    expect(headline).to_contain_text("1 failing")
+    expect(headline).to_contain_text("1 failed")
 
     # ── Default state: All filter active, both rows visible ──
     rows = modal.locator(".trr-row")
@@ -1713,19 +1717,42 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     assert expected_failed_label in visible_text_all
     assert expected_passed_label in visible_text_all
 
-    # ── Click "Failing" chip — only the failing row should be visible ──
-    failing_chip = modal.locator(".trf-chip[data-filter='failing']")
-    expect(failing_chip).to_be_visible(timeout=2000)
-    failing_chip.click()
-    expect(failing_chip).to_have_class(re.compile(r"\bactive\b"))
-    visible_after_failing = [
+    failing_row = modal.locator(f".trr-row[data-nodeid='{failed_nodeid}']")
+    expect(failing_row.locator(".test-result-pill.primary.failed")).to_contain_text("Failed")
+    expect(failing_row.locator(".test-result-pill.tracked")).to_contain_text("Tracked")
+    expect(failing_row.locator(".test-failure-summary")).to_contain_text(
+        "AssertionError: expected primary search"
+    )
+
+    page.evaluate(
+        """() => {
+            window.__copiedE2EText = "";
+            Object.defineProperty(navigator, "clipboard", {
+                configurable: true,
+                value: {
+                    writeText: async (text) => { window.__copiedE2EText = String(text); },
+                },
+            });
+        }"""
+    )
+    failing_row.get_by_role("button", name="Copy Error", exact=True).click()
+    copied_text = page.evaluate("() => window.__copiedE2EText")
+    assert failed_nodeid in copied_text
+    assert expected_longrepr in copied_text
+
+    # ── Click "Tracked failures" chip — only the tracked failed row should be visible ──
+    tracked_chip = modal.locator(".trf-chip[data-filter='tracked']")
+    expect(tracked_chip).to_be_visible(timeout=2000)
+    tracked_chip.click()
+    expect(tracked_chip).to_have_class(re.compile(r"\bactive\b"))
+    visible_after_tracked = [
         r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
     ]
-    assert len(visible_after_failing) == 1, (
-        f"Failing filter should leave 1 row visible, got {len(visible_after_failing)}"
+    assert len(visible_after_tracked) == 1, (
+        f"Tracked failures filter should leave 1 row visible, got {len(visible_after_tracked)}"
     )
-    assert expected_failed_label in (visible_after_failing[0].text_content() or "")
-    assert expected_passed_label not in (visible_after_failing[0].text_content() or "")
+    assert expected_failed_label in (visible_after_tracked[0].text_content() or "")
+    assert expected_passed_label not in (visible_after_tracked[0].text_content() or "")
 
     # ── Click "Passed" chip — only the passed row should be visible ──
     passed_chip = modal.locator(".trf-chip[data-filter='passed']")
@@ -1749,7 +1776,6 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     assert len(visible_after_all) == 2
 
     # ── Failing row must be expandable; clicking expands it inline ──
-    failing_row = modal.locator(f".trr-row[data-nodeid='{failed_nodeid}']")
     expect(failing_row).to_have_attribute("data-expandable", "1")
     expand_block = failing_row.locator(".trr-expand")
     expect(expand_block).to_be_hidden(timeout=2000)

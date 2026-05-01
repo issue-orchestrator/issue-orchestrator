@@ -558,6 +558,8 @@ html[data-embedded="true"] .embedded-sep {
 .tab-badge.running { background: var(--accent); color: var(--tab-badge-text); }
 .tab-badge.failed { background: var(--danger); color: var(--tab-badge-text); }
 .tab-badge.warning { background: var(--warn, #f0b24f); color: var(--tab-badge-text); }
+.tab-badge.passed { background: var(--success); color: var(--tab-badge-text); }
+.tab-badge.idle { background: var(--tab-badge-empty-bg); color: var(--tab-badge-empty-text); }
 .tab-badge .status-icon { margin-right: 4px; }
 
 .dashboard-columns,

@@ -321,7 +321,7 @@
                     </div>
                     <div class="e2e-meta-grid">
                         <div class="e2e-meta"><span class="label">Untriaged</span><span class="value">{{ e2e_summary.untriaged_count if e2e_summary.untriaged_count is not none else 0 }}</span></div>
-                        <div class="e2e-meta"><span class="label">Needs Attention</span><span class="value">{% if e2e_summary.needs_attention %}Yes{% else %}No{% endif %}</span></div>
+                        <div class="e2e-meta"><span class="label">Action Needed</span><span class="value">{% if e2e_summary.needs_attention %}Yes{% else %}No{% endif %}</span></div>
                         <div class="e2e-meta"><span class="label">Last Status</span><span class="value">{{ e2e_summary.last_status if e2e_summary.last_status else 'unknown' }}</span></div>
                         <div class="e2e-meta" id="e2eNextRun" data-next-run-at="{{ e2e_summary.next_run_at if e2e_summary.next_run_at else '' }}" data-next-run-reason="{{ e2e_summary.next_run_reason if e2e_summary.next_run_reason else '' }}">
                             <span class="label">Next Run</span>
@@ -346,7 +346,7 @@
                                 {% else %}
                                 <span class="card-focus">{{ run.title }}</span>
                                 {% endif %}
-                                <div class="card-line card-muted">{{ run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
+                                <div class="card-line card-muted">{{ run.status_label if run.status_label else run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
                                 {% if run.note %}<div class="card-line card-muted e2e-run-note">{{ run.note }}</div>{% endif %}
                                 {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
                                 <div class="attention-actions">

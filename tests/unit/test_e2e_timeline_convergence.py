@@ -972,9 +972,11 @@ class TestE2ERunDetailEndpoint:
             passed = results_by_category["passed"]
             assert len(passed) == 1
             assert passed[0]["nodeid"] == "tixmeup.e2e.smoke::runtime.verify_primary_search"
+            assert passed[0]["result_category"] == "passed"
             assert set(passed[0]) == set(TestCaseResultPayload.model_fields)
             has_issue = results_by_category["has_issue"]
             assert len(has_issue) == 1
+            assert has_issue[0]["result_category"] == "has_issue"
             assert set(has_issue[0]) == set(TestCaseResultPayload.model_fields)
             assert has_issue[0]["existing_issue"] == {
                 "number": 1234,

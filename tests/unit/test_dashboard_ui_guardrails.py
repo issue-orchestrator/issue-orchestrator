@@ -1379,34 +1379,42 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     filter_body = _function_body(js, "filterTestResults")
 
     # Headline + filters + flat list are the primary surface.
-    assert "renderTestResultsHeadline(summary" in results_body
+    assert "renderTestResultsHeadline(tests)" in results_body
     assert "renderTestResultsFilters(counts" in results_body
     assert 'class="test-results-list"' in results_body
-    assert "_renderTestRow(test, lifecycle)" in results_body
+    assert "_renderTestRow(test, lifecycle, activeFilter)" in results_body
     # The test-results-list MUST NOT carry a fixed id — both the E2E run
     # modal and the issue-detail drawer render this layout, so a fixed id
     # would create duplicates and break panel-scoped filter dispatch.
     assert "testResultsList" not in js
 
-    # Headline shows pass/fail/skipped/quarantined counts (passed/failing minimum).
+    # Headline shows user-facing pass/fail/action/skipped/quarantined counts.
     assert "passed" in headline_body
-    assert "failing" in headline_body
+    assert "failed" in headline_body
+    assert "action needed" in headline_body
     assert "trh-stat" in headline_body
+    assert "_testOutcomeCounts(tests)" in headline_body
 
-    # Filter chips are tablist with All/Failing/Passed/Skipped/Quarantined groups.
+    # Filter chips are tablist with task-oriented groups.
     assert "trf-chip" in filters_body
     assert "data-filter=" in filters_body
     assert 'role="tablist"' in filters_body
     assert "filterTestResults(" in filters_body
+    assert "Action needed" in filters_body
+    assert "Tracked failures" in filters_body
+    assert "Passed on retry" in filters_body
 
     # Per-test rows are expandable when there's error or linked lifecycle.
     assert "data-filter-group=" in row_body
     assert "data-expandable=" in row_body
+    assert "_renderTestResultPills(test)" in row_body
+    assert "_renderTestFailureSummary(test)" in row_body
     assert "toggleTestRowExpand(this)" in row_body
 
     # Per-row expand contains error pre + linked-lifecycle inline (no separate top-level section).
     assert "trr-error-text" in expand_body
-    assert "Linked agentic cycle" in expand_body
+    assert "Failure details" in expand_body
+    assert "Related issue activity" in expand_body
     assert "Coder Session" in expand_body
     assert "Review Session" in expand_body
     assert "Validation" in expand_body
@@ -1429,8 +1437,8 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "document.querySelectorAll" not in filter_body
 
 
-def test_e2e_run_details_disclosure_holds_metadata_artifacts_and_timeline() -> None:
-    """Run details disclosure carries runner/command/raw artifacts and the full run timeline."""
+def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:
+    """Run evidence disclosure carries runner/command/suite artifacts and suite timeline."""
     js = _read(DASHBOARD_JS)
     disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
@@ -1441,9 +1449,10 @@ def test_e2e_run_details_disclosure_holds_metadata_artifacts_and_timeline() -> N
     assert "rdd-grid" in disclosure_body
     assert "Runner" in disclosure_body
     assert "Command" in disclosure_body
-    assert "Run timeline" in disclosure_body
+    assert "Run evidence" in disclosure_body
+    assert "Suite timeline" in disclosure_body
     assert 'id="e2eTimelineContent"' in disclosure_body
-    assert "Raw artifacts" in disclosure_body
+    assert "Suite artifacts" in disclosure_body
     # Artifact buttons still go through openPath via the host action handler;
     # the broken file:// behavior is preserved for now in the disclosure but
     # is no longer the modal's headline.
@@ -1470,6 +1479,9 @@ def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
     command_body = _function_body(js, "runE2ELifecycleCommand")
     assert "data-e2e-action" in row_action_button_body
     assert "dataset.nodeid" in row_action_dispatch_body
+    assert "case 'copy_test_error'" in row_action_dispatch_body
+    assert "Copy-error action missing nodeid" in row_action_dispatch_body
+    assert "copyTestErrorFromRun(nodeid)" in row_action_dispatch_body
     assert "closeE2EIssue(" not in actions_body
     assert "showCreateIssueDropdown(this, '" not in actions_body
     assert "quarantineSingleTest('" not in actions_body
@@ -1479,6 +1491,39 @@ def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
     assert "openAgentLogAction" in command_body
     assert "openReviewTranscript" in command_body
     assert "openValidationFailure" in command_body
+
+
+def test_e2e_result_category_owns_client_grouping() -> None:
+    """The client trusts server result_category instead of re-deriving groups ad hoc."""
+    js = _read(DASHBOARD_JS)
+    category_body = _function_body(js, "_testResultCategory")
+    outcome_body = _function_body(js, "_testOutcomeState")
+    filter_body = _function_body(js, "_testFilterGroup")
+
+    assert "RESULT_CATEGORY_OUTCOME_STATE" in js
+    assert "ACTION_NEEDED_RESULT_CATEGORIES" in js
+    assert "test.result_category" in category_body
+    assert "RESULT_CATEGORY_OUTCOME_STATE.get(category)" in outcome_body
+    assert "effectiveOutcome === 'failed' || effectiveOutcome === 'error' || category ===" not in outcome_body
+    assert "Actionable categories intentionally win" in filter_body
+
+
+def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:
+    """The E2E tab badge must not look healthy when parsed failed tests exist."""
+    js = _read(DASHBOARD_JS)
+    state_body = _function_body(js, "e2eBadgeStateFromStatus")
+    update_body = _function_body(js, "updateE2EHeaderBadge")
+    css = _read_dashboard_css_bundle()
+
+    assert "failedTestCount > 0" in state_body
+    assert "data?.needs_attention" in state_body
+    assert "status === 'failed'" in state_body
+    assert "status === 'passed'" in state_body
+    assert "e2eLastStatusData" in js
+    assert "...e2eLastStatusData" in update_body
+    assert "badge.classList.remove('running', 'passed', 'failed', 'warning', 'idle')" in update_body
+    assert ".tab-badge.failed" in css
+    assert ".tab-badge.passed" in css
 
 
 def test_dashboard_templates_expose_direct_timeline_affordances() -> None:

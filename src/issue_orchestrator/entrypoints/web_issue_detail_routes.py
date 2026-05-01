@@ -99,8 +99,7 @@ def _validation_case_to_public(case: Any) -> dict[str, Any]:
     E2E-specific affordances when these fields are empty.
     """
     outcome = case.outcome
-    # Map outcome to a category the shared filter chips understand
-    # (untriaged → "failing" filter, others map to themselves).
+    # Map outcome to a category the shared filter chips understand.
     if outcome == "passed":
         category = "passed"
     elif outcome == "skipped":
@@ -109,7 +108,7 @@ def _validation_case_to_public(case: Any) -> dict[str, Any]:
         # Distinct from the E2E "untriaged" category — issue-session
         # validation has no flake-tracking, no GitHub-issue affordances. The
         # shared filter renderer maps any non-recognised category into the
-        # "failing" filter group, and the action renderer only shows
+        # failed-result filter group, and the action renderer only shows
         # E2E-specific buttons for E2E-recognised categories.
         category = "failed"
     return {
@@ -129,6 +128,7 @@ def _validation_case_to_public(case: Any) -> dict[str, Any]:
         "history": [],
         "existing_issue": None,
         "category": category,
+        "result_category": category,
         "flip_rate": 0.0,
         "flip_rate_percent": 0.0,
         "is_likely_flaky": False,
@@ -257,6 +257,7 @@ def _public_e2e_result_case(result: dict[str, Any]) -> dict[str, Any]:
         "history": result["history"],
         "existing_issue": _public_e2e_existing_issue(result["existing_issue"]),
         "category": result["category"],
+        "result_category": result["result_category"],
         "flip_rate": result["flip_rate"],
         "flip_rate_percent": result["flip_rate_percent"],
         "is_likely_flaky": result["is_likely_flaky"],

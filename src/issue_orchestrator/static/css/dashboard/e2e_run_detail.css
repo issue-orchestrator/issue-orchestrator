@@ -331,6 +331,7 @@
 }
 .trh-passed { color: var(--success, #2da44e); }
 .trh-failed { color: var(--danger, #cf222e); }
+.trh-action, .trh-warning { color: var(--warning, #9a6700); }
 .trh-skipped, .trh-quarantined { color: var(--text-muted); }
 
 .test-results-filters {
@@ -368,6 +369,9 @@
     background: var(--bg-panel-soft);
     overflow: hidden;
 }
+.trr-row.failed {
+    border-color: color-mix(in srgb, var(--danger, #cf222e) 35%, var(--border));
+}
 .trr-row-main {
     display: flex;
     align-items: center;
@@ -392,7 +396,60 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
+}
+.test-result-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+.test-result-pill {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    min-height: 20px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.test-result-pill.primary.failed,
+.test-result-pill.action-needed {
+    color: var(--danger, #cf222e);
+    border-color: color-mix(in srgb, var(--danger, #cf222e) 35%, var(--border));
+    background: color-mix(in srgb, var(--danger, #cf222e) 8%, var(--bg));
+}
+.test-result-pill.primary.passed {
+    color: var(--success, #2da44e);
+    border-color: color-mix(in srgb, var(--success, #2da44e) 35%, var(--border));
+}
+.test-result-pill.primary.passed_on_retry,
+.test-result-pill.flaky {
+    color: var(--warning, #9a6700);
+    border-color: color-mix(in srgb, var(--warning, #9a6700) 35%, var(--border));
+    background: color-mix(in srgb, var(--warning, #9a6700) 8%, var(--bg));
+}
+.test-result-pill.tracked {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+.test-result-pill.primary.skipped,
+.test-result-pill.primary.quarantined {
+    color: var(--text-muted);
+}
+.test-failure-summary {
+    color: var(--danger, #cf222e);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+.test-failure-summary.muted {
+    color: var(--text-muted);
 }
 .trr-row-actions {
     display: flex;
@@ -425,6 +482,14 @@
     max-height: 320px;
     overflow: auto;
 }
+.trr-expand-heading {
+    margin-bottom: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
 .trr-lifecycle {
     display: flex;
     flex-direction: column;
@@ -450,7 +515,7 @@
     gap: 6px;
 }
 
-/* ── Run details disclosure ──────────────────────────────────────── */
+/* ── Run evidence disclosure ─────────────────────────────────────── */
 .run-details-disclosure {
     border: 1px solid var(--border);
     border-radius: 8px;

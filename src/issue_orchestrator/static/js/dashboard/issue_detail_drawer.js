@@ -664,24 +664,9 @@ function _renderIssueValidationStructured(container, junitCases) {
     }
     const counts = {
         all: cases.length,
-        failing: cases.filter(c => _testFilterGroup(c) === 'failing').length,
+        failed: cases.filter(c => _testFilterGroup(c) === 'failed').length,
         passed: cases.filter(c => _testFilterGroup(c) === 'passed').length,
         skipped: cases.filter(c => _testFilterGroup(c) === 'skipped').length,
-        quarantined: 0,
-    };
-    const summary = {
-        total: cases.length,
-        passed: counts.passed,
-        skipped: counts.skipped,
-        // The shared headline computes "failing" from E2E categories
-        // (untriaged + has_issue + flaky + fixed). For issue-session
-        // validation we surface failures via the catch-all "failing" filter
-        // group instead, so we synthesize the count into untriaged so the
-        // headline ✗ stat reflects reality.
-        untriaged: counts.failing,
-        has_issue: 0,
-        flaky: 0,
-        fixed: 0,
         quarantined: 0,
     };
     const rows = cases
@@ -690,7 +675,7 @@ function _renderIssueValidationStructured(container, junitCases) {
     container.style.display = '';
     container.innerHTML = `
         <div class="test-results-panel issue-detail-validation-structured-panel">
-            ${renderTestResultsHeadline(summary, cases.length)}
+            ${renderTestResultsHeadline(cases)}
             ${renderTestResultsFilters(counts)}
             <div class="test-results-list">${rows}</div>
         </div>
@@ -742,7 +727,7 @@ function renderIssueDetailValidation(detail) {
             const extraCount = Math.max(0, totalFailed - preview.length);
             const items = preview.map((nodeid) => `<li><code>${escapeHtml(String(nodeid))}</code></li>`);
             if (extraCount > 0) {
-                items.push(`<li>${extraCount} more failing test${extraCount === 1 ? '' : 's'}…</li>`);
+                items.push(`<li>${extraCount} more failed test${extraCount === 1 ? '' : 's'}…</li>`);
             }
             testsEl.innerHTML = items.join('');
         } else {

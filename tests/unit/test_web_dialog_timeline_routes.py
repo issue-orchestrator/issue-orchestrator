@@ -809,8 +809,8 @@ class TestApiTimelineEndpoint:
         Asserts:
         - junit_cases is present and contains exactly the parsed entries
         - each case carries the right outcome, label, longrepr, suite
-        - failed cases get category='failed' so the shared filter chips
-          land them in the 'failing' bucket
+        - failed cases get result_category='failed' so shared filter chips
+          land them in the 'failed' bucket
         - the contract validates against TestCaseResultPayload (drift gate)
         """
         from issue_orchestrator.contracts.ui_openapi_models import (
@@ -929,6 +929,7 @@ class TestApiTimelineEndpoint:
             passed = by_name["test_passes"]
             assert passed["outcome"] == "passed"
             assert passed["category"] == "passed"
+            assert passed["result_category"] == "passed"
             assert passed["longrepr"] is None
             assert passed["existing_issue"] is None
             assert passed["history"] == []
@@ -936,11 +937,12 @@ class TestApiTimelineEndpoint:
             assert passed["result_source"] == "junit"
 
             # Failed case: outcome+category, full longrepr preserved (this
-            # is the field the per-row expand renders verbatim), category
-            # 'failed' lands the row in the "failing" filter group.
+            # is the field the per-row expand renders verbatim), result
+            # category 'failed' lands the row in the "failed" filter group.
             failed = by_name["test_circuit_open"]
             assert failed["outcome"] == "failed"
             assert failed["category"] == "failed"
+            assert failed["result_category"] == "failed"
             assert failed["longrepr"] is not None
             assert "AssertionError: expected 1 open circuit but got 0" in failed["longrepr"]
             assert "tests/unit/test_circuits.py:42" in failed["longrepr"]
@@ -954,6 +956,7 @@ class TestApiTimelineEndpoint:
             skipped = by_name["test_only_on_linux"]
             assert skipped["outcome"] == "skipped"
             assert skipped["category"] == "skipped"
+            assert skipped["result_category"] == "skipped"
             assert skipped["longrepr"] is not None
             assert "not on this platform" in skipped["longrepr"]
 
