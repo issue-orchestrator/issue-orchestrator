@@ -645,6 +645,23 @@ class Orchestrator:
         results = self.deps.publish_executor.poll_results()
 
         for result in results:
+            # If the job was superseded by a scratch reset, its result
+            # must not flow into state — that would re-populate
+            # discovered_reviews / completed_today for an issue we
+            # just declared fresh. The executor has no per-job cancel
+            # primitive, so the worker still ran; we simply discard
+            # its output and drain the tombstone.
+            if result.job_id in self.state.superseded_job_ids:
+                self.state.superseded_job_ids.discard(result.job_id)
+                self.state.pending_publish_jobs.pop(result.job_id, None)
+                logger.info(
+                    "[ASYNC] Discarding superseded job result: "
+                    "job_id=%s issue=%d (cleared by scratch reset)",
+                    result.job_id,
+                    result.issue_number,
+                )
+                continue
+
             logger.info(
                 "[ASYNC] Job completed: job_id=%s issue=%d success=%s pr_url=%s",
                 result.job_id,

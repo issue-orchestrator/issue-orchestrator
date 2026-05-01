@@ -173,11 +173,27 @@ class RetryHistoryState:
         ]
 
     def _clear_attempt_scoped_state(self, issue_number: int) -> None:
-        """Validation retries and publish jobs — purely per-attempt records."""
+        """Validation retries and publish jobs — purely per-attempt records.
+
+        For publish jobs, dropping the dict entry is not enough: the
+        worker thread inside ``PublishJobExecutor`` keeps running and
+        its result would flow through ``_poll_job_results`` after the
+        reset, re-populating ``discovered_reviews`` /
+        ``completed_today`` for the issue we just declared fresh. So
+        we tombstone the job IDs and let ``_poll_job_results`` skip
+        their late results. The executor has no per-job cancel
+        primitive — see PR #6131 review feedback.
+        """
         self._state.pending_validation_retries = [
             r for r in self._state.pending_validation_retries
             if r.issue_number != issue_number
         ]
+        for job_id, job in self._state.pending_publish_jobs.items():
+            if job.issue_number == issue_number:
+                self._state.superseded_job_ids.add(job_id)
+        for job_id, job in self._state.running_publish_jobs.items():
+            if job.issue_number == issue_number:
+                self._state.superseded_job_ids.add(job_id)
         self._state.pending_publish_jobs = {
             job_id: job
             for job_id, job in self._state.pending_publish_jobs.items()

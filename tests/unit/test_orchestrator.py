@@ -3444,7 +3444,7 @@ class TestAsyncPublishResults:
             )
         ])
 
-        orchestrator._poll_job_results()
+        orchestrator._poll_job_results()  # noqa: SLF001
 
         assert orchestrator.state.discovered_reviews == []
         assert orchestrator.state.completed_today == [42]
@@ -3465,7 +3465,48 @@ class TestAsyncPublishResults:
             )
         ])
 
-        orchestrator._poll_job_results()
+        orchestrator._poll_job_results()  # noqa: SLF001
 
         assert len(orchestrator.state.discovered_failures) == 1
         assert orchestrator.state.discovered_failures[0].failure_reason == "validation_failed"
+
+    def test_poll_job_results_skips_superseded_jobs_after_scratch_reset(self, sample_config):
+        """Scratch reset tombstones in-flight publish jobs; their late results
+        must not flow into discovered_reviews/completed_today/failures.
+
+        Closes the leak flagged in PR #6131 review: clearing the dict
+        entries doesn't stop the executor's worker thread, so when it
+        finishes its result must be discarded rather than re-populating
+        state for the freshly-reset issue.
+        """
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+        # Tombstone the job — simulating a scratch reset that happened
+        # while the worker was running.
+        orchestrator.state.superseded_job_ids = {"job-1"}
+
+        # Worker eventually finishes with what would otherwise be a
+        # successful publish for issue 42.
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=True,
+                pr_url="https://github.com/test/repo/pull/123",
+                pr_number=123,
+                review_exchange_completed=False,
+            )
+        ])
+
+        orchestrator._poll_job_results()  # noqa: SLF001
+
+        # No state mutations from the discarded result.
+        assert orchestrator.state.discovered_reviews == []
+        assert orchestrator.state.completed_today == []
+        assert orchestrator.state.discovered_failures == []
+        assert orchestrator.state.failed_this_cycle == set()
+        # Tombstone drained — the job is now done.
+        assert "job-1" not in orchestrator.state.superseded_job_ids
+        # Pending dict cleared just like a normal completion.
+        assert orchestrator.state.pending_publish_jobs == {}

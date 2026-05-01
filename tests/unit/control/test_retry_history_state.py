@@ -507,3 +507,57 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert other in state.awaiting_merge_drift_scan_timestamps
     assert other in state.priority_queue
     assert other in state.queue_pending_shrink_missing_issue_numbers
+
+
+def test_clear_scratch_retry_records_tombstones_for_active_publish_jobs() -> None:
+    """Active publish jobs at reset time must be tombstoned, not just removed
+    from the dict. The PublishJobExecutor worker keeps running after the dict
+    entry is dropped — its late result would otherwise re-populate
+    discovered_reviews/completed_today for the freshly-reset issue. Bug
+    flagged in PR #6131 review.
+    """
+    target = 10
+    other = 11
+    state = OrchestratorState(
+        pending_publish_jobs={
+            "job-target-pending": PublishJob(
+                job_id="job-target-pending",
+                issue_number=target,
+                session_key="session-1",
+                status=PublishJobStatus.QUEUED,
+            ),
+            "job-other-pending": PublishJob(
+                job_id="job-other-pending",
+                issue_number=other,
+                session_key="session-2",
+                status=PublishJobStatus.QUEUED,
+            ),
+        },
+        running_publish_jobs={
+            "job-target-running": PublishJob(
+                job_id="job-target-running",
+                issue_number=target,
+                session_key="session-1",
+                status=PublishJobStatus.RUNNING,
+            ),
+            "job-other-running": PublishJob(
+                job_id="job-other-running",
+                issue_number=other,
+                session_key="session-2",
+                status=PublishJobStatus.RUNNING,
+            ),
+        },
+    )
+
+    RetryHistoryState(state).clear_scratch_retry_pending_state(
+        issue_number=target,
+        superseded_prs=[],
+    )
+
+    # Both pending and running job IDs for `target` are tombstoned.
+    assert "job-target-pending" in state.superseded_job_ids
+    assert "job-target-running" in state.superseded_job_ids
+    # Other issue's jobs are NOT tombstoned — its workers should still
+    # report their results normally.
+    assert "job-other-pending" not in state.superseded_job_ids
+    assert "job-other-running" not in state.superseded_job_ids
