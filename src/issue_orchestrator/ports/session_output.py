@@ -98,7 +98,7 @@ class ValidationState:
     Stored at: <run_dir>/validation-state.json
     """
 
-    retry_count: int = 0
+    retry_count: int = 0  # Queued retry attempt number, not completed retry count.
     max_retries: int = 3
     validation_cmd: str | None = None
     last_error: str | None = None
@@ -114,7 +114,7 @@ class ValidationState:
 
     @property
     def can_retry(self) -> bool:
-        """Whether more retries are allowed."""
+        """Whether the queued retry attempt is within the retry budget."""
         return self.max_retries > 0 and self.retry_count <= self.max_retries
 
 

@@ -170,6 +170,11 @@ class TestActionDataclasses:
         assert action.issue_number == 123
         assert action.retry_count == 1
 
+    def test_launch_validation_retry_action_rejects_invalid_issue(self):
+        """Test LaunchValidationRetryAction requires a real issue number."""
+        with pytest.raises(ValueError, match="positive issue_number"):
+            LaunchValidationRetryAction(issue_number=0, retry_count=1)
+
     def test_reconcile_history_entry_action(self):
         """Test ReconcileHistoryEntryAction creation."""
         action = ReconcileHistoryEntryAction(

@@ -95,7 +95,7 @@ def enrich_logical_semantics(
         logical_run == (prev_run or 1) or signal_cycle > 1
     ):
         logical_cycle = signal_cycle
-        rework_driven = signal_cycle > 1
+        rework_driven = True
     elif logical_run != (prev_run or 1):
         logical_cycle = 1
     elif round_cycle is not None:

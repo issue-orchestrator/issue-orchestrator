@@ -36,6 +36,20 @@ def test_rework_cycle_signal_sets_logical_cycle() -> None:
     assert out.logical_phase == "rework"
 
 
+def test_first_rework_cycle_signal_is_rework_driven() -> None:
+    out = enrich_logical_semantics(
+        event_name="rework.started",
+        event_data={"task": "rework", "rework_cycle": 0},
+        previous_event_name="review.changes_requested",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+
+    assert out.logical_run == 1
+    assert out.logical_cycle == 1
+    assert out.rework_driven is True
+    assert out.logical_phase == "rework"
+
+
 def test_rework_start_after_terminal_restart_keeps_rework_cycle_signal() -> None:
     out = enrich_logical_semantics(
         event_name="rework.started",

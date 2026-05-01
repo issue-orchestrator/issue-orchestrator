@@ -335,6 +335,16 @@ class TestHasPendingRetry:
 
         assert has_pending_retry(worktree) is True
 
+    def test_state_at_max_retry_is_pending_final_attempt(self, tmp_path: Path):
+        """A queued final retry attempt is still recoverable."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        state = ValidationState(retry_count=3, max_retries=3)
+        write_validation_state(worktree, state)
+
+        assert has_pending_retry(worktree) is True
+
     def test_state_past_max_retries_not_pending(self, tmp_path: Path):
         """State past max retries is not pending."""
         worktree = tmp_path / "worktree"

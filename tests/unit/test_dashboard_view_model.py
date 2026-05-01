@@ -778,6 +778,51 @@ def test_pending_validation_retry_routes_to_blocked_lane_and_suppresses_queue_du
     assert blocked_column["items"][0]["issue_number"] == 359
 
 
+def test_pending_validation_retry_takes_precedence_over_validation_failed_history():
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=359,
+                title="Validation retry item",
+                agent_type="agent:backend",
+                status="validation_failed",
+                runtime_minutes=12,
+                status_reason="Earlier validation failure",
+            ),
+        ],
+        pending_validation_retries=[
+            PendingValidationRetry(
+                issue_number=359,
+                issue_title="Validation retry item",
+                agent_label="agent:backend",
+                worktree_path="/tmp/repo-359",
+                branch_name="issue-359",
+                original_prompt="original task",
+                validation_error="Working tree is dirty",
+                validation_error_file="/tmp/repo-359/validation-errors.txt",
+                retry_count=1,
+                validation_cmd="./scripts/validate.sh",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    matching = [item for item in view_model.blocked_items if item["issue_number"] == 359]
+    assert len(matching) == 1
+    assert matching[0]["status"] == "validation_retry"
+    assert "Working tree is dirty" in matching[0]["blocked_summary"]
+
+
 def test_build_awaiting_merge_items_dedupes_union_preferring_pr_link():
     queue_item = {
         "issue_number": 280,

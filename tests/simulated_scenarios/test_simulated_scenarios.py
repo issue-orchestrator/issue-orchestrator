@@ -152,6 +152,26 @@ def test_validation_retry_succeeds_after_retry(scenario_repo: Path):
         .run()
 
 
+def test_validation_retry_failure_exhausts_final_attempt(scenario_repo: Path):
+    def _disable_grace_period(config) -> None:
+        config.session_grace_period_seconds = 0
+        config.session_log_activity_seconds = 0
+
+    scenario("validation_retry_exhausts_final_attempt", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail.sh"), max_retries=1) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_disable_grace_period) \
+        .wait_for_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
+        .wait_for_event(EventName.SESSION_VALIDATION_FAILED) \
+        .wait_for(lambda orch: not orch.state.active_sessions, max_ticks=12) \
+        .expect_validation_status("failed") \
+        .expect_pending_validation_retries(0) \
+        .expect_session_history_status({"validation_failed"}) \
+        .run()
+
+
 def test_draft_pr_queues_review_without_exchange(scenario_repo: Path):
     scenario("draft_pr_queues_review", scenario_repo) \
         .coder(script("coder_complete.sh")) \

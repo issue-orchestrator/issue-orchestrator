@@ -149,6 +149,12 @@ class LaunchValidationRetryAction(Action):
     retry_count: int = 0
     action_type: ActionType = field(default=ActionType.LAUNCH_VALIDATION_RETRY, init=False)
 
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("LaunchValidationRetryAction requires a positive issue_number")
+        if self.retry_count < 0:
+            raise ValueError("LaunchValidationRetryAction requires a non-negative retry_count")
+
 
 @dataclass(frozen=True)
 class StopSessionAction(Action):

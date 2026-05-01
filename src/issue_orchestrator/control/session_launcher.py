@@ -84,6 +84,8 @@ from .transition_log import log_transition
 from .isolation import build_runtime_tool_env, build_runtime_tool_env_assignments
 
 logger = logging.getLogger(__name__)
+_TRUNCATION_MARKER_BUDGET = 30
+_MIN_USEFUL_TRUNCATED_HEAD = 100
 
 
 def detect_existing_work(
@@ -124,8 +126,8 @@ def _truncate_with_tail(text: str, max_length: int = 4000, tail_length: int = 20
     """Truncate long validation output while preserving the summary tail."""
     if len(text) <= max_length:
         return text
-    head_length = max_length - tail_length - 30
-    if head_length < 100:
+    head_length = max_length - tail_length - _TRUNCATION_MARKER_BUDGET
+    if head_length < _MIN_USEFUL_TRUNCATED_HEAD:
         return f"[...truncated {len(text) - tail_length} chars...]\n\n{text[-tail_length:]}"
     omitted = len(text) - head_length - tail_length
     return f"{text[:head_length]}\n\n[...truncated {omitted} chars...]\n\n{text[-tail_length:]}"
@@ -1211,7 +1213,11 @@ class SessionLauncher:
         worktree_path: Path,
         claim: ClaimAcquisitionResult,
     ) -> LaunchResult | None:
-        """Run setup commands before a validation retry without deleting work."""
+        """Run setup commands before retrying preserved work.
+
+        Validation retries intentionally keep the existing worktree, so
+        configured setup commands must be idempotent and non-destructive.
+        """
         if not self.config.setup_worktree:
             return None
         try:
