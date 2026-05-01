@@ -115,6 +115,103 @@ def check_dirty_files(worktree_root: Path | None = None) -> list[str]:
     return dirty
 
 
+def _handle_dirty_files_rejection(
+    *,
+    dirty_files: list[str],
+    worktree_root: Path,
+    issue_number: int | None,
+    status: str,
+    under_orchestrator: bool,
+    phase: str,
+) -> None:
+    """Print actionable error, record rejection, escalate-or-exit non-zero.
+
+    Used by both the pre-validation and post-validation dirty checks. The
+    post-validation check exists to close the temporal variance with the
+    orchestrator's publish gate: ``validate.sh`` can write to the tree
+    (auto-formatters, generated artifacts) between the agent's pre-check
+    and the orchestrator's later check, and without this the agent
+    completes "successfully" while the orchestrator silently rejects the
+    push and starts a rework loop.
+    """
+    print(f"\n{'='*60}")
+    if phase == "post-validation":
+        print("❌ WORKING TREE WAS DIRTIED BY VALIDATION — coding-done cannot complete")
+    else:
+        print("❌ WORKING TREE IS DIRTY — coding-done cannot complete")
+    print(f"{'='*60}")
+    print(f"\nUncommitted files ({len(dirty_files)}):")
+    for entry in dirty_files[:15]:
+        print(f"  {entry}")
+    if len(dirty_files) > 15:
+        print(f"  ... and {len(dirty_files) - 15} more")
+    if phase == "post-validation":
+        print(
+            "\nValidation modified the working tree (auto-formatter, generated "
+            "artifacts, integration-test side effects, ...)."
+        )
+        print(
+            "Decide for each file: commit it (part of your change) or add to "
+            ".gitignore / remove it (detritus). Then run coding-done again."
+        )
+        print(
+            "If you cannot classify a file, run "
+            "`coding-done blocked --reason 'unable to classify dirty file X'`."
+        )
+    else:
+        print("\nCommit all changes before calling coding-done.")
+        print("If you modified contracts or schemas, regenerate artifacts first.")
+    print(f"{'='*60}")
+
+    if issue_number:
+        logger.info(
+            issue_log(
+                issue_number,
+                "coding-done outcome: status=%s phase=%s dirty_files=%d",
+            ),
+            status,
+            phase,
+            len(dirty_files),
+        )
+
+    if under_orchestrator:
+        session_id = get_session_id()
+        count = record_rejection(worktree_root, session_id)
+        if is_budget_exhausted(count):
+            payload = build_escalation_payload(
+                session_id=session_id,
+                dirty_files=dirty_files,
+                count=count,
+            )
+            escalation_record = build_completion_record_for_escalation(
+                payload,
+                completion_record_cls=RUNTIME_COMPLETION_RECORD,
+                completion_outcome_cls=RUNTIME_COMPLETION_OUTCOME,
+                status_to_actions=STATUS_TO_ACTIONS,
+                needs_human_status=AgentStatus.NEEDS_HUMAN,
+            )
+            write_completion_record(escalation_record)
+            write_marker_file("needs_human")
+            reset_rejection_counter(worktree_root, session_id)
+
+            print(f"\n{'='*60}")
+            print(
+                f"⚠️  Auto-escalated to needs_human after {count} "
+                f"dirty-tree rejections."
+            )
+            print(
+                "The orchestrator will route this to a human. Session "
+                "will now exit cleanly rather than burn to the 90-minute "
+                "timeout."
+            )
+            print(f"{'='*60}")
+
+            trigger_orchestrator_resume(verbose=False)
+            sys.exit(0)
+
+    sys.exit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build argument parser for coding-done."""
     parser = argparse.ArgumentParser(
@@ -238,61 +335,14 @@ def main() -> None:  # noqa: C901, PLR0912
     # 2. Check for dirty files (coding agents must commit everything)
     dirty_files = check_dirty_files(worktree_root)
     if dirty_files:
-        print(f"\n{'='*60}")
-        print("❌ WORKING TREE IS DIRTY — coding-done cannot complete")
-        print(f"{'='*60}")
-        print(f"\nUncommitted files ({len(dirty_files)}):")
-        for f in dirty_files[:15]:
-            print(f"  {f}")
-        if len(dirty_files) > 15:
-            print(f"  ... and {len(dirty_files) - 15} more")
-        print(f"\nCommit all changes before calling coding-done.")
-        print("If you modified contracts or schemas, regenerate artifacts first.")
-        print(f"{'='*60}")
-
-        if issue_number:
-            logger.info(issue_log(issue_number, "coding-done outcome: status=%s dirty_files=%d"), status, len(dirty_files))
-
-        if under_orchestrator:
-            session_id = get_session_id()
-            count = record_rejection(worktree_root, session_id)
-            if is_budget_exhausted(count):
-                # Fabricate a ``needs_human`` completion on the agent's
-                # behalf and trigger the orchestrator to observe it.
-                # Without this the session would continue retrying
-                # until the 90-minute session-level timeout fires.
-                payload = build_escalation_payload(
-                    session_id=session_id,
-                    dirty_files=dirty_files,
-                    count=count,
-                )
-                escalation_record = build_completion_record_for_escalation(
-                    payload,
-                    completion_record_cls=RUNTIME_COMPLETION_RECORD,
-                    completion_outcome_cls=RUNTIME_COMPLETION_OUTCOME,
-                    status_to_actions=STATUS_TO_ACTIONS,
-                    needs_human_status=AgentStatus.NEEDS_HUMAN,
-                )
-                write_completion_record(escalation_record)
-                write_marker_file("needs_human")
-                reset_rejection_counter(worktree_root, session_id)
-
-                print(f"\n{'='*60}")
-                print(
-                    f"⚠️  Auto-escalated to needs_human after {count} "
-                    f"dirty-tree rejections."
-                )
-                print(
-                    "The orchestrator will route this to a human. Session "
-                    "will now exit cleanly rather than burn to the 90-minute "
-                    "timeout."
-                )
-                print(f"{'='*60}")
-
-                trigger_orchestrator_resume(verbose=False)
-                sys.exit(0)
-
-        sys.exit(1)
+        _handle_dirty_files_rejection(
+            dirty_files=dirty_files,
+            worktree_root=worktree_root,
+            issue_number=issue_number,
+            status=status,
+            under_orchestrator=under_orchestrator,
+            phase="pre-validation",
+        )
 
     # Dirty check passed — if a prior rejection left a non-zero counter
     # the agent has demonstrated recovery, so clear it. Subsequent
@@ -369,6 +419,26 @@ def main() -> None:  # noqa: C901, PLR0912
 
     if validation_result and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
+
+    # 3b. Re-check dirty tree AFTER validation. Closes the temporal
+    #     variance with the orchestrator's publish gate: validate.sh can
+    #     write to the tree (auto-formatters, generated artifacts,
+    #     integration-test outputs that aren't gitignored). Without this
+    #     re-check the agent completed "successfully" while the
+    #     orchestrator's later check found dirty files and silently
+    #     rejected the push, producing the rework loop seen on issue
+    #     #359 in tixmeup.
+    if validation_result and validation_result.passed:
+        post_validation_dirty = check_dirty_files(worktree_root)
+        if post_validation_dirty:
+            _handle_dirty_files_rejection(
+                dirty_files=post_validation_dirty,
+                worktree_root=worktree_root,
+                issue_number=issue_number,
+                status=status,
+                under_orchestrator=under_orchestrator,
+                phase="post-validation",
+            )
 
     # 4. Run preflight push check
     #    Skip under orchestrator — the orchestrator handles pushing via its own

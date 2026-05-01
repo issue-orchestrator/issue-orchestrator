@@ -133,6 +133,19 @@ git commit -m "Brief description of what you implemented"
 
 **If you skip this step, your work will be lost.** The orchestrator only pushes existing commits - it does not create them.
 
+**The tree must stay clean across validation.** `coding-done` checks for dirty
+files BEFORE running validation AND AGAIN AFTER. If validation modifies the
+tree (auto-formatter, generated artifacts, integration-test side effects),
+the second check fails and `coding-done` exits non-zero.
+
+When that happens, decide for each dirty file:
+- **Part of your change** → `git add` + `git commit`
+- **Detritus** (build output, generated lock files, IDE droppings) → add to `.gitignore` or `rm`
+- **Cannot classify** → run `coding-done blocked --reason "unable to classify dirty file <path>"`
+
+**Do not** `git stash` — your work belongs in a commit or in `.gitignore`, not
+in a stash the orchestrator can't see. Re-run `coding-done` after fixing.
+
 ---
 
 ## Implementation Principles
