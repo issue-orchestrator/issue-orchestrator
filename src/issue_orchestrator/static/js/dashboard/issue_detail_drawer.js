@@ -669,25 +669,13 @@ function _renderIssueValidationStructured(container, junitCases) {
         skipped: cases.filter(c => _testFilterGroup(c) === 'skipped').length,
         quarantined: 0,
     };
-    const summary = {
-        total: cases.length,
-        passed: counts.passed,
-        skipped: counts.skipped,
-        // The shared headline can compute directly from junit cases. Keep
-        // untriaged populated for older callers that still pass only summary.
-        untriaged: counts.failed,
-        has_issue: 0,
-        flaky: 0,
-        fixed: 0,
-        quarantined: 0,
-    };
     const rows = cases
         .map(test => _renderTestRow(test, null))
         .join('');
     container.style.display = '';
     container.innerHTML = `
         <div class="test-results-panel issue-detail-validation-structured-panel">
-            ${renderTestResultsHeadline(summary, cases.length, cases)}
+            ${renderTestResultsHeadline(cases)}
             ${renderTestResultsFilters(counts)}
             <div class="test-results-list">${rows}</div>
         </div>

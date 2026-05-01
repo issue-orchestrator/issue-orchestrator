@@ -1379,7 +1379,7 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     filter_body = _function_body(js, "filterTestResults")
 
     # Headline + filters + flat list are the primary surface.
-    assert "renderTestResultsHeadline(summary" in results_body
+    assert "renderTestResultsHeadline(tests)" in results_body
     assert "renderTestResultsFilters(counts" in results_body
     assert 'class="test-results-list"' in results_body
     assert "_renderTestRow(test, lifecycle, activeFilter)" in results_body
@@ -1393,6 +1393,7 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "failed" in headline_body
     assert "action needed" in headline_body
     assert "trh-stat" in headline_body
+    assert "_testOutcomeCounts(tests)" in headline_body
 
     # Filter chips are tablist with task-oriented groups.
     assert "trf-chip" in filters_body
@@ -1478,6 +1479,9 @@ def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
     command_body = _function_body(js, "runE2ELifecycleCommand")
     assert "data-e2e-action" in row_action_button_body
     assert "dataset.nodeid" in row_action_dispatch_body
+    assert "case 'copy_test_error'" in row_action_dispatch_body
+    assert "Copy-error action missing nodeid" in row_action_dispatch_body
+    assert "copyTestErrorFromRun(nodeid)" in row_action_dispatch_body
     assert "closeE2EIssue(" not in actions_body
     assert "showCreateIssueDropdown(this, '" not in actions_body
     assert "quarantineSingleTest('" not in actions_body
@@ -1487,6 +1491,21 @@ def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
     assert "openAgentLogAction" in command_body
     assert "openReviewTranscript" in command_body
     assert "openValidationFailure" in command_body
+
+
+def test_e2e_result_category_owns_client_grouping() -> None:
+    """The client trusts server result_category instead of re-deriving groups ad hoc."""
+    js = _read(DASHBOARD_JS)
+    category_body = _function_body(js, "_testResultCategory")
+    outcome_body = _function_body(js, "_testOutcomeState")
+    filter_body = _function_body(js, "_testFilterGroup")
+
+    assert "RESULT_CATEGORY_OUTCOME_STATE" in js
+    assert "ACTION_NEEDED_RESULT_CATEGORIES" in js
+    assert "test.result_category" in category_body
+    assert "RESULT_CATEGORY_OUTCOME_STATE.get(category)" in outcome_body
+    assert "effectiveOutcome === 'failed' || effectiveOutcome === 'error' || category ===" not in outcome_body
+    assert "Actionable categories intentionally win" in filter_body
 
 
 def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:

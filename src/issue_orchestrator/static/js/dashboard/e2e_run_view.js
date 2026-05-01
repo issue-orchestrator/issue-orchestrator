@@ -356,12 +356,26 @@ function runE2ELifecycleCommand(command) {
 // collapsed "Run evidence" disclosure at the bottom — they're diagnostic
 // surfaces, not the headline.
 
+const RESULT_CATEGORY_OUTCOME_STATE = new Map([
+    ['failed', 'failed'],
+    ['fixed', 'passed'],
+    ['has_issue', 'failed'],
+    ['passed', 'passed'],
+    ['quarantined', 'quarantined'],
+    ['skipped', 'skipped'],
+    ['untriaged', 'failed'],
+]);
+
+const ACTION_NEEDED_RESULT_CATEGORIES = new Set(['fixed', 'untriaged']);
+
 function _testFilterGroup(test) {
     if (!test) return 'other';
     const category = _testResultCategory(test);
     const outcomeState = _testOutcomeState(test);
+    // Actionable categories intentionally win over raw outcome filters:
+    // a fixed/passed test still needs the linked issue closed.
     if (_testNeedsAction(test)) return 'action_needed';
-    if (category === 'has_issue' && outcomeState === 'failed') return 'tracked';
+    if (_testIsTrackedFailure(test)) return 'tracked';
     if (outcomeState === 'passed_on_retry') return 'passed_on_retry';
     if (outcomeState === 'passed') return 'passed';
     if (outcomeState === 'failed') return 'failed';
@@ -377,7 +391,9 @@ function _flattenTestsByCategory(data) {
 }
 
 function _testResultCategory(test) {
-    return String(test && (test.result_category || test.category) || '').toLowerCase();
+    const resultCategory = String(test && test.result_category || '').toLowerCase();
+    if (resultCategory) return resultCategory;
+    return String(test && test.category || '').toLowerCase();
 }
 
 function _testEffectiveOutcome(test) {
@@ -396,21 +412,28 @@ function _testOutcomeState(test) {
     const category = _testResultCategory(test);
     const outcome = String(test.outcome || '').toLowerCase();
     const effectiveOutcome = _testEffectiveOutcome(test);
+    const retryOutcome = String(test.retry_outcome || '').toLowerCase();
     if (test.is_quarantined || category === 'quarantined') return 'quarantined';
-    if (outcome === 'skipped' || effectiveOutcome === 'skipped' || category === 'skipped') return 'skipped';
-    if (outcome === 'failed' && String(test.retry_outcome || '').toLowerCase() === 'passed') return 'passed_on_retry';
+    if (outcome === 'failed' && retryOutcome === 'passed') return 'passed_on_retry';
+    const categoryOutcomeState = RESULT_CATEGORY_OUTCOME_STATE.get(category);
+    if (categoryOutcomeState) return categoryOutcomeState;
     if (effectiveOutcome === 'passed') return 'passed';
-    if (effectiveOutcome === 'failed' || effectiveOutcome === 'error' || category === 'untriaged' || category === 'has_issue') return 'failed';
+    if (effectiveOutcome === 'skipped') return 'skipped';
+    if (effectiveOutcome === 'failed' || effectiveOutcome === 'error') return 'failed';
+    if (category) return 'failed';
     return 'unknown';
 }
 
 function _testNeedsAction(test) {
     const category = _testResultCategory(test);
     const outcomeState = _testOutcomeState(test);
-    if (category === 'fixed') return true;
-    if (category === 'untriaged') return true;
+    if (ACTION_NEEDED_RESULT_CATEGORIES.has(category)) return true;
     if (category === 'flaky' && outcomeState === 'failed') return true;
     return false;
+}
+
+function _testIsTrackedFailure(test) {
+    return _testResultCategory(test) === 'has_issue' && _testOutcomeState(test) === 'failed';
 }
 
 function _lifecyclesByIssueNumber(data) {
@@ -428,37 +451,21 @@ function _lifecyclesByIssueNumber(data) {
     return map;
 }
 
-function _testOutcomeCounts(tests, summary, totalRows) {
-    if (Array.isArray(tests)) {
-        return {
-            total: tests.length,
-            failed: tests.filter(t => _testOutcomeState(t) === 'failed').length,
-            passed: tests.filter(t => _testOutcomeState(t) === 'passed').length,
-            passed_on_retry: tests.filter(t => _testOutcomeState(t) === 'passed_on_retry').length,
-            skipped: tests.filter(t => _testOutcomeState(t) === 'skipped').length,
-            quarantined: tests.filter(t => _testOutcomeState(t) === 'quarantined').length,
-            action_needed: tests.filter(_testNeedsAction).length,
-        };
-    }
-    const passed = Number(summary.passed || 0);
-    const skipped = Number(summary.skipped || 0);
-    const quarantined = Number(summary.quarantined || 0);
-    const failed = (Number(summary.untriaged || 0) +
-        Number(summary.has_issue || 0) +
-        Number(summary.flaky || 0));
+function _testOutcomeCounts(tests) {
+    const cases = Array.isArray(tests) ? tests : [];
     return {
-        total: Number(summary.total || 0) || totalRows,
-        failed,
-        passed,
-        passed_on_retry: 0,
-        skipped,
-        quarantined,
-        action_needed: Number(summary.untriaged || 0),
+        total: cases.length,
+        failed: cases.filter(t => _testOutcomeState(t) === 'failed').length,
+        passed: cases.filter(t => _testOutcomeState(t) === 'passed').length,
+        passed_on_retry: cases.filter(t => _testOutcomeState(t) === 'passed_on_retry').length,
+        skipped: cases.filter(t => _testOutcomeState(t) === 'skipped').length,
+        quarantined: cases.filter(t => _testOutcomeState(t) === 'quarantined').length,
+        action_needed: cases.filter(_testNeedsAction).length,
     };
 }
 
-function renderTestResultsHeadline(summary, totalRows, tests) {
-    const counts = _testOutcomeCounts(tests, summary || {}, totalRows);
+function renderTestResultsHeadline(tests) {
+    const counts = _testOutcomeCounts(tests);
     return `
         <div class="test-results-headline" role="status" aria-label="Test summary">
             <span class="trh-stat trh-total">${counts.total} tests</span>
@@ -519,7 +526,7 @@ function _renderTestResultPills(test) {
     pills.push(`<span class="test-result-pill primary ${outcomeState}">${primaryLabels[outcomeState] || 'Unknown'}</span>`);
     if (_testNeedsAction(test)) {
         pills.push('<span class="test-result-pill action-needed">Action needed</span>');
-    } else if (category === 'has_issue' && outcomeState === 'failed') {
+    } else if (_testIsTrackedFailure(test)) {
         pills.push('<span class="test-result-pill tracked">Tracked</span>');
     }
     if (test.is_likely_flaky || category === 'flaky') {
@@ -665,7 +672,6 @@ function _renderTestRow(test, lifecycle, activeFilter = 'all') {
 
 function renderE2EResultsPanel(data) {
     const tests = _flattenTestsByCategory(data);
-    const summary = data && data.results_summary ? data.results_summary : {};
     const lifecycleMap = _lifecyclesByIssueNumber(data);
     const counts = {
         all: tests.length,
@@ -701,7 +707,7 @@ function renderE2EResultsPanel(data) {
 
     return `
         <div class="test-results-panel">
-            ${renderTestResultsHeadline(summary, tests.length, tests)}
+            ${renderTestResultsHeadline(tests)}
             ${renderTestResultsFilters(counts, activeFilter)}
             <div class="test-results-list">${rowsHtml}</div>
             ${bulkBar}
