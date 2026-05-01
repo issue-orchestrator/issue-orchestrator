@@ -856,6 +856,54 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     return history_items, blocked_items
 
 
+def _build_pending_validation_retry_items(state, config) -> list[dict[str, Any]]:
+    blocked_items: list[dict[str, Any]] = []
+    active_numbers = {session.issue.number for session in state.active_sessions}
+    for retry in state.pending_validation_retries:
+        if retry.issue_number in active_numbers:
+            continue
+
+        validation_cmd = retry.validation_cmd or "validation"
+        retry_attempt = retry.retry_count + 1
+        status_reason = (
+            f"Validation retry pending after {validation_cmd} failed "
+            f"(attempt {retry_attempt})"
+        )
+        if retry.validation_error:
+            status_reason = f"{status_reason}: {retry.validation_error}"
+
+        label_fields, display_title = _issue_label_fields(retry.issue_number, retry.issue_title)
+        flow_steps = flow_steps_for("blocked")
+        blocked_items.append({
+            "issue_number": retry.issue_number,
+            **label_fields,
+            "title": display_title,
+            "agent_type": retry.agent_label.replace("agent:", ""),
+            "status": "validation_retry",
+            "status_reason": status_reason,
+            "detail_label": "Validation Retry Pending",
+            "detail_reason": status_reason,
+            "time": "",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": "Click to open issue on GitHub",
+            "url": issue_url_for(config, retry.issue_number),
+            "issue_url": issue_url_for(config, retry.issue_number),
+            "pr_url": "",
+            "has_terminal": False,
+            "worktree_path": retry.worktree_path,
+            "flow_stage": "blocked",
+            "flow_stage_label": flow_stage_label(flow_steps, "blocked"),
+            "flow_steps": flow_steps,
+            "blocked_summary": status_reason,
+            "merge_pending": False,
+            "dependency_blocked": False,
+            "orchestrator_labels": [],
+            **_refresh_meta(state, config, retry.issue_number),
+        })
+    return blocked_items
+
+
 def _merge_blocked_items(
     scope_blocked: list[dict[str, Any]],
     history_blocked: list[dict[str, Any]],
@@ -1036,7 +1084,13 @@ def build_dashboard_view_model(
         }
         backlog_items = _build_backlog_items(state, config, lm=lm)
         history_items, history_blocked = _build_history_items(state, config)
-        blocked_items.extend(_merge_blocked_items(scope_blocked, history_blocked))
+        pending_validation_blocked = _build_pending_validation_retry_items(state, config)
+        blocked_items.extend(
+            _merge_blocked_items(
+                scope_blocked,
+                history_blocked + pending_validation_blocked,
+            )
+        )
 
         active_items = _sort_by_issue_number(active_items)
         queue_items = _sort_by_issue_number(queue_items)

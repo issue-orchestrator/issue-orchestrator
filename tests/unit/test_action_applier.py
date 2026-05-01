@@ -15,6 +15,7 @@ from issue_orchestrator.control.actions import (
     AddCommentAction,
     SyncLabelsAction,
     LaunchSessionAction,
+    LaunchValidationRetryAction,
     StopSessionAction,
     QueueReviewAction,
     EscalateToHumanAction,
@@ -485,6 +486,31 @@ class TestLaunchSessionAction:
 
         assert result.result_type == ActionResultType.SKIPPED
         assert "already running" in result.details.get("skip_reason", "")
+
+
+class TestLaunchValidationRetryAction:
+    """Tests for LAUNCH_VALIDATION_RETRY action."""
+
+    def test_launch_validation_retry_with_callback(self, applier):
+        """Test launching validation retry via callback."""
+        mock_session = MagicMock()
+        mock_session.terminal_id = "issue-123"
+        mock_session.issue.number = 123
+        callback = MagicMock(return_value=mock_session)
+        applier.validation_retry_launcher = callback
+
+        result = applier.apply(LaunchValidationRetryAction(issue_number=123, retry_count=1))
+
+        assert result.success
+        callback.assert_called_once_with(123)
+        assert result.details["session_name"] == "issue-123"
+
+    def test_launch_validation_retry_without_callback_fails(self, applier):
+        """Validation retry launch requires an orchestrator callback."""
+        result = applier.apply(LaunchValidationRetryAction(issue_number=123, retry_count=1))
+
+        assert not result.success
+        assert "No validation_retry_launcher callback configured" in result.error
 
 
 class TestStopSessionAction:
@@ -1115,6 +1141,7 @@ class TestClaimGateAudit:
 
     # Action types that legitimately skip claim verification:
     # - LAUNCH_SESSION: does its own claim acquisition in session_launcher
+    # - LAUNCH_VALIDATION_RETRY: does its own claim acquisition in session_launcher
     # - STOP_SESSION: local terminal operation (killing sessions)
     # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
     # - QUEUE_REWORK / QUEUE_TRIAGE: local state operations
@@ -1124,6 +1151,7 @@ class TestClaimGateAudit:
     # - CREATE_PR: not implemented in action_applier
     EXEMPT_ACTIONS = {
         ActionType.LAUNCH_SESSION,
+        ActionType.LAUNCH_VALIDATION_RETRY,
         ActionType.STOP_SESSION,
         ActionType.CREATE_WORKTREE,
         ActionType.REMOVE_WORKTREE,

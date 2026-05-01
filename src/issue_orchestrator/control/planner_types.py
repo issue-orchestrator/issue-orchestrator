@@ -17,6 +17,7 @@ from ..domain.models import (
     PendingReview,
     PendingRework,
     PendingTriageReview,
+    PendingValidationRetry,
     Session,
     TriageFacts,
 )
@@ -41,6 +42,7 @@ class OrchestratorSnapshot:
     pending_reworks: tuple[PendingRework, ...]
     pending_triage: tuple[PendingTriageReview, ...]
     paused: bool
+    pending_validation_retries: tuple[PendingValidationRetry, ...] = field(default_factory=tuple)
     priority_queue: tuple[int, ...] = field(default_factory=tuple)
     issues_started_count: int = 0
     max_issues_to_start: Optional[int] = None
@@ -126,6 +128,7 @@ class OrchestratorSnapshot:
             pending_reviews=tuple(state.pending_reviews),
             pending_reworks=tuple(state.pending_reworks),
             pending_triage=tuple(state.pending_triage_reviews),
+            pending_validation_retries=tuple(state.pending_validation_retries),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,

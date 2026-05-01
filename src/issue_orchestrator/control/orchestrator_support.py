@@ -68,6 +68,7 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
 
     # Wire up action_applier's session_launcher callback
     orch.deps.action_applier.session_launcher = orch.session_launcher_callback
+    orch.deps.action_applier.validation_retry_launcher = orch.launch_validation_retry_by_number
     orch.deps.action_applier.claim_gate = orch.deps.claim_gate
     orch.deps.action_applier.lease_id_lookup = (
         lambda issue_number: next(
@@ -341,6 +342,7 @@ class OrchestratorSupport:
 
         handlers = {
             ActionType.LAUNCH_SESSION: self._handle_launch_session,
+            ActionType.LAUNCH_VALIDATION_RETRY: self._handle_launch_validation_retry,
             ActionType.ESCALATE_TO_HUMAN: self._handle_escalate_to_human,
             ActionType.CREATE_TRIAGE_ISSUE: self._handle_create_triage_issue,
             ActionType.CLEANUP_SESSION: self._handle_cleanup_session,
@@ -357,6 +359,15 @@ class OrchestratorSupport:
         from .actions import LaunchSessionAction
         a = cast(LaunchSessionAction, action)
         logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
+
+    def _handle_launch_validation_retry(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import LaunchValidationRetryAction
+        a = cast(LaunchValidationRetryAction, action)
+        logger.info(
+            "[PLAN] Launched validation retry for issue #%d (retry_count=%d)",
+            a.issue_number,
+            a.retry_count,
+        )
 
     def _handle_escalate_to_human(self, action: "Action", result: "ActionResult") -> None:
         from .actions import EscalateToHumanAction

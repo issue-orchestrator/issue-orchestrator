@@ -35,8 +35,19 @@ from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
-from ..domain.models import Issue, Session, PendingReview, PendingRework, get_completion_path, SessionKey, TaskKind, AgentConfig
+from ..domain.models import (
+    AgentConfig,
+    Issue,
+    PendingReview,
+    PendingRework,
+    PendingValidationRetry,
+    Session,
+    SessionKey,
+    TaskKind,
+    get_completion_path,
+)
 from .worktree_context import WorktreeContext
+from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
 from ..ports import (
@@ -73,6 +84,8 @@ from .transition_log import log_transition
 from .isolation import build_runtime_tool_env, build_runtime_tool_env_assignments
 
 logger = logging.getLogger(__name__)
+_TRUNCATION_MARKER_BUDGET = 30
+_MIN_USEFUL_TRUNCATED_HEAD = 100
 
 
 def detect_existing_work(
@@ -107,6 +120,17 @@ def detect_existing_work(
     except Exception as e:
         logger.warning("Failed to detect existing work: %s", e)
         return None
+
+
+def _truncate_with_tail(text: str, max_length: int = 4000, tail_length: int = 2000) -> str:
+    """Truncate long validation output while preserving the summary tail."""
+    if len(text) <= max_length:
+        return text
+    head_length = max_length - tail_length - _TRUNCATION_MARKER_BUDGET
+    if head_length < _MIN_USEFUL_TRUNCATED_HEAD:
+        return f"[...truncated {len(text) - tail_length} chars...]\n\n{text[-tail_length:]}"
+    omitted = len(text) - head_length - tail_length
+    return f"{text[:head_length]}\n\n[...truncated {omitted} chars...]\n\n{text[-tail_length:]}"
 
 
 class SessionLauncher:
@@ -918,6 +942,7 @@ class SessionLauncher:
             branch_name=branch_name,
             completion_path=completion_path,
             agent_label=issue.agent_type,
+            original_prompt=rendered_prompt,
             lease_id=claim.lease_id,
             lease_acquired_at=claim.lease_acquired_at,
             lease_expires_at=claim.lease_expires_at,
@@ -953,6 +978,313 @@ class SessionLauncher:
         self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
 
         return LaunchResult(session, True)
+
+    def launch_validation_retry_session(
+        self,
+        retry: PendingValidationRetry,
+        active_sessions: list[Session],
+    ) -> LaunchResult:
+        """Launch a coding session that continues after validation failure."""
+        issue = self._resolve_validation_retry_issue(retry)
+        if issue is None or issue.agent_type is None:
+            return LaunchResult(
+                None,
+                False,
+                f"No agent config available for validation retry #{retry.issue_number}",
+            )
+
+        agent_config = self.config.agents.get(issue.agent_type)
+        if not agent_config:
+            return LaunchResult(None, False, f"No agent config for {issue.agent_type}")
+
+        session_name = f"issue-{issue.number}"
+        if result := self._check_launch_preconditions(issue, active_sessions, session_name):
+            return result
+        if result := self._check_provider_circuit(agent_config.provider, issue.number):
+            return result
+
+        retry_count = max(1, retry.retry_count)
+        issue_key = issue.key
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        logger.info(
+            "[launch] Validation retry identity: issue=%s issue_key=%s agent=%s "
+            "task=%s session=%s retry_count=%s",
+            issue.number,
+            issue_key,
+            issue.agent_type,
+            TaskKind.CODE.value,
+            session_name,
+            retry_count,
+            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+        )
+        log_transition(
+            "issue",
+            issue.number,
+            "VALIDATION_RETRY_QUEUED",
+            "LAUNCHING",
+            f"retry_count={retry_count}",
+        )
+
+        claim = self._acquire_issue_claim(issue)
+        if not claim.success:
+            return claim.as_launch_failure()
+
+        phase_name = f"coding-{retry_count + 1}"
+        ctx = WorktreeContext.create(
+            worktree_manager=self._worktree_manager,
+            config=self.config,
+            events=self.events,
+            session_output=self._session_output,
+            issue_number=issue.number,
+            issue_title=issue.title,
+            session_name=session_name,
+            agent_label=issue.agent_type,
+            branch_name=retry.branch_name or None,
+            enforce_hooks=self.config.enforce_hooks,
+            pre_push_hook=self.config.pre_push_hook,
+            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            phase_name=phase_name,
+        )
+        if ctx.error:
+            log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
+            logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
+            write_worktree_diagnostic(ctx.error)
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+
+        worktree_path = ctx.worktree_path
+        branch_name = ctx.branch_name
+        run = ctx.run
+        extra_args = self._extra_provider_args_from_labels(issue.labels)
+        retry_prompt = self._render_validation_retry_prompt(
+            retry=retry,
+            issue=issue,
+            agent_config=agent_config,
+            retry_count=retry_count,
+        )
+
+        ctx.write_worktree_note()
+        ctx.write_session_identity({
+            "task": TaskKind.CODE.value,
+            "issue_key": issue_key.stable_id(),
+            "session_key": session_key.stable_id(),
+            "agent": issue.agent_type,
+            "validation_retry": True,
+            "validation_retry_count": retry_count,
+            "validation_error_file": retry.validation_error_file,
+            **self._session_identity_launch_metadata(
+                agent_config,
+                extra_provider_args=extra_args,
+            ),
+        })
+        ctx.update_manifest({
+            "validation_retry": True,
+            "validation_retry_count": retry_count,
+            "validation_error": retry.validation_error,
+            "validation_error_file": retry.validation_error_file,
+        })
+
+        if setup_failure := self._run_validation_retry_setup(issue, worktree_path, claim):
+            return setup_failure
+
+        self._clear_interrupted_retry_guard_label(
+            issue_number=issue.number,
+            mode="coding",
+            context="launch_clear_interrupted_guard_validation_retry",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=issue.number,
+            context="launch_clear_reset_retry_pending_validation_retry",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=issue.number,
+            context="launch_clear_reset_retry_scratch_pending_validation_retry",
+        )
+
+        label_ok = self._apply_actions([
+            AddLabelAction(
+                issue_number=issue.number,
+                label=self._lm.in_progress,
+                reason="validation retry launched",
+                issue_key=issue.key.stable_id(),
+            ),
+        ], context="launch_validation_retry_in_progress_label")
+        if not label_ok:
+            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult(None, False, "Failed to add in-progress label")
+
+        prompt_path = self._persist_session_prompt(run.run_dir, retry_prompt)
+        self._session_output.write_retry_prompt(run.run_dir, retry_prompt)
+        base_command = agent_config.get_command_for_prompt(
+            retry_prompt,
+            issue_number=issue.number,
+            issue_title=issue.title,
+            worktree=worktree_path,
+            task_kind=TaskKind.CODE.value,
+            extra_provider_args=extra_args,
+        )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
+        completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
+        self._session_output.update_manifest(
+            run.run_dir,
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
+        )
+        env_exports = self._build_session_env(
+            completion_path=completion_path,
+            session_id=run.session_name,
+            agent_label=issue.agent_type,
+            issue_number=issue.number,
+            run_dir=run.run_dir,
+            worktree_path=worktree_path,
+        )
+        command = f"{env_exports} && {base_command}"
+        logger.info(
+            "[launch] Validation retry command: issue=%s session=%s worktree=%s "
+            "completion=%s command=%s",
+            issue.number,
+            session_name,
+            worktree_path,
+            completion_path,
+            command,
+        )
+
+        session_created = self._create_session(session_name, command, worktree_path, issue.title)
+        if not session_created:
+            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
+            self._apply_actions([
+                RemoveLabelAction(
+                    issue_number=issue.number,
+                    label=self._lm.in_progress,
+                    reason="validation retry session creation failed",
+                    issue_key=issue.key.stable_id(),
+                ),
+            ], context="launch_validation_retry_session_creation_failed")
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult(None, False, "Failed to create terminal session")
+
+        session = Session(
+            key=session_key,
+            issue=issue,
+            agent_config=agent_config,
+            terminal_id=session_name,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            completion_path=completion_path,
+            agent_label=issue.agent_type,
+            validation_retry_count=retry_count,
+            original_prompt=retry.original_prompt,
+            lease_id=claim.lease_id,
+            lease_acquired_at=claim.lease_acquired_at,
+            lease_expires_at=claim.lease_expires_at,
+        )
+        log_transition(
+            "issue",
+            issue.number,
+            "LAUNCHING",
+            "ACTIVE",
+            f"validation retry launched retry_count={retry_count}",
+        )
+
+        full_completion_path = (worktree_path / completion_path).resolve()
+        self.events.publish(make_session_started_event({
+            "issue_number": issue.number,
+            "session_id": session_name,
+            "agent": issue.agent_type,
+            "task": "code",
+            "worktree_path": str(worktree_path),
+            "branch_name": branch_name,
+            "run_id": run.run_id,
+            "run_dir": str(run.run_dir),
+            "completion_path": completion_path,
+            "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
+            "retry_count": retry_count,
+        }))
+        self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
+        return LaunchResult(session, True)
+
+    def _run_validation_retry_setup(
+        self,
+        issue: Issue,
+        worktree_path: Path,
+        claim: ClaimAcquisitionResult,
+    ) -> LaunchResult | None:
+        """Run setup commands before retrying preserved work.
+
+        Validation retries intentionally keep the existing worktree, so
+        configured setup commands must be idempotent and non-destructive.
+        """
+        if not self.config.setup_worktree:
+            return None
+        try:
+            self._run_setup_commands(worktree_path)
+        except Exception as e:
+            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "setup commands failed")
+            logger.error(issue_log(issue.number, "FAILED: setup commands failed: %s"), e)
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult(None, False, f"Setup commands failed: {e}")
+        return None
+
+    def _resolve_validation_retry_issue(self, retry: PendingValidationRetry) -> Issue | None:
+        """Resolve a pending validation retry into an issue snapshot with an agent."""
+        fresh_issue = self._refresh_issue(retry.issue_number) if self._refresh_issue else None
+        agent_label = retry.agent_label or (fresh_issue.agent_type if fresh_issue else None)
+        if not agent_label:
+            return None
+        labels = list(fresh_issue.labels) if fresh_issue else []
+        if agent_label not in labels:
+            labels.append(agent_label)
+        return Issue(
+            number=retry.issue_number,
+            title=(fresh_issue.title if fresh_issue else retry.issue_title),
+            labels=labels,
+            state=(fresh_issue.state if fresh_issue else "open"),
+            repo=self.config.repo or "",
+            milestone=(fresh_issue.milestone if fresh_issue else None),
+            body=(fresh_issue.body if fresh_issue else None),
+            milestone_number=(fresh_issue.milestone_number if fresh_issue else None),
+            milestone_due_on=(fresh_issue.milestone_due_on if fresh_issue else None),
+        )
+
+    def _render_validation_retry_prompt(
+        self,
+        *,
+        retry: PendingValidationRetry,
+        issue: Issue,
+        agent_config: AgentConfig,
+        retry_count: int,
+    ) -> str:
+        """Render the prompt used to send a validation failure back to a coder."""
+        if retry.original_prompt and retry.original_prompt.lstrip().startswith("# Validation Retry"):
+            return retry.original_prompt
+        validation_cmd = retry.validation_cmd or (self.config.validation.cmd if self.config.validation else None) or ""
+        original_task = retry.original_prompt or f"Work on issue #{issue.number}: {issue.title}"
+        template = DEFAULT_RETRY_TEMPLATE
+        template_path = agent_config.retry_prompt_template or self.config.retry.retry_prompt_template
+        if template_path:
+            full_template_path = self.config.repo_root / template_path
+            if full_template_path.exists():
+                try:
+                    template = full_template_path.read_text()
+                except OSError as exc:
+                    logger.warning("Failed to load retry template from %s: %s", full_template_path, exc)
+            else:
+                logger.warning("Retry template not found at %s, using default", full_template_path)
+        display_count = retry_count + 1
+        display_max = self.config.retry.max_validation_retries + 1
+        return template.format(
+            original_task=original_task,
+            validation_cmd=validation_cmd,
+            error_file=retry.validation_error_file or "unknown",
+            error_summary=_truncate_with_tail(retry.validation_error or "Unknown validation error"),
+            retry_count=display_count,
+            max_retries=display_max,
+            retries_remaining=max(0, display_max - display_count),
+        )
 
     def launch_review_session(
         self,

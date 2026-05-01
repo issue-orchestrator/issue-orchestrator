@@ -44,6 +44,7 @@ class ActionType(Enum):
 
     # Session operations
     LAUNCH_SESSION = "launch_session"
+    LAUNCH_VALIDATION_RETRY = "launch_validation_retry"
     STOP_SESSION = "stop_session"
 
     # GitHub operations
@@ -138,6 +139,21 @@ class LaunchSessionAction(Action):
     working_dir: str = ""
     title: Optional[str] = None
     action_type: ActionType = field(default=ActionType.LAUNCH_SESSION, init=False)
+
+
+@dataclass(frozen=True)
+class LaunchValidationRetryAction(Action):
+    """Launch a retry session for a failed validation gate."""
+
+    issue_number: int = 0
+    retry_count: int = 0
+    action_type: ActionType = field(default=ActionType.LAUNCH_VALIDATION_RETRY, init=False)
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("LaunchValidationRetryAction requires a positive issue_number")
+        if self.retry_count < 0:
+            raise ValueError("LaunchValidationRetryAction requires a non-negative retry_count")
 
 
 @dataclass(frozen=True)

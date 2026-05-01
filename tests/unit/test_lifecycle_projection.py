@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from issue_orchestrator.domain.logical_run_projection import group_events_by_logical_cycle
 from issue_orchestrator.view_models.lifecycle_projection import (
     LifecycleProjectionError,
     project_dashboard_lifecycle_container,
@@ -1214,6 +1215,120 @@ def test_issue_lifecycle_without_presentation_cycles_groups_by_logical_cycle() -
     assert isinstance(lifecycle.cycles[1].coder, FailedCodingAttempt)
     assert isinstance(lifecycle.cycles[1].review, ReviewNotReached)
     assert lifecycle.cycles[1].review.reason == "coding_failed"
+
+
+def test_orphan_rework_completion_tail_merges_with_cached_review_cycle() -> None:
+    orchestrator_boundary = _event(
+        "issue.labels_changed",
+        event_id="pr-pending-removed",
+        timestamp="2026-04-30T23:06:10Z",
+        logical_run=3,
+        logical_cycle=1,
+    )
+    rework_start = _event(
+        "rework.started",
+        event_id="rework-start",
+        timestamp="2026-04-30T23:06:27Z",
+        run_dir="/tmp/rework-run",
+        logical_run=4,
+        logical_cycle=1,
+        rework_cycle=1,
+    )
+    cached_review_started = _event(
+        "review.started",
+        event_id="cached-review-start",
+        timestamp="2026-04-30T23:14:58Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-run",
+        logical_run=4,
+        logical_cycle=1,
+    )
+    cached_review_approved = _event(
+        "review.approved",
+        event_id="cached-review-approved",
+        timestamp="2026-04-30T23:14:59Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-run",
+        logical_run=4,
+        logical_cycle=1,
+    )
+    orphan_completion = _event(
+        "session.completed",
+        event_id="orphan-rework-completed",
+        timestamp="2026-04-30T23:15:10Z",
+        agent="agent:coder",
+        run_dir="/tmp/rework-run",
+        logical_run=4,
+        logical_cycle=2,
+        rework_cycle=1,
+        artifacts=[_artifact("completion_record", "/tmp/rework-run/completion.json")],
+    )
+
+    lifecycle = project_issue_lifecycle(
+        issue_number=360,
+        title="Cached rework review",
+        events=[
+            orchestrator_boundary,
+            rework_start,
+            cached_review_started,
+            cached_review_approved,
+            orphan_completion,
+        ],
+        cycles=[],
+    )
+
+    assert len(lifecycle.cycles) == 1
+    assert isinstance(lifecycle.cycles[0].coder, CompletedCodingAttempt)
+    assert isinstance(lifecycle.cycles[0].review, ReviewApproved)
+    assert lifecycle.cycles[0].outcome == "approved"
+
+
+def test_rework_completion_tail_with_iteration_start_does_not_merge() -> None:
+    rework_start = _event(
+        "rework.started",
+        event_id="rework-start",
+        timestamp="2026-04-30T23:06:27Z",
+        logical_run=4,
+        logical_cycle=1,
+        rework_cycle=1,
+    )
+    cached_review_approved = _event(
+        "review.approved",
+        event_id="cached-review-approved",
+        timestamp="2026-04-30T23:14:59Z",
+        logical_run=4,
+        logical_cycle=1,
+    )
+    next_iteration_start = _event(
+        "session.started",
+        event_id="next-iteration-start",
+        timestamp="2026-04-30T23:15:00Z",
+        logical_run=4,
+        logical_cycle=2,
+        task="rework",
+        rework_cycle=1,
+    )
+    completion = _event(
+        "session.completed",
+        event_id="next-iteration-complete",
+        timestamp="2026-04-30T23:16:00Z",
+        logical_run=4,
+        logical_cycle=2,
+        task="rework",
+        rework_cycle=1,
+    )
+
+    groups = group_events_by_logical_cycle([
+        rework_start,
+        cached_review_approved,
+        next_iteration_start,
+        completion,
+    ])
+
+    assert [(group.logical_run, group.logical_cycle) for group in groups] == [
+        (4, 1),
+        (4, 2),
+    ]
 
 
 def test_issue_lifecycle_rejects_mixed_logical_cycle_annotations() -> None:

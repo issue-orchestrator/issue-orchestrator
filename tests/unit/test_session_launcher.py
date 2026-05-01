@@ -34,6 +34,7 @@ from issue_orchestrator.control.session_routing import (
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
+    orchestrator_launch_validation_retry_session,
     launch_triage_session,
     session_launcher_callback,
     restore_running_sessions,
@@ -53,6 +54,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRework,
     PendingTriageReview,
+    PendingValidationRetry,
     PendingCleanup,
     OrchestratorState,
     SessionHistoryEntry,
@@ -872,6 +874,44 @@ class TestLaunchIssueSession:
         assert "Dependencies not satisfied" in result.reason
 
 
+class TestLaunchValidationRetrySession:
+    """Tests for validation retry launch behavior."""
+
+    def test_launches_retry_with_retry_prompt_and_preserves_branch(
+        self,
+        launcher_bundle,
+        mock_worktree_manager,
+    ):
+        """Validation retry launch uses the pending branch and retry prompt."""
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123: Fix checkout",
+            validation_error="Validation blocked before running command: dirty worktree",
+            validation_error_file="/tmp/validation-errors.txt",
+            retry_count=1,
+            validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            retry,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        assert result.session is not None
+        assert result.session.terminal_id == "issue-123"
+        assert result.session.validation_retry_count == 1
+        assert result.session.original_prompt == "Work on issue #123: Fix checkout"
+        assert mock_worktree_manager.create_calls[0]["branch_name"] == "123-fix-checkout"
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "Validation Retry" in command
+        assert "dirty worktree" in command
+
+
 class TestLaunchIssueSessionPerSessionWorktree:
     """Tests for per-session worktree mode (lines 264-266)."""
 
@@ -1097,7 +1137,7 @@ class TestLaunchReworkSession:
             lambda _: None,
         )
 
-    def test_successful_launch_with_pr(self, session_launcher, mock_repo_host):
+    def test_successful_launch_with_pr(self, session_launcher, mock_repo_host, mock_events):
         """Verify successful rework session launch when PR exists."""
         mock_repo_host.prs[123] = [
             PRInfo(
@@ -1122,6 +1162,9 @@ class TestLaunchReworkSession:
         assert result.session is not None
         assert result.session.terminal_id == "rework-123"
         assert result.session.key.task == TaskKind.REWORK
+        started = next(e for e in mock_events.events if str(e.name) == "rework.started")
+        assert started.data["agent"] == "agent:web"
+        assert started.data["task"] == "rework"
 
     def test_successful_launch_without_pr(self, session_launcher):
         """Verify launch when no PR exists (lines 597-599)."""
@@ -1598,6 +1641,49 @@ class TestOrchestratorLaunchSession:
         assert restore_kwargs["session_name"] == "issue-123"
         assert restore_kwargs["is_review"] is False
         assert restore_kwargs["already_tracked"] is state.active_sessions
+
+
+class TestOrchestratorLaunchValidationRetrySession:
+    """Tests for validation retry launch wrapper."""
+
+    def test_removes_pending_retry_after_success(self, launcher_bundle):
+        """Successful retry launch removes only that issue from pending retries."""
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="original task",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            validation_cmd="make test",
+        )
+        other_retry = PendingValidationRetry(
+            issue_number=456,
+            issue_title="Other",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-456",
+            branch_name="456-other",
+            original_prompt="original task",
+            validation_error="failed",
+            validation_error_file=None,
+            retry_count=1,
+            validation_cmd="make test",
+        )
+        state = OrchestratorState(pending_validation_retries=[retry, other_retry])
+
+        result = orchestrator_launch_validation_retry_session(
+            retry,
+            state,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+
+        assert result is not None
+        assert [r.issue_number for r in state.pending_validation_retries] == [456]
+        assert [s.terminal_id for s in state.active_sessions] == ["issue-123"]
 
 
 class TestOrchestratorLaunchReviewSession:

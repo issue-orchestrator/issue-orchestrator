@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 
 from issue_orchestrator.domain.models import Issue, ORCHESTRATOR_PR_MARKER
@@ -123,7 +124,7 @@ def test_restart_recovers_pending_review_queue_from_pr_labels(scenario_repo: Pat
 
 
 def test_validation_retry_state_recovers_after_restart(scenario_repo: Path) -> None:
-    """Restart should recover pending validation retries from persisted worktree state."""
+    """Restart should recover persisted validation retry state and relaunch it."""
     ctx = scenario("retry_recovery_restart", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
@@ -131,16 +132,35 @@ def test_validation_retry_state_recovers_after_restart(scenario_repo: Path) -> N
         .review_exchange(mode="via-local-loop", require_validation=False) \
         .wait_for_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .run()
-    assert len(ctx.orch.state.pending_validation_retries) == 1
+    assert len(ctx.orch.state.pending_validation_retries) == 0
+    assert any(
+        session.issue.number == ctx.issue_number and session.validation_retry_count == 1
+        for session in ctx.orch.state.active_sessions
+    )
+    expected_recovery_worktree = ctx.config.worktree_base / f"{ctx.config.repo_root.name}-{ctx.issue_number}"
+    assert ctx.worktree is not None
+    shutil.copytree(ctx.worktree, expected_recovery_worktree, dirs_exist_ok=True)
 
-    restarted = ctx.restart()
+    restarted_orch, _repo_host, _events, _timeline = build_orchestrator(
+        ctx.repo_root,
+        list(ctx.repo_host.issues),
+        ctx.config,
+        repo_host=ctx.repo_host,
+        working_copy=StubWorkingCopy(branch="1-sim"),
+    )
+    asyncio.run(restarted_orch.startup())
+    assert len(restarted_orch.state.pending_validation_retries) == 1
+    assert restarted_orch.state.pending_validation_retries[0].issue_number == ctx.issue_number
+
     run_until(
-        restarted.orch,
-        lambda: len(restarted.orch.state.pending_validation_retries) >= 1,
+        restarted_orch,
+        lambda: any(
+            session.issue.number == ctx.issue_number and session.validation_retry_count == 1
+            for session in restarted_orch.state.active_sessions
+        ),
         max_ticks=6,
     )
-    assert len(restarted.orch.state.pending_validation_retries) == 1
-    assert restarted.orch.state.pending_validation_retries[0].issue_number == ctx.issue_number
+    assert len(restarted_orch.state.pending_validation_retries) == 0
 
 
 def test_tick_boundaries_and_session_lifecycle_remain_consistent(scenario_repo: Path) -> None:

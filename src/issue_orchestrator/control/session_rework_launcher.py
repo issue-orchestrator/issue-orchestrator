@@ -391,6 +391,7 @@ def launch_rework_session(
         agent_label=rework.agent_type,
         pr_number=pr_number,
         rework_cycle=rework.rework_cycle,
+        original_prompt=rendered_prompt,
     )
 
     log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
@@ -400,6 +401,8 @@ def launch_rework_session(
     deps.events.publish(make_run_scoped_event(EventName.REWORK_STARTED, {
         "issue_number": issue_number,
         "pr_number": pr_number,
+        "agent": rework.agent_type,
+        "task": "rework",
         "session_name": session_name,
         "rework_cycle": rework.rework_cycle,
         "run_id": run.run_id,

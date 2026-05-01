@@ -13,6 +13,7 @@ from issue_orchestrator.control.actions import (
     RemoveLabelAction,
     SyncLabelsAction,
     LaunchSessionAction,
+    LaunchValidationRetryAction,
     StopSessionAction,
     EscalateToHumanAction,
     ReconcileHistoryEntryAction,
@@ -160,6 +161,19 @@ class TestActionDataclasses:
         assert action.action_type == ActionType.LAUNCH_SESSION
         assert action.session_type == SessionType.ISSUE
         assert action.number == 123
+
+    def test_launch_validation_retry_action(self):
+        """Test LaunchValidationRetryAction creation."""
+        action = LaunchValidationRetryAction(issue_number=123, retry_count=1)
+
+        assert action.action_type == ActionType.LAUNCH_VALIDATION_RETRY
+        assert action.issue_number == 123
+        assert action.retry_count == 1
+
+    def test_launch_validation_retry_action_rejects_invalid_issue(self):
+        """Test LaunchValidationRetryAction requires a real issue number."""
+        with pytest.raises(ValueError, match="positive issue_number"):
+            LaunchValidationRetryAction(issue_number=0, retry_count=1)
 
     def test_reconcile_history_entry_action(self):
         """Test ReconcileHistoryEntryAction creation."""

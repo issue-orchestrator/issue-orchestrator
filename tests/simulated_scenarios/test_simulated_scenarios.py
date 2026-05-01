@@ -127,7 +127,8 @@ def test_validation_failure_queues_retry(scenario_repo: Path):
         .wait_for_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .expect_validation_status("retry") \
         .expect_validation_artifacts(False) \
-        .expect_pending_validation_retries(1) \
+        .expect_pending_validation_retries(0) \
+        .expect_active_validation_retry(retry_count=1) \
         .expect_timeline_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .run()
 
@@ -148,6 +149,26 @@ def test_validation_retry_succeeds_after_retry(scenario_repo: Path):
         .expect_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .expect_validation_status("passed") \
         .expect_validation_artifacts(True) \
+        .run()
+
+
+def test_validation_retry_failure_exhausts_final_attempt(scenario_repo: Path):
+    def _disable_grace_period(config) -> None:
+        config.session_grace_period_seconds = 0
+        config.session_log_activity_seconds = 0
+
+    scenario("validation_retry_exhausts_final_attempt", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail.sh"), max_retries=1) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_disable_grace_period) \
+        .wait_for_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
+        .wait_for_event(EventName.SESSION_VALIDATION_FAILED) \
+        .wait_for(lambda orch: not orch.state.active_sessions, max_ticks=12) \
+        .expect_validation_status("failed") \
+        .expect_pending_validation_retries(0) \
+        .expect_session_history_status({"validation_failed"}) \
         .run()
 
 

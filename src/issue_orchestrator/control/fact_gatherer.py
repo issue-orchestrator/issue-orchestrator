@@ -147,6 +147,7 @@ class FactGatherer:
             pending_reviews=tuple(state.pending_reviews),
             pending_reworks=tuple(state.pending_reworks),
             pending_triage=tuple(state.pending_triage_reviews),
+            pending_validation_retries=tuple(state.pending_validation_retries),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,

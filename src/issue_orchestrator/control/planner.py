@@ -54,6 +54,7 @@ from .actions import (
     AddLabelAction,
     RemoveLabelAction,
     LaunchSessionAction,
+    LaunchValidationRetryAction,
     QueueReviewAction,
     QueueReworkAction,
     QueueTriageAction,
@@ -224,10 +225,11 @@ class Planner:
             # Still return queue actions even if no capacity for launches
             return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
-        # PRIORITY ORDER: Reviews > Reworks > Triage > New Issues
+        # PRIORITY ORDER: Reviews > Reworks > Validation Retries > Triage > New Issues
         # This ensures completed work (PRs) gets reviewed before starting new work
         review_launch_count = 0
         rework_launch_count = 0
+        validation_retry_launch_count = 0
         triage_launch_count = 0
 
         # 2. Plan review launches (highest priority)
@@ -246,7 +248,20 @@ class Planner:
             capacity -= len(rework_actions)
             rework_launch_count = len(rework_actions)
 
-        # 4. Plan triage launches
+        # 4. Plan validation retry launches. These are continuations of
+        # existing coding work and are not subject to max_issues_to_start.
+        if capacity > 0:
+            validation_retry_actions, validation_retry_skipped = self._plan_validation_retries(
+                snapshot,
+                capacity,
+                plan_context,
+            )
+            actions.extend(validation_retry_actions)
+            skipped.extend(validation_retry_skipped)
+            capacity -= len(validation_retry_actions)
+            validation_retry_launch_count = len(validation_retry_actions)
+
+        # 5. Plan triage launches
         if capacity > 0 and self.triage_workflow:
             triage_actions, triage_skipped = self._plan_triage(snapshot, capacity, plan_context)
             actions.extend(triage_actions)
@@ -254,19 +269,26 @@ class Planner:
             capacity -= len(triage_actions)
             triage_launch_count = len(triage_actions)
 
-        # 5. Plan issue launches with remaining capacity.
+        # 6. Plan issue launches with remaining capacity.
         #
         # Reviews/reworks/triage get priority (they consumed capacity above),
         # but any leftover capacity goes to new issues. We never starve issue
         # launches just because review/rework/triage actions were planned.
         if capacity > 0:
-            pending_work_planned = review_launch_count + rework_launch_count + triage_launch_count
+            pending_work_planned = (
+                review_launch_count
+                + rework_launch_count
+                + validation_retry_launch_count
+                + triage_launch_count
+            )
             if pending_work_planned:
                 logger.info(
                     "Planner: pending work consumed %d slot(s) "
-                    "(reviews=%d, reworks=%d, triage=%d), %d slot(s) remain for issues",
+                    "(reviews=%d, reworks=%d, validation_retries=%d, triage=%d), "
+                    "%d slot(s) remain for issues",
                     pending_work_planned, review_launch_count,
-                    rework_launch_count, triage_launch_count, capacity,
+                    rework_launch_count, validation_retry_launch_count,
+                    triage_launch_count, capacity,
                 )
             issue_actions, issue_skipped, _ = self._plan_issues(snapshot, capacity)
             actions.extend(issue_actions)
@@ -1259,6 +1281,69 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         working_dir="",  # Orchestrator will fill in
                         reason=f"rework cycle {rework.rework_cycle} for issue #{issue_num}",
                     ))
+
+        return actions, skipped
+
+    def _plan_validation_retries(
+        self,
+        snapshot: OrchestratorSnapshot,
+        capacity: int,
+        plan_context: PlanContext,
+    ) -> tuple[list[Action], list[SkippedItem]]:
+        """Plan launch actions for coding sessions that need validation retry."""
+        actions: list[Action] = []
+        skipped: list[SkippedItem] = []
+        seen_issue_numbers: set[int] = set()
+
+        for retry in snapshot.pending_validation_retries:
+            if len(actions) >= capacity:
+                break
+            issue_number = retry.issue_number
+            if issue_number in seen_issue_numbers:
+                skipped.append(SkippedItem(
+                    item_type="validation_retry",
+                    number=issue_number,
+                    reason="duplicate pending validation retry",
+                ))
+                continue
+            seen_issue_numbers.add(issue_number)
+
+            if issue_number in snapshot.active_issue_numbers:
+                skipped.append(SkippedItem(
+                    item_type="validation_retry",
+                    number=issue_number,
+                    reason="active session running",
+                ))
+                logger.info(issue_log(issue_number, "Skipped validation retry: reason=active_session"))
+                continue
+
+            provider = (
+                self.provider_policy.provider_for_agent_label(retry.agent_label)
+                if self.provider_policy and retry.agent_label
+                else None
+            )
+            if provider and self.provider_policy and self.provider_policy.is_open(provider):
+                self._record_provider_skip(
+                    issue_number=issue_number,
+                    item_type="validation_retry",
+                    item_number=issue_number,
+                    provider=provider,
+                    actions=actions,
+                    skipped=skipped,
+                    plan_context=plan_context,
+                )
+                continue
+
+            logger.info(
+                issue_log(issue_number, "Selected for session: type=validation_retry retry_count=%d slots_available=%d"),
+                retry.retry_count,
+                capacity,
+            )
+            actions.append(LaunchValidationRetryAction(
+                issue_number=issue_number,
+                retry_count=retry.retry_count,
+                reason=f"validation retry {retry.retry_count} for issue #{issue_number}",
+            ))
 
         return actions, skipped
 

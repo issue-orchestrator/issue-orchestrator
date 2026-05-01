@@ -107,13 +107,14 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
 
     # Handle validation retry - queue for re-launch instead of normal completion
     if status == SessionStatus.NEEDS_VALIDATION_RETRY:
+        next_retry_count = session.validation_retry_count + 1
         logger.info(
             "[COMPLETION] Issue #%d needs validation retry (attempt %d), queueing for re-launch",
             session.issue.number,
-            session.validation_retry_count + 1,
+            next_retry_count,
         )
         completion_handler.mark_session_retry(session, reason="validation_retry")
-        state.pending_validation_retries.append(PendingValidationRetry(
+        pending_retry = PendingValidationRetry(
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             agent_label=session.agent_label or "",
@@ -122,9 +123,14 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             original_prompt=session.original_prompt,
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
-            retry_count=session.validation_retry_count,
-            validation_cmd=config.validation_cmd if hasattr(config, 'validation_cmd') else None,
-        ))
+            retry_count=next_retry_count,
+            validation_cmd=config.validation.cmd if config.validation else None,
+        )
+        state.pending_validation_retries = [
+            retry for retry in state.pending_validation_retries
+            if retry.issue_number != session.issue.number
+        ]
+        state.pending_validation_retries.append(pending_retry)
         # Kill the terminal session but don't cleanup worktree (agent will continue there)
         kill_session_fn(session.terminal_id)
         return  # Skip normal completion processing
@@ -279,7 +285,13 @@ def process_active_sessions(
         decision = session_controller.decide_outcome(
             obs, session.worktree_path, session.issue.number,
             session.issue.title, session.terminal_id, session.completion_path,
-            validation_retry_count=session.validation_retry_count
+            validation_retry_count=session.validation_retry_count,
+            original_prompt=session.original_prompt,
+            retry_prompt_template=(
+                session.agent_config.retry_prompt_template
+                or config.retry.retry_prompt_template
+            ),
+            repo_root=config.repo_root,
         )
         if decision.status == SessionStatus.RUNNING:
             logger.info(

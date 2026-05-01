@@ -1,5 +1,7 @@
 """Unit tests for StartupManager."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -752,6 +754,79 @@ class TestStartupManagerValidationRetryRecovery:
         assert "Test failed" in retry.validation_error
 
     @pytest.mark.asyncio
+    async def test_recovers_run_scoped_pending_validation_retry(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """Pending validation retries are recovered from current run artifacts."""
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260501-010000Z__coding-1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(json.dumps({"validation_status": "retry"}))
+        (run_dir / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Test failed from run dir",
+                    "last_error_file": "validation-stderr.log",
+                }
+            )
+        )
+        (run_dir / "retry-prompt.md").write_text("retry prompt from run dir")
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert len(sample_state.pending_validation_retries) == 1
+        retry = sample_state.pending_validation_retries[0]
+        assert retry.issue_number == 42
+        assert retry.retry_count == 1
+        assert retry.original_prompt == "retry prompt from run dir"
+        assert retry.validation_cmd == "make test"
+        assert "run dir" in retry.validation_error
+
+    @pytest.mark.asyncio
+    async def test_terminal_run_scoped_validation_status_suppresses_stale_retry(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """A later pass/fail validation result prevents stale retry recovery."""
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        stale_run = worktree / ".issue-orchestrator" / "sessions" / "20260501-010000Z__coding-1"
+        stale_run.mkdir(parents=True)
+        (stale_run / "manifest.json").write_text(json.dumps({"validation_status": "retry"}))
+        (stale_run / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Old failure",
+                }
+            )
+        )
+        terminal_run = worktree / ".issue-orchestrator" / "sessions" / "20260501-010100Z__coding-2"
+        terminal_run.mkdir(parents=True)
+        (terminal_run / "manifest.json").write_text(json.dumps({"validation_status": "passed"}))
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert len(sample_state.pending_validation_retries) == 0
+
+    @pytest.mark.asyncio
     async def test_no_recovery_when_no_pending_retry(
         self,
         startup_manager,
@@ -794,9 +869,9 @@ class TestStartupManagerValidationRetryRecovery:
         worktree = tmp_path / f"{mock_config.repo_root.name}-42"
         worktree.mkdir()
 
-        # Create validation state at max retries
+        # Create validation state past max retries
         state = ValidationState(
-            retry_count=3,  # At max
+            retry_count=4,
             max_retries=3,
             validation_cmd="make test",
         )

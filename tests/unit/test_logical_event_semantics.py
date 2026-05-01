@@ -36,6 +36,74 @@ def test_rework_cycle_signal_sets_logical_cycle() -> None:
     assert out.logical_phase == "rework"
 
 
+def test_first_rework_cycle_signal_is_rework_driven() -> None:
+    out = enrich_logical_semantics(
+        event_name="rework.started",
+        event_data={"task": "rework", "rework_cycle": 0},
+        previous_event_name="review.changes_requested",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+
+    assert out.logical_run == 1
+    assert out.logical_cycle == 1
+    assert out.rework_driven is True
+    assert out.logical_phase == "rework"
+
+
+def test_rework_start_after_terminal_restart_keeps_rework_cycle_signal() -> None:
+    out = enrich_logical_semantics(
+        event_name="rework.started",
+        event_data={"task": "rework", "rework_cycle": 1},
+        previous_event_name="cleanup.completed",
+        previous_data={
+            "logical_run": 3,
+            "logical_cycle": 1,
+            "_logical_restart_pending": True,
+        },
+    )
+
+    assert out.logical_run == 4
+    assert out.logical_cycle == 2
+    assert out.logical_phase == "rework"
+
+
+def test_cached_rework_review_and_completion_stay_in_rework_cycle() -> None:
+    rework_start = enrich_logical_semantics(
+        event_name="rework.started",
+        event_data={"task": "rework", "rework_cycle": 1},
+        previous_event_name="cleanup.completed",
+        previous_data={
+            "logical_run": 3,
+            "logical_cycle": 1,
+            "_logical_restart_pending": True,
+        },
+    )
+    review_approved = enrich_logical_semantics(
+        event_name="review.approved",
+        event_data={"task": "review", "cached": True},
+        previous_event_name="review.started",
+        previous_data={
+            "logical_run": rework_start.logical_run,
+            "logical_cycle": rework_start.logical_cycle,
+            "_logical_rework_driven": rework_start.rework_driven,
+        },
+    )
+    completed = enrich_logical_semantics(
+        event_name="session.completed",
+        event_data={"task": "rework", "rework_cycle": 1},
+        previous_event_name="review.approved",
+        previous_data={
+            "logical_run": review_approved.logical_run,
+            "logical_cycle": review_approved.logical_cycle,
+            "_logical_rework_driven": review_approved.rework_driven,
+        },
+    )
+
+    assert review_approved.logical_cycle == 2
+    assert completed.logical_cycle == 2
+    assert completed.logical_phase == "rework"
+
+
 def test_pr_pending_removed_starts_new_logical_run() -> None:
     out = enrich_logical_semantics(
         event_name="issue.labels_changed",
