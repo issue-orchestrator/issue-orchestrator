@@ -1538,7 +1538,12 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     # Tests are the modal headline; the single passed test row should render.
     expect(modal.locator(".trr-row")).to_have_count(1)
     expect(modal.locator(".trr-row")).to_contain_text("package.build_image")
-    expect(modal.locator(".test-source")).to_contain_text("JUnit XML")
+    # Per-row provenance tag is suppressed when the source is the framework-
+    # agnostic default (JUnit XML or runtime). Surfacing "JUnit XML" on every
+    # row was redundant noise — JUnit is the default lingua franca, not a
+    # notable per-row signal. The artifact link below still exposes it at the
+    # run level.
+    expect(modal.locator(".test-source")).to_have_count(0)
 
     # Run command + raw artifact buttons live in the collapsed Run details
     # disclosure. Expand it before clicking the artifact buttons.
@@ -1775,9 +1780,13 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     ]
     assert len(visible_after_all) == 2
 
-    # ── Failing row must be expandable; clicking expands it inline ──
+    # ── Failing row must be expandable AND render expanded by default ──
+    # Failures are the headline of a test-centric view — they shouldn't hide
+    # behind a caret. The first toggle click collapses; a second re-expands.
     expect(failing_row).to_have_attribute("data-expandable", "1")
     expand_block = failing_row.locator(".trr-expand")
+    expect(expand_block).to_be_visible(timeout=2000)
+    failing_row.locator(".trr-row-main").click()
     expect(expand_block).to_be_hidden(timeout=2000)
     failing_row.locator(".trr-row-main").click()
     expect(expand_block).to_be_visible(timeout=2000)

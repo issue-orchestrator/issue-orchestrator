@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.infra.e2e_reports import (
+    MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
     discover_report_artifacts,
     normalize_pytest_junit_cases,
@@ -183,6 +184,81 @@ def test_discover_report_artifacts_rejects_missing_configured_artifact_path(
             junit_xml_paths=[],
             artifact_paths=["reports/missing.log"],
         )
+
+
+def test_parse_junit_report_extracts_system_out_and_system_err(tmp_path: Path) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_chatty" time="0.10">
+    <system-out>captured stdout line 1
+captured stdout line 2</system-out>
+    <system-err>warning: something happened</system-err>
+  </testcase>
+  <testcase classname="pkg.test_mod" name="test_quiet" time="0.05" />
+  <testcase classname="pkg.test_mod" name="test_blank_channels" time="0.05">
+    <system-out>   </system-out>
+    <system-err></system-err>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert cases[0].system_out == "captured stdout line 1\ncaptured stdout line 2"
+    assert cases[0].system_err == "warning: something happened"
+    assert cases[1].system_out is None
+    assert cases[1].system_err is None
+    assert cases[2].system_out is None
+    assert cases[2].system_err is None
+
+
+def test_parse_junit_report_caps_captured_output_at_limit(tmp_path: Path) -> None:
+    huge = "x" * (MAX_CAPTURED_OUTPUT_CHARS + 5_000)
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        f"""\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_loud" time="0.10">
+    <system-out>{huge}</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert cases[0].system_out is not None
+    assert len(cases[0].system_out) == MAX_CAPTURED_OUTPUT_CHARS
+
+
+def test_parse_junit_report_attaches_captured_output_to_failed_case(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_fails" time="2.50">
+    <failure message="AssertionError">expected 1, got 2</failure>
+    <system-out>print before failure</system-out>
+    <system-err>traceback noise</system-err>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert cases[0].outcome == "failed"
+    assert cases[0].failure_summary == "AssertionError"
+    assert cases[0].system_out == "print before failure"
+    assert cases[0].system_err == "traceback noise"
 
 
 def test_discover_report_artifacts_rejects_paths_outside_repo_root(

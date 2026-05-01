@@ -14,6 +14,11 @@ from xml.etree.ElementTree import ParseError as XmlParseError
 
 CaseOutcome = Literal["passed", "failed", "error", "skipped"]
 
+# Captured stdout/stderr from JUnit are read on-demand from disk (see the
+# /api/e2e-run/{id}/test-output endpoint) — never persisted to SQLite. Cap each
+# channel to keep parser memory bounded when a test produces megabytes of logs.
+MAX_CAPTURED_OUTPUT_CHARS = 100_000
+
 
 @dataclass(frozen=True)
 class JUnitCaseResult:
@@ -25,6 +30,8 @@ class JUnitCaseResult:
     outcome: CaseOutcome
     duration_seconds: float | None
     failure_details: str | None = None
+    system_out: str | None = None
+    system_err: str | None = None
 
     @property
     def failure_summary(self) -> str | None:
@@ -143,6 +150,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
     suite_name = _optional_text(testcase.attrib.get("classname"))
     case_id = f"{suite_name}::{display_name}" if suite_name else display_name
     duration_seconds = _optional_float(testcase.attrib.get("time"))
+    system_out = _captured_channel_text(testcase.find("system-out"))
+    system_err = _captured_channel_text(testcase.find("system-err"))
 
     failure = testcase.find("failure")
     if failure is not None:
@@ -153,6 +162,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
             outcome="failed",
             duration_seconds=duration_seconds,
             failure_details=_detail_text(failure),
+            system_out=system_out,
+            system_err=system_err,
         )
 
     error = testcase.find("error")
@@ -164,6 +175,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
             outcome="error",
             duration_seconds=duration_seconds,
             failure_details=_detail_text(error),
+            system_out=system_out,
+            system_err=system_err,
         )
 
     skipped = testcase.find("skipped")
@@ -175,6 +188,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
             outcome="skipped",
             duration_seconds=duration_seconds,
             failure_details=_detail_text(skipped),
+            system_out=system_out,
+            system_err=system_err,
         )
 
     return JUnitCaseResult(
@@ -183,7 +198,22 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
         suite_name=suite_name,
         outcome="passed",
         duration_seconds=duration_seconds,
+        system_out=system_out,
+        system_err=system_err,
     )
+
+
+def _captured_channel_text(element: XmlElement | None) -> str | None:
+    if element is None:
+        return None
+    if not isinstance(element.text, str):
+        return None
+    text = element.text.strip()
+    if not text:
+        return None
+    if len(text) > MAX_CAPTURED_OUTPUT_CHARS:
+        return text[:MAX_CAPTURED_OUTPUT_CHARS]
+    return text
 
 
 def _detail_text(element: XmlElement) -> str | None:
