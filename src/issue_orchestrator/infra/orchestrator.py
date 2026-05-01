@@ -736,10 +736,22 @@ class Orchestrator:
         the awaiting-merge-drift discovery path; an aborted orchestrator
         is not.
 
+        ``ActionApplier.apply()`` can raise ``ClaimLostError`` or
+        ``ReconciliationRequired`` when a fresh attempt has already claimed
+        the issue (which is exactly the condition that produced the late
+        result we're cleaning up after). The caller in ``_poll_job_results``
+        has already drained the tombstone, so an unhandled exception both
+        aborts the tick and loses the only cleanup signal we have. We
+        therefore route those exceptions through the same failure-log path
+        as ``applied.success=False`` and let awaiting-merge-drift discovery
+        be the safety net.
+
         Caller must guard ``result.pr_number is not None`` — _poll_job_results
         does this in the skip path before invoking us.
         """
         from ..control.actions import SupersedePullRequestAction
+        from ..control.claim_gate import ClaimLostError
+        from ..control.reconciliation import ReconciliationRequired
 
         assert result.pr_number is not None, (
             "_supersede_late_publish_pr requires pr_number; caller in "
@@ -754,14 +766,27 @@ class Orchestrator:
             "The orchestrator is discarding all artifacts from the prior "
             "attempt; a fresh attempt will use a new branch."
         )
-        applied = self.deps.action_applier.apply(
-            SupersedePullRequestAction(
-                issue_number=result.issue_number,
-                pr_number=pr_number,
-                comment=comment,
-                reason="superseded late publish-job result after scratch reset",
+        try:
+            applied = self.deps.action_applier.apply(
+                SupersedePullRequestAction(
+                    issue_number=result.issue_number,
+                    pr_number=pr_number,
+                    comment=comment,
+                    reason="superseded late publish-job result after scratch reset",
+                )
             )
-        )
+        except (ClaimLostError, ReconciliationRequired) as exc:
+            logger.error(
+                "[ASYNC] Late supersede of PR #%d for issue #%d aborted by "
+                "%s: %s. A fresh attempt has already claimed this issue; "
+                "the stale PR will be picked up by awaiting-merge-drift "
+                "discovery.",
+                pr_number,
+                result.issue_number,
+                type(exc).__name__,
+                exc,
+            )
+            return
         if not applied.success:
             logger.error(
                 "[ASYNC] Failed to supersede late PR #%d for issue #%d "

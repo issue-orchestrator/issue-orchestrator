@@ -3533,6 +3533,95 @@ class TestAsyncPublishResults:
         assert action.pr_number == 123
         assert "scratch reset" in action.comment.lower()
 
+    def test_poll_job_results_superseded_pr_swallows_claim_lost_error(self, sample_config, caplog):
+        """If the fresh attempt has the claim, applier raises ClaimLostError —
+        skip path must log and continue, not abort the tick.
+
+        Caller has already drained the tombstone, so an unhandled exception
+        loses the only cleanup signal. Awaiting-merge-drift discovery is
+        the documented safety net.
+        """
+        from issue_orchestrator.control.claim_gate import ClaimLostError
+
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+        orchestrator.state.superseded_job_ids = {"job-1"}
+
+        apply_mock = MagicMock(
+            side_effect=ClaimLostError(issue_number=42, operation="supersede")
+        )
+        orchestrator.deps.action_applier.apply = apply_mock
+
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=True,
+                pr_url="https://github.com/test/repo/pull/123",
+                pr_number=123,
+                review_exchange_completed=False,
+            )
+        ])
+
+        # Must not raise — tick continues.
+        with caplog.at_level("ERROR"):
+            orchestrator._poll_job_results()  # noqa: SLF001
+
+        # Tombstone drained, pending cleared, no leakage into discovery.
+        assert "job-1" not in orchestrator.state.superseded_job_ids
+        assert orchestrator.state.discovered_reviews == []
+        assert orchestrator.state.completed_today == []
+        # Failure logged via the same path as success=False.
+        assert any(
+            "ClaimLostError" in rec.message and "PR #123" in rec.message
+            for rec in caplog.records
+        ), "ClaimLostError must be logged like other supersede failures"
+
+    def test_poll_job_results_superseded_pr_swallows_reconciliation_required(self, sample_config, caplog):
+        """ReconciliationRequired (state-mismatch optimistic-concurrency) must
+        also be caught — same shape as ClaimLostError, different exception.
+        """
+        from issue_orchestrator.control.reconciliation import (
+            ExternalSnapshot,
+            ReconciliationRequired,
+        )
+
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+        orchestrator.state.superseded_job_ids = {"job-1"}
+
+        snap = ExternalSnapshot.for_issue(42, set())
+        apply_mock = MagicMock(side_effect=ReconciliationRequired(
+            entity_type="pr",
+            entity_id=123,
+            expected=snap,
+            actual=snap,
+            reason="state moved on",
+        ))
+        orchestrator.deps.action_applier.apply = apply_mock
+
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=True,
+                pr_url="https://github.com/test/repo/pull/123",
+                pr_number=123,
+                review_exchange_completed=False,
+            )
+        ])
+
+        with caplog.at_level("ERROR"):
+            orchestrator._poll_job_results()  # noqa: SLF001
+
+        assert "job-1" not in orchestrator.state.superseded_job_ids
+        assert any(
+            "ReconciliationRequired" in rec.message and "PR #123" in rec.message
+            for rec in caplog.records
+        ), "ReconciliationRequired must be logged like other supersede failures"
+
     def test_poll_job_results_superseded_no_pr_skips_supersede(self, sample_config):
         """If the tombstoned worker hadn't yet created a PR, no supersede call.
 
