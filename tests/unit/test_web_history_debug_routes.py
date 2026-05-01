@@ -243,10 +243,14 @@ class TestHistoryEndpoints:
 
     def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
         """Scratch reset should remove stale in-memory PR/rework state before requeue."""
+        from pathlib import Path
+
+        from issue_orchestrator.adapters.github.github_issue import GitHubIssue
         from issue_orchestrator.control.maintenance import ResetResult
+        from issue_orchestrator.domain.models import OrchestratorState, PendingCleanup
         from issue_orchestrator.entrypoints.web_retry_history_routes import _clear_scratch_retry_pending_state
 
-        state = SimpleNamespace(
+        state = OrchestratorState(
             pending_reviews=[
                 PendingReview(
                     issue_key=FakeIssueKey("4057"),
@@ -278,8 +282,22 @@ class TestHistoryEndpoints:
                 ),
             ],
             pending_cleanups=[
-                SimpleNamespace(issue_number=4057, pr_number=376),
-                SimpleNamespace(issue_number=999, pr_number=999),
+                PendingCleanup(
+                    issue=GitHubIssue(number=4057, repo="o/r", title="Issue 4057"),
+                    pr_number=376,
+                    pr_url="https://example/pr/376",
+                    branch_name="4057-old",
+                    terminal_id="issue-4057",
+                    worktree_path=Path("/tmp/issue-4057"),
+                ),
+                PendingCleanup(
+                    issue=GitHubIssue(number=999, repo="o/r", title="Issue 999"),
+                    pr_number=999,
+                    pr_url="https://example/pr/999",
+                    branch_name="999-other",
+                    terminal_id="issue-999",
+                    worktree_path=Path("/tmp/issue-999"),
+                ),
             ],
         )
 

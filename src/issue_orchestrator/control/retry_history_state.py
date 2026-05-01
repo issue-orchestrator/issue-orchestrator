@@ -104,7 +104,16 @@ class RetryHistoryState:
         issue_number: int,
         superseded_prs: Iterable[int],
     ) -> PendingStateClearResult:
-        """Remove stale pending review/rework/cleanup items after a scratch reset."""
+        """Remove every issue-keyed in-memory record after a scratch reset.
+
+        Covers pending_*, discovered_*, immediate_cleanups, publish jobs,
+        progress-blocking flags (failed_this_cycle, stale_issue_ticks,
+        dependency_problems), UI/refresh hints, the priority queue, and the
+        candidate-shrink list. The contract is pinned by
+        test_clear_scratch_retry_state_contract_no_leaks_for_target — when a
+        new issue-keyed field is added to OrchestratorState it must be cleared
+        here or explicitly carved out in the test.
+        """
         superseded_pr_numbers = set(superseded_prs)
         review_count_before = len(self._state.pending_reviews)
         rework_count_before = len(self._state.pending_reworks)
@@ -127,6 +136,78 @@ class RetryHistoryState:
             for cleanup in self._state.pending_cleanups
             if cleanup.issue_number != issue_number
             and cleanup.pr_number not in superseded_pr_numbers
+        ]
+        self._state.pending_triage_reviews = [
+            triage
+            for triage in self._state.pending_triage_reviews
+            if triage.issue_number != issue_number
+        ]
+        self._state.pending_validation_retries = [
+            retry
+            for retry in self._state.pending_validation_retries
+            if retry.issue_number != issue_number
+        ]
+        self._state.pending_publish_jobs = {
+            job_id: job
+            for job_id, job in self._state.pending_publish_jobs.items()
+            if job.issue_number != issue_number
+        }
+        self._state.running_publish_jobs = {
+            job_id: job
+            for job_id, job in self._state.running_publish_jobs.items()
+            if job.issue_number != issue_number
+        }
+        self._state.discovered_reviews = [
+            d for d in self._state.discovered_reviews
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_reworks = [
+            d for d in self._state.discovered_reworks
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_escalations = [
+            d for d in self._state.discovered_escalations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_failures = [
+            d for d in self._state.discovered_failures
+            if d.issue_number != issue_number
+        ]
+        self._state.discovered_awaiting_merge_reconciliations = [
+            d for d in self._state.discovered_awaiting_merge_reconciliations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_awaiting_merge_drifts = [
+            d for d in self._state.discovered_awaiting_merge_drifts
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.immediate_cleanups = [
+            c for c in self._state.immediate_cleanups
+            if c.issue_number != issue_number
+        ]
+
+        self._state.failed_this_cycle.discard(issue_number)
+        self._state.stale_issue_ticks.pop(issue_number, None)
+        self._state.dependency_problems.pop(issue_number, None)
+        self._state.issue_refresh_timestamps.pop(issue_number, None)
+        self._state.issue_last_refreshed_at.pop(issue_number, None)
+        self._state.awaiting_merge_drift_scan_timestamps.pop(issue_number, None)
+        self._state.ui_visible_issue_numbers = [
+            n for n in self._state.ui_visible_issue_numbers
+            if n != issue_number
+        ]
+        self._state.priority_queue = [
+            n for n in self._state.priority_queue
+            if n != issue_number
+        ]
+        self._state.queue_pending_shrink_missing_issue_numbers = [
+            n for n in self._state.queue_pending_shrink_missing_issue_numbers
+            if n != issue_number
         ]
 
         return PendingStateClearResult(
