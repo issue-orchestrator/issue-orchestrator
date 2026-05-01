@@ -276,6 +276,13 @@ class E2ESuiteTimelineContainerPayload(BaseModel):
     runs: list[E2ERunIterationPayload]
     subject: TimelineSubjectPayload
 
+class E2ETestOutputPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    nodeid: str
+    source_path: str
+    system_err: str | None
+    system_out: str | None
+
 class E2ETimelineArtifactPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str

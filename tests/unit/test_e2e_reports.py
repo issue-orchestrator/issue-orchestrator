@@ -7,9 +7,11 @@ import pytest
 from issue_orchestrator.infra.e2e_reports import (
     MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
+    _parse_junit_cached,
     discover_report_artifacts,
     normalize_pytest_junit_cases,
     parse_junit_report,
+    parse_junit_report_cached,
 )
 
 
@@ -259,6 +261,67 @@ def test_parse_junit_report_attaches_captured_output_to_failed_case(
     assert cases[0].failure_summary == "AssertionError"
     assert cases[0].system_out == "print before failure"
     assert cases[0].system_err == "traceback noise"
+
+
+def test_parse_junit_report_cached_reuses_parse_for_unchanged_file(tmp_path: Path) -> None:
+    _parse_junit_cached.cache_clear()
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_a" time="0.10">
+    <system-out>captured a</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    raw_a, norm_a = parse_junit_report_cached(report)
+    raw_b, norm_b = parse_junit_report_cached(report)
+
+    # Same call, same file: cache hit returns the same object identities.
+    assert raw_a is raw_b
+    assert norm_a is norm_b
+    info = _parse_junit_cached.cache_info()
+    assert info.hits >= 1
+    assert info.misses >= 1
+
+
+def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    _parse_junit_cached.cache_clear()
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_a" time="0.10">
+    <system-out>first</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    raw_first, _ = parse_junit_report_cached(report)
+    assert raw_first[0].system_out == "first"
+
+    # Sleep just past the mtime resolution boundary, then rewrite.
+    time.sleep(0.01)
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_a" time="0.10">
+    <system-out>second</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    raw_second, _ = parse_junit_report_cached(report)
+    assert raw_second[0].system_out == "second"
 
 
 def test_discover_report_artifacts_rejects_paths_outside_repo_root(

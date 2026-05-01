@@ -318,6 +318,35 @@
         }
       }
     },
+    "/api/e2e-run/{run_id}/test-output": {
+      "get": {
+        "summary": "Get captured stdout/stderr for one test from the run's JUnit XML",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "nodeid",
+            "in": "query",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Captured stdout/stderr for the requested test",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/E2ETestOutputPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/control/e2e/run/{run_id}/timeline": {
       "get": {
         "summary": "Get E2E run timeline payload",
@@ -1708,6 +1737,17 @@
           "run_id": {"type": "integer"},
           "label": {"type": "string"},
           "branch_name": {"type": "string"}
+        }
+      },
+      "E2ETestOutputPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodeid", "system_out", "system_err", "source_path"],
+        "properties": {
+          "nodeid": {"type": "string"},
+          "system_out": {"type": ["string", "null"]},
+          "system_err": {"type": ["string", "null"]},
+          "source_path": {"type": "string"}
         }
       },
       "E2ETimelineArtifactPayload": {

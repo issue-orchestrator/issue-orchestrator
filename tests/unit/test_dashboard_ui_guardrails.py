@@ -1511,8 +1511,10 @@ def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
     expand_body = _function_body(js, "_renderTestRowExpand")
     toggle_body = _function_body(js, "toggleTestRowExpand")
     fetch_body = _function_body(js, "_maybeLoadCapturedOutput")
+    auto_body = _function_body(js, "_autoLoadVisibleCapturedOutput")
     panel_body = _function_body(js, "renderE2EResultsPanel")
     mount_body = _function_body(js, "renderUnifiedRunView")
+    filter_body = _function_body(js, "filterTestResults")
     # Placeholder + run/nodeid handles travel on the DOM, not in JS state.
     assert 'class="trr-captured-output"' in expand_body
     assert 'data-needs-fetch="1"' in expand_body
@@ -1535,9 +1537,14 @@ def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
     # Panel passes runId so the placeholder can address the right run.
     assert "data.run.id" in panel_body
     assert "{ runId }" in panel_body
-    # Auto-expanded failed rows kick off the fetch on initial mount.
-    assert ".trr-expand:not([hidden])" in mount_body
-    assert "_maybeLoadCapturedOutput" in mount_body
+    # Auto-expanded failed rows kick off the fetch on initial mount, but only
+    # for rows the user can see — a failure-heavy run with most rows hidden by
+    # the default "Action needed" filter would otherwise spam dozens of fetches.
+    assert "_autoLoadVisibleCapturedOutput(content)" in mount_body
+    assert ".trr-expand:not([hidden])" in auto_body
+    assert "row.style.display === 'none'" in auto_body
+    # When the user changes the filter, newly visible rows must trigger fetch.
+    assert "_autoLoadVisibleCapturedOutput(panel)" in filter_body
     css = _read_dashboard_css_bundle()
     assert ".trr-captured-output" in css
     assert ".trr-captured-channel-label" in css

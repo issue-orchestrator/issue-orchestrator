@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import (
     E2ERunDetailPayload,
+    E2ETestOutputPayload,
     TestCaseIssueLinkPayload,
     E2ERunResultCategoriesPayload,
     IssueDetailPayload,
@@ -607,19 +608,21 @@ def _captured_output_from_junit(
     Returns the JSON-serializable payload to send back, or None when no XML
     contained a matching case with non-empty captured output. Handles both
     raw and normalized pytest case-ids so the endpoint works for any runner.
+    Uses the parser's mtime-keyed cache so a failure-heavy run reparses the
+    same on-disk XML at most once per file change.
     """
-    from ..infra.e2e_reports import normalize_pytest_junit_cases, parse_junit_report
+    from ..infra.e2e_reports import parse_junit_report_cached
 
     for path in junit_paths:
         if not path.exists():
             logger.warning("JUnit XML for run %s missing on disk: %s", run_id, path)
             continue
         try:
-            cases = parse_junit_report(path)
+            raw_cases, normalized_cases = parse_junit_report_cached(path)
         except ValueError:
             logger.warning("Skipping malformed JUnit XML for run %s: %s", run_id, path)
             continue
-        for raw_case, norm_case in zip(cases, normalize_pytest_junit_cases(cases)):
+        for raw_case, norm_case in zip(raw_cases, normalized_cases):
             matches = nodeid in (raw_case.case_id, norm_case.case_id)
             has_output = raw_case.system_out is not None or raw_case.system_err is not None
             if matches and has_output:
@@ -632,12 +635,16 @@ def _captured_output_from_junit(
     return None
 
 
-@web_issue_detail_router.get("/api/e2e-run/{run_id}/test-output")
+@web_issue_detail_router.get(
+    "/api/e2e-run/{run_id}/test-output",
+    response_model=E2ETestOutputPayload,
+    response_model_exclude_unset=False,
+)
 async def get_e2e_run_test_output(
     run_id: int,
     nodeid: str,
     orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:
+) -> E2ETestOutputPayload | JSONResponse:
     """Lazy-load captured stdout/stderr for one test from the run's JUnit XML.
 
     Captured output is intentionally NOT persisted to SQLite — it can be many
@@ -688,7 +695,7 @@ async def get_e2e_run_test_output(
             },
             status_code=404,
         )
-    return JSONResponse(payload)
+    return E2ETestOutputPayload.model_validate(payload)
 
 
 @web_issue_detail_router.get(

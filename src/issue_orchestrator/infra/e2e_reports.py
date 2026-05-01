@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
@@ -108,6 +109,31 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
         raise ValueError(f"JUnit XML did not contain any <testcase> entries: {path}")
 
     return [_parse_testcase(case) for case in cases]
+
+
+@lru_cache(maxsize=16)
+def _parse_junit_cached(
+    path_str: str, mtime_ns: int, size: int
+) -> tuple[tuple[JUnitCaseResult, ...], tuple[JUnitCaseResult, ...]]:
+    """Parse + normalize once per (path, mtime, size). Tuples for hashability."""
+    raw = parse_junit_report(Path(path_str))
+    normalized = normalize_pytest_junit_cases(raw)
+    return tuple(raw), tuple(normalized)
+
+
+def parse_junit_report_cached(
+    path: Path,
+) -> tuple[tuple[JUnitCaseResult, ...], tuple[JUnitCaseResult, ...]]:
+    """Memoized variant of parse_junit_report + normalize_pytest_junit_cases.
+
+    Intended for endpoints that re-fetch the same JUnit XML on every row
+    expand — a failure-heavy run can hit the parser dozens of times for the
+    same on-disk file. Cache key is (path, mtime_ns, size) so the entry
+    invalidates if the file is rewritten; LRU caps memory at 16 distinct
+    files (a few recent runs' worth).
+    """
+    stat = path.stat()
+    return _parse_junit_cached(str(path), stat.st_mtime_ns, stat.st_size)
 
 
 def normalize_pytest_junit_cases(

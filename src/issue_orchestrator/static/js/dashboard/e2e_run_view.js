@@ -827,6 +827,18 @@ function toggleTestRowExpand(headerEl) {
     }
 }
 
+function _autoLoadVisibleCapturedOutput(root) {
+    // A row is "visible" for auto-fetch purposes when neither the row nor an
+    // ancestor has display:none (which is how the initial filter hides
+    // non-matching rows). This guards a failure-heavy run against firing N
+    // parallel fetches for tracked rows that the active filter has hidden.
+    root.querySelectorAll('.trr-expand:not([hidden])').forEach(expand => {
+        const row = expand.closest && expand.closest('.trr-row');
+        if (row && row.style && row.style.display === 'none') return;
+        _maybeLoadCapturedOutput(expand);
+    });
+}
+
 function _maybeLoadCapturedOutput(expand) {
     const placeholder = expand.querySelector('.trr-captured-output[data-needs-fetch="1"]');
     if (!placeholder) return;
@@ -905,6 +917,10 @@ function filterTestResults(filterKey, btnEl) {
         chip.classList.toggle('active', active);
         chip.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    // A row that was filter-hidden at initial render skipped its auto-fetch.
+    // Now that the user revealed it, kick off the fetch (idempotent — already-
+    // fetched rows are no-ops via the placeholder's data-needs-fetch flag).
+    _autoLoadVisibleCapturedOutput(panel);
 }
 
 function openE2ERunTimeline(runId) {
@@ -937,9 +953,11 @@ function renderUnifiedRunView(data, runId, options) {
     content.innerHTML = html;
 
     // Failed rows render expanded by default — kick off captured-output fetches
-    // for those without waiting for a user click. Collapsed rows defer until
-    // toggleTestRowExpand fires.
-    content.querySelectorAll('.trr-expand:not([hidden])').forEach(_maybeLoadCapturedOutput);
+    // for the ones the user can see. Skip rows hidden by the initial filter
+    // (a tracked-failure-heavy run defaults to "Action needed" and would
+    // otherwise spam dozens of fetches for off-screen tracked rows). Collapsed
+    // rows and filtered-in-later rows defer until toggle / filter dispatch.
+    _autoLoadVisibleCapturedOutput(content);
 
     const timelineContainer = document.getElementById('e2eTimelineContent');
     if (timelineContainer) {

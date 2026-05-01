@@ -348,6 +348,68 @@ test('filter chip: short-circuits when click happens outside a panel', () => {
     ctx.filterTestResults('failed', orphanChip);
 });
 
+function _makeFailedRowWithPlaceholder({ runId, nodeid, hidden }) {
+    const status = _stubElement();
+    const placeholder = _stubElement();
+    placeholder.dataset = { needsFetch: '1', runId: String(runId), nodeid };
+    placeholder.querySelector = (sel) => sel === '.trr-captured-status' ? status : null;
+    const expand = _stubElement();
+    // Failed rows render expanded by default (no hidden attribute).
+    expand.querySelector = (sel) => sel === '.trr-captured-output[data-needs-fetch="1"]' ? placeholder : null;
+    const row = _stubElement();
+    row.dataset = { filterGroup: 'failed', expandable: '1' };
+    if (hidden) row.style.display = 'none';
+    row.querySelector = (sel) => sel === '.trr-expand' ? expand : null;
+    expand.closest = (sel) => sel === '.trr-row' ? row : null;
+    return { row, expand, placeholder };
+}
+
+test('auto-load: skips placeholders inside rows hidden by the initial filter', () => {
+    const fetchCalls = [];
+    const ctx = loadE2ERunView({
+        fetch: (url) => { fetchCalls.push(url); return Promise.resolve({ ok: true, status: 200, json: async () => ({}) }); },
+    });
+    const visible = _makeFailedRowWithPlaceholder({ runId: 1, nodeid: 'pkg::shown', hidden: false });
+    const hiddenByFilter = _makeFailedRowWithPlaceholder({ runId: 1, nodeid: 'pkg::offscreen', hidden: true });
+    const root = _stubElement();
+    root.querySelectorAll = (sel) => sel === '.trr-expand:not([hidden])' ? [visible.expand, hiddenByFilter.expand] : [];
+
+    ctx._autoLoadVisibleCapturedOutput(root);
+
+    // Only the visible row's placeholder triggers a fetch — the filter-hidden
+    // one waits until the user reveals it.
+    assert.deepEqual(fetchCalls, ['/api/e2e-run/1/test-output?nodeid=pkg%3A%3Ashown']);
+    assert.equal(visible.placeholder.dataset.needsFetch, '0');
+    assert.equal(hiddenByFilter.placeholder.dataset.needsFetch, '1');
+});
+
+test('filter chip click: revives auto-fetch for newly visible rows', () => {
+    const fetchCalls = [];
+    const ctx = loadE2ERunView({
+        fetch: (url) => { fetchCalls.push(url); return Promise.resolve({ ok: true, status: 200, json: async () => ({}) }); },
+    });
+    // Two failed rows: one already-fetched (mimics the initially-visible row),
+    // one previously hidden (filter-hidden ⇒ skipped at initial render).
+    const alreadyFetched = _makeFailedRowWithPlaceholder({ runId: 5, nodeid: 'pkg::a', hidden: false });
+    alreadyFetched.placeholder.dataset.needsFetch = '0';
+    alreadyFetched.expand.querySelector = () => null;  // no placeholder needs fetch
+    const newlyRevealed = _makeFailedRowWithPlaceholder({ runId: 5, nodeid: 'pkg::b', hidden: true });
+
+    const list = _stubElement();
+    list.querySelectorAll = (sel) => sel === '.trr-row' ? [alreadyFetched.row, newlyRevealed.row] : [];
+    const chip = _stubElement();
+    const panel = _stubElement();
+    panel.querySelector = (sel) => sel === '.test-results-list' ? list : null;
+    panel.querySelectorAll = (sel) => sel === '.trf-chip' ? [chip] : sel === '.trr-expand:not([hidden])' ? [alreadyFetched.expand, newlyRevealed.expand] : [];
+    chip.closest = (sel) => sel === '.test-results-panel' ? panel : null;
+
+    ctx.filterTestResults('all', chip);
+
+    // After 'all' filter: both rows are visible; only the previously-hidden
+    // row's placeholder still needs a fetch.
+    assert.deepEqual(fetchCalls, ['/api/e2e-run/5/test-output?nodeid=pkg%3A%3Ab']);
+});
+
 // ── Click dispatch: row toggle (expand / collapse) ───────────────────────
 
 test('toggle: collapses an open expand and updates caret + aria-expanded', () => {
