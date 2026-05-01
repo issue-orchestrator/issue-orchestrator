@@ -127,7 +127,8 @@ def test_validation_failure_queues_retry(scenario_repo: Path):
         .wait_for_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .expect_validation_status("retry") \
         .expect_validation_artifacts(False) \
-        .expect_pending_validation_retries(1) \
+        .expect_pending_validation_retries(0) \
+        .expect_active_validation_retry(retry_count=1) \
         .expect_timeline_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .run()
 

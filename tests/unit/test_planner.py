@@ -34,6 +34,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRework,
     PendingTriageReview,
+    PendingValidationRetry,
     AgentConfig,
     CompletionRecord,
     CompletionOutcome,
@@ -348,6 +349,79 @@ class TestObservedCompletionLabels:
 
         # Should only plan 1 more issue (max=2, started=1)
         assert plan.action_count == 1
+
+
+class TestPlanValidationRetries:
+    """Tests for validation retry planning."""
+
+    def test_plans_validation_retry_when_max_issues_to_start_reached(self):
+        """Validation retries continue existing work and bypass max_to_start."""
+        config = make_config(max_concurrent_sessions=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            issues=[make_issue(1), make_issue(2)],
+            pending_validation_retries=[
+                PendingValidationRetry(
+                    issue_number=1,
+                    issue_title="Retry me",
+                    agent_label="agent:developer",
+                    worktree_path="/tmp/repo-1",
+                    branch_name="1-retry",
+                    original_prompt="original task",
+                    validation_error="dirty worktree",
+                    validation_error_file=None,
+                    retry_count=1,
+                    validation_cmd="make test",
+                ),
+            ],
+            max_issues_to_start=1,
+            issues_started_count=1,
+        )
+
+        plan = planner.plan(snapshot)
+
+        retry_actions = plan.actions_of_type(ActionType.LAUNCH_VALIDATION_RETRY)
+        issue_actions = [
+            action for action in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if action.session_type == SessionType.ISSUE
+        ]
+        assert len(retry_actions) == 1
+        assert retry_actions[0].issue_number == 1
+        assert issue_actions == []
+
+    def test_skips_validation_retry_for_active_issue(self):
+        """Validation retry planner does not double-launch an active issue."""
+        config = make_config(max_concurrent_sessions=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        issue = make_issue(1)
+
+        snapshot = make_snapshot(
+            issues=[issue],
+            active_sessions=[make_session(issue)],
+            pending_validation_retries=[
+                PendingValidationRetry(
+                    issue_number=1,
+                    issue_title="Retry me",
+                    agent_label="agent:developer",
+                    worktree_path="/tmp/repo-1",
+                    branch_name="1-retry",
+                    original_prompt="original task",
+                    validation_error="dirty worktree",
+                    validation_error_file=None,
+                    retry_count=1,
+                    validation_cmd="make test",
+                ),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        assert plan.actions_of_type(ActionType.LAUNCH_VALIDATION_RETRY) == []
+        assert plan.skipped[0].item_type == "validation_retry"
+        assert plan.skipped[0].reason == "active session running"
 
 
 class TestPlanReviews:
@@ -2363,6 +2437,19 @@ class TestSnapshotFromState:
 
         triage = PendingTriageReview(issue_number=3, title="Triage")
         state.pending_triage_reviews = [triage]
+        validation_retry = PendingValidationRetry(
+            issue_number=4,
+            issue_title="Retry",
+            agent_label="agent:dev",
+            worktree_path="/tmp/repo-4",
+            branch_name="4-retry",
+            original_prompt="original",
+            validation_error="dirty",
+            validation_error_file=None,
+            retry_count=1,
+            validation_cmd="make test",
+        )
+        state.pending_validation_retries = [validation_retry]
 
         discovered_review = DiscoveredReview(issue_number=10, pr_number=110, pr_url="url", branch_name="b")
         discovered_awaiting_merge_reconciliation = DiscoveredAwaitingMergeReconciliation(
@@ -2412,6 +2499,7 @@ class TestSnapshotFromState:
         assert len(snapshot.pending_reviews) == 1
         assert len(snapshot.pending_reworks) == 1
         assert len(snapshot.pending_triage) == 1
+        assert len(snapshot.pending_validation_retries) == 1
         assert len(snapshot.discovered_reviews) == 1
         assert len(snapshot.discovered_awaiting_merge_reconciliations) == 1
         assert len(snapshot.discovered_awaiting_merge_drifts) == 1

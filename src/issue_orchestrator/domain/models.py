@@ -882,7 +882,33 @@ class AgentConfig:
             pr_number=pr_number,
             existing_work=existing_work,
         )
+        return self.get_command_for_prompt(
+            rendered_prompt,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            worktree=worktree,
+            pr_number=pr_number,
+            prompt_file=prompt_for_command,
+            task_kind=task_kind,
+            extra_provider_args=extra_provider_args,
+        )
 
+    def get_command_for_prompt(
+        self,
+        rendered_prompt: str,
+        *,
+        issue_number: int = 0,
+        issue_title: str = "",
+        worktree: Optional[Path] = None,
+        pr_number: Optional[int] = None,
+        prompt_file: str | None = None,
+        task_kind: str = "code",
+        extra_provider_args: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Build an agent command for an already-rendered prompt."""
+        prompt_for_command = prompt_file or (
+            self.prompt_relative if self.prompt_relative else str(self.prompt_path)
+        )
         # If provider is set, use provider-based command building
         if self.provider:
             return self._build_provider_command(rendered_prompt, prompt_for_command, task_kind, extra_provider_args)
@@ -908,7 +934,7 @@ class AgentConfig:
             "issue_number": issue_number,
             "issue_title": issue_title,
             "prompt": prompt_for_command,
-            "worktree": worktree,
+            "worktree": worktree or Path("."),
             "model": self.model,
             "permission_mode": self.permission_mode,
             "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),

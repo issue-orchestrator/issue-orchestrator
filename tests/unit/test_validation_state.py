@@ -40,11 +40,17 @@ class TestValidationState:
         assert state.retry_count == 0  # Original unchanged
 
     def test_can_retry_boundary(self):
-        """can_retry is False at max retries."""
+        """can_retry remains true for the final retry attempt."""
         state = ValidationState(retry_count=2, max_retries=3)
         assert state.can_retry is True
 
         state = ValidationState(retry_count=3, max_retries=3)
+        assert state.can_retry is True
+
+        state = ValidationState(retry_count=4, max_retries=3)
+        assert state.can_retry is False
+
+        state = ValidationState(retry_count=0, max_retries=0)
         assert state.can_retry is False
 
     def test_retries_remaining(self):
@@ -329,12 +335,12 @@ class TestHasPendingRetry:
 
         assert has_pending_retry(worktree) is True
 
-    def test_state_at_max_retries_not_pending(self, tmp_path: Path):
-        """State at max retries is not pending."""
+    def test_state_past_max_retries_not_pending(self, tmp_path: Path):
+        """State past max retries is not pending."""
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        state = ValidationState(retry_count=3, max_retries=3)
+        state = ValidationState(retry_count=4, max_retries=3)
         write_validation_state(worktree, state)
 
         assert has_pending_retry(worktree) is False
@@ -399,7 +405,7 @@ class TestCrashRecoveryScenarios:
         worktree.mkdir()
 
         # Simulate: all retries exhausted before crash
-        state = ValidationState(retry_count=3, max_retries=3)
+        state = ValidationState(retry_count=4, max_retries=3)
         write_validation_state(worktree, state)
 
         # On recovery, should NOT be pending

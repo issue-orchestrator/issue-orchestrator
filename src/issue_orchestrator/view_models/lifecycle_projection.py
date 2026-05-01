@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+from ..domain.logical_run_projection import group_events_by_logical_cycle
 from .lifecycle_semantics import (
     AgentIdentity,
     BlockedCodingAttempt,
@@ -389,7 +390,7 @@ def _semantic_cycle_inputs(
 def _semantic_cycle_inputs_from_logical_fields(
     events: Sequence[EventDict],
 ) -> tuple[EventDict, ...]:
-    grouped: dict[tuple[int, int], list[EventDict]] = defaultdict(list)
+    grouped_events: list[dict[str, Any]] = []
     saw_logical_cycle_fields = False
     saw_legacy_event = False
     for event in events:
@@ -417,20 +418,27 @@ def _semantic_cycle_inputs_from_logical_fields(
             raise LifecycleProjectionError(
                 "timeline event logical_cycle must be a positive integer"
             )
-        grouped[(logical_run, logical_cycle)].append(event)
+        grouped_events.append(dict(event))
 
     if not saw_logical_cycle_fields:
         return ()
 
+    groups = group_events_by_logical_cycle(grouped_events)
+    lifecycle_groups = tuple(
+        group
+        for group in groups
+        if _has_coding_lifecycle_signal(group.events)
+        or _has_review_lifecycle_signal(group.events)
+    )
+    if lifecycle_groups:
+        groups = lifecycle_groups
+
     return tuple(
         {
             "cycle": index,
-            "events": list(group_events),
+            "events": list(group.events),
         }
-        for index, group_events in enumerate(
-            (grouped[key] for key in sorted(grouped)),
-            start=1,
-        )
+        for index, group in enumerate(groups, start=1)
     )
 
 
@@ -562,7 +570,7 @@ def _completed_coder_attempt(
     completed: EventDict,
     observed_at: str,
 ) -> CodingAttempt:
-    agent = _agent_identity_from_event(start or completed, role="coder")
+    agent = _agent_identity_from_events(start, completed, role="coder")
     completion_path = _artifact_value(completed, "completion_record")
     missing = _completed_coder_missing(agent=agent, completion_path=completion_path)
     if missing:
@@ -654,7 +662,7 @@ def _publish_failed_coder_attempt(
             event=publish_failed,
         )
 
-    agent = _agent_identity_from_event(start or completed, role="coder")
+    agent = _agent_identity_from_events(start, completed, role="coder")
     completion_path = _artifact_value(completed, "completion_record")
     missing = _completed_coder_missing(agent=agent, completion_path=completion_path)
     if missing:
@@ -707,7 +715,7 @@ def _blocked_coder_attempt(
     blocked: EventDict,
     observed_at: str,
 ) -> CodingAttempt:
-    agent = _agent_identity_from_event(start or blocked, role="coder")
+    agent = _agent_identity_from_events(start, blocked, role="coder")
     if agent is None:
         return _missing_coding(
             issue_number=issue_number,
@@ -737,7 +745,7 @@ def _failed_coder_attempt(
     start: EventDict | None,
     failed: EventDict,
 ) -> CodingAttempt:
-    agent = _agent_identity_from_event(start or failed, role="coder")
+    agent = _agent_identity_from_events(start, failed, role="coder")
     if agent is None:
         return _missing_coding(
             issue_number=issue_number,
@@ -1440,6 +1448,17 @@ def _agent_identity_from_event(
         name=name,
         role="reviewer" if role == "reviewer" else "coder",
     )
+
+
+def _agent_identity_from_events(
+    *events: EventDict | None,
+    role: str,
+) -> AgentIdentity | None:
+    for event in events:
+        agent = _agent_identity_from_event(event, role=role)
+        if agent is not None:
+            return agent
+    return None
 
 
 def _artifact_value(event: EventDict, artifact_type: str) -> str | None:

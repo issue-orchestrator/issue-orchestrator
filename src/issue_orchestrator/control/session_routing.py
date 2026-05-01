@@ -10,7 +10,14 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
-from ..domain.models import Issue, PendingReview, PendingRework, PendingTriageReview, Session
+from ..domain.models import (
+    Issue,
+    PendingReview,
+    PendingRework,
+    PendingTriageReview,
+    PendingValidationRetry,
+    Session,
+)
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
@@ -75,6 +82,36 @@ def orchestrator_launch_rework_session(
         session_name = f"rework-{issue_number}"
         restored = session_restorer.restore_known_terminal(
             issue_number=issue_number,
+            session_name=session_name,
+            is_review=False,
+            already_tracked=state.active_sessions,
+        )
+        if restored:
+            append_unique_active_sessions(state.active_sessions, restored)
+            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
+        else:
+            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+    return result.session if result.success else None
+
+
+def orchestrator_launch_validation_retry_session(
+    retry: PendingValidationRetry,
+    state: "OrchestratorState",
+    session_launcher: SessionLauncher,
+    session_restorer: "SessionRestorer",
+) -> Optional[Session]:
+    """Launch a validation retry session and update retry queue tracking."""
+    result = session_launcher.launch_validation_retry_session(retry, state.active_sessions)
+    if result.success and result.session:
+        state.pending_validation_retries = [
+            queued for queued in state.pending_validation_retries
+            if queued.issue_number != retry.issue_number
+        ]
+        append_unique_active_sessions(state.active_sessions, [result.session])
+    elif result.keep_queued:
+        session_name = f"issue-{retry.issue_number}"
+        restored = session_restorer.restore_known_terminal(
+            issue_number=retry.issue_number,
             session_name=session_name,
             is_review=False,
             already_tracked=state.active_sessions,

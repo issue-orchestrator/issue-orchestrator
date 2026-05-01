@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+_NO_CURRENT_RETRY = object()
 
 VALIDATION_STATE_DIR = ".issue-orchestrator"
 VALIDATION_STATE_FILE = "validation-state.json"
@@ -119,7 +120,16 @@ class ValidationState:
     @property
     def can_retry(self) -> bool:
         """Whether more retries are allowed."""
-        return self.retry_count < self.max_retries
+        return self.max_retries > 0 and self.retry_count <= self.max_retries
+
+
+@dataclass(frozen=True)
+class ValidationRetryArtifacts:
+    """Durable retry state and its associated artifact paths."""
+
+    state: ValidationState
+    state_path: Path
+    retry_prompt_path: Path | None = None
 
 
 def _now_iso() -> str:
@@ -147,12 +157,19 @@ def _retry_prompt_file(worktree_path: Path) -> Path:
     return _state_dir(worktree_path) / RETRY_PROMPT_FILE
 
 
-def read_validation_state(worktree_path: Path) -> Optional[ValidationState]:
-    """Read validation state from worktree.
+def _sessions_dir(worktree_path: Path) -> Path:
+    return _state_dir(worktree_path) / "sessions"
 
-    Returns None if no state file exists (not in retry flow).
-    """
-    state_file = _state_file(worktree_path)
+
+def _run_state_file(run_dir: Path) -> Path:
+    return run_dir / VALIDATION_STATE_FILE
+
+
+def _run_retry_prompt_file(run_dir: Path) -> Path:
+    return run_dir / RETRY_PROMPT_FILE
+
+
+def _load_validation_state_file(state_file: Path) -> Optional[ValidationState]:
     if not state_file.exists():
         return None
 
@@ -171,6 +188,116 @@ def read_validation_state(worktree_path: Path) -> Optional[ValidationState]:
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read validation state from %s: %s", state_file, e)
         return None
+
+
+def _run_activity_mtime(run_dir: Path) -> float:
+    candidates = [
+        run_dir,
+        run_dir / "manifest.json",
+        _run_state_file(run_dir),
+        _run_retry_prompt_file(run_dir),
+    ]
+    return max((path.stat().st_mtime for path in candidates if path.exists()), default=0.0)
+
+
+def _run_dirs_newest_first(worktree_path: Path) -> list[Path]:
+    sessions_dir = _sessions_dir(worktree_path)
+    if not sessions_dir.exists():
+        return []
+
+    run_dirs = [
+        path
+        for path in sessions_dir.iterdir()
+        if path.is_dir() and "__" in path.name
+    ]
+    return sorted(run_dirs, key=_run_activity_mtime, reverse=True)
+
+
+def _run_validation_status(run_dir: Path) -> str | None:
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+
+    try:
+        data = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read run manifest from %s: %s", manifest_path, e)
+        return None
+
+    status = data.get("validation_status")
+    return status if isinstance(status, str) else None
+
+
+def _run_session_name(run_dir: Path) -> str:
+    if "__" not in run_dir.name:
+        return run_dir.name
+    return run_dir.name.split("__", 1)[1]
+
+
+def _run_can_supersede_retry_state(run_dir: Path) -> bool:
+    return _run_session_name(run_dir).startswith(("coding-", "issue-", "rework-"))
+
+
+def _find_run_scoped_retry_artifacts(
+    worktree_path: Path,
+) -> ValidationRetryArtifacts | object | None:
+    for run_dir in _run_dirs_newest_first(worktree_path):
+        validation_status = _run_validation_status(run_dir)
+        if validation_status in {"passed", "failed"}:
+            return _NO_CURRENT_RETRY
+
+        state_path = _run_state_file(run_dir)
+        state = _load_validation_state_file(state_path)
+        if state is not None:
+            prompt_path = _run_retry_prompt_file(run_dir)
+            return ValidationRetryArtifacts(
+                state=state,
+                state_path=state_path,
+                retry_prompt_path=prompt_path if prompt_path.exists() else None,
+            )
+
+        if _run_retry_prompt_file(run_dir).exists():
+            continue
+
+        if _run_can_supersede_retry_state(run_dir):
+            return _NO_CURRENT_RETRY
+
+    return None
+
+
+def find_pending_retry_artifacts(worktree_path: Path) -> ValidationRetryArtifacts | None:
+    """Find durable validation retry artifacts for a worktree.
+
+    Current sessions write retry state inside the run directory. Older versions
+    wrote it directly under ``.issue-orchestrator``; keep that legacy location as
+    a compatibility fallback.
+    """
+    run_scoped = _find_run_scoped_retry_artifacts(worktree_path)
+    if run_scoped is _NO_CURRENT_RETRY:
+        return None
+    if isinstance(run_scoped, ValidationRetryArtifacts):
+        return run_scoped
+
+    legacy_state_path = _state_file(worktree_path)
+    legacy_state = _load_validation_state_file(legacy_state_path)
+    if legacy_state is None:
+        return None
+
+    legacy_prompt_path = _retry_prompt_file(worktree_path)
+    return ValidationRetryArtifacts(
+        state=legacy_state,
+        state_path=legacy_state_path,
+        retry_prompt_path=legacy_prompt_path if legacy_prompt_path.exists() else None,
+    )
+
+
+def read_validation_state(worktree_path: Path) -> Optional[ValidationState]:
+    """Read validation state from worktree.
+
+    Returns None if no current state file exists (not in retry flow).
+    """
+    artifacts = find_pending_retry_artifacts(worktree_path)
+    return artifacts.state if artifacts is not None else None
 
 
 def write_validation_state(worktree_path: Path, state: ValidationState) -> Path:
@@ -350,5 +477,8 @@ def has_pending_retry(worktree_path: Path) -> bool:
 
 def get_retry_prompt_path(worktree_path: Path) -> Optional[Path]:
     """Get path to retry prompt if it exists."""
-    retry_prompt = _retry_prompt_file(worktree_path)
-    return retry_prompt if retry_prompt.exists() else None
+    artifacts = find_pending_retry_artifacts(worktree_path)
+    if artifacts is not None and artifacts.retry_prompt_path is not None:
+        return artifacts.retry_prompt_path
+    legacy_prompt = _retry_prompt_file(worktree_path)
+    return legacy_prompt if legacy_prompt.exists() else None

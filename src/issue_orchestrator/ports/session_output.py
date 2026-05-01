@@ -115,7 +115,7 @@ class ValidationState:
     @property
     def can_retry(self) -> bool:
         """Whether more retries are allowed."""
-        return self.retry_count < self.max_retries
+        return self.max_retries > 0 and self.retry_count <= self.max_retries
 
 
 @dataclass(frozen=True)

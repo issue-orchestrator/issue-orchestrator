@@ -44,6 +44,7 @@ from ..control.session_launcher import SessionLauncher
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
+    orchestrator_launch_validation_retry_session as _launch_validation_retry_session,
     launch_triage_session as _launch_triage_session,
     session_launcher_callback as _session_launcher_callback,
     restore_running_sessions as _restore_running_sessions,
@@ -205,6 +206,11 @@ class Orchestrator:
     def _launch_issue_by_number(self, n: int) -> Optional[Session]: return _gw_launch_issue_by_number(n, self.state.cached_queue_issues, self.launch_session, lambda: setattr(self.state, 'issues_started_count', self.state.issues_started_count + 1))
     def _launch_review_by_number(self, n: int) -> Optional[Session]: return _ch_launch_review_by_number(n, self.state.pending_reviews, self.launch_review_session)
     def _launch_rework_by_number(self, n: int) -> Optional[Session]: return _ch_launch_rework_by_number(n, self.state.pending_reworks, self.launch_rework_session)
+    def launch_validation_retry_by_number(self, n: int) -> Optional[Session]:
+        retry = next((r for r in self.state.pending_validation_retries if r.issue_number == n), None)
+        if retry is None:
+            return None
+        return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer)
     def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self.state.active_sessions, self._launch_triage_session)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self.deps.state_machine_manager)

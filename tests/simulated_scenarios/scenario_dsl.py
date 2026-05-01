@@ -365,6 +365,22 @@ class Scenario:
             assert len(ctx.orch.state.pending_validation_retries) == count
         return self._add_expectation(_assert)
 
+    def expect_active_validation_retry(self, *, retry_count: int | None = None) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            matches = [
+                session
+                for session in ctx.orch.state.active_sessions
+                if getattr(session.issue, "number", None) == ctx.issue_number
+                and getattr(session, "validation_retry_count", 0) > 0
+            ]
+            assert matches, "Expected an active validation retry session"
+            if retry_count is not None:
+                assert any(
+                    session.validation_retry_count == retry_count
+                    for session in matches
+                )
+        return self._add_expectation(_assert)
+
     def expect_pending_reviews(self, count: int) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             assert len(ctx.orch.state.pending_reviews) == count

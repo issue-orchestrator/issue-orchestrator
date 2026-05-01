@@ -57,6 +57,7 @@ from .actions import (
     RemoveLabelAction,
     SyncLabelsAction,
     LaunchSessionAction,
+    LaunchValidationRetryAction,
     StopSessionAction,
     QueueReviewAction,
     EscalateToHumanAction,
@@ -76,6 +77,7 @@ logger = logging.getLogger(__name__)
 # Takes (session_type, number) and returns Optional[Session]
 # This allows orchestrator to inject entity lookup + SessionLauncher
 SessionLauncherCallback = Callable[[SessionType, int], Optional[Session]]
+ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
 
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
@@ -154,6 +156,7 @@ class ActionApplier:
     # Injected by orchestrator, allows ActionApplier to launch sessions without
     # knowing about Issue/PendingReview/PendingRework entities
     session_launcher: Optional[SessionLauncherCallback] = None
+    validation_retry_launcher: Optional[ValidationRetryLauncherCallback] = None
     # Claim/lease verification for multi-orchestrator coordination
     claim_gate: Optional[ClaimGate] = None
     # Callback to look up lease_id for an issue from active sessions
@@ -224,6 +227,7 @@ class ActionApplier:
             ActionType.REMOVE_LABEL: self._apply_remove_label,
             ActionType.SYNC_LABELS: self._apply_sync_labels,
             ActionType.LAUNCH_SESSION: self._apply_launch_session,
+            ActionType.LAUNCH_VALIDATION_RETRY: self._apply_launch_validation_retry,
             ActionType.STOP_SESSION: self._apply_stop_session,
             # Queue operations - IO is handled here, state update by orchestrator
             ActionType.QUEUE_REVIEW: self._apply_queue_review,
@@ -761,6 +765,28 @@ class ActionApplier:
             return ActionResult.ok(action, session_name=ref.name)
         else:
             return ActionResult.fail(action, "Failed to start session")
+
+    def _apply_launch_validation_retry(self, action: Action) -> ActionResult:
+        """Launch a validation retry session through the orchestrator callback."""
+        assert isinstance(action, LaunchValidationRetryAction)
+
+        if self.validation_retry_launcher is None:
+            return ActionResult.fail(
+                action,
+                "No validation_retry_launcher callback configured",
+            )
+
+        session = self.validation_retry_launcher(action.issue_number)
+        if session:
+            return ActionResult.ok(
+                action,
+                session_name=session.terminal_id,
+                issue_number=session.issue.number,
+            )
+        return ActionResult.fail(
+            action,
+            f"Failed to launch validation retry for issue #{action.issue_number}",
+        )
 
     def _apply_stop_session(self, action: Action) -> ActionResult:
         """Stop a terminal session."""

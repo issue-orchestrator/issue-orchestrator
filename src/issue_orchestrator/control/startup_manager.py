@@ -596,6 +596,14 @@ class StartupManager:
             if not worktree_path.exists():
                 continue
 
+            session_name = f"issue-{issue_number}"
+            if self._session_exists(session_name):
+                logger.info(
+                    "[startup] Validation retry already has a running session: issue=%d",
+                    issue_number,
+                )
+                continue
+
             # Check if this worktree has a pending validation retry
             if not has_pending_retry(worktree_path):
                 continue

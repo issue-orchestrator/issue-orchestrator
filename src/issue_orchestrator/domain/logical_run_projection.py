@@ -6,8 +6,43 @@ which may include multiple physical session runs.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(frozen=True)
+class LogicalEventGroup:
+    """Chronological timeline events that belong to one logical run/cycle."""
+
+    logical_run: int
+    logical_cycle: int
+    events: tuple[dict[str, Any], ...]
+
+
+def group_events_by_logical_cycle(
+    events: Iterable[dict[str, Any]],
+) -> tuple[LogicalEventGroup, ...]:
+    """Group timeline events by logical run/cycle with legacy orphan repair.
+
+    Older timeline rows can split a rework session's final completion into a
+    new cycle when `rework_cycle` appears on `session.completed` but the earlier
+    cached review events inherited the prior cycle. Keep that terminal tail with
+    its rework start/review group so semantic projections do not claim review
+    was not required.
+    """
+    grouped: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        logical_run = _required_positive_int(event, "logical_run")
+        logical_cycle = _required_positive_int(event, "logical_cycle")
+        grouped[(logical_run, logical_cycle)].append(event)
+
+    groups = tuple(
+        LogicalEventGroup(logical_run=key[0], logical_cycle=key[1], events=tuple(items))
+        for key, items in ((key, grouped[key]) for key in sorted(grouped))
+    )
+    return _merge_orphan_rework_terminal_groups(groups)
 
 
 class LogicalRunProjector:
@@ -99,6 +134,79 @@ class LogicalRunProjector:
 def dedupe_preserve_order(values: Iterable[str]) -> list[str]:
     """Return de-duplicated values while preserving insertion order."""
     return list(dict.fromkeys(values))
+
+
+def _merge_orphan_rework_terminal_groups(
+    groups: tuple[LogicalEventGroup, ...],
+) -> tuple[LogicalEventGroup, ...]:
+    merged: list[LogicalEventGroup] = []
+    for group in groups:
+        if merged and _is_orphan_rework_terminal_group(merged[-1], group):
+            previous = merged.pop()
+            merged.append(
+                LogicalEventGroup(
+                    logical_run=previous.logical_run,
+                    logical_cycle=previous.logical_cycle,
+                    events=previous.events + group.events,
+                )
+            )
+            continue
+        merged.append(group)
+    return tuple(merged)
+
+
+def _is_orphan_rework_terminal_group(
+    previous: LogicalEventGroup,
+    current: LogicalEventGroup,
+) -> bool:
+    if current.logical_run != previous.logical_run:
+        return False
+    if current.logical_cycle != previous.logical_cycle + 1:
+        return False
+    if _has_iteration_start(current.events):
+        return False
+    if not _has_rework_start(previous.events):
+        return False
+    return _has_rework_terminal_tail(current.events)
+
+
+def _has_iteration_start(events: Iterable[dict[str, Any]]) -> bool:
+    return any(
+        _event_name(event)
+        in {"session.started", "rework.started", "rework.launching", "review.started"}
+        for event in events
+    )
+
+
+def _has_rework_start(events: Iterable[dict[str, Any]]) -> bool:
+    return any(
+        _event_name(event) in {"rework.started", "agent.rework_started"}
+        for event in events
+    )
+
+
+def _has_rework_terminal_tail(events: Iterable[dict[str, Any]]) -> bool:
+    saw_terminal = False
+    saw_rework_signal = False
+    for event in events:
+        if _event_name(event) in {"session.completed", "agent.completed"}:
+            saw_terminal = True
+        rework_cycle = event.get("rework_cycle")
+        task = event.get("task")
+        if (isinstance(rework_cycle, int) and rework_cycle > 0) or task == "rework":
+            saw_rework_signal = True
+    return saw_terminal and saw_rework_signal
+
+
+def _event_name(event: dict[str, Any]) -> str:
+    return str(event.get("source_event") or event.get("event") or "")
+
+
+def _required_positive_int(event: dict[str, Any], key: str) -> int:
+    value = event.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"timeline event missing required positive int field: {key}")
+    return value
 
 
 def _is_in_progress_outcome(outcome: str) -> bool:

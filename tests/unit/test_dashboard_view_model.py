@@ -14,6 +14,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
     PendingReview,
+    PendingValidationRetry,
     Session,
     SessionHistoryEntry,
 )
@@ -727,6 +728,54 @@ def test_validation_failed_history_routes_to_blocked_lane():
     assert blocked_item["status"] == "validation_failed"
     assert blocked_item["detail_label"] == "Validation Failed"
     assert blocked_item["flow_stage"] == "blocked"
+
+
+def test_pending_validation_retry_routes_to_blocked_lane_and_suppresses_queue_duplicate():
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[
+            Issue(
+                number=359,
+                title="Validation retry item",
+                labels=["agent:backend"],
+            ),
+        ],
+        pending_validation_retries=[
+            PendingValidationRetry(
+                issue_number=359,
+                issue_title="Validation retry item",
+                agent_label="agent:backend",
+                worktree_path="/tmp/repo-359",
+                branch_name="issue-359",
+                original_prompt="original task",
+                validation_error="Working tree is dirty",
+                validation_error_file="/tmp/repo-359/validation-errors.txt",
+                retry_count=1,
+                validation_cmd="./scripts/validate.sh",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    blocked_item = next(item for item in view_model.blocked_items if item["issue_number"] == 359)
+    assert blocked_item["status"] == "validation_retry"
+    assert blocked_item["detail_label"] == "Validation Retry Pending"
+    assert blocked_item["flow_stage"] == "blocked"
+    assert "Working tree is dirty" in blocked_item["blocked_summary"]
+    assert all(item["issue_number"] != 359 for item in view_model.queue_items)
+
+    blocked_column = next(column for column in view_model.flow_columns if column["id"] == "blocked")
+    assert blocked_column["count"] == 1
+    assert blocked_column["items"][0]["issue_number"] == 359
 
 
 def test_build_awaiting_merge_items_dedupes_union_preferring_pr_link():

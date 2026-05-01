@@ -91,11 +91,13 @@ def enrich_logical_semantics(
     signal_cycle = _cycle_from_signal(event_data.get("rework_cycle"))
     round_cycle = _cycle_from_review_round(event_name, event_data)
     rework_driven = False
-    if logical_run != (prev_run or 1):
-        logical_cycle = 1
-    elif signal_cycle is not None:
+    if signal_cycle is not None and (
+        logical_run == (prev_run or 1) or signal_cycle > 1
+    ):
         logical_cycle = signal_cycle
-        rework_driven = True
+        rework_driven = signal_cycle > 1
+    elif logical_run != (prev_run or 1):
+        logical_cycle = 1
     elif round_cycle is not None:
         logical_cycle = round_cycle
         rework_driven = logical_cycle > 1

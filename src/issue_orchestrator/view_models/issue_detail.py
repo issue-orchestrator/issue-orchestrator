@@ -13,7 +13,10 @@ from ..domain.event_taxonomy import (
     EventIntent,
     infer_event_intent,
 )
-from ..domain.logical_run_projection import LogicalRunProjector
+from ..domain.logical_run_projection import (
+    LogicalRunProjector,
+    group_events_by_logical_cycle,
+)
 from ..events import EventName
 
 
@@ -683,37 +686,25 @@ def _has_logical_semantics(events: list[dict[str, Any]]) -> bool:
     )
 
 
-def _required_int(event: dict[str, Any], key: str) -> int:
-    value = event.get(key)
-    if not isinstance(value, int):
-        raise ValueError(f"timeline event missing required int field: {key}")
-    return value
-
-
 def _build_semantic_journey_cycles(
     events: list[dict[str, Any]],
     today: str,
     context: IssueStoryContext | None = None,
 ) -> list[dict[str, Any]]:
     """Group events using backend-owned logical semantics."""
-    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
-    for event in events:
-        event_name = str(event.get("event") or "")
-        # Legacy events without view tags: apply old skip rules
-        if event.get("views") is None and _should_skip_event(event_name):
-            continue
-        logical_run = _required_int(event, "logical_run")
-        logical_cycle = _required_int(event, "logical_cycle")
-        grouped.setdefault((logical_run, logical_cycle), []).append(event)
-
     cycles: list[dict[str, Any]] = []
-    for idx, key in enumerate(sorted(grouped.keys()), start=1):
-        logical_run, logical_cycle = key
-        raw_events = grouped[key]
+    grouped_events = [
+        event
+        for event in events
+        if event.get("views") is not None
+        or not _should_skip_event(str(event.get("event") or ""))
+    ]
+    for idx, group in enumerate(group_events_by_logical_cycle(grouped_events), start=1):
+        raw_events = list(group.events)
         cycle = _finalize_cycle_from_events(
             idx,
-            logical_run,
-            logical_cycle,
+            group.logical_run,
+            group.logical_cycle,
             raw_events,
             today,
             context,
