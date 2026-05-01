@@ -3479,14 +3479,25 @@ class TestAsyncPublishResults:
         finishes its result must be discarded rather than re-populating
         state for the freshly-reset issue.
         """
+        from issue_orchestrator.control.actions import (
+            ActionType,
+            SupersedePullRequestAction,
+        )
+
         orchestrator = create_test_orchestrator(sample_config)
         orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
         # Tombstone the job — simulating a scratch reset that happened
         # while the worker was running.
         orchestrator.state.superseded_job_ids = {"job-1"}
 
+        # Stub the action_applier's apply so we can verify supersede was called.
+        # OrchestratorDeps is frozen, so patch the method on the existing
+        # applier rather than replacing the applier itself.
+        apply_mock = MagicMock(return_value=MagicMock(success=True, error=None))
+        orchestrator.deps.action_applier.apply = apply_mock
+
         # Worker eventually finishes with what would otherwise be a
-        # successful publish for issue 42.
+        # successful publish for issue 42 — including a PR creation.
         orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
             PublishJobResult(
                 job_id="job-1",
@@ -3510,3 +3521,45 @@ class TestAsyncPublishResults:
         assert "job-1" not in orchestrator.state.superseded_job_ids
         # Pending dict cleared just like a normal completion.
         assert orchestrator.state.pending_publish_jobs == {}
+
+        # The PR the late worker created must be superseded — reset's
+        # _supersede_open_prs only catches PRs open at reset time, so a
+        # PR created seconds later only gets reconciled here.
+        apply_mock.assert_called_once()
+        action = apply_mock.call_args[0][0]
+        assert isinstance(action, SupersedePullRequestAction)
+        assert action.action_type == ActionType.SUPERSEDE_PR
+        assert action.issue_number == 42
+        assert action.pr_number == 123
+        assert "scratch reset" in action.comment.lower()
+
+    def test_poll_job_results_superseded_no_pr_skips_supersede(self, sample_config):
+        """If the tombstoned worker hadn't yet created a PR, no supersede call.
+
+        Worker may have failed before pushing, or the result reports
+        success but no pr_number (e.g., review-only retry). In either
+        case the skip path should not invoke SupersedePullRequestAction.
+        """
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+        orchestrator.state.superseded_job_ids = {"job-1"}
+
+        apply_mock = MagicMock(return_value=MagicMock(success=True))
+        orchestrator.deps.action_applier.apply = apply_mock
+
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=True,
+                pr_url=None,
+                pr_number=None,
+                review_exchange_completed=False,
+            )
+        ])
+
+        orchestrator._poll_job_results()  # noqa: SLF001
+
+        apply_mock.assert_not_called()
+        assert "job-1" not in orchestrator.state.superseded_job_ids

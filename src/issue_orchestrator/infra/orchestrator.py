@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 from .config import Config
 from ..ports.issue import Issue
-from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER
+from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER, PublishJobResult
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
 from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -649,16 +649,24 @@ class Orchestrator:
             # must not flow into state — that would re-populate
             # discovered_reviews / completed_today for an issue we
             # just declared fresh. The executor has no per-job cancel
-            # primitive, so the worker still ran; we simply discard
-            # its output and drain the tombstone.
+            # primitive, so the worker still ran; we discard its
+            # in-memory output and reconcile any GitHub side effect
+            # the worker produced (a late PR creation) by superseding
+            # the PR here. Without this, scratch reset's
+            # _supersede_open_prs only sees PRs that existed at reset
+            # time — a worker that creates a PR seconds later leaks
+            # past that boundary.
             if result.job_id in self.state.superseded_job_ids:
                 self.state.superseded_job_ids.discard(result.job_id)
                 self.state.pending_publish_jobs.pop(result.job_id, None)
+                if result.success and result.pr_number:
+                    self._supersede_late_publish_pr(result)
                 logger.info(
                     "[ASYNC] Discarding superseded job result: "
-                    "job_id=%s issue=%d (cleared by scratch reset)",
+                    "job_id=%s issue=%d pr_number=%s (cleared by scratch reset)",
                     result.job_id,
                     result.issue_number,
+                    result.pr_number,
                 )
                 continue
 
@@ -716,6 +724,60 @@ class Orchestrator:
                     result.failure_kind or "publish_failed",
                 ))
                 self.state.failed_this_cycle.add(result.issue_number)
+
+    def _supersede_late_publish_pr(self, result: PublishJobResult) -> None:
+        """Close + comment a PR created by a worker that completed after scratch reset.
+
+        Reset's ``_supersede_open_prs`` only acts on PRs open at reset time.
+        A worker that pushed a branch and created a PR after that boundary
+        leaks past it. Catching the result here is the only reliable
+        signal that such a PR exists. Failures are logged loudly but do
+        not abort the orchestrator — a stranded PR is recoverable via
+        the awaiting-merge-drift discovery path; an aborted orchestrator
+        is not.
+
+        Caller must guard ``result.pr_number is not None`` — _poll_job_results
+        does this in the skip path before invoking us.
+        """
+        from ..control.actions import SupersedePullRequestAction
+
+        assert result.pr_number is not None, (
+            "_supersede_late_publish_pr requires pr_number; caller in "
+            "_poll_job_results must guard the truthiness check first."
+        )
+        pr_number = result.pr_number
+
+        comment = (
+            "Superseded by reset and retry from scratch.\n\n"
+            "This PR was created by a publish-job worker that finished "
+            "after the orchestrator's scratch reset for the parent issue. "
+            "The orchestrator is discarding all artifacts from the prior "
+            "attempt; a fresh attempt will use a new branch."
+        )
+        applied = self.deps.action_applier.apply(
+            SupersedePullRequestAction(
+                issue_number=result.issue_number,
+                pr_number=pr_number,
+                comment=comment,
+                reason="superseded late publish-job result after scratch reset",
+            )
+        )
+        if not applied.success:
+            logger.error(
+                "[ASYNC] Failed to supersede late PR #%d for issue #%d "
+                "after scratch reset: %s. PR will need manual cleanup or "
+                "will be picked up by awaiting-merge-drift discovery.",
+                pr_number,
+                result.issue_number,
+                applied.error or "unknown error",
+            )
+            return
+        logger.info(
+            "[ASYNC] Superseded late PR #%d for issue #%d (worker finished "
+            "after scratch reset)",
+            pr_number,
+            result.issue_number,
+        )
 
     def start_publish_executor(self) -> None:
         """Start the background publish executor. Call during orchestrator startup."""
