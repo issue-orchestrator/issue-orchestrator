@@ -1753,3 +1753,112 @@ class TestOrchestratorModeSkips:
         finally:
             os.chdir(original_cwd)
             os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
+
+
+class TestPostValidationDirtyRecheck:
+    """Cover the post-validation dirty re-check that closes the temporal
+    variance with the orchestrator's publish gate.
+
+    Motivation: ``validate.sh`` can write to the tree (auto-formatters,
+    generated artifacts, integration-test side effects). Without a
+    second dirty check the agent completes "successfully" while the
+    orchestrator's later check finds dirty files and silently rejects
+    the push, producing the rework loop seen on tixmeup issue #359.
+    """
+
+    def _setup_git_repo(self, tmp_path):
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True, check=True)
+        (tmp_path / "README.md").write_text("test")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True, check=True)
+
+    def _setup_config_with_passing_validation(self, tmp_path):
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "validation:\n  cmd: 'exit 0'\n  timeout_seconds: 10\n"
+        )
+        session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_dir.mkdir(parents=True)
+
+    def test_post_validation_dirty_files_block_completion(self, tmp_path, capsys):
+        """If validation modifies tracked files, coding-done must reject."""
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_passing_validation(tmp_path)
+
+        # First call (pre-validation): clean. Second call (post-validation):
+        # validate.sh has dirtied a tracked test file — exactly the 359 shape.
+        dirty_call_returns = [
+            [],
+            ["M  inventory-impl/src/test/kotlin/.../JdbcTest.kt"],
+        ]
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "orch-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        with patch(
+                            'issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files',
+                            side_effect=dirty_call_returns,
+                        ):
+                            with pytest.raises(SystemExit) as exc_info:
+                                coding_done_main()
+                            assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+            assert "WORKING TREE WAS DIRTIED BY VALIDATION" in captured.out
+            assert "JdbcTest.kt" in captured.out
+            assert "Validation modified the working tree" in captured.out
+
+            # Completion record must NOT have been written
+            record_path = tmp_path / COMPLETION_RECORD_PATH
+            assert not record_path.exists(), (
+                "Post-validation dirty rejection must abort before writing the "
+                "completion record — otherwise the orchestrator picks up a "
+                "stale record claiming success."
+            )
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
+
+    def test_post_validation_clean_completes_normally(self, tmp_path):
+        """When validation does not dirty the tree, coding-done completes."""
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_passing_validation(tmp_path)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "orch-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        with patch(
+                            'issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files',
+                            return_value=[],
+                        ) as mock_dirty:
+                            coding_done_main()
+
+                            # Both checks must have run — pre- and post-validation
+                            assert mock_dirty.call_count == 2, (
+                                "Both pre- and post-validation dirty checks "
+                                "must run when validation succeeds."
+                            )
+
+            record_path = tmp_path / COMPLETION_RECORD_PATH
+            assert record_path.exists()
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
