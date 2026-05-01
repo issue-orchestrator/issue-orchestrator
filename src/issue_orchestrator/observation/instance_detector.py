@@ -12,7 +12,7 @@ import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from ..infra import supervisor
 from ..infra.repo_registry import load_registry
@@ -310,10 +310,51 @@ def detect_system_state(cwd: Path | None = None) -> SystemState:
     )
 
 
-def _default_search_paths() -> list[Path]:
-    """Return default directories to search for repos."""
-    home = Path.home()
-    return [
+def _canonical_path(path: Path) -> str:
+    """Return a stable absolute key for comparing filesystem paths."""
+    return str(path.expanduser().resolve())
+
+
+def _path_is_within_any(path: Path, roots: Iterable[Path]) -> bool:
+    """Return whether path is covered by any root."""
+    resolved = Path(_canonical_path(path))
+    for root in roots:
+        root_resolved = Path(_canonical_path(root))
+        if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+            return True
+    return False
+
+
+def _normalize_search_paths(paths: Iterable[Path]) -> list[Path]:
+    """Expand, resolve, and remove duplicate search roots."""
+    normalized: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        resolved = Path(_canonical_path(path))
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(resolved)
+    return normalized
+
+
+def default_repo_search_paths(
+    *,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> list[Path]:
+    """Return rationalized default directories to search for repos.
+
+    The Control Center can run from ``$HOME`` while managing repos under
+    ``~/dev``. Scanning both ``~/dev`` and ``$HOME`` rediscovers the same
+    repos through nested roots, so defaults stay focused on common repo
+    containers and only add a current-directory context when it is outside
+    those containers.
+    """
+    home = Path(_canonical_path(home or Path.home()))
+    cwd = Path(_canonical_path(cwd or Path.cwd()))
+    common_roots = [
         home / "dev",
         home / "projects",
         home / "code",
@@ -322,6 +363,35 @@ def _default_search_paths() -> list[Path]:
         home / "work",
         home / "github",
     ]
+    candidates = list(common_roots)
+
+    if cwd != home:
+        cwd_context = cwd.parent if (cwd / ".git").exists() else cwd
+        if not _path_is_within_any(cwd_context, common_roots):
+            candidates.append(cwd_context)
+
+    return _normalize_search_paths(candidates)
+
+
+def _default_search_paths() -> list[Path]:
+    """Return default directories to search for repos."""
+    return default_repo_search_paths()
+
+
+def _dedupe_discovered_repos(discovered: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate discovered repos by canonical repository path."""
+    by_path: dict[str, dict[str, Any]] = {}
+    for repo in discovered:
+        repo_path = repo.get("path")
+        if not repo_path:
+            continue
+        key = _canonical_path(Path(str(repo_path)))
+        if key in by_path:
+            continue
+        normalized = dict(repo)
+        normalized["path"] = key
+        by_path[key] = normalized
+    return list(by_path.values())
 
 
 def _try_add_discovered_repo(
@@ -342,7 +412,7 @@ def _try_add_discovered_repo(
     if git_path.is_file():
         return True
 
-    resolved = str(entry_path.resolve())
+    resolved = _canonical_path(entry_path)
     if resolved in registered_paths:
         return True
 
@@ -374,14 +444,22 @@ def discover_repos(
     """
     if search_paths is None:
         search_paths = _default_search_paths()
+    else:
+        search_paths = _normalize_search_paths(search_paths)
 
     registry = load_registry()
-    registered_paths = {r.path for r in registry.repos}
+    registered_paths = {_canonical_path(Path(r.path)) for r in registry.repos}
     discovered: list[dict[str, Any]] = []
+    scanned_dirs: set[str] = set()
 
     def scan_directory(base: Path, depth: int) -> None:
         if depth > max_depth or not base.exists() or not base.is_dir():
             return
+
+        base_key = _canonical_path(base)
+        if base_key in scanned_dirs:
+            return
+        scanned_dirs.add(base_key)
 
         try:
             for entry in os.scandir(base):
@@ -396,6 +474,7 @@ def discover_repos(
     for search_path in search_paths:
         scan_directory(search_path, 0)
 
+    discovered = _dedupe_discovered_repos(discovered)
     discovered.sort(key=lambda x: x["name"].lower())
     return discovered
 
