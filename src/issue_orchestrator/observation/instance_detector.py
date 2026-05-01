@@ -9,10 +9,11 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from ..infra import supervisor
 from ..infra.repo_registry import load_registry
@@ -316,11 +317,9 @@ def _canonical_path(path: Path) -> str:
 
 
 def _path_is_within_any(path: Path, roots: Iterable[Path]) -> bool:
-    """Return whether path is covered by any root."""
-    resolved = Path(_canonical_path(path))
+    """Return whether a canonical absolute path is covered by any canonical root."""
     for root in roots:
-        root_resolved = Path(_canonical_path(root))
-        if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+        if path == root or path.is_relative_to(root):
             return True
     return False
 

@@ -26,6 +26,59 @@ class TestDiscoverReposEndpoint:
         assert str(home.parent.resolve()) not in resolved_paths
         assert str((home / "dev").resolve()) in resolved_paths
 
+    def test_default_search_paths_add_cwd_when_outside_common_roots(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        cwd = tmp_path / "elsewhere"
+        home.mkdir()
+        cwd.mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=cwd)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str(cwd.resolve()) in resolved_paths
+
+    def test_default_search_paths_adds_parent_for_git_repo_outside_common_roots(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        workspace = tmp_path / "workspace"
+        repo = workspace / "target"
+        home.mkdir()
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=repo)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str(workspace.resolve()) in resolved_paths
+        assert str(repo.resolve()) not in resolved_paths
+
+    def test_default_search_paths_do_not_add_extra_context_inside_common_roots(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        repo = home / "dev" / "trustlist"
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=repo)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str((home / "dev").resolve()) in resolved_paths
+        assert str(repo.resolve()) not in resolved_paths
+        assert len(paths) == 7
+
     def test_discovers_ready_repo_with_config(
         self,
         supervisor_client: TestClient,
