@@ -104,30 +104,37 @@ class RetryHistoryState:
         issue_number: int,
         superseded_prs: Iterable[int],
     ) -> PendingStateClearResult:
-        """Remove stale pending review/rework/cleanup items after a scratch reset."""
+        """Remove every issue-keyed in-memory record after a scratch reset.
+
+        Grouped into four categories so the migration path to #6130's
+        ``Attempt`` aggregate is explicit:
+
+        - ``_clear_pending_workflow_queues`` and ``_clear_attempt_scoped_state``
+          hold the bulk of attempt-scoped state. After #6130 introduces
+          ``AttemptStore.supersede(issue_key)``, most of these collapse: the
+          old ``Attempt``'s state becomes invisible by construction and no
+          imperative clearance is needed.
+        - ``_clear_discovered_facts`` is also attempt-scoped (each fact pins a
+          specific PR/branch); same migration path.
+        - ``_clear_progress_flags`` and ``_clear_queue_and_ui_hints`` are
+          genuinely issue-scoped (they outlive any single attempt) and stay.
+
+        The contract is pinned by
+        ``test_clear_scratch_retry_state_contract_no_leaks_for_target`` — adding
+        an issue-keyed field requires clearing it here or carving it out in
+        the contract test, which forces the attempt-vs-issue scope question
+        at add time.
+        """
         superseded_pr_numbers = set(superseded_prs)
         review_count_before = len(self._state.pending_reviews)
         rework_count_before = len(self._state.pending_reworks)
         cleanup_count_before = len(self._state.pending_cleanups)
 
-        self._state.pending_reviews = [
-            review
-            for review in self._state.pending_reviews
-            if review.issue_number != issue_number
-            and review.pr_number not in superseded_pr_numbers
-        ]
-        self._state.pending_reworks = [
-            rework
-            for rework in self._state.pending_reworks
-            if rework.resolve_issue_number() != issue_number
-            and rework.pr_number not in superseded_pr_numbers
-        ]
-        self._state.pending_cleanups = [
-            cleanup
-            for cleanup in self._state.pending_cleanups
-            if cleanup.issue_number != issue_number
-            and cleanup.pr_number not in superseded_pr_numbers
-        ]
+        self._clear_pending_workflow_queues(issue_number, superseded_pr_numbers)
+        self._clear_attempt_scoped_state(issue_number)
+        self._clear_discovered_facts(issue_number, superseded_pr_numbers)
+        self._clear_progress_flags(issue_number)
+        self._clear_queue_and_ui_hints(issue_number)
 
         return PendingStateClearResult(
             review_count_before=review_count_before,
@@ -138,3 +145,126 @@ class RetryHistoryState:
             cleanup_count_after=len(self._state.pending_cleanups),
             superseded_prs=tuple(sorted(superseded_pr_numbers)),
         )
+
+    def _clear_pending_workflow_queues(
+        self,
+        issue_number: int,
+        superseded_pr_numbers: set[int],
+    ) -> None:
+        """Workflow queues (review/rework/cleanup/triage) — attempt-scoped."""
+        self._state.pending_reviews = [
+            r for r in self._state.pending_reviews
+            if r.issue_number != issue_number
+            and r.pr_number not in superseded_pr_numbers
+        ]
+        self._state.pending_reworks = [
+            r for r in self._state.pending_reworks
+            if r.resolve_issue_number() != issue_number
+            and r.pr_number not in superseded_pr_numbers
+        ]
+        self._state.pending_cleanups = [
+            c for c in self._state.pending_cleanups
+            if c.issue_number != issue_number
+            and c.pr_number not in superseded_pr_numbers
+        ]
+        self._state.pending_triage_reviews = [
+            t for t in self._state.pending_triage_reviews
+            if t.issue_number != issue_number
+        ]
+
+    def _clear_attempt_scoped_state(self, issue_number: int) -> None:
+        """Validation retries and publish jobs — purely per-attempt records.
+
+        For publish jobs, dropping the dict entry is not enough: the
+        worker thread inside ``PublishJobExecutor`` keeps running and
+        its result would flow through ``_poll_job_results`` after the
+        reset, re-populating ``discovered_reviews`` /
+        ``completed_today`` for the issue we just declared fresh. So
+        we tombstone the job IDs and let ``_poll_job_results`` skip
+        their late results. The executor has no per-job cancel
+        primitive — see PR #6131 review feedback.
+        """
+        self._state.pending_validation_retries = [
+            r for r in self._state.pending_validation_retries
+            if r.issue_number != issue_number
+        ]
+        for job_id, job in self._state.pending_publish_jobs.items():
+            if job.issue_number == issue_number:
+                self._state.superseded_job_ids.add(job_id)
+        for job_id, job in self._state.running_publish_jobs.items():
+            if job.issue_number == issue_number:
+                self._state.superseded_job_ids.add(job_id)
+        self._state.pending_publish_jobs = {
+            job_id: job
+            for job_id, job in self._state.pending_publish_jobs.items()
+            if job.issue_number != issue_number
+        }
+        self._state.running_publish_jobs = {
+            job_id: job
+            for job_id, job in self._state.running_publish_jobs.items()
+            if job.issue_number != issue_number
+        }
+
+    def _clear_discovered_facts(
+        self,
+        issue_number: int,
+        superseded_pr_numbers: set[int],
+    ) -> None:
+        """Discovered_* and immediate_cleanups — planner inputs, attempt-scoped."""
+        self._state.discovered_reviews = [
+            d for d in self._state.discovered_reviews
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_reworks = [
+            d for d in self._state.discovered_reworks
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_escalations = [
+            d for d in self._state.discovered_escalations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_failures = [
+            d for d in self._state.discovered_failures
+            if d.issue_number != issue_number
+        ]
+        self._state.discovered_awaiting_merge_reconciliations = [
+            d for d in self._state.discovered_awaiting_merge_reconciliations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_awaiting_merge_drifts = [
+            d for d in self._state.discovered_awaiting_merge_drifts
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.immediate_cleanups = [
+            c for c in self._state.immediate_cleanups
+            if c.issue_number != issue_number
+        ]
+
+    def _clear_progress_flags(self, issue_number: int) -> None:
+        """Progress-blocking flags — genuinely issue-scoped, stay after #6130."""
+        self._state.failed_this_cycle.discard(issue_number)
+        self._state.stale_issue_ticks.pop(issue_number, None)
+        self._state.dependency_problems.pop(issue_number, None)
+
+    def _clear_queue_and_ui_hints(self, issue_number: int) -> None:
+        """Queue/refresh/UI hints — issue-scoped, cross-attempt, stay after #6130."""
+        self._state.issue_refresh_timestamps.pop(issue_number, None)
+        self._state.issue_last_refreshed_at.pop(issue_number, None)
+        self._state.awaiting_merge_drift_scan_timestamps.pop(issue_number, None)
+        self._state.ui_visible_issue_numbers = [
+            n for n in self._state.ui_visible_issue_numbers
+            if n != issue_number
+        ]
+        self._state.priority_queue = [
+            n for n in self._state.priority_queue
+            if n != issue_number
+        ]
+        self._state.queue_pending_shrink_missing_issue_numbers = [
+            n for n in self._state.queue_pending_shrink_missing_issue_numbers
+            if n != issue_number
+        ]

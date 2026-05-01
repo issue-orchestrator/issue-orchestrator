@@ -1661,6 +1661,14 @@ class OrchestratorState:
     observed_completions: list["ObservedCompletion"] = field(default_factory=list)  # Completions detected this tick
     pending_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (queued)
     running_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (in progress)
+    # Tombstoned job IDs whose results must be discarded when the worker
+    # finishes. Populated by scratch reset for jobs that were in flight
+    # at reset time — their late results would otherwise re-populate
+    # discovered_reviews/completed_today for an issue we just declared
+    # fresh. Drained by _poll_job_results after the matching result is
+    # skipped, so the set is bounded by "in-flight at reset time and not
+    # yet polled."
+    superseded_job_ids: set[str] = field(default_factory=set)
     # Queue refresh/freshness tracking for dashboard UX and lazy refresh behavior
     queue_last_refresh_at: float = 0.0  # Epoch seconds of last queue refresh completion
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
