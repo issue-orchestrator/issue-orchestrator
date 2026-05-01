@@ -133,6 +133,8 @@ class DashboardViewModel:
             "githubOwner": self.github_owner,
             "githubRepo": self.github_repo,
             "e2eLastRun": self.e2e_status.get("last_run"),
+            "e2eNeedsAttention": bool(self.e2e_status.get("needs_attention")),
+            "e2eFailedTests": self.e2e_status.get("failed_tests") or [],
             "agents": self.agent_names,
             "scope": self.scope_summary,
             "refresh": self.scope_summary.get("refresh", {}),

@@ -7,10 +7,42 @@ const CONFIG_NAME = window.dashboardData?.configName
 
 // Mutable state for E2E - updated by polling
 let e2eLastRun = window.dashboardData.e2eLastRun;
+let e2eLastStatusData = {
+    running: window.dashboardData.e2eRunning,
+    last_run: e2eLastRun,
+    needs_attention: window.dashboardData.e2eNeedsAttention,
+    failed_tests: Array.isArray(window.dashboardData.e2eFailedTests) ? window.dashboardData.e2eFailedTests : [],
+};
 
 // E2E Progress Polling - polls while E2E is running or E2E tab is active
 let e2ePollingInterval = null;
 let e2eLastProgressState = null;
+
+function e2eBadgeStateFromStatus(data) {
+    if (data?.running) return 'running';
+    const failedTestCount = Array.isArray(data?.failed_tests) ? data.failed_tests.length : 0;
+    const status = data?.last_run?.status || '';
+    if (data?.needs_attention || failedTestCount > 0 || status === 'failed') return 'failed';
+    if (status === 'warning') return 'warning';
+    if (status === 'passed') return 'passed';
+    return 'idle';
+}
+
+function updateE2EHeaderBadge(data) {
+    const badge = document.getElementById('e2eHeaderBadge');
+    if (!badge) return;
+
+    e2eLastStatusData = { ...e2eLastStatusData, ...(data || {}) };
+    const state = e2eBadgeStateFromStatus(e2eLastStatusData);
+    const statusIcon = badge.querySelector('.status-icon');
+    badge.classList.remove('running', 'passed', 'failed', 'warning', 'idle');
+    badge.classList.add(state);
+
+    const statusIcons = { running: '⟳', failed: '✗', warning: '⚠', passed: '✓', idle: '○' };
+    if (statusIcon) {
+        statusIcon.textContent = statusIcons[state] || '○';
+    }
+}
 
 function startE2EPolling() {
     if (!e2ePollingInterval) {
@@ -64,15 +96,13 @@ async function updateE2EProgress() {
             e2eLastRun = data.last_run;
         }
 
-        // Get header badge elements
-        const badge = document.getElementById('e2eHeaderBadge');
-        const statusIcon = badge?.querySelector('.status-icon');
-
         // Create state key for comparison
         const stateKey = JSON.stringify({
             running: data.running,
             lastRunStatus: data.last_run?.status,
             lastRunId: data.last_run?.id,
+            needsAttention: data.needs_attention,
+            failedTestCount: Array.isArray(data.failed_tests) ? data.failed_tests.length : 0,
         });
 
         // Skip updates if state hasn't changed (reduces visual churn)
@@ -81,26 +111,7 @@ async function updateE2EProgress() {
         }
         e2eLastProgressState = stateKey;
 
-        // Update header badge class
-        if (badge) {
-            badge.classList.remove('running', 'passed', 'failed', 'warning');
-            if (data.running) {
-                badge.classList.add('running');
-            } else if (data.last_run?.status === 'failed') {
-                badge.classList.add('failed');
-            } else if (data.last_run?.status === 'warning') {
-                badge.classList.add('warning');
-            } else if (data.last_run?.status === 'passed') {
-                badge.classList.add('passed');
-            }
-        }
-
-        // Update status icon
-        const statusIcons = { running: '⟳', failed: '✗', warning: '⚠', passed: '✓' };
-        if (statusIcon) {
-            const key = data.running ? 'running' : (data.last_run?.status || '');
-            statusIcon.textContent = statusIcons[key] || '○';
-        }
+        updateE2EHeaderBadge(data);
 
         // Stop polling when not running
         if (!data.running) {
@@ -137,14 +148,7 @@ async function startE2E(forceRestart = false) {
         if (res.ok) {
             showToast('E2E tests started');
             // Update header badge to running state
-            const badge = document.getElementById('e2eHeaderBadge');
-            const statusIcon = badge?.querySelector('.status-icon');
-
-            if (badge) {
-                badge.classList.remove('passed', 'failed');
-                badge.classList.add('running');
-            }
-            if (statusIcon) statusIcon.textContent = '⟳';
+            updateE2EHeaderBadge({ running: true, last_run: e2eLastRun });
 
             // Update E2E tab controls if on E2E tab
             const e2eControls = document.getElementById('e2eControls');
@@ -183,13 +187,7 @@ async function stopE2E() {
             showToast('E2E tests stopped');
             stopE2EPolling();
             // Update header badge to stopped state
-            const badge = document.getElementById('e2eHeaderBadge');
-            const statusIcon = badge?.querySelector('.status-icon');
-
-            if (badge) {
-                badge.classList.remove('running');
-            }
-            if (statusIcon) statusIcon.textContent = '○';
+            updateE2EHeaderBadge({ running: false, last_run: e2eLastRun });
 
             // Update E2E tab controls if on E2E tab
             const e2eControls = document.getElementById('e2eControls');

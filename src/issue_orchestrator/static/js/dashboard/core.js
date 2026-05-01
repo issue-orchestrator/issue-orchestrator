@@ -376,7 +376,7 @@ function buildEmptyStateHtml(vm) {
         return 'No session history yet';
     }
     if (vm.active_tab === 'attention') {
-        return 'Nothing needs attention - all systems running smoothly!';
+        return 'No action needed - all systems running smoothly!';
     }
     if (vm.active_tab === 'e2e') {
         return '<div class=\"e2e-empty-state\">' +

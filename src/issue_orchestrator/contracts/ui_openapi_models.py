@@ -738,6 +738,7 @@ class TestCaseResultPayload(BaseModel):
     longrepr: str | None
     nodeid: str
     outcome: str
+    result_category: str
     result_source: str
     retry_outcome: str | None
     suite_name: str | None

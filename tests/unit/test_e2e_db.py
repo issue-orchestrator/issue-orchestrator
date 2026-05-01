@@ -866,6 +866,27 @@ class TestFlipRateStability:
         assert stability.flip_count == 0
         assert stability.category == "healthy"
 
+    def test_run_details_carries_result_category_separately_from_stability(self, db: E2EDB):
+        """UI grouping must not reuse the stability category field."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"])
+        db.upsert_result_case(
+            run_id=run_id,
+            case_id="tests/e2e/test_checkout.py::test_checkout",
+            outcome="failed",
+            duration_seconds=1.2,
+            failure_details="AssertionError: checkout failed",
+            display_name="test_checkout",
+            suite_name="tests/e2e/test_checkout.py",
+            result_source="junit_xml",
+        )
+        db.finish_run(run_id, "failed")
+
+        details = db.run_details_enhanced(run_id)
+        assert details is not None
+        test_case = details["tests_by_category"]["untriaged"][0]
+        assert test_case["category"] == "new_failure"
+        assert test_case["result_category"] == "untriaged"
+
     def test_stability_window_limits_runs(self, db: E2EDB):
         """Window parameter should limit the number of runs considered."""
         # Create 10 runs: first 8 pass, last 2 fail

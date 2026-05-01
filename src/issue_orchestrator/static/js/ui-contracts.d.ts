@@ -729,6 +729,7 @@ export interface TestCaseResultPayload {
   longrepr: string | null;
   nodeid: string;
   outcome: string;
+  result_category: string;
   result_source: string;
   retry_outcome: string | null;
   suite_name: string | null;

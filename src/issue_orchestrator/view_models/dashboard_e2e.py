@@ -79,9 +79,10 @@ def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any
         })
     return [{
         "issue_number": f"E2E-{run_id}",
-        "title": f"{untriaged} failure{'s' if untriaged != 1 else ''} need{'s' if untriaged == 1 else ''} triage",
+        "title": f"Action needed: {untriaged} failed test{'s' if untriaged != 1 else ''}",
         "status": "needs_attention",
-        "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
+        "status_label": "Action needed",
+        "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without a linked issue",
         "action": "triage",
         "action_hint": "Click to open triage modal",
         "is_e2e": True,
@@ -152,6 +153,7 @@ def build_e2e_recent_run_items(db: Any, config: Any, e2e_status: dict[str, Any])
             "issue_number": f"E2E-{run.id}",
             "title": run.commit_sha[:7] if run.commit_sha else "no commit",
             "status": run.status,
+            "status_label": _e2e_run_status_label(run.status),
             "detail_label": "",
             "action": "details",
             "action_hint": "View run details",
@@ -165,6 +167,17 @@ def build_e2e_recent_run_items(db: Any, config: Any, e2e_status: dict[str, Any])
             item["note"] = run.note
         items.append(item)
     return items
+
+
+def _e2e_run_status_label(status: str | None) -> str:
+    return {
+        "passed": "Passed",
+        "failed": "Failed",
+        "warning": "Passed on retry",
+        "running": "Running",
+        "canceled": "Canceled",
+        "error": "Error",
+    }.get(str(status or "").lower(), str(status or "Unknown"))
 
 
 def _build_e2e_db_items(config: Any, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -241,6 +254,22 @@ def _load_e2e_database_state(
         return None, None, [], None, 0, False
 
 
+def _e2e_badge_state(e2e_status: dict[str, Any]) -> str:
+    if e2e_status.get("running"):
+        return "running"
+
+    last_run = e2e_status.get("last_run") or {}
+    last_status = last_run.get("status")
+    failed_test_count = len(e2e_status.get("failed_tests") or [])
+    if last_status == "failed" or e2e_status.get("needs_attention") or failed_test_count > 0:
+        return "failed"
+    if last_status == "warning":
+        return "warning"
+    if last_status == "passed":
+        return "passed"
+    return "idle"
+
+
 def get_e2e_status(config: Any) -> dict[str, Any]:
     if not config or not config.e2e.enabled:
         return {"enabled": False, "running": False}
@@ -296,19 +325,11 @@ def build_e2e_view_model(
     running = bool(e2e_status.get("running"))
     untriaged_count = int(e2e_status.get("untriaged_count", 0) or 0)
     needs_attention = bool(e2e_status.get("needs_attention"))
+    failed_test_count = len(e2e_status.get("failed_tests") or [])
     badge_count = untriaged_count if untriaged_count > 0 else e2e_total
-    last_status = last_run.get("status")
-    badge_state = (
-        "running"
-        if running
-        else "failed"
-        if (last_status == "failed" or needs_attention)
-        else "warning"
-        if last_status == "warning"
-        else "passed"
-        if last_status == "passed"
-        else "idle"
-    )
+    if failed_test_count > 0 and untriaged_count == 0 and badge_count == 0:
+        badge_count = failed_test_count
+    badge_state = _e2e_badge_state(e2e_status)
     badge_icons = {"running": "⟳", "failed": "✗", "warning": "⚠", "passed": "✓"}
     badge_icon = badge_icons.get(badge_state, "○")
 

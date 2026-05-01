@@ -152,6 +152,7 @@ def categorize_test_results(
             result, history_by_nodeid, issues_by_nodeid, flake_threshold_percent
         )
         category = _determine_test_category(result, test_dict)
+        test_dict["result_category"] = category
         tests_by_category[category].append(test_dict)
 
     return tests_by_category

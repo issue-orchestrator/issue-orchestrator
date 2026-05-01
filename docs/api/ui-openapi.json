@@ -798,6 +798,7 @@
           "history",
           "existing_issue",
           "category",
+          "result_category",
           "flip_rate",
           "flip_rate_percent",
           "is_likely_flaky"
@@ -824,6 +825,7 @@
             ]
           },
           "category": {"type": "string"},
+          "result_category": {"type": "string"},
           "flip_rate": {"type": "number"},
           "flip_rate_percent": {"type": "number"},
           "is_likely_flaky": {"type": "boolean"}

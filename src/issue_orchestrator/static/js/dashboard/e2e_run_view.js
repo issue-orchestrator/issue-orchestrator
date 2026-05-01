@@ -165,7 +165,9 @@ function _e2eRowActionButton(label, options) {
         throw new Error('E2E row action button requires an action');
     }
     const cssClass = options.cssClass || 'action-btn';
-    return `<button class="${cssClass}" data-e2e-action="${escapeAttr(action)}"${_datasetButtonAttr('nodeid', options.nodeid)}${_datasetButtonAttr('issue-number', options.issueNumber)}${_datasetButtonAttr('agent', options.agent)} onclick="runE2ERowActionFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
+    const disabled = options.disabled ? ' disabled aria-disabled="true"' : '';
+    const title = options.title ? ` title="${escapeAttr(options.title)}"` : '';
+    return `<button class="${cssClass}" data-e2e-action="${escapeAttr(action)}"${_datasetButtonAttr('nodeid', options.nodeid)}${_datasetButtonAttr('issue-number', options.issueNumber)}${_datasetButtonAttr('agent', options.agent)}${title}${disabled} onclick="runE2ERowActionFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
 }
 
 function runE2ERowActionFromButton(button) {
@@ -350,23 +352,65 @@ function runE2ELifecycleCommand(command) {
 // is the primary unit and per-row expansion shows error detail and (when the
 // test is linked to a tracked issue) the agentic cycle history inline.
 //
-// Run-level metadata, raw artifacts, and the full run timeline live in a
-// collapsed "Run details" disclosure at the bottom — they're diagnostic
+// Run-level metadata, suite artifacts, and the suite timeline live in a
+// collapsed "Run evidence" disclosure at the bottom — they're diagnostic
 // surfaces, not the headline.
 
 function _testFilterGroup(test) {
     if (!test) return 'other';
-    const category = String(test.category || '').toLowerCase();
-    if (category === 'passed') return 'passed';
-    if (category === 'skipped') return 'skipped';
-    if (category === 'quarantined') return 'quarantined';
-    return 'failing';  // untriaged, has_issue, flaky, fixed
+    const category = _testResultCategory(test);
+    const outcomeState = _testOutcomeState(test);
+    if (_testNeedsAction(test)) return 'action_needed';
+    if (category === 'has_issue' && outcomeState === 'failed') return 'tracked';
+    if (outcomeState === 'passed_on_retry') return 'passed_on_retry';
+    if (outcomeState === 'passed') return 'passed';
+    if (outcomeState === 'failed') return 'failed';
+    if (outcomeState === 'skipped') return 'skipped';
+    if (outcomeState === 'quarantined') return 'quarantined';
+    return 'other';
 }
 
 function _flattenTestsByCategory(data) {
     const categories = _resultCategories(data);
     const order = ['untriaged', 'has_issue', 'flaky', 'fixed', 'passed', 'quarantined', 'skipped'];
     return order.flatMap(key => Array.isArray(categories[key]) ? categories[key] : []);
+}
+
+function _testResultCategory(test) {
+    return String(test && (test.result_category || test.category) || '').toLowerCase();
+}
+
+function _testEffectiveOutcome(test) {
+    return String(test && (test.retry_outcome || test.outcome) || '').toLowerCase();
+}
+
+function _testErrorText(test) {
+    if (!test || typeof test !== 'object') return '';
+    const longrepr = String(test.longrepr || '').trim();
+    if (longrepr) return longrepr;
+    return String(test.failure_summary || '').trim();
+}
+
+function _testOutcomeState(test) {
+    if (!test) return 'unknown';
+    const category = _testResultCategory(test);
+    const outcome = String(test.outcome || '').toLowerCase();
+    const effectiveOutcome = _testEffectiveOutcome(test);
+    if (test.is_quarantined || category === 'quarantined') return 'quarantined';
+    if (outcome === 'skipped' || effectiveOutcome === 'skipped' || category === 'skipped') return 'skipped';
+    if (outcome === 'failed' && String(test.retry_outcome || '').toLowerCase() === 'passed') return 'passed_on_retry';
+    if (effectiveOutcome === 'passed') return 'passed';
+    if (effectiveOutcome === 'failed' || effectiveOutcome === 'error' || category === 'untriaged' || category === 'has_issue') return 'failed';
+    return 'unknown';
+}
+
+function _testNeedsAction(test) {
+    const category = _testResultCategory(test);
+    const outcomeState = _testOutcomeState(test);
+    if (category === 'fixed') return true;
+    if (category === 'untriaged') return true;
+    if (category === 'flaky' && outcomeState === 'failed') return true;
+    return false;
 }
 
 function _lifecyclesByIssueNumber(data) {
@@ -384,30 +428,57 @@ function _lifecyclesByIssueNumber(data) {
     return map;
 }
 
-function renderTestResultsHeadline(summary, totalRows) {
-    const total = Number(summary.total || 0) || totalRows;
+function _testOutcomeCounts(tests, summary, totalRows) {
+    if (Array.isArray(tests)) {
+        return {
+            total: tests.length,
+            failed: tests.filter(t => _testOutcomeState(t) === 'failed').length,
+            passed: tests.filter(t => _testOutcomeState(t) === 'passed').length,
+            passed_on_retry: tests.filter(t => _testOutcomeState(t) === 'passed_on_retry').length,
+            skipped: tests.filter(t => _testOutcomeState(t) === 'skipped').length,
+            quarantined: tests.filter(t => _testOutcomeState(t) === 'quarantined').length,
+            action_needed: tests.filter(_testNeedsAction).length,
+        };
+    }
     const passed = Number(summary.passed || 0);
     const skipped = Number(summary.skipped || 0);
     const quarantined = Number(summary.quarantined || 0);
-    const failing = (Number(summary.untriaged || 0) +
+    const failed = (Number(summary.untriaged || 0) +
         Number(summary.has_issue || 0) +
-        Number(summary.flaky || 0) +
-        Number(summary.fixed || 0));
+        Number(summary.flaky || 0));
+    return {
+        total: Number(summary.total || 0) || totalRows,
+        failed,
+        passed,
+        passed_on_retry: 0,
+        skipped,
+        quarantined,
+        action_needed: Number(summary.untriaged || 0),
+    };
+}
+
+function renderTestResultsHeadline(summary, totalRows, tests) {
+    const counts = _testOutcomeCounts(tests, summary || {}, totalRows);
     return `
         <div class="test-results-headline" role="status" aria-label="Test summary">
-            <span class="trh-stat trh-total">${total} total</span>
-            <span class="trh-stat trh-passed ${passed ? '' : 'trh-zero'}">✓ ${passed} passed</span>
-            <span class="trh-stat trh-failed ${failing ? '' : 'trh-zero'}">✗ ${failing} failing</span>
-            ${skipped ? `<span class="trh-stat trh-skipped">○ ${skipped} skipped</span>` : ''}
-            ${quarantined ? `<span class="trh-stat trh-quarantined">⊘ ${quarantined} quarantined</span>` : ''}
+            <span class="trh-stat trh-total">${counts.total} tests</span>
+            <span class="trh-stat trh-failed ${counts.failed ? '' : 'trh-zero'}">✗ ${counts.failed} failed</span>
+            <span class="trh-stat trh-passed ${counts.passed ? '' : 'trh-zero'}">✓ ${counts.passed} passed</span>
+            ${counts.passed_on_retry ? `<span class="trh-stat trh-warning">⚠ ${counts.passed_on_retry} passed on retry</span>` : ''}
+            ${counts.action_needed ? `<span class="trh-stat trh-action">⚠ ${counts.action_needed} action needed</span>` : ''}
+            ${counts.skipped ? `<span class="trh-stat trh-skipped">○ ${counts.skipped} skipped</span>` : ''}
+            ${counts.quarantined ? `<span class="trh-stat trh-quarantined">⊘ ${counts.quarantined} quarantined</span>` : ''}
         </div>
     `;
 }
 
-function renderTestResultsFilters(counts) {
+function renderTestResultsFilters(counts, activeKey = 'all') {
     const chips = [
         { key: 'all', label: `All (${counts.all})` },
-        { key: 'failing', label: `Failing (${counts.failing})`, hide: !counts.failing },
+        { key: 'action_needed', label: `Action needed (${counts.action_needed})`, hide: counts.action_needed === undefined || !counts.action_needed },
+        { key: 'tracked', label: `Tracked failures (${counts.tracked})`, hide: counts.tracked === undefined || !counts.tracked },
+        { key: 'failed', label: `Failed (${counts.failed})`, hide: counts.failed === undefined || !counts.failed },
+        { key: 'passed_on_retry', label: `Passed on retry (${counts.passed_on_retry})`, hide: counts.passed_on_retry === undefined || !counts.passed_on_retry },
         { key: 'passed', label: `Passed (${counts.passed})`, hide: !counts.passed },
         { key: 'skipped', label: `Skipped (${counts.skipped})`, hide: !counts.skipped },
         { key: 'quarantined', label: `Quarantined (${counts.quarantined})`, hide: !counts.quarantined },
@@ -416,15 +487,60 @@ function renderTestResultsFilters(counts) {
         <div class="test-results-filters" role="tablist" aria-label="Filter tests by outcome">
             ${chips
                 .filter(c => !c.hide)
-                .map(c => `<button type="button" class="trf-chip ${c.key === 'all' ? 'active' : ''}" data-filter="${c.key}" role="tab" aria-selected="${c.key === 'all'}" onclick="filterTestResults('${c.key}', this); event.stopPropagation();">${escapeHtml(c.label)}</button>`)
+                .map(c => `<button type="button" class="trf-chip ${c.key === activeKey ? 'active' : ''}" data-filter="${c.key}" role="tab" aria-selected="${c.key === activeKey}" onclick="filterTestResults('${c.key}', this); event.stopPropagation();">${escapeHtml(c.label)}</button>`)
                 .join('')}
         </div>
     `;
 }
 
+function _renderTestFailureSummary(test) {
+    const outcomeState = _testOutcomeState(test);
+    if (outcomeState !== 'failed') return '';
+    const summary = String(test.failure_summary || '').trim()
+        || _testErrorText(test).split('\n').find(line => line.trim()) || '';
+    if (!summary) {
+        return '<div class="test-failure-summary muted">No failure text was recorded for this test.</div>';
+    }
+    return `<div class="test-failure-summary">${escapeHtml(summary)}</div>`;
+}
+
+function _renderTestResultPills(test) {
+    const outcomeState = _testOutcomeState(test);
+    const category = _testResultCategory(test);
+    const pills = [];
+    const primaryLabels = {
+        failed: 'Failed',
+        passed: 'Passed',
+        passed_on_retry: 'Passed on retry',
+        skipped: 'Skipped',
+        quarantined: 'Quarantined',
+        unknown: 'Unknown',
+    };
+    pills.push(`<span class="test-result-pill primary ${outcomeState}">${primaryLabels[outcomeState] || 'Unknown'}</span>`);
+    if (_testNeedsAction(test)) {
+        pills.push('<span class="test-result-pill action-needed">Action needed</span>');
+    } else if (category === 'has_issue' && outcomeState === 'failed') {
+        pills.push('<span class="test-result-pill tracked">Tracked</span>');
+    }
+    if (test.is_likely_flaky || category === 'flaky') {
+        pills.push('<span class="test-result-pill flaky">Flaky</span>');
+    }
+    if (category === 'fixed') {
+        pills.push('<span class="test-result-pill action-needed">Issue can close</span>');
+    }
+    return `<div class="test-result-pills">${pills.join('')}</div>`;
+}
+
 function _renderTestRowExpand(test, lifecycle) {
-    const errorBlock = test.longrepr
-        ? `<div class="trr-error"><pre class="trr-error-text">${escapeHtml(test.longrepr)}</pre></div>`
+    const errorText = _testErrorText(test);
+    const outcomeState = _testOutcomeState(test);
+    const errorBlock = outcomeState === 'failed'
+        ? `<div class="trr-error">
+            <div class="trr-expand-heading">Failure details</div>
+            ${errorText
+                ? `<pre class="trr-error-text">${escapeHtml(errorText)}</pre>`
+                : '<div class="e2e-empty-note">No full error text was recorded for this test.</div>'}
+        </div>`
         : '';
     let lifecycleBlock = '';
     if (test.existing_issue && lifecycle) {
@@ -445,7 +561,7 @@ function _renderTestRowExpand(test, lifecycle) {
         const cycleChips = cycles.map(c => `<span class="e2e-lifecycle-chip">Cycle ${escapeHtml(c.cycle_number)} · ${escapeHtml(_humanizeSnakeCase(c.outcome || 'unknown'))}</span>`).join('');
         lifecycleBlock = `
             <div class="trr-lifecycle">
-                <div class="trr-lifecycle-heading">Linked agentic cycle · Issue #${issueNumber}${lifecycle.title ? ` — ${escapeHtml(lifecycle.title)}` : ''}</div>
+                <div class="trr-lifecycle-heading">Related issue activity · Issue #${issueNumber}${lifecycle.title ? ` — ${escapeHtml(lifecycle.title)}` : ''}</div>
                 <div class="trr-lifecycle-cycles">${cycleChips || '<span class="e2e-empty-note">No cycles projected.</span>'}</div>
                 <div class="trr-lifecycle-actions">
                     ${_renderLifecycleCommandButton(timelineCommand, 'Timeline', 'action-btn primary')}
@@ -464,31 +580,51 @@ function _renderTestRowExpand(test, lifecycle) {
 }
 
 function _renderTestRowActions(test) {
-    const category = String(test.category || '').toLowerCase();
+    const category = _testResultCategory(test);
+    const outcomeState = _testOutcomeState(test);
+    const hasErrorText = Boolean(_testErrorText(test));
+    const copyErrorButton = _e2eRowActionButton(hasErrorText ? 'Copy Error' : 'No Error Text', {
+        action: 'copy_test_error',
+        cssClass: 'action-btn',
+        nodeid: test.nodeid,
+        disabled: !hasErrorText,
+        title: hasErrorText ? 'Copy the failure text for this test' : 'No failure text was recorded for this test',
+    });
     if (test.existing_issue) {
         const issueNum = test.existing_issue.number;
         const issueStatus = test.existing_issue.status;
-        const ghLink = `<a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}" target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">→ #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span></a>`;
+        const ghLink = `<a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}" target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">#${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span></a>`;
         if (category === 'fixed' && issueStatus === 'open') {
             return `${ghLink}${_e2eRowActionButton(`Close #${issueNum}`, { action: 'close_issue', cssClass: 'action-btn success', issueNumber: issueNum, nodeid: test.nodeid })}`;
         }
-        return ghLink;
+        return outcomeState === 'failed' ? `${ghLink}${copyErrorButton}` : ghLink;
     }
-    if (category === 'untriaged' || category === 'flaky') {
+    if (_testNeedsAction(test) && outcomeState === 'failed') {
         return [
             _e2eRowActionButton('Create Issue ▼', { action: 'create_issue_dropdown', cssClass: 'action-btn primary', nodeid: test.nodeid }),
             _e2eRowActionButton('Quarantine', { action: 'quarantine_test', cssClass: 'action-btn warning', nodeid: test.nodeid }),
-            _e2eRowActionButton('Copy Error', { action: 'copy_test_error', cssClass: 'action-btn', nodeid: test.nodeid }),
+            copyErrorButton,
         ].join('');
     }
+    if (outcomeState === 'failed') return copyErrorButton;
     return '';
 }
 
-function _renderTestRow(test, lifecycle) {
+function _renderTestRow(test, lifecycle, activeFilter = 'all') {
     const shortName = test.label || test.display_name || (test.nodeid || '').split('::').pop() || test.nodeid;
-    const effectiveOutcome = test.retry_outcome || test.outcome;
-    const outcomeIcon = effectiveOutcome === 'passed' ? '✓' : effectiveOutcome === 'skipped' ? '○' : '✗';
-    const outcomeClass = effectiveOutcome === 'passed' ? 'passed' : effectiveOutcome === 'skipped' ? 'skipped' : 'failed';
+    const outcomeState = _testOutcomeState(test);
+    const outcomeIcon = outcomeState === 'passed' || outcomeState === 'passed_on_retry'
+        ? '✓'
+        : outcomeState === 'skipped'
+            ? '○'
+            : outcomeState === 'quarantined'
+                ? '⊘'
+                : '✗';
+    const outcomeClass = outcomeState === 'passed' || outcomeState === 'passed_on_retry'
+        ? 'passed'
+        : outcomeState === 'skipped' || outcomeState === 'quarantined'
+            ? 'skipped'
+            : 'failed';
     const filterGroup = _testFilterGroup(test);
     const expand = _renderTestRowExpand(test, lifecycle);
     const expandable = Boolean(expand);
@@ -504,14 +640,17 @@ function _renderTestRow(test, lifecycle) {
         : '';
     const suiteHtml = test.suite_name ? `<div class="test-suite" title="${escapeHtml(test.suite_name)}">${escapeHtml(test.suite_name)}</div>` : '';
     const actions = _renderTestRowActions(test);
+    const hiddenForDefaultFilter = activeFilter !== 'all' && filterGroup !== activeFilter;
     return `
-        <div class="trr-row test-row" data-nodeid="${escapeAttr(test.nodeid)}" data-filter-group="${filterGroup}" data-expandable="${expandable ? '1' : '0'}">
+        <div class="trr-row test-row ${outcomeState}" data-nodeid="${escapeAttr(test.nodeid)}" data-filter-group="${filterGroup}" data-expandable="${expandable ? '1' : '0'}" ${hiddenForDefaultFilter ? 'style="display: none;"' : ''}>
             <div class="trr-row-main test-row-main" ${expandable ? `onclick="toggleTestRowExpand(this); event.stopPropagation();"` : ''} ${expandable ? 'role="button" tabindex="0" aria-expanded="false"' : ''}>
                 ${expandable ? '<span class="trr-caret" aria-hidden="true">▸</span>' : '<span class="trr-caret-spacer" aria-hidden="true"></span>'}
                 <span class="status-icon ${outcomeClass}">${outcomeIcon}</span>
                 <div class="trr-row-copy test-row-copy">
+                    ${_renderTestResultPills(test)}
                     <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
                     ${suiteHtml}
+                    ${_renderTestFailureSummary(test)}
                 </div>
                 ${sourceTag}
                 ${historyIcons}
@@ -530,23 +669,26 @@ function renderE2EResultsPanel(data) {
     const lifecycleMap = _lifecyclesByIssueNumber(data);
     const counts = {
         all: tests.length,
-        failing: tests.filter(t => _testFilterGroup(t) === 'failing').length,
+        action_needed: tests.filter(t => _testFilterGroup(t) === 'action_needed').length,
+        tracked: tests.filter(t => _testFilterGroup(t) === 'tracked').length,
+        passed_on_retry: tests.filter(t => _testFilterGroup(t) === 'passed_on_retry').length,
         passed: tests.filter(t => _testFilterGroup(t) === 'passed').length,
         skipped: tests.filter(t => _testFilterGroup(t) === 'skipped').length,
         quarantined: tests.filter(t => _testFilterGroup(t) === 'quarantined').length,
     };
+    const activeFilter = counts.action_needed ? 'action_needed' : 'all';
 
     const rowsHtml = tests.length
         ? tests.map(test => {
             const lifecycle = test.existing_issue ? lifecycleMap.get(Number(test.existing_issue.number)) : null;
-            return _renderTestRow(test, lifecycle);
+            return _renderTestRow(test, lifecycle, activeFilter);
         }).join('')
         : '<div class="empty-state">No test cases recorded for this run.</div>';
 
     const untriaged = (data.results_by_category && data.results_by_category.untriaged) || [];
     const bulkBar = untriaged.length ? `
         <div class="bulk-action-bar">
-            <span class="bulk-info">${untriaged.length} untriaged test(s)</span>
+            <span class="bulk-info">${untriaged.length} test${untriaged.length === 1 ? '' : 's'} need action</span>
             <div class="bulk-actions">
                 <select id="unifiedRunAgent" class="agent-select">
                     <option value="">Select agent...</option>
@@ -559,8 +701,8 @@ function renderE2EResultsPanel(data) {
 
     return `
         <div class="test-results-panel">
-            ${renderTestResultsHeadline(summary, tests.length)}
-            ${renderTestResultsFilters(counts)}
+            ${renderTestResultsHeadline(summary, tests.length, tests)}
+            ${renderTestResultsFilters(counts, activeFilter)}
             <div class="test-results-list">${rowsHtml}</div>
             ${bulkBar}
             ${renderRunDetailsDisclosure(data)}
@@ -574,7 +716,7 @@ function renderRunDetailsDisclosure(data) {
     const buttons = _renderRunArtifactButtons(data);
     return `
         <details class="run-details-disclosure" id="runDetailsDisclosure">
-            <summary>Run details<span class="rdd-summary-hint"> · command, raw artifacts, full timeline</span></summary>
+            <summary>Run evidence<span class="rdd-summary-hint"> · command, suite artifacts, suite timeline</span></summary>
             <div class="rdd-body">
                 <div class="rdd-grid">
                     <div class="rdd-row"><span class="rdd-label">Runner</span><span class="rdd-value">${escapeHtml(_formatRunnerLabel(run))}</span></div>
@@ -585,9 +727,9 @@ function renderRunDetailsDisclosure(data) {
                     ${run.branch ? `<div class="rdd-row"><span class="rdd-label">Branch</span><span class="rdd-value"><code>${escapeHtml(run.branch)}</code></span></div>` : ''}
                     <div class="rdd-row rdd-command-row"><span class="rdd-label">Command</span><span class="rdd-value">${command ? `<code class="e2e-run-command">${escapeHtml(command)}</code>` : 'Unavailable'}</span></div>
                 </div>
-                ${buttons ? `<div class="rdd-artifacts"><div class="rdd-section-title">Raw artifacts</div><div class="e2e-action-row">${buttons}</div></div>` : ''}
+                ${buttons ? `<div class="rdd-artifacts"><div class="rdd-section-title">Suite artifacts</div><div class="e2e-action-row">${buttons}</div></div>` : ''}
                 <div class="rdd-timeline">
-                    <div class="rdd-section-title">Run timeline</div>
+                    <div class="rdd-section-title">Suite timeline</div>
                     <div class="e2e-timeline-view-switcher">
                         <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this); event.stopPropagation();" data-view="user">Story</button>
                         <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this); event.stopPropagation();" data-view="ops">Ops</button>
@@ -641,14 +783,14 @@ function filterTestResults(filterKey, btnEl) {
 }
 
 function openE2ERunTimeline(runId) {
-    // Legacy entry point: open run modal and auto-expand the Run details
-    // disclosure (which holds the timeline).
+    // Legacy entry point: open run modal and auto-expand the Run evidence
+    // disclosure (which holds the suite timeline).
     return showUnifiedRunView(runId, { expandRunDetails: true });
 }
 
 /**
  * Render the run modal with a test-centric layout: tests are the headline,
- * run metadata + raw artifacts + full timeline live in a Run details
+ * run metadata + suite artifacts + suite timeline live in a Run evidence
  * disclosure at the bottom.
  */
 function renderUnifiedRunView(data, runId, options) {
@@ -738,15 +880,47 @@ async function switchE2ETimelineView(view, btn) {
     }
 }
 
+async function _copyTextToClipboard(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch (_err) {
+            // Fall back for browser contexts where Clipboard API permission is unavailable.
+        }
+    }
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.setAttribute('readonly', '');
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '0';
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+        const copied = document.execCommand('copy');
+        if (!copied) {
+            throw new Error('copy command was rejected');
+        }
+    } finally {
+        document.body.removeChild(textArea);
+    }
+}
+
 function copyTestErrorFromRun(nodeid) {
     if (!unifiedRunData) return;
 
     const test = _findResultCase(nodeid);
     if (test) {
-        const text = `Test: ${test.nodeid}\n\nError:\n${test.longrepr || 'No error details'}`;
-        navigator.clipboard.writeText(text).then(
+        const errorText = _testErrorText(test);
+        if (!errorText) {
+            showToast('No error text was recorded for this test', true);
+            return;
+        }
+        const text = `Test: ${test.nodeid}\n\nResult: ${_testOutcomeState(test)}\n\nError:\n${errorText}`;
+        _copyTextToClipboard(text).then(
             () => showToast('Error copied to clipboard'),
-            () => showToast('Failed to copy', true)
+            (err) => showToast(`Failed to copy: ${err instanceof Error ? err.message : String(err)}`, true)
         );
     }
 }
@@ -765,7 +939,7 @@ async function createIssuesForUntriaged() {
 
     const untriaged = _resultCategories(unifiedRunData).untriaged || [];
     if (untriaged.length === 0) {
-        showToast('No untriaged tests', true);
+        showToast('No tests need action', true);
         return;
     }
 

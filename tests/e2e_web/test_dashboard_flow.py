@@ -154,6 +154,7 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
                         "history": [],
                         "existing_issue": None,
                         "category": "failed",
+                        "result_category": "failed",
                         "flip_rate": 0.0,
                         "flip_rate_percent": 0.0,
                         "is_likely_flaky": False,
@@ -175,6 +176,7 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
                         "history": [],
                         "existing_issue": None,
                         "category": "passed",
+                        "result_category": "passed",
                         "flip_rate": 0.0,
                         "flip_rate_percent": 0.0,
                         "is_likely_flaky": False,
@@ -196,6 +198,7 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
                         "history": [],
                         "existing_issue": None,
                         "category": "skipped",
+                        "result_category": "skipped",
                         "flip_rate": 0.0,
                         "flip_rate_percent": 0.0,
                         "is_likely_flaky": False,
@@ -236,9 +239,9 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
     expect(structured).to_be_visible()
     headline = structured.locator(".test-results-headline")
     expect(headline).to_be_visible()
-    expect(headline).to_contain_text("3 total")
+    expect(headline).to_contain_text("3 tests")
     expect(headline).to_contain_text("1 passed")
-    expect(headline).to_contain_text("1 failing")
+    expect(headline).to_contain_text("1 failed")
     expect(headline).to_contain_text("1 skipped")
 
     # ── One row per junit_case, with right names ──
@@ -250,14 +253,14 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
     assert expected_skipped_label in rows_text
 
     # ── Filter chip toggles ──
-    failing_chip = structured.locator(".trf-chip[data-filter='failing']")
-    expect(failing_chip).to_be_visible()
-    failing_chip.click()
-    visible_after_failing = [
+    failed_chip = structured.locator(".trf-chip[data-filter='failed']")
+    expect(failed_chip).to_be_visible()
+    failed_chip.click()
+    visible_after_failed = [
         r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
     ]
-    assert len(visible_after_failing) == 1
-    assert expected_failed_label in (visible_after_failing[0].text_content() or "")
+    assert len(visible_after_failed) == 1
+    assert expected_failed_label in (visible_after_failed[0].text_content() or "")
 
     # Switch back to All to set up expand assertion
     structured.locator(".trf-chip[data-filter='all']").click()
@@ -327,6 +330,7 @@ def test_test_results_filter_is_panel_scoped_when_two_panels_coexist(
                         "display_name": "a_passes",
                         "suite_name": "tests",
                         "outcome": "passed", "category": "passed",
+                        "result_category": "passed",
                         "retry_outcome": None, "duration_seconds": 0.1,
                         "longrepr": None, "failure_summary": None,
                         "history": [], "existing_issue": None,
@@ -341,6 +345,7 @@ def test_test_results_filter_is_panel_scoped_when_two_panels_coexist(
                         "display_name": "a_fails",
                         "suite_name": "tests",
                         "outcome": "failed", "category": "failed",
+                        "result_category": "failed",
                         "retry_outcome": None, "duration_seconds": 0.2,
                         "longrepr": "panel A error", "failure_summary": "panel A error",
                         "history": [], "existing_issue": None,
@@ -370,12 +375,12 @@ def test_test_results_filter_is_panel_scoped_when_two_panels_coexist(
                     <div class="test-results-filters">
                         <button type="button" class="trf-chip active" data-filter="all"
                             onclick="filterTestResults('all', this)">All</button>
-                        <button type="button" class="trf-chip" data-filter="failing"
-                            onclick="filterTestResults('failing', this)">Failing</button>
+                        <button type="button" class="trf-chip" data-filter="failed"
+                            onclick="filterTestResults('failed', this)">Failed</button>
                     </div>
                     <div class="test-results-list">
                         <div class="trr-row" data-filter-group="passed" data-nodeid="b_pass">b_pass row</div>
-                        <div class="trr-row" data-filter-group="failing" data-nodeid="b_fail">b_fail row</div>
+                        <div class="trr-row" data-filter-group="failed" data-nodeid="b_fail">b_fail row</div>
                     </div>
                 </div>
             `;
@@ -393,9 +398,9 @@ def test_test_results_filter_is_panel_scoped_when_two_panels_coexist(
     assert panel_a.locator(".trr-row").count() == 2
     assert panel_b.locator(".trr-row").count() == 2
 
-    # Click "Failing" in panel A. Panel A: only the failing row visible.
+    # Click "Failed" in panel A. Panel A: only the failed row visible.
     # Panel B: both rows still visible (filter scope did not leak).
-    panel_a.locator(".trf-chip[data-filter='failing']").click()
+    panel_a.locator(".trf-chip[data-filter='failed']").click()
 
     a_visible = [
         r for r in panel_a.locator(".trr-row").all()

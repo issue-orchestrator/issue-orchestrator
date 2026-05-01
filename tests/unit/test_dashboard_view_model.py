@@ -105,6 +105,29 @@ def test_view_model_active_session_and_dashboard_data():
     assert dashboard_data["refresh"]["fetchLayerEnabled"] is True
 
 
+def test_dashboard_data_exposes_e2e_failure_evidence_for_live_badge_updates():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {
+            "enabled": True,
+            "running": False,
+            "needs_attention": True,
+            "last_run": {"id": 7, "status": "passed"},
+            "failed_tests": [{"nodeid": "tests/e2e/test_smoke.py::test_checkout"}],
+        },
+    )
+
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["e2eNeedsAttention"] is True
+    assert dashboard_data["e2eFailedTests"] == [
+        {"nodeid": "tests/e2e/test_smoke.py::test_checkout"}
+    ]
+
+
 def test_running_flow_card_uses_latest_timeline_snapshot():
     config = _make_config()
     agent_config = _make_agent_config()
@@ -1388,3 +1411,25 @@ def test_e2e_badge_state_maps_warning():
     )
     assert vm["badge"]["state"] == "warning"
     assert vm["badge"]["icon"] == "⚠"
+
+
+def test_e2e_badge_state_failed_when_passed_run_has_failed_test_evidence():
+    """Parsed failing tests must win over a superficially passed run status."""
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_view_model
+
+    vm = build_e2e_view_model(
+        e2e_status={
+            "running": False,
+            "needs_attention": False,
+            "last_run": {"id": 7, "status": "passed"},
+            "failed_tests": [{"nodeid": "tests/e2e/test_smoke.py::test_checkout"}],
+        },
+        e2e_items=[],
+        e2e_total=1,
+        e2e_page=1,
+        e2e_total_pages=1,
+        agents=[],
+    )
+
+    assert vm["badge"]["state"] == "failed"
+    assert vm["badge"]["icon"] == "✗"

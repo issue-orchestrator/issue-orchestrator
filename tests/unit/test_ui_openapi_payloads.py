@@ -386,6 +386,7 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
                 "history": [],
                 "existing_issue": None,
                 "category": "healthy",
+                "result_category": "passed",
                 "flip_rate": 0.0,
                 "flip_rate_percent": 0.0,
                 "is_likely_flaky": False,

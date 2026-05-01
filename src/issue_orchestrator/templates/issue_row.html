@@ -53,7 +53,7 @@
             {% elif issue.is_e2e %}
             {# E2E items without flow steps show their status #}
             <span class="e2e-run-label" title="E2E test run">
-                {% if issue.e2e_running %}⟳ Running{% elif issue.status == 'passed' %}✓ Passed{% elif issue.status == 'failed' %}✗ Failed{% elif issue.status == 'needs_attention' %}⚠ Needs Triage{% else %}E2E{% endif %}
+                {% if issue.e2e_running %}⟳ Running{% elif issue.status == 'passed' %}✓ Passed{% elif issue.status == 'failed' %}✗ Failed{% elif issue.status == 'needs_attention' %}⚠ Action Needed{% else %}E2E{% endif %}
             </span>
             {% endif %}
         </span>
