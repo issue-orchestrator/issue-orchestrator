@@ -12,6 +12,8 @@ from issue_orchestrator.entrypoints.timeline_presentation import (
     _review_transcript_context_for_event,
 )
 from issue_orchestrator.execution.timeline_writer import _enrich_narrative
+from issue_orchestrator.ports.timeline_store import TimelineRecord
+from issue_orchestrator.timeline import build_issue_timeline
 
 
 class TestRoleEventNarrativeEnrichment:
@@ -93,3 +95,45 @@ class TestRoleEventContextResolution:
             {"role": "coder"},
             "review_exchange.role_feedback",
         ) == {}
+
+
+class TestRoleTimeoutClassifiedAsFailure:
+    """``build_issue_timeline`` must classify ``review_exchange.role_timeout``
+    as a failure status. Without this the dashboard renders the row green
+    even though the per-role bailout is a real failure signal — the bug the
+    PR 6139 reviewer caught when ``_status_for_event`` returned ``completed``.
+    """
+
+    def test_role_timeout_event_renders_status_failed(self) -> None:
+        records = [
+            TimelineRecord(
+                event_id="e1",
+                timestamp="2026-05-02T18:00:00Z",
+                event="review_exchange.role_timeout",
+                data={
+                    "issue_number": 4057,
+                    "round_index": 2,
+                    "role": "coder",
+                    "reason": "no_completion",
+                },
+            ),
+        ]
+        events = build_issue_timeline(4057, records)["events"]
+        assert events[0]["status"] == "failed"
+
+    def test_role_prompted_and_feedback_do_not_render_as_failure(self) -> None:
+        # Sanity: only ROLE_TIMEOUT is a failure; PROMPTED/FEEDBACK are not.
+        for event_name in (
+            "review_exchange.role_prompted",
+            "review_exchange.role_feedback",
+        ):
+            records = [
+                TimelineRecord(
+                    event_id="e1",
+                    timestamp="2026-05-02T18:00:00Z",
+                    event=event_name,
+                    data={"issue_number": 4057, "round_index": 1, "role": "reviewer"},
+                ),
+            ]
+            event = build_issue_timeline(4057, records)["events"][0]
+            assert event["status"] != "failed", event_name
