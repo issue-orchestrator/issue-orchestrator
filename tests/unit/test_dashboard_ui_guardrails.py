@@ -106,6 +106,9 @@ def test_show_toast_errors_and_warnings_are_sticky() -> None:
     assert "if (!sticky)" in body
     # The non-sticky branch still uses the module timer.
     assert "setTimeout(() => hideToast(toast), 3000)" in body
+    # The toast-level click handler must early-return when sticky, so
+    # clicking the message body cannot dismiss a diagnostic toast.
+    assert "if (toast.classList.contains('sticky')) return;" in body
     # CSS must style the close button affordance.
     css = _read_dashboard_css_bundle()
     assert "#toast .toast-close" in css

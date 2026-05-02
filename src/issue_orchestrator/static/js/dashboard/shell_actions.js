@@ -119,6 +119,10 @@ function showToast(message, type = false) {
     if (!toast) return;
     if (!toast.dataset.dismissBound) {
         toast.addEventListener('click', (e) => {
+            // Sticky toasts (errors/warnings) only dismiss via the explicit
+            // close button — clicking the message must not lose diagnostic
+            // detail the user might be trying to read or copy.
+            if (toast.classList.contains('sticky')) return;
             // Don't dismiss when the user is selecting text to copy.
             const sel = window.getSelection && window.getSelection();
             if (sel && sel.toString && sel.toString().length > 0) return;
