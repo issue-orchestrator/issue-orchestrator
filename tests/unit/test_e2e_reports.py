@@ -291,7 +291,7 @@ def test_parse_junit_report_cached_reuses_parse_for_unchanged_file(tmp_path: Pat
 def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
     tmp_path: Path,
 ) -> None:
-    import time
+    import os
 
     _parse_junit_cached.cache_clear()
     report = tmp_path / "junit.xml"
@@ -305,23 +305,31 @@ def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
 """,
         encoding="utf-8",
     )
+    # Pin mtime deterministically — sleeping to wait for the FS clock to tick
+    # would flake on filesystems with coarse mtime resolution (HFS+, FAT) or
+    # slow CI clocks. The cache key is (path, mtime_ns, size); both must
+    # change to force a miss, so we also vary the body length below.
+    original_ns = 1_700_000_000_000_000_000
+    os.utime(report, ns=(original_ns, original_ns))
+
     raw_first, _ = parse_junit_report_cached(report)
     assert raw_first[0].system_out == "first"
 
-    # Sleep just past the mtime resolution boundary, then rewrite.
-    time.sleep(0.01)
     report.write_text(
         """\
 <testsuite name="suite">
   <testcase classname="pkg.test_mod" name="test_a" time="0.10">
-    <system-out>second</system-out>
+    <system-out>second-with-different-length</system-out>
   </testcase>
 </testsuite>
 """,
         encoding="utf-8",
     )
+    rewritten_ns = original_ns + 1_000_000_000  # one second later
+    os.utime(report, ns=(rewritten_ns, rewritten_ns))
+
     raw_second, _ = parse_junit_report_cached(report)
-    assert raw_second[0].system_out == "second"
+    assert raw_second[0].system_out == "second-with-different-length"
 
 
 def test_discover_report_artifacts_rejects_paths_outside_repo_root(
