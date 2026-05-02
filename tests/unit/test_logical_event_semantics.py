@@ -54,7 +54,7 @@ def test_rework_start_after_terminal_restart_keeps_rework_cycle_signal() -> None
     out = enrich_logical_semantics(
         event_name="rework.started",
         event_data={"task": "rework", "rework_cycle": 1},
-        previous_event_name="cleanup.completed",
+        previous_event_name="session.failed",
         previous_data={
             "logical_run": 3,
             "logical_cycle": 1,
@@ -71,7 +71,7 @@ def test_cached_rework_review_and_completion_stay_in_rework_cycle() -> None:
     rework_start = enrich_logical_semantics(
         event_name="rework.started",
         event_data={"task": "rework", "rework_cycle": 1},
-        previous_event_name="cleanup.completed",
+        previous_event_name="session.failed",
         previous_data={
             "logical_run": 3,
             "logical_cycle": 1,
@@ -104,14 +104,18 @@ def test_cached_rework_review_and_completion_stay_in_rework_cycle() -> None:
     assert completed.logical_phase == "rework"
 
 
-def test_pr_pending_removed_starts_new_logical_run() -> None:
+def test_pr_pending_removed_does_not_start_new_logical_run() -> None:
+    """pr-pending label churns naturally during the PR lifecycle and must not
+    split the issue's lifecycle into separate logical runs. Real restart triggers
+    are issue.unblocked, terminal events (issue.completed/blocked/needs_human,
+    session.failed/timeout/blocked), and orchestrator instance changes."""
     out = enrich_logical_semantics(
         event_name="issue.labels_changed",
         event_data={"removed": ["pr-pending"]},
         previous_event_name="review.approved",
         previous_data={"logical_run": 2, "logical_cycle": 1},
     )
-    assert out.logical_run == 3
+    assert out.logical_run == 2
     assert out.logical_cycle == 1
     assert out.logical_phase == "orchestrator"
 

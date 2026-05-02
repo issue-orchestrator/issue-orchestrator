@@ -245,7 +245,11 @@ SCENARIOS: list[LogicalRunScenario] = [
         expected_latest_session_run_ids=["code-1", "review-1", "code-2"],
     ),
     LogicalRunScenario(
-        name="pr_pending_removed_then_new_start_creates_new_logical_run",
+        # pr-pending label churns naturally during the PR lifecycle (e.g.
+        # PR-feedback rework after CR comments lands, label is removed and
+        # later re-added). That churn must not split a single continuous
+        # issue lifecycle into multiple logical runs.
+        name="pr_pending_removed_then_new_start_stays_single_logical_run",
         events=[
             _evt("session.started", timestamp="2026-02-09T10:00:00Z", run_id="code-1", rework_cycle=0),
             _evt("session.completed", timestamp="2026-02-09T10:15:00Z", status="completed", run_id="code-1", rework_cycle=0),
@@ -255,13 +259,16 @@ SCENARIOS: list[LogicalRunScenario] = [
             _evt("session.started", timestamp="2026-02-09T10:20:00Z", run_id="code-2", rework_cycle=0),
             _evt("session.completed", timestamp="2026-02-09T10:30:00Z", status="completed", run_id="code-2", rework_cycle=0),
         ],
-        expected_run_count=2,
-        expected_cycles_per_run=[1, 1],
-        expected_review_events_in_latest_run=0,
-        expected_latest_session_run_ids=["code-2"],
+        expected_run_count=1,
+        expected_cycles_per_run=[1],
+        expected_review_events_in_latest_run=2,
+        expected_latest_session_run_ids=["code-1", "review-1", "code-2"],
     ),
     LogicalRunScenario(
-        name="cleanup_completed_then_new_start_creates_new_logical_run",
+        # cleanup.completed is a routine between-phases artifact, not a real
+        # terminator. A subsequent session.started (e.g. PR-feedback rework)
+        # is the next phase of the same run, not a new run.
+        name="cleanup_completed_then_new_start_stays_single_logical_run",
         events=[
             _evt("session.started", timestamp="2026-02-09T10:00:00Z", run_id="code-1", rework_cycle=0),
             _evt("session.completed", timestamp="2026-02-09T10:15:00Z", status="completed", run_id="code-1", rework_cycle=0),
@@ -272,10 +279,10 @@ SCENARIOS: list[LogicalRunScenario] = [
             _evt("session.started", timestamp="2026-02-09T14:01:00Z", run_id="code-2", rework_cycle=0),
             _evt("session.completed", timestamp="2026-02-09T14:20:00Z", status="completed", run_id="code-2", rework_cycle=0),
         ],
-        expected_run_count=2,
-        expected_cycles_per_run=[1, 1],
-        expected_review_events_in_latest_run=0,
-        expected_latest_session_run_ids=["code-2"],
+        expected_run_count=1,
+        expected_cycles_per_run=[1],
+        expected_review_events_in_latest_run=2,
+        expected_latest_session_run_ids=["code-1", "review-1", "code-2"],
     ),
     LogicalRunScenario(
         name="mixed_missing_and_present_run_ids_stays_single_logical_run",

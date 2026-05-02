@@ -17,7 +17,6 @@ _TERMINAL_EVENTS = frozenset({
     "session.failed",
     "session.timeout",
     "session.blocked",
-    "cleanup.completed",
 })
 _RUN_RESTART_EVENTS = frozenset({"issue.unblocked"})
 _CYCLE_BOUNDARY_EVENTS = frozenset({
@@ -73,7 +72,6 @@ def enrich_logical_semantics(
     prev_restart_pending = bool(previous_data.get("_logical_restart_pending")) if previous_data else False
     logical_run = prev_run or 1
 
-    restart_due_to_label_change = _is_pr_pending_removed_event(event_name, event_data)
     restart_due_to_transition = (
         (previous_event_name in _TERMINAL_EVENTS or prev_restart_pending)
         and event_name in _ITERATION_START_EVENTS
@@ -85,7 +83,7 @@ def enrich_logical_semantics(
         and previous_instance_id
         and current_instance_id != previous_instance_id
     )
-    if restart_due_to_label_change or restart_due_to_transition or restart_due_to_event or restart_due_to_instance:
+    if restart_due_to_transition or restart_due_to_event or restart_due_to_instance:
         logical_run = logical_run + 1
 
     signal_cycle = _cycle_from_signal(event_data.get("rework_cycle"))
@@ -164,15 +162,6 @@ def _cycle_from_review_round(event_name: str, event_data: dict[str, Any]) -> int
         # later review outcomes into earlier cycles after retries/restarts.
         return round_index
     return None
-
-
-def _is_pr_pending_removed_event(event_name: str, event_data: dict[str, Any]) -> bool:
-    if event_name != "issue.labels_changed":
-        return False
-    removed = event_data.get("removed")
-    if not isinstance(removed, list):
-        return False
-    return any(isinstance(label, str) and label.split(":", 1)[0] == "pr-pending" for label in removed)
 
 
 def _compute_restart_pending(
