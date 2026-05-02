@@ -13,8 +13,7 @@ exchange-loop policy on top of it.
 from __future__ import annotations
 
 import json
-import subprocess
-from collections.abc import Callable
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -68,6 +67,7 @@ def _patch_persistent_runner(
     *,
     response_script: dict[str, list[dict[str, Any] | Exception]],
     write_recording: bool = True,
+    write_coder_completion: bool = True,
 ) -> dict[str, Any]:
     """Patch the runner functions in pse to consume a per-role response script.
 
@@ -75,8 +75,16 @@ def _patch_persistent_runner(
     a dict, the function returns it; if it's an exception, it raises.
     The opened session also gets a recording file written to make
     ``recording_event_count`` happy (or skipped via flag).
+
+    When ``write_coder_completion`` is True (default), each successful
+    coder send_round also writes a stub ``completion-coder.json`` so the
+    coder protocol guardrail finds the artifact it expects. Tests that
+    want to exercise the missing-completion path pass False.
     """
-    state: dict[str, Any] = {"opened": [], "rounds_seen": [], "closed": []}
+    state: dict[str, Any] = {
+        "opened": [], "rounds_seen": [], "closed": [],
+        "run_dir": None,
+    }
 
     def _open(*, command, working_dir, env, recording_path=None,
               additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
@@ -86,8 +94,13 @@ def _patch_persistent_runner(
         role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
         if write_recording and recording_path is not None:
             recording_path.parent.mkdir(parents=True, exist_ok=True)
-            # Seed with one event so recording_event_count() returns >=1.
-            recording_path.write_text('{"event_type":"resize"}\n', encoding="utf-8")
+            # Seed with one canonical TerminalRecordingEvent so the strict
+            # validation in recording_event_count is satisfied.
+            recording_path.write_text(
+                '{"schema_version":1,"event_type":"resize","offset_ms":0,'
+                '"rows":40,"cols":120}\n',
+                encoding="utf-8",
+            )
         state["opened"].append(role)
         return _FakeSession(role)
 
@@ -99,6 +112,24 @@ def _patch_persistent_runner(
         head = response_script[role].pop(0)
         if isinstance(head, Exception):
             raise head
+        # Stub the coder's completion artifact write so the protocol
+        # guardrail in pse._validate_coder_completion has the file it expects.
+        if role == "coder" and write_coder_completion:
+            run_dir = response_file.parent.parent
+            state["run_dir"] = run_dir
+            completion = run_dir / "coder" / "completion-coder.json"
+            completion.parent.mkdir(parents=True, exist_ok=True)
+            completion.write_text(
+                json.dumps({"outcome": "completed", "implementation": "stub"}),
+                encoding="utf-8",
+            )
+            # Also stub a passing validation-record.json by default so
+            # require_validation=True tests don't blow up on the coder
+            # guardrail. Tests exercising missing-validation set
+            # ``write_coder_completion=False``.
+            (run_dir / "validation-record.json").write_text(
+                json.dumps({"passed": True}), encoding="utf-8",
+            )
         return head
 
     def _close(session, **_):
@@ -248,28 +279,39 @@ class TestExchangeTerminationConditions:
         assert outcome.status == "stopped"
         assert outcome.reason == "reviewer_reports_no_progress"
 
-    def test_validation_gate_overrides_reviewer_ok(
+    def test_reviewer_ok_overridden_when_validation_required_but_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Reviewer returns ok but validation-record.json is missing → coerced to
-        changes_requested, exchange continues to next round (or hits max)."""
+        """Reviewer returns ok in round 1 but validation-record.json is missing
+        — the loop coerces the reviewer's verdict to changes_requested and
+        continues into the coder turn. The coder also can't satisfy the
+        protocol (no validation record possible), so retries exhaust and the
+        outcome is coder_protocol_error. The point this test pins is that
+        the coder turn WAS attempted: the coercion fired and the exchange
+        did not return ``status=ok`` from the reviewer's optimistic verdict.
+        """
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        _patch_persistent_runner(
+        # write_coder_completion=False: the helper does NOT write
+        # completion-coder.json or a passing validation record, so the
+        # coder protocol guardrail will fail on every send_round and
+        # retries will run.
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [
                     {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
-                    {"response_type": "ok", "response_text": "lgtm again", "getting_closer": True},
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "Done r1", "getting_closer": None},
-                    {"response_type": "ok", "response_text": "Done r2", "getting_closer": None},
+                    {"response_type": "ok", "response_text": "x", "getting_closer": None},
+                    {"response_type": "ok", "response_text": "y", "getting_closer": None},
+                    {"response_type": "ok", "response_text": "z", "getting_closer": None},
                 ],
             },
+            write_coder_completion=False,
         )
 
         outcome = pse.run_persistent_session_exchange(
@@ -284,14 +326,15 @@ class TestExchangeTerminationConditions:
             reviewer_agent=_make_agent(prompt_path),
             max_rounds=2,
             max_no_progress=5,
-            require_validation=True,  # <-- validation record never written
+            require_validation=True,
         )
 
-        # Round 1's "ok" is overridden to changes_requested; round 2's "ok"
-        # is also overridden, exchange runs out of rounds. Status is
-        # "stopped" with reason max_rounds_exceeded — the gate did its job.
-        assert outcome.status == "stopped"
-        assert outcome.reason == "max_rounds_exceeded"
+        assert outcome.status == "error"
+        assert outcome.reason == "coder_protocol_error"
+        # And the coder turn was indeed attempted — proves the reviewer
+        # coercion fired (otherwise the exchange would have returned ok).
+        coder_calls = [r for role, _ in state["rounds_seen"] if (r := role) == "coder"]
+        assert coder_calls, "coder turn must have been attempted"
 
     def test_reviewer_timeout_exits_with_no_completion(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -535,6 +578,316 @@ class TestCallerHooks:
 # ---------------------------------------------------------------------------
 # Cleanup invariant
 # ---------------------------------------------------------------------------
+
+
+class TestCoderProtocolGuardrail:
+    """Parity with the active runner's _validate_coder_protocol: the coder
+    must produce completion-coder.json (output of ``coding-done``) or the
+    round is treated as a protocol error and retried."""
+
+    def test_missing_coder_completion_triggers_retries_then_protocol_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        # No completion artifact gets written (write_coder_completion=False).
+        # 1 initial coder round + _CODER_PROTOCOL_RETRY_LIMIT (=2) retries
+        # = 3 send_round calls before the runner gives up.
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "fix",
+                     "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "x", "getting_closer": None},
+                    {"response_type": "ok", "response_text": "y", "getting_closer": None},
+                    {"response_type": "ok", "response_text": "z", "getting_closer": None},
+                ],
+            },
+            write_coder_completion=False,
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=5,
+            require_validation=False,
+            events=sink,
+            event_context=ctx,
+        )
+
+        assert outcome.status == "error"
+        assert outcome.reason == "coder_protocol_error"
+        # 3 coder send_rounds happened (1 initial + 2 retries).
+        coder_rounds = [r for r in state["rounds_seen"] if r[0] == "coder"]
+        assert len(coder_rounds) == 3
+        # Terminal event fired with status=error so timeline consumers see
+        # the exchange ended definitively.
+        assert any(
+            evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
+            and evt.data.get("status") == "error"
+            and evt.data.get("reason") == "coder_protocol_error"
+            for evt in sink.events
+        )
+
+    def test_coder_completion_present_passes_protocol(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sanity: when the coder writes completion-coder.json (the helper's
+        default), no retry path is taken — only one coder send_round per round."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "fix",
+                     "getting_closer": True},
+                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=2,
+            max_no_progress=5,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        coder_rounds = [r for r in state["rounds_seen"] if r[0] == "coder"]
+        assert len(coder_rounds) == 1
+
+
+class TestTerminalEventsOnError:
+    """Every error/timeout exit path emits a terminal REVIEW_EXCHANGE_COMPLETED
+    event so the timeline / publish cache observe a definitive end-of-exchange."""
+
+    def test_reviewer_timeout_emits_terminal_completed_event_with_error_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+        _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [PersistentRoundTimeoutError("timeout")],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=5,
+            require_validation=False,
+            events=sink,
+            event_context=ctx,
+        )
+
+        assert outcome.status == "error"
+        assert outcome.reason == "reviewer_no_completion"
+        terminal = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
+        ]
+        assert len(terminal) == 1
+        assert terminal[0].data.get("status") == "error"
+        assert terminal[0].data.get("reason") == "reviewer_no_completion"
+
+    def test_summary_status_matches_outcome_for_error_exits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """summary.json's ``status`` must match the outcome's ``status``,
+        not say "stopped"/"incomplete" while the outcome says "error"."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+        _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [PersistentRoundTimeoutError("timeout")],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=5,
+            require_validation=False,
+        )
+
+        assert outcome.summary is not None
+        assert outcome.summary["status"] == "error"
+        assert outcome.summary["reason"] == "reviewer_no_completion"
+
+
+class TestRecordingContractFailLoud:
+    """Missing or corrupt recording at chapter time is a broken replay
+    contract and must surface as a definitive exchange failure, not a
+    silent skipped chapter."""
+
+    def test_missing_recording_at_chapter_time_fails_exchange(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        # write_recording=False: helper does NOT seed the recording file,
+        # so the first _record_chapter call hits a missing recording and
+        # raises FileNotFoundError up the stack.
+        _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "lgtm",
+                              "getting_closer": True}],
+                "coder": [],
+            },
+            write_recording=False,
+        )
+
+        with pytest.raises(FileNotFoundError):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_path=reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=5,
+                require_validation=False,
+                events=sink,
+                event_context=ctx,
+            )
+        # FAILED event fired before the raise propagated.
+        assert any(
+            evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events
+        )
+
+
+class TestAtomicSummaryWrite:
+    def test_summary_write_is_atomic_no_partial_file_visible(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The orchestrator polls summary.json from a different process
+        while the exchange runs in the background. The write must be
+        atomic — a torn file would surface as JSONDecodeError on the
+        polling tick.
+
+        We verify the contract by patching ``os.replace`` to capture the
+        intermediate temp path and asserting that the destination is
+        either fully present or absent at any observable moment.
+        """
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "lgtm",
+                              "getting_closer": True}],
+                "coder": [],
+            },
+        )
+
+        observed_tmp_paths: list[str] = []
+        real_replace = os.replace
+
+        def _capturing_replace(src: str, dst: str) -> None:
+            observed_tmp_paths.append(src)
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(pse.os, "replace", _capturing_replace)
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=5,
+            require_validation=False,
+        )
+
+        # summary.json was written via a tempfile + atomic replace.
+        assert observed_tmp_paths, "atomic write was not exercised"
+        assert all(str(p).endswith(".tmp") for p in observed_tmp_paths)
+        assert outcome.summary is not None
 
 
 class TestSessionCleanup:

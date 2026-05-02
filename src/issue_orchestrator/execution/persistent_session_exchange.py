@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +61,8 @@ from .persistent_round_runner import (
 
 logger = logging.getLogger(__name__)
 
+
+_CODER_PROTOCOL_RETRY_LIMIT = 2
 
 _BOOTSTRAP_PROMPT_TEMPLATE = (
     "You are the {role} in a coder↔reviewer review exchange for issue "
@@ -410,6 +414,9 @@ def _drive_rounds(  # noqa: PLR0913
                 round_index=round_index,
                 role="reviewer",
                 last_reviewer=None,
+                emit=emit,
+                issue_number=issue_number,
+                session_name=session_name,
             )
 
         if require_validation and reviewer.response_type == "ok" and not _validation_passed(run_dir):
@@ -496,7 +503,30 @@ def _drive_rounds(  # noqa: PLR0913
                 round_index=round_index,
                 role="coder",
                 last_reviewer=reviewer,
+                emit=emit,
+                issue_number=issue_number,
+                session_name=session_name,
             )
+
+        coder, protocol_outcome = _enforce_coder_protocol(
+            session_output=session_output,
+            coder_session=coder_session,
+            coder=coder,
+            reviewer=reviewer,
+            run_dir=run_dir,
+            exchange_dir=exchange_dir,
+            coder_response=coder_response,
+            coder_recording=coder_recording,
+            coder_timeout_seconds=coder_timeout_seconds,
+            require_validation=require_validation,
+            exchange_run_id=exchange_run_id,
+            issue_number=issue_number,
+            session_name=session_name,
+            cycle_index=round_index,
+            emit=emit,
+        )
+        if protocol_outcome is not None:
+            return protocol_outcome
 
         emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
             "issue_number": issue_number,
@@ -509,7 +539,11 @@ def _drive_rounds(  # noqa: PLR0913
         })
         last_coder_text = coder.response_text
 
-    summary = _write_summary(exchange_dir, max_rounds, reviewer_response=None)
+    summary = _write_summary(
+        exchange_dir, max_rounds,
+        status="stopped", reason="max_rounds_exceeded",
+        reviewer_response=None,
+    )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
         "session_name": session_name,
@@ -525,6 +559,107 @@ def _drive_rounds(  # noqa: PLR0913
         exchange_dir=exchange_dir,
         summary=summary,
     )
+
+
+def _enforce_coder_protocol(  # noqa: PLR0913
+    *,
+    session_output: SessionOutput,
+    coder_session: PersistentSession,
+    coder: ReviewExchangeResponse,
+    reviewer: ReviewExchangeResponse,
+    run_dir: Path,
+    exchange_dir: Path,
+    coder_response: Path,
+    coder_recording: Path,
+    coder_timeout_seconds: float,
+    require_validation: bool,
+    exchange_run_id: str,
+    issue_number: int,
+    session_name: str,
+    cycle_index: int,
+    emit: Callable[[EventName, dict[str, Any]], None],
+) -> tuple[ReviewExchangeResponse, ReviewExchangeOutcome | None]:
+    """Validate the coder produced its completion-coder.json artifact, retry
+    with a remediation prompt up to ``_CODER_PROTOCOL_RETRY_LIMIT`` times,
+    and return either the validated response or a terminal outcome.
+
+    Mirrors the active runner's _run_coder_round_with_protocol_retries.
+    Without this guardrail a coder could advance the exchange by writing
+    only the review-response file while skipping coding-done.
+    """
+    protocol_error = _validate_coder_completion(
+        run_dir, require_validation=require_validation,
+    )
+    retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
+    while protocol_error is not None and retries_remaining > 0:
+        retries_remaining -= 1
+        retry_prompt = (
+            f"{protocol_error}\n"
+            "Run `coding-done completed --implementation '...' --problems '...'` "
+            "(or `coding-done blocked --reason '...' --attempted '...'` if you "
+            "cannot continue), then write your one-line JSON response again to "
+            "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
+        )
+        _record_chapter(
+            session_output=session_output,
+            run_dir=run_dir,
+            role="coder",
+            recording_path=coder_recording,
+            exchange_run_id=exchange_run_id,
+            issue_number=issue_number,
+            cycle_index=cycle_index,
+            section=CHAPTER_SECTION_PROMPT,
+            label=f"Round {cycle_index} coder protocol-retry",
+        )
+        emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": cycle_index,
+            "role": "coder",
+            "prompt_chars": len(retry_prompt),
+            "protocol_retry": True,
+        })
+        retry_response = _send_role_round(
+            session=coder_session,
+            role="coder",
+            response_file=coder_response,
+            recording_path=coder_recording,
+            prompt=retry_prompt,
+            timeout_seconds=coder_timeout_seconds,
+            session_output=session_output,
+            run_dir=run_dir,
+            exchange_run_id=exchange_run_id,
+            issue_number=issue_number,
+            cycle_index=cycle_index,
+            session_name=session_name,
+            emit=emit,
+        )
+        if retry_response is None:
+            return coder, _build_outcome_for_role_timeout(
+                exchange_dir=exchange_dir,
+                round_index=cycle_index,
+                role="coder",
+                last_reviewer=reviewer,
+                emit=emit,
+                issue_number=issue_number,
+                session_name=session_name,
+            )
+        coder = retry_response
+        protocol_error = _validate_coder_completion(
+            run_dir, require_validation=require_validation,
+        )
+    if protocol_error is not None:
+        return coder, _build_outcome_for_protocol_error(
+            exchange_dir=exchange_dir,
+            round_index=cycle_index,
+            last_reviewer=reviewer,
+            last_coder=coder,
+            protocol_error=protocol_error,
+            emit=emit,
+            issue_number=issue_number,
+            session_name=session_name,
+        )
+    return coder, None
 
 
 def _send_role_round(  # noqa: PLR0913
@@ -647,7 +782,10 @@ def _complete_with_reviewer_ok(
     issue_number: int,
     session_name: str,
 ) -> ReviewExchangeOutcome:
-    summary = _write_summary(exchange_dir, round_index, reviewer)
+    summary = _write_summary(
+        exchange_dir, round_index,
+        status="ok", reason="reviewer_ok", reviewer_response=reviewer,
+    )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
         "session_name": session_name,
@@ -682,7 +820,11 @@ def _stop_for_no_progress(
     issue_number: int,
     session_name: str,
 ) -> ReviewExchangeOutcome:
-    summary = _write_summary(exchange_dir, round_index, reviewer)
+    summary = _write_summary(
+        exchange_dir, round_index,
+        status="stopped", reason="reviewer_reports_no_progress",
+        reviewer_response=reviewer,
+    )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
         "session_name": session_name,
@@ -714,12 +856,84 @@ def _build_outcome_for_role_timeout(
     round_index: int,
     role: str,
     last_reviewer: ReviewExchangeResponse | None,
+    emit: Callable[[EventName, dict[str, Any]], None],
+    issue_number: int,
+    session_name: str,
 ) -> ReviewExchangeOutcome:
-    summary = _write_summary(exchange_dir, round_index, last_reviewer)
+    """Build the ``error`` outcome when a role times out / dies / fails protocol.
+
+    Persists the summary with matching ``status`` and emits the terminal
+    ``REVIEW_EXCHANGE_COMPLETED`` event so timeline / cache consumers see
+    a definitive end-of-exchange marker. Without the event the active
+    path's contract — every exchange ends with one COMPLETED or FAILED
+    event — is broken on the persistent path.
+    """
+    reason = f"{role}_no_completion"
+    summary = _write_summary(
+        exchange_dir, round_index,
+        status="error", reason=reason, reviewer_response=last_reviewer,
+    )
+    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "rounds": round_index,
+        "status": "error",
+        "reason": reason,
+    })
     return ReviewExchangeOutcome(
         status="error",
         rounds=round_index,
-        reason=f"{role}_no_completion",
+        reason=reason,
+        reviewer_response=last_reviewer,
+        exchange_dir=exchange_dir,
+        summary=summary,
+    )
+
+
+def _build_outcome_for_protocol_error(
+    *,
+    exchange_dir: Path,
+    round_index: int,
+    last_reviewer: ReviewExchangeResponse | None,
+    last_coder: ReviewExchangeResponse | None,
+    protocol_error: str,
+    emit: Callable[[EventName, dict[str, Any]], None],
+    issue_number: int,
+    session_name: str,
+) -> ReviewExchangeOutcome:
+    """Build the ``error`` outcome when the coder fails its protocol contract.
+
+    Mirrors the active runner's ``_stop_for_protocol_error``: emits a
+    REVIEW_EXCHANGE_ROUND_COMPLETED with the partial round's data plus a
+    REVIEW_EXCHANGE_COMPLETED with status=error and protocol_error reason.
+    """
+    summary = _write_summary(
+        exchange_dir, round_index,
+        status="error", reason="coder_protocol_error",
+        reviewer_response=last_reviewer,
+    )
+    emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": round_index,
+        "reviewer_response_type": last_reviewer.response_type if last_reviewer else None,
+        "reviewer_response_text": last_reviewer.response_text if last_reviewer else None,
+        "coder_response_type": "protocol_error",
+        "coder_response_text": last_coder.response_text if last_coder else None,
+        "detail": protocol_error,
+    })
+    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "rounds": round_index,
+        "status": "error",
+        "reason": "coder_protocol_error",
+        "detail": protocol_error,
+    })
+    return ReviewExchangeOutcome(
+        status="error",
+        rounds=round_index,
+        reason="coder_protocol_error",
         reviewer_response=last_reviewer,
         exchange_dir=exchange_dir,
         summary=summary,
@@ -729,20 +943,24 @@ def _build_outcome_for_role_timeout(
 def _write_summary(
     exchange_dir: Path,
     round_index: int,
+    *,
+    status: str,
+    reason: str,
     reviewer_response: ReviewExchangeResponse | None,
 ) -> dict[str, Any]:
+    """Persist summary.json atomically using the same shape the active
+    runner emits, so the publish-cache contract is uniform across both
+    runners. ``status`` is the ReviewExchangeOutcome status value
+    ("ok"/"stopped"/"error"); ``reason`` carries the matching reason
+    token."""
     summary = {
         "completed_rounds": round_index,
-        "status": "ok" if reviewer_response and reviewer_response.response_type == "ok" else "stopped",
-        "response_text": reviewer_response.response_text if reviewer_response else "",
-        "reason": (
-            "reviewer_ok"
-            if reviewer_response and reviewer_response.response_type == "ok"
-            else "incomplete"
-        ),
+        "status": status,
+        "response_text": reviewer_response.response_text if reviewer_response else None,
+        "reason": reason,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    summary_path = exchange_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary
 
 
@@ -765,32 +983,26 @@ def _record_chapter(  # noqa: PLR0913
 ) -> None:
     """Capture the recording's current event index and append a chapter.
 
-    Errors are logged but not raised — chapter writes are advisory; if
-    the recording is briefly missing we want the exchange to keep
-    running, not bail mid-round.
+    Errors propagate. Role recordings are created at session open and the
+    chapter offset is the UI contract for scrubbing the persistent
+    recording — a missing recording or failed sidecar write means the
+    replay contract is broken, not a best-effort detail. The top-level
+    ``run_persistent_session_exchange`` handler converts the propagated
+    exception into a REVIEW_EXCHANGE_FAILED event and re-raises so the
+    orchestrator surface treats it as a definitive exchange failure.
     """
-    try:
-        event_index = recording_event_count(recording_path)
-    except FileNotFoundError:
-        logger.warning(
-            "Recording missing for %s at chapter time; skipping chapter %s",
-            role, label,
-        )
-        return
-    try:
-        session_output.record_exchange_chapter(
-            run_dir,
-            role=role,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=cycle_index,
-            section=section,
-            recording_event_index=event_index,
-            recorded_at=datetime.now(timezone.utc).isoformat(),
-            label=label,
-        )
-    except Exception:
-        logger.warning("Failed to record chapter %s/%s", role, label, exc_info=True)
+    event_index = recording_event_count(recording_path)
+    session_output.record_exchange_chapter(
+        run_dir,
+        role=role,
+        exchange_run_id=exchange_run_id,
+        issue_number=issue_number,
+        cycle_index=cycle_index,
+        section=section,
+        recording_event_index=event_index,
+        recorded_at=datetime.now(timezone.utc).isoformat(),
+        label=label,
+    )
 
 
 def _validation_passed(run_dir: Path) -> bool:
@@ -802,3 +1014,66 @@ def _validation_passed(run_dir: Path) -> bool:
     except json.JSONDecodeError:
         return False
     return bool(data.get("passed"))
+
+
+def _validate_coder_completion(
+    run_dir: Path,
+    *,
+    require_validation: bool,
+) -> str | None:
+    """Mirror of control/review_exchange_loop._validate_coder_protocol.
+
+    The coder must produce a completion-coder.json artifact (the
+    ``coding-done`` CLI's output) and, when ``require_validation`` is on,
+    a passing validation-record.json. A coder that only writes the
+    review-response file but skips coding-done would otherwise advance
+    the exchange by accident.
+    """
+    completion_path = run_dir / "coder" / "completion-coder.json"
+    if not completion_path.exists():
+        return f"missing completion artifact: {completion_path}"
+    if completion_path.stat().st_size <= 0:
+        return f"completion artifact is empty: {completion_path}"
+    try:
+        payload = json.loads(completion_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return f"completion artifact is not valid JSON: {completion_path}"
+    if not isinstance(payload, dict):
+        return f"completion artifact must be a JSON object: {completion_path}"
+    if require_validation and not _validation_passed(run_dir):
+        return "validation-record.json missing or did not pass"
+    return None
+
+
+_ATOMIC_WRITE_TMP_PREFIX = "."
+_ATOMIC_WRITE_TMP_SUFFIX = ".tmp"
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomic write so concurrent polls never see a torn summary file.
+
+    Mirrors ``control/review_exchange_loop._atomic_write_json``. The main
+    orchestrator tick polls ``summary.json`` every iteration to detect
+    async review-exchange completion; a non-atomic write creates a window
+    where a reader hits a partial file and raises JSONDecodeError. Write
+    to a sibling temp file on the same filesystem and rename — POSIX
+    ``os.replace`` is atomic, so any reader sees either the pre-write
+    content or the full new content.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(payload, indent=2)
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f"{_ATOMIC_WRITE_TMP_PREFIX}{path.name}.",
+        suffix=_ATOMIC_WRITE_TMP_SUFFIX,
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(encoded)
+        os.replace(tmp_path_str, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path_str)
+        except FileNotFoundError:
+            pass
+        raise
