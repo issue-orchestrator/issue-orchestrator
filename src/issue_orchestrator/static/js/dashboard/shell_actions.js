@@ -118,20 +118,50 @@ function showToast(message, type = false) {
     const toast = document.getElementById('toast');
     if (!toast) return;
     if (!toast.dataset.dismissBound) {
-        toast.addEventListener('click', () => {
+        toast.addEventListener('click', (e) => {
+            // Don't dismiss when the user is selecting text to copy.
+            const sel = window.getSelection && window.getSelection();
+            if (sel && sel.toString && sel.toString().length > 0) return;
+            // Ignore clicks on the explicit close button — its own handler runs.
+            if (e.target && e.target.classList && e.target.classList.contains('toast-close')) {
+                return;
+            }
             clearTimeout(toastTimer);
             hideToast(toast);
         });
         toast.dataset.dismissBound = 'true';
     }
     const toastType = normalizeToastType(type);
-    toast.textContent = message;
-    toast.classList.remove('info', 'success', 'warning', 'error', 'visible');
+    // Errors and warnings stay until dismissed so the user can read or copy
+    // the diagnostic detail (e.g. GitHub API reason text). Info/success
+    // confirmations auto-dismiss.
+    const sticky = toastType === 'error' || toastType === 'warning';
+    toast.classList.remove('info', 'success', 'warning', 'error', 'visible', 'sticky');
+    toast.replaceChildren();
+    const messageEl = document.createElement('span');
+    messageEl.className = 'toast-message';
+    messageEl.textContent = message;
+    toast.appendChild(messageEl);
+    if (sticky) {
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'toast-close';
+        closeBtn.setAttribute('aria-label', 'Dismiss');
+        closeBtn.textContent = '×';
+        closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            clearTimeout(toastTimer);
+            hideToast(toast);
+        });
+        toast.appendChild(closeBtn);
+        toast.classList.add('sticky');
+    }
     toast.classList.add(toastType);
     toast.classList.add('visible');
     clearTimeout(toastTimer);
-    const duration = toastType === 'error' ? 7000 : 3000;
-    toastTimer = setTimeout(() => hideToast(toast), duration);
+    if (!sticky) {
+        toastTimer = setTimeout(() => hideToast(toast), 3000);
+    }
 }
 
 /**
