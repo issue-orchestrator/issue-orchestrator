@@ -28,3 +28,19 @@ def test_infer_event_intent_prefers_typed_review_and_rework() -> None:
     assert infer_event_intent(event_name=EventName.REVIEW_STARTED.value) == EventIntent.REVIEW
     assert infer_event_intent(event_name=EventName.REWORK_STARTED.value) == EventIntent.REWORK
     assert infer_event_intent(event_name=EventName.SESSION_STARTED.value) == EventIntent.CODING
+
+
+def test_role_level_review_exchange_events_classify_as_review() -> None:
+    """ROLE_PROMPTED / ROLE_FEEDBACK / ROLE_TIMEOUT must classify as review-family
+    events. Without this, the timeline projection assigns them ``phase=system``
+    and ``review_oriented=False``.
+    """
+    role_events = (
+        EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+        EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+        EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT,
+    )
+    for event in role_events:
+        assert is_review_event_name(event.value), event.value
+        assert is_review_exchange_event_name(event.value), event.value
+        assert infer_event_intent(event_name=event.value) == EventIntent.REVIEW, event.value

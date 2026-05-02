@@ -22,9 +22,21 @@ from issue_orchestrator.control.review_exchange_loop import (
     run_review_exchange_loop,
 )
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV, get_gradle_user_home
+from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.env import ENV_PREFIX
+from issue_orchestrator.ports import TraceEvent
+
+
+class _CollectingEventSink:
+    """Minimal EventSink that records every published event for assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def publish(self, event: TraceEvent) -> None:
+        self.events.append(event)
 
 
 @pytest.fixture(autouse=True)
@@ -688,6 +700,173 @@ def test_parse_exchange_response_repairs_tab_characters_inside_response_text() -
     assert response is not None
     assert response.response_type == "changes_requested"
     assert "\t1. Add the UI." in response.response_text
+
+
+def test_review_exchange_emits_role_events_from_active_path(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The active control-layer path must emit ROLE_PROMPTED + ROLE_FEEDBACK
+    for both reviewer and coder, alongside the existing ROUND events.
+
+    Regression for the PR 6138 review finding: events were only emitted from
+    ``execution/review_exchange_local_loop.py`` (a path used only by unit
+    tests) so production review exchanges shipped role-blind timelines.
+    """
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-exchange"
+    run_dir.mkdir(parents=True)
+
+    session_output = MagicMock()
+    session_output.start_run.return_value = SimpleNamespace(
+        run_dir=run_dir, run_id="run-exchange",
+    )
+
+    class DummyRunner:
+        def run(self, spec):
+            role = Path(spec.output_dir).name
+            if role == "reviewer":
+                _write_response_file(
+                    spec,
+                    '{"response_type":"changes_requested","getting_closer":true,'
+                    '"response_text":"fix the typo"}\n',
+                )
+            else:  # coder
+                _write_response_file(
+                    spec,
+                    '{"response_type":"ok","response_text":"applied"}\n',
+                )
+                (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+            return SimpleNamespace(succeeded=True, exit_code=0, timed_out=False, stderr="")
+
+    monkeypatch.setattr(
+        "issue_orchestrator.control.review_exchange_loop.AgentRunner", DummyRunner,
+    )
+
+    sink = _CollectingEventSink()
+    ctx = EventContext()
+
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    run_review_exchange_loop(
+        session_output=session_output,
+        worktree_path=worktree,
+        issue_number=4057,
+        issue_title="Test",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=2,
+        require_validation=False,
+        web_port=None,
+        events=sink,
+        event_context=ctx,
+    )
+
+    # Sequence within round 1: reviewer prompted → reviewer feedback →
+    # coder prompted → coder feedback. ROUND_STARTED still fires alongside
+    # the reviewer ROLE_PROMPTED.
+    role_events = [
+        (event.event_type.value, event.data.get("role"), event.data.get("response_type"))
+        for event in sink.events
+        if event.event_type in (
+            EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+            EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+        )
+    ]
+    assert role_events == [
+        ("review_exchange.role_prompted", "reviewer", None),
+        ("review_exchange.role_feedback", "reviewer", "changes_requested"),
+        ("review_exchange.role_prompted", "coder", None),
+        ("review_exchange.role_feedback", "coder", "ok"),
+    ]
+    # The existing round event must still fire — we are adding events,
+    # not replacing.
+    assert any(
+        event.event_type == EventName.REVIEW_EXCHANGE_ROUND_STARTED
+        for event in sink.events
+    )
+
+
+def test_review_exchange_emits_role_timeout_when_coder_protocol_fails(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Coder protocol_error path must emit ROLE_TIMEOUT(coder) before bailing out.
+
+    Regression for the PR 6138 finding: the active path had no per-role
+    timeout signal, so failures looked indistinguishable from successful
+    rounds in the timeline.
+    """
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-exchange"
+    run_dir.mkdir(parents=True)
+
+    session_output = MagicMock()
+    session_output.start_run.return_value = SimpleNamespace(
+        run_dir=run_dir, run_id="run-exchange",
+    )
+
+    class DummyRunner:
+        def run(self, spec):
+            role = Path(spec.output_dir).name
+            if role == "reviewer":
+                _write_response_file(
+                    spec,
+                    '{"response_type":"changes_requested","getting_closer":true,'
+                    '"response_text":"fix"}\n',
+                )
+                return SimpleNamespace(
+                    succeeded=True, exit_code=0, timed_out=False, stderr="",
+                )
+            # Coder never produces the expected completion file; protocol error.
+            _write_response_file(spec, '{"response_type":"ok","response_text":"x"}\n')
+            return SimpleNamespace(
+                succeeded=True, exit_code=0, timed_out=False, stderr="",
+            )
+
+    monkeypatch.setattr(
+        "issue_orchestrator.control.review_exchange_loop.AgentRunner", DummyRunner,
+    )
+
+    sink = _CollectingEventSink()
+    ctx = EventContext()
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    run_review_exchange_loop(
+        session_output=session_output,
+        worktree_path=worktree,
+        issue_number=4057,
+        issue_title="Test",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=2,
+        require_validation=False,
+        web_port=None,
+        events=sink,
+        event_context=ctx,
+    )
+
+    timeout_events = [
+        event for event in sink.events
+        if event.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+    ]
+    assert len(timeout_events) == 1
+    payload = timeout_events[0].data
+    assert payload["role"] == "coder"
+    assert payload["reason"] == "protocol_error"
+    assert payload["round_index"] == 1
 
 
 def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeypatch) -> None:

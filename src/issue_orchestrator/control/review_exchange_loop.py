@@ -232,6 +232,26 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
 
     for round_index in range(1, max_rounds + 1):
         current_round = round_index
+
+        def _emit_reviewer_prompt_ready(round_index: int = round_index) -> None:
+            emit(
+                EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+                {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                },
+            )
+            emit(
+                EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+                {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "role": "reviewer",
+                },
+            )
+
         reviewer_response = _run_reviewer_round(
             session_output=session_output,
             runner=runner,
@@ -248,14 +268,18 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
             web_port=web_port,
             session_name=session_name,
             agent_label=reviewer_label,
-            on_prompt_ready=lambda round_index=round_index: emit(
-                EventName.REVIEW_EXCHANGE_ROUND_STARTED,
-                {
-                    "issue_number": issue_number,
-                    "session_name": session_name,
-                    "round_index": round_index,
-                },
-            ),
+            on_prompt_ready=_emit_reviewer_prompt_ready,
+        )
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "role": "reviewer",
+                "response_type": reviewer_response.response_type,
+                "getting_closer": reviewer_response.getting_closer,
+            },
         )
         outcome, no_progress_count, last_reviewer_text, last_coder_text = _process_exchange_round(
             session_output=session_output,
@@ -339,6 +363,29 @@ def _process_exchange_round(  # noqa: PLR0913
         ), no_progress_count, last_reviewer_text, last_coder_text
 
     last_reviewer_text = reviewer_response.response_text
+
+    def _emit_coder_prompt_ready(round_index: int = round_index) -> None:
+        emit(
+            EventName.REVIEW_REWORK_STARTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "reviewer_response_type": reviewer_response.response_type,
+                "reviewer_response_text": reviewer_response.response_text,
+                "task": "rework",
+            },
+        )
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "role": "coder",
+            },
+        )
+
     coder_response, protocol_error = _run_coder_round_with_protocol_retries(
         session_output=session_output,
         runner=runner,
@@ -354,19 +401,20 @@ def _process_exchange_round(  # noqa: PLR0913
         session_name=session_name,
         agent_label=coder_label,
         require_validation=require_validation,
-        on_prompt_ready=lambda round_index=round_index: emit(
-            EventName.REVIEW_REWORK_STARTED,
+        on_prompt_ready=_emit_coder_prompt_ready,
+    )
+    if protocol_error is not None:
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT,
             {
                 "issue_number": issue_number,
                 "session_name": session_name,
                 "round_index": round_index,
-                "reviewer_response_type": reviewer_response.response_type,
-                "reviewer_response_text": reviewer_response.response_text,
-                "task": "rework",
+                "role": "coder",
+                "reason": "protocol_error",
+                "detail": protocol_error,
             },
-        ),
-    )
-    if protocol_error is not None:
+        )
         return _stop_for_protocol_error(
             exchange_dir=exchange_dir,
             round_index=round_index,
@@ -376,6 +424,17 @@ def _process_exchange_round(  # noqa: PLR0913
             issue_number=issue_number,
             session_name=session_name,
         ), no_progress_count, last_reviewer_text, last_coder_text
+    emit(
+        EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+        {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+            "role": "coder",
+            "response_type": coder_response.response_type,
+            "getting_closer": coder_response.getting_closer,
+        },
+    )
 
     _write_round_log(
         exchange_dir=exchange_dir,
