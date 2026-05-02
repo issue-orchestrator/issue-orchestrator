@@ -23,7 +23,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from ..domain.exchange_chapter import ExchangeChapterSidecar
 
 
 @dataclass(frozen=True)
@@ -534,6 +537,36 @@ class SessionOutput(Protocol):
         run_dir: Path,
     ) -> Path:
         """Ensure the dedicated review-exchange transcript exists and is registered."""
+        ...
+
+    def record_exchange_chapter(
+        self,
+        run_dir: Path,
+        *,
+        role: str,
+        exchange_run_id: str,
+        issue_number: int,
+        cycle_index: int,
+        section: str,
+        recording_event_index: int,
+        recorded_at: str,
+        label: str,
+    ) -> Path:
+        """Append a chapter entry to ``<run_dir>/<role>/chapters.json``.
+
+        Returns the sidecar path. Creates the file if absent. Idempotent
+        across role/exchange identity — supplying the same exchange_run_id
+        and role consistently is the caller's responsibility.
+        """
+        ...
+
+    def read_exchange_chapters(
+        self,
+        run_dir: Path,
+        *,
+        role: str,
+    ) -> "ExchangeChapterSidecar | None":
+        """Load the chapters sidecar for one role, or None if absent."""
         ...
 
     # -------------------------------------------------------------------------
