@@ -339,14 +339,8 @@ def _validate_recording_event_shape(
         raise CorruptRecordingError(
             f"Recording event at {where} is not a JSON object"
         )
-    if not isinstance(event.get("schema_version"), int):
-        raise CorruptRecordingError(
-            f"Recording event at {where} missing integer schema_version"
-        )
-    if not isinstance(event.get("offset_ms"), int):
-        raise CorruptRecordingError(
-            f"Recording event at {where} missing integer offset_ms"
-        )
+    _require_int_field(event, "schema_version", where)
+    _require_int_field(event, "offset_ms", where)
     event_type = event.get("event_type")
     if not isinstance(event_type, str) or not event_type:
         raise CorruptRecordingError(
@@ -359,16 +353,29 @@ def _validate_recording_event_shape(
                 f"output event at {where} missing usable data_b64"
             )
     elif event_type == "resize":
-        rows = event.get("rows")
-        cols = event.get("cols")
-        if not isinstance(rows, int) or not isinstance(cols, int):
-            raise CorruptRecordingError(
-                f"resize event at {where} missing integer rows/cols"
-            )
+        _require_int_field(event, "rows", where, error_label="resize event")
+        _require_int_field(event, "cols", where, error_label="resize event")
     else:
         raise CorruptRecordingError(
             f"Recording event at {where} has unsupported event_type={event_type!r}"
         )
+
+
+def _require_int_field(
+    event: dict[str, Any], key: str, where: str, *, error_label: str = "Recording event",
+) -> int:
+    """Read an integer field or raise CorruptRecordingError with a useful message.
+
+    Centralizes the get + isinstance + raise pattern so individual call
+    sites read like declarations of what the schema requires rather than
+    untyped dict pokes followed by isinstance narrowing.
+    """
+    value = event.get(key)
+    if not isinstance(value, int):
+        raise CorruptRecordingError(
+            f"{error_label} at {where} missing integer {key}"
+        )
+    return value
 
 
 def _drain_pty_output(session: PersistentSession) -> None:

@@ -448,13 +448,22 @@ class TestRecordingEventCount:
         with pytest.raises(CorruptRecordingError, match="data_b64"):
             recording_event_count(path)
 
-    def test_raises_when_resize_event_lacks_rows_cols(self, tmp_path: Path) -> None:
+    def test_raises_when_resize_event_lacks_rows(self, tmp_path: Path) -> None:
         path = tmp_path / "rec.jsonl"
         path.write_text(
-            '{"schema_version":1,"event_type":"resize","offset_ms":0}\n',
+            '{"schema_version":1,"event_type":"resize","offset_ms":0,"cols":120}\n',
             encoding="utf-8",
         )
-        with pytest.raises(CorruptRecordingError, match="rows/cols"):
+        with pytest.raises(CorruptRecordingError, match="missing integer rows"):
+            recording_event_count(path)
+
+    def test_raises_when_resize_event_lacks_cols(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"schema_version":1,"event_type":"resize","offset_ms":0,"rows":40}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="missing integer cols"):
             recording_event_count(path)
 
     def test_raises_on_unsupported_event_type(self, tmp_path: Path) -> None:
