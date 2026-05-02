@@ -375,6 +375,31 @@ class StartupManager:
         print(f"[startup] Fetched {len(issues)} in-progress issues for {agent_label} in {elapsed:.1f}s")
         return issues
 
+    def _prefilter_pr_pending_to_cached_scope(
+        self,
+        local_pr_pending: list[int],
+        cached_queue_issues: list[Issue],
+    ) -> list[int]:
+        """Drop pr-pending entries that aren't in the cached queue.
+
+        The cached queue is authoritative for in-scope issues, so any number
+        not present there is by definition out-of-scope and would only cost a
+        wasted GitHub round-trip in the recovery loop. When the cache is empty
+        (true cold start), pass through unchanged so the in-loop scope check
+        still runs against freshly fetched issues.
+        """
+        cached_numbers = {issue.number for issue in cached_queue_issues}
+        if not cached_numbers:
+            return local_pr_pending
+        filtered = [n for n in local_pr_pending if n in cached_numbers]
+        skipped = len(local_pr_pending) - len(filtered)
+        if skipped:
+            logger.info(
+                "[startup] Skipped %d pr-pending entries not in cached queue (out-of-scope)",
+                skipped,
+            )
+        return filtered
+
     def _recover_pr_pending_history(
         self,
         state: OrchestratorState,
@@ -393,6 +418,10 @@ class StartupManager:
         )
         if not local_pr_pending:
             return
+
+        local_pr_pending = self._prefilter_pr_pending_to_cached_scope(
+            local_pr_pending, state.cached_queue_issues
+        )
 
         recovered = 0
         for issue_number in local_pr_pending:

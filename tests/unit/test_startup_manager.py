@@ -628,6 +628,51 @@ class TestStartupManagerAwaitingMergeRecovery:
         assert sample_state.session_history == []
         assert "Skipping pr-pending dashboard recovery without open PR: issue=4057" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_prefilter_skips_get_issue_for_entries_not_in_cached_queue(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+        caplog,
+    ):
+        # Cache holds a different issue; the pr-pending label store entry is
+        # therefore out-of-scope and used to cost a wasted GitHub round-trip.
+        sample_state.cached_queue_issues = [
+            Issue(number=9999, title="In-scope issue", labels=["agent:backend"]),
+        ]
+        mock_label_store.load_all.return_value = {
+            4057: {"agent:backend", "pr-pending"},
+        }
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        mock_repository_host.get_issue.assert_not_called()
+        assert sample_state.session_history == []
+        assert "Skipped 1 pr-pending entries not in cached queue" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_prefilter_falls_back_to_fetch_when_cache_is_empty(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+    ):
+        # Empty cache (true cold start): the function must still fetch each
+        # entry so the in-loop scope check has something to evaluate.
+        sample_state.cached_queue_issues = []
+        mock_label_store.load_all.return_value = {
+            4057: {"agent:backend", "pr-pending"},
+        }
+        mock_repository_host.get_issue.return_value = None  # signal "gone"
+
+        await startup_manager.run_startup(sample_state)
+
+        mock_repository_host.get_issue.assert_called_once_with(4057)
+
 
 class TestStartupManagerTriageRecovery:
     """Tests for triage review recovery."""
