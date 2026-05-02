@@ -23,8 +23,9 @@ runtime initialization only:
 
 import logging
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
@@ -138,6 +139,21 @@ class StartupManager:
             if not result.success:
                 logger.warning("[startup] Label action failed: %s", result.error)
 
+    @contextmanager
+    def _phase(self, name: str, timings: dict[str, float]) -> Iterator[None]:
+        """Time a startup phase and record into ``timings`` keyed by ``name``.
+
+        Logs the elapsed time at INFO so cold-start cost is visible in the
+        orchestrator logs even when the dashboard is still "Initializing...".
+        """
+        phase_start = time.time()
+        try:
+            yield
+        finally:
+            elapsed = time.time() - phase_start
+            timings[name] = elapsed
+            logger.info("[STARTUP_TIMING] phase=%s elapsed=%.3fs", name, elapsed)
+
     async def run_startup(self, state: OrchestratorState) -> None:
         """Execute the full startup sequence.
 
@@ -146,6 +162,7 @@ class StartupManager:
         """
         startup_start = time.time()
         state.startup_status = "running"
+        timings: dict[str, float] = {}
 
         # Emit merged configuration for debugging
         self.events.publish(make_trace_event(EventName.CONFIG_MERGED, self.config.to_event_dict()))
@@ -159,9 +176,11 @@ class StartupManager:
 
         # Step 1: Enforce SQLite pragmas and backups
         state.startup_message = "Checking SQLite state..."
-        enforce_pragmas_on_startup(self.config)
+        with self._phase("sqlite_pragmas", timings):
+            enforce_pragmas_on_startup(self.config)
         if self.config.sqlite_backup.enforce_on_startup:
-            run_backups_if_due(self.config)
+            with self._phase("sqlite_backups", timings):
+                run_backups_if_due(self.config)
 
         # Step 2: Clean up stale claims
         state.startup_message = "Cleaning up stale claims..."
@@ -169,64 +188,80 @@ class StartupManager:
 
         # Step 3: Clean up idle terminal sessions
         state.startup_message = "Cleaning up idle terminal sessions..."
-        closed_tabs = self.runner.cleanup_idle_sessions()
+        with self._phase("cleanup_idle_sessions", timings):
+            closed_tabs = self.runner.cleanup_idle_sessions()
         if closed_tabs:
             logger.info("Closed %d idle terminal sessions", closed_tabs)
             print(f"  Closed {closed_tabs} idle terminal sessions")
 
         # Step 4: Discover and restore running sessions
         state.startup_message = "Discovering running sessions..."
-        running = self.runner.discover_running_sessions()
-        if running:
-            logger.info("Found %d running sessions to restore tracking", len(running))
-            print(f"  Found {len(running)} running sessions to restore tracking")
-            self._restore_sessions(running)
+        with self._phase("discover_running_sessions", timings):
+            running = self.runner.discover_running_sessions()
+            if running:
+                logger.info("Found %d running sessions to restore tracking", len(running))
+                print(f"  Found {len(running)} running sessions to restore tracking")
+                self._restore_sessions(running)
 
         # Step 5: Restore + sync queue cache (moved early so Steps 6/8 use cache)
-        self._restore_and_sync_queue(state)
+        with self._phase("restore_and_sync_queue", timings):
+            self._restore_and_sync_queue(state)
 
         # Step 6: Check in-progress issues and determine action
         state.startup_message = "Scanning local branches..."
-        issue_branches = self._issue_branches()
+        with self._phase("issue_branches_scan", timings):
+            issue_branches = self._issue_branches()
 
         issues_to_resume: list[tuple[Issue, str]] = []
-        await self._check_in_progress_issues(state, issue_branches, issues_to_resume)
+        with self._phase("check_in_progress_issues", timings):
+            await self._check_in_progress_issues(state, issue_branches, issues_to_resume)
 
         # Step 7: Recover pending code reviews
         if self.config.code_review_agent and self.config.code_review_label:
-            await self._recover_pending_reviews(state, issue_branches)
+            with self._phase("recover_pending_reviews", timings):
+                await self._recover_pending_reviews(state, issue_branches)
 
         # Step 8: Recover awaiting-merge dashboard history
-        self._recover_pr_pending_history(state, issue_branches)
+        with self._phase("recover_pr_pending_history", timings):
+            self._recover_pr_pending_history(state, issue_branches)
 
         # Step 9: Recover pending triage reviews
         if self.config.triage_review_agent:
-            await self._recover_pending_triage(state)
+            with self._phase("recover_pending_triage", timings):
+                await self._recover_pending_triage(state)
 
         # Step 10: Recover pending validation retries (crash recovery)
-        self._recover_pending_validation_retries(state, issue_branches)
+        with self._phase("recover_pending_validation_retries", timings):
+            self._recover_pending_validation_retries(state, issue_branches)
 
         # Step 11: Recover orphaned cleanups
-        self._recover_orphaned_cleanups(state)
+        with self._phase("recover_orphaned_cleanups", timings):
+            self._recover_orphaned_cleanups(state)
 
         # Step 12: Resume issues with partial work
-        await self._resume_partial_work(state, issues_to_resume)
+        with self._phase("resume_partial_work", timings):
+            await self._resume_partial_work(state, issues_to_resume)
 
         # Step 13: Audit and cache the queue
         state.startup_message = "Auditing queue..."
-        from ..infra.audit import audit_queue, print_audit
-        audit_entries = audit_queue(
-            self.config, state, self.repository_host,
-            issue_branches=issue_branches,
-            preloaded_issues=list(state.cached_queue_issues) if state.cached_queue_issues else None,
-        )
-        print_audit(audit_entries)
+        with self._phase("audit_queue", timings):
+            from ..infra.audit import audit_queue, print_audit
+            audit_entries = audit_queue(
+                self.config, state, self.repository_host,
+                issue_branches=issue_branches,
+                preloaded_issues=list(state.cached_queue_issues) if state.cached_queue_issues else None,
+            )
+            print_audit(audit_entries)
 
         # Mark startup complete
         state.startup_status = "complete"
         state.startup_message = ""
         elapsed = time.time() - startup_start
         logger.info("Startup complete in %.1fs", elapsed)
+        # Sorted summary lets cold-start hotspots jump out at a glance.
+        ranked = sorted(timings.items(), key=lambda kv: kv[1], reverse=True)
+        summary = ", ".join(f"{name}={dt:.2f}s" for name, dt in ranked)
+        logger.info("[STARTUP_TIMING] summary total=%.2fs %s", elapsed, summary)
 
         self.events.publish(make_trace_event(EventName.ORCHESTRATOR_READY, {
             "filtering": {
