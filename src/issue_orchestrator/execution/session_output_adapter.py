@@ -25,6 +25,12 @@ from ..infra.terminal_cleaning import (
     is_spinner_fragment,
 )
 from ..infra.terminal_recording import append_output_event
+from ..domain.exchange_chapter import (
+    CHAPTER_SCHEMA_VERSION,
+    ChapterSidecarIdentityMismatch,
+    ExchangeChapter,
+    ExchangeChapterSidecar,
+)
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
@@ -66,6 +72,7 @@ SESSION_PROMPT_NAME = "session-prompt.txt"
 REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
 REVIEW_EXCHANGE_SUMMARY_NAME = "summary.json"
 REVIEW_EXCHANGE_TRANSCRIPT_NAME = "transcript.log"
+EXCHANGE_CHAPTERS_NAME = "chapters.json"
 
 # Review feedback artifacts (stored per-cycle for diagnostics)
 REVIEW_FEEDBACK_DIR_NAME = "review-feedback"
@@ -858,6 +865,119 @@ Timestamp: {self._now_iso()}
                 run_dir, {"review_exchange_transcript_path": str(transcript_path)}
             )
         return transcript_path
+
+    def record_exchange_chapter(
+        self,
+        run_dir: Path,
+        *,
+        role: str,
+        exchange_run_id: str,
+        issue_number: int,
+        cycle_index: int,
+        section: str,
+        recording_event_index: int,
+        recorded_at: str,
+        label: str,
+    ) -> Path:
+        """Append a chapter to ``<run_dir>/<role>/chapters.json`` (read-modify-write)."""
+        role_dir = run_dir / role
+        role_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_path = role_dir / EXCHANGE_CHAPTERS_NAME
+        new_chapter = ExchangeChapter(
+            cycle_index=cycle_index,
+            section=section,
+            recording_event_index=recording_event_index,
+            recorded_at=recorded_at,
+            label=label,
+        )
+        with self._io_lock:
+            sidecar = self._load_chapter_sidecar(
+                sidecar_path,
+                role=role,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+            )
+            updated = ExchangeChapterSidecar(
+                schema_version=sidecar.schema_version,
+                role=sidecar.role,
+                exchange_run_id=sidecar.exchange_run_id,
+                issue_number=sidecar.issue_number,
+                chapters=[*sidecar.chapters, new_chapter],
+            )
+            self._write_json(sidecar_path, updated.to_payload())
+        return sidecar_path
+
+    def read_exchange_chapters(
+        self,
+        run_dir: Path,
+        *,
+        role: str,
+    ) -> ExchangeChapterSidecar | None:
+        sidecar_path = run_dir / role / EXCHANGE_CHAPTERS_NAME
+        if not sidecar_path.exists():
+            return None
+        try:
+            payload = json.loads(sidecar_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        try:
+            return ExchangeChapterSidecar.from_payload(payload)
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Malformed chapters sidecar at %s: %s", sidecar_path, exc,
+            )
+            return None
+
+    def _load_chapter_sidecar(
+        self,
+        sidecar_path: Path,
+        *,
+        role: str,
+        exchange_run_id: str,
+        issue_number: int,
+    ) -> ExchangeChapterSidecar:
+        if not sidecar_path.exists():
+            return ExchangeChapterSidecar(
+                schema_version=CHAPTER_SCHEMA_VERSION,
+                role=role,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                chapters=[],
+            )
+        try:
+            payload = json.loads(sidecar_path.read_text())
+            existing = ExchangeChapterSidecar.from_payload(payload)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Existing chapters sidecar at %s unreadable (%s); starting fresh",
+                sidecar_path,
+                exc,
+            )
+            return ExchangeChapterSidecar(
+                schema_version=CHAPTER_SCHEMA_VERSION,
+                role=role,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                chapters=[],
+            )
+        # Identity must match — appending a chapter for a different
+        # (role, exchange_run_id, issue_number) into an existing sidecar
+        # would corrupt the chapter contract that the session viewer
+        # relies on. Surface the caller bug instead of silently merging.
+        if (
+            existing.role != role
+            or existing.exchange_run_id != exchange_run_id
+            or existing.issue_number != issue_number
+        ):
+            raise ChapterSidecarIdentityMismatch(
+                f"chapters.json identity mismatch at {sidecar_path}: "
+                f"existing=(role={existing.role!r}, "
+                f"exchange_run_id={existing.exchange_run_id!r}, "
+                f"issue_number={existing.issue_number}); "
+                f"requested=(role={role!r}, exchange_run_id={exchange_run_id!r}, "
+                f"issue_number={issue_number})"
+            )
+        return existing
 
     # -------------------------------------------------------------------------
     # Log Access
