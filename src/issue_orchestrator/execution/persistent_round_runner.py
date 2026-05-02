@@ -145,6 +145,13 @@ def send_round(
     Stale response files are removed before the prompt is sent so the
     appearance of the file is unambiguously this round's response.
 
+    A response file that exists but does not yet parse as JSON is treated
+    as still-being-written: the loop keeps polling until the JSON parses,
+    the agent exits, or the deadline expires. Without this tolerance, a
+    non-atomic write from the agent (open, write opening brace, flush,
+    write the rest) would race the orchestrator and surface as a fatal
+    protocol error on the very first poll.
+
     ``now`` and ``sleep`` are injectable for deterministic tests.
     """
     if session.closed:
@@ -156,28 +163,57 @@ def send_round(
     deadline = now() + timeout_seconds
     while now() < deadline:
         _drain_pty_output(session)
-        if response_file.exists():
+        parsed = _try_read_response(response_file)
+        if parsed is not None:
             _drain_pty_output_until_quiet(
                 session,
                 quiet_seconds=response_drain_seconds,
                 now=now,
                 sleep=sleep,
             )
-            try:
-                return json.loads(response_file.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                raise PersistentRoundError(
-                    f"Agent wrote invalid JSON to {response_file}: {exc}"
-                ) from exc
+            return parsed
         ret = session.proc.poll()
         if ret is not None:
+            # Agent exited. Give one final read so we don't miss a response
+            # that landed atomically right at exit.
+            final = _try_read_response(response_file)
+            if final is not None:
+                return final
+            if response_file.exists():
+                raise PersistentRoundError(
+                    f"Agent exited (code={ret}) leaving invalid JSON in {response_file}"
+                )
             raise PersistentRoundError(
                 f"Agent exited unexpectedly (code={ret}) before responding"
             )
         sleep(poll_interval_seconds)
     raise PersistentRoundTimeoutError(
-        f"Agent did not produce {response_file} within {timeout_seconds}s"
+        f"Agent did not produce valid JSON in {response_file} within {timeout_seconds}s"
     )
+
+
+def _try_read_response(response_file: Path) -> dict[str, Any] | None:
+    """Return the parsed JSON if the file exists and parses, else None.
+
+    A returned ``None`` covers both "file not yet present" and "file
+    present but the writer hasn't finished a complete JSON document yet"
+    — both cases call for continued polling rather than escalation.
+    """
+    if not response_file.exists():
+        return None
+    try:
+        text = response_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
 
 
 def close_persistent_session(
@@ -226,13 +262,30 @@ def close_persistent_session(
     return session.proc.returncode
 
 
-def recording_event_count(recording_path: Path) -> int:
-    """Return the current number of events in a JSONL recording, or 0 if absent.
+def recording_event_count(
+    recording_path: Path,
+    *,
+    require_recording: bool = True,
+) -> int:
+    """Return the current number of events in a JSONL recording.
 
     Used by chapter-sidecar writers to capture the current position in
-    the role's recording stream at boundary moments.
+    the role's recording stream at boundary moments. Because this number
+    is recorded into chapters.json and the session viewer scrubs to it,
+    a wrong-but-plausible offset is worse than a loud failure.
+
+    By default, raises ``FileNotFoundError`` if the recording is absent —
+    in the persistent-session path the recording is created when the PTY
+    writer is constructed at session open, so a missing file means wrong
+    path or failed capture, not "no events yet." Bootstrap and test paths
+    that genuinely operate before any recording exists must opt out by
+    passing ``require_recording=False``.
     """
     if not recording_path.exists():
+        if require_recording:
+            raise FileNotFoundError(
+                f"Recording not found at {recording_path}; cannot compute event count"
+            )
         return 0
     with recording_path.open("rb") as handle:
         return sum(1 for line in handle if line.strip())
