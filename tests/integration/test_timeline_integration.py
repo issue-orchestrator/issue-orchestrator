@@ -414,11 +414,13 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
         web.set_orchestrator(None)
 
 
-def test_issue_detail_latest_run_splits_after_pr_pending_removed_and_requeue(
+def test_issue_detail_latest_run_stays_single_after_pr_pending_removed_and_requeue(
     sample_config,
     mock_repository_host,
 ):
-    """Approved cycle followed by explicit requeue must become a new logical run."""
+    """pr-pending label churn during the PR/rework lifecycle must not split a
+    continuous issue lifecycle into multiple logical runs. Approved cycle plus a
+    follow-up rework round are the same run; the rework simply adds a new cycle."""
     orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
     issue_number = 4057
     code_run_id = "run-4057-code-1"
@@ -515,7 +517,8 @@ def test_issue_detail_latest_run_splits_after_pr_pending_removed_and_requeue(
         summary="Posted review comment",
     )
 
-    # Boundary signal: manual label mutation removed pr-pending.
+    # Routine label mutation: pr-pending removed as part of the PR/rework
+    # lifecycle. This MUST NOT split the run.
     record(
         EventName.ISSUE_LABELS_CHANGED,
         run_id=code_run_id,
@@ -525,7 +528,7 @@ def test_issue_detail_latest_run_splits_after_pr_pending_removed_and_requeue(
         removed=["pr-pending"],
     )
 
-    # Run 2: fresh requeue/retry starts a new logical run.
+    # Follow-up rework: same logical run, additional cycle.
     record(
         EventName.REWORK_STARTED,
         run_id=requeue_run_id,
@@ -542,22 +545,21 @@ def test_issue_detail_latest_run_splits_after_pr_pending_removed_and_requeue(
         assert response.status_code == 200
         payload = response.json()
 
-        assert payload["run_count"] == 2
-        first_run = payload["runs"][0]
+        assert payload["run_count"] == 1
+        only_run = payload["runs"][0]
         latest_run = _latest_run(payload)
+        assert only_run is latest_run
 
-        assert first_run["outcome"] == "Approved"
-        assert len(first_run["cycles"]) == 1
-        first_run_cycle = _first_cycle(first_run)
-        assert first_run_cycle["outcome"] == "Approved"
-
-        assert latest_run["outcome"] == "In progress"
-        assert len(latest_run["cycles"]) == 1
-        latest_cycle = _first_cycle(latest_run)
-        assert latest_cycle["outcome"] == "In progress"
-        assert _phase_group_labels(latest_cycle)[0] == "Rework"
-
-        assert latest_cycle["lifecycle"] > first_run_cycle["lifecycle"]
+        # Cycle 1 is the original approved cycle; cycle 2 is the rework follow-up.
+        assert len(latest_run["cycles"]) == 2
+        first_cycle = latest_run["cycles"][0]
+        rework_cycle = latest_run["cycles"][1]
+        assert first_cycle["outcome"] == "Approved"
+        assert rework_cycle["outcome"] == "In progress"
+        assert _phase_group_labels(rework_cycle)[0] == "Rework"
+        # Both cycles belong to the same logical run — pr-pending churn does
+        # not create a new run, it just adds another cycle to the existing one.
+        assert rework_cycle["lifecycle"] == first_cycle["lifecycle"]
     finally:
         web.set_orchestrator(None)
 
@@ -1286,14 +1288,14 @@ def test_latest_run_without_review_events_is_not_projected_as_approved_or_comple
         "rework_cycle": 0,
     }))
 
-    # Boundary + latest run without review events.
-    timeline_writer.record(TraceEvent(EventName.ISSUE_LABELS_CHANGED, {
+    # Real run boundary: issue.unblocked is a genuine restart trigger
+    # (pr-pending label churn is not — it's a routine PR-lifecycle artifact).
+    timeline_writer.record(TraceEvent(EventName.ISSUE_UNBLOCKED, {
         "issue_number": issue_number,
         "run_id": "run-4064-code-1",
         "run_dir": run_dir_code,
         "task": "orchestrator",
         "agent": "agent:backend",
-        "removed": ["pr-pending"],
         "rework_cycle": 0,
     }))
     timeline_writer.record(TraceEvent(EventName.REWORK_STARTED, {
