@@ -384,6 +384,7 @@ def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> st
         "dependency.blocked",
         "session.validation_retry_needed",
         "publish.failed",
+        "review_exchange.role_timeout",
     }
     success_events = {
         "session.completed",
