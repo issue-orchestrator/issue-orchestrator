@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
     CHAPTER_SECTION_FEEDBACK,
     CHAPTER_SECTION_PROMPT,
+    ChapterSidecarIdentityMismatch,
     ExchangeChapterSidecar,
 )
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -118,6 +121,41 @@ class TestChapterSidecarWriter:
         bogus_path.write_text("{not json")
 
         assert output.read_exchange_chapters(run_dir, role="reviewer") is None
+
+    def test_identity_mismatch_on_append_raises(self, tmp_path: Path) -> None:
+        """Appending a chapter for a different (role, exchange_run_id, issue_number)
+        triple must fail loudly rather than silently rewriting the sidecar's
+        identity. Future session-viewer consumers trust these fields to match
+        the recording they're playing.
+        """
+        run_dir = _start_run(tmp_path)
+        output = FileSystemSessionOutput()
+        output.record_exchange_chapter(
+            run_dir, role="reviewer", exchange_run_id="exch-1", issue_number=359,
+            cycle_index=1, section=CHAPTER_SECTION_PROMPT,
+            recording_event_index=0, recorded_at="t1", label="round 1 prompt",
+        )
+
+        with pytest.raises(ChapterSidecarIdentityMismatch, match="exchange_run_id"):
+            output.record_exchange_chapter(
+                run_dir, role="reviewer", exchange_run_id="exch-2", issue_number=359,
+                cycle_index=1, section=CHAPTER_SECTION_PROMPT,
+                recording_event_index=10, recorded_at="t2", label="wrong run",
+            )
+
+        with pytest.raises(ChapterSidecarIdentityMismatch, match="issue_number"):
+            output.record_exchange_chapter(
+                run_dir, role="reviewer", exchange_run_id="exch-1", issue_number=999,
+                cycle_index=1, section=CHAPTER_SECTION_PROMPT,
+                recording_event_index=10, recorded_at="t2", label="wrong issue",
+            )
+
+        # And the original sidecar is untouched (no partial mutation).
+        sidecar = output.read_exchange_chapters(run_dir, role="reviewer")
+        assert sidecar is not None
+        assert sidecar.exchange_run_id == "exch-1"
+        assert sidecar.issue_number == 359
+        assert len(sidecar.chapters) == 1
 
     def test_writer_recovers_from_pre_existing_corrupt_sidecar(self, tmp_path: Path) -> None:
         run_dir = _start_run(tmp_path)

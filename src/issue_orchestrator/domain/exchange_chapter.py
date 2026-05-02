@@ -28,6 +28,18 @@ CHAPTER_SECTION_FEEDBACK = "feedback"
 CHAPTER_SECTION_TIMEOUT = "timeout"
 
 
+class ChapterSidecarIdentityMismatch(ValueError):
+    """Raised when a chapter is appended to a sidecar with mismatched identity.
+
+    Each chapter sidecar covers one (role, exchange_run_id, issue_number)
+    triple and the recording it sits next to. If a caller asks the
+    SessionOutput owner to append a chapter for a different identity, that
+    is a caller bug — silently rewriting the identity or appending to the
+    wrong sidecar would corrupt the chapter contract that downstream UI
+    consumers rely on.
+    """
+
+
 @dataclass(frozen=True)
 class ExchangeChapter:
     """One boundary marker in a role's review-exchange recording."""

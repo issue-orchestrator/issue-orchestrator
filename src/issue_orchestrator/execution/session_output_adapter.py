@@ -27,6 +27,7 @@ from ..infra.terminal_cleaning import (
 from ..infra.terminal_recording import append_output_event
 from ..domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
+    ChapterSidecarIdentityMismatch,
     ExchangeChapter,
     ExchangeChapterSidecar,
 )
@@ -945,7 +946,7 @@ Timestamp: {self._now_iso()}
             )
         try:
             payload = json.loads(sidecar_path.read_text())
-            return ExchangeChapterSidecar.from_payload(payload)
+            existing = ExchangeChapterSidecar.from_payload(payload)
         except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
             logger.warning(
                 "Existing chapters sidecar at %s unreadable (%s); starting fresh",
@@ -959,6 +960,24 @@ Timestamp: {self._now_iso()}
                 issue_number=issue_number,
                 chapters=[],
             )
+        # Identity must match — appending a chapter for a different
+        # (role, exchange_run_id, issue_number) into an existing sidecar
+        # would corrupt the chapter contract that the session viewer
+        # relies on. Surface the caller bug instead of silently merging.
+        if (
+            existing.role != role
+            or existing.exchange_run_id != exchange_run_id
+            or existing.issue_number != issue_number
+        ):
+            raise ChapterSidecarIdentityMismatch(
+                f"chapters.json identity mismatch at {sidecar_path}: "
+                f"existing=(role={existing.role!r}, "
+                f"exchange_run_id={existing.exchange_run_id!r}, "
+                f"issue_number={existing.issue_number}); "
+                f"requested=(role={role!r}, exchange_run_id={exchange_run_id!r}, "
+                f"issue_number={issue_number})"
+            )
+        return existing
 
     # -------------------------------------------------------------------------
     # Log Access
