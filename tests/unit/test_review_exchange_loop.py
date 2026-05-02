@@ -15,7 +15,7 @@ from issue_orchestrator.control.review_exchange_loop import (
     REVIEW_RESPONSE_FILENAME,
     _build_env_overrides,
     _is_interactive_provider,
-    _parse_exchange_response,
+    parse_exchange_response,
     _resolve_provider,
     _run_agent_round,
     _run_interactive_round,
@@ -649,7 +649,7 @@ def test_parse_exchange_response_accepts_embedded_json_from_claude_result_event(
         '\\"response_text\\":\\"Run make validate via coding-done.\\"}"}\n'
     )
 
-    response = _parse_exchange_response(stdout)
+    response = parse_exchange_response(stdout)
 
     assert response is not None
     assert response.response_type == "changes_requested"
@@ -664,7 +664,7 @@ def test_parse_exchange_response_prefers_last_protocol_json_in_embedded_text() -
         'final: {\\"response_type\\":\\"ok\\",\\"response_text\\":\\"done\\"}"}\n'
     )
 
-    response = _parse_exchange_response(stdout)
+    response = parse_exchange_response(stdout)
 
     assert response is not None
     assert response.response_type == "ok"
@@ -680,7 +680,7 @@ def test_parse_exchange_response_repairs_multiline_response_text() -> None:
         '3. Remove the fail-soft exception handler."}\n'
     )
 
-    response = _parse_exchange_response(stdout)
+    response = parse_exchange_response(stdout)
 
     assert response is not None
     assert response.response_type == "changes_requested"
@@ -695,7 +695,7 @@ def test_parse_exchange_response_repairs_tab_characters_inside_response_text() -
         '"response_text":"Checklist:\n\t1. Add the UI.\n\t2. Tighten the contract."}\n'
     )
 
-    response = _parse_exchange_response(stdout)
+    response = parse_exchange_response(stdout)
 
     assert response is not None
     assert response.response_type == "changes_requested"
