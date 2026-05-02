@@ -262,6 +262,18 @@ def close_persistent_session(
     return session.proc.returncode
 
 
+class CorruptRecordingError(RuntimeError):
+    """Raised when a recording file contains lines that aren't valid events.
+
+    The chapter sidecar's recording offset is consumed by the session
+    viewer to scrub into the raw replay stream, so a wrong-but-plausible
+    count is worse than a loud failure. If the recording has been
+    corrupted (truncated mid-write, accidentally overwritten, mixed with
+    non-recording content), surface that loudly rather than silently
+    producing chapter offsets that point at noise.
+    """
+
+
 def recording_event_count(
     recording_path: Path,
     *,
@@ -273,6 +285,12 @@ def recording_event_count(
     the role's recording stream at boundary moments. Because this number
     is recorded into chapters.json and the session viewer scrubs to it,
     a wrong-but-plausible offset is worse than a loud failure.
+
+    Each non-blank line is parsed as a JSON object with at minimum an
+    ``event_type`` string field — anything else raises
+    ``CorruptRecordingError``. The contract this enforces matches what
+    ``TerminalRecordingWriter`` produces: every event carries
+    ``event_type`` plus optional payload fields.
 
     By default, raises ``FileNotFoundError`` if the recording is absent —
     in the persistent-session path the recording is created when the PTY
@@ -287,8 +305,29 @@ def recording_event_count(
                 f"Recording not found at {recording_path}; cannot compute event count"
             )
         return 0
-    with recording_path.open("rb") as handle:
-        return sum(1 for line in handle if line.strip())
+    count = 0
+    with recording_path.open("r", encoding="utf-8") as handle:
+        for lineno, raw in enumerate(handle, start=1):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise CorruptRecordingError(
+                    f"Malformed JSON at {recording_path}:{lineno}: {exc.msg}"
+                ) from exc
+            if not isinstance(event, dict):
+                raise CorruptRecordingError(
+                    f"Recording event at {recording_path}:{lineno} is not a JSON object"
+                )
+            event_type = event.get("event_type")
+            if not isinstance(event_type, str) or not event_type:
+                raise CorruptRecordingError(
+                    f"Recording event at {recording_path}:{lineno} missing event_type"
+                )
+            count += 1
+    return count
 
 
 def _drain_pty_output(session: PersistentSession) -> None:

@@ -20,6 +20,7 @@ from typing import Callable
 import pytest
 
 from issue_orchestrator.execution.persistent_round_runner import (
+    CorruptRecordingError,
     PersistentRoundError,
     PersistentRoundTimeoutError,
     close_persistent_session,
@@ -382,10 +383,39 @@ class TestRecordingEventCount:
             require_recording=False,
         ) == 0
 
-    def test_counts_only_non_blank_lines(self, tmp_path: Path) -> None:
+    def test_counts_valid_recording_events_skipping_blank_lines(self, tmp_path: Path) -> None:
         path = tmp_path / "rec.jsonl"
-        path.write_text('{"a":1}\n\n{"b":2}\n  \n{"c":3}\n', encoding="utf-8")
+        path.write_text(
+            '{"event_type":"resize","offset_ms":0}\n\n'
+            '{"event_type":"output","offset_ms":12,"data_b64":"aGk="}\n  \n'
+            '{"event_type":"output","offset_ms":99,"data_b64":"YnllCg=="}\n',
+            encoding="utf-8",
+        )
         assert recording_event_count(path) == 3
+
+    def test_raises_on_malformed_json_line(self, tmp_path: Path) -> None:
+        """A corrupt recording must surface loudly — the offset feeds into
+        chapters.json and the session viewer scrubs to it. A wrong-but-
+        plausible count is worse than a loud failure."""
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"event_type":"output","offset_ms":0}\nnot-json\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="Malformed JSON"):
+            recording_event_count(path)
+
+    def test_raises_when_event_is_not_an_object(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text('"just a string"\n', encoding="utf-8")
+        with pytest.raises(CorruptRecordingError, match="not a JSON object"):
+            recording_event_count(path)
+
+    def test_raises_when_event_type_missing(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text('{"offset_ms":0,"data_b64":"aGk="}\n', encoding="utf-8")
+        with pytest.raises(CorruptRecordingError, match="missing event_type"):
+            recording_event_count(path)
 
 
 # ---------------------------------------------------------------------------
