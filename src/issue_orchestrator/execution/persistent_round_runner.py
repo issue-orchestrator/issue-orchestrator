@@ -317,17 +317,58 @@ def recording_event_count(
                 raise CorruptRecordingError(
                     f"Malformed JSON at {recording_path}:{lineno}: {exc.msg}"
                 ) from exc
-            if not isinstance(event, dict):
-                raise CorruptRecordingError(
-                    f"Recording event at {recording_path}:{lineno} is not a JSON object"
-                )
-            event_type = event.get("event_type")
-            if not isinstance(event_type, str) or not event_type:
-                raise CorruptRecordingError(
-                    f"Recording event at {recording_path}:{lineno} missing event_type"
-                )
+            _validate_recording_event_shape(event, recording_path, lineno)
             count += 1
     return count
+
+
+def _validate_recording_event_shape(
+    event: object, recording_path: Path, lineno: int,
+) -> None:
+    """Enforce the TerminalRecordingEvent contract on one parsed line.
+
+    The chapter offset that ``recording_event_count`` produces is consumed
+    by the session viewer's replay (``static/js/dashboard/session_replay.js``)
+    which only applies ``resize`` events with integer rows/cols and
+    ``output`` events with ``data_b64``. Anything outside that shape would
+    advance the chapter offset past events the viewer cannot faithfully
+    replay, so reject it loudly here.
+    """
+    where = f"{recording_path}:{lineno}"
+    if not isinstance(event, dict):
+        raise CorruptRecordingError(
+            f"Recording event at {where} is not a JSON object"
+        )
+    if not isinstance(event.get("schema_version"), int):
+        raise CorruptRecordingError(
+            f"Recording event at {where} missing integer schema_version"
+        )
+    if not isinstance(event.get("offset_ms"), int):
+        raise CorruptRecordingError(
+            f"Recording event at {where} missing integer offset_ms"
+        )
+    event_type = event.get("event_type")
+    if not isinstance(event_type, str) or not event_type:
+        raise CorruptRecordingError(
+            f"Recording event at {where} missing event_type"
+        )
+    if event_type == "output":
+        data_b64 = event.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            raise CorruptRecordingError(
+                f"output event at {where} missing usable data_b64"
+            )
+    elif event_type == "resize":
+        rows = event.get("rows")
+        cols = event.get("cols")
+        if not isinstance(rows, int) or not isinstance(cols, int):
+            raise CorruptRecordingError(
+                f"resize event at {where} missing integer rows/cols"
+            )
+    else:
+        raise CorruptRecordingError(
+            f"Recording event at {where} has unsupported event_type={event_type!r}"
+        )
 
 
 def _drain_pty_output(session: PersistentSession) -> None:

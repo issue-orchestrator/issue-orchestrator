@@ -386,9 +386,9 @@ class TestRecordingEventCount:
     def test_counts_valid_recording_events_skipping_blank_lines(self, tmp_path: Path) -> None:
         path = tmp_path / "rec.jsonl"
         path.write_text(
-            '{"event_type":"resize","offset_ms":0}\n\n'
-            '{"event_type":"output","offset_ms":12,"data_b64":"aGk="}\n  \n'
-            '{"event_type":"output","offset_ms":99,"data_b64":"YnllCg=="}\n',
+            '{"schema_version":1,"event_type":"resize","offset_ms":0,"rows":40,"cols":120}\n\n'
+            '{"schema_version":1,"event_type":"output","offset_ms":12,"data_b64":"aGk="}\n  \n'
+            '{"schema_version":1,"event_type":"output","offset_ms":99,"data_b64":"YnllCg=="}\n',
             encoding="utf-8",
         )
         assert recording_event_count(path) == 3
@@ -399,7 +399,8 @@ class TestRecordingEventCount:
         plausible count is worse than a loud failure."""
         path = tmp_path / "rec.jsonl"
         path.write_text(
-            '{"event_type":"output","offset_ms":0}\nnot-json\n',
+            '{"schema_version":1,"event_type":"output","offset_ms":0,"data_b64":"aGk="}\n'
+            "not-json\n",
             encoding="utf-8",
         )
         with pytest.raises(CorruptRecordingError, match="Malformed JSON"):
@@ -413,8 +414,56 @@ class TestRecordingEventCount:
 
     def test_raises_when_event_type_missing(self, tmp_path: Path) -> None:
         path = tmp_path / "rec.jsonl"
-        path.write_text('{"offset_ms":0,"data_b64":"aGk="}\n', encoding="utf-8")
+        path.write_text(
+            '{"schema_version":1,"offset_ms":0,"data_b64":"aGk="}\n', encoding="utf-8",
+        )
         with pytest.raises(CorruptRecordingError, match="missing event_type"):
+            recording_event_count(path)
+
+    def test_raises_when_schema_version_missing(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"event_type":"output","offset_ms":0,"data_b64":"aGk="}\n', encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="schema_version"):
+            recording_event_count(path)
+
+    def test_raises_when_offset_ms_missing(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"schema_version":1,"event_type":"output","data_b64":"aGk="}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="offset_ms"):
+            recording_event_count(path)
+
+    def test_raises_when_output_event_lacks_data_b64(self, tmp_path: Path) -> None:
+        """Replay can't render an output event without payload bytes — that
+        line must not advance the chapter offset."""
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"schema_version":1,"event_type":"output","offset_ms":0}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="data_b64"):
+            recording_event_count(path)
+
+    def test_raises_when_resize_event_lacks_rows_cols(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"schema_version":1,"event_type":"resize","offset_ms":0}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="rows/cols"):
+            recording_event_count(path)
+
+    def test_raises_on_unsupported_event_type(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"schema_version":1,"event_type":"junk","offset_ms":0}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="unsupported event_type"):
             recording_event_count(path)
 
 
