@@ -165,6 +165,9 @@ class EventName(str, Enum):
     REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"
     REVIEW_EXCHANGE_COMPLETED = "review_exchange.completed"
     REVIEW_EXCHANGE_FAILED = "review_exchange.failed"
+    REVIEW_EXCHANGE_ROLE_PROMPTED = "review_exchange.role_prompted"
+    REVIEW_EXCHANGE_ROLE_FEEDBACK = "review_exchange.role_feedback"
+    REVIEW_EXCHANGE_ROLE_TIMEOUT = "review_exchange.role_timeout"
 
     # =========================================================================
     # Rework cycle

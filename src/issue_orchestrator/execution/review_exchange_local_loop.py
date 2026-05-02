@@ -860,6 +860,13 @@ def _run_exchange_rounds(  # noqa: PLR0913
             "session_name": session_name,
             "round_index": round_index,
         })
+        emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+            "role": "reviewer",
+            "prompt_chars": len(reviewer_prompt_text),
+        })
 
         # Kill leftover sessions before each new phase
         _kill_existing_claude_sessions(worktree_path)
@@ -889,6 +896,13 @@ def _run_exchange_rounds(  # noqa: PLR0913
                     section="completion",
                     content="(no completion - timeout or session died)",
                 )
+                emit(EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "role": "reviewer",
+                    "reason": "no_completion",
+                })
                 summary = _write_summary(exchange_dir, round_index, reviewer_response=None)
                 emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
                     "issue_number": issue_number,
@@ -942,6 +956,14 @@ def _run_exchange_rounds(  # noqa: PLR0913
             content=f"response_type={reviewer_response.response_type} "
                     f"text={reviewer_response.response_text}",
         )
+        emit(EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+            "role": "reviewer",
+            "response_type": reviewer_response.response_type,
+            "getting_closer": reviewer_response.getting_closer,
+        })
 
         # Check if reviewer approved
         if reviewer_response.response_type == "ok":
@@ -1021,6 +1043,13 @@ def _run_exchange_rounds(  # noqa: PLR0913
             section="prompt",
             content=coder_prompt_text,
         )
+        emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+            "role": "coder",
+            "prompt_chars": len(coder_prompt_text),
+        })
 
         # Kill reviewer before starting coder
         _kill_existing_claude_sessions(worktree_path)
@@ -1050,6 +1079,13 @@ def _run_exchange_rounds(  # noqa: PLR0913
                     section="completion",
                     content="(no completion - timeout or session died)",
                 )
+                emit(EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "role": "coder",
+                    "reason": "no_completion",
+                })
                 summary = _write_summary(exchange_dir, round_index, reviewer_response)
                 emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
                     "issue_number": issue_number,
@@ -1097,6 +1133,14 @@ def _run_exchange_rounds(  # noqa: PLR0913
             content=f"response_type={coder_response.response_type} "
                     f"text={coder_response.response_text}",
         )
+        emit(EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+            "role": "coder",
+            "response_type": coder_response.response_type,
+            "getting_closer": coder_response.getting_closer,
+        })
 
         emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
             "issue_number": issue_number,
