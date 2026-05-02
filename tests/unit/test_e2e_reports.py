@@ -7,7 +7,6 @@ import pytest
 from issue_orchestrator.infra.e2e_reports import (
     MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
-    _parse_junit_cached,
     discover_report_artifacts,
     normalize_pytest_junit_cases,
     parse_junit_report,
@@ -264,7 +263,8 @@ def test_parse_junit_report_attaches_captured_output_to_failed_case(
 
 
 def test_parse_junit_report_cached_reuses_parse_for_unchanged_file(tmp_path: Path) -> None:
-    _parse_junit_cached.cache_clear()
+    # tmp_path is unique per test, so the cache key is unique and we don't
+    # need to reach into the LRU's internals to reset shared state.
     report = tmp_path / "junit.xml"
     report.write_text(
         """\
@@ -280,12 +280,14 @@ def test_parse_junit_report_cached_reuses_parse_for_unchanged_file(tmp_path: Pat
     raw_a, norm_a = parse_junit_report_cached(report)
     raw_b, norm_b = parse_junit_report_cached(report)
 
-    # Same call, same file: cache hit returns the same object identities.
+    # Object identity is the observable contract: a cache hit returns the
+    # SAME tuple, never a fresh parse. parse_junit_report always returns
+    # fresh objects, so reuse-by-identity here is only possible if the cache
+    # short-circuited the second call.
     assert raw_a is raw_b
     assert norm_a is norm_b
-    info = _parse_junit_cached.cache_info()
-    assert info.hits >= 1
-    assert info.misses >= 1
+    # Sanity-check the parsed content is what we expect, not stale or empty.
+    assert raw_a[0].system_out == "captured a"
 
 
 def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
@@ -293,7 +295,6 @@ def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
 ) -> None:
     import os
 
-    _parse_junit_cached.cache_clear()
     report = tmp_path / "junit.xml"
     report.write_text(
         """\
@@ -329,7 +330,11 @@ def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
     os.utime(report, ns=(rewritten_ns, rewritten_ns))
 
     raw_second, _ = parse_junit_report_cached(report)
+    # If the cache had ignored the file change, this would still say "first".
+    # Observing the new content proves invalidation without inspecting LRU state.
     assert raw_second[0].system_out == "second-with-different-length"
+    # Identity also flips — fresh tuple, not the cached one.
+    assert raw_second is not raw_first
 
 
 def test_discover_report_artifacts_rejects_paths_outside_repo_root(
