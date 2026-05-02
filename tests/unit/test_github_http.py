@@ -605,6 +605,57 @@ def test_invalidate_labels_etag_clears_cache() -> None:
     assert "if-none-match" not in requests_seen[0]["headers"]
 
 
+def test_get_prs_for_issue_query_includes_is_pr_qualifier() -> None:
+    """GitHub search rejects queries without `is:` with 422.
+
+    Regression: tixmeup orchestrator hit
+    `422 — Query must include 'is:issue' or 'is:pull-request'` on
+    reset-and-retry-from-scratch because the search query lacked `is:pr`.
+    The OR must be parenthesized so it binds inside the disjunction.
+    """
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["q"] = request.url.params.get("q", "")
+        return httpx.Response(200, json={"items": []})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    client.get_prs_for_issue(359)
+
+    query = captured["q"]
+    assert "is:pr" in query
+    assert "(head:359 OR #359)" in query
+    assert "repo:owner/repo" in query
+
+
+def test_http_error_message_includes_response_body_summary() -> None:
+    """`str(GitHubHttpError)` must surface GitHub's reason text.
+
+    Without this, toasts/logs only show "GitHub request failed: 422"
+    and the user has no idea what GitHub actually rejected.
+    """
+    error_body = {
+        "message": "Validation Failed",
+        "errors": [
+            {"resource": "Search", "field": "q", "code": "invalid"},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json=error_body)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    with pytest.raises(GitHubHttpError) as exc_info:
+        client.get_prs_for_issue(359)
+
+    rendered = str(exc_info.value)
+    assert "422" in rendered
+    assert "Validation Failed" in rendered
+    assert "Search" in rendered
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.response_text  # raw body still preserved
+
+
 def test_get_prs_with_label_state_all_skips_malformed_items() -> None:
     class _Sink:
         def __init__(self) -> None:

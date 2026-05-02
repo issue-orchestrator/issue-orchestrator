@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import time
 from dataclasses import dataclass
@@ -71,6 +72,51 @@ class GitHubHttpConfig:
 class _ETagEntry:
     etag: str
     payload: Any
+
+
+def _summarize_github_error(response_text: str, max_len: int = 280) -> str:
+    """Extract GitHub's `message` and `errors[]` codes from a response body.
+
+    GitHub error bodies look like:
+        {"message": "Validation Failed",
+         "errors": [{"resource": "PullRequest", "code": "invalid", "field": "state"}],
+         "documentation_url": "..."}
+
+    Returns a compact one-line summary suitable for embedding in an exception
+    message or surfacing in a UI toast. Falls back to a truncated raw body
+    when JSON parsing fails or fields are absent.
+    """
+    if not response_text:
+        return ""
+    try:
+        body = _json.loads(response_text)
+    except (ValueError, TypeError):
+        snippet = response_text.strip().replace("\n", " ")
+        return snippet[:max_len] + ("..." if len(snippet) > max_len else "")
+    if not isinstance(body, dict):
+        return str(body)[:max_len]
+    message = str(body.get("message") or "").strip()
+    parts: list[str] = []
+    if message:
+        parts.append(message)
+    errors = body.get("errors")
+    if isinstance(errors, list) and errors:
+        detail_chunks: list[str] = []
+        for err in errors:
+            if isinstance(err, dict):
+                code = err.get("code")
+                field = err.get("field")
+                resource = err.get("resource")
+                err_msg = err.get("message")
+                bits = [str(x) for x in (resource, field, code, err_msg) if x]
+                if bits:
+                    detail_chunks.append("/".join(bits))
+            elif err:
+                detail_chunks.append(str(err))
+        if detail_chunks:
+            parts.append("[" + "; ".join(detail_chunks) + "]")
+    summary = " ".join(parts) if parts else response_text.strip().replace("\n", " ")
+    return summary[:max_len] + ("..." if len(summary) > max_len else "")
 
 
 def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, Any] | None:
@@ -186,8 +232,13 @@ class GitHubHttpClient:
                     return payload
             if status_code >= 400:
                 error = f"{status_code} {response_text.strip()}"
+                summary = _summarize_github_error(response_text)
+                detail = f" — {summary}" if summary else ""
                 raise GitHubHttpError(
-                    f"GitHub request failed: {status_code}",
+                    (
+                        f"GitHub {method.upper()} {path} failed: "
+                        f"{status_code}{detail}"
+                    ),
                     method=method,
                     url=str(response.url),
                     status_code=status_code,
@@ -999,7 +1050,14 @@ class GitHubHttpClient:
         return all_prs
 
     def get_prs_for_issue(self, issue_number: int) -> list[dict[str, Any]]:
-        query = f"repo:{self._config.repo} head:{issue_number} OR #{issue_number}"
+        # GitHub's search API rejects queries without an `is:` qualifier with
+        # 422 ("Query must include 'is:issue' or 'is:pull-request'"). The
+        # parens are required so `OR` binds within the disjunction rather than
+        # across the `is:pr` qualifier.
+        query = (
+            f"repo:{self._config.repo} is:pr "
+            f"(head:{issue_number} OR #{issue_number})"
+        )
         payload = self._request_json(
             "GET",
             "/search/issues",
@@ -1245,8 +1303,10 @@ class GitHubHttpClient:
             response_text = response.text
             if status_code >= 400:
                 error = f"{status_code} {response_text.strip()}"
+                summary = _summarize_github_error(response_text)
+                detail = f" — {summary}" if summary else ""
                 raise GitHubHttpError(
-                    f"GitHub request failed: {status_code}",
+                    f"GitHub GET /user failed: {status_code}{detail}",
                     method="GET",
                     url=str(response.url),
                     status_code=status_code,

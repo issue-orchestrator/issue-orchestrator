@@ -400,7 +400,13 @@ def _reset_and_retry_issue(  # noqa: PLR0913
         )
         return success, None
     except Exception as exc:
-        logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, exc)
+        logger.error(
+            "[reset-retry] Failed to reset issue #%d (from_scratch=%s): %s",
+            issue_number,
+            from_scratch,
+            exc,
+            exc_info=True,
+        )
         return None, {"issue": issue_number, "error": str(exc)}
 
 

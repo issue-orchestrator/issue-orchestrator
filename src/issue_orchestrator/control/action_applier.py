@@ -425,8 +425,10 @@ class ActionApplier:
         self._require_expected(action, action.issue_number)
         self._verify_claim_before_write(action, action.issue_number)
 
+        step = "comment"
         try:
             comment_url = self.repository_host.add_comment(action.pr_number, action.comment)
+            step = "close"
             self.repository_host.close_pr(action.pr_number)
             logger.info(
                 issue_log(action.issue_number, "Superseded PR #%d"),
@@ -440,11 +442,20 @@ class ActionApplier:
             )
         except Exception as e:
             logger.error(
-                issue_log(action.issue_number, "Failed to supersede PR #%d: %s"),
+                issue_log(
+                    action.issue_number,
+                    "Failed to supersede PR #%d during %s step: %s",
+                ),
                 action.pr_number,
+                step,
                 e,
+                exc_info=True,
             )
-            return ActionResult.fail(action, str(e), pr_number=action.pr_number)
+            return ActionResult.fail(
+                action,
+                f"PR #{action.pr_number} {step} failed: {e}",
+                pr_number=action.pr_number,
+            )
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
         """Close an issue through the repository host."""
