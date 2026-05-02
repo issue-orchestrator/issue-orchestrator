@@ -122,6 +122,153 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
     assert any(name == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED for name, _ in emitted)
 
 
+def test_role_level_events_emit_with_clear_payloads(monkeypatch, tmp_path: Path) -> None:
+    """Each role transition emits ROLE_PROMPTED before launch and ROLE_FEEDBACK after completion."""
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    session_output = FileSystemSessionOutput()
+    run = session_output.start_run(worktree, "review-exchange-1", issue_number=4057)
+    run_dir = run.run_dir
+    exchange_dir = run_dir / "review-exchange"
+    exchange_dir.mkdir(parents=True, exist_ok=True)
+
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    def _fake_run_phase(**kwargs):
+        role = kwargs["role"]
+        completion_path = run_dir / f"completion-{role}.json"
+        completion_path.write_text("{}", encoding="utf-8")
+        if role == "reviewer":
+            data = {"outcome": "changes_requested", "review_issues": "fix it"}
+        else:
+            data = {"outcome": "completed", "implementation": "fixed"}
+        return _FakeSession(role, completion_path), data
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.review_exchange_local_loop._run_phase",
+        _fake_run_phase,
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.review_exchange_local_loop._kill_existing_claude_sessions",
+        lambda *args, **kwargs: None,
+    )
+
+    emitted: list[tuple[EventName, dict[str, object]]] = []
+
+    def _emit(name: EventName, payload: dict[str, object]) -> None:
+        emitted.append((name, payload))
+
+    _run_exchange_rounds(
+        worktree_path=worktree,
+        run_dir=run_dir,
+        exchange_dir=exchange_dir,
+        issue_number=4057,
+        issue_title="Test",
+        session_name="review-exchange-1",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=2,
+        require_validation=False,
+        web_port=None,
+        emit=_emit,
+        session_output=session_output,
+    )
+
+    role_events = [(name, payload) for name, payload in emitted
+                   if name in (
+                       EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+                       EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+                   )]
+    # Expected sequence within a round: reviewer prompted → reviewer feedback →
+    # coder prompted → coder feedback
+    assert [(name.value, payload["role"]) for name, payload in role_events] == [
+        ("review_exchange.role_prompted", "reviewer"),
+        ("review_exchange.role_feedback", "reviewer"),
+        ("review_exchange.role_prompted", "coder"),
+        ("review_exchange.role_feedback", "coder"),
+    ]
+    for _, payload in role_events:
+        assert payload["round_index"] == 1
+        assert payload["issue_number"] == 4057
+    prompted_payloads = [p for n, p in role_events
+                         if n is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED]
+    assert all(isinstance(p["prompt_chars"], int) and p["prompt_chars"] > 0
+               for p in prompted_payloads)
+    feedback_payloads = [p for n, p in role_events
+                         if n is EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK]
+    # _completion_to_coder_response maps outcome="completed" → response_type="ok"
+    assert {p["role"]: p["response_type"] for p in feedback_payloads} == {
+        "reviewer": "changes_requested",
+        "coder": "ok",
+    }
+
+
+def test_role_timeout_event_fires_when_phase_returns_no_completion(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A phase returning None (timeout / dead session) emits ROLE_TIMEOUT before bailing out."""
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    session_output = FileSystemSessionOutput()
+    run = session_output.start_run(worktree, "review-exchange-1", issue_number=4057)
+    run_dir = run.run_dir
+    exchange_dir = run_dir / "review-exchange"
+    exchange_dir.mkdir(parents=True, exist_ok=True)
+
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    def _fake_run_phase(**kwargs):
+        completion_path = run_dir / "completion-reviewer.json"
+        return _FakeSession(kwargs["role"], completion_path), None  # timeout
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.review_exchange_local_loop._run_phase",
+        _fake_run_phase,
+    )
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.review_exchange_local_loop._kill_existing_claude_sessions",
+        lambda *args, **kwargs: None,
+    )
+
+    emitted: list[tuple[EventName, dict[str, object]]] = []
+    _run_exchange_rounds(
+        worktree_path=worktree,
+        run_dir=run_dir,
+        exchange_dir=exchange_dir,
+        issue_number=4057,
+        issue_title="Test",
+        session_name="review-exchange-1",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=2,
+        require_validation=False,
+        web_port=None,
+        emit=lambda name, payload: emitted.append((name, payload)),
+        session_output=session_output,
+    )
+
+    timeout_events = [
+        payload for name, payload in emitted
+        if name is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+    ]
+    assert len(timeout_events) == 1
+    assert timeout_events[0]["role"] == "reviewer"
+    assert timeout_events[0]["reason"] == "no_completion"
+    assert timeout_events[0]["round_index"] == 1
+
+
 def test_run_phase_uses_round_scoped_phase_directory(monkeypatch, tmp_path: Path) -> None:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Prompt", encoding="utf-8")
