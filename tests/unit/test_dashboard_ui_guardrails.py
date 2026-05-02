@@ -92,6 +92,29 @@ def test_show_toast_uses_module_timer_and_click_dismiss() -> None:
     assert "hideToast(toast)" in body
 
 
+def test_show_toast_errors_and_warnings_are_sticky() -> None:
+    """Errors/warnings must require explicit dismiss so the user can read or
+    copy diagnostic detail (e.g. GitHub API reason text). Auto-dismissing a
+    toast that carries useful info is bad UX.
+    """
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "showToast")
+
+    assert "toastType === 'error' || toastType === 'warning'" in body
+    assert "toast-close" in body
+    # Auto-dismiss timer must be gated on non-sticky severity.
+    assert "if (!sticky)" in body
+    # The non-sticky branch still uses the module timer.
+    assert "setTimeout(() => hideToast(toast), 3000)" in body
+    # The toast-level click handler must early-return when sticky, so
+    # clicking the message body cannot dismiss a diagnostic toast.
+    assert "if (toast.classList.contains('sticky')) return;" in body
+    # CSS must style the close button affordance.
+    css = _read_dashboard_css_bundle()
+    assert "#toast .toast-close" in css
+    assert "#toast.sticky" in css
+
+
 def test_show_toast_normalizes_supported_severities() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "normalizeToastType")
