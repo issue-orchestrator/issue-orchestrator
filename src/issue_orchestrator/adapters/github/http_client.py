@@ -74,6 +74,30 @@ class _ETagEntry:
     payload: Any
 
 
+def _truncate_one_line(text: str, max_len: int) -> str:
+    snippet = text.strip().replace("\n", " ")
+    return snippet[:max_len] + ("..." if len(snippet) > max_len else "")
+
+
+def _format_error_entry(err: object) -> str:
+    """Format a single entry from a GitHub `errors[]` array."""
+    if isinstance(err, dict):
+        bits = [
+            str(err[k])
+            for k in ("resource", "field", "code", "message")
+            if err.get(k)
+        ]
+        return "/".join(bits)
+    return str(err) if err else ""
+
+
+def _format_error_details(errors: object) -> str:
+    if not isinstance(errors, list):
+        return ""
+    chunks = [c for c in (_format_error_entry(e) for e in errors) if c]
+    return "[" + "; ".join(chunks) + "]" if chunks else ""
+
+
 def _summarize_github_error(response_text: str, max_len: int = 280) -> str:
     """Extract GitHub's `message` and `errors[]` codes from a response body.
 
@@ -91,32 +115,17 @@ def _summarize_github_error(response_text: str, max_len: int = 280) -> str:
     try:
         body = _json.loads(response_text)
     except (ValueError, TypeError):
-        snippet = response_text.strip().replace("\n", " ")
-        return snippet[:max_len] + ("..." if len(snippet) > max_len else "")
+        return _truncate_one_line(response_text, max_len)
     if not isinstance(body, dict):
         return str(body)[:max_len]
-    message = str(body.get("message") or "").strip()
-    parts: list[str] = []
-    if message:
-        parts.append(message)
-    errors = body.get("errors")
-    if isinstance(errors, list) and errors:
-        detail_chunks: list[str] = []
-        for err in errors:
-            if isinstance(err, dict):
-                code = err.get("code")
-                field = err.get("field")
-                resource = err.get("resource")
-                err_msg = err.get("message")
-                bits = [str(x) for x in (resource, field, code, err_msg) if x]
-                if bits:
-                    detail_chunks.append("/".join(bits))
-            elif err:
-                detail_chunks.append(str(err))
-        if detail_chunks:
-            parts.append("[" + "; ".join(detail_chunks) + "]")
-    summary = " ".join(parts) if parts else response_text.strip().replace("\n", " ")
-    return summary[:max_len] + ("..." if len(summary) > max_len else "")
+    parts = [
+        str(body.get("message") or "").strip(),
+        _format_error_details(body.get("errors")),
+    ]
+    summary = " ".join(p for p in parts if p)
+    if not summary:
+        return _truncate_one_line(response_text, max_len)
+    return _truncate_one_line(summary, max_len)
 
 
 def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, Any] | None:
