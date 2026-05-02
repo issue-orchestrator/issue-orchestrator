@@ -1382,7 +1382,7 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "renderTestResultsHeadline(tests)" in results_body
     assert "renderTestResultsFilters(counts" in results_body
     assert 'class="test-results-list"' in results_body
-    assert "_renderTestRow(test, lifecycle, activeFilter)" in results_body
+    assert "_renderTestRow(test, lifecycle, activeFilter, { runId })" in results_body
     # The test-results-list MUST NOT carry a fixed id — both the E2E run
     # modal and the issue-detail drawer render this layout, so a fixed id
     # would create duplicates and break panel-scoped filter dispatch.
@@ -1437,8 +1437,121 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "document.querySelectorAll" not in filter_body
 
 
+def test_e2e_test_row_history_cluster_uses_inline_labels() -> None:
+    """The recent-runs glyph cluster and flake % must carry visible labels.
+
+    The original row jammed glyphs and a bare "50%" together with no inline
+    labels — users misread the glyphs as a single test's retry sequence and
+    couldn't tell what the percent meant. Lock in the labels so the row stays
+    self-explanatory.
+    """
+    js = _read(DASHBOARD_JS)
+    cluster_body = _function_body(js, "_renderHistoryCluster")
+    row_body = _function_body(js, "_renderTestRow")
+    assert 'class="test-history-label"' in cluster_body
+    assert ">Recent<" in cluster_body
+    assert "test-history-flake" in cluster_body
+    assert "% flake" in cluster_body
+    # Row delegates to the cluster — no bare flip_rate_percent rendering left.
+    assert "_renderHistoryCluster(test)" in row_body
+    assert 'class="flip-rate"' not in row_body
+    css = _read_dashboard_css_bundle()
+    assert ".test-history-label" in css
+    assert ".test-history-flake" in css
+
+
+def test_e2e_test_row_drops_flaky_pill_in_favor_of_history_cluster() -> None:
+    """`Flaky` is no longer a peer pill alongside `Passed`/`Failed`.
+
+    Reading "Passed" and "Flaky" as two pills made the outcome look
+    contradictory. Flakiness now lives in the history cluster (glyphs + flake
+    %); the only fallback is a small inline note when there's no history.
+    """
+    js = _read(DASHBOARD_JS)
+    pills_body = _function_body(js, "_renderTestResultPills")
+    assert 'test-result-pill flaky' not in pills_body
+    assert "test-result-flaky-note" in pills_body
+    # Fallback is gated by absence of history — don't double-up with the cluster.
+    assert "_hasHistory(test)" in pills_body
+
+
+def test_e2e_test_row_suppresses_default_provenance_tag() -> None:
+    """`JUnit XML` provenance is the framework-agnostic default — no per-row tag."""
+    js = _read(DASHBOARD_JS)
+    row_body = _function_body(js, "_renderTestRow")
+    # Both runtime and junit_xml are common defaults; only show the tag for
+    # genuinely unusual sources (e.g. external_report).
+    assert "sourceKey !== 'runtime'" in row_body
+    assert "sourceKey !== 'junit_xml'" in row_body
+
+
+def test_e2e_failed_rows_render_expanded_by_default() -> None:
+    """Failed tests are the headline — expansion must not hide behind a caret."""
+    js = _read(DASHBOARD_JS)
+    expand_body = _function_body(js, "_renderTestRowExpand")
+    row_body = _function_body(js, "_renderTestRow")
+    # Expand div omits the hidden attribute when the row is failed.
+    assert "outcomeState === 'failed'" in expand_body
+    assert "startOpen" in expand_body
+    # Row's caret + aria-expanded mirror the open state so a11y stays honest.
+    assert "outcomeState === 'failed'" in row_body
+    assert 'aria-expanded="${ariaExpandedAttr}"' in row_body
+
+
+def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
+    """Captured stdout/stderr is fetched on demand from the JUnit XML.
+
+    Captured output is intentionally NOT persisted to SQLite (it can be MB per
+    test). Lock in the lazy-load contract: a placeholder marks the row as
+    needing fetch; the toggle handler calls /api/e2e-run/{id}/test-output and
+    fills in the placeholder. Render-time pre-fetch covers failed rows that
+    auto-expand.
+    """
+    js = _read(DASHBOARD_JS)
+    expand_body = _function_body(js, "_renderTestRowExpand")
+    toggle_body = _function_body(js, "toggleTestRowExpand")
+    fetch_body = _function_body(js, "_maybeLoadCapturedOutput")
+    auto_body = _function_body(js, "_autoLoadVisibleCapturedOutput")
+    panel_body = _function_body(js, "renderE2EResultsPanel")
+    mount_body = _function_body(js, "renderUnifiedRunView")
+    filter_body = _function_body(js, "filterTestResults")
+    # Placeholder + run/nodeid handles travel on the DOM, not in JS state.
+    assert 'class="trr-captured-output"' in expand_body
+    assert 'data-needs-fetch="1"' in expand_body
+    assert "data-run-id=" in expand_body
+    assert "data-nodeid=" in expand_body
+    # Source must be JUnit-derived — other runners have no captured output to fetch.
+    assert "sourceKey.includes('junit')" in expand_body
+    # Captured-output expansion is gated to FAILED rows only — passed rows
+    # rendering an empty "Captured output" block would turn every passing row
+    # into expandable noise. (Users who want green-run logs can hit the JUnit
+    # XML link in Run details & artifacts.)
+    assert "outcomeState === 'failed' && runId" in expand_body
+    # Toggle handler triggers fetch on first expand.
+    assert "_maybeLoadCapturedOutput(expand)" in toggle_body
+    assert "/api/e2e-run/" in fetch_body
+    assert "/test-output" in fetch_body
+    assert "encodeURIComponent(nodeid)" in fetch_body
+    # 404 must render an empty note rather than an error.
+    assert "_renderCapturedOutputEmpty" in fetch_body
+    # Panel passes runId so the placeholder can address the right run.
+    assert "data.run.id" in panel_body
+    assert "{ runId }" in panel_body
+    # Auto-expanded failed rows kick off the fetch on initial mount, but only
+    # for rows the user can see — a failure-heavy run with most rows hidden by
+    # the default "Action needed" filter would otherwise spam dozens of fetches.
+    assert "_autoLoadVisibleCapturedOutput(content)" in mount_body
+    assert ".trr-expand:not([hidden])" in auto_body
+    assert "row.style.display === 'none'" in auto_body
+    # When the user changes the filter, newly visible rows must trigger fetch.
+    assert "_autoLoadVisibleCapturedOutput(panel)" in filter_body
+    css = _read_dashboard_css_bundle()
+    assert ".trr-captured-output" in css
+    assert ".trr-captured-channel-label" in css
+
+
 def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:
-    """Run evidence disclosure carries runner/command/suite artifacts and suite timeline."""
+    """Run details & artifacts disclosure carries runner/command/suite artifacts and suite timeline."""
     js = _read(DASHBOARD_JS)
     disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
@@ -1449,7 +1562,11 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     assert "rdd-grid" in disclosure_body
     assert "Runner" in disclosure_body
     assert "Command" in disclosure_body
-    assert "Run evidence" in disclosure_body
+    # Renamed from "Run evidence" — that label implied the disclosure proved
+    # the test results above, when it's actually run-level metadata + suite
+    # artifacts + cycle timeline. The new label says what's there.
+    assert "Run details &amp; artifacts" in disclosure_body
+    assert "Run evidence" not in disclosure_body
     assert "Suite timeline" in disclosure_body
     assert 'id="e2eTimelineContent"' in disclosure_body
     assert "Suite artifacts" in disclosure_body

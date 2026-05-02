@@ -147,8 +147,46 @@ If you genuinely can't verify behavior without accessing internals, this signals
 
 ---
 
+## Test Pyramid: Prefer Integration over Browser
+
+**Default to the cheapest layer that can prove the behavior.** Playwright tests are slow (~7s/test) and flaky-prone; treat them as a scarce resource.
+
+| Layer | Cost | Use for |
+|-------|------|---------|
+| Python unit | <50 ms | Pure logic, parsers, view-model shape, port behavior |
+| **JS-vm** (`tests/js/`, `node:test` + `vm`) | **<5 ms** | **JS rendering, click dispatch, fetch behavior, command-pattern handlers** |
+| Python integration | <500 ms | HTTP endpoints (`TestClient`), SQLite-backed flows, multi-component wiring |
+| Playwright (`tests/e2e_web/`) | ~7 s | True browser concerns only |
+
+### When to use Playwright (and when NOT to)
+
+**Use Playwright for:**
+- Cross-page navigation, modal lifecycle, focus management
+- Real DOM events the JS-vm can't simulate (paint timing, layout, drag/drop, file pickers)
+- One end-to-end smoke per major surface, proving the wiring (view-model → API → JS → DOM) actually works in a real browser
+
+**Do NOT use Playwright for:**
+- Verifying which handler fires when a button is clicked → JS-vm test of the dispatch function
+- Verifying HTML structure (pills, classes, attributes) → JS-vm test asserting on rendered string
+- Verifying API request shape on click → JS-vm test with stubbed `fetch`
+- Verifying error/empty states → JS-vm test with the matching response stub
+
+### The command pattern lets you skip Playwright
+
+Click handlers in this codebase route through dispatch contracts (`data-e2e-action`, `data-lifecycle-command`, `data-artifact-path`) rather than inline closures. Tests at the JS-vm layer call the dispatcher directly with a synthetic button (`{ dataset: {...} }`) and assert on which window-scoped helper got called and with what arguments — no DOM, no browser.
+
+Reference: `tests/js/e2e_run_view_actions.test.js` covers every clickable surface in `e2e_run_view.js` (row actions, lifecycle commands, artifact buttons, filter chips, row toggle, lazy-load) at the dispatch layer. New click surfaces should be tested there first; only escalate to Playwright if the test genuinely needs a browser.
+
+### Substring guardrails are a backstop, not a primary
+
+`tests/unit/test_dashboard_ui_guardrails.py` greps function bodies for specific strings ("must contain `data-needs-fetch`"). It catches accidental deletion of structural patterns but doesn't verify behavior — a typo or wrong wiring still passes substring checks. Use it sparingly for cross-cutting structural rules ("filter dispatch is panel-scoped, not global"); per-handler behavior belongs in `tests/js/`.
+
+---
+
 ## Subdirectory Guides
 
 - `unit/AGENTS.md` - Unit test patterns, fixtures, mocking
 - `integration/AGENTS.md` - Integration test patterns
+- `js/AGENTS.md` - JS-vm command-pattern tests (the preferred middle layer)
 - `e2e/AGENTS.md` - E2E test setup, GitHub requirements
+- `e2e_web/AGENTS.md` - Playwright browser tests (use sparingly)

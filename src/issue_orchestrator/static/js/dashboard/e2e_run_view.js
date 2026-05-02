@@ -529,8 +529,12 @@ function _renderTestResultPills(test) {
     } else if (_testIsTrackedFailure(test)) {
         pills.push('<span class="test-result-pill tracked">Tracked</span>');
     }
-    if (test.is_likely_flaky || category === 'flaky') {
-        pills.push('<span class="test-result-pill flaky">Flaky</span>');
+    // Flakiness used to be a peer pill alongside Passed/Failed, which read as a
+    // contradictory second outcome. It's now a small annotation on the row's
+    // history cluster — see _renderTestRow. Keep this branch as a fallback for
+    // tests where the flake flag is set but no per-run history is available.
+    if ((test.is_likely_flaky || category === 'flaky') && !_hasHistory(test)) {
+        pills.push('<span class="test-result-flaky-note" title="Marked as historically flaky">flaky history</span>');
     }
     if (category === 'fixed') {
         pills.push('<span class="test-result-pill action-needed">Issue can close</span>');
@@ -538,7 +542,12 @@ function _renderTestResultPills(test) {
     return `<div class="test-result-pills">${pills.join('')}</div>`;
 }
 
-function _renderTestRowExpand(test, lifecycle) {
+function _hasHistory(test) {
+    return Array.isArray(test && test.history) && test.history.length > 0;
+}
+
+function _renderTestRowExpand(test, lifecycle, opts) {
+    opts = opts || {};
     const errorText = _testErrorText(test);
     const outcomeState = _testOutcomeState(test);
     const errorBlock = outcomeState === 'failed'
@@ -547,6 +556,22 @@ function _renderTestRowExpand(test, lifecycle) {
             ${errorText
                 ? `<pre class="trr-error-text">${escapeHtml(errorText)}</pre>`
                 : '<div class="e2e-empty-note">No full error text was recorded for this test.</div>'}
+        </div>`
+        : '';
+    // Captured stdout/stderr is read on-demand from the run's JUnit XML — we
+    // never persist it. Render a placeholder; toggleTestRowExpand fills it in
+    // on first expand. Scope: failed rows only. Passing tests usually have
+    // nothing to show, and rendering an empty "Captured output" block on
+    // every passing row turns them all into expandable noise. Users who want
+    // captured output from a green run can open the JUnit XML directly from
+    // Run details & artifacts.
+    const runId = Number.isFinite(opts.runId) ? Number(opts.runId) : null;
+    const sourceKey = String(test && test.result_source || '').toLowerCase();
+    const canFetchOutput = outcomeState === 'failed' && runId !== null && sourceKey.includes('junit');
+    const capturedBlock = canFetchOutput
+        ? `<div class="trr-captured-output" data-needs-fetch="1" data-run-id="${runId}" data-nodeid="${escapeAttr(test.nodeid)}">
+            <div class="trr-expand-heading">Captured output</div>
+            <div class="trr-captured-status">Loading captured output…</div>
         </div>`
         : '';
     let lifecycleBlock = '';
@@ -580,10 +605,15 @@ function _renderTestRowExpand(test, lifecycle) {
             </div>
         `;
     }
-    if (!errorBlock && !lifecycleBlock) {
+    if (!errorBlock && !lifecycleBlock && !capturedBlock) {
         return '';
     }
-    return `<div class="trr-expand" hidden>${errorBlock}${lifecycleBlock}</div>`;
+    // Failed rows render expanded by default — failures are the headline of a
+    // test-centric view and shouldn't hide behind a caret. Anything else stays
+    // collapsed so the list scans cleanly.
+    const startOpen = outcomeState === 'failed';
+    const hiddenAttr = startOpen ? '' : 'hidden';
+    return `<div class="trr-expand" ${hiddenAttr}>${errorBlock}${capturedBlock}${lifecycleBlock}</div>`;
 }
 
 function _renderTestRowActions(test) {
@@ -617,7 +647,9 @@ function _renderTestRowActions(test) {
     return '';
 }
 
-function _renderTestRow(test, lifecycle, activeFilter = 'all') {
+function _renderTestRow(test, lifecycle, activeFilter, opts) {
+    activeFilter = activeFilter || 'all';
+    opts = opts || {};
     const shortName = test.label || test.display_name || (test.nodeid || '').split('::').pop() || test.nodeid;
     const outcomeState = _testOutcomeState(test);
     const outcomeIcon = outcomeState === 'passed' || outcomeState === 'passed_on_retry'
@@ -633,16 +665,22 @@ function _renderTestRow(test, lifecycle, activeFilter = 'all') {
             ? 'skipped'
             : 'failed';
     const filterGroup = _testFilterGroup(test);
-    const expand = _renderTestRowExpand(test, lifecycle);
+    const expand = _renderTestRowExpand(test, lifecycle, opts);
     const expandable = Boolean(expand);
-    const historyIcons = Array.isArray(test.history) && test.history.length
-        ? `<span class="test-history">${test.history.map(h => h.outcome === 'passed' ? '<span class="hist-icon pass">✓</span>' : h.outcome === 'failed' ? '<span class="hist-icon fail">✗</span>' : '<span class="hist-icon skip">○</span>').reverse().join('')}</span>`
-        : '';
-    const flipRate = test.flip_rate_percent && test.flip_rate_percent > 0
-        ? `<span class="flip-rate" title="Flip rate across recent runs">${test.flip_rate_percent}%</span>`
-        : '';
+    // The expansion renders open by default for failed rows (see
+    // _renderTestRowExpand) — match the caret + aria-expanded state to that
+    // initial visibility so screen readers and keyboard users see the truth.
+    const startOpen = expandable && outcomeState === 'failed';
+    const caretChar = startOpen ? '▾' : '▸';
+    const ariaExpandedAttr = startOpen ? 'true' : 'false';
+    const historyCluster = _renderHistoryCluster(test);
     const duration = test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
-    const sourceTag = test.result_source && test.result_source !== 'runtime'
+    // Suppress the JUnit provenance tag by default — JUnit XML is the
+    // framework-agnostic lingua franca, not a notable per-row signal. Same for
+    // the legacy "runtime" source. Only render the tag when the source is
+    // something a user would actually want to flag (e.g. external_report).
+    const sourceKey = String(test.result_source || '').toLowerCase();
+    const sourceTag = sourceKey && sourceKey !== 'runtime' && sourceKey !== 'junit_xml'
         ? `<span class="test-source">${escapeHtml(_humanizeSnakeCase(test.result_source))}</span>`
         : '';
     const suiteHtml = test.suite_name ? `<div class="test-suite" title="${escapeHtml(test.suite_name)}">${escapeHtml(test.suite_name)}</div>` : '';
@@ -650,8 +688,8 @@ function _renderTestRow(test, lifecycle, activeFilter = 'all') {
     const hiddenForDefaultFilter = activeFilter !== 'all' && filterGroup !== activeFilter;
     return `
         <div class="trr-row test-row ${outcomeState}" data-nodeid="${escapeAttr(test.nodeid)}" data-filter-group="${filterGroup}" data-expandable="${expandable ? '1' : '0'}" ${hiddenForDefaultFilter ? 'style="display: none;"' : ''}>
-            <div class="trr-row-main test-row-main" ${expandable ? `onclick="toggleTestRowExpand(this); event.stopPropagation();"` : ''} ${expandable ? 'role="button" tabindex="0" aria-expanded="false"' : ''}>
-                ${expandable ? '<span class="trr-caret" aria-hidden="true">▸</span>' : '<span class="trr-caret-spacer" aria-hidden="true"></span>'}
+            <div class="trr-row-main test-row-main" ${expandable ? `onclick="toggleTestRowExpand(this); event.stopPropagation();"` : ''} ${expandable ? `role="button" tabindex="0" aria-expanded="${ariaExpandedAttr}"` : ''}>
+                ${expandable ? `<span class="trr-caret" aria-hidden="true">${caretChar}</span>` : '<span class="trr-caret-spacer" aria-hidden="true"></span>'}
                 <span class="status-icon ${outcomeClass}">${outcomeIcon}</span>
                 <div class="trr-row-copy test-row-copy">
                     ${_renderTestResultPills(test)}
@@ -660,14 +698,34 @@ function _renderTestRow(test, lifecycle, activeFilter = 'all') {
                     ${_renderTestFailureSummary(test)}
                 </div>
                 ${sourceTag}
-                ${historyIcons}
-                ${flipRate}
+                ${historyCluster}
                 ${duration}
                 ${actions ? `<div class="test-actions trr-row-actions">${actions}</div>` : ''}
             </div>
             ${expand}
         </div>
     `;
+}
+
+function _renderHistoryCluster(test) {
+    if (!_hasHistory(test)) return '';
+    const glyphs = test.history
+        .map(h => h.outcome === 'passed'
+            ? '<span class="hist-icon pass">✓</span>'
+            : h.outcome === 'failed'
+                ? '<span class="hist-icon fail">✗</span>'
+                : '<span class="hist-icon skip">○</span>')
+        .reverse()
+        .join('');
+    const flakePct = Number(test.flip_rate_percent || 0);
+    const flakeAnnotation = flakePct > 0
+        ? `<span class="test-history-flake" title="Flip rate across recent runs">· ${flakePct}% flake</span>`
+        : '';
+    return `<span class="test-history" title="Outcome of this test in the most recent runs (newest first).">
+        <span class="test-history-label">Recent</span>
+        <span class="test-history-glyphs">${glyphs}</span>
+        ${flakeAnnotation}
+    </span>`;
 }
 
 function renderE2EResultsPanel(data) {
@@ -684,10 +742,11 @@ function renderE2EResultsPanel(data) {
     };
     const activeFilter = counts.action_needed ? 'action_needed' : 'all';
 
+    const runId = data && data.run && Number.isFinite(Number(data.run.id)) ? Number(data.run.id) : null;
     const rowsHtml = tests.length
         ? tests.map(test => {
             const lifecycle = test.existing_issue ? lifecycleMap.get(Number(test.existing_issue.number)) : null;
-            return _renderTestRow(test, lifecycle, activeFilter);
+            return _renderTestRow(test, lifecycle, activeFilter, { runId });
         }).join('')
         : '<div class="empty-state">No test cases recorded for this run.</div>';
 
@@ -722,7 +781,7 @@ function renderRunDetailsDisclosure(data) {
     const buttons = _renderRunArtifactButtons(data);
     return `
         <details class="run-details-disclosure" id="runDetailsDisclosure">
-            <summary>Run evidence<span class="rdd-summary-hint"> · command, suite artifacts, suite timeline</span></summary>
+            <summary>Run details &amp; artifacts<span class="rdd-summary-hint"> · runner, command, suite artifacts, suite timeline</span></summary>
             <div class="rdd-body">
                 <div class="rdd-grid">
                     <div class="rdd-row"><span class="rdd-label">Runner</span><span class="rdd-value">${escapeHtml(_formatRunnerLabel(run))}</span></div>
@@ -764,7 +823,79 @@ function toggleTestRowExpand(headerEl) {
         headerEl.setAttribute('aria-expanded', 'true');
         const caret = headerEl.querySelector('.trr-caret');
         if (caret) caret.textContent = '▾';
+        _maybeLoadCapturedOutput(expand);
     }
+}
+
+function _autoLoadVisibleCapturedOutput(root) {
+    // A row is "visible" for auto-fetch purposes when neither the row nor an
+    // ancestor has display:none (which is how the initial filter hides
+    // non-matching rows). This guards a failure-heavy run against firing N
+    // parallel fetches for tracked rows that the active filter has hidden.
+    root.querySelectorAll('.trr-expand:not([hidden])').forEach(expand => {
+        const row = expand.closest && expand.closest('.trr-row');
+        if (row && row.style && row.style.display === 'none') return;
+        _maybeLoadCapturedOutput(expand);
+    });
+}
+
+function _maybeLoadCapturedOutput(expand) {
+    const placeholder = expand.querySelector('.trr-captured-output[data-needs-fetch="1"]');
+    if (!placeholder) return;
+    placeholder.dataset.needsFetch = '0';
+    const runId = Number(placeholder.dataset.runId);
+    const nodeid = placeholder.dataset.nodeid;
+    if (!Number.isFinite(runId) || !nodeid) {
+        _renderCapturedOutputError(placeholder, 'Cannot load captured output: missing run or test id.');
+        return;
+    }
+    const url = `/api/e2e-run/${runId}/test-output?nodeid=${encodeURIComponent(nodeid)}`;
+    fetch(url)
+        .then(async response => {
+            if (response.status === 404) {
+                _renderCapturedOutputEmpty(placeholder);
+                return;
+            }
+            if (!response.ok) {
+                _renderCapturedOutputError(placeholder, `Server returned ${response.status}.`);
+                return;
+            }
+            const body = await response.json().catch(() => null);
+            if (!body || typeof body !== 'object') {
+                _renderCapturedOutputError(placeholder, 'Server returned a malformed response.');
+                return;
+            }
+            _renderCapturedOutputBody(placeholder, body);
+        })
+        .catch(err => {
+            _renderCapturedOutputError(placeholder, escapeHtml(String(err && err.message || err)));
+        });
+}
+
+function _renderCapturedOutputEmpty(placeholder) {
+    placeholder.querySelector('.trr-captured-status').outerHTML =
+        '<div class="e2e-empty-note">No captured output recorded for this test.</div>';
+}
+
+function _renderCapturedOutputError(placeholder, message) {
+    placeholder.querySelector('.trr-captured-status').outerHTML =
+        `<div class="e2e-empty-note trr-captured-error">Failed to load captured output: ${message}</div>`;
+}
+
+function _renderCapturedOutputBody(placeholder, body) {
+    const stdoutHtml = body.system_out
+        ? `<div class="trr-captured-channel">
+            <div class="trr-captured-channel-label">stdout</div>
+            <pre class="trr-error-text trr-captured-text">${escapeHtml(body.system_out)}</pre>
+        </div>`
+        : '';
+    const stderrHtml = body.system_err
+        ? `<div class="trr-captured-channel">
+            <div class="trr-captured-channel-label">stderr</div>
+            <pre class="trr-error-text trr-captured-text">${escapeHtml(body.system_err)}</pre>
+        </div>`
+        : '';
+    placeholder.querySelector('.trr-captured-status').outerHTML = stdoutHtml + stderrHtml;
 }
 
 function filterTestResults(filterKey, btnEl) {
@@ -786,18 +917,22 @@ function filterTestResults(filterKey, btnEl) {
         chip.classList.toggle('active', active);
         chip.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    // A row that was filter-hidden at initial render skipped its auto-fetch.
+    // Now that the user revealed it, kick off the fetch (idempotent — already-
+    // fetched rows are no-ops via the placeholder's data-needs-fetch flag).
+    _autoLoadVisibleCapturedOutput(panel);
 }
 
 function openE2ERunTimeline(runId) {
-    // Legacy entry point: open run modal and auto-expand the Run evidence
-    // disclosure (which holds the suite timeline).
+    // Legacy entry point: open run modal and auto-expand the Run details &
+    // artifacts disclosure (which holds the suite timeline).
     return showUnifiedRunView(runId, { expandRunDetails: true });
 }
 
 /**
  * Render the run modal with a test-centric layout: tests are the headline,
- * run metadata + suite artifacts + suite timeline live in a Run evidence
- * disclosure at the bottom.
+ * run metadata + suite artifacts + suite timeline live in a Run details &
+ * artifacts disclosure at the bottom.
  */
 function renderUnifiedRunView(data, runId, options) {
     options = options || {};
@@ -816,6 +951,13 @@ function renderUnifiedRunView(data, runId, options) {
         </div>
     `;
     content.innerHTML = html;
+
+    // Failed rows render expanded by default — kick off captured-output fetches
+    // for the ones the user can see. Skip rows hidden by the initial filter
+    // (a tracked-failure-heavy run defaults to "Action needed" and would
+    // otherwise spam dozens of fetches for off-screen tracked rows). Collapsed
+    // rows and filtered-in-later rows defer until toggle / filter dispatch.
+    _autoLoadVisibleCapturedOutput(content);
 
     const timelineContainer = document.getElementById('e2eTimelineContent');
     if (timelineContainer) {

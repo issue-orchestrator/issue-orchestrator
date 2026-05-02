@@ -5,10 +5,12 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.infra.e2e_reports import (
+    MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
     discover_report_artifacts,
     normalize_pytest_junit_cases,
     parse_junit_report,
+    parse_junit_report_cached,
 )
 
 
@@ -183,6 +185,156 @@ def test_discover_report_artifacts_rejects_missing_configured_artifact_path(
             junit_xml_paths=[],
             artifact_paths=["reports/missing.log"],
         )
+
+
+def test_parse_junit_report_extracts_system_out_and_system_err(tmp_path: Path) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_chatty" time="0.10">
+    <system-out>captured stdout line 1
+captured stdout line 2</system-out>
+    <system-err>warning: something happened</system-err>
+  </testcase>
+  <testcase classname="pkg.test_mod" name="test_quiet" time="0.05" />
+  <testcase classname="pkg.test_mod" name="test_blank_channels" time="0.05">
+    <system-out>   </system-out>
+    <system-err></system-err>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert cases[0].system_out == "captured stdout line 1\ncaptured stdout line 2"
+    assert cases[0].system_err == "warning: something happened"
+    assert cases[1].system_out is None
+    assert cases[1].system_err is None
+    assert cases[2].system_out is None
+    assert cases[2].system_err is None
+
+
+def test_parse_junit_report_caps_captured_output_at_limit(tmp_path: Path) -> None:
+    huge = "x" * (MAX_CAPTURED_OUTPUT_CHARS + 5_000)
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        f"""\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_loud" time="0.10">
+    <system-out>{huge}</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert cases[0].system_out is not None
+    assert len(cases[0].system_out) == MAX_CAPTURED_OUTPUT_CHARS
+
+
+def test_parse_junit_report_attaches_captured_output_to_failed_case(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_fails" time="2.50">
+    <failure message="AssertionError">expected 1, got 2</failure>
+    <system-out>print before failure</system-out>
+    <system-err>traceback noise</system-err>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    cases = parse_junit_report(report)
+
+    assert cases[0].outcome == "failed"
+    assert cases[0].failure_summary == "AssertionError"
+    assert cases[0].system_out == "print before failure"
+    assert cases[0].system_err == "traceback noise"
+
+
+def test_parse_junit_report_cached_reuses_parse_for_unchanged_file(tmp_path: Path) -> None:
+    # tmp_path is unique per test, so the cache key is unique and we don't
+    # need to reach into the LRU's internals to reset shared state.
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_a" time="0.10">
+    <system-out>captured a</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+    raw_a, norm_a = parse_junit_report_cached(report)
+    raw_b, norm_b = parse_junit_report_cached(report)
+
+    # Object identity is the observable contract: a cache hit returns the
+    # SAME tuple, never a fresh parse. parse_junit_report always returns
+    # fresh objects, so reuse-by-identity here is only possible if the cache
+    # short-circuited the second call.
+    assert raw_a is raw_b
+    assert norm_a is norm_b
+    # Sanity-check the parsed content is what we expect, not stale or empty.
+    assert raw_a[0].system_out == "captured a"
+
+
+def test_parse_junit_report_cached_invalidates_when_file_is_rewritten(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_a" time="0.10">
+    <system-out>first</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    # Pin mtime deterministically — sleeping to wait for the FS clock to tick
+    # would flake on filesystems with coarse mtime resolution (HFS+, FAT) or
+    # slow CI clocks. The cache key is (path, mtime_ns, size); both must
+    # change to force a miss, so we also vary the body length below.
+    original_ns = 1_700_000_000_000_000_000
+    os.utime(report, ns=(original_ns, original_ns))
+
+    raw_first, _ = parse_junit_report_cached(report)
+    assert raw_first[0].system_out == "first"
+
+    report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="pkg.test_mod" name="test_a" time="0.10">
+    <system-out>second-with-different-length</system-out>
+  </testcase>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    rewritten_ns = original_ns + 1_000_000_000  # one second later
+    os.utime(report, ns=(rewritten_ns, rewritten_ns))
+
+    raw_second, _ = parse_junit_report_cached(report)
+    # If the cache had ignored the file change, this would still say "first".
+    # Observing the new content proves invalidation without inspecting LRU state.
+    assert raw_second[0].system_out == "second-with-different-length"
+    # Identity also flips — fresh tuple, not the cached one.
+    assert raw_second is not raw_first
 
 
 def test_discover_report_artifacts_rejects_paths_outside_repo_root(

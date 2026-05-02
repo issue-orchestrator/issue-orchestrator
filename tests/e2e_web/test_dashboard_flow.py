@@ -265,16 +265,19 @@ def test_issue_drawer_validation_renders_structured_view_for_junit_cases(
     # Switch back to All to set up expand assertion
     structured.locator(".trf-chip[data-filter='all']").click()
 
-    # ── Click failing row → expand reveals the *specific* longrepr text ──
+    # ── Failing row defaults to expanded (failures are the headline of a
+    # test-centric view). The *specific* longrepr text must be visible
+    # without a click, and a click toggles to collapsed. ──
     failing_row = structured.locator(
         f".trr-row[data-nodeid='tests/unit/test_circuits.py::{expected_failed_label}']"
     )
     expect(failing_row).to_have_attribute("data-expandable", "1")
-    failing_row.locator(".trr-row-main").click()
     error_pre = failing_row.locator(".trr-error-text")
     expect(error_pre).to_be_visible()
     expect(error_pre).to_contain_text("AssertionError: expected 1 open circuit but got 0")
     expect(error_pre).to_contain_text("test_circuits.py:42")
+    failing_row.locator(".trr-row-main").click()
+    expect(error_pre).to_be_hidden(timeout=2000)
 
     # ── Issue-session validation must NOT render an inline lifecycle block:
     # validation cases have no `existing_issue` (E2E flake-tracking is the

@@ -266,6 +266,13 @@ export interface E2ESuiteTimelineContainerPayload {
   subject: TimelineSubjectPayload;
 }
 
+export interface E2ETestOutputPayload {
+  nodeid: string;
+  source_path: string;
+  system_err: string | null;
+  system_out: string | null;
+}
+
 export interface E2ETimelineArtifactPayload {
   label: string;
   type: string;

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import (
     E2ERunDetailPayload,
+    E2ETestOutputPayload,
     TestCaseIssueLinkPayload,
     E2ERunResultCategoriesPayload,
     IssueDetailPayload,
@@ -594,6 +595,107 @@ async def get_e2e_run_detail(
         mode="json",
     )
     return E2ERunDetailPayload.model_validate(payload)
+
+
+def _captured_output_from_junit(
+    junit_paths: list[Any],
+    nodeid: str,
+    *,
+    run_id: int,
+) -> dict[str, Any] | None:
+    """Walk the run's JUnit XMLs looking for captured output for one nodeid.
+
+    Returns the JSON-serializable payload to send back, or None when no XML
+    contained a matching case with non-empty captured output. Handles both
+    raw and normalized pytest case-ids so the endpoint works for any runner.
+    Uses the parser's mtime-keyed cache so a failure-heavy run reparses the
+    same on-disk XML at most once per file change.
+    """
+    from ..infra.e2e_reports import parse_junit_report_cached
+
+    for path in junit_paths:
+        if not path.exists():
+            logger.warning("JUnit XML for run %s missing on disk: %s", run_id, path)
+            continue
+        try:
+            raw_cases, normalized_cases = parse_junit_report_cached(path)
+        except ValueError:
+            logger.warning("Skipping malformed JUnit XML for run %s: %s", run_id, path)
+            continue
+        for raw_case, norm_case in zip(raw_cases, normalized_cases):
+            matches = nodeid in (raw_case.case_id, norm_case.case_id)
+            has_output = raw_case.system_out is not None or raw_case.system_err is not None
+            if matches and has_output:
+                return {
+                    "nodeid": nodeid,
+                    "system_out": raw_case.system_out,
+                    "system_err": raw_case.system_err,
+                    "source_path": str(path),
+                }
+    return None
+
+
+@web_issue_detail_router.get(
+    "/api/e2e-run/{run_id}/test-output",
+    response_model=E2ETestOutputPayload,
+    response_model_exclude_unset=False,
+)
+async def get_e2e_run_test_output(
+    run_id: int,
+    nodeid: str,
+    orchestrator: WebOrchestratorDependency,
+) -> E2ETestOutputPayload | JSONResponse:
+    """Lazy-load captured stdout/stderr for one test from the run's JUnit XML.
+
+    Captured output is intentionally NOT persisted to SQLite — it can be many
+    megabytes per test. We re-parse the on-disk JUnit XML on demand.
+    """
+    from pathlib import Path
+    from ..infra.e2e_db import E2EDB
+
+    if not orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    nodeid_clean = nodeid.strip()
+    if not nodeid_clean:
+        return JSONResponse(
+            {"error": "bad_request", "detail": "nodeid is required"},
+            status_code=400,
+        )
+
+    db_path = orchestrator.config.repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": f"E2E database not found for run {run_id}"},
+            status_code=404,
+        )
+    db = E2EDB(db_path)
+    if db.get_run(run_id) is None:
+        return JSONResponse(
+            {"error": "not_found", "detail": f"E2E run {run_id} not found"},
+            status_code=404,
+        )
+
+    junit_paths = [
+        Path(artifact.path)
+        for artifact in db.list_run_artifacts(run_id)
+        if artifact.kind == "junit_xml"
+    ]
+    if not junit_paths:
+        return JSONResponse(
+            {"error": "no_junit", "detail": f"No JUnit XML artifact for run {run_id}"},
+            status_code=404,
+        )
+
+    payload = _captured_output_from_junit(junit_paths, nodeid_clean, run_id=run_id)
+    if payload is None:
+        return JSONResponse(
+            {
+                "error": "not_found",
+                "detail": f"No captured output recorded for nodeid {nodeid_clean!r}",
+            },
+            status_code=404,
+        )
+    return E2ETestOutputPayload.model_validate(payload)
 
 
 @web_issue_detail_router.get(

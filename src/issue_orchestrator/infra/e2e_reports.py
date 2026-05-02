@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
@@ -13,6 +14,11 @@ from xml.etree.ElementTree import ParseError as XmlParseError
 
 
 CaseOutcome = Literal["passed", "failed", "error", "skipped"]
+
+# Captured stdout/stderr from JUnit are read on-demand from disk (see the
+# /api/e2e-run/{id}/test-output endpoint) — never persisted to SQLite. Cap each
+# channel to keep parser memory bounded when a test produces megabytes of logs.
+MAX_CAPTURED_OUTPUT_CHARS = 100_000
 
 
 @dataclass(frozen=True)
@@ -25,6 +31,8 @@ class JUnitCaseResult:
     outcome: CaseOutcome
     duration_seconds: float | None
     failure_details: str | None = None
+    system_out: str | None = None
+    system_err: str | None = None
 
     @property
     def failure_summary(self) -> str | None:
@@ -103,6 +111,31 @@ def parse_junit_report(path: Path) -> list[JUnitCaseResult]:
     return [_parse_testcase(case) for case in cases]
 
 
+@lru_cache(maxsize=16)
+def _parse_junit_cached(
+    path_str: str, mtime_ns: int, size: int
+) -> tuple[tuple[JUnitCaseResult, ...], tuple[JUnitCaseResult, ...]]:
+    """Parse + normalize once per (path, mtime, size). Tuples for hashability."""
+    raw = parse_junit_report(Path(path_str))
+    normalized = normalize_pytest_junit_cases(raw)
+    return tuple(raw), tuple(normalized)
+
+
+def parse_junit_report_cached(
+    path: Path,
+) -> tuple[tuple[JUnitCaseResult, ...], tuple[JUnitCaseResult, ...]]:
+    """Memoized variant of parse_junit_report + normalize_pytest_junit_cases.
+
+    Intended for endpoints that re-fetch the same JUnit XML on every row
+    expand — a failure-heavy run can hit the parser dozens of times for the
+    same on-disk file. Cache key is (path, mtime_ns, size) so the entry
+    invalidates if the file is rewritten; LRU caps memory at 16 distinct
+    files (a few recent runs' worth).
+    """
+    stat = path.stat()
+    return _parse_junit_cached(str(path), stat.st_mtime_ns, stat.st_size)
+
+
 def normalize_pytest_junit_cases(
     cases: list[JUnitCaseResult],
 ) -> list[JUnitCaseResult]:
@@ -143,6 +176,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
     suite_name = _optional_text(testcase.attrib.get("classname"))
     case_id = f"{suite_name}::{display_name}" if suite_name else display_name
     duration_seconds = _optional_float(testcase.attrib.get("time"))
+    system_out = _captured_channel_text(testcase.find("system-out"))
+    system_err = _captured_channel_text(testcase.find("system-err"))
 
     failure = testcase.find("failure")
     if failure is not None:
@@ -153,6 +188,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
             outcome="failed",
             duration_seconds=duration_seconds,
             failure_details=_detail_text(failure),
+            system_out=system_out,
+            system_err=system_err,
         )
 
     error = testcase.find("error")
@@ -164,6 +201,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
             outcome="error",
             duration_seconds=duration_seconds,
             failure_details=_detail_text(error),
+            system_out=system_out,
+            system_err=system_err,
         )
 
     skipped = testcase.find("skipped")
@@ -175,6 +214,8 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
             outcome="skipped",
             duration_seconds=duration_seconds,
             failure_details=_detail_text(skipped),
+            system_out=system_out,
+            system_err=system_err,
         )
 
     return JUnitCaseResult(
@@ -183,7 +224,22 @@ def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:
         suite_name=suite_name,
         outcome="passed",
         duration_seconds=duration_seconds,
+        system_out=system_out,
+        system_err=system_err,
     )
+
+
+def _captured_channel_text(element: XmlElement | None) -> str | None:
+    if element is None:
+        return None
+    if not isinstance(element.text, str):
+        return None
+    text = element.text.strip()
+    if not text:
+        return None
+    if len(text) > MAX_CAPTURED_OUTPUT_CHARS:
+        return text[:MAX_CAPTURED_OUTPUT_CHARS]
+    return text
 
 
 def _detail_text(element: XmlElement) -> str | None:
