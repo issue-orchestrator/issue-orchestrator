@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -328,7 +327,7 @@ async def get_repo_config(
 
 
 @control_repo_router.get("/control/repos/discover")
-async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning with filtering
+async def discover_repos_endpoint(
     search_paths: str = Query(
         default="",
         description="Comma-separated paths to search (default: ~/dev, ~/projects, ~/code, ~/repos)",
@@ -336,77 +335,17 @@ async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning 
     max_depth: int = Query(default=3, description="Max directory depth to search"),
 ) -> JSONResponse:
     """Discover unregistered git repositories and classify setup readiness."""
-    from ..infra.config import list_configs
-    from ..infra.repo_registry import load_registry
+    from ..observation.instance_detector import discover_repos
 
+    paths_to_search = None
     if search_paths:
-        paths_to_search = [Path(path.strip()).expanduser() for path in search_paths.split(",")]
-    else:
-        home = Path.home()
-        cwd = Path.cwd()
         paths_to_search = [
-            home / "dev",
-            home / "projects",
-            home / "code",
-            home / "repos",
-            home / "src",
-            home / "work",
-            home / "github",
-            cwd,
-            cwd.parent,
+            Path(path.strip()).expanduser()
+            for path in search_paths.split(",")
+            if path.strip()
         ]
 
-    seen_paths: set[str] = set()
-    deduped_paths: list[Path] = []
-    for path in paths_to_search:
-        key = str(path.expanduser())
-        if key in seen_paths:
-            continue
-        seen_paths.add(key)
-        deduped_paths.append(path)
-
-    registry = load_registry()
-    registered_paths = {repo.path for repo in registry.repos}
-    discovered: list[dict[str, Any]] = []
-
-    def scan_directory(base: Path, depth: int) -> None:  # noqa: C901 - recursive scan with ignore patterns
-        if depth > max_depth or not base.exists() or not base.is_dir():
-            return
-
-        try:
-            for entry in os.scandir(base):
-                if not entry.is_dir() or entry.name.startswith("."):
-                    continue
-
-                entry_path = Path(entry.path)
-                git_path = entry_path / ".git"
-                if git_path.exists():
-                    if git_path.is_file():
-                        continue
-
-                    resolved = str(entry_path.resolve())
-                    if resolved in registered_paths:
-                        continue
-
-                    configs = list_configs(entry_path)
-                    legacy_config = (entry_path / ".issue-orchestrator.yaml").exists()
-                    status = "ready" if configs else "legacy" if legacy_config else "needs_setup"
-                    discovered.append({
-                        "path": resolved,
-                        "name": entry_path.name,
-                        "configs": configs,
-                        "status": status,
-                    })
-                    continue
-
-                scan_directory(entry_path, depth + 1)
-        except PermissionError:
-            return
-
-    for search_path in deduped_paths:
-        scan_directory(search_path, 0)
-
-    discovered.sort(key=lambda repo: repo["name"].lower())
+    discovered = discover_repos(search_paths=paths_to_search, max_depth=max_depth)
     return JSONResponse({"discovered": discovered})
 
 

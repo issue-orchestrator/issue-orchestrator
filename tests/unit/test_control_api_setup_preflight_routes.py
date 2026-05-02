@@ -10,6 +10,75 @@ globals().update(
 )
 
 class TestDiscoverReposEndpoint:
+    def test_default_search_paths_do_not_scan_home_or_parent_when_cwd_is_home(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        home.mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=home)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str(home.resolve()) not in resolved_paths
+        assert str(home.parent.resolve()) not in resolved_paths
+        assert str((home / "dev").resolve()) in resolved_paths
+
+    def test_default_search_paths_add_cwd_when_outside_common_roots(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        cwd = tmp_path / "elsewhere"
+        home.mkdir()
+        cwd.mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=cwd)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str(cwd.resolve()) in resolved_paths
+
+    def test_default_search_paths_adds_parent_for_git_repo_outside_common_roots(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        workspace = tmp_path / "workspace"
+        repo = workspace / "target"
+        home.mkdir()
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=repo)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str(workspace.resolve()) in resolved_paths
+        assert str(repo.resolve()) not in resolved_paths
+
+    def test_default_search_paths_do_not_add_extra_context_inside_common_roots(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.observation.instance_detector import default_repo_search_paths
+
+        home = tmp_path / "home"
+        repo = home / "dev" / "trustlist"
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()
+
+        paths = default_repo_search_paths(home=home, cwd=repo)
+        resolved_paths = {str(path) for path in paths}
+
+        assert str((home / "dev").resolve()) in resolved_paths
+        assert str(repo.resolve()) not in resolved_paths
+        assert len(paths) == 7
+
     def test_discovers_ready_repo_with_config(
         self,
         supervisor_client: TestClient,
@@ -36,6 +105,40 @@ class TestDiscoverReposEndpoint:
         assert response.status_code == 200
         discovered = response.json()["discovered"]
         assert any(item["name"] == "trustlist" and item["status"] == "ready" for item in discovered)
+
+    def test_dedupes_repo_found_through_overlapping_search_roots(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        repo = workspace / "trustlist"
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        config_dir = repo / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "main.yaml").write_text("repo:\n  name: test/trustlist\n")
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.repo_registry.load_registry",
+            lambda: SimpleNamespace(repos=[]),
+        )
+
+        response = supervisor_client.get(
+            "/control/repos/discover",
+            params={
+                "search_paths": f"{tmp_path},{workspace}",
+                "max_depth": 2,
+            },
+        )
+
+        assert response.status_code == 200
+        discovered = response.json()["discovered"]
+        trustlist_paths = [
+            item["path"] for item in discovered if item["name"] == "trustlist"
+        ]
+        assert trustlist_paths == [str(repo.resolve())]
 
 
 class TestSetupPrereqsGitHubAuth:
