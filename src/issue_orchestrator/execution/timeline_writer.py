@@ -199,12 +199,47 @@ def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
     return f"Review exchange completed ({rounds} rounds)" if isinstance(rounds, int) else None
 
 
+def _role_label(role: Any) -> str | None:
+    if isinstance(role, str) and role in {"coder", "reviewer"}:
+        return role.capitalize()
+    return None
+
+
+def _enrich_role_prompted(data: dict[str, Any]) -> str | None:
+    role = _role_label(data.get("role"))
+    ri = data.get("round_index")
+    if role and isinstance(ri, int):
+        return f"{role} prompt sent (round {ri})"
+    return None
+
+
+def _enrich_role_feedback(data: dict[str, Any]) -> str | None:
+    role = _role_label(data.get("role"))
+    ri = data.get("round_index")
+    verdict = data.get("response_type")
+    if not (role and isinstance(ri, int)):
+        return None
+    suffix = f" — {verdict}" if isinstance(verdict, str) and verdict else ""
+    return f"{role} feedback (round {ri}){suffix}"
+
+
+def _enrich_role_timeout(data: dict[str, Any]) -> str | None:
+    role = _role_label(data.get("role"))
+    ri = data.get("round_index")
+    if role and isinstance(ri, int):
+        return f"{role} timed out (round {ri})"
+    return None
+
+
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
     "session.started": _enrich_session_started,
     "issue.unblocked": _enrich_issue_unblocked,
     "review.started": _enrich_review_started,
     "review_exchange.round_started": _enrich_round_started,
     "review_exchange.round_completed": _enrich_round_completed,
+    "review_exchange.role_prompted": _enrich_role_prompted,
+    "review_exchange.role_feedback": _enrich_role_feedback,
+    "review_exchange.role_timeout": _enrich_role_timeout,
     "review.rework_started": _enrich_review_rework_started,
     "review.rework_completed": _enrich_review_rework_completed,
     "review.approved": _enrich_review_approved,
