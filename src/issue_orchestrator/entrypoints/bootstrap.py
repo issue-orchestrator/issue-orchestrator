@@ -18,6 +18,7 @@ Principle: "No Nulls in Orchestrator"
 import logging
 import os
 import sys
+import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -190,7 +191,12 @@ def _configure_gh_audit(
         warn_remaining=config.gh_rate_limit_warn_remaining,
     )
     if config.gh_rate_limit_startup:
+        rl_start = time.time()
         gh_audit.check_rate_limit("startup")
+        logger.info(
+            "[STARTUP_TIMING] phase=gh_rate_limit_probe elapsed=%.3fs",
+            time.time() - rl_start,
+        )
 
 
 def _create_claim_components(

@@ -15,6 +15,7 @@ when the caller only wants to display readiness (e.g. CC page load).
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -75,7 +76,14 @@ def _run_preflight(
     if os.environ.get("ISSUE_ORCHESTRATOR_SKIP_DOCTOR") == "1":
         return DoctorResult(checks=[]), "ok"
     fn = doctor_fn or run_doctor
+    doctor_start = time.time()
     doctor_result = fn(config=config, runner=runner)
+    logger.info(
+        "[STARTUP_TIMING] phase=preflight_doctor elapsed=%.3fs overall=%s checks=%d",
+        time.time() - doctor_start,
+        doctor_result.overall,
+        len(doctor_result.checks),
+    )
     if doctor_result.overall == "error":
         return doctor_result, "doctor_error"
     if doctor_result.overall == "warning":
