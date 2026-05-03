@@ -466,6 +466,19 @@ class TestRecordingEventCount:
         with pytest.raises(CorruptRecordingError, match="missing integer cols"):
             recording_event_count(path)
 
+    def test_raises_when_output_data_b64_is_not_valid_base64(self, tmp_path: Path) -> None:
+        """An output event whose ``data_b64`` is non-empty but not actually
+        base64 will crash the browser replay decoder at scrub time, so it
+        must not advance the chapter offset."""
+        path = tmp_path / "rec.jsonl"
+        path.write_text(
+            '{"schema_version":1,"event_type":"output","offset_ms":0,'
+            '"data_b64":"@@@@"}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(CorruptRecordingError, match="not valid base64"):
+            recording_event_count(path)
+
     def test_raises_on_unsupported_event_type(self, tmp_path: Path) -> None:
         path = tmp_path / "rec.jsonl"
         path.write_text(

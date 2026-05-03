@@ -23,6 +23,8 @@ the diff is reviewable in pieces.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fcntl
 import json
 import logging
@@ -352,6 +354,17 @@ def _validate_recording_event_shape(
             raise CorruptRecordingError(
                 f"output event at {where} missing usable data_b64"
             )
+        # The browser-side replay decoder calls atob() on this value
+        # (static/js/dashboard/session_replay.js); a string that's
+        # non-empty but not actually base64 would crash the player at
+        # scrub time. Validate decodability here so chapter offsets
+        # never point at output events the viewer can't render.
+        try:
+            base64.b64decode(data_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise CorruptRecordingError(
+                f"output event at {where} has data_b64 that is not valid base64: {exc}"
+            ) from exc
     elif event_type == "resize":
         _require_int_field(event, "rows", where, error_label="resize event")
         _require_int_field(event, "cols", where, error_label="resize event")
