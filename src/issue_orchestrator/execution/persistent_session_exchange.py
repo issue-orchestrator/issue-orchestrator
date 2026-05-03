@@ -303,13 +303,24 @@ def _build_role_env(
     issue_number: int,
     session_name: str,
 ) -> dict[str, str]:
-    import os as _os
+    """Compose the agent environment via the shared filtered-env owner.
+
+    Routing through ``build_filtered_env`` is load-bearing: the
+    orchestrator process holds GH_TOKEN / GITHUB_TOKEN /
+    ISSUE_ORCHESTRATOR_API_TOKEN / CLAUDECODE / SSH_AUTH_SOCK and
+    similar credentials that long-lived agent processes must NOT
+    inherit. The active runner (``control/review_exchange_loop._run_agent_round``)
+    goes through this same helper for the same reason; bypassing it here
+    would let coder/reviewer agents run with admin GitHub tokens, the
+    Control API admin bearer, etc.
+    """
     from ..control.isolation import build_runtime_tool_env
+    from .agent_runner_env import build_filtered_env
+
     completion_path = (
         f".issue-orchestrator/sessions/{run_dir.name}/{role}/completion-{role}.json"
     )
-    env = dict(_os.environ)
-    env.update({
+    overrides: dict[str, str] = {
         f"{ENV_PREFIX}COMPLETION_PATH": completion_path,
         f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR": str(run_dir),
         f"{ENV_PREFIX}AGENT_LABEL": agent_label,
@@ -317,11 +328,11 @@ def _build_role_env(
         f"{ENV_PREFIX}REVIEW_RESPONSE_FILE": str(response_file),
         "ORCHESTRATOR_ISSUE_NUMBER": str(issue_number),
         "ORCHESTRATOR_SESSION_ID": session_name,
-    })
-    env.update(build_runtime_tool_env(worktree, base_env={}))
+    }
+    overrides.update(build_runtime_tool_env(worktree, base_env={}))
     if web_port is not None:
-        env["ORCHESTRATOR_API_PORT"] = str(web_port)
-    return env
+        overrides["ORCHESTRATOR_API_PORT"] = str(web_port)
+    return build_filtered_env(overrides=overrides)
 
 
 # ---------------------------------------------------------------------------

@@ -992,6 +992,104 @@ class TestAtomicSummaryWrite:
         assert outcome.summary is not None
 
 
+class TestRoleEnvironmentScrubbing:
+    """The persistent runner must route the role env through the shared
+    ``build_filtered_env`` policy. Without it, long-lived agent processes
+    would inherit orchestrator credentials (GH_TOKEN, ISSUE_ORCHESTRATOR_API_TOKEN,
+    CLAUDECODE, …) that the active path deliberately scrubs."""
+
+    def test_forbidden_env_vars_are_scrubbed_from_role_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Pollute the orchestrator's env with the exact secrets the
+        # filtered-env policy guards against.
+        monkeypatch.setenv("GH_TOKEN", "ghp_fake")
+        monkeypatch.setenv("GITHUB_TOKEN", "ghs_fake")
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_API_TOKEN", "admin-secret")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-fake")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+
+        run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        response_file = run_dir / "reviewer" / "review-response.json"
+
+        env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            run_dir=run_dir,
+            response_file=response_file,
+            worktree=worktree,
+            role="reviewer",
+            agent_label="agent:reviewer",
+            web_port=None,
+            issue_number=4057,
+            session_name="exchange-1",
+        )
+
+        # Forbidden vars must be absent.
+        for forbidden in (
+            "GH_TOKEN", "GITHUB_TOKEN", "ISSUE_ORCHESTRATOR_API_TOKEN",
+            "CLAUDECODE", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY",
+        ):
+            assert forbidden not in env, f"{forbidden} leaked into agent env"
+
+    def test_required_overrides_are_present_in_role_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        response_file = run_dir / "coder" / "review-response.json"
+        monkeypatch.setenv("GH_TOKEN", "ghp_fake")  # ensure scrubbing path runs
+
+        env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            run_dir=run_dir,
+            response_file=response_file,
+            worktree=worktree,
+            role="coder",
+            agent_label="agent:backend",
+            web_port=8080,
+            issue_number=4057,
+            session_name="exchange-1",
+        )
+
+        # The orchestrator-side overrides we depend on must propagate.
+        assert env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] == str(response_file)
+        assert env["ISSUE_ORCHESTRATOR_AGENT_LABEL"] == "agent:backend"
+        assert env["ISSUE_ORCHESTRATOR_ISSUE_NUMBER"] == "4057"
+        assert env["ORCHESTRATOR_SESSION_ID"] == "exchange-1"
+        assert env["ORCHESTRATOR_API_PORT"] == "8080"
+        # Git-safe defaults from the filtered-env helper.
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        # And GH_TOKEN was still scrubbed (sanity).
+        assert "GH_TOKEN" not in env
+
+    def test_callback_token_propagates_when_set_in_orchestrator_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ALWAYS_PASSTHROUGH_ENV_VARS must reach the agent so it can call
+        back into the loopback Control API for preflight-push / session-resume."""
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", "scoped-cb-token")
+
+        run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            run_dir=run_dir,
+            response_file=run_dir / "reviewer" / "review-response.json",
+            worktree=worktree,
+            role="reviewer",
+            agent_label="agent:reviewer",
+            web_port=None,
+            issue_number=4057,
+            session_name="exchange-1",
+        )
+        assert env.get("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN") == "scoped-cb-token"
+
+
 class TestSessionCleanup:
     def test_sessions_closed_even_on_round_exception(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
