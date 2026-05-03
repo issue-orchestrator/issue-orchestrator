@@ -482,6 +482,11 @@ def _drive_rounds(  # noqa: PLR0913
             "role": "coder",
             "prompt_chars": len(coder_prompt_text),
         })
+        # Clear the previous turn's completion artifact so a stale file
+        # from round N-1 cannot satisfy round N's protocol guardrail —
+        # the guardrail must observe an artifact freshly written during
+        # *this* round's coding-done invocation.
+        _clear_coder_completion(run_dir)
         coder = _send_role_round(
             session=coder_session,
             role="coder",
@@ -619,6 +624,9 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             "prompt_chars": len(retry_prompt),
             "protocol_retry": True,
         })
+        # Same freshness invariant as the initial turn: drop any file
+        # left over from the previous attempt before the retry runs.
+        _clear_coder_completion(run_dir)
         retry_response = _send_role_round(
             session=coder_session,
             role="coder",
@@ -1016,6 +1024,25 @@ def _validation_passed(run_dir: Path) -> bool:
     return bool(data.get("passed"))
 
 
+def _coder_completion_path(run_dir: Path) -> Path:
+    """Single source of truth for where the coder writes its completion artifact."""
+    return run_dir / "coder" / "completion-coder.json"
+
+
+def _clear_coder_completion(run_dir: Path) -> None:
+    """Unlink any prior coder completion artifact so the protocol guardrail
+    observes only the file freshly written during the current turn.
+
+    Without this, ``_validate_coder_completion`` sees a stale artifact
+    from an earlier round and accepts a coder that skipped coding-done
+    on this turn entirely. The active runner avoids this because each
+    round spawns a fresh coder process whose env points at a per-round
+    path; the persistent runner shares the path across rounds, so we
+    have to invalidate explicitly.
+    """
+    _coder_completion_path(run_dir).unlink(missing_ok=True)
+
+
 def _validate_coder_completion(
     run_dir: Path,
     *,
@@ -1029,7 +1056,7 @@ def _validate_coder_completion(
     review-response file but skips coding-done would otherwise advance
     the exchange by accident.
     """
-    completion_path = run_dir / "coder" / "completion-coder.json"
+    completion_path = _coder_completion_path(run_dir)
     if not completion_path.exists():
         return f"missing completion artifact: {completion_path}"
     if completion_path.stat().st_size <= 0:

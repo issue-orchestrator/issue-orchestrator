@@ -645,6 +645,108 @@ class TestCoderProtocolGuardrail:
             for evt in sink.events
         )
 
+    def test_stale_round1_completion_does_not_satisfy_round2_guardrail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Round 1's coder writes completion-coder.json. Round 2's coder
+        does NOT refresh it. The runner must clear the stale artifact
+        before round 2's prompt and detect the missing fresh write — i.e.
+        the exchange ends in coder_protocol_error, not status=ok with a
+        stale satisfaction.
+
+        Regression for the PR 6145 reviewer's repro: previously round 2
+        re-used round 1's completion file and the exchange wrongly
+        approved.
+        """
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        # Manually drive the helper: round 1 coder gets a completion
+        # file, round 2 coder explicitly skips writing one. We do this
+        # by patching ``send_round`` ourselves so we can vary the
+        # behavior turn-by-turn.
+        from issue_orchestrator.execution import (
+            persistent_session_exchange as pse_mod,
+        )
+        coder_call_count = {"n": 0}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            if recording_path is not None:
+                recording_path.parent.mkdir(parents=True, exist_ok=True)
+                recording_path.write_text(
+                    '{"schema_version":1,"event_type":"resize",'
+                    '"offset_ms":0,"rows":40,"cols":120}\n',
+                    encoding="utf-8",
+                )
+            return _FakeSession(role)
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            role = session.role
+            if role == "coder":
+                coder_call_count["n"] += 1
+                run_dir = response_file.parent.parent
+                if coder_call_count["n"] == 1:
+                    # Round 1: write a completion + passing validation.
+                    (run_dir / "coder" / "completion-coder.json").write_text(
+                        json.dumps({"outcome": "completed", "round": 1}),
+                        encoding="utf-8",
+                    )
+                    (run_dir / "validation-record.json").write_text(
+                        json.dumps({"passed": True}), encoding="utf-8",
+                    )
+                # Round 2 and retries: do NOT write completion. The runner
+                # must have cleared the round-1 file before sending this
+                # prompt, so _validate_coder_completion will fail.
+                return {"response_type": "ok", "response_text": "x", "getting_closer": None}
+            # Reviewer side: round 1 changes_requested, round 2 ok.
+            if not state["reviewer_responses"]:
+                raise AssertionError("reviewer responses exhausted")
+            return state["reviewer_responses"].pop(0)
+
+        def _close(session, **_):
+            session.closed = True
+            return 0
+
+        # Both reviewer rounds say "changes_requested" so the coder runs
+        # in both rounds. (If round 2's reviewer said "ok" the loop would
+        # short-circuit before the coder turn and the bug wouldn't be
+        # exercised.)
+        state = {
+            "reviewer_responses": [
+                {"response_type": "changes_requested", "response_text": "fix",
+                 "getting_closer": True},
+                {"response_type": "changes_requested", "response_text": "still fix",
+                 "getting_closer": True},
+            ],
+        }
+        monkeypatch.setattr(pse_mod, "open_persistent_session", _open)
+        monkeypatch.setattr(pse_mod, "send_round", _send)
+        monkeypatch.setattr(pse_mod, "close_persistent_session", _close)
+
+        outcome = pse_mod.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=5,
+            require_validation=False,
+        )
+
+        assert outcome.status == "error"
+        assert outcome.reason == "coder_protocol_error"
+        # Round 1 + round 2 + 2 protocol retries = 4 coder calls.
+        assert coder_call_count["n"] == 4
+
     def test_coder_completion_present_passes_protocol(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
