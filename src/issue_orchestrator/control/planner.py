@@ -351,6 +351,13 @@ class Planner:
         """Plan history status transitions discovered by awaiting-merge scans."""
         actions: list[Action] = []
 
+        # Drifts already strip pr-pending via SyncLabelsAction below; track those
+        # issues so the per-reconciliation removal doesn't double up.
+        drift_issue_numbers = {
+            drift.issue_number
+            for drift in snapshot.discovered_awaiting_merge_drifts
+        }
+
         for reconciliation in snapshot.discovered_awaiting_merge_reconciliations:
             actions.append(ReconcileHistoryEntryAction(
                 issue_number=reconciliation.issue_number,
@@ -360,6 +367,22 @@ class Planner:
                 source=reconciliation.source,
                 issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
                 reason=reconciliation.status_reason,
+            ))
+            # When the awaiting-merge state reaches a terminal status (PR
+            # merged/closed or parent issue closed), strip pr-pending so it
+            # doesn't outlive its meaning. Without this the only path that
+            # cleared the label was the drift discovery, which requires the
+            # issue to still be open and a 5-min cooldown — many merges and
+            # all issue-closes slipped through, stranding pr-pending rows in
+            # the local label_store forever.
+            if reconciliation.issue_number in drift_issue_numbers:
+                continue
+            actions.append(RemoveLabelAction(
+                issue_number=reconciliation.issue_number,
+                label=self._lm.pr_pending,
+                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
+                reason=f"awaiting-merge terminal: {reconciliation.status}",
+                expected=build_expected_for_mutation(),
             ))
 
         for drift in snapshot.discovered_awaiting_merge_drifts:

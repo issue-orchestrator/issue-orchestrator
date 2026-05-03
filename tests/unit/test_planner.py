@@ -26,6 +26,7 @@ from issue_orchestrator.control.actions import (
     ReconcileHistoryEntryAction,
     SessionType,
     SyncLabelsAction,
+    RemoveLabelAction,
 )
 from issue_orchestrator.domain.models import (
     Issue,
@@ -842,6 +843,124 @@ class TestPlanAwaitingMergeReconciliations:
         assert action.reason == "PR merged; awaiting merge reconciled"
         assert action.source == "pull_request"
         assert action.issue_key == "M1-228"
+
+    def test_terminal_pr_merged_reconciliation_strips_pr_pending(self):
+        """Source fix for stranded pr-pending rows: when a PR is observed
+        merged, also produce RemoveLabelAction(pr-pending) so the local
+        label_store mirror is cleaned via the existing write-through path.
+        """
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        discovered = DiscoveredAwaitingMergeReconciliation(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            status_reason="PR merged; awaiting merge reconciled",
+            source="pull_request",
+            issue_key="M1-228",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_reconciliations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_actions = [
+            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
+            if isinstance(a, RemoveLabelAction)
+            and a.issue_number == 228
+            and a.label == "pr-pending"
+        ]
+        assert len(remove_actions) == 1
+        action = remove_actions[0]
+        assert action.issue_key == "M1-228"
+        assert "merged" in action.reason
+        # No expected.required: by the time we observe the merge, pr-pending
+        # may already have been stripped by an earlier drift pass; treat the
+        # remove as best-effort cleanup, not an optimistic-concurrency mutation.
+        assert action.expected is not None
+        assert action.expected.required_labels == frozenset()
+
+    def test_terminal_issue_closed_reconciliation_strips_pr_pending(self):
+        """When the parent issue is closed (regardless of PR state), the
+        same source fix applies: clean the stranded pr-pending row.
+        """
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        discovered = DiscoveredAwaitingMergeReconciliation(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="closed",
+            status_reason="Issue closed; awaiting merge reconciled",
+            source="issue",
+            issue_key="M1-228",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_reconciliations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_actions = [
+            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
+            if isinstance(a, RemoveLabelAction)
+            and a.issue_number == 228
+            and a.label == "pr-pending"
+        ]
+        assert len(remove_actions) == 1
+
+    def test_terminal_reconciliation_dedupes_against_drift(self):
+        """When a drift action already removes pr-pending for the same
+        issue (PR closed but issue still open), don't duplicate the work
+        with a separate RemoveLabelAction — the SyncLabelsAction's
+        remove_labels already covers it.
+        """
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        reconciliation = DiscoveredAwaitingMergeReconciliation(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="closed",
+            status_reason="PR closed",
+            source="pull_request",
+            issue_key="M1-228",
+        )
+        drift = DiscoveredAwaitingMergeDrift(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="PR closed; issue remains open",
+            issue_key="M1-228",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_reconciliations=(reconciliation,),
+            discovered_awaiting_merge_drifts=(drift,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_actions = [
+            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
+            if isinstance(a, RemoveLabelAction)
+            and a.issue_number == 228
+            and a.label == "pr-pending"
+        ]
+        assert remove_actions == [], (
+            "Drift's SyncLabelsAction already removes pr-pending; "
+            "RemoveLabelAction would double up."
+        )
+        sync_actions = plan.actions_of_type(ActionType.SYNC_LABELS)
+        assert len(sync_actions) == 1
+        assert "pr-pending" in sync_actions[0].remove_labels
 
     def test_plans_pr_closed_drift_label_sync_action(self):
         config = make_config()
