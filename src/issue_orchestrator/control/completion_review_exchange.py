@@ -908,5 +908,3 @@ class CompletionReviewExchange:
             # failure. force=True so a kill -9 mid-exchange or a stuck
             # checkout doesn't strand it.
             remove_reviewer_worktree(reviewer_wt, force=True)
-
-
