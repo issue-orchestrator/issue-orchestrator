@@ -42,8 +42,25 @@ def _strip_nested_session_env(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
 
 
+def pytest_configure(config):
+    """Register the per-test review-exchange outcome marker.
+
+    Tests apply ``@pytest.mark.simulated_review_outcome(...)`` to override
+    the conftest stub's default single-round reviewer-ok outcome. Without
+    registration pytest emits a "unknown marker" warning treated as an
+    error in strict mode.
+    """
+    config.addinivalue_line(
+        "markers",
+        "simulated_review_outcome(**fields): override the canned "
+        "PersistentReviewExchangeRunner outcome for one test. Recognized "
+        "fields: rounds, status, reason, reviewer_responses (list), "
+        "coder_response_type, force_pre_validation_failure",
+    )
+
+
 @pytest.fixture(autouse=True)
-def _stub_persistent_review_exchange_setup(monkeypatch):
+def _stub_persistent_review_exchange_setup(monkeypatch, request):
     """Bypass the persistent-session runner in simulated scenarios.
 
     The simulated-scenario harness was built around the spawn-per-phase
@@ -54,13 +71,16 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
     add``, and PTY spawns against non-git scratch dirs.
 
     Replace :meth:`PersistentReviewExchangeRunner.run` with a stub that
-    fabricates the canned single-round, reviewer-approved outcome
-    + events the orchestration logic expects. The persistent runner's
-    own behavior is covered exhaustively by
+    fabricates an outcome and the right event sequence. The default is a
+    single-round reviewer-ok exchange; tests that need a different shape
+    (multi-round, no-progress, max-rounds-exceeded, protocol error, etc.)
+    apply ``@pytest.mark.simulated_review_outcome(...)`` to override.
+
+    The persistent runner's own behavior is covered exhaustively by
     ``tests/unit/execution/test_persistent_session_exchange.py`` and
-    ``test_persistent_round_runner.py``; this conftest only stubs the
-    integration boundary so the simulated-scenario harness doesn't
-    need a real git repo or PTY.
+    ``test_persistent_round_runner.py`` against the real PTY runner;
+    this conftest only stubs the integration boundary so the
+    simulated-scenario harness doesn't need a real git repo or PTY.
     """
     from datetime import datetime, timezone
 
@@ -73,6 +93,32 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
         PersistentReviewExchangeRunner,
     )
 
+    marker = request.node.get_closest_marker("simulated_review_outcome")
+    overrides: dict[str, object] = dict(marker.kwargs) if marker is not None else {}
+
+    default_reviewer_responses = [
+        {
+            "response_type": "ok",
+            "response_text": "LGTM (stubbed scenario response)",
+            "getting_closer": True,
+        }
+    ]
+    reviewer_responses_raw = overrides.get(
+        "reviewer_responses", default_reviewer_responses,
+    )
+    coder_response_type = overrides.get("coder_response_type")
+    rounds_override = overrides.get("rounds")
+    status_override = overrides.get("status")
+    reason_override = overrides.get("reason")
+    # Mirror the reviewer_ok_with_validation.sh fixture: when a test
+    # opts in via ``write_validation_record_passed=True``, the stub
+    # writes a passing validation-record.json into the run dir before
+    # the reviewer round so the runner's require_validation guard
+    # accepts the reviewer-ok outcome.
+    write_validation_record_passed = bool(
+        overrides.get("write_validation_record_passed", False)
+    )
+
     def _stub_run(
         self,
         *,
@@ -83,9 +129,9 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
         reviewer_label,  # noqa: ARG001
         coder_agent,  # noqa: ARG001
         reviewer_agent,  # noqa: ARG001
-        max_rounds,  # noqa: ARG001
-        max_no_progress,  # noqa: ARG001
-        require_validation,  # noqa: ARG001
+        max_rounds,
+        max_no_progress,
+        require_validation,
         initial_validation_record_path=None,  # noqa: ARG001
         web_port=None,  # noqa: ARG001
         events=None,
@@ -108,6 +154,11 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
         if on_started is not None:
             on_started(run_dir)
 
+        if write_validation_record_passed:
+            (run_dir / "validation-record.json").write_text(
+                json.dumps({"passed": True}), encoding="utf-8",
+            )
+
         def _emit(name, payload):
             if events is None or event_context is None:
                 return
@@ -122,37 +173,105 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
             "session_name": session_name,
             "exchange_dir": str(exchange_dir),
         })
-        reviewer = ReviewExchangeResponse(
-            response_type="ok",
-            response_text="LGTM (stubbed scenario response)",
-            getting_closer=True,
-        )
-        _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": 1,
-            "reviewer_response_type": reviewer.response_type,
-            "reviewer_response_text": reviewer.response_text,
-            "coder_response_type": None,
-        })
+
+        # Walk the scripted reviewer responses, capping at max_rounds.
+        # If validation is required and no record exists, the runner's
+        # contract is to flip a reviewer "ok" into "changes_requested"
+        # with reason "validation missing" — mirror that here so tests
+        # that exercise the validation gate see the same shape.
+        responses = list(reviewer_responses_raw)
+        rounds_run = 0
+        last_reviewer: ReviewExchangeResponse | None = None
+        no_progress_streak = 0
+        terminating_status: str | None = None
+        terminating_reason: str | None = None
+
+        for round_index in range(1, max_rounds + 1):
+            if not responses:
+                break
+            entry = responses.pop(0) if len(responses) > 1 else responses[0]
+            response_type = str(entry.get("response_type", "ok"))
+            getting_closer = bool(entry.get("getting_closer", True))
+            response_text = str(entry.get("response_text", "stub-reviewer"))
+
+            if (
+                response_type == "ok"
+                and require_validation
+                and not (run_dir / "validation-record.json").exists()
+            ):
+                response_type = "changes_requested"
+                response_text = "Validation record missing"
+                getting_closer = False
+
+            reviewer = ReviewExchangeResponse(
+                response_type=response_type,
+                response_text=response_text,
+                getting_closer=getting_closer,
+            )
+            last_reviewer = reviewer
+            rounds_run = round_index
+            _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "reviewer_response_type": reviewer.response_type,
+                "reviewer_response_text": reviewer.response_text,
+                "coder_response_type": coder_response_type,
+            })
+
+            if response_type == "ok":
+                terminating_status = "ok"
+                terminating_reason = "reviewer_ok"
+                break
+            if not getting_closer:
+                no_progress_streak += 1
+            else:
+                no_progress_streak = 0
+            if max_no_progress > 0 and no_progress_streak >= max_no_progress:
+                terminating_status = "stopped"
+                terminating_reason = "no_progress"
+                break
+        else:
+            terminating_status = "stopped"
+            terminating_reason = "max_rounds_exceeded"
+
+        if terminating_status is None:
+            terminating_status = "ok"
+            terminating_reason = "reviewer_ok"
+
+        # Marker-level overrides win — useful for protocol-error/error
+        # scenarios that the round loop above can't naturally produce.
+        if status_override is not None:
+            terminating_status = str(status_override)
+        if reason_override is not None:
+            terminating_reason = str(reason_override)
+        if rounds_override is not None:
+            rounds_run = int(rounds_override)
+
         _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
             "issue_number": issue_number,
             "session_name": session_name,
-            "rounds": 1,
-            "status": "ok",
-            "reason": "reviewer_ok",
+            "rounds": rounds_run,
+            "status": terminating_status,
+            "reason": terminating_reason,
         })
         summary = {
-            "completed_rounds": 1,
-            "status": "ok",
-            "response_text": reviewer.response_text,
-            "reason": "reviewer_ok",
+            "completed_rounds": rounds_run,
+            "status": terminating_status,
+            "response_text": last_reviewer.response_text if last_reviewer else None,
+            "reason": terminating_reason,
         }
+        # The real runner persists summary.json atomically into
+        # exchange_dir; the orchestration logic reads it on the next
+        # tick to decide cache-hit / advance / halt. Mirror that here so
+        # scenario tests that walk the run-dir layout match production.
+        from issue_orchestrator.infra.atomic_io import atomic_write_json
+        atomic_write_json(exchange_dir / "summary.json", summary)
         return ReviewExchangeOutcome(
-            status="ok",
-            rounds=1,
-            reason="reviewer_ok",
-            reviewer_response=reviewer,
+            status=terminating_status,
+            rounds=rounds_run,
+            reason=terminating_reason,
+            reviewer_response=last_reviewer,
             exchange_dir=exchange_dir,
             summary=summary,
         )
