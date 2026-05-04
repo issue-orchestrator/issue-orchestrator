@@ -14,6 +14,13 @@ from issue_orchestrator.entrypoints.cli_tools.prepush_check import (
 )
 
 
+def _shared_timing_records(worktree: Path) -> list[dict[str, object]]:
+    timings_file = worktree / ".git" / "issue-orchestrator" / "validate-timings.jsonl"
+    if not timings_file.exists():
+        return []
+    return [json.loads(line) for line in timings_file.read_text().splitlines()]
+
+
 class TestLoadValidationCmd:
     """Tests for loading validation configuration."""
 
@@ -87,7 +94,9 @@ validation:
 """)
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
 
-        with pytest.raises(FileNotFoundError, match="Configured file 'main.yaml' not found under"):
+        with pytest.raises(
+            FileNotFoundError, match="Configured file 'main.yaml' not found under"
+        ):
             load_validation_cmd(temp_worktree)
 
     def test_uses_default_timeout(self, temp_worktree):
@@ -333,6 +342,27 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
+        summaries = [
+            record
+            for record in _shared_timing_records(temp_worktree)
+            if record["kind"] == "prepush_gate_summary"
+        ]
+        assert summaries[-1]["final_exit_code"] == 0
+        assert summaries[-1]["phase"] == "validation_gate"
+        assert summaries[-1]["dirty_check"] == "tracked"
+        dirty_elapsed = summaries[-1]["dirty_elapsed_seconds"]
+        monotonic_elapsed = summaries[-1]["monotonic_elapsed_seconds"]
+        wall_elapsed = summaries[-1]["wall_elapsed_seconds"]
+        assert isinstance(dirty_elapsed, int | float)
+        assert isinstance(monotonic_elapsed, int | float)
+        assert isinstance(wall_elapsed, int | float)
+        assert dirty_elapsed >= 0
+        assert summaries[-1]["validation_cache_hit"] is True
+        assert summaries[-1]["validation_allowed"] is True
+        assert summaries[-1]["validation_record_exit_code"] == 0
+        assert monotonic_elapsed >= 0
+        assert wall_elapsed >= 0
+
     def test_blocks_when_tracked_dirty(self, temp_worktree):
         """Test blocks push when tracked files are dirty."""
 
@@ -391,7 +421,12 @@ validation:
 """)
 
         (temp_worktree / "README.md").write_text("dirty")
-        subprocess.run(["git", "add", "README.md"], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", "README.md"],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
 
         orig_cwd = os.getcwd()
         try:
@@ -504,7 +539,12 @@ validation:
         runtime_file = temp_worktree / ".issue-orchestrator" / "session-latest.json"
         runtime_file.parent.mkdir(parents=True, exist_ok=True)
         runtime_file.write_text("{}\n")
-        subprocess.run(["git", "add", str(runtime_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", str(runtime_file)],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             ["git", "commit", "-m", "Track runtime session metadata for test"],
             cwd=temp_worktree,
@@ -521,7 +561,9 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
-    def test_still_blocks_when_runtime_and_real_dirty_files_present(self, temp_worktree):
+    def test_still_blocks_when_runtime_and_real_dirty_files_present(
+        self, temp_worktree
+    ):
         """Guard should still fail if non-excluded files are dirty."""
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
@@ -536,7 +578,12 @@ validation:
         runtime_file = temp_worktree / ".issue-orchestrator" / "session-latest.json"
         runtime_file.parent.mkdir(parents=True, exist_ok=True)
         runtime_file.write_text("{}\n")
-        subprocess.run(["git", "add", str(runtime_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", str(runtime_file)],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             ["git", "commit", "-m", "Track runtime session metadata for test"],
             cwd=temp_worktree,
@@ -570,7 +617,12 @@ validation:
         claude_file = temp_worktree / ".claude" / "settings.json"
         claude_file.parent.mkdir(parents=True, exist_ok=True)
         claude_file.write_text("{}\n")
-        subprocess.run(["git", "add", str(claude_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", str(claude_file)],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             ["git", "commit", "-m", "Track claude settings for test"],
             cwd=temp_worktree,

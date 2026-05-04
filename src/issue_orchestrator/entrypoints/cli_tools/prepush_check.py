@@ -16,12 +16,15 @@ import logging
 import shutil
 import sys
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from ...control.validation import PublishGate
 from ...execution import GitWorkingCopy, LocalCommandRunner
 from ...infra.runtime_artifacts import filter_runtime_managed_dirty_paths
+from ...infra.validation_timings import append_validation_timing
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,19 @@ def find_worktree_root() -> Path:
 
 DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
 DIRTY_FILE_LIST_LIMIT = 20
+
+
+@dataclass(frozen=True)
+class PrepushValidationOutcome:
+    """Result of the validation phase within pre-push."""
+
+    exit_code: int
+    allowed: bool
+    cache_hit: bool
+    reason: str
+    elapsed_seconds: float
+    record_exit_code: int | None
+    record_timed_out: bool | None
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -92,7 +108,9 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     if mode == "off":
         return None
     working_copy = GitWorkingCopy()
-    dirty_files = _filter_guard_excluded_files(working_copy.list_dirty_files(worktree, mode), worktree)
+    dirty_files = _filter_guard_excluded_files(
+        working_copy.list_dirty_files(worktree, mode), worktree
+    )
     if dirty_files:
         if verbose:
             if mode == "all":
@@ -117,8 +135,8 @@ def _run_validation_gate(
     cmd: str,
     timeout: int,
     verbose: bool,
-) -> int:
-    """Run the publish gate and return exit code."""
+) -> PrepushValidationOutcome:
+    """Run the publish gate and return the pre-push validation outcome."""
     if verbose:
         print(f"Validation configured: {cmd}")
 
@@ -143,7 +161,15 @@ def _run_validation_gate(
         cache_note = " (cached)" if result.cache_hit else ""
         if verbose:
             print(f"Validation passed{cache_note}: {result.reason} (%.2fs)" % duration)
-        return 0
+        return PrepushValidationOutcome(
+            exit_code=0,
+            allowed=True,
+            cache_hit=result.cache_hit,
+            reason=result.reason,
+            elapsed_seconds=duration,
+            record_exit_code=result.record.exit_code if result.record else None,
+            record_timed_out=result.record.timed_out if result.record else None,
+        )
 
     if verbose:
         print(f"Validation failed: {result.reason} (%.2fs)" % duration)
@@ -152,7 +178,84 @@ def _run_validation_gate(
             if stderr_path.exists():
                 print("\nValidation stderr:")
                 print(stderr_path.read_text()[:1000])
-    return 1
+    return PrepushValidationOutcome(
+        exit_code=1,
+        allowed=False,
+        cache_hit=result.cache_hit,
+        reason=result.reason,
+        elapsed_seconds=duration,
+        record_exit_code=result.record.exit_code if result.record else None,
+        record_timed_out=result.record.timed_out if result.record else None,
+    )
+
+
+def _record_prepush_summary(
+    worktree: Path,
+    *,
+    wall_started_at: datetime,
+    monotonic_started_at: float,
+    head_sha: str | None,
+    cmd: str | None,
+    timeout: int,
+    dirty_check: str,
+    dirty_only: bool,
+    dirty_elapsed_seconds: float | None,
+    dirty_exit_code: int | None,
+    validation_outcome: PrepushValidationOutcome | None,
+    final_exit_code: int | None,
+    phase: str,
+    error_type: str | None,
+) -> None:
+    """Append an outer pre-push summary timing record."""
+    wall_ended_at = datetime.now(timezone.utc)
+    append_validation_timing(
+        worktree,
+        {
+            "kind": "prepush_gate_summary",
+            "head_sha": head_sha,
+            "command": cmd,
+            "timeout_seconds": timeout,
+            "dirty_check": dirty_check,
+            "dirty_only": dirty_only,
+            "dirty_elapsed_seconds": (
+                round(dirty_elapsed_seconds, 3)
+                if dirty_elapsed_seconds is not None
+                else None
+            ),
+            "dirty_exit_code": dirty_exit_code,
+            "validation_elapsed_seconds": (
+                round(validation_outcome.elapsed_seconds, 3)
+                if validation_outcome
+                else None
+            ),
+            "validation_cache_hit": validation_outcome.cache_hit
+            if validation_outcome
+            else None,
+            "validation_allowed": validation_outcome.allowed
+            if validation_outcome
+            else None,
+            "validation_reason": validation_outcome.reason
+            if validation_outcome
+            else None,
+            "validation_record_exit_code": validation_outcome.record_exit_code
+            if validation_outcome
+            else None,
+            "validation_record_timed_out": validation_outcome.record_timed_out
+            if validation_outcome
+            else None,
+            "final_exit_code": final_exit_code,
+            "phase": phase,
+            "error_type": error_type,
+            "monotonic_elapsed_seconds": round(
+                time.monotonic() - monotonic_started_at, 3
+            ),
+            "wall_started_at": wall_started_at.isoformat(),
+            "wall_ended_at": wall_ended_at.isoformat(),
+            "wall_elapsed_seconds": round(
+                (wall_ended_at - wall_started_at).total_seconds(), 3
+            ),
+        },
+    )
 
 
 def _prepush_output_dir(worktree: Path) -> Path:
@@ -209,23 +312,71 @@ def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:
         Exit code (0 = passed, 1 = failed, 2 = error)
     """
     worktree = find_worktree_root()
-    cmd, timeout, dirty_check = load_validation_cmd(worktree)
+    wall_started_at = datetime.now(timezone.utc)
+    monotonic_started_at = time.monotonic()
+    cmd: str | None = None
+    timeout = 0
+    dirty_check = "tracked"
+    dirty_elapsed_seconds: float | None = None
+    dirty_exit_code: int | None = None
+    validation_outcome: PrepushValidationOutcome | None = None
+    final_exit_code: int | None = None
+    phase = "started"
+    error_type: str | None = None
+    head_sha: str | None = None
 
-    dirty_result = _run_dirty_guard(worktree, dirty_check, verbose)
-    if dirty_result is not None:
-        return dirty_result
+    try:
+        cmd, timeout, dirty_check = load_validation_cmd(worktree)
+        head_sha = GitWorkingCopy().get_head_sha(worktree)
 
-    if dirty_only:
-        if verbose:
-            print("Dirty-tree check passed")
-        return 0
+        dirty_started_at = time.monotonic()
+        dirty_result = _run_dirty_guard(worktree, dirty_check, verbose)
+        dirty_elapsed_seconds = time.monotonic() - dirty_started_at
+        dirty_exit_code = dirty_result
+        if dirty_result is not None:
+            phase = "dirty_guard_failed"
+            final_exit_code = dirty_result
+            return dirty_result
 
-    if not cmd:
-        if verbose:
-            print("No validation configured - allowing push")
-        return 0
+        if dirty_only:
+            if verbose:
+                print("Dirty-tree check passed")
+            phase = "dirty_only_passed"
+            final_exit_code = 0
+            return 0
 
-    return _run_validation_gate(worktree, cmd, timeout, verbose)
+        if not cmd:
+            if verbose:
+                print("No validation configured - allowing push")
+            phase = "validation_unconfigured"
+            final_exit_code = 0
+            return 0
+
+        validation_outcome = _run_validation_gate(worktree, cmd, timeout, verbose)
+        phase = "validation_gate"
+        final_exit_code = validation_outcome.exit_code
+        return validation_outcome.exit_code
+    except Exception as exc:
+        phase = "error"
+        error_type = type(exc).__name__
+        raise
+    finally:
+        _record_prepush_summary(
+            worktree,
+            wall_started_at=wall_started_at,
+            monotonic_started_at=monotonic_started_at,
+            head_sha=head_sha,
+            cmd=cmd,
+            timeout=timeout,
+            dirty_check=dirty_check,
+            dirty_only=dirty_only,
+            dirty_elapsed_seconds=dirty_elapsed_seconds,
+            dirty_exit_code=dirty_exit_code,
+            validation_outcome=validation_outcome,
+            final_exit_code=final_exit_code,
+            phase=phase,
+            error_type=error_type,
+        )
 
 
 def main() -> None:
@@ -236,12 +387,14 @@ def main() -> None:
         description="Run pre-push validation check",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Show detailed output",
     )
     parser.add_argument(
-        "-q", "--quiet",
+        "-q",
+        "--quiet",
         action="store_true",
         help="Suppress all output",
     )

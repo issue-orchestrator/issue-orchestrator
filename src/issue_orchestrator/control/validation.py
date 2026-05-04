@@ -11,13 +11,15 @@ Storage location: .issue-orchestrator/validation/<suite>/<HEAD_SHA>.json
 
 import json
 import logging
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from ..infra.atomic_json import atomic_write_json
 from ..infra.emit import emit_event
+from ..infra.validation_timings import append_validation_timing
 from ..ports import CommandRunner, CommandResult, WorkingCopy
 from ..ports.session_output import ValidationRecord
 from .isolation import build_runtime_tool_env
@@ -35,7 +37,9 @@ def _is_session_run_dir(path: Path, worktree: Path) -> bool:
     except ValueError:
         return False
     parts = rel.parts
-    return len(parts) >= 3 and parts[0] == ".issue-orchestrator" and parts[1] == "sessions"
+    return (
+        len(parts) >= 3 and parts[0] == ".issue-orchestrator" and parts[1] == "sessions"
+    )
 
 
 @dataclass
@@ -186,12 +190,15 @@ class ValidationRunner:
         logger.info("Running validation suite '%s': %s", suite, command)
 
         # Emit validation started event
-        emit_event("validation.started", {
-            "suite": suite,
-            "sha": head_sha,
-            "command": command,
-            "timeout_seconds": timeout_seconds,
-        })
+        emit_event(
+            "validation.started",
+            {
+                "suite": suite,
+                "sha": head_sha,
+                "command": command,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
 
         try:
             result = self.command_runner.run(
@@ -271,14 +278,17 @@ class ValidationRunner:
 
         # Emit validation completed event
         duration_seconds = (ended_at - started_at).total_seconds()
-        emit_event("validation.completed", {
-            "suite": suite,
-            "sha": head_sha,
-            "passed": passed,
-            "exit_code": exit_code,
-            "timed_out": timed_out,
-            "duration_seconds": duration_seconds,
-        })
+        emit_event(
+            "validation.completed",
+            {
+                "suite": suite,
+                "sha": head_sha,
+                "passed": passed,
+                "exit_code": exit_code,
+                "timed_out": timed_out,
+                "duration_seconds": duration_seconds,
+            },
+        )
 
         return record
 
@@ -299,7 +309,9 @@ class ValidationCache:
         """
         self.store = store
 
-    def lookup(self, sha: str, command: Optional[str] = None) -> Optional[ValidationRecord]:
+    def lookup(
+        self, sha: str, command: Optional[str] = None
+    ) -> Optional[ValidationRecord]:
         """Look up a cached validation record.
 
         Args:
@@ -313,9 +325,12 @@ class ValidationCache:
 
         if record is None:
             logger.debug("Cache miss for %s", sha)
-            emit_event("validation.cache_miss", {
-                "sha": sha,
-            })
+            emit_event(
+                "validation.cache_miss",
+                {
+                    "sha": sha,
+                },
+            )
             return None
 
         # Validate schema version
@@ -326,10 +341,13 @@ class ValidationCache:
                 record.schema_version,
                 VALIDATION_SCHEMA_VERSION,
             )
-            emit_event("validation.cache_miss", {
-                "sha": sha,
-                "reason": "schema_version_mismatch",
-            })
+            emit_event(
+                "validation.cache_miss",
+                {
+                    "sha": sha,
+                    "reason": "schema_version_mismatch",
+                },
+            )
             return None
 
         # If command specified, check it matches
@@ -340,18 +358,24 @@ class ValidationCache:
                 record.command,
                 command,
             )
-            emit_event("validation.cache_miss", {
-                "sha": sha,
-                "reason": "command_mismatch",
-            })
+            emit_event(
+                "validation.cache_miss",
+                {
+                    "sha": sha,
+                    "reason": "command_mismatch",
+                },
+            )
             return None
 
         logger.debug("Cache hit for %s (passed=%s)", sha, record.passed)
-        emit_event("validation.cache_hit", {
-            "sha": sha,
-            "passed": record.passed,
-            "command": record.command,
-        })
+        emit_event(
+            "validation.cache_hit",
+            {
+                "sha": sha,
+                "passed": record.passed,
+                "command": record.command,
+            },
+        )
         return record
 
     def is_valid_hit(self, sha: str, command: Optional[str] = None) -> bool:
@@ -418,6 +442,44 @@ class PublishGate:
             logger.warning("Failed to get HEAD SHA in %s", self.worktree)
         return head_sha
 
+    def _record_summary(
+        self,
+        *,
+        wall_started_at: datetime,
+        monotonic_started_at: float,
+        head_sha: str | None,
+        cache_lookup: str,
+        result: PublishGateResult,
+    ) -> None:
+        """Append an outer publish-gate timing record."""
+        wall_ended_at = datetime.now(timezone.utc)
+        record = result.record
+        append_validation_timing(
+            self.worktree,
+            {
+                "kind": "validation_gate_summary",
+                "gate": self.SUITE_NAME,
+                "command": self.command,
+                "timeout_seconds": self.timeout_seconds,
+                "head_sha": head_sha,
+                "cache_lookup": cache_lookup,
+                "cache_hit": result.cache_hit,
+                "allowed": result.allowed,
+                "reason": result.reason,
+                "record_passed": record.passed if record else None,
+                "record_exit_code": record.exit_code if record else None,
+                "record_timed_out": record.timed_out if record else None,
+                "monotonic_elapsed_seconds": round(
+                    time.monotonic() - monotonic_started_at, 3
+                ),
+                "wall_started_at": wall_started_at.isoformat(),
+                "wall_ended_at": wall_ended_at.isoformat(),
+                "wall_elapsed_seconds": round(
+                    (wall_ended_at - wall_started_at).total_seconds(), 3
+                ),
+            },
+        )
+
     def check(self, session_output_dir: Optional[Path] = None) -> PublishGateResult:
         """Check if publishing is allowed.
 
@@ -435,26 +497,48 @@ class PublishGate:
         Returns:
             PublishGateResult with allowed status and reason
         """
+        wall_started_at = datetime.now(timezone.utc)
+        monotonic_started_at = time.monotonic()
+        head_sha: str | None = None
+        cache_lookup = "not_checked"
+
+        def finish(result: PublishGateResult) -> PublishGateResult:
+            self._record_summary(
+                wall_started_at=wall_started_at,
+                monotonic_started_at=monotonic_started_at,
+                head_sha=head_sha,
+                cache_lookup=cache_lookup,
+                result=result,
+            )
+            return result
+
         # Gate disabled if no command
         if not self.command:
             logger.debug("Publish gate disabled (no command configured)")
-            return PublishGateResult(
-                allowed=True,
-                reason="Publish gate disabled (no command configured)",
+            cache_lookup = "disabled"
+            return finish(
+                PublishGateResult(
+                    allowed=True,
+                    reason="Publish gate disabled (no command configured)",
+                )
             )
 
         # Get HEAD SHA
         head_sha = self._get_head_sha()
         if not head_sha:
-            return PublishGateResult(
-                allowed=False,
-                reason="Cannot determine HEAD SHA",
+            cache_lookup = "head_sha_missing"
+            return finish(
+                PublishGateResult(
+                    allowed=False,
+                    reason="Cannot determine HEAD SHA",
+                )
             )
 
         # Check cache - only trust cached passes, not failures
         # Failures might be due to flaky tests or transient issues, so always re-run
         cached = self.cache.lookup(head_sha, self.command)
         if cached is not None and cached.passed:
+            cache_lookup = "hit_passed"
             logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
             # Materialize the cached record into the session run dir so
             # downstream consumers (manifest, review-exchange predicate, UI)
@@ -468,15 +552,23 @@ class PublishGate:
                     session_output_dir / "validation-record.json",
                     cached.to_dict(),
                 )
-            return PublishGateResult(
-                allowed=True,
-                reason=f"Cached validation passed for {head_sha[:8]}",
-                record=cached,
-                cache_hit=True,
+            return finish(
+                PublishGateResult(
+                    allowed=True,
+                    reason=f"Cached validation passed for {head_sha[:8]}",
+                    record=cached,
+                    cache_hit=True,
+                )
             )
         elif cached is not None:
+            cache_lookup = "hit_failed_rerun"
             # Cached failure - log it but re-run validation
-            logger.info("Publish gate: cached failure for %s, re-running validation", head_sha[:8])
+            logger.info(
+                "Publish gate: cached failure for %s, re-running validation",
+                head_sha[:8],
+            )
+        else:
+            cache_lookup = "miss"
 
         # Run validation
         logger.info("Publish gate: running validation for %s", head_sha[:8])
@@ -489,21 +581,27 @@ class PublishGate:
         )
 
         if record.passed:
-            return PublishGateResult(
-                allowed=True,
-                reason=f"Validation passed for {head_sha[:8]}",
-                record=record,
-                cache_hit=False,
+            return finish(
+                PublishGateResult(
+                    allowed=True,
+                    reason=f"Validation passed for {head_sha[:8]}",
+                    record=record,
+                    cache_hit=False,
+                )
             )
         else:
-            reason = f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
+            reason = (
+                f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
+            )
             if record.timed_out:
                 reason = f"Validation timed out for {head_sha[:8]}"
-            return PublishGateResult(
-                allowed=False,
-                reason=reason,
-                record=record,
-                cache_hit=False,
+            return finish(
+                PublishGateResult(
+                    allowed=False,
+                    reason=reason,
+                    record=record,
+                    cache_hit=False,
+                )
             )
 
 
@@ -606,7 +704,9 @@ class AgentGate:
                 record_path=record_path,
             )
         else:
-            reason = f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
+            reason = (
+                f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
+            )
             if record.timed_out:
                 reason = f"Validation timed out for {head_sha[:8]}"
             return AgentGateResult(

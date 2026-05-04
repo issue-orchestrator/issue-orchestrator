@@ -17,7 +17,6 @@ Exit codes:
     Same as the underlying validation command
 """
 
-import json
 import os
 import re
 import subprocess
@@ -29,6 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ...infra.env import get_env
+from ...infra.validation_timings import (
+    append_jsonl,
+    current_branch_name,
+    get_shared_timings_file,
+)
 
 _CONFIG_KEY_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
 _CONFIG_FIELD_PATTERN = rf"{_CONFIG_KEY_PATTERN}=\S+"
@@ -36,7 +40,9 @@ _CONFIG_RE = re.compile(
     rf"\[validate-timing\] CONFIG (?P<fields>{_CONFIG_FIELD_PATTERN}(?:\s+{_CONFIG_FIELD_PATTERN})*)\s*$"
 )
 _CONFIG_FIELD_RE = re.compile(rf"(?P<key>{_CONFIG_KEY_PATTERN})=(?P<value>\S+)")
-_START_RE = re.compile(r"\[validate-timing\] START target=(?P<target>\S+) at=(?P<at>\S+)")
+_START_RE = re.compile(
+    r"\[validate-timing\] START target=(?P<target>\S+) at=(?P<at>\S+)"
+)
 _END_RE = re.compile(
     r"\[validate-timing\] END target=(?P<target>\S+) "
     r"status=(?P<status>-?\d+) elapsed=(?P<elapsed>\d+)s at=(?P<at>\S+)"
@@ -88,85 +94,6 @@ def load_validation_cmd(worktree: Path) -> str | None:
 
     validation_config = load_runtime_validation_config(worktree)
     return validation_config.get("cmd")
-
-
-def resolve_git_dir(worktree: Path) -> Path | None:
-    """Resolve the git dir for the current worktree without shelling out."""
-    dot_git = worktree / ".git"
-    if dot_git.is_dir():
-        return dot_git
-    if not dot_git.is_file():
-        return None
-    content = dot_git.read_text(encoding="utf-8").strip()
-    prefix = "gitdir: "
-    if not content.startswith(prefix):
-        return None
-    git_dir = Path(content[len(prefix):].strip())
-    if not git_dir.is_absolute():
-        git_dir = (worktree / git_dir).resolve()
-    return git_dir
-
-
-def resolve_git_common_dir(worktree: Path) -> Path | None:
-    """Resolve the repository's shared git dir for cross-worktree artifacts."""
-    git_dir = resolve_git_dir(worktree)
-    if git_dir is None:
-        return None
-    commondir_file = git_dir / "commondir"
-    if not commondir_file.exists():
-        return git_dir
-    common_dir = Path(commondir_file.read_text(encoding="utf-8").strip())
-    if not common_dir.is_absolute():
-        common_dir = (git_dir / common_dir).resolve()
-    return common_dir
-
-
-def read_head_ref_name(git_dir: Path) -> str | None:
-    """Read the current branch name from HEAD when it points at a ref."""
-    head_file = git_dir / "HEAD"
-    if not head_file.exists():
-        return None
-    head = head_file.read_text(encoding="utf-8").strip()
-    prefix = "ref: refs/heads/"
-    if not head.startswith(prefix):
-        return None
-    return head[len(prefix):]
-
-
-def read_branch_name(worktree: Path) -> str | None:
-    """Best-effort branch name for diagnostics records without git subprocesses."""
-    git_dir = resolve_git_dir(worktree)
-    if git_dir is None:
-        return None
-    branch = read_head_ref_name(git_dir)
-    if branch:
-        return branch
-    common_dir = resolve_git_common_dir(worktree)
-    if common_dir is not None:
-        return read_head_ref_name(common_dir)
-    return None
-
-
-def get_shared_timings_file(worktree: Path) -> Path | None:
-    """Return the shared JSONL timing file path for this repository."""
-    common_dir = resolve_git_common_dir(worktree)
-    if common_dir is None:
-        return None
-    return common_dir / "issue-orchestrator" / "validate-timings.jsonl"
-
-
-def current_branch_name(worktree: Path) -> str | None:
-    """Best-effort branch name for diagnostics records."""
-    return read_branch_name(worktree)
-
-
-def append_jsonl(path: Path | None, record: dict[str, object]) -> None:
-    """Append one JSON object to a JSONL file, creating parents as needed."""
-    if path is None:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def run_command_text(args: list[str], *, cwd: Path) -> str | None:
@@ -237,7 +164,9 @@ class ValidateTimingRecorder:
 
     worktree: Path
     command: str
-    run_id: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    run_id: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    )
     branch: str | None = field(init=False)
     output_path: Path | None = field(init=False)
     config: dict[str, str] = field(default_factory=dict)
@@ -324,7 +253,9 @@ class ResourceSampler:
     _last_disk_totals: dict[str, float] | None = field(default=None, init=False)
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name="validate-resource-sampler", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="validate-resource-sampler", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -369,10 +300,14 @@ class ResourceSampler:
             sample.update(disk_totals)
             if self._last_disk_totals is not None:
                 sample["disk_xfrs_delta"] = round(
-                    disk_totals["disk_xfrs_total"] - self._last_disk_totals["disk_xfrs_total"], 3
+                    disk_totals["disk_xfrs_total"]
+                    - self._last_disk_totals["disk_xfrs_total"],
+                    3,
                 )
                 sample["disk_mb_delta"] = round(
-                    disk_totals["disk_mb_total"] - self._last_disk_totals["disk_mb_total"], 3
+                    disk_totals["disk_mb_total"]
+                    - self._last_disk_totals["disk_mb_total"],
+                    3,
                 )
             self._last_disk_totals = disk_totals
 
@@ -401,7 +336,9 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     print(f"Running: {command}")
     print(f"Output will be saved to: {output_file}")
     if is_orchestrated_run:
-        print("[orchestrated] full output -> file; terminal shows lifecycle markers only")
+        print(
+            "[orchestrated] full output -> file; terminal shows lifecycle markers only"
+        )
     print()
 
     start = time.monotonic()
@@ -410,7 +347,9 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     # Run command, capturing output while also displaying it
     # Use line buffering (buffering=1) to ensure output is written immediately
     with open(output_file, "w", buffering=1) as f:
-        f.write(f"[validate_runner] start pid={os.getpid()} cwd={worktree} command={command}\n")
+        f.write(
+            f"[validate_runner] start pid={os.getpid()} cwd={worktree} command={command}\n"
+        )
         f.flush()
         process = subprocess.Popen(
             command,
@@ -482,7 +421,9 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
         try:
             resource_sampler.stop()
         finally:
-            timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
+            timing_recorder.finalize(
+                exit_code=exit_code, total_elapsed_seconds=duration
+            )
 
     print()
     if exit_code == 0:
@@ -510,7 +451,8 @@ def main() -> None:
         description="Run validation with output capture",
     )
     parser.add_argument(
-        "--command", "-c",
+        "--command",
+        "-c",
         help="Validation command to run (default: from config)",
     )
 
@@ -528,7 +470,10 @@ def main() -> None:
         print("", file=sys.stderr)
         print("Either:", file=sys.stderr)
         print("  1. Pass --command 'your command here'", file=sys.stderr)
-        print("  2. Configure validation.cmd in .issue-orchestrator/config/*.yaml", file=sys.stderr)
+        print(
+            "  2. Configure validation.cmd in .issue-orchestrator/config/*.yaml",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     exit_code = run_validation(command, output_dir, worktree)
