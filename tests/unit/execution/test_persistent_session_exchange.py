@@ -490,6 +490,75 @@ class TestChapterSidecarAndEvents:
         ):
             assert expected in names, f"missing event {expected.value}"
 
+    def test_chapter_recorded_event_emitted_per_chapter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Original PR 2c plan item 4 contract: chapters.json gets a sidecar
+        AND ``REVIEW_EXCHANGE_CHAPTER_RECORDED`` fires for each chapter so
+        SSE/timeline consumers can react to round/role/section boundaries
+        without polling the on-disk file."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested",
+                     "response_text": "Needs work",
+                     "getting_closer": True},
+                    {"response_type": "ok",
+                     "response_text": "Approved",
+                     "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "Applied"},
+                ],
+            },
+        )
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_path=reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=2,
+            max_no_progress=3,
+            require_validation=False,
+            events=sink,
+            event_context=ctx,
+        )
+
+        chapter_events = [
+            evt for evt in sink.events
+            if evt.event_type == EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED
+        ]
+        # Two rounds × (reviewer prompt + reviewer feedback) = 4 reviewer chapters.
+        # Round 1 also has (coder prompt + coder feedback) = 2 more. Round 2's
+        # reviewer says "ok" so coder doesn't run again. Total = 6.
+        assert len(chapter_events) >= 4, (
+            f"expected at least 4 chapter events (2 rounds × reviewer prompt+feedback); "
+            f"got {len(chapter_events)}"
+        )
+        # Each event carries the offset that was just durably written, so
+        # consumers don't have to re-read the recording to learn where the
+        # chapter starts.
+        for evt in chapter_events:
+            assert "recording_event_index" in evt.data
+            assert "role" in evt.data and evt.data["role"] in {"reviewer", "coder"}
+            assert "section" in evt.data
+            assert "round_index" in evt.data
+            assert "label" in evt.data
+
 
 # ---------------------------------------------------------------------------
 # Caller-injected hooks

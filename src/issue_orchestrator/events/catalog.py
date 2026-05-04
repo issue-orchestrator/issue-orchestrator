@@ -168,6 +168,7 @@ class EventName(str, Enum):
     REVIEW_EXCHANGE_ROLE_PROMPTED = "review_exchange.role_prompted"
     REVIEW_EXCHANGE_ROLE_FEEDBACK = "review_exchange.role_feedback"
     REVIEW_EXCHANGE_ROLE_TIMEOUT = "review_exchange.role_timeout"
+    REVIEW_EXCHANGE_CHAPTER_RECORDED = "review_exchange.chapter_recorded"
 
     # =========================================================================
     # Rework cycle
@@ -388,6 +389,7 @@ class PublicEventName(str, Enum):
     REVIEW_EXCHANGE_ROLE_PROMPTED = "review_exchange.role_prompted"
     REVIEW_EXCHANGE_ROLE_FEEDBACK = "review_exchange.role_feedback"
     REVIEW_EXCHANGE_ROLE_TIMEOUT = "review_exchange.role_timeout"
+    REVIEW_EXCHANGE_CHAPTER_RECORDED = "review_exchange.chapter_recorded"
 
     REWORK_STARTED = "rework.started"
     REWORK_LAUNCHING = "rework.launching"

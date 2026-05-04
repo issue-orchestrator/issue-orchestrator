@@ -635,6 +635,12 @@
     "status": "started",
     "step": "triage_started"
   },
+  "review_exchange.chapter_recorded": {
+    "level": "detail",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "chapter_recorded"
+  },
   "review_exchange.completed": {
     "level": "phase",
     "phase": "reviewing",
