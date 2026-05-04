@@ -3,43 +3,52 @@ description: |
   Reviewer-requested rework that is fixed and then approved on the
   next round.
 
-  This fixture aligns with the production emission sequence
-  documented in `tests/integration/test_timeline_integration.py`
-  (cycle layout: cycle 1 = Coding + Review with `round_completed`
-  carrying `reviewer_response_type=changes_requested`; cycle 2 =
-  Rework + Review with `rework_started/completed` then a fresh
-  `round_started/completed` and approval) and in
-  `tests/unit/test_logical_run_scenarios.py`
-  ("local_loop_two_review_rounds_split_into_two_cycles").
+  The fixture aligns with the **actual emitter** in
+  `src/issue_orchestrator/control/review_exchange_loop.py`. Pinning
+  any one production path is necessary; mixing paths or pinning the
+  view-model expected output (rather than the emitter) gives false
+  confidence (PR #6157 review).
 
-  Critical orderings pinned:
+  Per round, the loop emits:
 
-    - **`round_index=1` for the first rework.** The rework cycle
-      that follows round 1's needs_work verdict carries
-      `round_index=1` (the round it is rework *for*), not 2.
-    - **`review.rework_started` follows `review_exchange.round_completed`
-      for round 1**, not vice versa. `review_exchange_loop.py` has
-      a different inline ordering for the persistent-session path,
-      but this fixture models the canonical view-model output that
-      the dashboard actually displays.
-    - **`review.changes_requested` is NOT emitted in this flow.**
-      That terminal event fires only when a review session
-      completes without approval (see
-      `control/completion_processor.py` ~line 710). Successful
-      rework-then-approve produces only `review.approved` at the
-      end. A separate fixture would model the terminal-rejection
-      case.
+    - `REVIEW_EXCHANGE_ROUND_STARTED` (line 222) — opens the round.
+    - `REVIEW_EXCHANGE_ROLE_PROMPTED` (line 230) — reviewer prompt
+      sent.
+    - reviewer runs.
+    - `REVIEW_EXCHANGE_ROLE_FEEDBACK` (line 257) — reviewer verdict.
 
-  Goldens that mixed these two flows in earlier drafts caught a
-  real review finding (PR #6157): "passing projection over a
-  synthetic sequence is not enough." This rewrite aligns the
-  fixture with one specific production path so it actually
-  protects long-running timeline behavior.
+  When the reviewer says `needs_work` (rework path inside the round,
+  `_emit_coder_prompt_ready` + post-coder block, lines 351-447):
+
+    - `REVIEW_REWORK_STARTED` (line 353) — *inside* the round.
+    - `REVIEW_EXCHANGE_ROLE_PROMPTED` (line 363) — coder prompt sent.
+    - coder runs.
+    - `REVIEW_EXCHANGE_ROLE_FEEDBACK` (line 411) — coder verdict.
+    - `REVIEW_REWORK_COMPLETED` (line 429).
+    - `REVIEW_EXCHANGE_ROUND_COMPLETED` (line 439) — closes the round.
+
+  When the reviewer says `ok` (`_complete_with_reviewer_ok`,
+  lines 509-547):
+
+    - `REVIEW_EXCHANGE_ROUND_COMPLETED` (line 525) with
+      `coder_response_type: null`.
+    - `REVIEW_EXCHANGE_COMPLETED` (line 533) with `status: ok`.
+
+  Then the orchestrator's completion processor maps the loop outcome
+  to `review.approved` (`completion_processor.py` ~line 710:
+  `event_name = REVIEW_APPROVED if approved else
+  REVIEW_CHANGES_REQUESTED`).
+
+  This fixture explicitly does NOT mix in events from
+  `execution/review_exchange_local_loop.py` or
+  `execution/persistent_session_exchange.py` — those paths do not
+  emit `review.rework_started` / `review.rework_completed` and would
+  warrant separate fixtures.
 
 issue_number: 7777
 
 records:
-  # Cycle 1 — Coding + Review (round 1 ends with changes_requested verdict).
+  # Initial coder pass: session.started → session.completed.
   - event: session.started
     timestamp: "2026-05-04T00:00:00Z"
     data:
@@ -82,6 +91,7 @@ records:
       pr_number: 88
       task: review
 
+  # ============== Round 1: reviewer says needs_work → rework ==============
   - event: review_exchange.round_started
     timestamp: "2026-05-04T00:04:02Z"
     data:
@@ -90,38 +100,81 @@ records:
       task: review
       round_index: 1
 
-  - event: review_exchange.round_completed
-    timestamp: "2026-05-04T00:04:30Z"
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:03Z"
     data:
       issue_number: 7777
       pr_number: 88
       task: review
       round_index: 1
-      reviewer_response_type: changes_requested
-      reviewer_response_text: "Missing tests for the new error path"
+      role: reviewer
 
-  # Cycle 2 — Rework + Review (rework carries round_index=1, then a
-  # fresh round 2 closes with approval).
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:04:25Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      task: review
+      round_index: 1
+      role: reviewer
+      response_type: needs_work
+      getting_closer: false
+
   - event: review.rework_started
-    timestamp: "2026-05-04T00:05:00Z"
+    timestamp: "2026-05-04T00:04:26Z"
     data:
       issue_number: 7777
       pr_number: 88
       task: rework
       round_index: 1
-      reviewer_response_type: changes_requested
+      reviewer_response_type: needs_work
       reviewer_response_text: "Missing tests for the new error path"
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:27Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      task: rework
+      round_index: 1
+      role: coder
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:06:30Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      task: rework
+      round_index: 1
+      role: coder
+      response_type: ok
+      getting_closer: true
 
   - event: review.rework_completed
-    timestamp: "2026-05-04T00:07:30Z"
+    timestamp: "2026-05-04T00:06:31Z"
     data:
       issue_number: 7777
       pr_number: 88
       task: rework
       round_index: 1
+      reviewer_response_type: needs_work
+      reviewer_response_text: "Missing tests for the new error path"
       coder_response_type: ok
       coder_response_text: "Tests added"
 
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:06:32Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      task: review
+      round_index: 1
+      reviewer_response_type: needs_work
+      reviewer_response_text: "Missing tests for the new error path"
+      coder_response_type: ok
+      coder_response_text: "Tests added"
+
+  # ============== Round 2: reviewer says ok → exchange completes ==============
   - event: review_exchange.round_started
     timestamp: "2026-05-04T00:08:00Z"
     data:
@@ -130,8 +183,31 @@ records:
       task: review
       round_index: 2
 
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:08:01Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      task: review
+      round_index: 2
+      role: reviewer
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:08:25Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      task: review
+      round_index: 2
+      role: reviewer
+      response_type: ok
+      getting_closer: true
+
+  # `_complete_with_reviewer_ok` emits round_completed with
+  # coder_response_type=None then review_exchange.completed with
+  # status=ok.
   - event: review_exchange.round_completed
-    timestamp: "2026-05-04T00:08:30Z"
+    timestamp: "2026-05-04T00:08:26Z"
     data:
       issue_number: 7777
       pr_number: 88
@@ -139,17 +215,21 @@ records:
       round_index: 2
       reviewer_response_type: ok
       reviewer_response_text: "Looks good now"
+      coder_response_type: null
 
   - event: review_exchange.completed
-    timestamp: "2026-05-04T00:08:31Z"
+    timestamp: "2026-05-04T00:08:27Z"
     data:
       issue_number: 7777
       pr_number: 88
       task: review
       rounds: 2
+      status: ok
+      reason: reviewer_ok
 
+  # `completion_processor.py` maps the ok outcome to REVIEW_APPROVED.
   - event: review.approved
-    timestamp: "2026-05-04T00:08:32Z"
+    timestamp: "2026-05-04T00:08:28Z"
     data:
       issue_number: 7777
       pr_number: 88
@@ -169,6 +249,7 @@ records:
       issue_number: 7777
 
 internal_timeline:
+  # Initial code path
   - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-7777-1" }
   - event: session.completed
     phase: in_progress
@@ -185,23 +266,33 @@ internal_timeline:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
   - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "review:88" }
   - { event: review_exchange.started, phase: reviewing, step: started, status: started }
+
+  # Round 1
   - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed }
-  - event: review_exchange.round_completed
-    phase: reviewing
-    step: round_completed
-    status: completed
-    detail: "Round 1. Missing tests for the new error path"
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed }
   - event: review.rework_started
     phase: reviewing
     step: rework_started
     status: started
     detail: "Round 1. Missing tests for the new error path"
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed }
   - event: review.rework_completed
     phase: reviewing
     step: rework_completed
     status: completed
     detail: "Round 1. Coder response: ok. Tests added"
+  - event: review_exchange.round_completed
+    phase: reviewing
+    step: round_completed
+    status: completed
+    detail: "Round 1. Missing tests for the new error path. Coder response: ok"
+
+  # Round 2
   - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed }
   - event: review_exchange.round_completed
     phase: reviewing
     step: round_completed
@@ -231,20 +322,30 @@ external_timeline:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
   - { event: review.started, status: started, narrative: "Code review started" }
   - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
+
+  # Round 1
   - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
-  - event: review_exchange.round_completed
-    status: completed
-    narrative: "Review round 1 completed — changes_requested"
-    detail: "Round 1. Missing tests for the new error path"
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 1) — needs_work" }
   - event: review.rework_started
     status: started
     narrative: "Coder started rework for review round 1"
     detail: "Round 1. Missing tests for the new error path"
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
   - event: review.rework_completed
     status: completed
     narrative: "Coder completed rework for review round 1"
     detail: "Round 1. Coder response: ok. Tests added"
+  - event: review_exchange.round_completed
+    status: completed
+    narrative: "Review round 1 completed — needs_work"
+    detail: "Round 1. Missing tests for the new error path. Coder response: ok"
+
+  # Round 2
   - { event: review_exchange.round_started, status: completed, narrative: "Review round 2 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 2)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 2) — ok" }
   - event: review_exchange.round_completed
     status: completed
     narrative: "Review round 2 completed — ok"
