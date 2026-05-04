@@ -63,7 +63,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _user("agent.coding_completed", "Agent finished coding", "coding"),
     ],
     "session.completed": [
-        _user("agent.completed", "Issue completed", "orchestrator"),
+        _user("agent.completed", "Coding session completed", "orchestrator"),
     ],
     "session.failed": [
         _user("agent.failed", "Agent session failed", "orchestrator"),

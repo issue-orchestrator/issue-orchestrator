@@ -18,12 +18,11 @@ description: |
   Discovered behaviors pinned (intentionally — these are the kinds of
   user-facing rough edges goldens are meant to surface for follow-up):
 
-    - The narrative for `session.completed` is `"Issue completed"`
-      (from `VIEW_REGISTRY`), so a retry scenario shows that line
-      twice plus once for the actual `issue.completed`. The user
-      sees three "Issue completed" lines for one issue, which is
-      misleading. Worth a follow-up to differentiate
-      `agent.completed` vs `issue.completed` narratives.
+    - `session.completed` narrative used to be `"Issue completed"`,
+      colliding with `issue.completed`. Fixed in PR 9 (this scenario
+      now shows `"Coding session completed"` for the per-session
+      events and `"Issue completed"` only for the actual issue
+      finish).
     - `validation_retry_needed.detail` concatenates the original
       validation reason with `"Source: <cmd>"`. Reasonable, but
       formatting could be improved.
@@ -186,7 +185,7 @@ external_timeline:
   - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
   - event: agent.completed
     status: completed
-    narrative: "Issue completed"
+    narrative: "Coding session completed"
     detail: "Added the feature"
   - event: validation.failed
     status: failed
@@ -203,7 +202,7 @@ external_timeline:
   - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
   - event: agent.completed
     status: completed
-    narrative: "Issue completed"
+    narrative: "Coding session completed"
     detail: "Fixed the failing tests"
   - event: validation.passed
     status: completed

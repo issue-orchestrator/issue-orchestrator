@@ -195,11 +195,10 @@ def _enrich_pr_created(data: dict[str, Any]) -> str | None:
 
 def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
     rounds = data.get("rounds")
-    return (
-        f"Review exchange completed ({rounds} rounds)"
-        if isinstance(rounds, int)
-        else None
-    )
+    if not isinstance(rounds, int):
+        return None
+    plural = "round" if rounds == 1 else "rounds"
+    return f"Review exchange completed ({rounds} {plural})"
 
 
 def _role_label(role: Any) -> str | None:

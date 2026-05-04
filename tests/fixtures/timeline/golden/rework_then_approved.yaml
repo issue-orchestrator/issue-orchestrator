@@ -221,7 +221,7 @@ external_timeline:
   - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
   - event: agent.completed
     status: completed
-    narrative: "Issue completed"
+    narrative: "Coding session completed"
     detail: "Initial feature"
   - { event: validation.passed, status: completed, narrative: "Validation passed" }
   - event: pr.created
