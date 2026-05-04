@@ -295,9 +295,11 @@ endif
 
 test-simulated-agent: sync-deps
 ifeq ($(SIMULATED_PARALLEL),0)
-	$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-simulated-agent,\
+		$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS))
 else
-	$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-simulated-agent,\
+		$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 test-unit-cov:
@@ -334,9 +336,11 @@ test-integration-no-infra: test-integration-core
 
 test-integration-agent: sync-deps
 ifeq ($(INTEGRATION_PARALLEL),0)
-	$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-integration-agent,\
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS))
 else
-	$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -n $(INTEGRATION_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-integration-agent,\
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -n $(INTEGRATION_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 # Full integration tests including infrastructure-dependent ones (run in CI)

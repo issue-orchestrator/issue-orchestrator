@@ -63,9 +63,13 @@ def _matching_indexes(lines: list[str], *fragments: str) -> list[int]:
 def _find_line(lines: list[str], *fragments: str) -> int:
     matches = _matching_indexes(lines, *fragments)
     if not matches:
-        raise AssertionError(f"Missing line containing {fragments!r}. Output:\n" + "\n".join(lines))
+        raise AssertionError(
+            f"Missing line containing {fragments!r}. Output:\n" + "\n".join(lines)
+        )
     if len(matches) > 1:
-        raise AssertionError(f"Expected one line containing {fragments!r}, got {len(matches)}")
+        raise AssertionError(
+            f"Expected one line containing {fragments!r}, got {len(matches)}"
+        )
     return matches[0]
 
 
@@ -118,3 +122,16 @@ def test_validate_pr_raw_does_not_schedule_entire_graph_at_validate_jobs():
     raw_pr_index = _find_line(lines, "_validate-pr-impl")
 
     _assert_no_job_count(lines[raw_pr_index])
+
+
+def test_agent_validation_targets_emit_timing_markers():
+    simulated_lines = _dry_run("test-simulated-agent", SIMULATED_PARALLEL="0")
+    integration_lines = _dry_run("test-integration-agent", INTEGRATION_PARALLEL="0")
+
+    _find_line(simulated_lines, "[validate-timing] START target=$target")
+    _find_line(simulated_lines, "[validate-timing] END target=$target")
+    _find_line(simulated_lines, 'target="test-simulated-agent"')
+
+    _find_line(integration_lines, "[validate-timing] START target=$target")
+    _find_line(integration_lines, "[validate-timing] END target=$target")
+    _find_line(integration_lines, 'target="test-integration-agent"')

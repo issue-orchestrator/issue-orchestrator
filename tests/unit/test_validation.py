@@ -25,6 +25,13 @@ from issue_orchestrator.control.validation import (
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 
 
+def _shared_timing_records(worktree: Path) -> list[dict[str, object]]:
+    timings_file = worktree / ".git" / "issue-orchestrator" / "validate-timings.jsonl"
+    if not timings_file.exists():
+        return []
+    return [json.loads(line) for line in timings_file.read_text().splitlines()]
+
+
 class TestValidationRecord:
     """Tests for ValidationRecord dataclass."""
 
@@ -235,6 +242,7 @@ class TestValidationRunner:
 
     def test_run_handles_command_runner_exception(self, store, session_output_dir):
         """Test that runner records failures when command runner raises."""
+
         class FailingRunner:
             def run(self, *args, **kwargs):
                 raise RuntimeError("boom")
@@ -300,15 +308,20 @@ class TestValidationRunner:
 
         assert not (output_dir / "validation-record.json").exists()
 
-    def test_run_uses_per_worktree_gradle_user_home(self, store, temp_worktree, session_output_dir):
+    def test_run_uses_per_worktree_gradle_user_home(
+        self, store, temp_worktree, session_output_dir
+    ):
         """Validation should not share Gradle daemons with other worktrees."""
+
         class RecordingRunner:
             def __init__(self):
                 self.kwargs = {}
 
             def run(self, *args, **kwargs):
                 self.kwargs = kwargs
-                return CommandResult(returncode=0, stdout="", stderr="", timed_out=False)
+                return CommandResult(
+                    returncode=0, stdout="", stderr="", timed_out=False
+                )
 
         command_runner = RecordingRunner()
         runner = ValidationRunner(store, command_runner)
@@ -532,6 +545,40 @@ class TestPublishGate:
         assert result.allowed is True
         assert "disabled" in result.reason.lower()
         assert result.record is None
+        summary = next(
+            record
+            for record in _shared_timing_records(temp_worktree)
+            if record["kind"] == "validation_gate_summary"
+        )
+        assert summary["cache_lookup"] == "disabled"
+        assert summary["allowed"] is True
+        assert summary["record_exit_code"] is None
+
+    def test_gate_appends_summary_when_head_sha_missing(self, temp_worktree):
+        """Publish gate summaries should pin HEAD lookup failures."""
+        working_copy = MagicMock()
+        working_copy.get_head_sha.return_value = None
+        gate = PublishGate(
+            temp_worktree,
+            command_runner=LocalCommandRunner(),
+            working_copy=working_copy,
+            command="echo 'ok'",
+            timeout_seconds=10,
+        )
+
+        result = gate.check()
+
+        assert result.allowed is False
+        assert result.reason == "Cannot determine HEAD SHA"
+        summary = next(
+            record
+            for record in _shared_timing_records(temp_worktree)
+            if record["kind"] == "validation_gate_summary"
+        )
+        assert summary["cache_lookup"] == "head_sha_missing"
+        assert summary["head_sha"] is None
+        assert summary["allowed"] is False
+        assert summary["record_exit_code"] is None
 
     def test_gate_passes_when_command_succeeds(self, temp_worktree, session_output_dir):
         """Test gate passes when validation command succeeds."""
@@ -548,6 +595,43 @@ class TestPublishGate:
         assert result.record is not None
         assert result.record.passed is True
         assert result.cache_hit is False
+
+    def test_gate_appends_summary_when_validation_runs(
+        self, temp_worktree, session_output_dir
+    ):
+        """Publish gate checks should append an outer summary record."""
+        gate = PublishGate(
+            temp_worktree,
+            command_runner=LocalCommandRunner(),
+            working_copy=GitWorkingCopy(),
+            command="echo 'ok'",
+            timeout_seconds=10,
+        )
+
+        result = gate.check(session_output_dir=session_output_dir)
+
+        assert result.allowed is True
+        assert result.record is not None
+        summary = next(
+            record
+            for record in _shared_timing_records(temp_worktree)
+            if record["kind"] == "validation_gate_summary"
+        )
+        assert summary["gate"] == "publish_gate"
+        assert summary["command"] == "echo 'ok'"
+        assert summary["timeout_seconds"] == 10
+        assert summary["cache_lookup"] == "miss"
+        assert summary["cache_hit"] is False
+        assert summary["allowed"] is True
+        assert summary["record_exit_code"] == 0
+        assert summary["record_timed_out"] is False
+        assert summary["head_sha"] == result.record.head_sha
+        monotonic_elapsed = summary["monotonic_elapsed_seconds"]
+        wall_elapsed = summary["wall_elapsed_seconds"]
+        assert isinstance(monotonic_elapsed, int | float)
+        assert isinstance(wall_elapsed, int | float)
+        assert monotonic_elapsed >= 0
+        assert wall_elapsed >= 0
 
     def test_gate_fails_when_command_fails(self, temp_worktree, session_output_dir):
         """Test gate fails when validation command fails."""
@@ -585,11 +669,38 @@ class TestPublishGate:
         assert result2.allowed is True
         assert result2.cache_hit is True
 
+    def test_gate_appends_summary_on_cache_hit(self, temp_worktree, session_output_dir):
+        """Publish gate summaries should distinguish cache hits from validation runs."""
+        gate = PublishGate(
+            temp_worktree,
+            command_runner=LocalCommandRunner(),
+            working_copy=GitWorkingCopy(),
+            command="echo 'ok'",
+            timeout_seconds=10,
+        )
+
+        gate.check(session_output_dir=session_output_dir)
+        result = gate.check(session_output_dir=session_output_dir)
+
+        assert result.cache_hit is True
+        summaries = [
+            record
+            for record in _shared_timing_records(temp_worktree)
+            if record["kind"] == "validation_gate_summary"
+        ]
+        assert summaries[-1]["cache_lookup"] == "hit_passed"
+        assert summaries[-1]["cache_hit"] is True
+        assert summaries[-1]["allowed"] is True
+        assert summaries[-1]["record_exit_code"] == 0
+
     def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
+
         class TimeoutRunner:
             def run(self, *args, **kwargs):
-                return CommandResult(returncode=-1, stdout="", stderr="", timed_out=True)
+                return CommandResult(
+                    returncode=-1, stdout="", stderr="", timed_out=True
+                )
 
         gate = PublishGate(
             temp_worktree,
@@ -754,6 +865,26 @@ class TestAgentGate:
         assert result.record.passed is True
         assert result.record.suite == "agent_gate"
 
+    def test_agent_gate_does_not_append_publish_summary(
+        self, temp_worktree, session_output_dir
+    ):
+        """Agent gate should not write PublishGate-only timing summaries."""
+        gate = AgentGate(
+            temp_worktree,
+            command_runner=LocalCommandRunner(),
+            working_copy=GitWorkingCopy(),
+            command="echo 'ok'",
+            timeout_seconds=10,
+        )
+
+        result = gate.run(session_output_dir)
+
+        assert result.passed is True
+        assert not any(
+            record["kind"] == "validation_gate_summary"
+            for record in _shared_timing_records(temp_worktree)
+        )
+
     def test_gate_fails_when_command_fails(self, temp_worktree, session_output_dir):
         """Test gate fails when validation command fails."""
         gate = AgentGate(
@@ -794,9 +925,12 @@ class TestAgentGate:
 
     def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
+
         class TimeoutRunner:
             def run(self, *args, **kwargs):
-                return CommandResult(returncode=-1, stdout="", stderr="", timed_out=True)
+                return CommandResult(
+                    returncode=-1, stdout="", stderr="", timed_out=True
+                )
 
         gate = AgentGate(
             temp_worktree,
