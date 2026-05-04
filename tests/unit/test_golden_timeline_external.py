@@ -13,8 +13,10 @@ optionally carries an `external_timeline:` block alongside its
 
   internal records
       ─┐
-       ├── apply view-registry fan-out (one internal → N external records)
-       ├── enrich narratives (`_enrich_narrative` mirroring the writer)
+       ├── apply view-registry fan-out via the canonical
+       │   `produce_external_records()` (the same function the
+       │   production `DefaultTimelineWriter` calls — no test-side
+       │   re-implementation of writer policy)
        ├── project_timeline()
        ├── filter to `external_view` (default 'user')
        └── assert ordered match against `external_timeline:`
@@ -26,9 +28,11 @@ Bisection between the two layers:
   - internal fail + external fail  → projection bug (cascades to external)
   - internal fail + external pass  → fixture authoring bug (shouldn't happen)
 
-The recurring "events out of expected order" failure mode is now
-asserted at *both* layers: the internal layer catches it at projection;
-the external layer catches it at the user-facing rendering.
+Routing through `produce_external_records()` ensures this harness
+cannot drift from production policy — including subtle conditionals
+like the rework-cycle phase-override guard in
+`events/fan_out_pipeline.py`. See `test_fan_out_pipeline.py` for
+focused unit coverage of that policy.
 """
 
 from __future__ import annotations
@@ -39,8 +43,7 @@ from typing import Any
 import pytest
 import yaml
 
-from issue_orchestrator.events.view_registry import fan_out
-from issue_orchestrator.execution.timeline_writer import _enrich_narrative
+from issue_orchestrator.events.fan_out_pipeline import produce_external_records
 from issue_orchestrator.ports.timeline_store import TimelineRecord
 from issue_orchestrator.timeline import TimelineEvent, project_timeline
 
@@ -57,53 +60,27 @@ def _discover_fixtures_with_external() -> list[Path]:
     return out
 
 
-def _build_internal_records(records_data: list[dict[str, Any]]) -> list[TimelineRecord]:
-    return [
-        TimelineRecord(
-            event_id=f"i-{i:04d}",
-            timestamp=entry["timestamp"],
-            event=entry["event"],
-            data=entry.get("data", {}),
-            source_event=entry.get("source_event", entry["event"]),
-        )
-        for i, entry in enumerate(records_data)
-    ]
-
-
-def _apply_fan_out(records: list[TimelineRecord]) -> list[TimelineRecord]:
-    """Mirror the production fan-out: one internal record → N external records.
-
-    Replicates what `DefaultTimelineWriter.record()` does after
-    semantic enrichment:
-      - Look up `fan_out(internal_name)` to get external ViewEvents.
-      - For each, copy the data, attach `views` and (optionally)
-        override `logical_phase`, and apply narrative enrichment.
+def _apply_fan_out(records_data: list[dict[str, Any]]) -> list[TimelineRecord]:
+    """Run each fixture record through the production fan-out function.
 
     Logical-semantics enrichment (logical_run / logical_cycle /
     restart_pending) is intentionally omitted — those fields depend on
-    state-machine context the test fixture does not simulate, and
-    coupling goldens to them would make fixtures brittle.
+    state-machine context that fixtures do not simulate. Tests that
+    need to exercise enrichment-driven branches (rework-cycle phase
+    promotion, restart boundaries) supply the relevant fields directly
+    in the fixture's `data:` block; `produce_external_records()` then
+    enforces the production policy on top.
     """
     out: list[TimelineRecord] = []
-    for i, record in enumerate(records):
-        view_events = fan_out(record.event)
-        for j, ve in enumerate(view_events):
-            new_data = {**record.data, "views": sorted(ve.views)}
-            if ve.narrative:
-                new_data["narrative"] = _enrich_narrative(
-                    ve.narrative, record.event, record.data
-                )
-            if ve.phase:
-                new_data["logical_phase"] = ve.phase
-            out.append(
-                TimelineRecord(
-                    event_id=f"e-{i:04d}-{j}",
-                    timestamp=record.timestamp,
-                    event=ve.name,
-                    data=new_data,
-                    source_event=record.event,
-                )
+    for i, entry in enumerate(records_data):
+        out.extend(
+            produce_external_records(
+                internal_event_name=entry["event"],
+                enriched_data=entry.get("data", {}),
+                base_event_id=f"i-{i:04d}",
+                timestamp_iso=entry["timestamp"],
             )
+        )
     return out
 
 
@@ -139,8 +116,7 @@ def test_golden_external_timeline(fixture_path: Path) -> None:
 
     issue_number = fixture["issue_number"]
     view = fixture.get("external_view", "user")
-    internal_records = _build_internal_records(fixture["records"])
-    fanned_records = _apply_fan_out(internal_records)
+    fanned_records = _apply_fan_out(fixture["records"])
     all_events = project_timeline(fanned_records, issue_number=issue_number)
     user_events = _filter_to_view(all_events, view)
     expected = fixture["external_timeline"]
