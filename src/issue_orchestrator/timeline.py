@@ -127,6 +127,34 @@ class TimelineEvent:
         return d
 
 
+def project_timeline(
+    records: list[TimelineRecord], *, issue_number: int
+) -> list[TimelineEvent]:
+    """Project a sequence of TimelineRecords into TimelineEvents.
+
+    This is the single canonical projection — every consumer (web view
+    models, replay tools, golden tests, the e2e timeline assembler)
+    flows through this function.
+
+    Contract:
+      - Input order = output order. Each record produces exactly one
+        `TimelineEvent`.
+      - The projection is pure and deterministic given the inputs;
+        no I/O, no global state.
+      - Per-event display fields (phase / step / status / level) come
+        from `events/spec.py` for catalogued public events, with a
+        legacy fallback in this module for events outside
+        `PublicEventName` (raw e2e runner events, debug-tier events).
+
+    Use this function as the target for golden-timeline assertions.
+    Goldens that pin a specific scenario's record stream to an expected
+    ordered list of `TimelineEvent`s assert against the output of this
+    function — making the projection function the single point at which
+    "the timeline is right" is decided.
+    """
+    return [_record_to_event(issue_number, record) for record in records]
+
+
 @dataclass(frozen=True)
 class TimelineStream:
     """Higher-level view over timeline records for an issue."""
@@ -138,8 +166,10 @@ class TimelineStream:
     def from_records(
         cls, issue_number: int, records: list[TimelineRecord]
     ) -> "TimelineStream":
-        events = [_record_to_event(issue_number, record) for record in records]
-        return cls(issue_number=issue_number, events=events)
+        return cls(
+            issue_number=issue_number,
+            events=project_timeline(records, issue_number=issue_number),
+        )
 
     def group_by_phase(self) -> dict[str, list[TimelineEvent]]:
         grouped: dict[str, list[TimelineEvent]] = {}
