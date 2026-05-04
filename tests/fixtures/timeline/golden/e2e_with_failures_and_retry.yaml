@@ -1,0 +1,109 @@
+scenario: e2e_with_failures_and_retry
+description: |
+  E2E run with a failure and retry: 3 tests run, one fails, retry
+  is triggered, the failed test passes on retry, run finishes
+  with overall passed status.
+
+  Pins the user's most-likely-painful path: a failure that
+  the runner recovers from. The fixture makes visible:
+
+    - **`status='error'` for failed test** — the red tile.
+    - **`e2e.retry_started` enters `phase='retry'`** — distinct
+      swim-lane, so the user can see at a glance \"this run had
+      to retry once.\"
+    - **Retry produces a new `test_completed` with `outcome=passed`** —
+      the tile flips green; the original `failed` event remains
+      visible above it as historical record.
+    - **Final `e2e.run_finished` with `status=passed`** — overall
+      success despite the intermediate failure.
+
+issue_number: -42
+
+records:
+  - event: e2e.run_started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      branch: feature/x
+      commit: def456
+
+  - event: e2e.tests_collected
+    timestamp: "2026-05-04T00:00:01Z"
+    data:
+      total: 3
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:02Z"
+    data:
+      nodeid: "tests/e2e/test_pass.py::test_a"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:03Z"
+    data:
+      nodeid: "tests/e2e/test_pass.py::test_a"
+      outcome: passed
+      duration_seconds: 1.0
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:04Z"
+    data:
+      nodeid: "tests/e2e/test_flaky.py::test_b"
+
+  # First attempt: fails.
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:08Z"
+    data:
+      nodeid: "tests/e2e/test_flaky.py::test_b"
+      outcome: failed
+      duration_seconds: 4.2
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:09Z"
+    data:
+      nodeid: "tests/e2e/test_other.py::test_c"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:10Z"
+    data:
+      nodeid: "tests/e2e/test_other.py::test_c"
+      outcome: passed
+      duration_seconds: 0.8
+
+  - event: e2e.retry_started
+    timestamp: "2026-05-04T00:00:11Z"
+    data:
+      failed_count: 1
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:12Z"
+    data:
+      nodeid: "tests/e2e/test_flaky.py::test_b"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:14Z"
+    data:
+      nodeid: "tests/e2e/test_flaky.py::test_b"
+      outcome: passed
+      duration_seconds: 2.0
+
+  - event: e2e.run_finished
+    timestamp: "2026-05-04T00:00:15Z"
+    data:
+      status: passed
+      duration_seconds: 15.0
+
+internal_timeline:
+  - { event: e2e.run_started, phase: setup, status: active, parent_key: "e2e-run-42", summary: "E2E run started on feature/x" }
+  - { event: e2e.tests_collected, phase: setup, status: active, summary: "Collected 3 tests" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_pass.py::test_a" }
+  - { event: e2e.test_completed, phase: execution, status: completed, summary: "tests/e2e/test_pass.py::test_a: passed (1.0s)" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_flaky.py::test_b" }
+  # First-attempt failure pinned: status='error' is the red tile.
+  - { event: e2e.test_completed, phase: execution, status: error, summary: "tests/e2e/test_flaky.py::test_b: failed (4.2s)" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_other.py::test_c" }
+  - { event: e2e.test_completed, phase: execution, status: completed, summary: "tests/e2e/test_other.py::test_c: passed (0.8s)" }
+  # Retry phase begins — distinct swim lane.
+  - { event: e2e.retry_started, phase: retry, status: active, summary: "Retrying 1 failed tests" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_flaky.py::test_b" }
+  # Retry passes.
+  - { event: e2e.test_completed, phase: execution, status: completed, summary: "tests/e2e/test_flaky.py::test_b: passed (2.0s)" }
+  - { event: e2e.run_finished, phase: teardown, status: completed, summary: "Run passed in 15.0s" }

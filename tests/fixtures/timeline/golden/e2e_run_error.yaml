@@ -1,0 +1,51 @@
+scenario: e2e_run_error
+description: |
+  Infrastructure failure during an e2e run: the worker crashes
+  before tests can complete. The user sees an unmistakable
+  `phase=teardown`, `level=error` event with the actual error
+  message so they can begin diagnosis without crawling logs.
+
+  Pinned:
+
+    - **`level='error'`** — distinct from the warning level used
+      for `run_canceled` (user-initiated abort). The dashboard
+      should render these differently.
+    - **`status='error'`** — same status code as a failed test,
+      but at the run level.
+    - **`summary` carries the error string** — truncated at 100
+      chars in `_e2e_summary` to keep the timeline readable.
+
+issue_number: -99
+
+records:
+  - event: e2e.run_started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      branch: main
+      commit: c0ffee
+
+  - event: e2e.tests_collected
+    timestamp: "2026-05-04T00:00:01Z"
+    data:
+      total: 5
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:02Z"
+    data:
+      nodeid: "tests/e2e/test_one.py::test_a"
+
+  - event: e2e.run_error
+    timestamp: "2026-05-04T00:00:03Z"
+    data:
+      error: "Worker crashed: SIGKILL (likely OOM in CI runner)"
+
+internal_timeline:
+  - { event: e2e.run_started, phase: setup, status: active, level: info, parent_key: "e2e-run-99", summary: "E2E run started on main" }
+  - { event: e2e.tests_collected, phase: setup, status: active, level: info, summary: "Collected 5 tests" }
+  - { event: e2e.test_started, phase: execution, status: active, level: info, summary: "tests/e2e/test_one.py::test_a" }
+  - event: e2e.run_error
+    phase: teardown
+    status: error
+    level: error
+    parent_key: "e2e-run-99"
+    summary: "Run error: Worker crashed: SIGKILL (likely OOM in CI runner)"
