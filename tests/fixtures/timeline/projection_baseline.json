@@ -1,0 +1,938 @@
+{
+  "action.end": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "action.end"
+  },
+  "action.start": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "action.start"
+  },
+  "agent.coding_completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "agent.coding_completed"
+  },
+  "apply.completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "apply.completed"
+  },
+  "apply.failed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "apply.failed"
+  },
+  "apply.started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "apply.started"
+  },
+  "apply.step_applied": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "apply.step_applied"
+  },
+  "claim.acquired": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.acquired"
+  },
+  "claim.attempted": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.attempted"
+  },
+  "claim.contested": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.contested"
+  },
+  "claim.converged": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.converged"
+  },
+  "claim.expired": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.expired"
+  },
+  "claim.lost": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.lost"
+  },
+  "claim.lost_before_write": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.lost_before_write"
+  },
+  "claim.released": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.released"
+  },
+  "claim.renewed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.renewed"
+  },
+  "claim.stale_detected": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "claim.stale_detected"
+  },
+  "cleanup.completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "cleanup.completed"
+  },
+  "completion.lookup": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "lookup"
+  },
+  "config.merged": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "config.merged"
+  },
+  "dependencies.evaluated": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "dependencies.evaluated"
+  },
+  "dependency.blocked": {
+    "level": "detail",
+    "phase": "system",
+    "status": "failed",
+    "step": "dependency.blocked"
+  },
+  "dependency.unblocked": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "dependency.unblocked"
+  },
+  "e2e.auto_triggered": {
+    "level": "info",
+    "phase": "teardown",
+    "status": "active",
+    "step": "auto_triggered"
+  },
+  "e2e.completed": {
+    "level": "info",
+    "phase": "teardown",
+    "status": "active",
+    "step": "completed"
+  },
+  "e2e.failed": {
+    "level": "info",
+    "phase": "teardown",
+    "status": "active",
+    "step": "failed"
+  },
+  "e2e.progress": {
+    "level": "info",
+    "phase": "teardown",
+    "status": "active",
+    "step": "progress"
+  },
+  "e2e.started": {
+    "level": "info",
+    "phase": "teardown",
+    "status": "active",
+    "step": "started"
+  },
+  "e2e.stopped": {
+    "level": "info",
+    "phase": "teardown",
+    "status": "active",
+    "step": "stopped"
+  },
+  "facts.gathered": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "facts.gathered"
+  },
+  "gh.rate_limit": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "gh.rate_limit"
+  },
+  "gh.rate_limit_warning": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "gh.rate_limit_warning"
+  },
+  "gh.search_item_malformed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "gh.search_item_malformed"
+  },
+  "goal_pilot.action_executed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "goal_pilot.action_executed"
+  },
+  "goal_pilot.action_failed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "goal_pilot.action_failed"
+  },
+  "goal_pilot.action_proposed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "goal_pilot.action_proposed"
+  },
+  "goal_pilot.completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "goal_pilot.completed"
+  },
+  "goal_pilot.created": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "goal_pilot.created"
+  },
+  "goal_pilot.updated": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "goal_pilot.updated"
+  },
+  "history.reconciled": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "history.reconciled"
+  },
+  "issue.blocked": {
+    "level": "phase",
+    "phase": "blocked",
+    "status": "failed",
+    "step": "blocked"
+  },
+  "issue.claimed": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "started",
+    "step": "claimed"
+  },
+  "issue.completed": {
+    "level": "phase",
+    "phase": "completed",
+    "status": "completed",
+    "step": "completed"
+  },
+  "issue.dependency_blocked": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "failed",
+    "step": "dependency_blocked"
+  },
+  "issue.labels_changed": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "labels_changed"
+  },
+  "issue.needs_human": {
+    "level": "phase",
+    "phase": "needs_human",
+    "status": "failed",
+    "step": "needs_human"
+  },
+  "issue.paused_reconcile": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "paused_reconcile"
+  },
+  "issue.pr_created": {
+    "level": "phase",
+    "phase": "orchestrator",
+    "status": "completed",
+    "step": "pr_created"
+  },
+  "issue.pr_rejected": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "failed",
+    "step": "pr_rejected"
+  },
+  "issue.released": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "released"
+  },
+  "issue.retry_noop": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "issue.retry_noop"
+  },
+  "issue.retry_triggered": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "issue.retry_triggered"
+  },
+  "issue.started": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "started",
+    "step": "started"
+  },
+  "issue.unblocked": {
+    "level": "phase",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "unblocked"
+  },
+  "issues.fetched": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "issues.fetched"
+  },
+  "labels.mutation_summary": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "labels.mutation_summary"
+  },
+  "labels.synced": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "labels.synced"
+  },
+  "observation.completion_detected": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "completion_detected"
+  },
+  "observation.result": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "result"
+  },
+  "orchestrator.heartbeat": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.heartbeat"
+  },
+  "orchestrator.idle": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.idle"
+  },
+  "orchestrator.paused": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.paused"
+  },
+  "orchestrator.ready": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.ready"
+  },
+  "orchestrator.resumed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.resumed"
+  },
+  "orchestrator.shutdown_completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.shutdown_completed"
+  },
+  "orchestrator.shutdown_requested": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.shutdown_requested"
+  },
+  "orchestrator.shutdown_started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.shutdown_started"
+  },
+  "orchestrator.started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "orchestrator.started"
+  },
+  "orchestrator.startup_stale_cleared": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "orchestrator.startup_stale_cleared"
+  },
+  "plan.computed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "plan.computed"
+  },
+  "plan.noop": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "plan.noop"
+  },
+  "pr.view_changed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "pr.view_changed"
+  },
+  "provider.outage_entered": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "provider.outage_entered"
+  },
+  "provider.outage_exited": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "provider.outage_exited"
+  },
+  "provider.retry_attempted": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "provider.retry_attempted"
+  },
+  "provider.retry_scheduled": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "provider.retry_scheduled"
+  },
+  "provider.transient_error": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "provider.transient_error"
+  },
+  "publish.failed": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "failed",
+    "step": "publish.failed"
+  },
+  "publish_job.failed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.failed"
+  },
+  "publish_job.pr_created": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.pr_created"
+  },
+  "publish_job.push_completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.push_completed"
+  },
+  "publish_job.push_started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.push_started"
+  },
+  "publish_job.queued": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.queued"
+  },
+  "publish_job.started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "publish_job.started"
+  },
+  "publish_job.succeeded": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.succeeded"
+  },
+  "publish_job.validation_completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.validation_completed"
+  },
+  "publish_job.validation_started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "publish_job.validation_started"
+  },
+  "queue.changed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "queue.changed"
+  },
+  "reconciliation.checked": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "reconciliation.checked"
+  },
+  "reconciliation.required": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "reconciliation.required"
+  },
+  "reconciliation.warning": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "reconciliation.warning"
+  },
+  "resolver.duplicate_external_id": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "resolver.duplicate_external_id"
+  },
+  "review.approved": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "approved"
+  },
+  "review.changes_requested": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "failed",
+    "step": "changes_requested"
+  },
+  "review.closed": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "failed",
+    "step": "closed"
+  },
+  "review.comment_added": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "comment_added"
+  },
+  "review.escalated": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "failed",
+    "step": "escalated"
+  },
+  "review.launching": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "started",
+    "step": "launching"
+  },
+  "review.merged": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "merged"
+  },
+  "review.queued": {
+    "level": "phase",
+    "phase": "orchestrator",
+    "status": "started",
+    "step": "queued"
+  },
+  "review.rework_completed": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "rework_completed"
+  },
+  "review.rework_started": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "started",
+    "step": "rework_started"
+  },
+  "review.skipped": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "skipped"
+  },
+  "review.started": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "started",
+    "step": "started"
+  },
+  "review.triage_approved": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "triage_approved"
+  },
+  "review.triage_started": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "started",
+    "step": "triage_started"
+  },
+  "review_exchange.completed": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "completed"
+  },
+  "review_exchange.failed": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "failed"
+  },
+  "review_exchange.role_feedback": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "role_feedback"
+  },
+  "review_exchange.role_prompted": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "role_prompted"
+  },
+  "review_exchange.role_timeout": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "failed",
+    "step": "role_timeout"
+  },
+  "review_exchange.round_completed": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "round_completed"
+  },
+  "review_exchange.round_started": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "completed",
+    "step": "round_started"
+  },
+  "review_exchange.started": {
+    "level": "phase",
+    "phase": "reviewing",
+    "status": "started",
+    "step": "started"
+  },
+  "rework.escalating": {
+    "level": "detail",
+    "phase": "rework",
+    "status": "failed",
+    "step": "escalating"
+  },
+  "rework.launching": {
+    "level": "detail",
+    "phase": "rework",
+    "status": "started",
+    "step": "launching"
+  },
+  "rework.skipped": {
+    "level": "detail",
+    "phase": "rework",
+    "status": "completed",
+    "step": "skipped"
+  },
+  "rework.started": {
+    "level": "detail",
+    "phase": "rework",
+    "status": "started",
+    "step": "started"
+  },
+  "scanner.reviews_found": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "scanner.reviews_found"
+  },
+  "scanner.reworks_found": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "scanner.reworks_found"
+  },
+  "session.artifact_lookup": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "artifact_lookup"
+  },
+  "session.blocked": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "failed",
+    "step": "blocked"
+  },
+  "session.cleanup": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "cleanup"
+  },
+  "session.completed": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "completed"
+  },
+  "session.failed": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "failed",
+    "step": "failed"
+  },
+  "session.launched": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "launched"
+  },
+  "session.name_parse_error": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "name_parse_error"
+  },
+  "session.no_completion_record": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "no_completion_record"
+  },
+  "session.no_output": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "no_output"
+  },
+  "session.observed": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "observed"
+  },
+  "session.processing_completed": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "processing_completed"
+  },
+  "session.restored": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "restored"
+  },
+  "session.resumed": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "resumed"
+  },
+  "session.slow": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "slow"
+  },
+  "session.start_failed": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "start_failed"
+  },
+  "session.started": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "started",
+    "step": "started"
+  },
+  "session.stopped": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "stopped"
+  },
+  "session.timeout": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "failed",
+    "step": "timeout"
+  },
+  "session.timeout_recovered": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "completed",
+    "step": "timeout_recovered"
+  },
+  "session.validation_failed": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "failed",
+    "step": "validation_failed"
+  },
+  "session.validation_passed": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "completed",
+    "step": "validation_passed"
+  },
+  "session.validation_retry_needed": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "failed",
+    "step": "validation_retry_needed"
+  },
+  "stale.in_progress_cleared": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "stale.in_progress_cleared"
+  },
+  "stale.in_progress_detected": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "stale.in_progress_detected"
+  },
+  "stale.persistent_detected": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "stale.persistent_detected"
+  },
+  "tick.completed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "tick.completed"
+  },
+  "tick.started": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "tick.started"
+  },
+  "transition.applied": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "transition.applied"
+  },
+  "transition.rejected": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "transition.rejected"
+  },
+  "triage.batch_triggered": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "triage.batch_triggered"
+  },
+  "triage.issue_created": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "triage.issue_created"
+  },
+  "triage.launching": {
+    "level": "detail",
+    "phase": "system",
+    "status": "started",
+    "step": "triage.launching"
+  },
+  "triage.skipped": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "triage.skipped"
+  },
+  "validation.completed": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "completed",
+    "step": "validation.completed"
+  },
+  "validation.started": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "started",
+    "step": "validation.started"
+  },
+  "worktree.reset": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "worktree.reset"
+  }
+}
