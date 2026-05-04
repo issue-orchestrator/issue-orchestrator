@@ -228,6 +228,9 @@ records:
       reason: reviewer_ok
 
   # `completion_processor.py` maps the ok outcome to REVIEW_APPROVED.
+  # `_emit_review_outcome()` publishes the approval text under
+  # `summary` (not `review_summary`), per
+  # `control/completion_processor.py` ~line 695-715.
   - event: review.approved
     timestamp: "2026-05-04T00:08:28Z"
     data:
@@ -235,7 +238,7 @@ records:
       pr_number: 88
       task: review
       rounds: 2
-      review_summary: "Approved on round 2"
+      summary: "Approved on round 2"
 
   - event: review.merged
     timestamp: "2026-05-04T00:09:00Z"
@@ -303,7 +306,7 @@ internal_timeline:
     phase: reviewing
     step: approved
     status: completed
-    detail: "Approved on round 2"
+    summary: "Approved on round 2"
   - { event: review.merged, phase: reviewing, step: merged, status: completed }
   - { event: issue.completed, phase: completed, step: completed, status: completed, parent_key: "issue:7777" }
 
@@ -354,6 +357,6 @@ external_timeline:
   - event: review.approved
     status: completed
     narrative: "Review approved after 2 rounds"
-    detail: "Approved on round 2"
+    summary: "Approved on round 2"
   - { event: review.merged, status: completed, narrative: "PR merged" }
   - { event: issue.completed, status: completed, narrative: "Issue completed" }
