@@ -1732,6 +1732,43 @@ class TestCompletionProcessorDirtyPolicy:
         assert result.success
         mock_git_adapter.push.assert_called_once()
 
+    def test_push_blocked_when_dirty_listing_reports_enumeration_failure(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+    ):
+        """list_dirty_files returning ``None`` signals an enumeration
+        failure: we don't know whether the dirty entries are the safe
+        planted/runtime kind or real blocking changes. The boolean
+        ``has_*`` helpers fail closed by returning True on error;
+        ``list_dirty_files`` must do the same, and the policy must NOT
+        collapse ``None`` to ``[] -> pass`` (#6159 review feedback).
+        """
+        config = Config()
+        config.validation.pre_push_dirty_check = "all"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=config,
+        )
+        mock_git_adapter.has_uncommitted_changes.return_value = True
+        # The exact shape from the reviewer's repro: dirty=True from the
+        # boolean check, list_dirty_files returns None (couldn't enumerate).
+        mock_git_adapter.list_dirty_files.return_value = None
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert not result.success
+        mock_git_adapter.push.assert_not_called()
+
     def test_push_allowed_when_dirty_check_off(
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
     ):
