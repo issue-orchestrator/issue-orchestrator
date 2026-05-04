@@ -42,16 +42,50 @@ logger = logging.getLogger(__name__)
 web_session_router = APIRouter()
 
 
+class PhaseChapterError(Exception):
+    """Raised when a persistent-layout recording cannot be scoped to a round.
+
+    The persistent layout writes ``<run_dir>/<role>/terminal-recording.jsonl``
+    alongside ``<run_dir>/<role>/chapters.json``; the legacy spawn-per-phase
+    layout has its own per-round file and no sidecar. For the persistent
+    layout, a phase-scoped request that cannot find the chapter offsets
+    must fail closed — silently returning event-0 onwards would render
+    the wrong round in the UI while looking like a successful response.
+    """
+
+    def __init__(self, message: str, *, diagnostic: dict[str, str] | None = None):
+        super().__init__(message)
+        self.diagnostic = diagnostic or {}
+
+
+def _is_persistent_layout(recording_path: Path, role: str) -> bool:
+    """Detect the persistent-runner layout from the recording path.
+
+    Persistent: ``<run_dir>/<role>/terminal-recording.jsonl`` — role dir
+    sits directly under the run dir, with no ``review-exchange/round-NNN``
+    ancestry.
+    Legacy: ``<run_dir>/review-exchange/round-NNN/<role>/terminal-recording.jsonl``
+    — the per-round directory in the path is the discriminator.
+    Both layouts have ``recording_path.parent.name == role``, so the
+    role-name check alone is insufficient.
+    """
+    if recording_path.parent.name != role:
+        return False
+    return "review-exchange" not in recording_path.parts
+
+
 def _load_phase_chapter_sidecar(
     recording_path: Path,
     role: str,
 ) -> ExchangeChapterSidecar | None:
     """Read the chapter sidecar that sits next to a persistent-layout recording.
 
-    The persistent runner writes ``<run_dir>/<role>/terminal-recording.jsonl``
-    plus ``<run_dir>/<role>/chapters.json``. The legacy spawn-per-phase
-    layout has no sidecar — return ``None`` so callers fall back to
-    serving the whole recording slice they were given.
+    Returns ``None`` only when the sidecar simply does not exist — the
+    legacy spawn-per-phase layout has no sidecar by design and the
+    caller passes through the unsliced per-round file. Malformed sidecar
+    contents raise :class:`PhaseChapterError` so the persistent layout
+    fails closed instead of silently degrading to the whole-role
+    recording (which would show the wrong round in the UI).
     """
     sidecar_path = recording_path.parent / EXCHANGE_CHAPTERS_NAME
     if not sidecar_path.exists():
@@ -60,24 +94,30 @@ def _load_phase_chapter_sidecar(
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         return ExchangeChapterSidecar.from_payload(payload)
     except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
-        logger.warning(
-            "Malformed chapters sidecar at %s: %s — serving whole recording",
-            sidecar_path,
-            exc,
-        )
-        return None
+        raise PhaseChapterError(
+            f"Malformed chapter sidecar at {sidecar_path}: {exc}",
+            diagnostic={
+                "sidecar_path": str(sidecar_path),
+                "reason": "malformed_or_unreadable",
+                "detail": str(exc),
+            },
+        ) from exc
 
 
 def _phase_event_window(
     chapters: list[ExchangeChapter],
     round_index: int,
-) -> tuple[int, int | None]:
-    """Return ``(start_index, end_index_or_None)`` in the recording for one round.
+) -> tuple[int, int | None] | None:
+    """Return ``(start_index, end_index_or_None)`` for one round, or ``None``.
 
     The window starts at the prompt chapter for ``round_index`` and ends
     at the prompt chapter for the next round (exclusive). The final
     round has no successor, so ``end_index`` is ``None`` meaning
     "until end of recording" — the UI playhead naturally stops there.
+
+    Returns ``None`` when the requested round has no prompt chapter in
+    the sidecar — caller decides how to fail (legacy: serve unsliced;
+    persistent: 404).
     """
     sorted_prompts = sorted(
         (
@@ -87,16 +127,16 @@ def _phase_event_window(
         ),
         key=lambda chapter: chapter.cycle_index,
     )
-    start_index = 0
+    start_index: int | None = None
     end_index: int | None = None
-    found_target = False
     for chapter in sorted_prompts:
         if chapter.cycle_index == round_index:
             start_index = chapter.recording_event_index
-            found_target = True
-        elif found_target and chapter.cycle_index > round_index:
+        elif start_index is not None and chapter.cycle_index > round_index:
             end_index = chapter.recording_event_index
             break
+    if start_index is None:
+        return None
     return start_index, end_index
 
 
@@ -164,21 +204,126 @@ def _slice_events_to_phase_window(
     """Slice events to the requested round's window using chapters.json.
 
     Returns ``(events, total_events, sidecar_or_none, window_start)``.
-    The persistent layout writes chapters next to each role's recording;
-    the legacy spawn-per-phase layout has its own per-round file and no
-    sidecar, in which case we return the unsliced events untouched.
+
+    Persistent layout (``<run_dir>/<role>/...``): the recording is one
+    continuous stream covering all rounds, so the chapter sidecar is
+    load-bearing — without it we cannot tell rounds apart and serving
+    the whole role recording for a phase-scoped request would silently
+    show the wrong content. Failures (sidecar missing, malformed, or
+    no prompt chapter for the requested round) raise
+    :class:`PhaseChapterError` so the caller fails the request.
+
+    Legacy layout (``<run_dir>/review-exchange/round-NNN/<role>/...``):
+    the file itself is already round-scoped; sidecars are optional and
+    we serve the unsliced bytes when none is present.
     """
     if scope.round_index is None or scope.session_role is None:
         return all_events, len(all_events), None, 0
+    persistent = _is_persistent_layout(recording_path, scope.session_role)
     sidecar = _load_phase_chapter_sidecar(recording_path, scope.session_role)
     if sidecar is None or not sidecar.chapters:
+        if persistent:
+            raise PhaseChapterError(
+                f"Persistent recording at {recording_path} has no chapters "
+                f"sidecar; cannot scope to round {scope.round_index}",
+                diagnostic={
+                    "recording_path": str(recording_path),
+                    "reason": (
+                        "missing_sidecar" if sidecar is None else "empty_sidecar"
+                    ),
+                    "round_index": str(scope.round_index),
+                    "session_role": scope.session_role,
+                },
+            )
         return all_events, len(all_events), sidecar, 0
-    window_start, window_end = _phase_event_window(
-        sidecar.chapters, scope.round_index,
-    )
+    window = _phase_event_window(sidecar.chapters, scope.round_index)
+    if window is None:
+        if persistent:
+            raise PhaseChapterError(
+                f"Chapter sidecar at {recording_path.parent / EXCHANGE_CHAPTERS_NAME} "
+                f"has no prompt chapter for round {scope.round_index}",
+                diagnostic={
+                    "recording_path": str(recording_path),
+                    "reason": "missing_round",
+                    "round_index": str(scope.round_index),
+                    "session_role": scope.session_role,
+                    "available_rounds": ",".join(
+                        str(chapter.cycle_index)
+                        for chapter in sidecar.chapters
+                        if chapter.section == CHAPTER_SECTION_PROMPT
+                    ),
+                },
+            )
+        return all_events, len(all_events), sidecar, 0
+    window_start, window_end = window
     slice_end = window_end if window_end is not None else len(all_events)
     sliced = all_events[window_start:slice_end]
     return sliced, len(sliced), sidecar, window_start
+
+
+def _resolve_recording_artifact_or_404(
+    accessor: ManifestAccessor,
+    scope: _PhaseScope,
+    run_identity: RunIdentity,
+):
+    """Resolve the ArtifactStream for the requested scope, or return 404."""
+    try:
+        if scope.round_index is not None and scope.session_role is not None:
+            return accessor.get_review_exchange_phase_terminal_recording(
+                round_index=scope.round_index,
+                role=scope.session_role,
+                allow_empty=True,
+            )
+        return accessor.get_terminal_recording(allow_empty=True)
+    except ArtifactNotFoundError as exc:
+        return JSONResponse(
+            {
+                "error": "No terminal recording found",
+                "hint": "Session may not have started or raw recording was not enabled",
+                "diagnostic": {
+                    "run_dir": str(run_identity.run_dir),
+                    "detail": str(exc),
+                },
+            },
+            status_code=404,
+        )
+
+
+def _resolve_phase_slice_or_404(
+    all_events: list[dict[str, Any]],
+    recording_path: Path,
+    scope: _PhaseScope,
+    run_identity: RunIdentity,
+) -> (
+    tuple[list[dict[str, Any]], int, ExchangeChapterSidecar | None, int]
+    | JSONResponse
+):
+    """Apply the phase-window slice or return a 404 explaining why we can't.
+
+    Persistent layout fails closed when chapters can't resolve the
+    requested round; legacy layout falls back to the unsliced bytes
+    (its file is already round-scoped).
+    """
+    try:
+        return _slice_events_to_phase_window(all_events, recording_path, scope)
+    except PhaseChapterError as exc:
+        return JSONResponse(
+            {
+                "error": "Phase-scoped recording cannot be resolved",
+                "hint": (
+                    "The role recording exists but its chapters sidecar "
+                    "cannot be matched to the requested round. The "
+                    "recording may be from an in-progress run or have "
+                    "been written by an older runner."
+                ),
+                "diagnostic": {
+                    "run_dir": str(run_identity.run_dir),
+                    "detail": str(exc),
+                    **exc.diagnostic,
+                },
+            },
+            status_code=404,
+        )
 
 
 def serve_terminal_recording(
@@ -205,34 +350,20 @@ def serve_terminal_recording(
     scope = _resolve_phase_scope(round_index, session_role)
     if isinstance(scope, JSONResponse):
         return scope
-    try:
-        if scope.round_index is not None and scope.session_role is not None:
-            artifact = accessor.get_review_exchange_phase_terminal_recording(
-                round_index=scope.round_index,
-                role=scope.session_role,
-                allow_empty=True,
-            )
-        else:
-            artifact = accessor.get_terminal_recording(allow_empty=True)
-    except ArtifactNotFoundError as exc:
-        return JSONResponse(
-            {
-                "error": "No terminal recording found",
-                "hint": "Session may not have started or raw recording was not enabled",
-                "diagnostic": {
-                    "run_dir": str(run_identity.run_dir),
-                    "detail": str(exc),
-                },
-            },
-            status_code=404,
-        )
-
-    recording_path = artifact.path
+    artifact_or_response = _resolve_recording_artifact_or_404(
+        accessor, scope, run_identity,
+    )
+    if isinstance(artifact_or_response, JSONResponse):
+        return artifact_or_response
+    recording_path = artifact_or_response.path
     try:
         all_events = list(iter_terminal_recording(recording_path))
-        all_events, total_events, chapter_sidecar, phase_window_start = (
-            _slice_events_to_phase_window(all_events, recording_path, scope)
+        slice_result = _resolve_phase_slice_or_404(
+            all_events, recording_path, scope, run_identity,
         )
+        if isinstance(slice_result, JSONResponse):
+            return slice_result
+        all_events, total_events, chapter_sidecar, phase_window_start = slice_result
 
         # Dispatch render mode by captured format. Codex ``exec --json``
         # writes a JSON event stream to the PTY; feeding that to an xterm
