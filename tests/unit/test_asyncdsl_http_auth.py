@@ -28,16 +28,88 @@ from issue_orchestrator.testing.asyncdsl.http import (
 )
 
 
-def test_e2e_watcher_resolves_token_env_first(monkeypatch):
-    """Pin that the e2e watcher uses the env-aware admin-token helper.
+@pytest.mark.asyncio
+async def test_e2e_watcher_wires_env_token_through_to_clients(monkeypatch):
+    """Pin the watcher *wiring*, not the underlying helper.
 
-    The server resolves the admin token via ``resolve_api_token()`` —
-    ``ISSUE_ORCHESTRATOR_API_TOKEN`` wins over the on-disk file. A
-    file-only helper on the watcher side would send no token / a
-    stale token in env-token configurations and reintroduce the same
-    401/timeout shape this PR is meant to fix. Run the helper that
-    the watcher call sites use and assert it picks up the env value.
+    The bug ``read_existing_admin_token`` was introduced to fix is that
+    the watcher call sites picked the wrong token source. Asserting
+    only the helper would miss a regression where ``flows.py`` /
+    ``conftest.py`` switch back to a file-only helper; the helper
+    itself would still be correct in isolation.
+
+    Strategy: monkeypatch the three client constructors to capture the
+    ``auth_token`` they receive, then call ``create_watcher_for_port``.
+    The wiring is verified by what each constructor was asked to use,
+    independent of whether the watcher's internal materializer
+    succeeds against the canned response.
     """
+    from issue_orchestrator.infra.api_token import TOKEN_ENV_VAR
+    from issue_orchestrator.testing.asyncdsl import http as asyncdsl_http
+    from tests.e2e import flows as e2e_flows
+
+    monkeypatch.setenv(TOKEN_ENV_VAR, "wire-test-env-token")
+
+    constructed: dict[str, str | None] = {}
+
+    class _RecordingSSE(asyncdsl_http.SSEEventStream):
+        def __post_init__(self) -> None:
+            constructed["sse_token"] = self.auth_token
+            super().__post_init__()
+
+        async def start(self) -> None:
+            return  # don't spawn a thread; we already captured the token
+
+    class _RecordingSnapshot(asyncdsl_http.HTTPSnapshotProvider):
+        # Subclasses without ``@dataclass`` do not inherit the parent's
+        # ``__post_init__`` hook, and the parent has none anyway. Override
+        # ``__init__`` directly to capture the token.
+        def __init__(self, url, auth_token=None):
+            super().__init__(url=url, auth_token=auth_token)
+            constructed["snapshot_token"] = auth_token
+
+    class _RecordingReplay(asyncdsl_http.HTTPReplayProvider):
+        def __init__(self, url, auth_token=None):
+            super().__init__(url=url, auth_token=auth_token)
+            constructed["replay_token"] = auth_token
+
+    # Patch the names ``flows.py`` imports from so the watcher path
+    # picks up the recording subclasses.
+    monkeypatch.setattr(e2e_flows, "SSEEventStream", _RecordingSSE)
+    monkeypatch.setattr(e2e_flows, "HTTPSnapshotProvider", _RecordingSnapshot)
+    monkeypatch.setattr(e2e_flows, "HTTPReplayProvider", _RecordingReplay)
+
+    # ``OrchestratorWatcher.create`` expects a real snapshot stream;
+    # short-circuit so the test focuses on the wiring stage.
+    class _NoopWatcher:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def close(self):
+            return
+
+    monkeypatch.setattr(e2e_flows, "OrchestratorWatcher", _NoopWatcher)
+
+    watcher, _stream = await e2e_flows.create_watcher_for_port(19080)
+    try:
+        assert constructed.get("sse_token") == "wire-test-env-token", (
+            "SSE client missing env-token; watcher wired wrong helper"
+        )
+        assert constructed.get("snapshot_token") == "wire-test-env-token", (
+            "snapshot client missing env-token; watcher wired wrong helper"
+        )
+        assert constructed.get("replay_token") == "wire-test-env-token", (
+            "replay client missing env-token; watcher wired wrong helper"
+        )
+    finally:
+        await watcher.close()
+
+
+def test_e2e_watcher_resolves_token_env_first(monkeypatch):
+    """Direct sanity check on the env-aware helper used by the watcher
+    paths. Paired with the wiring test above so a regression in either
+    the helper or its wiring fails its own test."""
     from issue_orchestrator.infra.api_token import (
         TOKEN_ENV_VAR,
         read_existing_admin_token,
