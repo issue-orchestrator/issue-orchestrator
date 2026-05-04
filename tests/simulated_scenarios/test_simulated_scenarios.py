@@ -73,14 +73,6 @@ _skip_if_no_agent_cli = pytest.mark.skipif(
 )
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
     scenario("happy_path_local_loop", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -97,13 +89,12 @@ def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "changes_requested", "response_text": "round 1", "getting_closer": True},
+        {"response_type": "changes_requested", "response_text": "round 2", "getting_closer": True},
+        {"response_type": "ok", "response_text": "round 3 ok", "getting_closer": True},
+    ],
 )
 def test_local_loop_two_rounds_of_review(scenario_repo: Path):
     scenario("two_rounds", scenario_repo) \
@@ -116,13 +107,11 @@ def test_local_loop_two_rounds_of_review(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "changes_requested", "response_text": "disagree", "getting_closer": True},
+        {"response_type": "ok", "response_text": "ok", "getting_closer": True},
+    ],
 )
 def test_review_exchange_disagree_then_ok(scenario_repo: Path):
     scenario("disagree_then_ok", scenario_repo) \
@@ -133,14 +122,6 @@ def test_review_exchange_disagree_then_ok(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_review_exchange_noise_output_parses(scenario_repo: Path):
     scenario("noise_output", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -150,14 +131,6 @@ def test_review_exchange_noise_output_parses(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_validation_failure_queues_retry(scenario_repo: Path):
     scenario("validation_retry_queue", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -173,14 +146,6 @@ def test_validation_failure_queues_retry(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_validation_retry_succeeds_after_retry(scenario_repo: Path):
     def _disable_grace_period(config) -> None:
         config.session_grace_period_seconds = 0
@@ -200,14 +165,6 @@ def test_validation_retry_succeeds_after_retry(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_validation_retry_failure_exhausts_final_attempt(scenario_repo: Path):
     def _disable_grace_period(config) -> None:
         config.session_grace_period_seconds = 0
@@ -329,14 +286,6 @@ def test_claim_loss_marks_blocked_and_comment(scenario_repo: Path):
         .expect_issue_comment_contains("Work Cancelled") \
         .run()
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
     ctx1 = scenario("cache_skips_first", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -355,14 +304,6 @@ def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
     assert ctx2 is not None
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_review_exchange_cache_requires_validation(scenario_repo: Path):
     ctx1 = scenario("cache_validation_first", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -384,14 +325,6 @@ def test_review_exchange_cache_requires_validation(scenario_repo: Path):
     assert ctx2 is not None
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_review_exchange_cache_invalid_validation_reruns(scenario_repo: Path):
     ctx1 = scenario("cache_invalid_first", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -411,14 +344,6 @@ def test_review_exchange_cache_invalid_validation_reruns(scenario_repo: Path):
     assert ctx2 is not None
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_validation_failure_exhausts_retries(scenario_repo: Path):
     scenario("validation_exhausted", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -433,14 +358,6 @@ def test_validation_failure_exhausts_retries(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_validation_failure_updates_run_manifest(scenario_repo: Path):
     scenario("validation_manifest", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -460,14 +377,6 @@ def test_validation_failure_updates_run_manifest(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_validation_timeout_marks_failed(scenario_repo: Path):
     def _short_timeout(config) -> None:
         config.validation.timeout_seconds = 1
@@ -483,14 +392,6 @@ def test_validation_timeout_marks_failed(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_review_exchange_auto_uses_local_loop_when_mcp_unsupported(scenario_repo: Path):
     def _configure_auto_mode(config) -> None:
         config.review_exchange_mode = "auto"
@@ -507,14 +408,6 @@ def test_review_exchange_auto_uses_local_loop_when_mcp_unsupported(scenario_repo
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_reconciliation_no_drift_allows_progress(scenario_repo: Path):
     matching_labels = {"simulated-scenario", "agent:coder"}
     scenario("reconciliation_ok", scenario_repo) \
@@ -617,14 +510,6 @@ def test_review_rework_then_approved(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_completion_outcome_blocked_sets_label_and_event(scenario_repo: Path):
     scenario("completion_blocked", scenario_repo) \
         .coder(script("coder_blocked.sh")) \
@@ -642,14 +527,6 @@ def test_completion_outcome_blocked_sets_label_and_event(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_completion_outcome_needs_human_sets_label_and_event(scenario_repo: Path):
     scenario("completion_needs_human", scenario_repo) \
         .coder(script("coder_needs_human.sh")) \
@@ -667,14 +544,6 @@ def test_completion_outcome_needs_human_sets_label_and_event(scenario_repo: Path
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_reconciliation_drift_pauses_issue(scenario_repo: Path):
     pause_label = "io:needs-reconcile"
     scenario("reconciliation_drift", scenario_repo) \
@@ -725,14 +594,6 @@ def test_sqlite_backups_created_for_existing_dbs(scenario_repo: Path):
     assert backups, "Expected sqlite backup files to be created"
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_restart_recovery_uses_labels_not_memory(scenario_repo: Path):
     ctx = scenario("restart_recovery", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -752,13 +613,12 @@ def test_restart_recovery_uses_labels_not_memory(scenario_repo: Path):
     assert bool(restarted.orch.state.active_sessions) or bool(restarted.orch.state.pending_reviews)
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "changes_requested", "response_text": "stuck", "getting_closer": False},
+    ],
+    status="stopped",
+    reason="reviewer_reports_no_progress",
 )
 def test_review_exchange_stops_on_no_progress(scenario_repo: Path):
     scenario("no_progress", scenario_repo) \
@@ -769,13 +629,10 @@ def test_review_exchange_stops_on_no_progress(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "changes_requested", "response_text": "n", "getting_closer": True},
+    ],
 )
 def test_review_exchange_max_rounds_exceeded(scenario_repo: Path):
     scenario("max_rounds", scenario_repo) \
@@ -787,13 +644,16 @@ def test_review_exchange_max_rounds_exceeded(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    # require_validation=True with no validation-record.json triggers
+    # the runner's auto-flip from ok to changes_requested with
+    # getting_closer=False; the no-progress streak then trips after
+    # max_no_progress=1 with reason "reviewer_reports_no_progress".
+    reviewer_responses=[
+        {"response_type": "ok", "response_text": "looks good", "getting_closer": True},
+    ],
+    status="stopped",
+    reason="reviewer_reports_no_progress",
 )
 def test_review_exchange_requires_validation_blocks_ok(scenario_repo: Path):
     scenario("require_validation_blocks_ok", scenario_repo) \
@@ -804,15 +664,40 @@ def test_review_exchange_requires_validation_blocks_ok(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    # Negative seeded-record: the validation record exists but has
+    # ``passed: false``. The runner's ``_validation_passed`` parses the
+    # JSON and only accepts ``true``; this scenario pins that the
+    # require_validation guard flips reviewer-ok even when the record
+    # is present-but-failed (file existence alone is not enough).
+    reviewer_responses=[
+        {"response_type": "ok", "response_text": "looks good", "getting_closer": True},
+    ],
+    write_validation_record_failed=True,
+    status="stopped",
+    reason="reviewer_reports_no_progress",
+)
+def test_review_exchange_requires_validation_blocks_ok_with_failed_record(scenario_repo: Path):
+    scenario("require_validation_blocks_ok_failed_record", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=True, max_no_progress=1) \
+        .expect_review_exchange_reason("reviewer_reports_no_progress") \
+        .run()
+
+
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "ok", "response_text": "ok", "getting_closer": True},
+    ],
+    write_validation_record_passed=True,
 )
 def test_review_exchange_requires_validation_allows_ok(scenario_repo: Path):
+    """When the validation record is present alongside the reviewer-ok
+    response, the runner accepts the ok and finishes with reason
+    reviewer_ok. The scenario harness writes a passing
+    validation-record.json before the exchange enters via the
+    validation step, so the stub here just emits a plain ok."""
     scenario("require_validation_allows_ok", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
         .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
@@ -821,13 +706,16 @@ def test_review_exchange_requires_validation_allows_ok(scenario_repo: Path):
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    # Reviewer dies / produces invalid output: the runner's
+    # ``_build_outcome_for_role_timeout`` path emits status="error",
+    # reason="reviewer_no_completion". The round event still records
+    # the synthesized "error"-typed reviewer response.
+    reviewer_responses=[
+        {"response_type": "error", "response_text": "invalid_json", "getting_closer": False},
+    ],
+    status="error",
+    reason="reviewer_no_completion",
 )
 def test_reviewer_invalid_json_emits_error(scenario_repo: Path):
     scenario("reviewer_invalid_json", scenario_repo) \
@@ -835,16 +723,16 @@ def test_reviewer_invalid_json_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_invalid_json.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(reviewer_response_type="error") \
+        .expect_review_exchange_terminal_state(status="error", reason="reviewer_no_completion") \
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "error", "response_text": "exit_nonzero", "getting_closer": False},
+    ],
+    status="error",
+    reason="reviewer_no_completion",
 )
 def test_reviewer_exit_nonzero_emits_error(scenario_repo: Path):
     scenario("reviewer_exit_nonzero", scenario_repo) \
@@ -852,16 +740,21 @@ def test_reviewer_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_exit_nonzero.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(reviewer_response_type="error") \
+        .expect_review_exchange_terminal_state(status="error", reason="reviewer_no_completion") \
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    # Coder protocol guardrail exhausts retries: runner's
+    # ``_build_outcome_for_coder_protocol_error`` emits status="error",
+    # reason="coder_protocol_error". The round event records the
+    # protocol_error coder response.
+    reviewer_responses=[
+        {"response_type": "changes_requested", "response_text": "n", "getting_closer": True},
+    ],
+    coder_response_type="protocol_error",
+    status="error",
+    reason="coder_protocol_error",
 )
 def test_coder_invalid_json_emits_error(scenario_repo: Path):
     scenario("coder_invalid_json", scenario_repo) \
@@ -869,16 +762,17 @@ def test_coder_invalid_json_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="protocol_error") \
+        .expect_review_exchange_terminal_state(status="error", reason="coder_protocol_error") \
         .run()
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
+@pytest.mark.simulated_review_outcome(
+    reviewer_responses=[
+        {"response_type": "changes_requested", "response_text": "n", "getting_closer": True},
+    ],
+    coder_response_type="protocol_error",
+    status="error",
+    reason="coder_protocol_error",
 )
 def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
     scenario("coder_exit_nonzero", scenario_repo) \
@@ -886,6 +780,7 @@ def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="protocol_error") \
+        .expect_review_exchange_terminal_state(status="error", reason="coder_protocol_error") \
         .run()
 
 
@@ -949,14 +844,6 @@ def test_review_changes_requested_writes_feedback_artifact(scenario_repo: Path):
     )
 
 
-@pytest.mark.skip(
-    reason="Persistent-session cutover deleted the spawn-per-phase "
-    "capture path these scenarios were tightly coupled to. The "
-    "persistent runner is exhaustively unit-tested in "
-    "test_persistent_session_exchange.py + test_persistent_round_runner.py; "
-    "migrating this harness to drive the persistent runner natively "
-    "is tracked as a follow-up."
-)
 def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path):
     """via-local-loop should emit run-scoped actions with usable artifacts."""
     ctx = scenario("local_loop_run_scoped_actions", scenario_repo) \
@@ -989,8 +876,11 @@ def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path
             continue
         actions = _timeline_event_actions(event, 1)
         action_types = {action["type"] for action in actions}
-        if event_name == EventName.REVIEW_STARTED.value:
-            assert "open_review_transcript" in action_types
-        else:
-            assert "open_agent_log" in action_types
+        # Post-cutover the canonical run-scoped review artifact is the
+        # phase-scoped terminal recording (``open_agent_log`` with
+        # round_index + session_role). The legacy ``open_review_transcript``
+        # was tied to the spawn-per-phase ``transcript.log`` writer that
+        # the cutover deleted; the persistent runner does not write a
+        # text transcript.
+        assert "open_agent_log" in action_types
         assert "open_session_diagnostics" in action_types
