@@ -178,6 +178,39 @@ class TestRunPrepushCheck:
         finally:
             os.chdir(orig_cwd)
 
+    def test_records_error_summary_when_config_load_raises(
+        self, temp_worktree, monkeypatch
+    ):
+        """Unexpected pre-push exceptions should still leave a summary record."""
+
+        def fail_load_validation_cmd(worktree: Path):
+            raise RuntimeError(f"cannot load validation config from {worktree}")
+
+        monkeypatch.setattr(
+            "issue_orchestrator.entrypoints.cli_tools.prepush_check."
+            "load_validation_cmd",
+            fail_load_validation_cmd,
+        )
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            with pytest.raises(RuntimeError, match="cannot load validation config"):
+                run_prepush_check(verbose=False)
+        finally:
+            os.chdir(orig_cwd)
+
+        summary = next(
+            record
+            for record in _shared_timing_records(temp_worktree)
+            if record["kind"] == "prepush_gate_summary"
+        )
+        assert summary["phase"] == "error"
+        assert summary["error_type"] == "RuntimeError"
+        assert summary["final_exit_code"] is None
+        assert summary["head_sha"] is None
+        assert summary["validation_allowed"] is None
+
     def test_returns_0_when_validation_passes(self, temp_worktree):
         """Test returns 0 when validation passes."""
 

@@ -24,7 +24,7 @@ from typing import Optional
 from ...control.validation import PublishGate
 from ...execution import GitWorkingCopy, LocalCommandRunner
 from ...infra.runtime_artifacts import filter_runtime_managed_dirty_paths
-from ...infra.validation_timings import append_validation_timing
+from ...infra.validation_timings import append_validation_timing, build_timing_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -207,55 +207,46 @@ def _record_prepush_summary(
     error_type: str | None,
 ) -> None:
     """Append an outer pre-push summary timing record."""
-    wall_ended_at = datetime.now(timezone.utc)
-    append_validation_timing(
-        worktree,
-        {
-            "kind": "prepush_gate_summary",
-            "head_sha": head_sha,
-            "command": cmd,
-            "timeout_seconds": timeout,
-            "dirty_check": dirty_check,
-            "dirty_only": dirty_only,
-            "dirty_elapsed_seconds": (
-                round(dirty_elapsed_seconds, 3)
-                if dirty_elapsed_seconds is not None
-                else None
-            ),
-            "dirty_exit_code": dirty_exit_code,
-            "validation_elapsed_seconds": (
-                round(validation_outcome.elapsed_seconds, 3)
-                if validation_outcome
-                else None
-            ),
-            "validation_cache_hit": validation_outcome.cache_hit
-            if validation_outcome
-            else None,
-            "validation_allowed": validation_outcome.allowed
-            if validation_outcome
-            else None,
-            "validation_reason": validation_outcome.reason
-            if validation_outcome
-            else None,
-            "validation_record_exit_code": validation_outcome.record_exit_code
-            if validation_outcome
-            else None,
-            "validation_record_timed_out": validation_outcome.record_timed_out
-            if validation_outcome
-            else None,
-            "final_exit_code": final_exit_code,
-            "phase": phase,
-            "error_type": error_type,
-            "monotonic_elapsed_seconds": round(
-                time.monotonic() - monotonic_started_at, 3
-            ),
-            "wall_started_at": wall_started_at.isoformat(),
-            "wall_ended_at": wall_ended_at.isoformat(),
-            "wall_elapsed_seconds": round(
-                (wall_ended_at - wall_started_at).total_seconds(), 3
-            ),
-        },
+    payload: dict[str, object] = {
+        "kind": "prepush_gate_summary",
+        "head_sha": head_sha,
+        "command": cmd,
+        "timeout_seconds": timeout,
+        "dirty_check": dirty_check,
+        "dirty_only": dirty_only,
+        "dirty_elapsed_seconds": (
+            round(dirty_elapsed_seconds, 3)
+            if dirty_elapsed_seconds is not None
+            else None
+        ),
+        "dirty_exit_code": dirty_exit_code,
+        "validation_elapsed_seconds": (
+            round(validation_outcome.elapsed_seconds, 3) if validation_outcome else None
+        ),
+        "validation_cache_hit": validation_outcome.cache_hit
+        if validation_outcome
+        else None,
+        "validation_allowed": validation_outcome.allowed
+        if validation_outcome
+        else None,
+        "validation_reason": validation_outcome.reason if validation_outcome else None,
+        "validation_record_exit_code": validation_outcome.record_exit_code
+        if validation_outcome
+        else None,
+        "validation_record_timed_out": validation_outcome.record_timed_out
+        if validation_outcome
+        else None,
+        "final_exit_code": final_exit_code,
+        "phase": phase,
+        "error_type": error_type,
+    }
+    payload.update(
+        build_timing_envelope(
+            wall_started_at=wall_started_at,
+            monotonic_started_at=monotonic_started_at,
+        )
     )
+    append_validation_timing(worktree, payload)
 
 
 def _prepush_output_dir(worktree: Path) -> Path:

@@ -19,7 +19,7 @@ from typing import Optional
 
 from ..infra.atomic_json import atomic_write_json
 from ..infra.emit import emit_event
-from ..infra.validation_timings import append_validation_timing
+from ..infra.validation_timings import append_validation_timing, build_timing_envelope
 from ..ports import CommandRunner, CommandResult, WorkingCopy
 from ..ports.session_output import ValidationRecord
 from .isolation import build_runtime_tool_env
@@ -452,33 +452,28 @@ class PublishGate:
         result: PublishGateResult,
     ) -> None:
         """Append an outer publish-gate timing record."""
-        wall_ended_at = datetime.now(timezone.utc)
         record = result.record
-        append_validation_timing(
-            self.worktree,
-            {
-                "kind": "validation_gate_summary",
-                "gate": self.SUITE_NAME,
-                "command": self.command,
-                "timeout_seconds": self.timeout_seconds,
-                "head_sha": head_sha,
-                "cache_lookup": cache_lookup,
-                "cache_hit": result.cache_hit,
-                "allowed": result.allowed,
-                "reason": result.reason,
-                "record_passed": record.passed if record else None,
-                "record_exit_code": record.exit_code if record else None,
-                "record_timed_out": record.timed_out if record else None,
-                "monotonic_elapsed_seconds": round(
-                    time.monotonic() - monotonic_started_at, 3
-                ),
-                "wall_started_at": wall_started_at.isoformat(),
-                "wall_ended_at": wall_ended_at.isoformat(),
-                "wall_elapsed_seconds": round(
-                    (wall_ended_at - wall_started_at).total_seconds(), 3
-                ),
-            },
+        payload: dict[str, object] = {
+            "kind": "validation_gate_summary",
+            "gate": self.SUITE_NAME,
+            "command": self.command,
+            "timeout_seconds": self.timeout_seconds,
+            "head_sha": head_sha,
+            "cache_lookup": cache_lookup,
+            "cache_hit": result.cache_hit,
+            "allowed": result.allowed,
+            "reason": result.reason,
+            "record_passed": record.passed if record else None,
+            "record_exit_code": record.exit_code if record else None,
+            "record_timed_out": record.timed_out if record else None,
+        }
+        payload.update(
+            build_timing_envelope(
+                wall_started_at=wall_started_at,
+                monotonic_started_at=monotonic_started_at,
+            )
         )
+        append_validation_timing(self.worktree, payload)
 
     def check(self, session_output_dir: Optional[Path] = None) -> PublishGateResult:
         """Check if publishing is allowed.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,8 +84,33 @@ def append_jsonl(path: Path | None, record: dict[str, object]) -> None:
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, sort_keys=True) + "\n")
+    line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        # Use one O_APPEND write so concurrent validation gates cannot interleave
+        # JSONL fragments on local POSIX filesystems such as macOS APFS.
+        written = os.write(fd, line)
+        if written != len(line):
+            raise OSError(f"short JSONL write to {path}: {written} of {len(line)}")
+    finally:
+        os.close(fd)
+
+
+def build_timing_envelope(
+    *,
+    wall_started_at: datetime,
+    monotonic_started_at: float,
+) -> dict[str, object]:
+    """Return common elapsed-time fields for validation timing records."""
+    wall_ended_at = datetime.now(timezone.utc)
+    return {
+        "monotonic_elapsed_seconds": round(time.monotonic() - monotonic_started_at, 3),
+        "wall_started_at": wall_started_at.isoformat(),
+        "wall_ended_at": wall_ended_at.isoformat(),
+        "wall_elapsed_seconds": round(
+            (wall_ended_at - wall_started_at).total_seconds(), 3
+        ),
+    }
 
 
 def append_validation_timing(worktree: Path, record: dict[str, object]) -> None:
