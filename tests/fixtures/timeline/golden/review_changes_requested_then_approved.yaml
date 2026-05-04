@@ -1,0 +1,279 @@
+scenario: review_changes_requested_then_approved
+description: |
+  Reviewer-requested-changes flow: agent codes, PR is reviewed, reviewer
+  flags issues, rework agent fixes them, second review approves, merge.
+
+  This pins the user-facing narrative for the most common non-trivial
+  outcome: "the reviewer wants changes." The fixture covers:
+
+    - **`review.changes_requested.detail`** — the `review_issues`
+      payload that the user must read to understand what to fix,
+      plus risk level.
+    - **Multi-round review structure** — round 1 ends with
+      changes_requested, round 2 with approved. Goldens pin both
+      rounds appearing distinctly in the user view.
+    - **Rework events** — `review.rework_started` /
+      `review.rework_completed` showing the rework cycle inline.
+    - **Narrative enrichment** — `_enrich_changes_requested`
+      includes the round number; `_enrich_review_approved` adds
+      "after N rounds" when rounds > 1.
+
+  Discovered behavior pinned (worth a follow-up):
+
+    - `review_exchange.failed` (not used in this fixture) currently
+      maps to `status='completed'` despite the name (see PR #6151
+      `events/spec.py` for the rest). This fixture's
+      `review_exchange.round_completed` handling is consistent with
+      production.
+
+issue_number: 7777
+
+records:
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      issue_number: 7777
+      session_id: "issue-7777-1"
+      agent: coder
+      task: code
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data:
+      issue_number: 7777
+      session_id: "issue-7777-1"
+      implementation: "Initial feature"
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:03:00Z"
+    data:
+      issue_number: 7777
+      session_id: "issue-7777-1"
+
+  - event: issue.pr_created
+    timestamp: "2026-05-04T00:03:30Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      pr_url: "https://github.com/example/repo/pull/88"
+
+  - event: review.started
+    timestamp: "2026-05-04T00:04:00Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+
+  - event: review_exchange.started
+    timestamp: "2026-05-04T00:04:01Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:04:02Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      round_index: 1
+
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:04:30Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      round_index: 1
+      reviewer_response_type: needs_work
+      reviewer_response_text: "Missing tests for the new error path"
+      coder_response_type: acknowledged
+
+  - event: review.changes_requested
+    timestamp: "2026-05-04T00:04:31Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      rounds: 1
+      review_issues: "Missing tests for the new error path"
+      risk_level: medium
+
+  - event: review.rework_started
+    timestamp: "2026-05-04T00:05:00Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      round_index: 2
+      reviewer_response_text: "Missing tests for the new error path"
+
+  - event: session.started
+    timestamp: "2026-05-04T00:05:05Z"
+    data:
+      issue_number: 7777
+      session_id: "issue-7777-2"
+      agent: coder
+      task: rework
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:07:00Z"
+    data:
+      issue_number: 7777
+      session_id: "issue-7777-2"
+      implementation: "Added tests for error path"
+
+  - event: review.rework_completed
+    timestamp: "2026-05-04T00:07:30Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      round_index: 2
+      coder_response_type: ok
+      coder_response_text: "Tests added"
+
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:08:00Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      round_index: 2
+
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:08:30Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      round_index: 2
+      reviewer_response_type: ok
+      reviewer_response_text: "Looks good now"
+
+  - event: review_exchange.completed
+    timestamp: "2026-05-04T00:08:31Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      rounds: 2
+
+  - event: review.approved
+    timestamp: "2026-05-04T00:08:32Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+      rounds: 2
+      review_summary: "Approved on round 2"
+
+  - event: review.merged
+    timestamp: "2026-05-04T00:09:00Z"
+    data:
+      issue_number: 7777
+      pr_number: 88
+
+  - event: issue.completed
+    timestamp: "2026-05-04T00:09:30Z"
+    data:
+      issue_number: 7777
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-7777-1" }
+  - event: session.completed
+    phase: in_progress
+    step: completed
+    status: completed
+    detail: "Initial feature"
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    parent_key: "review:88"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
+  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "review:88" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed }
+  - event: review_exchange.round_completed
+    phase: reviewing
+    step: round_completed
+    status: completed
+    detail: "Round 1. Missing tests for the new error path. Coder response: acknowledged"
+  - event: review.changes_requested
+    phase: reviewing
+    step: changes_requested
+    status: failed
+    detail: "Missing tests for the new error path. Risk: medium"
+  - event: review.rework_started
+    phase: reviewing
+    step: rework_started
+    status: started
+    detail: "Round 2. Missing tests for the new error path"
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-7777-2" }
+  - event: session.completed
+    phase: in_progress
+    step: completed
+    status: completed
+    detail: "Added tests for error path"
+  - event: review.rework_completed
+    phase: reviewing
+    step: rework_completed
+    status: completed
+    detail: "Round 2. Coder response: ok. Tests added"
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed }
+  - event: review_exchange.round_completed
+    phase: reviewing
+    step: round_completed
+    status: completed
+    detail: "Round 2. Looks good now"
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed }
+  - event: review.approved
+    phase: reviewing
+    step: approved
+    status: completed
+    detail: "Approved on round 2"
+  - { event: review.merged, phase: reviewing, step: merged, status: completed }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, parent_key: "issue:7777" }
+
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - event: agent.completed
+    status: completed
+    narrative: "Issue completed"
+    detail: "Initial feature"
+  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - event: pr.created
+    status: completed
+    narrative: "PR #88 created"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
+  - { event: review.started, status: started, narrative: "Code review started" }
+  - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
+  - event: review_exchange.round_completed
+    status: completed
+    narrative: "Review round 1 completed — needs_work"
+    detail: "Round 1. Missing tests for the new error path. Coder response: acknowledged"
+  - event: review.changes_requested
+    status: failed
+    narrative: "Reviewer requested changes (round 1)"
+    detail: "Missing tests for the new error path. Risk: medium"
+  - event: review.rework_started
+    status: started
+    narrative: "Coder started rework for review round 2"
+    detail: "Round 2. Missing tests for the new error path"
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - event: agent.completed
+    status: completed
+    narrative: "Issue completed"
+    detail: "Added tests for error path"
+  - event: review.rework_completed
+    status: completed
+    narrative: "Coder completed rework for review round 2"
+    detail: "Round 2. Coder response: ok. Tests added"
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 2 started" }
+  - event: review_exchange.round_completed
+    status: completed
+    narrative: "Review round 2 completed — ok"
+    detail: "Round 2. Looks good now"
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)" }
+  - event: review.approved
+    status: completed
+    narrative: "Review approved after 2 rounds"
+    detail: "Approved on round 2"
+  - { event: review.merged, status: completed, narrative: "PR merged" }
+  - { event: issue.completed, status: completed, narrative: "Issue completed" }

@@ -1,0 +1,218 @@
+scenario: validation_failed_then_retry
+description: |
+  Validation failure flow: agent codes, completes, validation runs and
+  FAILS with a clear reason, retry is requested, agent codes again,
+  validation passes, PR is created and issue completes.
+
+  This is the failure-narrative path. The fixture pins:
+
+    - **Order** — events in the exact retry sequence the user sees.
+    - **`detail`** — the `validation_reason` carried into the
+      user-facing `detail` field (so the user can read *why* it failed).
+    - **`artifacts`** — the `validation_record_path` link (so the user
+      can navigate to the failure log) and the PR url once created.
+    - **`status` transitions** — `validation_failed` → `failed`,
+      `validation_retry_needed` → `failed`, `validation_passed` →
+      `completed`.
+
+  Discovered behaviors pinned (intentionally — these are the kinds of
+  user-facing rough edges goldens are meant to surface for follow-up):
+
+    - The narrative for `session.completed` is `"Issue completed"`
+      (from `VIEW_REGISTRY`), so a retry scenario shows that line
+      twice plus once for the actual `issue.completed`. The user
+      sees three "Issue completed" lines for one issue, which is
+      misleading. Worth a follow-up to differentiate
+      `agent.completed` vs `issue.completed` narratives.
+    - `validation_retry_needed.detail` concatenates the original
+      validation reason with `"Source: <cmd>"`. Reasonable, but
+      formatting could be improved.
+
+issue_number: 5678
+
+records:
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+      agent: coder
+      task: code
+
+  - event: observation.completion_detected
+    timestamp: "2026-05-04T00:01:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+      implementation: "Added the feature"
+
+  - event: validation.started
+    timestamp: "2026-05-04T00:02:30Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+
+  - event: validation.completed
+    timestamp: "2026-05-04T00:03:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+
+  - event: session.validation_failed
+    timestamp: "2026-05-04T00:03:01Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+      validation_reason: "2 unit tests failed: test_foo, test_bar"
+      validation_record_path: "/runs/issue-5678/run-001/validation-record.json"
+      run_dir: "/runs/issue-5678/run-001"
+
+  - event: session.validation_retry_needed
+    timestamp: "2026-05-04T00:03:02Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-1"
+      validation_reason: "2 unit tests failed: test_foo, test_bar"
+      validation_source: "make test-unit"
+
+  - event: session.started
+    timestamp: "2026-05-04T00:04:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-2"
+      agent: coder
+      task: code
+
+  - event: observation.completion_detected
+    timestamp: "2026-05-04T00:05:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-2"
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:06:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-2"
+      implementation: "Fixed the failing tests"
+
+  - event: validation.started
+    timestamp: "2026-05-04T00:06:30Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-2"
+
+  - event: validation.completed
+    timestamp: "2026-05-04T00:07:00Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-2"
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:07:01Z"
+    data:
+      issue_number: 5678
+      session_id: "issue-5678-2"
+      validation_record_path: "/runs/issue-5678/run-002/validation-record.json"
+
+  - event: issue.pr_created
+    timestamp: "2026-05-04T00:07:30Z"
+    data:
+      issue_number: 5678
+      pr_number: 99
+      pr_url: "https://github.com/example/repo/pull/99"
+
+  - event: issue.completed
+    timestamp: "2026-05-04T00:08:00Z"
+    data:
+      issue_number: 5678
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-5678-1" }
+  - { event: observation.completion_detected, phase: in_progress, step: completion_detected, status: completed }
+  - event: session.completed
+    phase: in_progress
+    step: completed
+    status: completed
+    detail: "Added the feature"
+  - { event: validation.started, phase: orchestrator, step: validation.started, status: started }
+  - { event: validation.completed, phase: orchestrator, step: validation.completed, status: completed }
+  - event: session.validation_failed
+    phase: orchestrator
+    step: validation_failed
+    status: failed
+    detail: "2 unit tests failed: test_foo, test_bar"
+    artifacts:
+      - { type: validation, label: Validation, value: "/runs/issue-5678/run-001/validation-record.json" }
+      - { type: run_dir, label: Run Dir, value: "/runs/issue-5678/run-001" }
+  - event: session.validation_retry_needed
+    phase: orchestrator
+    step: validation_retry_needed
+    status: failed
+    detail: "2 unit tests failed: test_foo, test_bar. Source: make test-unit"
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-5678-2" }
+  - { event: observation.completion_detected, phase: in_progress, step: completion_detected, status: completed }
+  - event: session.completed
+    phase: in_progress
+    step: completed
+    status: completed
+    detail: "Fixed the failing tests"
+  - { event: validation.started, phase: orchestrator, step: validation.started, status: started }
+  - { event: validation.completed, phase: orchestrator, step: validation.completed, status: completed }
+  - event: session.validation_passed
+    phase: orchestrator
+    step: validation_passed
+    status: completed
+    artifacts:
+      - { type: validation, label: Validation, value: "/runs/issue-5678/run-002/validation-record.json" }
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    parent_key: "review:99"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/99" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, parent_key: "issue:5678" }
+
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
+  - event: agent.completed
+    status: completed
+    narrative: "Issue completed"
+    detail: "Added the feature"
+  - event: validation.failed
+    status: failed
+    narrative: "Validation failed"
+    detail: "2 unit tests failed: test_foo, test_bar"
+    artifacts:
+      - { type: validation, label: Validation, value: "/runs/issue-5678/run-001/validation-record.json" }
+      - { type: run_dir, label: Run Dir, value: "/runs/issue-5678/run-001" }
+  - event: validation.retry
+    status: failed
+    narrative: "Validation failed — retrying"
+    detail: "2 unit tests failed: test_foo, test_bar. Source: make test-unit"
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
+  - event: agent.completed
+    status: completed
+    narrative: "Issue completed"
+    detail: "Fixed the failing tests"
+  - event: validation.passed
+    status: completed
+    narrative: "Validation passed"
+    artifacts:
+      - { type: validation, label: Validation, value: "/runs/issue-5678/run-002/validation-record.json" }
+  - event: pr.created
+    status: completed
+    narrative: "PR #99 created"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/99" }
+  - { event: issue.completed, status: completed, narrative: "Issue completed" }
