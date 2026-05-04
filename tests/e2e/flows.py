@@ -97,8 +97,14 @@ async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEv
     # silently 401s and the watcher reports the orchestrator as
     # unreachable; the test then fails with timeouts instead of an
     # auth error.
-    from issue_orchestrator.infra.api_token import read_existing_token
-    token = read_existing_token()
+    #
+    # Use the env-aware helper to match the server's
+    # ``resolve_api_token`` precedence — ``ISSUE_ORCHESTRATOR_API_TOKEN``
+    # wins over the on-disk token file. A file-only helper would
+    # send no token / a stale token when the parent env carries a
+    # different value.
+    from issue_orchestrator.infra.api_token import read_existing_admin_token
+    token = read_existing_admin_token()
     stream = SSEEventStream(
         f"http://localhost:{port}/api/events", auth_token=token,
     )

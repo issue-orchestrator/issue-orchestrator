@@ -666,10 +666,11 @@ async def orchestrator_watcher(
 
     # See create_watcher_for_port in flows.py for the auth contract:
     # the orchestrator's loopback API requires ``Authorization: Bearer …``
-    # for SSE / snapshot / replay. Loading the token here keeps these
-    # endpoints reachable under the e2e harness.
-    from issue_orchestrator.infra.api_token import read_existing_token
-    token = read_existing_token()
+    # for SSE / snapshot / replay. The env-aware helper matches the
+    # server's ``resolve_api_token`` precedence — env wins over the
+    # on-disk file.
+    from issue_orchestrator.infra.api_token import read_existing_admin_token
+    token = read_existing_admin_token()
     stream = SSEEventStream(
         f"http://localhost:{port}/api/events", auth_token=token,
     )

@@ -28,6 +28,25 @@ from issue_orchestrator.testing.asyncdsl.http import (
 )
 
 
+def test_e2e_watcher_resolves_token_env_first(monkeypatch):
+    """Pin that the e2e watcher uses the env-aware admin-token helper.
+
+    The server resolves the admin token via ``resolve_api_token()`` —
+    ``ISSUE_ORCHESTRATOR_API_TOKEN`` wins over the on-disk file. A
+    file-only helper on the watcher side would send no token / a
+    stale token in env-token configurations and reintroduce the same
+    401/timeout shape this PR is meant to fix. Run the helper that
+    the watcher call sites use and assert it picks up the env value.
+    """
+    from issue_orchestrator.infra.api_token import (
+        TOKEN_ENV_VAR,
+        read_existing_admin_token,
+    )
+
+    monkeypatch.setenv(TOKEN_ENV_VAR, "env-token-wins")
+    assert read_existing_admin_token() == "env-token-wins"
+
+
 def test_build_request_attaches_bearer_token():
     request = _build_request("http://localhost:19080/api/events", auth_token="abc123")
     assert request.get_header("Authorization") == "Bearer abc123"
