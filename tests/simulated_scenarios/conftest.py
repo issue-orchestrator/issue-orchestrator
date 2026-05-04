@@ -132,7 +132,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         max_rounds,
         max_no_progress,
         require_validation,
-        initial_validation_record_path=None,  # noqa: ARG001
+        initial_validation_record_path=None,
         web_port=None,  # noqa: ARG001
         events=None,
         event_context=None,
@@ -150,6 +150,20 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         run_dir = run.run_dir
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
+
+        # Mirror the real runner: when an initial validation record was
+        # passed in (cache hit / pre-seeded scenarios), copy it into the
+        # exchange's run_dir before the require_validation guard fires.
+        # Without this, scenarios named after the cache/seeding path
+        # (cache_requires_validation, cache_invalid_validation_reruns)
+        # silently fall through the production path they claim to test.
+        if (
+            initial_validation_record_path is not None
+            and initial_validation_record_path.exists()
+        ):
+            seed_target = run_dir / "validation-record.json"
+            if not seed_target.exists():
+                seed_target.write_bytes(initial_validation_record_path.read_bytes())
 
         if on_started is not None:
             on_started(run_dir)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
@@ -261,6 +261,36 @@ class Scenario:
             payload = _latest_event_payload(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_COMPLETED)
             assert payload is not None
             assert payload.get("reason") == reason
+            # The runner's contract is that summary.json mirrors the
+            # terminal event's status/reason. Verify both so error
+            # scenarios can't drift in only one place.
+            worktree = ctx.worktree
+            assert worktree is not None
+            summary = _latest_review_exchange_summary(worktree)
+            if summary is not None:
+                assert summary.get("reason") == reason, (
+                    f"summary.json reason {summary.get('reason')!r} != "
+                    f"event reason {reason!r}"
+                )
+        return self._add_expectation(_assert)
+
+    def expect_review_exchange_status(self, status: str) -> Scenario:
+        """Assert ``REVIEW_EXCHANGE_COMPLETED.status`` matches ``status``
+        and that ``summary.json`` agrees. Pin the status side of the
+        terminal contract — paired with :meth:`expect_review_exchange_reason`
+        for error scenarios that need both sides verified."""
+        def _assert(ctx: ScenarioContext) -> None:
+            payload = _latest_event_payload(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_COMPLETED)
+            assert payload is not None
+            assert payload.get("status") == status
+            worktree = ctx.worktree
+            assert worktree is not None
+            summary = _latest_review_exchange_summary(worktree)
+            if summary is not None:
+                assert summary.get("status") == status, (
+                    f"summary.json status {summary.get('status')!r} != "
+                    f"event status {status!r}"
+                )
         return self._add_expectation(_assert)
 
     def expect_review_exchange_round_response(
@@ -560,6 +590,25 @@ def _summary_rounds(worktree: Path) -> list[int]:
         if "completed_rounds" in data:
             rounds.append(int(data["completed_rounds"]))
     return rounds
+
+
+def _latest_review_exchange_summary(worktree: Path) -> dict[str, Any] | None:
+    """Return the most recent ``review-exchange/summary.json`` payload, if any.
+
+    Returns ``None`` (not an assertion failure) when no summary exists,
+    so callers can verify alignment only when a runner actually wrote
+    one — avoids false negatives on cache-hit / draft-PR paths.
+    """
+    summary_root = worktree / ".issue-orchestrator" / "sessions"
+    if not summary_root.exists():
+        return None
+    summary_files = sorted(
+        summary_root.rglob("review-exchange/summary.json"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not summary_files:
+        return None
+    return json.loads(summary_files[-1].read_text())
 
 
 def _close_goal_pilot_store(orch: object) -> None:

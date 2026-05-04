@@ -685,11 +685,15 @@ def test_review_exchange_requires_validation_allows_ok(scenario_repo: Path):
 
 
 @pytest.mark.simulated_review_outcome(
+    # Reviewer dies / produces invalid output: the runner's
+    # ``_build_outcome_for_role_timeout`` path emits status="error",
+    # reason="reviewer_no_completion". The round event still records
+    # the synthesized "error"-typed reviewer response.
     reviewer_responses=[
         {"response_type": "error", "response_text": "invalid_json", "getting_closer": False},
     ],
-    status="stopped",
-    reason="reviewer_invalid_json",
+    status="error",
+    reason="reviewer_no_completion",
 )
 def test_reviewer_invalid_json_emits_error(scenario_repo: Path):
     scenario("reviewer_invalid_json", scenario_repo) \
@@ -697,6 +701,8 @@ def test_reviewer_invalid_json_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_invalid_json.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(reviewer_response_type="error") \
+        .expect_review_exchange_status("error") \
+        .expect_review_exchange_reason("reviewer_no_completion") \
         .run()
 
 
@@ -704,8 +710,8 @@ def test_reviewer_invalid_json_emits_error(scenario_repo: Path):
     reviewer_responses=[
         {"response_type": "error", "response_text": "exit_nonzero", "getting_closer": False},
     ],
-    status="stopped",
-    reason="reviewer_exit_nonzero",
+    status="error",
+    reason="reviewer_no_completion",
 )
 def test_reviewer_exit_nonzero_emits_error(scenario_repo: Path):
     scenario("reviewer_exit_nonzero", scenario_repo) \
@@ -713,16 +719,22 @@ def test_reviewer_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_exit_nonzero.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(reviewer_response_type="error") \
+        .expect_review_exchange_status("error") \
+        .expect_review_exchange_reason("reviewer_no_completion") \
         .run()
 
 
 @pytest.mark.simulated_review_outcome(
+    # Coder protocol guardrail exhausts retries: runner's
+    # ``_build_outcome_for_coder_protocol_error`` emits status="error",
+    # reason="coder_protocol_error". The round event records the
+    # protocol_error coder response.
     reviewer_responses=[
         {"response_type": "changes_requested", "response_text": "n", "getting_closer": True},
     ],
     coder_response_type="protocol_error",
-    status="stopped",
-    reason="coder_invalid_json",
+    status="error",
+    reason="coder_protocol_error",
 )
 def test_coder_invalid_json_emits_error(scenario_repo: Path):
     scenario("coder_invalid_json", scenario_repo) \
@@ -730,6 +742,8 @@ def test_coder_invalid_json_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="protocol_error") \
+        .expect_review_exchange_status("error") \
+        .expect_review_exchange_reason("coder_protocol_error") \
         .run()
 
 
@@ -738,8 +752,8 @@ def test_coder_invalid_json_emits_error(scenario_repo: Path):
         {"response_type": "changes_requested", "response_text": "n", "getting_closer": True},
     ],
     coder_response_type="protocol_error",
-    status="stopped",
-    reason="coder_exit_nonzero",
+    status="error",
+    reason="coder_protocol_error",
 )
 def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
     scenario("coder_exit_nonzero", scenario_repo) \
@@ -747,6 +761,8 @@ def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="protocol_error") \
+        .expect_review_exchange_status("error") \
+        .expect_review_exchange_reason("coder_protocol_error") \
         .run()
 
 
