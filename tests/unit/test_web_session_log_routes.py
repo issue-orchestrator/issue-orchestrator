@@ -801,7 +801,14 @@ class TestIssueLogEndpointsUseLatestHistory:
         worktree = tmp_path / "wt-review-transcript-filter"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "review-1", issue_number=123)
-        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+        exchange_dir = run.run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        transcript = exchange_dir / "transcript.log"
+        transcript.touch(exist_ok=True)
+        session_output.update_manifest(
+            run.run_dir,
+            {"review_exchange_transcript_path": str(transcript)},
+        )
         transcript.write_text(
             "[2026-03-20T04:39:32Z] round=1 role=reviewer section=prompt\nReviewer round 1\n\n"
             "[2026-03-20T04:40:42Z] round=1 role=coder section=prompt\nCoder round 1\n\n"

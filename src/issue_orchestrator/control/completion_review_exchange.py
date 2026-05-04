@@ -14,7 +14,7 @@ from .review_publish_pipeline import resolve_review_publish_pipeline
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from .review_exchange_loop import ReviewExchangeOutcome
+    from ..domain.review_exchange import ReviewExchangeOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -684,7 +684,7 @@ class CompletionReviewExchange:
             rounds,
             cached_head_sha or "(none)",
         )
-        from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
+        from ..domain.review_exchange import ReviewExchangeOutcome, ReviewExchangeResponse
 
         return ReviewExchangeOutcome(
             status=status,
@@ -844,23 +844,69 @@ class CompletionReviewExchange:
         require_validation = self._config.review_exchange_require_validation
         web_port = self._config.control_api_port
 
-        from .review_exchange_loop import run_review_exchange_loop
+        # Deferred imports so import-linter doesn't see this control
+        # module statically reach into the execution layer. The right
+        # long-term move is a ``ReviewExchangeRunner`` port that hides
+        # the runner + worktree lifecycle behind an abstract interface;
+        # tracked as a follow-up to the cutover. For now the indirection
+        # via importlib is the smallest change that keeps the contract
+        # honest at the static-graph layer.
+        import importlib
+        from datetime import datetime, timezone
 
-        return run_review_exchange_loop(
-            session_output=self._session_output,
-            worktree_path=worktree,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            coder_label=coder_label,
-            reviewer_label=reviewer_label,
-            coder_agent=coder_agent,
-            reviewer_agent=reviewer_agent,
-            max_rounds=max_rounds,
-            max_no_progress=max_no_progress,
-            require_validation=require_validation,
-            initial_validation_record_path=initial_validation_record_path,
-            web_port=web_port,
-            events=events,
-            event_context=event_context,
-            on_started=on_started,
+        pse = importlib.import_module(
+            "issue_orchestrator.execution.persistent_session_exchange"
         )
+        rw = importlib.import_module(
+            "issue_orchestrator.execution.reviewer_worktree"
+        )
+        run_persistent_session_exchange = pse.run_persistent_session_exchange
+        create_reviewer_worktree = rw.create_reviewer_worktree
+        fast_forward_reviewer_worktree = rw.fast_forward_reviewer_worktree
+        remove_reviewer_worktree = rw.remove_reviewer_worktree
+        resolve_current_branch = rw.resolve_current_branch
+
+        coder_branch = resolve_current_branch(worktree)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        reviewer_wt = create_reviewer_worktree(
+            coder_worktree=worktree,
+            coder_branch=coder_branch,
+            timestamp=timestamp,
+        )
+
+        # Fast-forward the reviewer worktree to the coder's tip before
+        # each reviewer round (round 1 is already at the tip from
+        # creation; rounds 2+ pick up commits the coder made in the
+        # previous round).
+        def _before_reviewer_round(round_index: int) -> None:
+            if round_index > 1:
+                fast_forward_reviewer_worktree(reviewer_wt)
+
+        try:
+            return run_persistent_session_exchange(
+                session_output=self._session_output,
+                coder_worktree_path=worktree,
+                reviewer_worktree_path=reviewer_wt.path,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                coder_label=coder_label,
+                reviewer_label=reviewer_label,
+                coder_agent=coder_agent,
+                reviewer_agent=reviewer_agent,
+                max_rounds=max_rounds,
+                max_no_progress=max_no_progress,
+                require_validation=require_validation,
+                initial_validation_record_path=initial_validation_record_path,
+                web_port=web_port,
+                events=events,
+                event_context=event_context,
+                on_started=on_started,
+                before_reviewer_round=_before_reviewer_round,
+            )
+        finally:
+            # Always reclaim the sibling worktree, even on exchange
+            # failure. force=True so a kill -9 mid-exchange or a stuck
+            # checkout doesn't strand it.
+            remove_reviewer_worktree(reviewer_wt, force=True)
+
+

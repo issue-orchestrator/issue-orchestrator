@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1083,35 +1081,7 @@ def _validate_coder_completion(
     return None
 
 
-_ATOMIC_WRITE_TMP_PREFIX = "."
-_ATOMIC_WRITE_TMP_SUFFIX = ".tmp"
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Atomic write so concurrent polls never see a torn summary file.
-
-    Mirrors ``control/review_exchange_loop._atomic_write_json``. The main
-    orchestrator tick polls ``summary.json`` every iteration to detect
-    async review-exchange completion; a non-atomic write creates a window
-    where a reader hits a partial file and raises JSONDecodeError. Write
-    to a sibling temp file on the same filesystem and rename — POSIX
-    ``os.replace`` is atomic, so any reader sees either the pre-write
-    content or the full new content.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(payload, indent=2)
-    fd, tmp_path_str = tempfile.mkstemp(
-        prefix=f"{_ATOMIC_WRITE_TMP_PREFIX}{path.name}.",
-        suffix=_ATOMIC_WRITE_TMP_SUFFIX,
-        dir=str(path.parent),
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(encoded)
-        os.replace(tmp_path_str, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path_str)
-        except FileNotFoundError:
-            pass
-        raise
+# ``_atomic_write_json`` is the shared helper from ``infra.atomic_io``;
+# re-export under the private name so the existing test that monkeypatches
+# ``pse.os.replace`` continues to find the same write path.
+from ..infra.atomic_io import atomic_write_json as _atomic_write_json  # noqa: E402

@@ -492,47 +492,6 @@ class TestSessionLogCleaning:
 
         assert recording.read_text(encoding="utf-8") == ""
 
-    def test_append_review_exchange_session_log_entry_writes_dedicated_transcript_not_terminal_recording(
-        self, tmp_path
-    ):
-        session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
-        recording = run.run_dir / "terminal-recording.jsonl"
-        transcript = run.run_dir / REVIEW_EXCHANGE_DIR_NAME / "transcript.log"
-
-        session_output.append_review_exchange_session_log_entry(
-            run.run_dir,
-            round_index=3,
-            role="reviewer",
-            section="feedback",
-            content="Line one\n✶ Thinking…\nLine two\n",
-        )
-
-        assert self._decoded_recording(recording) == ""
-        content = transcript.read_text(encoding="utf-8")
-        assert "round=3 role=reviewer section=feedback" in content
-        assert "Line one" in content
-        assert "Line two" in content
-        assert "Thinking" not in content
-        manifest = session_output.read_manifest(run.run_dir)
-        assert manifest is not None
-        assert manifest.get("review_exchange_transcript_path") == str(transcript)
-
-    def test_ensure_review_exchange_session_log_creates_empty_transcript_and_manifest_path(
-        self, tmp_path
-    ):
-        session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
-
-        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
-
-        assert transcript.exists()
-        assert transcript.read_text(encoding="utf-8") == ""
-        manifest = session_output.read_manifest(run.run_dir)
-        assert manifest is not None
-        assert manifest.get("review_exchange_transcript_path") == str(transcript)
-
-
 class TestClaudeLogAttachment:
     def test_claude_jsonl_parser_keeps_preview_tool_summaries_stable(self):
         entry = {

@@ -24,7 +24,7 @@ from issue_orchestrator.domain.models import (
     COMPLETION_RECORD_PATH,
     AgentConfig,
 )
-from issue_orchestrator.control.review_exchange_loop import ReviewExchangeOutcome
+from issue_orchestrator.domain.review_exchange import ReviewExchangeOutcome
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
     ProcessingResult,
@@ -1101,10 +1101,20 @@ class TestReviewExchangeExecution:
             captured["reviewer_label"] = kwargs["reviewer_label"]
             return MagicMock(status="ok", rounds=1, reason="reviewer_ok")
 
+        # New dispatch target post-cutover.
         monkeypatch.setattr(
-            "issue_orchestrator.control.review_exchange_loop.run_review_exchange_loop",
+            "issue_orchestrator.execution.persistent_session_exchange.run_persistent_session_exchange",
             _fake_run,
         )
+        # Stub out branch resolution + reviewer-worktree lifecycle so the
+        # test doesn't need a real git repo.
+        from issue_orchestrator.execution import reviewer_worktree as rw
+        monkeypatch.setattr(rw, "resolve_current_branch", lambda _wt: "feature/test")
+        monkeypatch.setattr(
+            rw, "create_reviewer_worktree",
+            lambda **_: MagicMock(path=tmp_path / "review-wt", coder_branch="feature/test"),
+        )
+        monkeypatch.setattr(rw, "remove_reviewer_worktree", lambda *_, **__: None)
 
         processor._run_review_exchange_loop(
             worktree=tmp_path,

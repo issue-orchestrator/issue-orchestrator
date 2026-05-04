@@ -969,7 +969,11 @@ class TestAtomicSummaryWrite:
             observed_tmp_paths.append(src)
             return real_replace(src, dst)
 
-        monkeypatch.setattr(pse.os, "replace", _capturing_replace)
+        # Atomic write lives in the shared infra.atomic_io helper now;
+        # patch os.replace at that module's binding so we observe the
+        # actual rename call from the runner's summary write path.
+        from issue_orchestrator.infra import atomic_io
+        monkeypatch.setattr(atomic_io.os, "replace", _capturing_replace)
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,

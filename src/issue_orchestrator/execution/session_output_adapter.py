@@ -826,46 +826,6 @@ Timestamp: {self._now_iso()}
         recording_path.parent.mkdir(parents=True, exist_ok=True)
         append_output_event(recording_path, payload)
 
-    def append_review_exchange_session_log_entry(
-        self,
-        run_dir: Path,
-        *,
-        round_index: int,
-        role: str,
-        section: str,
-        content: str,
-    ) -> None:
-        """Append one review-exchange transcript entry to the dedicated exchange transcript."""
-        timestamp = datetime.now(timezone.utc).isoformat()
-        header = f"[{timestamp}] round={round_index} role={role} section={section}"
-        cleaned_lines: list[str] = []
-        for raw_line in content.splitlines():
-            cleaned = clean_terminal_line(raw_line)
-            if cleaned.strip() and not is_spinner_fragment(cleaned):
-                cleaned_lines.append(cleaned)
-        if not cleaned_lines:
-            return
-        transcript_path = self.ensure_review_exchange_session_log(run_dir)
-        payload = f"{header}\n" + "\n".join(cleaned_lines).rstrip() + "\n\n"
-        with self._io_lock:
-            with transcript_path.open("a", encoding="utf-8") as handle:
-                handle.write(payload)
-
-    def ensure_review_exchange_session_log(
-        self,
-        run_dir: Path,
-    ) -> Path:
-        """Ensure the dedicated review-exchange transcript exists and is registered."""
-        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
-        exchange_dir.mkdir(parents=True, exist_ok=True)
-        transcript_path = exchange_dir / REVIEW_EXCHANGE_TRANSCRIPT_NAME
-        with self._io_lock:
-            transcript_path.touch(exist_ok=True)
-            self.update_manifest(
-                run_dir, {"review_exchange_transcript_path": str(transcript_path)}
-            )
-        return transcript_path
-
     def record_exchange_chapter(
         self,
         run_dir: Path,

@@ -19,7 +19,7 @@ import pytest
 from issue_orchestrator.control.completion_review_exchange import (
     CompletionReviewExchange,
 )
-from issue_orchestrator.control.review_exchange_loop import (
+from issue_orchestrator.domain.review_exchange import (
     ReviewExchangeOutcome,
     ReviewExchangeResponse,
 )
