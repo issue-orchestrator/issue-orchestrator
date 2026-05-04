@@ -257,40 +257,66 @@ class Scenario:
         return self._add_expectation(_assert)
 
     def expect_review_exchange_reason(self, reason: str) -> Scenario:
+        """Assert ``REVIEW_EXCHANGE_COMPLETED.reason`` matches ``reason``.
+
+        Lenient: only asserts the event side. Cache-hit / draft-PR
+        paths complete without the runner writing ``summary.json``,
+        so this expectation does not require one. Use
+        :meth:`expect_review_exchange_terminal_state` for scenarios
+        where the summary is mandatory (e.g. error termination).
+        """
         def _assert(ctx: ScenarioContext) -> None:
             payload = _latest_event_payload(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_COMPLETED)
             assert payload is not None
             assert payload.get("reason") == reason
-            # The runner's contract is that summary.json mirrors the
-            # terminal event's status/reason. Verify both so error
-            # scenarios can't drift in only one place.
-            worktree = ctx.worktree
-            assert worktree is not None
-            summary = _latest_review_exchange_summary(worktree)
-            if summary is not None:
-                assert summary.get("reason") == reason, (
-                    f"summary.json reason {summary.get('reason')!r} != "
-                    f"event reason {reason!r}"
-                )
         return self._add_expectation(_assert)
 
     def expect_review_exchange_status(self, status: str) -> Scenario:
-        """Assert ``REVIEW_EXCHANGE_COMPLETED.status`` matches ``status``
-        and that ``summary.json`` agrees. Pin the status side of the
-        terminal contract — paired with :meth:`expect_review_exchange_reason`
-        for error scenarios that need both sides verified."""
+        """Assert ``REVIEW_EXCHANGE_COMPLETED.status`` matches ``status``.
+
+        Lenient counterpart to :meth:`expect_review_exchange_reason`.
+        For scenarios that must verify the summary contract, use
+        :meth:`expect_review_exchange_terminal_state`.
+        """
         def _assert(ctx: ScenarioContext) -> None:
             payload = _latest_event_payload(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_COMPLETED)
             assert payload is not None
             assert payload.get("status") == status
+        return self._add_expectation(_assert)
+
+    def expect_review_exchange_terminal_state(
+        self, *, status: str, reason: str,
+    ) -> Scenario:
+        """Strict terminal-contract check: event AND ``summary.json`` agree.
+
+        Fails if no ``summary.json`` was written. The runner's contract
+        is that every exchange that reaches a terminal state writes a
+        summary whose status/reason match the
+        ``REVIEW_EXCHANGE_COMPLETED`` payload. Error scenarios use this
+        so a regression that drops the summary would surface here
+        instead of silently passing.
+        """
+        def _assert(ctx: ScenarioContext) -> None:
+            payload = _latest_event_payload(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_COMPLETED)
+            assert payload is not None, "REVIEW_EXCHANGE_COMPLETED event missing"
+            assert payload.get("status") == status, (
+                f"event status {payload.get('status')!r} != expected {status!r}"
+            )
+            assert payload.get("reason") == reason, (
+                f"event reason {payload.get('reason')!r} != expected {reason!r}"
+            )
             worktree = ctx.worktree
             assert worktree is not None
             summary = _latest_review_exchange_summary(worktree)
-            if summary is not None:
-                assert summary.get("status") == status, (
-                    f"summary.json status {summary.get('status')!r} != "
-                    f"event status {status!r}"
-                )
+            assert summary is not None, "review-exchange summary.json missing"
+            assert summary.get("status") == status, (
+                f"summary.json status {summary.get('status')!r} != "
+                f"event status {status!r}"
+            )
+            assert summary.get("reason") == reason, (
+                f"summary.json reason {summary.get('reason')!r} != "
+                f"event reason {reason!r}"
+            )
         return self._add_expectation(_assert)
 
     def expect_review_exchange_round_response(

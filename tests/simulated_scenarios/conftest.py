@@ -59,6 +59,24 @@ def pytest_configure(config):
     )
 
 
+def _validation_passed(run_dir: Path) -> bool:
+    """Mirror :func:`persistent_session_exchange._validation_passed`.
+
+    Existence of ``validation-record.json`` is not enough — the runner
+    parses it and requires ``passed: true``. Invalid JSON or
+    ``{"passed": false}`` must read as not-passed so a failed seeded
+    record cannot let a reviewer ``ok`` slip through.
+    """
+    record_path = run_dir / "validation-record.json"
+    if not record_path.exists():
+        return False
+    try:
+        data = json.loads(record_path.read_text())
+    except json.JSONDecodeError:
+        return False
+    return bool(data.get("passed"))
+
+
 @pytest.fixture(autouse=True)
 def _stub_persistent_review_exchange_setup(monkeypatch, request):
     """Bypass the persistent-session runner in simulated scenarios.
@@ -118,6 +136,14 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
     write_validation_record_passed = bool(
         overrides.get("write_validation_record_passed", False)
     )
+    # Counterpart for the negative-seeded-record case: writes
+    # ``{"passed": false}`` so the require_validation guard flips a
+    # reviewer ``ok`` even though the file exists. Without this, the
+    # simulated coverage would treat file-existence as success and
+    # miss a failed/corrupt seeded record.
+    write_validation_record_failed = bool(
+        overrides.get("write_validation_record_failed", False)
+    )
 
     def _stub_run(
         self,
@@ -172,6 +198,10 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             (run_dir / "validation-record.json").write_text(
                 json.dumps({"passed": True}), encoding="utf-8",
             )
+        if write_validation_record_failed:
+            (run_dir / "validation-record.json").write_text(
+                json.dumps({"passed": False}), encoding="utf-8",
+            )
 
         def _emit(name, payload):
             if events is None or event_context is None:
@@ -208,13 +238,9 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             getting_closer = bool(entry.get("getting_closer", True))
             response_text = str(entry.get("response_text", "stub-reviewer"))
 
-            if (
-                response_type == "ok"
-                and require_validation
-                and not (run_dir / "validation-record.json").exists()
-            ):
+            if response_type == "ok" and require_validation and not _validation_passed(run_dir):
                 response_type = "changes_requested"
-                response_text = "Validation record missing"
+                response_text = "Validation record missing or failed"
                 getting_closer = False
 
             reviewer = ReviewExchangeResponse(

@@ -665,6 +665,28 @@ def test_review_exchange_requires_validation_blocks_ok(scenario_repo: Path):
 
 
 @pytest.mark.simulated_review_outcome(
+    # Negative seeded-record: the validation record exists but has
+    # ``passed: false``. The runner's ``_validation_passed`` parses the
+    # JSON and only accepts ``true``; this scenario pins that the
+    # require_validation guard flips reviewer-ok even when the record
+    # is present-but-failed (file existence alone is not enough).
+    reviewer_responses=[
+        {"response_type": "ok", "response_text": "looks good", "getting_closer": True},
+    ],
+    write_validation_record_failed=True,
+    status="stopped",
+    reason="reviewer_reports_no_progress",
+)
+def test_review_exchange_requires_validation_blocks_ok_with_failed_record(scenario_repo: Path):
+    scenario("require_validation_blocks_ok_failed_record", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=True, max_no_progress=1) \
+        .expect_review_exchange_reason("reviewer_reports_no_progress") \
+        .run()
+
+
+@pytest.mark.simulated_review_outcome(
     reviewer_responses=[
         {"response_type": "ok", "response_text": "ok", "getting_closer": True},
     ],
@@ -701,8 +723,7 @@ def test_reviewer_invalid_json_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_invalid_json.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(reviewer_response_type="error") \
-        .expect_review_exchange_status("error") \
-        .expect_review_exchange_reason("reviewer_no_completion") \
+        .expect_review_exchange_terminal_state(status="error", reason="reviewer_no_completion") \
         .run()
 
 
@@ -719,8 +740,7 @@ def test_reviewer_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_exit_nonzero.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(reviewer_response_type="error") \
-        .expect_review_exchange_status("error") \
-        .expect_review_exchange_reason("reviewer_no_completion") \
+        .expect_review_exchange_terminal_state(status="error", reason="reviewer_no_completion") \
         .run()
 
 
@@ -742,8 +762,7 @@ def test_coder_invalid_json_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="protocol_error") \
-        .expect_review_exchange_status("error") \
-        .expect_review_exchange_reason("coder_protocol_error") \
+        .expect_review_exchange_terminal_state(status="error", reason="coder_protocol_error") \
         .run()
 
 
@@ -761,8 +780,7 @@ def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="protocol_error") \
-        .expect_review_exchange_status("error") \
-        .expect_review_exchange_reason("coder_protocol_error") \
+        .expect_review_exchange_terminal_state(status="error", reason="coder_protocol_error") \
         .run()
 
 
