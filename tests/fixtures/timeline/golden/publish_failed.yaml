@@ -1,0 +1,81 @@
+scenario: publish_failed
+description: |
+  PR push or PR-create failure: agent codes successfully, validation
+  passes, but the publish step (push branch + open PR) fails. The
+  user needs to immediately understand:
+
+    - **Which stage failed** — `push_branch` vs `create_pr` is
+      surfaced via the `summary` ("Push failed: ..." or "PR
+      creation failed: ...").
+    - **The branch involved** — `detail` carries the branch name.
+    - **Whether to retry** — `detail` carries `Retryable: yes/no`.
+
+  Without these in the user-facing timeline, the operator has to
+  open `failure-diagnostic-*.json` to figure out what went wrong;
+  the whole point of `publish.failed` was to surface this inline.
+
+  This fixture pins the inline narrative so future projection
+  changes don't accidentally swallow it.
+
+issue_number: 4242
+
+records:
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      issue_number: 4242
+      session_id: "issue-4242-1"
+      agent: coder
+      task: code
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data:
+      issue_number: 4242
+      session_id: "issue-4242-1"
+      implementation: "Implemented the fix"
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:03:00Z"
+    data:
+      issue_number: 4242
+      session_id: "issue-4242-1"
+
+  - event: publish.failed
+    timestamp: "2026-05-04T00:03:30Z"
+    data:
+      issue_number: 4242
+      session_id: "issue-4242-1"
+      stage: create_pr
+      branch: "fix/feature-x"
+      error: "API rate limit exceeded; retry after 60s"
+      retryable: true
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-4242-1" }
+  - event: session.completed
+    phase: in_progress
+    step: completed
+    status: completed
+    detail: "Implemented the fix"
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - event: publish.failed
+    phase: orchestrator
+    step: publish.failed
+    status: failed
+    summary: "PR creation failed: API rate limit exceeded; retry after 60s"
+    detail: "Branch: fix/feature-x. Retryable: yes"
+
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - event: agent.completed
+    status: completed
+    narrative: "Issue completed"
+    detail: "Implemented the fix"
+  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - event: publish.failed
+    status: failed
+    narrative: "Publish failed"
+    summary: "PR creation failed: API rate limit exceeded; retry after 60s"
+    detail: "Branch: fix/feature-x. Retryable: yes"

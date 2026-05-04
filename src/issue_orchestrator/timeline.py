@@ -19,6 +19,7 @@ from .domain.event_taxonomy import (
     is_session_event_name,
     is_validation_event_name,
 )
+from .events.spec import spec_for
 from .ports.timeline_store import TimelineRecord
 
 TIMELINE_SCHEMA_VERSION = 4
@@ -126,6 +127,34 @@ class TimelineEvent:
         return d
 
 
+def project_timeline(
+    records: list[TimelineRecord], *, issue_number: int
+) -> list[TimelineEvent]:
+    """Project a sequence of TimelineRecords into TimelineEvents.
+
+    This is the single canonical projection — every consumer (web view
+    models, replay tools, golden tests, the e2e timeline assembler)
+    flows through this function.
+
+    Contract:
+      - Input order = output order. Each record produces exactly one
+        `TimelineEvent`.
+      - The projection is pure and deterministic given the inputs;
+        no I/O, no global state.
+      - Per-event display fields (phase / step / status / level) come
+        from `events/spec.py` for catalogued public events, with a
+        legacy fallback in this module for events outside
+        `PublicEventName` (raw e2e runner events, debug-tier events).
+
+    Use this function as the target for golden-timeline assertions.
+    Goldens that pin a specific scenario's record stream to an expected
+    ordered list of `TimelineEvent`s assert against the output of this
+    function — making the projection function the single point at which
+    "the timeline is right" is decided.
+    """
+    return [_record_to_event(issue_number, record) for record in records]
+
+
 @dataclass(frozen=True)
 class TimelineStream:
     """Higher-level view over timeline records for an issue."""
@@ -137,8 +166,10 @@ class TimelineStream:
     def from_records(
         cls, issue_number: int, records: list[TimelineRecord]
     ) -> "TimelineStream":
-        events = [_record_to_event(issue_number, record) for record in records]
-        return cls(issue_number=issue_number, events=events)
+        return cls(
+            issue_number=issue_number,
+            events=project_timeline(records, issue_number=issue_number),
+        )
 
     def group_by_phase(self) -> dict[str, list[TimelineEvent]]:
         grouped: dict[str, list[TimelineEvent]] = {}
@@ -305,6 +336,12 @@ def _timeline_schema_version_from_data(data: dict[str, Any]) -> int | None:
 
 
 def _phase_for_event(event_name: str) -> str:
+    spec = spec_for(event_name)
+    if spec is not None:
+        return spec.phase
+    # Fallback: events outside the EventName enum (e.g. raw `e2e.test_*`
+    # strings emitted by the e2e runner). The spec covers every catalogued
+    # event; this branch only fires for un-catalogued events.
     if is_e2e_event_name(event_name):
         return _e2e_phase(event_name)
     if is_validation_event_name(event_name) or event_name in {
@@ -346,6 +383,10 @@ def _e2e_phase(event_name: str) -> str:
 
 
 def _step_for_event(event_name: str) -> str:
+    spec = spec_for(event_name)
+    if spec is not None:
+        return spec.step
+    # Fallback for un-catalogued events.
     if is_e2e_event_name(event_name):
         return event_name.replace("e2e.", "")
     if is_session_event_name(event_name):
@@ -366,8 +407,20 @@ def _step_for_event(event_name: str) -> str:
 
 
 def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> str:
+    # E2E test-runner events have data-dependent status (e.g.
+    # `e2e.test_completed` checks `data['outcome']`). The catalogued
+    # `e2e.*` events always return 'active' per the spec — but
+    # un-catalogued ones (e2e.test_*, e2e.run_finished, etc.) need
+    # `_e2e_status` for the data-driven outcome derivation.
     if is_e2e_event_name(event_name):
+        spec = spec_for(event_name)
+        if spec is not None:
+            return spec.status
         return _e2e_status(event_name, data)
+    spec = spec_for(event_name)
+    if spec is not None:
+        return spec.status
+    # Fallback for un-catalogued non-e2e events.
     failure_events = {
         "session.failed",
         "session.timeout",
@@ -435,6 +488,10 @@ def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> st
 
 
 def _level_for_event(event_name: str) -> str:
+    spec = spec_for(event_name)
+    if spec is not None:
+        return spec.level
+    # Fallback for un-catalogued events.
     if is_e2e_event_name(event_name):
         return _e2e_level(event_name)
     if is_issue_event_name(event_name) or is_review_event_name(event_name):

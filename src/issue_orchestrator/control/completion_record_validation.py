@@ -111,7 +111,22 @@ class CompletionValidationGitAdapter(Protocol):
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
-    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]: ...
+
+    def list_dirty_files(self, worktree: Path, mode: str) -> list[str] | None:
+        """Enumerate dirty file paths for the given mode.
+
+        Return the enumerated paths on success, ``None`` when
+        enumeration itself failed (git error, etc.). Callers MUST treat
+        ``None`` as fail-closed; an empty list ``[]`` is a valid "all
+        dirty entries were filtered" result that callers may pass.
+
+        The boolean ``has_*_changes`` helpers in this protocol
+        intentionally fail closed by returning ``True`` on error;
+        ``list_dirty_files`` needs the same fail-closed semantics, but a
+        bare ``list`` return type would collapse "filtered to empty" and
+        "could not enumerate" into the same value — hence ``None``.
+        """
+        ...
 
 
 class CompletionRecordValidator:
@@ -216,6 +231,30 @@ class CompletionRecordValidator:
         )
         if dirty:
             dirty_files = self._git_adapter.list_dirty_files(worktree, list_mode)
+            if dirty_files is None:
+                # ``has_*_changes`` said the worktree is dirty, but the
+                # enumeration call failed. Without the file list we
+                # cannot tell whether the dirty state is the
+                # planted/runtime-only kind that's safe to push or a
+                # real blocking change. The boolean helpers fail closed
+                # by returning ``True`` on git error; preserve that
+                # invariant here by treating "unknown dirty state" as a
+                # blocking failure rather than collapsing it to
+                # "blocking_files == [] -> pass" (#6159).
+                logger.warning(
+                    "Dirty-check enumeration failed for %s (mode=%s); "
+                    "failing closed",
+                    worktree,
+                    mode,
+                )
+                return WorktreeValidationResult.fail(
+                    WorktreeValidationFailure.DIRTY_POLICY,
+                    (
+                        "Could not enumerate dirty files "
+                        f"(validation.pre_push_dirty_check={mode!r}); "
+                        "fail-closed because dirty state is unknown."
+                    ),
+                )
             blocking_files = filter_runtime_managed_dirty_paths(dirty_files, worktree)
             logger.info(
                 "Dirty-check files for %s: mode=%s total=%d blocking=%d files=%s",
@@ -227,12 +266,25 @@ class CompletionRecordValidator:
                 if blocking_files
                 else "<runtime-only>",
             )
-            if dirty_files and not blocking_files:
-                logger.info(
-                    "Dirty-check ignored runtime-only files for %s: %s",
-                    worktree,
-                    ", ".join(dirty_files),
-                )
+            if not blocking_files:
+                # Bool short-circuit (has_uncommitted_changes / has_tracked_changes)
+                # can fire on paths that ``list_dirty_files`` then filters out:
+                # orchestrator-planted untracked files in mode=all (filtered
+                # inside list_dirty_files) and runtime-managed metadata
+                # (filtered here). Either way, ``blocking_files`` is the
+                # authoritative gate — empty means nothing to block on.
+                if dirty_files:
+                    logger.info(
+                        "Dirty-check ignored runtime-only files for %s: %s",
+                        worktree,
+                        ", ".join(dirty_files),
+                    )
+                else:
+                    logger.info(
+                        "Dirty-check found no blocking files for %s "
+                        "(planted/runtime entries filtered)",
+                        worktree,
+                    )
                 return WorktreeValidationResult.pass_()
             reason = (
                 "Working tree is dirty; commit/add/stash before pushing. "

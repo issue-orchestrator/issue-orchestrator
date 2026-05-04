@@ -108,9 +108,17 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     if mode == "off":
         return None
     working_copy = GitWorkingCopy()
-    dirty_files = _filter_guard_excluded_files(
-        working_copy.list_dirty_files(worktree, mode), worktree
-    )
+    raw_dirty_files = working_copy.list_dirty_files(worktree, mode)
+    if raw_dirty_files is None:
+        # Enumeration failed — fail closed instead of silently passing
+        # the gate (which would happen if we collapsed None to []).
+        if verbose:
+            print(
+                "Could not enumerate dirty files; failing closed. "
+                f"(validation.pre_push_dirty_check={mode!r})"
+            )
+        return 1
+    dirty_files = _filter_guard_excluded_files(raw_dirty_files, worktree)
     if dirty_files:
         if verbose:
             if mode == "all":

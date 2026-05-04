@@ -1,0 +1,247 @@
+scenario: happy_path
+description: |
+  The canonical happy path for an issue: an agent codes, completes,
+  validates, opens a PR, gets reviewed and approved, merges, and the
+  issue closes. No rework, no failures.
+
+  This fixture pairs an input record stream with the expected output
+  of `project_timeline()`. The records are what the orchestrator
+  would write to the timeline store; the `internal_timeline` is what
+  the projection function should produce given those records, in
+  exactly that order.
+
+  Field-level assertions are subset matches — only the keys listed
+  here are checked against each event. Optional fields (run_id,
+  run_dir, etc.) are ignored unless explicitly asserted.
+
+issue_number: 1234
+
+records:
+  - event: session.started
+    timestamp: "2026-05-03T00:00:00Z"
+    data:
+      issue_number: 1234
+      session_id: "issue-1234-1"
+      agent: coder
+      task: code
+
+  - event: observation.completion_detected
+    timestamp: "2026-05-03T00:01:00Z"
+    data:
+      issue_number: 1234
+      session_id: "issue-1234-1"
+
+  - event: session.completed
+    timestamp: "2026-05-03T00:02:00Z"
+    data:
+      issue_number: 1234
+      session_id: "issue-1234-1"
+      implementation: "Added the feature"
+
+  - event: validation.started
+    timestamp: "2026-05-03T00:02:30Z"
+    data:
+      issue_number: 1234
+      session_id: "issue-1234-1"
+
+  - event: validation.completed
+    timestamp: "2026-05-03T00:03:00Z"
+    data:
+      issue_number: 1234
+      session_id: "issue-1234-1"
+
+  - event: session.validation_passed
+    timestamp: "2026-05-03T00:03:01Z"
+    data:
+      issue_number: 1234
+      session_id: "issue-1234-1"
+
+  - event: issue.pr_created
+    timestamp: "2026-05-03T00:03:30Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+      pr_url: "https://github.com/example/repo/pull/42"
+
+  - event: review.started
+    timestamp: "2026-05-03T00:04:00Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+
+  - event: review_exchange.started
+    timestamp: "2026-05-03T00:04:01Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+
+  - event: review_exchange.round_started
+    timestamp: "2026-05-03T00:04:02Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+      round_index: 1
+
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-03T00:04:30Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+      round_index: 1
+      reviewer_response_type: ok
+
+  - event: review_exchange.completed
+    timestamp: "2026-05-03T00:04:31Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+      rounds: 1
+
+  - event: review.approved
+    timestamp: "2026-05-03T00:04:32Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+      review_summary: "LGTM"
+
+  - event: review.merged
+    timestamp: "2026-05-03T00:05:00Z"
+    data:
+      issue_number: 1234
+      pr_number: 42
+
+  - event: issue.completed
+    timestamp: "2026-05-03T00:05:01Z"
+    data:
+      issue_number: 1234
+
+# Expected output of project_timeline(records, issue_number=1234), in order.
+# Only the listed fields are asserted; other fields (run_id, run_dir, etc.)
+# are ignored. A length mismatch fails the test before any field check.
+internal_timeline:
+  - event: session.started
+    phase: in_progress
+    step: started
+    status: started
+    level: detail
+    parent_key: "session:issue-1234-1"
+
+  - event: observation.completion_detected
+    phase: in_progress
+    step: completion_detected
+    status: completed
+    level: detail
+    parent_key: "session:issue-1234-1"
+
+  - event: session.completed
+    phase: in_progress
+    step: completed
+    status: completed
+    level: detail
+    parent_key: "session:issue-1234-1"
+
+  - event: validation.started
+    phase: orchestrator
+    step: validation.started
+    status: started
+    level: detail
+    parent_key: "session:issue-1234-1"
+
+  - event: validation.completed
+    phase: orchestrator
+    step: validation.completed
+    status: completed
+    level: detail
+    parent_key: "session:issue-1234-1"
+
+  - event: session.validation_passed
+    phase: orchestrator
+    step: validation_passed
+    status: completed
+    level: detail
+    parent_key: "session:issue-1234-1"
+
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    level: phase
+    parent_key: "review:42"
+
+  - event: review.started
+    phase: reviewing
+    step: started
+    status: started
+    level: phase
+    parent_key: "review:42"
+
+  - event: review_exchange.started
+    phase: reviewing
+    step: started
+    status: started
+    level: phase
+    parent_key: "review:42"
+
+  - event: review_exchange.round_started
+    phase: reviewing
+    step: round_started
+    status: completed
+    level: phase
+    parent_key: "review:42"
+
+  - event: review_exchange.round_completed
+    phase: reviewing
+    step: round_completed
+    status: completed
+    level: phase
+    parent_key: "review:42"
+
+  - event: review_exchange.completed
+    phase: reviewing
+    step: completed
+    status: completed
+    level: phase
+    parent_key: "review:42"
+
+  - event: review.approved
+    phase: reviewing
+    step: approved
+    status: completed
+    level: phase
+    parent_key: "review:42"
+
+  - event: review.merged
+    phase: reviewing
+    step: merged
+    status: completed
+    level: phase
+    parent_key: "review:42"
+
+  - event: issue.completed
+    phase: completed
+    step: completed
+    status: completed
+    level: phase
+    parent_key: "issue:1234"
+
+# Expected user-facing timeline after view-registry fan-out + view filter.
+# Rendered via the same pipeline `DefaultTimelineWriter` uses (fan-out +
+# narrative enrichment), then filtered to `external_view`. Note that
+# events with only `_ops`/`_debug` fan-out do NOT appear here — e.g.
+# `validation.started` and `validation.completed` are ops-only and the
+# user view should not see them.
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, phase: in_progress, step: started, status: started, level: detail, logical_phase: coding, narrative: "Coding agent started" }
+  - { event: agent.coding_completed, phase: in_progress, step: completion_detected, status: completed, level: detail, logical_phase: coding, narrative: "Agent finished coding" }
+  - { event: agent.completed, phase: in_progress, step: completed, status: completed, level: detail, logical_phase: orchestrator, narrative: "Issue completed" }
+  - { event: validation.passed, phase: orchestrator, step: validation_passed, status: completed, level: detail, logical_phase: orchestrator, narrative: "Validation passed" }
+  - { event: pr.created, phase: orchestrator, step: pr_created, status: completed, level: phase, logical_phase: orchestrator, narrative: "PR #42 created" }
+  - { event: review.started, phase: reviewing, step: started, status: started, level: phase, logical_phase: review, narrative: "Code review started" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, level: phase, logical_phase: review, narrative: "Review exchange started" }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, level: phase, logical_phase: review, narrative: "Review round 1 started" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, level: phase, logical_phase: review, narrative: "Review round 1 completed — ok" }
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, level: phase, logical_phase: review, narrative: "Review exchange completed (1 rounds)" }
+  - { event: review.approved, phase: reviewing, step: approved, status: completed, level: phase, logical_phase: review, narrative: "Review approved" }
+  - { event: review.merged, phase: reviewing, step: merged, status: completed, level: phase, logical_phase: review, narrative: "PR merged" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, level: phase, logical_phase: orchestrator, narrative: "Issue completed" }

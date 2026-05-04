@@ -623,6 +623,299 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
+    def test_terminal_recording_persistent_layout_uses_chapters_to_scrub(self, tmp_path: Path):
+        """Persistent layout: phase-scoped request slices the role's
+        recording to the requested round using ``chapters.json``, and
+        returns the chapter list + ``recording_event_index`` so the UI
+        can render an outline and start playback at the right offset.
+        Regression for the #6160 re-review finding that the route was
+        returning the entire role recording with no chapter metadata.
+        """
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-persistent-chapters"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+
+        recording = run.run_dir / "reviewer" / "terminal-recording.jsonl"
+        recording.parent.mkdir(parents=True, exist_ok=True)
+        events_lines = []
+        for index in range(6):
+            events_lines.append(
+                '{"data_b64":"aGk=","event_type":"output","offset_ms":'
+                + str(index)
+                + ',"schema_version":1}'
+            )
+        recording.write_text("\n".join(events_lines) + "\n", encoding="utf-8")
+
+        chapters_path = run.run_dir / "reviewer" / "chapters.json"
+        chapters_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "role": "reviewer",
+                    "exchange_run_id": "exchange-1",
+                    "issue_number": 123,
+                    "chapters": [
+                        {
+                            "cycle_index": 1,
+                            "section": "prompt",
+                            "recording_event_index": 0,
+                            "recorded_at": "2026-05-04T00:00:00Z",
+                            "label": "Round 1 Prompt",
+                        },
+                        {
+                            "cycle_index": 1,
+                            "section": "feedback",
+                            "recording_event_index": 1,
+                            "recorded_at": "2026-05-04T00:00:01Z",
+                            "label": "Round 1 Feedback",
+                        },
+                        {
+                            "cycle_index": 2,
+                            "section": "prompt",
+                            "recording_event_index": 3,
+                            "recorded_at": "2026-05-04T00:00:02Z",
+                            "label": "Round 2 Prompt",
+                        },
+                        {
+                            "cycle_index": 2,
+                            "section": "feedback",
+                            "recording_event_index": 4,
+                            "recorded_at": "2026-05-04T00:00:03Z",
+                            "label": "Round 2 Feedback",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=1&session_role=reviewer"
+            )
+            assert response.status_code == 200
+            round1 = response.json()
+            assert round1["recording_path"].endswith("/reviewer/terminal-recording.jsonl")
+            # Round 1 spans events [0, 3) — three of the six events.
+            assert round1["total_events"] == 3
+            assert round1["recording_event_index"] == 0
+            assert isinstance(round1["chapters"], list)
+            assert len(round1["chapters"]) == 4
+            sections = [(ch["cycle_index"], ch["section"]) for ch in round1["chapters"]]
+            assert sections == [
+                (1, "prompt"),
+                (1, "feedback"),
+                (2, "prompt"),
+                (2, "feedback"),
+            ]
+
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=2&session_role=reviewer"
+            )
+            assert response.status_code == 200
+            round2 = response.json()
+            # Round 2 spans events [3, end) — three of the six events,
+            # and starts at recording event index 3.
+            assert round2["total_events"] == 3
+            assert round2["recording_event_index"] == 3
+            assert len(round2["chapters"]) == 4
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_persistent_layout_404s_when_sidecar_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """Persistent role recording with no chapters.json must fail
+        closed — silently serving the whole role recording for a
+        phase-scoped request would render the wrong round (#6160
+        re-review feedback).
+        """
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-persistent-no-sidecar"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        recording = run.run_dir / "reviewer" / "terminal-recording.jsonl"
+        recording.parent.mkdir(parents=True, exist_ok=True)
+        recording.write_text(
+            '{"data_b64":"aGk=","event_type":"output","offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+        # Note: NO chapters.json next to the recording.
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=2&session_role=reviewer"
+            )
+            assert response.status_code == 404
+            payload = response.json()
+            assert payload["diagnostic"]["reason"] == "missing_sidecar"
+            assert payload["diagnostic"]["round_index"] == "2"
+            assert payload["diagnostic"]["session_role"] == "reviewer"
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_persistent_layout_404s_when_sidecar_malformed(
+        self, tmp_path: Path,
+    ) -> None:
+        """Malformed sidecar JSON must not silently degrade to whole-role."""
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-persistent-malformed"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        recording = run.run_dir / "reviewer" / "terminal-recording.jsonl"
+        recording.parent.mkdir(parents=True, exist_ok=True)
+        recording.write_text(
+            '{"data_b64":"aGk=","event_type":"output","offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+        chapters_path = run.run_dir / "reviewer" / "chapters.json"
+        chapters_path.write_text("{not valid json", encoding="utf-8")
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=1&session_role=reviewer"
+            )
+            assert response.status_code == 404
+            payload = response.json()
+            assert payload["diagnostic"]["reason"] == "malformed_or_unreadable"
+            assert payload["diagnostic"]["sidecar_path"].endswith(
+                "/reviewer/chapters.json"
+            )
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_persistent_layout_404s_when_round_not_in_sidecar(
+        self, tmp_path: Path,
+    ) -> None:
+        """A sidecar that exists but has no prompt chapter for the
+        requested round must fail closed."""
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-persistent-missing-round"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        recording = run.run_dir / "reviewer" / "terminal-recording.jsonl"
+        recording.parent.mkdir(parents=True, exist_ok=True)
+        recording.write_text(
+            '{"data_b64":"aGk=","event_type":"output","offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+        chapters_path = run.run_dir / "reviewer" / "chapters.json"
+        chapters_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "role": "reviewer",
+                    "exchange_run_id": "exchange-1",
+                    "issue_number": 123,
+                    "chapters": [
+                        {
+                            "cycle_index": 1,
+                            "section": "prompt",
+                            "recording_event_index": 0,
+                            "recorded_at": "2026-05-04T00:00:00Z",
+                            "label": "Round 1 Prompt",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            # Request round 2, which has no entry in the sidecar.
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=2&session_role=reviewer"
+            )
+            assert response.status_code == 404
+            payload = response.json()
+            assert payload["diagnostic"]["reason"] == "missing_round"
+            assert payload["diagnostic"]["round_index"] == "2"
+            assert payload["diagnostic"]["available_rounds"] == "1"
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_legacy_layout_still_serves_when_no_sidecar(
+        self, tmp_path: Path,
+    ) -> None:
+        """Legacy spawn-per-phase layout has no sidecar by design — the
+        per-round file is already scoped, so the request must still
+        succeed (no 404). Guards against the persistent fail-closed
+        path leaking onto the legacy file shape."""
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-legacy-still-served"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        legacy_recording = (
+            run.run_dir
+            / "review-exchange"
+            / "round-002"
+            / "reviewer"
+            / "terminal-recording.jsonl"
+        )
+        legacy_recording.parent.mkdir(parents=True, exist_ok=True)
+        legacy_recording.write_text(
+            '{"data_b64":"aGk=","event_type":"output","offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=2&session_role=reviewer"
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["recording_path"].endswith(
+                "/review-exchange/round-002/reviewer/terminal-recording.jsonl"
+            )
+            # Legacy layout has no chapter sidecar — chapters/recording_event_index null.
+            assert payload["chapters"] is None
+            assert payload["recording_event_index"] is None
+        finally:
+            set_orchestrator(None)
+
     def test_terminal_recording_preserves_initial_geometry_when_tail_is_truncated(self, tmp_path: Path):
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -801,7 +1094,14 @@ class TestIssueLogEndpointsUseLatestHistory:
         worktree = tmp_path / "wt-review-transcript-filter"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "review-1", issue_number=123)
-        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+        exchange_dir = run.run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        transcript = exchange_dir / "transcript.log"
+        transcript.touch(exist_ok=True)
+        session_output.update_manifest(
+            run.run_dir,
+            {"review_exchange_transcript_path": str(transcript)},
+        )
         transcript.write_text(
             "[2026-03-20T04:39:32Z] round=1 role=reviewer section=prompt\nReviewer round 1\n\n"
             "[2026-03-20T04:40:42Z] round=1 role=coder section=prompt\nCoder round 1\n\n"

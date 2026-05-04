@@ -269,11 +269,24 @@ class ReviewTimelineScenario:
         recording_path.parent.mkdir(parents=True, exist_ok=True)
         recording_path.write_text(_terminal_recording_line(text), encoding="utf-8")
 
-        transcript_path = FileSystemSessionOutput().ensure_review_exchange_session_log(self.run_dir)
+        # Materialize the legacy transcript.log directly: the persistent
+        # runner no longer writes it (chapters.json replaces it), but
+        # several pre-existing UI/web-route tests still scan for the
+        # pre-cutover artifact layout. The fixture below imitates that
+        # layout for those tests; the production runner does not.
+        exchange_dir = self.run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = exchange_dir / "transcript.log"
         existing = transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else ""
         existing += (
             f"[2026-03-22T13:50:04Z] round={round_index} role={role} section=prompt\n"
             f"{text}"
         )
         transcript_path.write_text(existing, encoding="utf-8")
+        # The web route resolves the transcript via the manifest entry —
+        # add it so the legacy UI tests still find the file.
+        FileSystemSessionOutput().update_manifest(
+            self.run_dir,
+            {"review_exchange_transcript_path": str(transcript_path)},
+        )
         return self

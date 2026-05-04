@@ -277,14 +277,22 @@ class TestListDirtyFiles:
                 "tracked-unstaged.py",
             ]
 
-    def test_list_dirty_files_git_error_returns_empty(self, git_wc, worktree_path):
-        """Error handling should return empty list."""
+    def test_list_dirty_files_git_error_returns_none(self, git_wc, worktree_path):
+        """Enumeration failure surfaces as ``None`` so callers can
+        distinguish "everything filtered out" (``[]``) from "couldn't
+        enumerate" — the latter must fail closed at the policy layer.
+
+        Returning ``[]`` here was the original behavior and the source
+        of #6159's fail-open bug: the publish gate observed
+        ``dirty=True`` from the bool check + ``[]`` from this method
+        and approved the push despite an unknown dirty state.
+        """
         with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = git_error(stderr="error")
 
             files = git_wc.list_dirty_files(worktree_path, "all")
 
-            assert files == []
+            assert files is None
 
     def test_list_dirty_files_all_mode_filters_untracked_planted(
         self, git_wc, worktree_path

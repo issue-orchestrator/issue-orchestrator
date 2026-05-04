@@ -24,7 +24,7 @@ from issue_orchestrator.domain.models import (
     COMPLETION_RECORD_PATH,
     AgentConfig,
 )
-from issue_orchestrator.control.review_exchange_loop import ReviewExchangeOutcome
+from issue_orchestrator.domain.review_exchange import ReviewExchangeOutcome
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
     ProcessingResult,
@@ -1101,10 +1101,20 @@ class TestReviewExchangeExecution:
             captured["reviewer_label"] = kwargs["reviewer_label"]
             return MagicMock(status="ok", rounds=1, reason="reviewer_ok")
 
+        # New dispatch target post-cutover.
         monkeypatch.setattr(
-            "issue_orchestrator.control.review_exchange_loop.run_review_exchange_loop",
+            "issue_orchestrator.execution.persistent_session_exchange.run_persistent_session_exchange",
             _fake_run,
         )
+        # Stub out branch resolution + reviewer-worktree lifecycle so the
+        # test doesn't need a real git repo.
+        from issue_orchestrator.execution import reviewer_worktree as rw
+        monkeypatch.setattr(rw, "resolve_current_branch", lambda _wt: "feature/test")
+        monkeypatch.setattr(
+            rw, "create_reviewer_worktree",
+            lambda **_: MagicMock(path=tmp_path / "review-wt", coder_branch="feature/test"),
+        )
+        monkeypatch.setattr(rw, "remove_reviewer_worktree", lambda *_, **__: None)
 
         processor._run_review_exchange_loop(
             worktree=tmp_path,
@@ -1670,6 +1680,40 @@ class TestCompletionProcessorDirtyPolicy:
         assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
 
+    def test_push_allows_when_all_mode_and_only_planted_untracked(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+    ):
+        # Reproduces the mode=all parity gap with the agent's coding-done
+        # check. has_uncommitted_changes fires on planted-untracked paths,
+        # but list_dirty_files filters them out (filter_orchestrator_untracked_planted),
+        # leaving an empty list. The previous gate required dirty_files to be
+        # non-empty before short-circuiting to pass, so this case fell through
+        # to a confusing "Working tree is dirty" with no files listed.
+        config = Config()
+        config.validation.pre_push_dirty_check = "all"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=config,
+        )
+        mock_git_adapter.has_uncommitted_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = []
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success
+        mock_git_adapter.push.assert_called_once()
+
     def test_push_allows_runtime_only_dirty_files(
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
     ):
@@ -1697,6 +1741,43 @@ class TestCompletionProcessorDirtyPolicy:
 
         assert result.success
         mock_git_adapter.push.assert_called_once()
+
+    def test_push_blocked_when_dirty_listing_reports_enumeration_failure(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+    ):
+        """list_dirty_files returning ``None`` signals an enumeration
+        failure: we don't know whether the dirty entries are the safe
+        planted/runtime kind or real blocking changes. The boolean
+        ``has_*`` helpers fail closed by returning True on error;
+        ``list_dirty_files`` must do the same, and the policy must NOT
+        collapse ``None`` to ``[] -> pass`` (#6159 review feedback).
+        """
+        config = Config()
+        config.validation.pre_push_dirty_check = "all"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=config,
+        )
+        mock_git_adapter.has_uncommitted_changes.return_value = True
+        # The exact shape from the reviewer's repro: dirty=True from the
+        # boolean check, list_dirty_files returns None (couldn't enumerate).
+        mock_git_adapter.list_dirty_files.return_value = None
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert not result.success
+        mock_git_adapter.push.assert_not_called()
 
     def test_push_allowed_when_dirty_check_off(
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion

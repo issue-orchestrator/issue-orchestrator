@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.control.review_exchange_loop import (
-    _atomic_write_json,
-    sweep_atomic_write_tempfiles,
-)
+from issue_orchestrator.control.review_exchange_loop import sweep_atomic_write_tempfiles
+from issue_orchestrator.infra.atomic_io import atomic_write_json as _atomic_write_json
 
 
 def _make_review_exchange_dir(tmp_path: Path, name: str) -> Path:

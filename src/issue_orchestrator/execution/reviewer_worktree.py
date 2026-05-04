@@ -111,6 +111,34 @@ def remove_reviewer_worktree(
         ) from exc
 
 
+def resolve_current_branch(worktree_path: Path) -> str:
+    """Resolve the named branch checked out in ``worktree_path``.
+
+    Used by the persistent-session exchange dispatch to know what branch
+    the reviewer worktree should track. Raises if the worktree is on
+    detached HEAD or has no resolvable branch — the reviewer worktree
+    needs a real branch tip to fast-forward to between rounds.
+
+    Lives in this execution module so the control layer can compose it
+    without importing ``subprocess`` directly (architectural lint
+    forbids ``control.* -> subprocess``).
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    branch = result.stdout.strip()
+    if not branch or branch == "HEAD":
+        raise ReviewerWorktreeError(
+            f"Worktree {worktree_path} is detached or has no resolvable branch; "
+            "review-exchange requires a named branch to point the reviewer at."
+        )
+    return branch
+
+
 def _resolve_repo_root(worktree_path: Path) -> Path:
     result = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"],

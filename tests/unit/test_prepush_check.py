@@ -672,6 +672,41 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
+    def test_blocks_when_list_dirty_files_returns_none(
+        self, temp_worktree, monkeypatch, capsys
+    ):
+        """Enumeration failure (list_dirty_files -> None) must fail closed
+        and skip the validation command. Regression for the silent-pass
+        path where None collapsed to [] (PR #6159 reviewer feedback)."""
+        from issue_orchestrator.execution import GitWorkingCopy
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        marker_file = temp_worktree / "validation_ran"
+        config_path = config_dir / "default.yaml"
+        config_path.write_text(f"""
+validation:
+  cmd: "touch {marker_file}"
+  pre_push_dirty_check: "tracked"
+""")
+
+        monkeypatch.setattr(
+            GitWorkingCopy, "list_dirty_files", lambda self, wt, mode: None
+        )
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=True)
+            captured = capsys.readouterr()
+            assert result == 1
+            assert "Could not enumerate dirty files" in captured.out
+            assert not marker_file.exists(), (
+                "validation command must not run when dirty enumeration fails"
+            )
+        finally:
+            os.chdir(orig_cwd)
+
     def test_verbose_output_lists_dirty_files(self, temp_worktree, capsys):
         """Verbose dirty guard output should include dirty file paths."""
 
