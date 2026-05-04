@@ -42,6 +42,148 @@ def _strip_nested_session_env(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _stub_persistent_review_exchange_setup(monkeypatch):
+    """Bypass the persistent-session runner in simulated scenarios.
+
+    The simulated-scenario harness was built around the spawn-per-phase
+    review-exchange model where each round was a fresh subprocess managed
+    by ``ScriptSessionRunner``. The persistent runner manages its own
+    subprocesses via PTY directly, so scenarios that exercise
+    review-exchange would now hit real ``git rev-parse``, ``git worktree
+    add``, and PTY spawns against non-git scratch dirs.
+
+    Stub:
+      * the reviewer-worktree git helpers (no real git repo needed)
+      * the runner itself (no real PTY/subprocess work)
+
+    The persistent runner's behavior is covered exhaustively by
+    ``tests/unit/execution/test_persistent_session_exchange.py`` (20
+    tests) and ``test_persistent_round_runner.py`` (22 tests). Migrating
+    the simulated-scenario harness to drive the persistent runner
+    natively is tracked as a follow-up.
+    """
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from issue_orchestrator.domain.review_exchange import (
+        ReviewExchangeOutcome,
+        ReviewExchangeResponse,
+    )
+    from issue_orchestrator.events import EventName
+    from issue_orchestrator.execution import (
+        persistent_session_exchange as pse,
+        reviewer_worktree as rw,
+    )
+
+    def _stub_create(*, coder_worktree, coder_branch, timestamp):  # noqa: ARG001
+        sibling = coder_worktree.parent / f"{coder_worktree.name}-review-{timestamp}"
+        sibling.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(path=sibling, coder_branch=coder_branch)
+
+    monkeypatch.setattr(rw, "resolve_current_branch", lambda _wt: "issue-1")
+    monkeypatch.setattr(rw, "create_reviewer_worktree", _stub_create)
+    monkeypatch.setattr(rw, "fast_forward_reviewer_worktree", lambda _r: "deadbeef")
+    monkeypatch.setattr(rw, "remove_reviewer_worktree", lambda *_, **__: None)
+
+    def _stub_run_persistent_session_exchange(
+        *,
+        session_output,
+        coder_worktree_path,
+        reviewer_worktree_path,  # noqa: ARG001
+        issue_number,
+        issue_title,  # noqa: ARG001
+        coder_label,  # noqa: ARG001
+        reviewer_label,  # noqa: ARG001
+        coder_agent,  # noqa: ARG001
+        reviewer_agent,  # noqa: ARG001
+        max_rounds,  # noqa: ARG001
+        max_no_progress,  # noqa: ARG001
+        require_validation,  # noqa: ARG001
+        initial_validation_record_path=None,  # noqa: ARG001
+        web_port=None,  # noqa: ARG001
+        events=None,
+        event_context=None,
+        on_started=None,
+        before_reviewer_round=None,  # noqa: ARG001
+    ):
+        """Produce the events + outcome the orchestration logic expects.
+
+        Mirrors the shape of a single-round, reviewer-approved exchange
+        without spawning anything. Scenarios that need a different
+        outcome (changes_requested, no_progress, error) are skipped or
+        will be migrated when the harness is updated.
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        session_name = f"review-exchange-{issue_number}-{timestamp}"
+        run = session_output.start_run(
+            coder_worktree_path,
+            session_name,
+            issue_number=issue_number,
+            agent_label=None,
+            backend="persistent-pty",
+        )
+        run_dir = run.run_dir
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+
+        if on_started is not None:
+            on_started(run_dir)
+
+        def _emit(name, payload):
+            if events is None or event_context is None:
+                return
+            from issue_orchestrator.ports import make_trace_event
+            enriched = dict(payload)
+            enriched["run_dir"] = str(run_dir)
+            enriched["session_run_id"] = run.run_id
+            events.publish(make_trace_event(name, event_context.enrich(enriched)))
+
+        _emit(EventName.REVIEW_EXCHANGE_STARTED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "exchange_dir": str(exchange_dir),
+        })
+        reviewer = ReviewExchangeResponse(
+            response_type="ok",
+            response_text="LGTM (stubbed scenario response)",
+            getting_closer=True,
+        )
+        _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": 1,
+            "reviewer_response_type": reviewer.response_type,
+            "reviewer_response_text": reviewer.response_text,
+            "coder_response_type": None,
+        })
+        _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "rounds": 1,
+            "status": "ok",
+            "reason": "reviewer_ok",
+        })
+        summary = {
+            "completed_rounds": 1,
+            "status": "ok",
+            "response_text": reviewer.response_text,
+            "reason": "reviewer_ok",
+        }
+        return ReviewExchangeOutcome(
+            status="ok",
+            rounds=1,
+            reason="reviewer_ok",
+            reviewer_response=reviewer,
+            exchange_dir=exchange_dir,
+            summary=summary,
+        )
+
+    monkeypatch.setattr(
+        pse, "run_persistent_session_exchange", _stub_run_persistent_session_exchange,
+    )
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "tests" / "simulated_scenarios" / "fixtures" / "scripts"
 

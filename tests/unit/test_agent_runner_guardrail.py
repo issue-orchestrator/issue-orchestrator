@@ -26,9 +26,7 @@ TESTS_ROOT = Path(__file__).resolve().parents[2] / "tests"
 # Files allowed to use pexpect.spawn directly (besides AgentRunner).
 # Remove entries here as each file is migrated.
 # ---------------------------------------------------------------------------
-KNOWN_PEXPECT_SPAWN_VIOLATIONS = {
-    "execution/review_exchange_local_loop.py",
-}
+KNOWN_PEXPECT_SPAWN_VIOLATIONS: set[str] = set()
 
 
 def _find_pexpect_spawn_calls(source_file: Path) -> list[int]:
@@ -137,34 +135,23 @@ class TestSubprocessPluginDelegatesToAgentRunner:
         )
 
 
-def test_review_exchange_ui_log_writes_go_through_session_output_owner() -> None:
-    for rel_path in (
-        SRC_ROOT / "control" / "review_exchange_loop.py",
-        SRC_ROOT / "execution" / "review_exchange_local_loop.py",
-    ):
-        source = rel_path.read_text(encoding="utf-8")
-        assert "append_review_exchange_session_log_entry(" in source, (
-            f"{rel_path.name} must delegate review-exchange UI log writes to SessionOutput"
-        )
-        assert "clean_terminal_line(" not in source, (
-            f"{rel_path.name} must not own ad hoc UI log cleaning"
-        )
-        tree = ast.parse(source, filename=str(rel_path))
-        helper_source = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_append_session_log":
-                helper_source = ast.get_source_segment(source, node)
-                break
-
-        assert helper_source is not None, (
-            f"{rel_path.name} must keep an _append_session_log helper to delegate through SessionOutput"
-        )
-        assert "round=" not in helper_source, (
-            f"{rel_path.name} must not own review-exchange transcript header formatting"
-        )
-        assert "datetime.now(" not in helper_source, (
-            f"{rel_path.name} must not stamp review-exchange transcript headers directly"
-        )
+def test_persistent_session_exchange_does_not_own_ad_hoc_ui_log_cleaning() -> None:
+    """The legacy spawn-per-phase path was removed in favor of the
+    persistent-session runner. The old guardrail required a transcript-log
+    helper that delegated to SessionOutput; the persistent runner replaces
+    that with one continuous terminal-recording.jsonl per role plus a
+    chapters.json sidecar. What the new owner module must NOT do is reach
+    into terminal-recording cleaning directly — those concerns live behind
+    the recording writer in ``infra.terminal_recording``.
+    """
+    rel_path = SRC_ROOT / "execution" / "persistent_session_exchange.py"
+    source = rel_path.read_text(encoding="utf-8")
+    assert "clean_terminal_line(" not in source, (
+        f"{rel_path.name} must not own ad hoc UI log cleaning"
+    )
+    assert "transcript.log" not in source, (
+        f"{rel_path.name} must not write the legacy review-exchange transcript.log"
+    )
 
 
 class TestScriptSessionRunnerUsesAgentRunner:

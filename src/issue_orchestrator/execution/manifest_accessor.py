@@ -86,7 +86,17 @@ class ManifestAccessor:
         role: str,
         allow_empty: bool = False,
     ) -> ArtifactStream:
-        """Return the raw terminal recording for one review-exchange phase."""
+        """Return the raw terminal recording for one review-exchange phase.
+
+        Resolves the persistent-runner layout first (one continuous
+        recording per role at ``<run_dir>/<role>/terminal-recording.jsonl``,
+        with chapter offsets in ``<run_dir>/<role>/chapters.json`` keyed
+        by ``cycle_index`` + ``section`` for round/role scrubbing). Falls
+        back to the legacy spawn-per-phase layout
+        (``<run_dir>/review-exchange/round-NNN/<role>/terminal-recording.jsonl``)
+        for runs that pre-date the cutover or for spawn-per-phase
+        artifacts retained for back-compat.
+        """
         run_dir = self.run_identity.run_dir
         self._require_run_dir_exists(run_dir)
         normalized_role = str(role).strip().lower()
@@ -94,22 +104,46 @@ class ManifestAccessor:
             raise ArtifactNotFoundError(f"invalid review exchange round: {round_index}")
         if normalized_role not in {"reviewer", "coder"}:
             raise ArtifactNotFoundError(f"invalid review exchange role: {role}")
-        path = (
+
+        persistent_path = run_dir / normalized_role / "terminal-recording.jsonl"
+        legacy_path = (
             run_dir
             / "review-exchange"
             / f"round-{round_index:03d}"
             / normalized_role
             / "terminal-recording.jsonl"
         )
-        if path.exists() and (allow_empty or path.stat().st_size > 0):
+
+        # Prefer the persistent layout when it exists. The replay UI
+        # accepts the whole-role recording and uses chapter offsets
+        # (chapters.json) to scrub to the requested round; the legacy
+        # per-round-per-role file is what we still have to serve for
+        # pre-cutover runs.
+        if persistent_path.exists() and (allow_empty or persistent_path.stat().st_size > 0):
             return self._artifact_stream(
                 "terminal_recording",
-                path,
+                persistent_path,
                 content_type="application/x-ndjson",
             )
-        if path.exists():
-            raise ArtifactNotFoundError(f"review exchange phase recording is empty: {path}")
-        raise ArtifactNotFoundError(f"review exchange phase recording not found: {path}")
+        if legacy_path.exists() and (allow_empty or legacy_path.stat().st_size > 0):
+            return self._artifact_stream(
+                "terminal_recording",
+                legacy_path,
+                content_type="application/x-ndjson",
+            )
+        if persistent_path.exists():
+            raise ArtifactNotFoundError(
+                f"review exchange role recording is empty: {persistent_path}"
+            )
+        if legacy_path.exists():
+            raise ArtifactNotFoundError(
+                f"review exchange phase recording is empty: {legacy_path}"
+            )
+        raise ArtifactNotFoundError(
+            f"review exchange recording not found for "
+            f"round={round_index} role={normalized_role}; "
+            f"checked persistent={persistent_path} legacy={legacy_path}"
+        )
 
     def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
         """Return the canonical run-scoped agent recording stream."""

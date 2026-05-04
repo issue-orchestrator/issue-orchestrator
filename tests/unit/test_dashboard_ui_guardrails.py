@@ -384,6 +384,40 @@ def test_session_replay_bootstraps_from_recorded_geometry() -> None:
     assert "if (sessionReplayState.initialGeometry) return;" in fit_body
 
 
+def test_session_replay_renders_phase_chapters_when_present() -> None:
+    """Guardrail: session_replay.js wires ``payload.chapters`` and
+    ``payload.recording_event_index`` into the player.
+
+    The persistent runner writes a chapters.json sidecar so the
+    timeline view can scrub directly to "Round N → Coder Prompt".
+    The terminal-recording route returns these as ``chapters`` and
+    ``recording_event_index`` when phase-scoped. Without explicit
+    consumption here, future edits could drop the wiring and the
+    sidecar becomes dead weight.
+    """
+    js = _read(DASHBOARD_JS)
+    init_body = _function_body(js, "initializeSessionReplay")
+    refresh_body = _function_body(js, "refreshAgentLog")
+    chapters_body = _function_body(js, "renderSessionReplayChapters")
+
+    assert "payload.chapters" in init_body
+    assert "payload.recording_event_index" in init_body
+    assert "renderSessionReplayChapters(sessionReplayState)" in init_body
+
+    # Refresh path picks up new chapters added by later rounds without
+    # reopening the modal.
+    assert "data.chapters" in refresh_body
+    assert "renderSessionReplayChapters(sessionReplayState)" in refresh_body
+
+    # Chapter renderer translates absolute recording indices into the
+    # current slice's local playback index. Without that subtraction,
+    # clicking "Round 2 Prompt" would seek to the wrong event.
+    assert "state.recordingEventIndex" in chapters_body
+    assert (
+        "Number(chapter.recording_event_index) - baseIndex" in chapters_body
+    )
+
+
 def test_session_replay_resize_event_does_not_fit_over_recorded_geometry() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "applyTerminalRecordingEvent")
