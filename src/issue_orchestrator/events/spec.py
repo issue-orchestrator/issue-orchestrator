@@ -91,6 +91,7 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     PublicEventName.REVIEW_EXCHANGE_ROLE_PROMPTED: EventSpec(phase='reviewing', step='role_prompted', status='completed', level='phase'),
     PublicEventName.REVIEW_EXCHANGE_ROLE_FEEDBACK: EventSpec(phase='reviewing', step='role_feedback', status='completed', level='phase'),
     PublicEventName.REVIEW_EXCHANGE_ROLE_TIMEOUT: EventSpec(phase='reviewing', step='role_timeout', status='failed', level='phase'),
+    PublicEventName.REVIEW_EXCHANGE_CHAPTER_RECORDED: EventSpec(phase='reviewing', step='chapter_recorded', status='completed', level='detail'),
 
     # ----- Rework cycle -----
     PublicEventName.REWORK_STARTED: EventSpec(phase='rework', step='started', status='started', level='detail'),

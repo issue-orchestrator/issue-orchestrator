@@ -103,6 +103,13 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
     "review_exchange.role_timeout": [
         _user("review_exchange.role_timeout", "Reviewer/coder timed out", "review"),
     ],
+    "review_exchange.chapter_recorded": [
+        _ops(
+            "review_exchange.chapter_recorded",
+            "Chapter recorded in role recording",
+            "review",
+        ),
+    ],
     "review.approved": [
         _user("review.approved", "Review approved", "review"),
     ],

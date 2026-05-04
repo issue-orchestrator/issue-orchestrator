@@ -29,6 +29,7 @@ _REVIEW_EVENTS = frozenset({
     EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
     EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
     EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT,
+    EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED,
 })
 
 _REVIEW_EXCHANGE_EVENTS = frozenset({
@@ -40,6 +41,7 @@ _REVIEW_EXCHANGE_EVENTS = frozenset({
     EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
     EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
     EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT,
+    EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED,
 })
 
 # ---------------------------------------------------------------------------

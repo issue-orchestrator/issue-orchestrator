@@ -394,6 +394,8 @@ def _drive_rounds(  # noqa: PLR0913
             cycle_index=round_index,
             section=CHAPTER_SECTION_PROMPT,
             label=f"Round {round_index} reviewer prompt",
+            session_name=session_name,
+            emit=emit,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
@@ -483,6 +485,8 @@ def _drive_rounds(  # noqa: PLR0913
             cycle_index=round_index,
             section=CHAPTER_SECTION_PROMPT,
             label=f"Round {round_index} coder prompt",
+            session_name=session_name,
+            emit=emit,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
@@ -624,6 +628,8 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             cycle_index=cycle_index,
             section=CHAPTER_SECTION_PROMPT,
             label=f"Round {cycle_index} coder protocol-retry",
+            session_name=session_name,
+            emit=emit,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
@@ -721,6 +727,8 @@ def _send_role_round(  # noqa: PLR0913
             cycle_index=cycle_index,
             section=CHAPTER_SECTION_TIMEOUT,
             label=f"Round {cycle_index} {role} timeout/error",
+            session_name=session_name,
+            emit=emit,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT, {
             "issue_number": issue_number,
@@ -743,6 +751,8 @@ def _send_role_round(  # noqa: PLR0913
         cycle_index=cycle_index,
         section=CHAPTER_SECTION_FEEDBACK,
         label=f"Round {cycle_index} {role} feedback",
+        session_name=session_name,
+        emit=emit,
     )
     emit(EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK, {
         "issue_number": issue_number,
@@ -997,8 +1007,11 @@ def _record_chapter(  # noqa: PLR0913
     cycle_index: int,
     section: str,
     label: str,
+    session_name: str,
+    emit: Callable[[EventName, dict[str, Any]], None],
 ) -> None:
-    """Capture the recording's current event index and append a chapter.
+    """Capture the recording's current event index, append a chapter,
+    and emit ``REVIEW_EXCHANGE_CHAPTER_RECORDED``.
 
     Errors propagate. Role recordings are created at session open and the
     chapter offset is the UI contract for scrubbing the persistent
@@ -1007,6 +1020,11 @@ def _record_chapter(  # noqa: PLR0913
     ``run_persistent_session_exchange`` handler converts the propagated
     exception into a REVIEW_EXCHANGE_FAILED event and re-raises so the
     orchestrator surface treats it as a definitive exchange failure.
+
+    The chapter event is emitted *after* the sidecar write succeeds so
+    SSE/timeline consumers see the same offset that's now durable on disk;
+    on failure the exception propagates and no event fires (consistent
+    with the rest of the runner's emit-on-success contract).
     """
     event_index = recording_event_count(recording_path)
     session_output.record_exchange_chapter(
@@ -1020,6 +1038,15 @@ def _record_chapter(  # noqa: PLR0913
         recorded_at=datetime.now(timezone.utc).isoformat(),
         label=label,
     )
+    emit(EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": cycle_index,
+        "role": role,
+        "section": section,
+        "recording_event_index": event_index,
+        "label": label,
+    })
 
 
 def _validation_passed(run_dir: Path) -> bool:
