@@ -53,44 +53,30 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
     review-exchange would now hit real ``git rev-parse``, ``git worktree
     add``, and PTY spawns against non-git scratch dirs.
 
-    Stub:
-      * the reviewer-worktree git helpers (no real git repo needed)
-      * the runner itself (no real PTY/subprocess work)
-
-    The persistent runner's behavior is covered exhaustively by
-    ``tests/unit/execution/test_persistent_session_exchange.py`` (20
-    tests) and ``test_persistent_round_runner.py`` (22 tests). Migrating
-    the simulated-scenario harness to drive the persistent runner
-    natively is tracked as a follow-up.
+    Replace :meth:`PersistentReviewExchangeRunner.run` with a stub that
+    fabricates the canned single-round, reviewer-approved outcome
+    + events the orchestration logic expects. The persistent runner's
+    own behavior is covered exhaustively by
+    ``tests/unit/execution/test_persistent_session_exchange.py`` and
+    ``test_persistent_round_runner.py``; this conftest only stubs the
+    integration boundary so the simulated-scenario harness doesn't
+    need a real git repo or PTY.
     """
     from datetime import datetime, timezone
-    from types import SimpleNamespace
 
     from issue_orchestrator.domain.review_exchange import (
         ReviewExchangeOutcome,
         ReviewExchangeResponse,
     )
     from issue_orchestrator.events import EventName
-    from issue_orchestrator.execution import (
-        persistent_session_exchange as pse,
-        reviewer_worktree as rw,
+    from issue_orchestrator.execution.persistent_review_exchange_runner import (
+        PersistentReviewExchangeRunner,
     )
 
-    def _stub_create(*, coder_worktree, coder_branch, timestamp):  # noqa: ARG001
-        sibling = coder_worktree.parent / f"{coder_worktree.name}-review-{timestamp}"
-        sibling.mkdir(parents=True, exist_ok=True)
-        return SimpleNamespace(path=sibling, coder_branch=coder_branch)
-
-    monkeypatch.setattr(rw, "resolve_current_branch", lambda _wt: "issue-1")
-    monkeypatch.setattr(rw, "create_reviewer_worktree", _stub_create)
-    monkeypatch.setattr(rw, "fast_forward_reviewer_worktree", lambda _r: "deadbeef")
-    monkeypatch.setattr(rw, "remove_reviewer_worktree", lambda *_, **__: None)
-
-    def _stub_run_persistent_session_exchange(
+    def _stub_run(
+        self,
         *,
-        session_output,
-        coder_worktree_path,
-        reviewer_worktree_path,  # noqa: ARG001
+        coder_worktree,
         issue_number,
         issue_title,  # noqa: ARG001
         coder_label,  # noqa: ARG001
@@ -105,19 +91,11 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
         events=None,
         event_context=None,
         on_started=None,
-        before_reviewer_round=None,  # noqa: ARG001
     ):
-        """Produce the events + outcome the orchestration logic expects.
-
-        Mirrors the shape of a single-round, reviewer-approved exchange
-        without spawning anything. Scenarios that need a different
-        outcome (changes_requested, no_progress, error) are skipped or
-        will be migrated when the harness is updated.
-        """
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         session_name = f"review-exchange-{issue_number}-{timestamp}"
-        run = session_output.start_run(
-            coder_worktree_path,
+        run = self._session_output.start_run(
+            coder_worktree,
             session_name,
             issue_number=issue_number,
             agent_label=None,
@@ -179,9 +157,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch):
             summary=summary,
         )
 
-    monkeypatch.setattr(
-        pse, "run_persistent_session_exchange", _stub_run_persistent_session_exchange,
-    )
+    monkeypatch.setattr(PersistentReviewExchangeRunner, "run", _stub_run)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

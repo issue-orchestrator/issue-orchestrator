@@ -747,12 +747,16 @@ def build_test_orchestrator_deps(
     state_machine_manager = StateMachineManager(config=config)
 
     session_output = FileSystemSessionOutput()
+    from issue_orchestrator.execution.persistent_review_exchange_runner import (
+        PersistentReviewExchangeRunner,
+    )
     completion_processor = CompletionProcessor(
         label_adapter=repo_host,
         pr_adapter=repo_host,
         git_adapter=working_copy,
         event_bus=None,
         session_output=session_output,
+        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
         label_config={
             "blocked": config.get_label_blocked(),
             "needs_human": config.get_label_needs_human(),

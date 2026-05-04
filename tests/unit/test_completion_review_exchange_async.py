@@ -34,6 +34,28 @@ from issue_orchestrator.ports.background_job import CompletedJob
 from issue_orchestrator.ports.session_output import SessionOutput
 
 
+class _FakeReviewExchangeRunner:
+    """Minimal :class:`ReviewExchangeRunner` stand-in for async-path tests.
+
+    The async test suite cares about how ``CompletionReviewExchange``
+    schedules work and emits events around the runner call, not about
+    what the runner itself does. This fake returns a canned outcome
+    that satisfies the type signature; tests that need to drive the
+    runner explicitly (e.g. failure path) replace it with their own
+    implementation per-test.
+    """
+
+    def run(self, **kwargs: Any) -> ReviewExchangeOutcome:
+        return ReviewExchangeOutcome(
+            status="ok",
+            rounds=1,
+            reason="reviewer_ok",
+            reviewer_response=None,
+            exchange_dir=None,
+            summary={"status": "ok", "completed_rounds": 1},
+        )
+
+
 class _FakeJobRunner:
     """Records submitted jobs and lets tests control whether they are 'running'."""
 
@@ -212,6 +234,7 @@ def _build(
         session_output=cast(SessionOutput, session_output),
         emit_review_started=_on_started,
         emit_review_outcome=_on_outcome,
+        review_exchange_runner=_FakeReviewExchangeRunner(),
         job_supervisor=BackgroundJobSupervisor(job_runner),
     )
     return review, session_output
@@ -663,6 +686,7 @@ def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
         session_output=cast(SessionOutput, session_output),
         emit_review_started=lambda **kw: started.append(kw),
         emit_review_outcome=lambda **kw: outcomes.append(kw),
+        review_exchange_runner=_FakeReviewExchangeRunner(),
     )
 
     def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:

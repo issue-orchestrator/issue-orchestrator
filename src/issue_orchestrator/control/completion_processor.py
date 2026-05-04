@@ -39,6 +39,10 @@ from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
+from ..ports.review_exchange_runner import (
+    NullReviewExchangeRunner,
+    ReviewExchangeRunner,
+)
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
 from .completion_pr_collision import (
@@ -409,6 +413,7 @@ class CompletionProcessor:
         pr_adapter: PRAdapter,
         git_adapter: GitAdapter,
         session_output: SessionOutput,
+        review_exchange_runner: ReviewExchangeRunner | None = None,
         event_bus: EventBus | None = None,
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
@@ -456,11 +461,17 @@ class CompletionProcessor:
             if config is not None
             else True
         )
+        # Production must always inject a real runner via bootstrap.
+        # ``NullReviewExchangeRunner`` is the test-only default — its
+        # ``run`` raises if any test that hasn't wired a real runner
+        # actually enters the review-exchange path, so misuse surfaces
+        # immediately rather than silently no-oping.
         self._review_exchange = CompletionReviewExchange(
             config=config,
             session_output=session_output,
             emit_review_started=self._emit_review_started,
             emit_review_outcome=self._emit_review_outcome,
+            review_exchange_runner=review_exchange_runner or NullReviewExchangeRunner(),
             job_supervisor=background_job_supervisor,
         )
         # Per-(session, head_sha) consecutive validation-failed reroute count.
