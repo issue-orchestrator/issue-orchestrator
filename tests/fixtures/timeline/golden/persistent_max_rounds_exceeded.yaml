@@ -1,0 +1,268 @@
+scenario: persistent_max_rounds_exceeded
+description: |
+  Reviewer never says `ok`. After `max_rounds=2` rounds — each
+  ending with `needs_work` and a coder rework — the persistent
+  runner exits the round loop and emits a terminal
+  `REVIEW_EXCHANGE_COMPLETED` carrying `status="stopped"` and
+  `reason="max_rounds_exceeded"`.
+
+  This is one of three terminal exchange statuses the runner can
+  emit:
+
+    - `status="ok"`     — reviewer approved (covered by
+                          `persistent_rework_then_approved.yaml`)
+    - `status="error"`  — role timeout / protocol error
+                          (covered by `persistent_role_timeout.yaml`)
+    - `status="stopped"` — max_rounds_exceeded or no_progress
+                          (this fixture)
+
+  Source: `persistent_session_exchange.py:565` (post-loop emit).
+
+  Pinned in this fixture:
+
+    - All `max_rounds` rounds run to completion with `needs_work`
+      verdicts; each emits a `REVIEW_EXCHANGE_ROUND_COMPLETED` with
+      `coder_response_type="ok"` (the coder accepted the rework
+      task).
+    - The terminal `REVIEW_EXCHANGE_COMPLETED` carries the
+      `max_rounds_exceeded` reason — distinct from the `reviewer_ok`
+      reason of the success path.
+    - `REVIEW_APPROVED` does NOT follow; the orchestrator's
+      downstream logic (changes_requested / escalation) is left for
+      a separate fixture.
+
+issue_number: 8888
+
+records:
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data: { issue_number: 8888, session_id: "issue-8888-1", agent: coder, task: code }
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data: { issue_number: 8888, session_id: "issue-8888-1", implementation: "Initial feature" }
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:03:00Z"
+    data: { issue_number: 8888, session_id: "issue-8888-1" }
+
+  - event: issue.pr_created
+    timestamp: "2026-05-04T00:03:30Z"
+    data: { issue_number: 8888, pr_number: 77, pr_url: "https://github.com/example/repo/pull/77" }
+
+  - event: review.started
+    timestamp: "2026-05-04T00:04:00Z"
+    data: { issue_number: 8888, task: review, agent: reviewer }
+
+  - event: review_exchange.started
+    timestamp: "2026-05-04T00:04:01Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1" }
+
+  # ============== Round 1: needs_work ==============
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:04:02Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:03Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: reviewer, section: prompt, recording_event_index: 0, label: "Round 1 reviewer prompt" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:04Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: reviewer, prompt_chars: 1100 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:25Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: reviewer, section: feedback, recording_event_index: 38, label: "Round 1 reviewer feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:04:26Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: reviewer, response_type: needs_work, getting_closer: true }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:27Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: coder, section: prompt, recording_event_index: 0, label: "Round 1 coder prompt" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:28Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: coder, prompt_chars: 920 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:06:30Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: coder, section: feedback, recording_event_index: 80, label: "Round 1 coder feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:06:31Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 1, role: coder, response_type: ok, getting_closer: true }
+
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:06:32Z"
+    data:
+      issue_number: 8888
+      session_name: "issue-8888-exchange-1"
+      round_index: 1
+      reviewer_response_type: needs_work
+      reviewer_response_text: "More tests needed for the boundary cases"
+      coder_response_type: ok
+      coder_response_text: "Added boundary tests"
+
+  # ============== Round 2: still needs_work — exhausts max_rounds ==============
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:08:00Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:01Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: reviewer, section: prompt, recording_event_index: 130, label: "Round 2 reviewer prompt" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:08:02Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: reviewer, prompt_chars: 1300 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:25Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: reviewer, section: feedback, recording_event_index: 175, label: "Round 2 reviewer feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:08:26Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: reviewer, response_type: needs_work, getting_closer: true }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:27Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: coder, section: prompt, recording_event_index: 0, label: "Round 2 coder prompt" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:08:28Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: coder, prompt_chars: 1000 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:10:30Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: coder, section: feedback, recording_event_index: 80, label: "Round 2 coder feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:10:31Z"
+    data: { issue_number: 8888, session_name: "issue-8888-exchange-1", round_index: 2, role: coder, response_type: ok, getting_closer: true }
+
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:10:32Z"
+    data:
+      issue_number: 8888
+      session_name: "issue-8888-exchange-1"
+      round_index: 2
+      reviewer_response_type: needs_work
+      reviewer_response_text: "Still need a fixture for the rare case"
+      coder_response_type: ok
+      coder_response_text: "Added the rare-case fixture"
+
+  # Loop exhausts; post-loop emit at line 565.
+  - event: review_exchange.completed
+    timestamp: "2026-05-04T00:10:33Z"
+    data:
+      issue_number: 8888
+      session_name: "issue-8888-exchange-1"
+      rounds: 2
+      status: stopped
+      reason: max_rounds_exceeded
+
+  # Downstream review-outcome event from
+  # `CompletionReviewExchange._run_fresh_review_exchange()` for any
+  # non-`ok` exchange status (`completion_review_exchange.py:486-495`).
+  # This is the user-visible terminal verdict.
+  - event: review.changes_requested
+    timestamp: "2026-05-04T00:10:34Z"
+    data:
+      issue_number: 8888
+      task: review
+      agent: reviewer
+      review_exchange_mode: persistent
+      rounds: 2
+      summary: "Review exchange halted: max_rounds_exceeded"
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-8888-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, parent_key: "session:issue-8888-1", detail: "Initial feature" }
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    parent_key: "review:77"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/77" }
+  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "issue:8888" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, parent_key: "issue:8888" }
+
+  # Round 1
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:8888", detail: "Round 1. More tests needed for the boundary cases. Coder response: ok" }
+
+  # Round 2
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:8888" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:8888" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:8888", detail: "Round 2. Still need a fixture for the rare case. Coder response: ok" }
+
+  # Terminal exchange.completed (PR 6180 differentiates the narrative
+  # by status). The user-visible verdict follows in
+  # review.changes_requested below.
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:8888" }
+  # Downstream review-outcome event from
+  # CompletionReviewExchange._run_fresh_review_exchange(). Non-`ok`
+  # exchange statuses produce review.changes_requested with
+  # summary="Review exchange halted: <reason>".
+  - { event: review.changes_requested, phase: reviewing, step: changes_requested, status: failed, parent_key: "issue:8888", summary: "Review exchange halted: max_rounds_exceeded" }
+
+# User view: chapter rows hidden as ops-only. The narrative spine
+# tells the story — round 1 needs_work, round 2 needs_work, exchange
+# completed but no approval.
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - { event: agent.completed, status: completed, narrative: "Coding session completed", detail: "Initial feature" }
+  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - event: pr.created
+    status: completed
+    narrative: "PR #77 created"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/77" }
+  - { event: review.started, status: started, narrative: "Code review started" }
+  - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
+
+  # Round 1
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 1) — needs_work" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
+  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 1 completed — needs_work", detail: "Round 1. More tests needed for the boundary cases. Coder response: ok" }
+
+  # Round 2
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 2 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 2)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 2) — needs_work" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 2)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 2) — ok" }
+  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 2 completed — needs_work", detail: "Round 2. Still need a fixture for the rare case. Coder response: ok" }
+
+  # Terminal narrative on this PR is the un-differentiated
+  # "Review exchange completed (2 rounds)"; PR 6180 changes it to
+  # "Review exchange ended without approval (2 rounds)".
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)" }
+  # Downstream review.changes_requested: production user-visible
+  # terminal verdict. Carries the summary "Review exchange halted:
+  # max_rounds_exceeded" so users can see why approval didn't happen.
+  - { event: review.changes_requested, status: failed, narrative: "Reviewer requested changes (round 2)", summary: "Review exchange halted: max_rounds_exceeded" }
