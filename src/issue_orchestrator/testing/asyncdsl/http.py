@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
@@ -18,10 +18,27 @@ from .contracts import Event
 logger = logging.getLogger(__name__)
 
 
+def _build_request(url: str, *, auth_token: str | None) -> urllib.request.Request:
+    """Build a urllib Request, attaching ``Authorization: Bearer …`` when given.
+
+    The orchestrator's ``/api/events``, ``/api/events_since`` and
+    snapshot endpoints all require the loopback bearer token. Tests
+    that bypass this (e.g. by passing a bare URL to ``urlopen``) get
+    HTTP 401 and silently look like "the orchestrator isn't reachable".
+    Centralizing the header injection here makes the auth contract
+    explicit at the one place where the test client talks HTTP.
+    """
+    request = urllib.request.Request(url)
+    if auth_token:
+        request.add_header("Authorization", f"Bearer {auth_token}")
+    return request
+
+
 @dataclass
 class SSEEventStream:
     url: str
     timeout_s: float = 30.0
+    auth_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
@@ -128,7 +145,8 @@ class SSEEventStream:
             while not self._stop.is_set():
                 try:
                     logger.info("[SSE] Connecting to %s", self.url)
-                    with urllib.request.urlopen(self.url, timeout=self.timeout_s) as resp:
+                    request = _build_request(self.url, auth_token=self.auth_token)
+                    with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
                         self._process_stream(resp)
                     consecutive_failures = 0
                     self._emit_reconnect("closed")
@@ -157,6 +175,7 @@ class SSEEventStream:
 @dataclass
 class HTTPSnapshotProvider:
     url: str
+    auth_token: str | None = field(default=None, repr=False)
 
     async def fetch_snapshot(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_sync)
@@ -165,7 +184,8 @@ class HTTPSnapshotProvider:
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(self.url, timeout=30.0) as resp:
+                request = _build_request(self.url, auth_token=self.auth_token)
+                with urllib.request.urlopen(request, timeout=30.0) as resp:
                     data = resp.read().decode("utf-8")
                 return json.loads(data)
             except (TimeoutError, urllib.error.URLError) as exc:
@@ -187,13 +207,15 @@ class HTTPSnapshotProvider:
 @dataclass
 class HTTPReplayProvider:
     url: str
+    auth_token: str | None = field(default=None, repr=False)
 
     async def fetch_events_since(self, event_id: int) -> list[Event]:
         return await asyncio.to_thread(self._fetch_sync, event_id)
 
     def _fetch_sync(self, event_id: int) -> list[Event]:
         full_url = f"{self.url}?after={event_id}"
-        with urllib.request.urlopen(full_url, timeout=30.0) as resp:
+        request = _build_request(full_url, auth_token=self.auth_token)
+        with urllib.request.urlopen(request, timeout=30.0) as resp:
             data = resp.read().decode("utf-8")
         payload = json.loads(data)
         return payload.get("events", [])

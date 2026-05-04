@@ -92,10 +92,23 @@ async def start_orchestrator_runtime(
 
 
 async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEventStream]:
-    stream = SSEEventStream(f"http://localhost:{port}/api/events")
+    # The orchestrator's loopback API guards SSE / snapshot / replay
+    # behind ``Authorization: Bearer …``. Without this, the stream
+    # silently 401s and the watcher reports the orchestrator as
+    # unreachable; the test then fails with timeouts instead of an
+    # auth error.
+    from issue_orchestrator.infra.api_token import read_existing_token
+    token = read_existing_token()
+    stream = SSEEventStream(
+        f"http://localhost:{port}/api/events", auth_token=token,
+    )
     await stream.start()
-    snapshot_provider = HTTPSnapshotProvider(f"http://localhost:{port}/api/snapshot")
-    replay_provider = HTTPReplayProvider(f"http://localhost:{port}/api/events_since")
+    snapshot_provider = HTTPSnapshotProvider(
+        f"http://localhost:{port}/api/snapshot", auth_token=token,
+    )
+    replay_provider = HTTPReplayProvider(
+        f"http://localhost:{port}/api/events_since", auth_token=token,
+    )
     watcher = await OrchestratorWatcher.create(
         event_stream=stream,
         snapshot_provider=snapshot_provider,
