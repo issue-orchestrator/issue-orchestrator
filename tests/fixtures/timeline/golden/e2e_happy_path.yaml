@@ -1,0 +1,155 @@
+scenario: e2e_happy_path
+description: |
+  E2E test run, fully successful: collect 3 tests, run each in
+  sequence, all pass, run finishes.
+
+  E2E timelines are scoped to a *negative issue number* — the e2e
+  run number negated. Per `_parent_key`, this produces
+  `parent_key="e2e-run-N"` so the dashboard groups all events for
+  one run together.
+
+  E2E events are not in `VIEW_REGISTRY` user/ops mappings (they go
+  through the legacy fallback projection), so this fixture only
+  pins the **internal** timeline. The e2e dashboard reads via
+  `TimelineStream.from_records` directly without view filtering,
+  so the projected events are exactly what the user sees.
+
+  Pinned per-event:
+
+    - **`status` derivation from `outcome`** — `passed` →
+      `completed`, `failed`/`error` → `error`, `skipped` →
+      `skipped`. Critical for the green/red-tile rendering.
+    - **`phase` progression** — `setup` (run_started,
+      tests_collected) → `execution` (test_*) → `teardown`
+      (run_finished). Drives the swim-lane grouping.
+    - **`summary`** — the rendered text the user reads:
+      `"Run passed in 12.5s"`, `"tests/.../test_one: passed (1.2s)"`.
+
+issue_number: -7
+
+records:
+  - event: e2e.run_started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      branch: main
+      commit: abc123
+
+  - event: e2e.tests_collected
+    timestamp: "2026-05-04T00:00:01Z"
+    data:
+      total: 3
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:02Z"
+    data:
+      nodeid: "tests/e2e/test_a.py::test_one"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:03Z"
+    data:
+      nodeid: "tests/e2e/test_a.py::test_one"
+      outcome: passed
+      duration_seconds: 1.2
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:04Z"
+    data:
+      nodeid: "tests/e2e/test_b.py::test_two"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:07Z"
+    data:
+      nodeid: "tests/e2e/test_b.py::test_two"
+      outcome: passed
+      duration_seconds: 2.8
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:08Z"
+    data:
+      nodeid: "tests/e2e/test_c.py::test_three"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:09Z"
+    data:
+      nodeid: "tests/e2e/test_c.py::test_three"
+      outcome: passed
+      duration_seconds: 0.9
+
+  - event: e2e.run_finished
+    timestamp: "2026-05-04T00:00:10Z"
+    data:
+      status: passed
+      duration_seconds: 10.0
+
+internal_timeline:
+  - event: e2e.run_started
+    phase: setup
+    step: run_started
+    status: active
+    level: info
+    parent_key: "e2e-run-7"
+    summary: "E2E run started on main"
+
+  - event: e2e.tests_collected
+    phase: setup
+    step: tests_collected
+    status: active
+    level: info
+    parent_key: "e2e-run-7"
+    summary: "Collected 3 tests"
+
+  - event: e2e.test_started
+    phase: execution
+    step: test_started
+    status: active
+    level: info
+    parent_key: "e2e-run-7"
+    summary: "tests/e2e/test_a.py::test_one"
+
+  - event: e2e.test_completed
+    phase: execution
+    step: test_completed
+    status: completed
+    level: detail
+    parent_key: "e2e-run-7"
+    summary: "tests/e2e/test_a.py::test_one: passed (1.2s)"
+
+  - event: e2e.test_started
+    phase: execution
+    step: test_started
+    status: active
+    level: info
+    parent_key: "e2e-run-7"
+    summary: "tests/e2e/test_b.py::test_two"
+
+  - event: e2e.test_completed
+    phase: execution
+    step: test_completed
+    status: completed
+    level: detail
+    parent_key: "e2e-run-7"
+    summary: "tests/e2e/test_b.py::test_two: passed (2.8s)"
+
+  - event: e2e.test_started
+    phase: execution
+    step: test_started
+    status: active
+    level: info
+    parent_key: "e2e-run-7"
+    summary: "tests/e2e/test_c.py::test_three"
+
+  - event: e2e.test_completed
+    phase: execution
+    step: test_completed
+    status: completed
+    level: detail
+    parent_key: "e2e-run-7"
+    summary: "tests/e2e/test_c.py::test_three: passed (0.9s)"
+
+  - event: e2e.run_finished
+    phase: teardown
+    step: run_finished
+    status: completed
+    level: info
+    parent_key: "e2e-run-7"
+    summary: "Run passed in 10.0s"

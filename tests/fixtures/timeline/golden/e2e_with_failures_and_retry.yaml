@@ -1,0 +1,121 @@
+scenario: e2e_with_failures_and_retry
+description: |
+  E2E run with a failure recovered by retry. Aligns with the actual
+  production emit sequence in
+  `src/issue_orchestrator/entrypoints/e2e_worker.py`:
+
+    - The first pass emits per-test `test_started`/`test_completed`
+      records via the pytest `ResultPlugin` + `timeline_store`.
+    - When `allow_retry_once and failed_tests`, the worker emits
+      `e2e.retry_started` (carrying `failed_count` + `nodeids`).
+    - `_run_retry()` then calls `pytest.main([nodeid, ...])` *without*
+      `ResultPlugin` or `timeline_store`. It updates `retry_outcome`
+      in `e2e.db`; **no per-test timeline records are produced for
+      the retry attempt**.
+    - The run finishes. When all tests eventually pass but a retry
+      was needed, `status` is set to `"warning"` (not `"passed"`) so
+      the retry remains visible to the user — see
+      `e2e_worker.py:594-603`.
+
+  Earlier drafts of this fixture (caught in PR 6158 review) pinned
+  per-test retry events that the worker does not emit, and pinned
+  `status="passed"` instead of `"warning"`. That created false
+  confidence — passing projection over a synthetic stream.
+
+  The fixture now pins the *actual* user-visible signal:
+
+    - Failure tile remains visible (the original `test_completed`
+      with `outcome=failed` stays on the timeline as historical
+      record).
+    - `e2e.retry_started` enters `phase='retry'` — distinct
+      swim-lane.
+    - Final `e2e.run_finished` carries `status='warning'` so the
+      run isn't silently green; the dashboard surfaces the retry.
+
+issue_number: -42
+
+records:
+  - event: e2e.run_started
+    timestamp: "2026-05-04T00:00:00Z"
+    data:
+      branch: feature/x
+      commit: def456
+
+  - event: e2e.tests_collected
+    timestamp: "2026-05-04T00:00:01Z"
+    data:
+      total: 3
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:02Z"
+    data:
+      nodeid: "tests/e2e/test_pass.py::test_a"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:03Z"
+    data:
+      nodeid: "tests/e2e/test_pass.py::test_a"
+      outcome: passed
+      duration_seconds: 1.0
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:04Z"
+    data:
+      nodeid: "tests/e2e/test_flaky.py::test_b"
+
+  # First-attempt failure: the only timeline record for this test until
+  # the run finishes. Retry attempt updates `retry_outcome` in e2e.db
+  # but produces no further timeline events.
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:08Z"
+    data:
+      nodeid: "tests/e2e/test_flaky.py::test_b"
+      outcome: failed
+      duration_seconds: 4.2
+
+  - event: e2e.test_started
+    timestamp: "2026-05-04T00:00:09Z"
+    data:
+      nodeid: "tests/e2e/test_other.py::test_c"
+
+  - event: e2e.test_completed
+    timestamp: "2026-05-04T00:00:10Z"
+    data:
+      nodeid: "tests/e2e/test_other.py::test_c"
+      outcome: passed
+      duration_seconds: 0.8
+
+  - event: e2e.retry_started
+    timestamp: "2026-05-04T00:00:11Z"
+    data:
+      failed_count: 1
+      nodeids:
+        - "tests/e2e/test_flaky.py::test_b"
+
+  # _run_retry() runs pytest WITHOUT timeline_store — so no per-test
+  # records appear here. The run silently retries, then finishes with
+  # status="warning" because retries were needed.
+  - event: e2e.run_finished
+    timestamp: "2026-05-04T00:00:15Z"
+    data:
+      status: warning
+      duration_seconds: 15.0
+
+internal_timeline:
+  - { event: e2e.run_started, phase: setup, status: active, parent_key: "e2e-run-42", summary: "E2E run started on feature/x" }
+  - { event: e2e.tests_collected, phase: setup, status: active, summary: "Collected 3 tests" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_pass.py::test_a" }
+  - { event: e2e.test_completed, phase: execution, status: completed, summary: "tests/e2e/test_pass.py::test_a: passed (1.0s)" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_flaky.py::test_b" }
+  # First-attempt failure pinned: status='error' is the red tile; this
+  # record stays visible for the rest of the run (no retry record overwrites it).
+  - { event: e2e.test_completed, phase: execution, status: error, summary: "tests/e2e/test_flaky.py::test_b: failed (4.2s)" }
+  - { event: e2e.test_started, phase: execution, status: active, summary: "tests/e2e/test_other.py::test_c" }
+  - { event: e2e.test_completed, phase: execution, status: completed, summary: "tests/e2e/test_other.py::test_c: passed (0.8s)" }
+  # Retry phase begins — distinct swim lane. No per-test events follow:
+  # the retry runs pytest without ResultPlugin/timeline_store.
+  - { event: e2e.retry_started, phase: retry, status: active, summary: "Retrying 1 failed tests" }
+  # Final status: "warning" — retries were needed, so the run is not
+  # silently green. The dashboard renders this distinctly so the user
+  # can investigate flakiness.
+  - { event: e2e.run_finished, phase: teardown, status: completed, summary: "Run warning in 15.0s" }
