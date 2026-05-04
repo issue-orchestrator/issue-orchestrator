@@ -331,5 +331,83 @@ class EventName(str, Enum):
         return self.value
 
 
+class PublicEventName(str, Enum):
+    """Events that surface in the user or ops timeline view.
+
+    A type-level subset of `EventName`: each `PublicEventName` value
+    matches the string value of the corresponding `EventName` and
+    represents an event that fans out to at least one user-or-ops
+    `ViewEvent` per `events/view_registry.py`.
+
+    Use `PublicEventName` as the key type for the projection contract:
+
+      - `EVENT_SPEC: dict[PublicEventName, EventSpec]` — only public
+        events have a defined timeline projection.
+      - Golden test fixtures — only assert on public events.
+      - `project_timeline()` consumers that should not depend on
+        private/debug-only events.
+
+    Emit-side code continues to use `EventName.X`. The wire-protocol
+    contract is unchanged; this enum exists for read-side type safety.
+
+    Membership is enforced by `tests/unit/test_event_spec.py`, which
+    asserts these values match the user/ops set computed from
+    `VIEW_REGISTRY` — making the registry the single source of truth
+    and this enum its codification.
+    """
+
+    SESSION_STARTED = "session.started"
+    SESSION_COMPLETED = "session.completed"
+    SESSION_FAILED = "session.failed"
+    SESSION_TIMEOUT = "session.timeout"
+    SESSION_BLOCKED = "session.blocked"
+    SESSION_NO_COMPLETION_RECORD = "session.no_completion_record"
+    SESSION_PROCESSING_COMPLETED = "session.processing_completed"
+    SESSION_VALIDATION_PASSED = "session.validation_passed"
+    SESSION_VALIDATION_FAILED = "session.validation_failed"
+    SESSION_VALIDATION_RETRY_NEEDED = "session.validation_retry_needed"
+
+    OBSERVATION_COMPLETION_DETECTED = "observation.completion_detected"
+    COMPLETION_LOOKUP = "completion.lookup"
+    WORKTREE_RESET = "worktree.reset"
+
+    REVIEW_STARTED = "review.started"
+    REVIEW_APPROVED = "review.approved"
+    REVIEW_CHANGES_REQUESTED = "review.changes_requested"
+    REVIEW_ESCALATED = "review.escalated"
+    REVIEW_MERGED = "review.merged"
+    REVIEW_COMMENT_ADDED = "review.comment_added"
+    REVIEW_REWORK_STARTED = "review.rework_started"
+    REVIEW_REWORK_COMPLETED = "review.rework_completed"
+
+    REVIEW_EXCHANGE_STARTED = "review_exchange.started"
+    REVIEW_EXCHANGE_ROUND_STARTED = "review_exchange.round_started"
+    REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"
+    REVIEW_EXCHANGE_COMPLETED = "review_exchange.completed"
+    REVIEW_EXCHANGE_FAILED = "review_exchange.failed"
+    REVIEW_EXCHANGE_ROLE_PROMPTED = "review_exchange.role_prompted"
+    REVIEW_EXCHANGE_ROLE_FEEDBACK = "review_exchange.role_feedback"
+    REVIEW_EXCHANGE_ROLE_TIMEOUT = "review_exchange.role_timeout"
+
+    REWORK_STARTED = "rework.started"
+    REWORK_LAUNCHING = "rework.launching"
+
+    TRIAGE_LAUNCHING = "triage.launching"
+
+    VALIDATION_STARTED = "validation.started"
+    VALIDATION_COMPLETED = "validation.completed"
+
+    ISSUE_BLOCKED = "issue.blocked"
+    ISSUE_NEEDS_HUMAN = "issue.needs_human"
+    ISSUE_COMPLETED = "issue.completed"
+    ISSUE_UNBLOCKED = "issue.unblocked"
+    ISSUE_PR_CREATED = "issue.pr_created"
+
+    PUBLISH_FAILED = "publish.failed"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 # Schema version for event payload evolution
 EVENT_SCHEMA_VERSION = 1
