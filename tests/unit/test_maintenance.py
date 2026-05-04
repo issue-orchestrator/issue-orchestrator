@@ -333,6 +333,90 @@ class TestResetIssue:
             call(mock_config.repo_root, "123-fresh-branch"),
         ]
 
+    def test_reset_issue_from_scratch_clears_validation_cache_via_worktree_removal(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        """Reset-and-retry **from scratch** must invalidate the validation
+        cache, otherwise a fresh attempt at the same head SHA can
+        silently reuse the previous run's pass result. This was the
+        regression observed in production where cached validation was
+        reused erroneously after a reset.
+
+        The runner stores per-SHA validation records inside the
+        worktree at ``.issue-orchestrator/validation/<sha>.json``.
+        ``reset_issue(from_scratch=True)`` calls
+        ``worktree_manager.remove(path, force=True)`` (the scratch path
+        — distinct from ordinary reset's plain ``remove(path)``),
+        which deletes that directory and its records. This test pins
+        the scratch-specific invariant: ``from_scratch=True`` must
+        invoke the force-remove call. Without it, a second attempt at
+        the same SHA would hit the cache and skip validation.
+        """
+        worktree_path = mock_config.worktree_base / f"{mock_config.repo_root.name}-789"
+        worktree_path.mkdir(parents=True)
+        # Seed a passing validation record so a regression that didn't
+        # delete the worktree would leave the cache reusable.
+        validation_dir = worktree_path / ".issue-orchestrator" / "validation"
+        validation_dir.mkdir(parents=True, exist_ok=True)
+        cache_record = validation_dir / "deadbeef.json"
+        cache_record.write_text('{"passed": true, "head_sha": "deadbeef"}')
+
+        # Make the mock worktree_manager actually remove the directory
+        # so the test verifies the contract end-to-end. The scratch
+        # path passes ``force=True``; the kwarg-accepting signature
+        # mirrors the real ``WorktreeManager.remove``.
+        def _remove(path, force: bool = False):  # noqa: ARG001 - kwarg shape only
+            import shutil
+            shutil.rmtree(path, ignore_errors=True)
+
+        mock_worktree_manager.remove.side_effect = _remove
+        mock_working_copy.list_remote_branches.return_value = []
+        # Scratch reset requires a repository_host for PR supersession.
+        mock_repository_host = MagicMock()
+        mock_repository_host.list_open_prs_for_branch = MagicMock(return_value=[])
+        mock_repository_host.list_open_prs = MagicMock(return_value=[])
+
+        result = reset_issue(
+            issue_number=789,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            from_scratch=True,
+            repository_host=mock_repository_host,
+        )
+
+        assert result.success is True
+        assert result.deleted_worktree == str(worktree_path)
+        # Pin the scratch-specific call shape — ``force=True`` is what
+        # the from_scratch branch passes; ordinary reset passes no
+        # ``force`` kwarg. Asserting on the kwarg is what catches a
+        # regression that lets scratch reset fall back to the soft
+        # remove (which can leave the worktree behind on git lock
+        # errors and thus leave the validation cache intact).
+        mock_worktree_manager.remove.assert_called_once_with(
+            worktree_path, force=True,
+        )
+        # Worktree directory and its validation cache must both be gone.
+        assert not worktree_path.exists(), (
+            "reset_issue should delete the worktree so the "
+            "per-SHA validation cache is implicitly cleared"
+        )
+        assert not cache_record.exists(), (
+            "validation/<sha>.json must not survive reset_issue; "
+            "a stale cache entry would let a second attempt at the "
+            "same head SHA silently skip validation"
+        )
+
     def test_reset_issue_no_worktree(
         self,
         mock_worktree_manager,

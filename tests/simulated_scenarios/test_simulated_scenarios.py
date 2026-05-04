@@ -28,6 +28,52 @@ class FailingPushWorkingCopy(StubWorkingCopy):
         return PushResult(success=False, branch=self.branch, remote=remote, message="simulated push failure")
 
 
+class DirtyTrackedWorkingCopy(StubWorkingCopy):
+    """Reports tracked-file changes — tracked-mode dirty check should block.
+
+    Returns a non-empty ``list_dirty_files`` so the policy's
+    ``blocking_files`` filter does not collapse to "runtime-only,
+    pass". Without that, the bool short-circuit alone wouldn't fail
+    the gate.
+    """
+
+    def has_tracked_changes(self, worktree, include_staged: bool = True) -> bool:
+        return True
+
+    def list_dirty_files(self, worktree, mode: str) -> list[str] | None:
+        return ["src/some_module.py"]
+
+
+class DirtyEnumerationFailsWorkingCopy(StubWorkingCopy):
+    """``has_*_changes`` returns True but ``list_dirty_files`` returns
+    ``None`` (e.g., git error). The orchestrator must fail closed
+    rather than collapse to "blocking_files=[] -> pass" and silently
+    let a possibly-dirty worktree through (#6159)."""
+
+    def has_tracked_changes(self, worktree, include_staged: bool = True) -> bool:
+        return True
+
+    def list_dirty_files(self, worktree, mode: str) -> list[str] | None:
+        return None
+
+
+class DirtyUntrackedWorkingCopy(StubWorkingCopy):
+    """Reports any uncommitted change (tracked or untracked) — all-mode blocks."""
+
+    def has_uncommitted_changes(self, worktree) -> bool:
+        return True
+
+    def has_tracked_changes(self, worktree, include_staged: bool = True) -> bool:
+        # Untracked-only case: tracked side is clean, but ``has_uncommitted_changes``
+        # still trips because of the untracked file.
+        return False
+
+    def list_dirty_files(self, worktree, mode: str) -> list[str] | None:
+        # Untracked file the orchestrator's runtime-managed filter
+        # won't strip (not under ``.issue-orchestrator/`` etc.).
+        return ["scratchpad.txt"]
+
+
 class LeaseRenewerOnce:
     def __init__(self) -> None:
         self._used = False
@@ -884,3 +930,220 @@ def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path
         # text transcript.
         assert "open_agent_log" in action_types
         assert "open_session_diagnostics" in action_types
+
+
+# ---------------------------------------------------------------------------
+# Coverage gaps — dirty-tree + validation behavior
+#
+# Scenarios added during the post-cutover coverage sweep to pin runtime
+# behavior that had only unit-level coverage (or none). Each test
+# exercises the orchestrator's dirty-policy / validation paths through
+# the simulated harness so a regression at the orchestration level
+# surfaces here, not just in the unit suite.
+# ---------------------------------------------------------------------------
+
+
+def _enable_dirty_check(mode: str):
+    def _configure(config) -> None:
+        config.validation.pre_push_dirty_check = mode
+    return _configure
+
+
+def test_dirty_tree_tracked_blocks_publish(scenario_repo: Path):
+    """Tracked-file changes left dirty by the agent must block publish.
+
+    The orchestrator's completion-record validator checks
+    ``has_tracked_changes`` against the working copy before running
+    publish actions. When it reports dirty, ``check_dirty_policy``
+    fails with ``DIRTY_POLICY`` and ``_handle_gate_failure`` records
+    the failure on the run manifest. Without this scenario, a
+    regression in the dirty-check call could silently allow a publish
+    on a dirty worktree — only caught at the prepush hook level
+    (which simulated_scenarios doesn't drive).
+    """
+    scenario("dirty_tree_tracked", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_enable_dirty_check("tracked")) \
+        .use_working_copy(DirtyTrackedWorkingCopy()) \
+        .expect_validation_status("failed") \
+        .expect_session_history_status({"validation_failed"}) \
+        .run()
+
+
+def test_dirty_tree_all_mode_blocks_untracked(scenario_repo: Path):
+    """``pre_push_dirty_check: all`` blocks publish even when only
+    untracked files are dirty. The check uses
+    ``has_uncommitted_changes`` (which covers untracked) instead of
+    the tracked-only path, so a regression that confused the two
+    modes would surface here.
+    """
+    scenario("dirty_tree_all_untracked", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_enable_dirty_check("all")) \
+        .use_working_copy(DirtyUntrackedWorkingCopy()) \
+        .expect_validation_status("failed") \
+        .expect_session_history_status({"validation_failed"}) \
+        .run()
+
+
+def test_validation_failed_event_carries_run_context(scenario_repo: Path):
+    """``SESSION_VALIDATION_FAILED`` must carry the run-scoped fields the
+    UI/timeline relies on. Without these, the timeline can't render a
+    failure row that links back to the right diagnostic artifacts
+    (``open_session_diagnostics`` resolves the run from
+    ``run_dir`` + ``session_name``; ``artifacts`` exposes the
+    validation-record path).
+    """
+    scenario("validation_failed_event_payload", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail.sh"), max_retries=0) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_latest_event(
+            EventName.SESSION_VALIDATION_FAILED,
+            predicate=lambda data: bool(
+                data.get("run_dir")
+                and data.get("session_name")
+                and data.get("issue_number")
+                and "validation_cmd" in data
+                and "artifacts" in data
+            ),
+        ) \
+        .run()
+
+
+def test_validation_failure_surfaces_as_timeline_failure_row(scenario_repo: Path):
+    """A failed validation must surface as a failure-status timeline row.
+
+    The timeline projection maps ``SESSION_VALIDATION_FAILED`` to a
+    ``failed`` status (not ``completed``). This test pins that mapping
+    by reading the timeline events and verifying the row's status
+    field is ``failed``. Without it, a regression in
+    ``timeline._status_for_event`` could hide validation failures
+    from the dashboard's failure-row treatment.
+    """
+    ctx = scenario("validation_timeline_failure_row", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail.sh"), max_retries=0) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_timeline_event(EventName.SESSION_VALIDATION_FAILED) \
+        .run()
+    timeline_events = list(ctx.timeline_since_baseline())
+    # Timeline rows can carry the upstream event name in either
+    # ``event`` or ``source_event`` depending on whether the row was
+    # collapsed/derived; check both, matching ``expect_timeline_event``.
+    failed_rows = [
+        evt for evt in timeline_events
+        if (evt.source_event or evt.event) == EventName.SESSION_VALIDATION_FAILED.value
+    ]
+    assert failed_rows, "expected SESSION_VALIDATION_FAILED in timeline"
+    for evt in failed_rows:
+        assert evt.status == "failed", (
+            f"expected failed status, got {evt.status!r} for SESSION_VALIDATION_FAILED"
+        )
+
+
+def test_validation_cache_invalidates_on_record_corruption(scenario_repo: Path):
+    """A corrupt ``validation/<sha>.json`` must trigger a fresh
+    validation run, not a silent cache hit. ``ValidationRecordStore.read``
+    returns ``None`` on ``JSONDecodeError``/``KeyError``/``TypeError``,
+    which is the contract that lets the publish gate distinguish
+    "no record yet" from "record but unreadable" — both miss, so
+    validation re-runs.
+    """
+    # Stub head SHA is "deadbeef" (StubWorkingCopy.get_head_sha).
+    # Seed the corrupt cache before the orchestrator boots; the worktree
+    # path is the conventional ``<repo>/.issue-orchestrator/worktrees/sim-wt-1``.
+    validation_dir = (
+        scenario_repo
+        / ".issue-orchestrator" / "worktrees" / "sim-wt-1"
+        / ".issue-orchestrator" / "validation"
+    )
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    (validation_dir / "deadbeef.json").write_text(
+        "{ this is not valid JSON",
+        encoding="utf-8",
+    )
+
+    scenario("validation_cache_corrupted", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_validation_status("passed") \
+        .expect_validation_artifacts(True) \
+        .run()
+
+
+def test_dirty_enumeration_failure_fails_closed(scenario_repo: Path):
+    """When ``list_dirty_files`` reports it can't enumerate
+    (returns ``None`` on a git error), the dirty-policy guard must
+    fail closed — not collapse to "no blocking files, pass" and let
+    a possibly-dirty worktree through. Regression for the bug fixed
+    in PR #6159 at the prepush hook level; this scenario pins the
+    same fail-closed behavior at the completion-record validator
+    level used inside the orchestration pipeline.
+    """
+    scenario("dirty_enum_fails_closed", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_enable_dirty_check("tracked")) \
+        .use_working_copy(DirtyEnumerationFailsWorkingCopy()) \
+        .expect_validation_status("failed") \
+        .expect_session_history_status({"validation_failed"}) \
+        .run()
+
+
+def test_validation_diagnostics_persisted_on_failure(scenario_repo: Path):
+    """A failed validation run must leave diagnostic artifacts that the
+    UI's ``open_session_diagnostics`` action can resolve: a
+    ``validation/<sha>.json`` record with stdout_path / stderr_path
+    fields, and the underlying log files. Without these, a failed-
+    validation timeline row links to nothing and the operator can't
+    see what broke.
+    """
+    ctx = scenario("validation_diag_persisted", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail.sh"), max_retries=0) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_validation_status("failed") \
+        .run()
+
+    # Find the worktree the orchestrator used so we can inspect its
+    # ``.issue-orchestrator/validation/`` directory.
+    worktree_root = scenario_repo / ".issue-orchestrator" / "worktrees"
+    sim_worktrees = [p for p in worktree_root.iterdir() if p.is_dir()] if worktree_root.exists() else []
+    assert sim_worktrees, "expected a simulated worktree to exist"
+    validation_dir = sim_worktrees[0] / ".issue-orchestrator" / "validation"
+    record_files = list(validation_dir.glob("*.json")) if validation_dir.exists() else []
+    assert record_files, (
+        f"expected validation/<sha>.json record under {validation_dir}; "
+        "the failed-validation diagnostics action depends on it."
+    )
+    record = json.loads(record_files[0].read_text())
+    assert record.get("passed") is False
+    stdout_rel = record.get("stdout_path")
+    stderr_rel = record.get("stderr_path")
+    assert stdout_rel and stderr_rel, (
+        "validation record missing stdout_path/stderr_path; "
+        "diagnostic action cannot link to the actual log files"
+    )
+    stdout_abs = sim_worktrees[0] / stdout_rel
+    stderr_abs = sim_worktrees[0] / stderr_rel
+    assert stdout_abs.exists(), f"stdout log missing at {stdout_abs}"
+    assert stderr_abs.exists(), f"stderr log missing at {stderr_abs}"
+    # Sanity: events emitted with the right context were captured.
+    assert any(
+        evt.name == EventName.SESSION_VALIDATION_FAILED
+        for evt in ctx.events_since_baseline()
+    ), "expected SESSION_VALIDATION_FAILED to be emitted"
