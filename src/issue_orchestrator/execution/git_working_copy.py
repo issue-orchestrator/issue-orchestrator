@@ -193,7 +193,7 @@ class GitWorkingCopy:
         """Parse NUL-delimited path output from git commands."""
         return [path for path in output.split("\0") if path]
 
-    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]:
+    def list_dirty_files(self, worktree: Path, mode: str) -> list[str] | None:
         """List dirty file paths for guard diagnostics.
 
         Args:
@@ -201,7 +201,12 @@ class GitWorkingCopy:
             mode: One of "tracked", "unstaged", or "all".
 
         Returns:
-            Sorted unique file paths. Returns empty list on error.
+            Sorted unique file paths on success. ``None`` when the git
+            invocations needed to enumerate dirty state failed — callers
+            must distinguish this from an intentionally empty filtered
+            list (which is ``[]``) and fail closed accordingly. Without
+            this distinction, an enumeration failure during a publish
+            gate would silently approve the push (#6159 review feedback).
         """
         try:
             files: set[str] = set()
@@ -231,7 +236,7 @@ class GitWorkingCopy:
             return sorted(files)
         except GitError:
             logger.warning("Failed to list dirty files in %s", worktree)
-            return []
+            return None
 
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         """Get commits that are ahead of main branch."""
