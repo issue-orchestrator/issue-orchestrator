@@ -223,3 +223,25 @@ internal_timeline:
     status: completed
     level: phase
     parent_key: "issue:1234"
+
+# Expected user-facing timeline after view-registry fan-out + view filter.
+# Rendered via the same pipeline `DefaultTimelineWriter` uses (fan-out +
+# narrative enrichment), then filtered to `external_view`. Note that
+# events with only `_ops`/`_debug` fan-out do NOT appear here — e.g.
+# `validation.started` and `validation.completed` are ops-only and the
+# user view should not see them.
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, phase: in_progress, step: started, status: started, level: detail, logical_phase: coding, narrative: "Coding agent started" }
+  - { event: agent.coding_completed, phase: in_progress, step: completion_detected, status: completed, level: detail, logical_phase: coding, narrative: "Agent finished coding" }
+  - { event: agent.completed, phase: in_progress, step: completed, status: completed, level: detail, logical_phase: orchestrator, narrative: "Issue completed" }
+  - { event: validation.passed, phase: orchestrator, step: validation_passed, status: completed, level: detail, logical_phase: orchestrator, narrative: "Validation passed" }
+  - { event: pr.created, phase: orchestrator, step: pr_created, status: completed, level: phase, logical_phase: orchestrator, narrative: "PR #42 created" }
+  - { event: review.started, phase: reviewing, step: started, status: started, level: phase, logical_phase: review, narrative: "Code review started" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, level: phase, logical_phase: review, narrative: "Review exchange started" }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, level: phase, logical_phase: review, narrative: "Review round 1 started" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, level: phase, logical_phase: review, narrative: "Review round 1 completed — ok" }
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, level: phase, logical_phase: review, narrative: "Review exchange completed (1 rounds)" }
+  - { event: review.approved, phase: reviewing, step: approved, status: completed, level: phase, logical_phase: review, narrative: "Review approved" }
+  - { event: review.merged, phase: reviewing, step: merged, status: completed, level: phase, logical_phase: review, narrative: "PR merged" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, level: phase, logical_phase: orchestrator, narrative: "Issue completed" }

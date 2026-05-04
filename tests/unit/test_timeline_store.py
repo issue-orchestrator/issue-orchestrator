@@ -718,9 +718,9 @@ class TestNarrativeEnrichment:
         assert narrative == "Coder completed rework for review round 2"
 
     def test_unhandled_event_keeps_static_narrative(self) -> None:
-        from issue_orchestrator.execution.timeline_writer import _enrich_narrative
+        from issue_orchestrator.events.fan_out_pipeline import enrich_narrative
 
-        result = _enrich_narrative(
+        result = enrich_narrative(
             "Code review started", "review.started", {"issue_number": 42}
         )
         assert result == "Code review started"

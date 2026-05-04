@@ -7,17 +7,17 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 
 from ..domain.logical_event_semantics import enrich_logical_semantics
 from ..events.catalog import EVENT_SCHEMA_VERSION
-from ..events.view_registry import fan_out
+from ..events.fan_out_pipeline import produce_external_records
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..timeline import TIMELINE_SCHEMA_VERSION
 from .timeline_artifact_expectations import validate_event_artifact_expectations
 from ..ports.event_sink import TraceEvent
-from ..ports.timeline_store import TimelineRecord, TimelineStore
+from ..ports.timeline_store import TimelineStore
 from ..ports.timeline_writer import TimelineWriter
 
 logger = logging.getLogger(__name__)
@@ -90,163 +90,17 @@ class DefaultTimelineWriter(TimelineWriter):
                 previous_source,
             )
 
-        # Fan out: one internal event -> N external timeline records
-        external_events = fan_out(event.name)
-        for i, view_event in enumerate(external_events):
-            record_data = dict(safe_data)
-            record_data["views"] = sorted(view_event.views)
-            if view_event.narrative:
-                record_data["narrative"] = _enrich_narrative(
-                    view_event.narrative, event.name, safe_data,
-                )
-            if view_event.phase:
-                enriched_phase = record_data.get("logical_phase", "system")
-                # Don't override if enrichment already promoted the phase
-                # (e.g. coding→rework for session.started in a rework cycle).
-                if enriched_phase != "rework" or view_event.phase != "coding":
-                    record_data["logical_phase"] = view_event.phase
-
-            record_id = base_event_id if i == 0 else f"{base_event_id}-{i}"
-            record = TimelineRecord(
-                event_id=record_id,
-                timestamp=ts_iso,
-                event=view_event.name,
-                data=record_data,
-                source_event=event.name,
-            )
+        # Single canonical fan-out surface — used here for production and
+        # by golden tests via the same `produce_external_records()`. Any
+        # change to fan-out / narrative / phase-override policy lands in
+        # one place.
+        for record in produce_external_records(
+            internal_event_name=event.name,
+            enriched_data=safe_data,
+            base_event_id=base_event_id,
+            timestamp_iso=ts_iso,
+        ):
             self._store.append(issue_number, record)
-
-
-def _enrich_narrative(
-    narrative: str,
-    internal_event: str,
-    data: dict[str, Any],
-) -> str:
-    """Enrich a static narrative with dynamic event data.
-
-    Injects round numbers, PR numbers, and review round counts into
-    the narrative at write time so the stored timeline is self-describing.
-    """
-    enricher = _NARRATIVE_ENRICHERS.get(internal_event)
-    if enricher is not None:
-        return enricher(data) or narrative
-    return narrative
-
-
-def _enrich_round_started(data: dict[str, Any]) -> str | None:
-    ri = data.get("round_index")
-    return f"Review round {ri} started" if isinstance(ri, int) else None
-
-
-def _enrich_round_completed(data: dict[str, Any]) -> str | None:
-    ri = data.get("round_index")
-    if not isinstance(ri, int):
-        return None
-    verdict = data.get("reviewer_response_type")
-    suffix = f" — {verdict}" if isinstance(verdict, str) and verdict else ""
-    return f"Review round {ri} completed{suffix}"
-
-
-def _enrich_session_started(data: dict[str, Any]) -> str | None:
-    if data.get("reset_from_scratch"):
-        return "Scratch coding agent started"
-    return None
-
-
-def _enrich_issue_unblocked(data: dict[str, Any]) -> str | None:
-    if data.get("from_scratch"):
-        return "Scratch reset requested"
-    return None
-
-
-def _enrich_review_started(data: dict[str, Any]) -> str | None:
-    if data.get("cached"):
-        return "Cached review result reused for unchanged commit"
-    return None
-
-
-def _enrich_review_approved(data: dict[str, Any]) -> str | None:
-    if data.get("cached"):
-        return "Cached review approval reused for unchanged commit"
-    rounds = data.get("rounds")
-    return f"Review approved after {rounds} rounds" if isinstance(rounds, int) and rounds > 1 else None
-
-
-def _enrich_review_rework_started(data: dict[str, Any]) -> str | None:
-    ri = data.get("round_index")
-    return f"Coder started rework for review round {ri}" if isinstance(ri, int) else None
-
-
-def _enrich_review_rework_completed(data: dict[str, Any]) -> str | None:
-    ri = data.get("round_index")
-    return f"Coder completed rework for review round {ri}" if isinstance(ri, int) else None
-
-
-def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
-    if data.get("cached"):
-        return "Cached changes-requested verdict reused for unchanged commit"
-    rounds = data.get("rounds")
-    return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
-
-
-def _enrich_pr_created(data: dict[str, Any]) -> str | None:
-    pr = data.get("pr_number")
-    return f"PR #{pr} created" if isinstance(pr, int) else None
-
-
-def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
-    rounds = data.get("rounds")
-    return f"Review exchange completed ({rounds} rounds)" if isinstance(rounds, int) else None
-
-
-def _role_label(role: Any) -> str | None:
-    if isinstance(role, str) and role in {"coder", "reviewer"}:
-        return role.capitalize()
-    return None
-
-
-def _enrich_role_prompted(data: dict[str, Any]) -> str | None:
-    role = _role_label(data.get("role"))
-    ri = data.get("round_index")
-    if role and isinstance(ri, int):
-        return f"{role} prompt sent (round {ri})"
-    return None
-
-
-def _enrich_role_feedback(data: dict[str, Any]) -> str | None:
-    role = _role_label(data.get("role"))
-    ri = data.get("round_index")
-    verdict = data.get("response_type")
-    if not (role and isinstance(ri, int)):
-        return None
-    suffix = f" — {verdict}" if isinstance(verdict, str) and verdict else ""
-    return f"{role} feedback (round {ri}){suffix}"
-
-
-def _enrich_role_timeout(data: dict[str, Any]) -> str | None:
-    role = _role_label(data.get("role"))
-    ri = data.get("round_index")
-    if role and isinstance(ri, int):
-        return f"{role} timed out (round {ri})"
-    return None
-
-
-_NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
-    "session.started": _enrich_session_started,
-    "issue.unblocked": _enrich_issue_unblocked,
-    "review.started": _enrich_review_started,
-    "review_exchange.round_started": _enrich_round_started,
-    "review_exchange.round_completed": _enrich_round_completed,
-    "review_exchange.role_prompted": _enrich_role_prompted,
-    "review_exchange.role_feedback": _enrich_role_feedback,
-    "review_exchange.role_timeout": _enrich_role_timeout,
-    "review.rework_started": _enrich_review_rework_started,
-    "review.rework_completed": _enrich_review_rework_completed,
-    "review.approved": _enrich_review_approved,
-    "review.changes_requested": _enrich_changes_requested,
-    "issue.pr_created": _enrich_pr_created,
-    "review_exchange.completed": _enrich_exchange_completed,
-}
 
 
 def _normalize_json(value: Any) -> Any:
