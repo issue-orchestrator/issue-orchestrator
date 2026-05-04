@@ -664,23 +664,13 @@ async def orchestrator_watcher(
     if port <= 0:
         pytest.skip("Control API disabled; async watcher unavailable")
 
-    # See create_watcher_for_port in flows.py for the auth contract:
-    # the orchestrator's loopback API requires ``Authorization: Bearer …``
-    # for SSE / snapshot / replay. The env-aware helper matches the
-    # server's ``resolve_api_token`` precedence — env wins over the
-    # on-disk file.
-    from issue_orchestrator.infra.api_token import read_existing_admin_token
-    token = read_existing_admin_token()
-    stream = SSEEventStream(
-        f"http://localhost:{port}/api/events", auth_token=token,
-    )
+    # Both watcher paths (this fixture and ``create_watcher_for_port``
+    # in flows.py) route through ``build_watcher_clients`` so the
+    # auth-wiring contract has one owner; see
+    # ``tests/e2e/_watcher_auth.py``.
+    from tests.e2e._watcher_auth import build_watcher_clients
+    stream, snapshot_provider, replay_provider = build_watcher_clients(port)
     await stream.start()
-    snapshot_provider = HTTPSnapshotProvider(
-        f"http://localhost:{port}/api/snapshot", auth_token=token,
-    )
-    replay_provider = HTTPReplayProvider(
-        f"http://localhost:{port}/api/events_since", auth_token=token,
-    )
     watcher = await OrchestratorWatcher.create(
         event_stream=stream,
         snapshot_provider=snapshot_provider,

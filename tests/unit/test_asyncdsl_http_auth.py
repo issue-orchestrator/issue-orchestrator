@@ -28,82 +28,71 @@ from issue_orchestrator.testing.asyncdsl.http import (
 )
 
 
-@pytest.mark.asyncio
-async def test_e2e_watcher_wires_env_token_through_to_clients(monkeypatch):
-    """Pin the watcher *wiring*, not the underlying helper.
+def test_e2e_watcher_clients_pick_up_env_token(monkeypatch):
+    """Pin the watcher auth-wiring contract at its single owner.
 
-    The bug ``read_existing_admin_token`` was introduced to fix is that
-    the watcher call sites picked the wrong token source. Asserting
-    only the helper would miss a regression where ``flows.py`` /
-    ``conftest.py`` switch back to a file-only helper; the helper
-    itself would still be correct in isolation.
+    Both watcher call sites (``tests/e2e/flows.py::create_watcher_for_port``
+    and ``tests/e2e/conftest.py::orchestrator_watcher``) route through
+    ``tests/e2e/_watcher_auth.py::build_watcher_clients``. Testing the
+    helper covers both call sites at once — a regression that swaps
+    one path back to a file-only helper would still fail this test
+    because the helper is the contract.
 
-    Strategy: monkeypatch the three client constructors to capture the
-    ``auth_token`` they receive, then call ``create_watcher_for_port``.
-    The wiring is verified by what each constructor was asked to use,
-    independent of whether the watcher's internal materializer
-    succeeds against the canned response.
+    Set ``ISSUE_ORCHESTRATOR_API_TOKEN`` and verify all three clients
+    (SSE / snapshot / replay) receive that env-token via their
+    ``auth_token`` field.
     """
     from issue_orchestrator.infra.api_token import TOKEN_ENV_VAR
-    from issue_orchestrator.testing.asyncdsl import http as asyncdsl_http
-    from tests.e2e import flows as e2e_flows
+    from tests.e2e._watcher_auth import build_watcher_clients
 
-    monkeypatch.setenv(TOKEN_ENV_VAR, "wire-test-env-token")
+    monkeypatch.setenv(TOKEN_ENV_VAR, "shared-helper-env-token")
+    sse, snapshot, replay = build_watcher_clients(19080)
 
-    constructed: dict[str, str | None] = {}
+    assert sse.auth_token == "shared-helper-env-token", (
+        "SSE client missing env-token; helper or env-precedence regressed"
+    )
+    assert snapshot.auth_token == "shared-helper-env-token", (
+        "snapshot client missing env-token; helper or env-precedence regressed"
+    )
+    assert replay.auth_token == "shared-helper-env-token", (
+        "replay client missing env-token; helper or env-precedence regressed"
+    )
 
-    class _RecordingSSE(asyncdsl_http.SSEEventStream):
-        def __post_init__(self) -> None:
-            constructed["sse_token"] = self.auth_token
-            super().__post_init__()
 
-        async def start(self) -> None:
-            return  # don't spawn a thread; we already captured the token
+def test_e2e_watcher_clients_explicit_token_wins(monkeypatch):
+    """Caller-supplied ``auth_token`` overrides the resolved token,
+    so tests that need to drive a specific value (e.g. the negative
+    "no token" case) don't have to muck with env state.
+    """
+    from issue_orchestrator.infra.api_token import TOKEN_ENV_VAR
+    from tests.e2e._watcher_auth import build_watcher_clients
 
-    class _RecordingSnapshot(asyncdsl_http.HTTPSnapshotProvider):
-        # Subclasses without ``@dataclass`` do not inherit the parent's
-        # ``__post_init__`` hook, and the parent has none anyway. Override
-        # ``__init__`` directly to capture the token.
-        def __init__(self, url, auth_token=None):
-            super().__init__(url=url, auth_token=auth_token)
-            constructed["snapshot_token"] = auth_token
+    monkeypatch.setenv(TOKEN_ENV_VAR, "env-loses")
+    sse, snapshot, replay = build_watcher_clients(19080, auth_token="explicit-wins")
+    assert sse.auth_token == "explicit-wins"
+    assert snapshot.auth_token == "explicit-wins"
+    assert replay.auth_token == "explicit-wins"
 
-    class _RecordingReplay(asyncdsl_http.HTTPReplayProvider):
-        def __init__(self, url, auth_token=None):
-            super().__init__(url=url, auth_token=auth_token)
-            constructed["replay_token"] = auth_token
 
-    # Patch the names ``flows.py`` imports from so the watcher path
-    # picks up the recording subclasses.
-    monkeypatch.setattr(e2e_flows, "SSEEventStream", _RecordingSSE)
-    monkeypatch.setattr(e2e_flows, "HTTPSnapshotProvider", _RecordingSnapshot)
-    monkeypatch.setattr(e2e_flows, "HTTPReplayProvider", _RecordingReplay)
+def test_e2e_watcher_call_sites_route_through_shared_helper():
+    """Guardrail: the contract is "both watcher paths route through
+    ``build_watcher_clients``". Asserting on the *imports* keeps a
+    future PR from accidentally re-introducing the duplicated
+    construction blocks (and therefore the auth-wiring drift this
+    helper exists to prevent).
+    """
+    from pathlib import Path
 
-    # ``OrchestratorWatcher.create`` expects a real snapshot stream;
-    # short-circuit so the test focuses on the wiring stage.
-    class _NoopWatcher:
-        @classmethod
-        async def create(cls, **_kwargs):
-            return cls()
+    repo_root = Path(__file__).resolve().parents[2]
+    flows_text = (repo_root / "tests" / "e2e" / "flows.py").read_text()
+    conftest_text = (repo_root / "tests" / "e2e" / "conftest.py").read_text()
 
-        async def close(self):
-            return
-
-    monkeypatch.setattr(e2e_flows, "OrchestratorWatcher", _NoopWatcher)
-
-    watcher, _stream = await e2e_flows.create_watcher_for_port(19080)
-    try:
-        assert constructed.get("sse_token") == "wire-test-env-token", (
-            "SSE client missing env-token; watcher wired wrong helper"
+    for name, text in (("flows.py", flows_text), ("conftest.py", conftest_text)):
+        assert "build_watcher_clients" in text, (
+            f"{name} no longer references the shared "
+            "build_watcher_clients helper; the auth-wiring contract "
+            "is now duplicated again."
         )
-        assert constructed.get("snapshot_token") == "wire-test-env-token", (
-            "snapshot client missing env-token; watcher wired wrong helper"
-        )
-        assert constructed.get("replay_token") == "wire-test-env-token", (
-            "replay client missing env-token; watcher wired wrong helper"
-        )
-    finally:
-        await watcher.close()
 
 
 def test_e2e_watcher_resolves_token_env_first(monkeypatch):
