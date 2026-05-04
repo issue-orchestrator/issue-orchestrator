@@ -81,14 +81,12 @@ records:
     timestamp: "2026-05-04T00:04:00Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
 
   - event: review_exchange.started
     timestamp: "2026-05-04T00:04:01Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
 
   # ============== Round 1: reviewer says needs_work → rework ==============
@@ -96,7 +94,6 @@ records:
     timestamp: "2026-05-04T00:04:02Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 1
 
@@ -104,7 +101,6 @@ records:
     timestamp: "2026-05-04T00:04:03Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 1
       role: reviewer
@@ -113,7 +109,6 @@ records:
     timestamp: "2026-05-04T00:04:25Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 1
       role: reviewer
@@ -124,7 +119,6 @@ records:
     timestamp: "2026-05-04T00:04:26Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: rework
       round_index: 1
       reviewer_response_type: needs_work
@@ -134,7 +128,6 @@ records:
     timestamp: "2026-05-04T00:04:27Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: rework
       round_index: 1
       role: coder
@@ -143,7 +136,6 @@ records:
     timestamp: "2026-05-04T00:06:30Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: rework
       round_index: 1
       role: coder
@@ -154,7 +146,6 @@ records:
     timestamp: "2026-05-04T00:06:31Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: rework
       round_index: 1
       reviewer_response_type: needs_work
@@ -166,7 +157,6 @@ records:
     timestamp: "2026-05-04T00:06:32Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 1
       reviewer_response_type: needs_work
@@ -179,7 +169,6 @@ records:
     timestamp: "2026-05-04T00:08:00Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 2
 
@@ -187,7 +176,6 @@ records:
     timestamp: "2026-05-04T00:08:01Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 2
       role: reviewer
@@ -196,7 +184,6 @@ records:
     timestamp: "2026-05-04T00:08:25Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 2
       role: reviewer
@@ -210,7 +197,6 @@ records:
     timestamp: "2026-05-04T00:08:26Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       round_index: 2
       reviewer_response_type: ok
@@ -221,7 +207,6 @@ records:
     timestamp: "2026-05-04T00:08:27Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       rounds: 2
       status: ok
@@ -235,7 +220,6 @@ records:
     timestamp: "2026-05-04T00:08:28Z"
     data:
       issue_number: 7777
-      pr_number: 88
       task: review
       rounds: 2
       summary: "Looks good now"
@@ -244,7 +228,6 @@ records:
     timestamp: "2026-05-04T00:09:00Z"
     data:
       issue_number: 7777
-      pr_number: 88
 
   - event: issue.completed
     timestamp: "2026-05-04T00:09:30Z"
@@ -267,7 +250,7 @@ internal_timeline:
     parent_key: "review:88"
     artifacts:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
-  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "review:88" }
+  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "issue:7777" }
   - { event: review_exchange.started, phase: reviewing, step: started, status: started }
 
   # Round 1
