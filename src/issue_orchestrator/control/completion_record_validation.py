@@ -227,12 +227,25 @@ class CompletionRecordValidator:
                 if blocking_files
                 else "<runtime-only>",
             )
-            if dirty_files and not blocking_files:
-                logger.info(
-                    "Dirty-check ignored runtime-only files for %s: %s",
-                    worktree,
-                    ", ".join(dirty_files),
-                )
+            if not blocking_files:
+                # Bool short-circuit (has_uncommitted_changes / has_tracked_changes)
+                # can fire on paths that ``list_dirty_files`` then filters out:
+                # orchestrator-planted untracked files in mode=all (filtered
+                # inside list_dirty_files) and runtime-managed metadata
+                # (filtered here). Either way, ``blocking_files`` is the
+                # authoritative gate — empty means nothing to block on.
+                if dirty_files:
+                    logger.info(
+                        "Dirty-check ignored runtime-only files for %s: %s",
+                        worktree,
+                        ", ".join(dirty_files),
+                    )
+                else:
+                    logger.info(
+                        "Dirty-check found no blocking files for %s "
+                        "(planted/runtime entries filtered)",
+                        worktree,
+                    )
                 return WorktreeValidationResult.pass_()
             reason = (
                 "Working tree is dirty; commit/add/stash before pushing. "
