@@ -320,13 +320,10 @@ internal_timeline:
   - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
   - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:7777", detail: "Round 2. Looks good now" }
 
-  # `review_exchange.completed.summary` is "reviewer_ok" because
-  # `_summary_from_data` reads `data.reason` first; in the actual
-  # runner payload `reason="reviewer_ok"` is a machine code, not
-  # human-readable text. Worth a follow-up to either drop `reason`
-  # from the user-facing summary fallback chain or use a
-  # human-readable string.
-  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:7777", summary: "reviewer_ok" }
+  # `review_exchange.completed` no longer renders machine codes as
+  # summary; the narrative ("Review exchange completed (N rounds)")
+  # is the user-facing text.
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:7777" }
 
   # `review.approved.summary` is the reviewer's response_text.
   - { event: review.approved, phase: reviewing, step: approved, status: completed, parent_key: "issue:7777", summary: "Looks good now" }
@@ -367,7 +364,7 @@ external_timeline:
   - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 2)" }
   - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 2) — ok" }
   - { event: review_exchange.round_completed, status: completed, narrative: "Review round 2 completed — ok", detail: "Round 2. Looks good now" }
-  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)", summary: "reviewer_ok" }
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)" }
   - { event: review.approved, status: completed, narrative: "Review approved after 2 rounds", summary: "Looks good now" }
   - { event: review.merged, status: completed, narrative: "PR merged" }
   - { event: issue.completed, status: completed, narrative: "Issue completed" }
