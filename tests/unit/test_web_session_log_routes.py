@@ -623,6 +623,116 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
+    def test_terminal_recording_persistent_layout_uses_chapters_to_scrub(self, tmp_path: Path):
+        """Persistent layout: phase-scoped request slices the role's
+        recording to the requested round using ``chapters.json``, and
+        returns the chapter list + ``recording_event_index`` so the UI
+        can render an outline and start playback at the right offset.
+        Regression for the #6160 re-review finding that the route was
+        returning the entire role recording with no chapter metadata.
+        """
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-persistent-chapters"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+
+        recording = run.run_dir / "reviewer" / "terminal-recording.jsonl"
+        recording.parent.mkdir(parents=True, exist_ok=True)
+        events_lines = []
+        for index in range(6):
+            events_lines.append(
+                '{"data_b64":"aGk=","event_type":"output","offset_ms":'
+                + str(index)
+                + ',"schema_version":1}'
+            )
+        recording.write_text("\n".join(events_lines) + "\n", encoding="utf-8")
+
+        chapters_path = run.run_dir / "reviewer" / "chapters.json"
+        chapters_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "role": "reviewer",
+                    "exchange_run_id": "exchange-1",
+                    "issue_number": 123,
+                    "chapters": [
+                        {
+                            "cycle_index": 1,
+                            "section": "prompt",
+                            "recording_event_index": 0,
+                            "recorded_at": "2026-05-04T00:00:00Z",
+                            "label": "Round 1 Prompt",
+                        },
+                        {
+                            "cycle_index": 1,
+                            "section": "feedback",
+                            "recording_event_index": 1,
+                            "recorded_at": "2026-05-04T00:00:01Z",
+                            "label": "Round 1 Feedback",
+                        },
+                        {
+                            "cycle_index": 2,
+                            "section": "prompt",
+                            "recording_event_index": 3,
+                            "recorded_at": "2026-05-04T00:00:02Z",
+                            "label": "Round 2 Prompt",
+                        },
+                        {
+                            "cycle_index": 2,
+                            "section": "feedback",
+                            "recording_event_index": 4,
+                            "recorded_at": "2026-05-04T00:00:03Z",
+                            "label": "Round 2 Feedback",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=1&session_role=reviewer"
+            )
+            assert response.status_code == 200
+            round1 = response.json()
+            assert round1["recording_path"].endswith("/reviewer/terminal-recording.jsonl")
+            # Round 1 spans events [0, 3) — three of the six events.
+            assert round1["total_events"] == 3
+            assert round1["recording_event_index"] == 0
+            assert isinstance(round1["chapters"], list)
+            assert len(round1["chapters"]) == 4
+            sections = [(ch["cycle_index"], ch["section"]) for ch in round1["chapters"]]
+            assert sections == [
+                (1, "prompt"),
+                (1, "feedback"),
+                (2, "prompt"),
+                (2, "feedback"),
+            ]
+
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=2&session_role=reviewer"
+            )
+            assert response.status_code == 200
+            round2 = response.json()
+            # Round 2 spans events [3, end) — three of the six events,
+            # and starts at recording event index 3.
+            assert round2["total_events"] == 3
+            assert round2["recording_event_index"] == 3
+            assert len(round2["chapters"]) == 4
+        finally:
+            set_orchestrator(None)
+
     def test_terminal_recording_preserves_initial_geometry_when_tail_is_truncated(self, tmp_path: Path):
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 

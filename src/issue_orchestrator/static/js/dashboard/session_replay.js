@@ -91,6 +91,17 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
             replaySessionToIndex(sessionReplayState.events.length);
         }
     }
+    if (Array.isArray(data.chapters)) {
+        // Chapters grow during a run as later rounds emit prompt/feedback
+        // boundaries. Refresh the outline whenever the backend returns a
+        // longer (or different) list so the user can jump to rounds that
+        // didn't exist when the modal first opened.
+        const previous = sessionReplayState.chapters || [];
+        if (data.chapters.length !== previous.length) {
+            sessionReplayState.chapters = data.chapters;
+            renderSessionReplayChapters(sessionReplayState);
+        }
+    }
     const recordingPathEl = document.getElementById('sessionReplayPath');
     if (recordingPathEl) recordingPathEl.textContent = data.recording_path || '';
     updateSessionReplayUi();
@@ -148,6 +159,7 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
                     <span class="session-replay-status" id="sessionReplayStatus"></span>
                 </div>
             </div>
+            <div class="session-replay-chapters" id="sessionReplayChapters" hidden></div>
             <div class="session-replay-progress">
                 <input class="session-replay-seek" type="range" id="sessionReplaySeek" min="0" max="0" value="0" step="1">
                 <span class="session-replay-progress-text" id="sessionReplayProgressText">0 / 0 events</span>
@@ -337,14 +349,80 @@ function initializeSessionReplay(issueNumber, runDir, payload) {
         follow: true,
         terminal: null,
         fitAddon: null,
+        chapters: Array.isArray(payload.chapters) ? payload.chapters : null,
+        recordingEventIndex: Number.isInteger(payload.recording_event_index)
+            ? payload.recording_event_index
+            : null,
     };
     logFollow = true;
     const pathEl = document.getElementById('sessionReplayPath');
     if (pathEl) pathEl.textContent = payload.recording_path || '';
+    renderSessionReplayChapters(sessionReplayState);
     const terminalHost = document.getElementById('sessionReplayTerminal');
     if (!terminalHost) return;
     createSessionReplayTerminal();
     replaySessionToIndex(events.length);
+}
+
+function renderSessionReplayChapters(state) {
+    // Persistent-runner exchanges write chapters.json next to each
+    // role's recording. When the backend slices the role recording to
+    // a specific round, it returns the full chapter outline plus the
+    // absolute ``recording_event_index`` where this slice starts. We
+    // surface both so the user can see "Round 2 → Coder Prompt"
+    // without having to scrub the whole role recording. Whole-run
+    // recordings (no chapters) keep the chapters drawer hidden.
+    const host = document.getElementById('sessionReplayChapters');
+    if (!host) return;
+    const chapters = (state && Array.isArray(state.chapters)) ? state.chapters : null;
+    if (!chapters || chapters.length === 0) {
+        host.hidden = true;
+        host.innerHTML = '';
+        return;
+    }
+    const baseIndex = Number.isInteger(state.recordingEventIndex)
+        ? state.recordingEventIndex
+        : 0;
+    host.hidden = false;
+    host.innerHTML = '';
+    const heading = document.createElement('div');
+    heading.className = 'session-replay-chapters-title';
+    heading.textContent = 'Chapters';
+    host.appendChild(heading);
+    const list = document.createElement('ul');
+    list.className = 'session-replay-chapters-list';
+    for (const chapter of chapters) {
+        const item = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'session-replay-chapter-link';
+        const labelText = chapter && chapter.label
+            ? String(chapter.label)
+            : `Round ${chapter.cycle_index} ${chapter.section}`;
+        button.textContent = labelText;
+        // Translate the chapter's absolute index into a slice-relative
+        // playback index so seeking to "Round 2 Prompt" lands on the
+        // event at offset (chapter_index - slice_start). Out-of-window
+        // chapters are still listed (so users can see what other
+        // rounds exist) but their links no-op gracefully.
+        const sliceIndex = Number(chapter.recording_event_index) - baseIndex;
+        if (
+            Number.isInteger(sliceIndex)
+            && sliceIndex >= 0
+            && sliceIndex <= state.events.length
+        ) {
+            button.addEventListener('click', () => {
+                pauseSessionReplay();
+                replaySessionToIndex(sliceIndex);
+            });
+        } else {
+            button.disabled = true;
+            button.title = 'Outside of the current round window';
+        }
+        item.appendChild(button);
+        list.appendChild(item);
+    }
+    host.appendChild(list);
 }
 
 function renderSessionTranscript(issueNumber, runDir, payload) {

@@ -11,12 +11,18 @@ from typing import Any, Literal
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from ..domain.exchange_chapter import (
+    CHAPTER_SECTION_PROMPT,
+    ExchangeChapter,
+    ExchangeChapterSidecar,
+)
 from ..execution.manifest_accessor import ArtifactNotFoundError, ManifestAccessor, RunIdentity
 from ..execution.review_exchange_transcript import (
     filter_review_exchange_transcript,
     parse_review_exchange_transcript,
     render_review_exchange_transcript,
 )
+from ..execution.session_output_adapter import EXCHANGE_CHAPTERS_NAME
 from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.claude_jsonl import claude_jsonl_entry_preview_lines
 from ..infra.session_log_prettify import (
@@ -34,6 +40,145 @@ from .web_session_context import (
 logger = logging.getLogger(__name__)
 
 web_session_router = APIRouter()
+
+
+def _load_phase_chapter_sidecar(
+    recording_path: Path,
+    role: str,
+) -> ExchangeChapterSidecar | None:
+    """Read the chapter sidecar that sits next to a persistent-layout recording.
+
+    The persistent runner writes ``<run_dir>/<role>/terminal-recording.jsonl``
+    plus ``<run_dir>/<role>/chapters.json``. The legacy spawn-per-phase
+    layout has no sidecar — return ``None`` so callers fall back to
+    serving the whole recording slice they were given.
+    """
+    sidecar_path = recording_path.parent / EXCHANGE_CHAPTERS_NAME
+    if not sidecar_path.exists():
+        return None
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        return ExchangeChapterSidecar.from_payload(payload)
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Malformed chapters sidecar at %s: %s — serving whole recording",
+            sidecar_path,
+            exc,
+        )
+        return None
+
+
+def _phase_event_window(
+    chapters: list[ExchangeChapter],
+    round_index: int,
+) -> tuple[int, int | None]:
+    """Return ``(start_index, end_index_or_None)`` in the recording for one round.
+
+    The window starts at the prompt chapter for ``round_index`` and ends
+    at the prompt chapter for the next round (exclusive). The final
+    round has no successor, so ``end_index`` is ``None`` meaning
+    "until end of recording" — the UI playhead naturally stops there.
+    """
+    sorted_prompts = sorted(
+        (
+            chapter
+            for chapter in chapters
+            if chapter.section == CHAPTER_SECTION_PROMPT
+        ),
+        key=lambda chapter: chapter.cycle_index,
+    )
+    start_index = 0
+    end_index: int | None = None
+    found_target = False
+    for chapter in sorted_prompts:
+        if chapter.cycle_index == round_index:
+            start_index = chapter.recording_event_index
+            found_target = True
+        elif found_target and chapter.cycle_index > round_index:
+            end_index = chapter.recording_event_index
+            break
+    return start_index, end_index
+
+
+def _chapters_payload(
+    chapters: list[ExchangeChapter],
+) -> list[dict[str, Any]]:
+    """Render chapters for the JSON response — one entry per chapter."""
+    return [
+        {
+            "cycle_index": chapter.cycle_index,
+            "section": chapter.section,
+            "recording_event_index": chapter.recording_event_index,
+            "recorded_at": chapter.recorded_at,
+            "label": chapter.label,
+        }
+        for chapter in chapters
+    ]
+
+
+@dataclass(frozen=True)
+class _PhaseScope:
+    """Resolved phase-scoping inputs for serve_terminal_recording."""
+
+    round_index: int | None
+    session_role: str | None
+
+
+def _resolve_phase_scope(
+    round_index: int | None,
+    session_role: str | None,
+) -> _PhaseScope | JSONResponse:
+    """Validate phase-scoping query params and return the resolved tuple.
+
+    Returns a 400 response when the caller supplied one half of the pair
+    (round_index without session_role or vice versa). Either both are
+    set (phase scope) or both are None (whole-run scope).
+    """
+    resolved_round_index = _positive_int(round_index)
+    resolved_session_role = str(session_role or "").strip().lower() or None
+    if resolved_round_index is None and resolved_session_role is None:
+        return _PhaseScope(round_index=None, session_role=None)
+    if resolved_round_index is None or not resolved_session_role:
+        return JSONResponse(
+            {
+                "error": (
+                    "round_index and session_role are required together "
+                    "for phase-scoped recordings"
+                ),
+            },
+            status_code=400,
+        )
+    return _PhaseScope(
+        round_index=resolved_round_index,
+        session_role=resolved_session_role,
+    )
+
+
+def _slice_events_to_phase_window(
+    all_events: list[dict[str, Any]],
+    recording_path: Path,
+    scope: _PhaseScope,
+) -> tuple[
+    list[dict[str, Any]], int, ExchangeChapterSidecar | None, int,
+]:
+    """Slice events to the requested round's window using chapters.json.
+
+    Returns ``(events, total_events, sidecar_or_none, window_start)``.
+    The persistent layout writes chapters next to each role's recording;
+    the legacy spawn-per-phase layout has its own per-round file and no
+    sidecar, in which case we return the unsliced events untouched.
+    """
+    if scope.round_index is None or scope.session_role is None:
+        return all_events, len(all_events), None, 0
+    sidecar = _load_phase_chapter_sidecar(recording_path, scope.session_role)
+    if sidecar is None or not sidecar.chapters:
+        return all_events, len(all_events), sidecar, 0
+    window_start, window_end = _phase_event_window(
+        sidecar.chapters, scope.round_index,
+    )
+    slice_end = window_end if window_end is not None else len(all_events)
+    sliced = all_events[window_start:slice_end]
+    return sliced, len(sliced), sidecar, window_start
 
 
 def serve_terminal_recording(
@@ -57,23 +202,14 @@ def serve_terminal_recording(
 
     run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
     accessor = ManifestAccessor(run_identity)
+    scope = _resolve_phase_scope(round_index, session_role)
+    if isinstance(scope, JSONResponse):
+        return scope
     try:
-        resolved_round_index = _positive_int(round_index)
-        resolved_session_role = str(session_role or "").strip().lower() or None
-        if resolved_round_index is not None or resolved_session_role is not None:
-            if resolved_round_index is None or not resolved_session_role:
-                return JSONResponse(
-                    {
-                        "error": (
-                            "round_index and session_role are required together "
-                            "for phase-scoped recordings"
-                        ),
-                    },
-                    status_code=400,
-                )
+        if scope.round_index is not None and scope.session_role is not None:
             artifact = accessor.get_review_exchange_phase_terminal_recording(
-                round_index=resolved_round_index,
-                role=resolved_session_role,
+                round_index=scope.round_index,
+                role=scope.session_role,
                 allow_empty=True,
             )
         else:
@@ -94,7 +230,9 @@ def serve_terminal_recording(
     recording_path = artifact.path
     try:
         all_events = list(iter_terminal_recording(recording_path))
-        total_events = len(all_events)
+        all_events, total_events, chapter_sidecar, phase_window_start = (
+            _slice_events_to_phase_window(all_events, recording_path, scope)
+        )
 
         # Dispatch render mode by captured format. Codex ``exec --json``
         # writes a JSON event stream to the PTY; feeding that to an xterm
@@ -143,6 +281,11 @@ def serve_terminal_recording(
             else:
                 events = events[:limit]
 
+        chapters_payload = (
+            _chapters_payload(chapter_sidecar.chapters)
+            if chapter_sidecar is not None
+            else None
+        )
         return JSONResponse(
             {
                 "issue_number": issue_number,
@@ -152,6 +295,17 @@ def serve_terminal_recording(
                 "initial_geometry": _terminal_recording_initial_geometry(recording_path),
                 "offset": offset,
                 "truncated": truncated,
+                # Phase-scoped persistent layout: ``chapters`` is the full
+                # role outline so the UI can render a navigable sidebar,
+                # and ``recording_event_index`` is the absolute position
+                # in the role's recording where this slice begins (the
+                # prompt boundary for ``round_index``). Both fields are
+                # ``null`` for whole-run recordings and legacy spawn-
+                # per-phase artifacts that have no sidecar.
+                "chapters": chapters_payload,
+                "recording_event_index": (
+                    phase_window_start if chapter_sidecar is not None else None
+                ),
                 "events": events,
                 "render_mode": dispatch.mode,
             }

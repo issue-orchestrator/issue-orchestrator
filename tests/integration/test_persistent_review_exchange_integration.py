@@ -41,6 +41,7 @@ from issue_orchestrator.ports import TraceEvent
 _STUB_AGENT_SOURCE = textwrap.dedent("""
     import json
     import os
+    import select
     import sys
     import time
     from pathlib import Path
@@ -49,25 +50,67 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
     completion_path_rel = os.environ["ISSUE_ORCHESTRATOR_COMPLETION_PATH"]
     role = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_LABEL", "")
 
+    # Reviewer outcomes are scripted per-round via env so a single stub
+    # script drives ok / changes_requested / multi-round / max-rounds
+    # scenarios. Default: ``ok`` every round.
+    raw_outcomes = os.environ.get("STUB_REVIEWER_OUTCOMES", "ok").strip()
+    reviewer_script = [
+        token.strip() or "ok" for token in raw_outcomes.split(",")
+    ]
+
+    fd = sys.stdin.fileno()
     print(f"[stub-{role}] ready", flush=True)
     round_index = 0
-    for raw in sys.stdin:
-        prompt = raw.strip()
-        if not prompt:
+
+    # Real prompts are multi-line; reading line-by-line would advance
+    # the script outcome on every line of a single prompt. Instead,
+    # batch reads until stdin goes quiet for a brief window and treat
+    # that whole burst as one logical prompt.
+    QUIET_WINDOW = 0.15
+    while True:
+        ready, _, _ = select.select([fd], [], [], None)
+        if not ready:
+            continue
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        # Drain follow-on bytes that belong to the same prompt.
+        while True:
+            ready, _, _ = select.select([fd], [], [], QUIET_WINDOW)
+            if not ready:
+                break
+            more = os.read(fd, 65536)
+            if not more:
+                break
+            chunk += more
+        prompt_text = chunk.decode("utf-8", errors="replace").strip()
+        if not prompt_text:
             continue
         round_index += 1
-        # Find the worktree root by walking up looking for .issue-orchestrator
         cwd = Path.cwd()
         worktree = cwd
         completion_full = worktree / completion_path_rel
         if "reviewer" in role:
-            payload = {
-                "response_type": "ok",
-                "response_text": "LGTM (stub-reviewer)",
-                "getting_closer": True,
-            }
+            outcome = (
+                reviewer_script[round_index - 1]
+                if round_index - 1 < len(reviewer_script)
+                else reviewer_script[-1]
+            )
+            if outcome == "changes_requested":
+                payload = {
+                    "response_type": "changes_requested",
+                    "response_text": (
+                        f"Needs work (stub-reviewer round {round_index})"
+                    ),
+                    "getting_closer": True,
+                }
+            else:
+                payload = {
+                    "response_type": "ok",
+                    "response_text": f"LGTM (stub-reviewer round {round_index})",
+                    "getting_closer": True,
+                }
         else:
-            # Coder: also write the completion artifact (coding-done's output).
             completion_full.parent.mkdir(parents=True, exist_ok=True)
             completion_full.write_text(
                 json.dumps({
@@ -81,8 +124,6 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
                 "response_type": "ok",
                 "response_text": f"Applied (stub-coder round {round_index})",
             }
-        # Tiny delay so the PTY produces capturable output before the
-        # response file appears (mirrors a real agent's "thinking" tail).
         time.sleep(0.02)
         response_file.parent.mkdir(parents=True, exist_ok=True)
         response_file.write_text(json.dumps(payload), encoding="utf-8")
@@ -260,3 +301,143 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
     sibling_pattern = list(coder_wt.parent.glob(f"{coder_wt.name}-review-*"))
     assert sibling_pattern == [], \
         f"reviewer worktree leaked: {sibling_pattern}"
+
+
+def test_persistent_review_exchange_multi_round_changes_then_ok(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End-to-end multi-round exchange.
+
+    Replaces the skipped local-loop multi-round scenario from
+    ``tests/simulated_scenarios/test_simulated_scenarios.py``. The
+    reviewer disagrees on round 1, the coder reapplies, the reviewer
+    approves on round 2; the persistent runner must:
+      - issue exactly one coder send (after the round-1 changes_requested)
+      - emit two REVIEW_EXCHANGE_ROUND_COMPLETED events
+      - write chapters for both rounds in the reviewer's chapters.json
+      - end with status=ok / rounds=2 / reason=reviewer_ok
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    # Drive the reviewer: round 1 = changes_requested, round 2 = ok.
+    monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "changes_requested,ok")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 3
+
+    captured_events: list[TraceEvent] = []
+
+    class _Sink:
+        def publish(self, event):
+            captured_events.append(event)
+
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=FileSystemSessionOutput(),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=4058,
+        issue_title="Multi-round integration",
+        session_name="issue-4058",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=_Sink(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    assert outcome.rounds == 2
+    assert outcome.reason == "reviewer_ok"
+
+    round_completed = [
+        evt for evt in captured_events
+        if evt.event_type == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
+    ]
+    assert len(round_completed) == 2, \
+        f"expected exactly 2 round-completed events, got {len(round_completed)}"
+    # Round 1 reviewer should be changes_requested, round 2 should be ok.
+    payload_first = round_completed[0].data
+    payload_second = round_completed[1].data
+    assert payload_first["reviewer_response_type"] == "changes_requested"
+    assert payload_second["reviewer_response_type"] == "ok"
+
+    run_dir = outcome.exchange_dir.parent
+    reviewer_chapters_path = run_dir / "reviewer" / "chapters.json"
+    assert reviewer_chapters_path.exists()
+    chapters_payload = json.loads(reviewer_chapters_path.read_text())
+    cycle_indices = sorted({
+        chapter["cycle_index"] for chapter in chapters_payload["chapters"]
+    })
+    assert cycle_indices == [1, 2], \
+        f"expected reviewer chapters for rounds 1 and 2, got {cycle_indices}"
+
+
+def test_persistent_review_exchange_max_rounds_exhausted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Reviewer never approves — exchange ends with max_rounds reached.
+
+    Replaces the skipped no-progress / max-rounds scenarios.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    # Reviewer always says changes_requested across all rounds.
+    monkeypatch.setenv(
+        "STUB_REVIEWER_OUTCOMES",
+        "changes_requested,changes_requested,changes_requested",
+    )
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 2
+    config.review_exchange_max_no_progress = 5  # don't trip no-progress first
+
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=FileSystemSessionOutput(),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=4059,
+        issue_title="Max-rounds integration",
+        session_name="issue-4059",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=MagicMock(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "stopped", \
+        f"unexpected outcome status: {outcome.status} (full: {outcome})"
+    assert outcome.reason == "max_rounds_exceeded"
+    assert outcome.rounds == 2
