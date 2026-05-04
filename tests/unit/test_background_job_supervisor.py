@@ -175,11 +175,16 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
             command="claude",
         ),
     }
+    class _RunnerStub:
+        def run(self, **_: object):  # type: ignore[no-untyped-def]
+            raise AssertionError("runner must not be invoked on halt path")
+
     review = CompletionReviewExchange(
         config=cfg,
         session_output=_SessionOutput(Path("/tmp")),  # type: ignore[arg-type]
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_RunnerStub(),  # type: ignore[arg-type]
         job_supervisor=supervisor,
     )
     errors: list[str] = []

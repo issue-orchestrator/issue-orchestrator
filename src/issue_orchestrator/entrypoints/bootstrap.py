@@ -318,6 +318,9 @@ def _create_completion_components(
     from ..control.pre_publish_gate import PrePublishGate
     from ..control.session_controller import SessionController
     from ..control.label_manager import LabelManager as _LM
+    from ..execution.persistent_review_exchange_runner import (
+        PersistentReviewExchangeRunner,
+    )
 
     if label_manager is None:
         label_manager = _LM(config)
@@ -327,6 +330,7 @@ def _create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
+        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -924,11 +928,15 @@ def build_orchestrator_for_testing(
     # Create CompletionProcessor for testing
     from ..control.completion_processor import CompletionProcessor
     from ..control.pre_publish_gate import PrePublishGate
+    from ..execution.persistent_review_exchange_runner import (
+        PersistentReviewExchangeRunner,
+    )
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
+        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,

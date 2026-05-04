@@ -251,11 +251,16 @@ class TestReviewExchangeExecution:
         return config
 
     def _make_processor(self, config: Config) -> CompletionProcessor:
+        from issue_orchestrator.execution.persistent_review_exchange_runner import (
+            PersistentReviewExchangeRunner,
+        )
+        session_output = FileSystemSessionOutput()
         return CompletionProcessor(
             label_adapter=Mock(spec=LabelAdapter),
             pr_adapter=Mock(spec=PRAdapter),
             git_adapter=Mock(spec=GitAdapter),
-            session_output=FileSystemSessionOutput(),
+            session_output=session_output,
+            review_exchange_runner=PersistentReviewExchangeRunner(session_output),
             event_bus=EventBus(),
             label_config={},
             config=config,
@@ -1091,30 +1096,30 @@ class TestReviewExchangeExecution:
         with pytest.raises(ValueError, match="supported ai_system pair"):
             processor._resolve_review_exchange_mode("agent:coder")
 
-    def test_run_review_exchange_uses_default_reviewer(self, tmp_path, monkeypatch):
+    def test_run_review_exchange_uses_default_reviewer(self, tmp_path):
+        """Default reviewer resolution flows through the injected
+        ``ReviewExchangeRunner`` port. Inject a capture stub instead of
+        monkeypatching execution-layer symbols (the runner now owns the
+        worktree + persistent-runner dispatch internally)."""
         config = self._make_config(tmp_path)
-        processor = self._make_processor(config)
         captured: dict[str, str] = {}
 
-        def _fake_run(**kwargs):
-            captured["coder_label"] = kwargs["coder_label"]
-            captured["reviewer_label"] = kwargs["reviewer_label"]
-            return MagicMock(status="ok", rounds=1, reason="reviewer_ok")
+        class _CaptureRunner:
+            def run(self, **kwargs):
+                captured["coder_label"] = kwargs["coder_label"]
+                captured["reviewer_label"] = kwargs["reviewer_label"]
+                return MagicMock(status="ok", rounds=1, reason="reviewer_ok")
 
-        # New dispatch target post-cutover.
-        monkeypatch.setattr(
-            "issue_orchestrator.execution.persistent_session_exchange.run_persistent_session_exchange",
-            _fake_run,
+        processor = CompletionProcessor(
+            label_adapter=Mock(spec=LabelAdapter),
+            pr_adapter=Mock(spec=PRAdapter),
+            git_adapter=Mock(spec=GitAdapter),
+            session_output=FileSystemSessionOutput(),
+            review_exchange_runner=_CaptureRunner(),
+            event_bus=EventBus(),
+            label_config={},
+            config=config,
         )
-        # Stub out branch resolution + reviewer-worktree lifecycle so the
-        # test doesn't need a real git repo.
-        from issue_orchestrator.execution import reviewer_worktree as rw
-        monkeypatch.setattr(rw, "resolve_current_branch", lambda _wt: "feature/test")
-        monkeypatch.setattr(
-            rw, "create_reviewer_worktree",
-            lambda **_: MagicMock(path=tmp_path / "review-wt", coder_branch="feature/test"),
-        )
-        monkeypatch.setattr(rw, "remove_reviewer_worktree", lambda *_, **__: None)
 
         processor._run_review_exchange_loop(
             worktree=tmp_path,

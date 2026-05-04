@@ -32,6 +32,9 @@ import pytest
 from issue_orchestrator.control.completion_review_exchange import CompletionReviewExchange
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.manifest_accessor import ManifestAccessor, RunIdentity
+from issue_orchestrator.execution.persistent_review_exchange_runner import (
+    PersistentReviewExchangeRunner,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import AgentConfig
@@ -229,6 +232,7 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         session_output=session_output,
         emit_review_started=_emit_started,
         emit_review_outcome=lambda **_: None,
+        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
     )
 
     from issue_orchestrator.events import EventContext
@@ -341,11 +345,13 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         def publish(self, event):
             captured_events.append(event)
 
+    _session_output_for_test = FileSystemSessionOutput()
     cre = CompletionReviewExchange(
         config=config,
-        session_output=FileSystemSessionOutput(),
+        session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
+        review_exchange_runner=PersistentReviewExchangeRunner(_session_output_for_test),
     )
 
     from issue_orchestrator.events import EventContext
@@ -417,11 +423,13 @@ def test_persistent_review_exchange_max_rounds_exhausted(
     config.review_exchange_max_rounds = 2
     config.review_exchange_max_no_progress = 5  # don't trip no-progress first
 
+    _session_output_for_test = FileSystemSessionOutput()
     cre = CompletionReviewExchange(
         config=config,
-        session_output=FileSystemSessionOutput(),
+        session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
+        review_exchange_runner=PersistentReviewExchangeRunner(_session_output_for_test),
     )
 
     from issue_orchestrator.events import EventContext
