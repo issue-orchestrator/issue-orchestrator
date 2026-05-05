@@ -268,12 +268,81 @@ class TestReconcileHistoryEntryAction:
         assert result.success
         assert entry.status == "merged"
         assert entry.status_reason == "PR merged; awaiting merge reconciled"
-        event = mock_events.publish.call_args_list[-2].args[0]
-        assert event.name == EventName.HISTORY_RECONCILED.value
+        published = [call.args[0] for call in mock_events.publish.call_args_list]
+        history_events = [
+            evt for evt in published
+            if evt.name == EventName.HISTORY_RECONCILED.value
+        ]
+        assert len(history_events) == 1
+        event = history_events[0]
         assert event.data["issue_number"] == 228
         assert event.data["issue_key"] == "M1-228"
         assert event.data["previous_status"] == "completed"
         assert event.data["status"] == "merged"
+
+        # When the awaiting-merge reconciliation lands on the "merged"
+        # terminal state, the orchestrator must also publish REVIEW_MERGED
+        # so the user-facing timeline carries a "PR merged" event. Without
+        # this, the dashboard sees only a debug-only HISTORY_RECONCILED
+        # record after a successful merge.
+        merged_events = [
+            evt for evt in published
+            if evt.name == EventName.REVIEW_MERGED.value
+        ]
+        assert len(merged_events) == 1, (
+            "Expected exactly one REVIEW_MERGED event for a merged-status "
+            f"reconciliation; saw events: {[e.name for e in published]}"
+        )
+        merged = merged_events[0]
+        assert merged.data["issue_number"] == 228
+        assert merged.data["pr_number"] == 318
+        assert merged.data["pr_url"] == "https://github.com/test/repo/pull/318"
+        assert merged.data["issue_key"] == "M1-228"
+        assert merged.data["source"] == "pull_request"
+
+    def test_reconcile_history_entry_closed_does_not_emit_review_merged(
+        self,
+        applier,
+        mock_events,
+    ):
+        """Closed (not merged) PRs must not produce a REVIEW_MERGED event.
+
+        Closed-without-merge is a different end state: the user-facing
+        timeline should not show a "PR merged" event when the PR was
+        actually abandoned. HISTORY_RECONCILED still fires (so the
+        orchestrator records the reconciliation) but REVIEW_MERGED must
+        not.
+        """
+        entry = SessionHistoryEntry(
+            issue_number=229,
+            title="Abandoned PR",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/319",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        action = ReconcileHistoryEntryAction(
+            issue_number=229,
+            pr_number=319,
+            pr_url="https://github.com/test/repo/pull/319",
+            status="closed",
+            source="pull_request",
+            issue_key="M1-229",
+            reason="PR closed without merge; awaiting merge reconciled",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        published = [call.args[0] for call in mock_events.publish.call_args_list]
+        names = [evt.name for evt in published]
+        assert EventName.HISTORY_RECONCILED.value in names
+        assert EventName.REVIEW_MERGED.value not in names, (
+            "REVIEW_MERGED leaked from a closed-without-merge reconciliation; "
+            f"events published: {names}"
+        )
 
     def test_reconcile_history_entry_requires_history_owner(self, applier):
         """Applying a history reconciliation without an owner fails loudly."""
