@@ -157,7 +157,6 @@ internal_timeline:
     step: role_timeout
     status: failed
     parent_key: "issue:9999"
-    summary: "no_completion"
 
   # Terminal exchange.completed with error status. The user-visible
   # signals are the upstream `role_timeout` row (status=failed) and
@@ -172,10 +171,12 @@ internal_timeline:
   - { event: review.changes_requested, phase: reviewing, step: changes_requested, status: failed, parent_key: "issue:9999", summary: "Review exchange halted: reviewer_no_completion" }
 
 # `chapter_recorded` is ops-only; user view shows the narrative spine.
-# `review_exchange.completed` here renders the same way as a successful
-# exchange, so the user-visible signal that something went wrong is
-# the `role_timeout` row above with status=failed and the timeout
-# narrative.
+# After this PR's status-aware narrative differentiation,
+# `review_exchange.completed` renders as "Review exchange failed
+# (1 round)" for status="error" — distinct from a successful
+# exchange. The user-visible failure signal lives both in the
+# `role_timeout` row (status=failed, "Reviewer timed out") AND in
+# the terminal `review_exchange.completed` row's narrative.
 external_view: user
 external_timeline:
   - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
@@ -191,15 +192,14 @@ external_timeline:
   - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
   - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
 
-  # The user-visible failure: role_timeout with the timeout reason.
+  # The user-visible failure: role_timeout with the timeout narrative.
   - event: review_exchange.role_timeout
     status: failed
     narrative: "Reviewer timed out (round 1)"
-    summary: "no_completion"
 
-  # Exchange terminates. Narrative is the same plural-rules string as
-  # success on this PR; PR 6180 differentiates by status.
-  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (1 round)" }
+  # Exchange terminates with status="error". Status-aware narrative
+  # renders as "Review exchange failed (N round[s])".
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange failed (1 round)" }
   # Downstream review.changes_requested: production user-visible
   # terminal verdict for any non-`ok` exchange outcome
   # (`completion_review_exchange.py:486-495`).

@@ -198,6 +198,15 @@ def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
     if not isinstance(rounds, int):
         return None
     plural = "round" if rounds == 1 else "rounds"
+    status = data.get("status")
+    # Persistent runner emits one of three terminal statuses
+    # (`persistent_session_exchange.py:533, 565, 824, 863, 903, 952`).
+    # Differentiate the user-facing narrative so the timeline
+    # distinguishes a successful exchange from a stopped or errored one.
+    if status == "stopped":
+        return f"Review exchange ended without approval ({rounds} {plural})"
+    if status == "error":
+        return f"Review exchange failed ({rounds} {plural})"
     return f"Review exchange completed ({rounds} {plural})"
 
 

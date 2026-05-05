@@ -258,10 +258,9 @@ external_timeline:
   - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 2) — ok" }
   - { event: review_exchange.round_completed, status: completed, narrative: "Review round 2 completed — needs_work", detail: "Round 2. Still need a fixture for the rare case. Coder response: ok" }
 
-  # Terminal narrative on this PR is the un-differentiated
-  # "Review exchange completed (2 rounds)"; PR 6180 changes it to
-  # "Review exchange ended without approval (2 rounds)".
-  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)" }
+  # Status-aware narrative for status="stopped" → "Review exchange
+  # ended without approval (N round[s])".
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange ended without approval (2 rounds)" }
   # Downstream review.changes_requested: production user-visible
   # terminal verdict. Carries the summary "Review exchange halted:
   # max_rounds_exceeded" so users can see why approval didn't happen.
