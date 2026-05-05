@@ -333,6 +333,7 @@ def _create_completion_components(
         label_manager = _LM(config)
     if pair_registry is None:
         pair_registry = InMemoryPersistentExchangePairRegistry()
+    persistent_pair_root = state_dir(config.repo_root) / "persistent-pairs"
 
     completion_processor = CompletionProcessor(
         label_adapter=github,
@@ -340,7 +341,7 @@ def _create_completion_components(
         git_adapter=working_copy,
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, pair_registry,
+            session_output, pair_registry, persistent_pair_root,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
@@ -660,12 +661,17 @@ def build_orchestrator(
     # The persistent exchange pair registry is process-scoped: one
     # registry for the orchestrator's lifetime, shared across every
     # review exchange. Built here (above completion components and
-    # InfraServices) so ``Orchestrator.close``'s shutdown_all hook
-    # can reach it through ``deps.pair_registry``.
+    # InfraServices) so the shutdown / reset / escalation paths can
+    # reach it through ``deps.pair_registry``.
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
     pair_registry = InMemoryPersistentExchangePairRegistry()
+
+    # Wire the registry into action_applier so ``_apply_escalate``
+    # can release the pair when an issue is escalated to human.
+    if action_applier is not None:
+        action_applier.pair_registry = pair_registry
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
@@ -958,6 +964,11 @@ def build_orchestrator_for_testing(
         PersistentReviewExchangeRunner,
     )
     pair_registry_for_testing = InMemoryPersistentExchangePairRegistry()
+    if action_applier is not None:
+        action_applier.pair_registry = pair_registry_for_testing
+    persistent_pair_root_for_testing = (
+        state_dir(config.repo_root) / "persistent-pairs"
+    )
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -965,6 +976,7 @@ def build_orchestrator_for_testing(
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output, pair_registry_for_testing,
+            persistent_pair_root_for_testing,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),

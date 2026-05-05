@@ -195,8 +195,9 @@ class TestPersistentSessionExchangeHappyPath:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -240,8 +241,9 @@ class TestPersistentSessionExchangeHappyPath:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -256,9 +258,13 @@ class TestPersistentSessionExchangeHappyPath:
         assert outcome.rounds == 2
         # Round order: reviewer round 1 → coder round 1 → reviewer round 2.
         assert [role for role, _ in state["rounds_seen"]] == ["reviewer", "coder", "reviewer"]
-        # Both sessions opened; pair released exactly once at exchange end.
+        # Both sessions opened. The pair is NOT released at exchange
+        # end — B2 ADR 0026 keeps the pair alive across exchanges so
+        # the issue can run multiple back-to-back exchanges with the
+        # same coder + reviewer processes.
         assert sorted(state["opened"]) == ["coder", "reviewer"]
-        assert state["registry"].released == [(42, "exchange-complete")]
+        assert state["registry"].released == []
+        assert len(state["registry"].acquired) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +297,9 @@ class TestExchangeTerminationConditions:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -345,8 +352,9 @@ class TestExchangeTerminationConditions:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -387,8 +395,9 @@ class TestExchangeTerminationConditions:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -442,8 +451,9 @@ class TestChapterSidecarAndEvents:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -495,8 +505,9 @@ class TestChapterSidecarAndEvents:
         pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -556,8 +567,9 @@ class TestChapterSidecarAndEvents:
         pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -624,8 +636,9 @@ class TestCallerHooks:
         pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -660,8 +673,9 @@ class TestCallerHooks:
         pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -721,8 +735,9 @@ class TestCoderProtocolGuardrail:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -831,8 +846,9 @@ class TestCoderProtocolGuardrail:
         outcome = pse_mod.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -876,8 +892,9 @@ class TestCoderProtocolGuardrail:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -922,8 +939,9 @@ class TestTerminalEventsOnError:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -971,8 +989,9 @@ class TestTerminalEventsOnError:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -1021,8 +1040,9 @@ class TestRecordingContractFailLoud:
             pse.run_persistent_session_exchange(
                 session_output=session_output,
                 pair_registry=state["registry"],
+                persistent_pair_root=tmp_path / "persistent-pairs",
                 coder_worktree_path=coder_wt,
-                reviewer_worktree_path=reviewer_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
                 issue_number=42,
                 issue_title="Test",
                 coder_label="agent:backend",
@@ -1084,8 +1104,9 @@ class TestAtomicSummaryWrite:
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
             pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
             coder_worktree_path=coder_wt,
-            reviewer_worktree_path=reviewer_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
             issue_number=42,
             issue_title="Test",
             coder_label="agent:backend",
@@ -1128,10 +1149,10 @@ class TestRoleEnvironmentScrubbing:
         response_file = run_dir / "reviewer" / "review-response.json"
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
-            run_dir=run_dir,
             response_file=response_file,
+            completion_path=run_dir / "reviewer" / "completion-reviewer.json",
+            validation_output_dir=run_dir,
             worktree=worktree,
-            role="reviewer",
             agent_label="agent:reviewer",
             web_port=None,
             issue_number=4057,
@@ -1156,10 +1177,10 @@ class TestRoleEnvironmentScrubbing:
         monkeypatch.setenv("GH_TOKEN", "ghp_fake")  # ensure scrubbing path runs
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
-            run_dir=run_dir,
             response_file=response_file,
+            completion_path=run_dir / "coder" / "completion-coder.json",
+            validation_output_dir=run_dir,
             worktree=worktree,
-            role="coder",
             agent_label="agent:backend",
             web_port=8080,
             issue_number=4057,
@@ -1189,10 +1210,10 @@ class TestRoleEnvironmentScrubbing:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
-            run_dir=run_dir,
             response_file=run_dir / "reviewer" / "review-response.json",
+            completion_path=run_dir / "reviewer" / "completion-reviewer.json",
+            validation_output_dir=run_dir,
             worktree=worktree,
-            role="reviewer",
             agent_label="agent:reviewer",
             web_port=None,
             issue_number=4057,
@@ -1226,8 +1247,9 @@ class TestSessionCleanup:
             pse.run_persistent_session_exchange(
                 session_output=session_output,
                 pair_registry=state["registry"],
+                persistent_pair_root=tmp_path / "persistent-pairs",
                 coder_worktree_path=coder_wt,
-                reviewer_worktree_path=reviewer_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
                 issue_number=42,
                 issue_title="Test",
                 coder_label="agent:backend",
@@ -1241,8 +1263,13 @@ class TestSessionCleanup:
                 event_context=ctx,
             )
 
-        # Pair must be released even when the round loop raised.
-        assert state["registry"].released == [(42, "exchange-complete")]
+        # B2: a mid-round exception does NOT release the pair — the
+        # pair is alive enough for the next exchange to retry the
+        # work, and lifecycle release happens at issue-completion /
+        # reset / shutdown sites instead. (B1's "release on every
+        # finally" assertion was the right invariant for B1's
+        # per-exchange ownership; B2 inverts it.)
+        assert state["registry"].released == []
         # And the failure event was emitted before raising.
         assert any(
             evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events

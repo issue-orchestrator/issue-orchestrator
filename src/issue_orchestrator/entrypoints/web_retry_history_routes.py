@@ -317,6 +317,15 @@ def _reset_and_retry_issue(  # noqa: PLR0913
     from ..control.actions import AddLabelAction
 
     try:
+        # Tear down the persistent exchange pair before reset clears
+        # local state so the pair's reviewer worktree (a child of the
+        # coder worktree) is reclaimed before the coder worktree
+        # itself is removed by ``reset_issue``. ADR 0026 / B2: this is
+        # the canonical "reset" lifecycle boundary.
+        pair_registry = getattr(deps, "pair_registry", None)
+        if pair_registry is not None:
+            pair_registry.release(issue_number, reason="reset-retry")
+
         current_labels = repository_host.get_issue_labels(issue_number)
         result = reset_issue_fn(
             issue_number=issue_number,
