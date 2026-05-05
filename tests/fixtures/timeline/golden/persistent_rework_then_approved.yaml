@@ -1,0 +1,373 @@
+scenario: persistent_rework_then_approved
+description: |
+  Reviewer-requested rework that is fixed and then approved on the
+  next round, modelled against the **post-cutover persistent-session
+  review-exchange runner**
+  (`src/issue_orchestrator/execution/persistent_session_exchange.py`).
+
+  History note. The pre-cutover fixture (`rework_then_approved.yaml`)
+  pinned events from `control/review_exchange_loop.py` — including
+  `review.rework_started` / `review.rework_completed`. PRs #6160 /
+  #6161 / #6166 / #6168 deleted that path; the file kept after #6160
+  is gutted to a single helper. The persistent runner does **not**
+  emit any `review.rework_*` event — the rework concept is implicit
+  in the "needs_work → coder turn" flow inside a single round.
+
+  Per-round emission order (per `persistent_session_exchange.py:382-557`):
+
+    Reviewer turn:
+      1. `REVIEW_EXCHANGE_ROUND_STARTED`            (line 382)
+      2. `REVIEW_EXCHANGE_CHAPTER_RECORDED` for reviewer prompt
+         (`section: prompt`)                        (line 387 → 1041)
+      3. `REVIEW_EXCHANGE_ROLE_PROMPTED` for reviewer
+                                                    (line 400)
+      4. `REVIEW_EXCHANGE_CHAPTER_RECORDED` for reviewer feedback
+         (`section: feedback`)                      (line 744 → 1041)
+      5. `REVIEW_EXCHANGE_ROLE_FEEDBACK` for reviewer
+                                                    (line 757)
+
+    If reviewer says `ok` (terminal):
+      6a. `REVIEW_EXCHANGE_ROUND_COMPLETED` with
+          `coder_response_type: null`                (line 816)
+      7a. `REVIEW_EXCHANGE_COMPLETED` with `status: ok`
+                                                    (line 824)
+
+    If reviewer says `needs_work` (coder turn within the same round):
+      6b. `REVIEW_EXCHANGE_CHAPTER_RECORDED` for coder prompt
+                                                    (line 478 → 1041)
+      7b. `REVIEW_EXCHANGE_ROLE_PROMPTED` for coder  (line 491)
+      8b. `REVIEW_EXCHANGE_CHAPTER_RECORDED` for coder feedback
+                                                    (line 744 → 1041)
+      9b. `REVIEW_EXCHANGE_ROLE_FEEDBACK` for coder  (line 757)
+      10b. `REVIEW_EXCHANGE_ROUND_COMPLETED` with full data
+                                                    (line 549)
+      → loop continues to next round.
+
+  The orchestrator's `CompletionProcessor._emit_review_outcome()`
+  (`control/completion_processor.py:668-715`) then maps the outcome
+  to `REVIEW_APPROVED` (carrying `summary` from the reviewer's
+  `response_text`).
+
+  Pinned in this fixture:
+
+    - All chapter events (`section`, `role`, `recording_event_index`,
+      `label`). They land in `ops` view only — not `user`.
+    - All role events with their actual payload shape (no `pr_number`,
+      `session_name` not `session_id`).
+    - Round-completed payload differences: round 1 carries
+      `coder_response_type` populated; the final ok-round carries
+      `coder_response_type: null` because no coder turn ran.
+    - Final exchange status `"ok"` and reason `"reviewer_ok"`.
+
+issue_number: 7777
+
+records:
+  # Initial coder pass (separate session before exchange starts).
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data: { issue_number: 7777, session_id: "issue-7777-1", agent: coder, task: code }
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data: { issue_number: 7777, session_id: "issue-7777-1", implementation: "Initial feature" }
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:03:00Z"
+    data: { issue_number: 7777, session_id: "issue-7777-1" }
+
+  - event: issue.pr_created
+    timestamp: "2026-05-04T00:03:30Z"
+    data: { issue_number: 7777, pr_number: 88, pr_url: "https://github.com/example/repo/pull/88" }
+
+  # Review begins.
+  - event: review.started
+    timestamp: "2026-05-04T00:04:00Z"
+    data: { issue_number: 7777, task: review, agent: reviewer }
+
+  - event: review_exchange.started
+    timestamp: "2026-05-04T00:04:01Z"
+    data: { issue_number: 7777, session_name: "issue-7777-exchange-1" }
+
+  # ============== Round 1: needs_work → coder reworks ==============
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:04:02Z"
+    data: { issue_number: 7777, session_name: "issue-7777-exchange-1", round_index: 1 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:03Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: reviewer
+      section: prompt
+      recording_event_index: 0
+      label: "Round 1 reviewer prompt"
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:04Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: reviewer
+      prompt_chars: 1234
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:25Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: reviewer
+      section: feedback
+      recording_event_index: 42
+      label: "Round 1 reviewer feedback"
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:04:26Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: reviewer
+      response_type: needs_work
+      getting_closer: false
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:27Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: coder
+      section: prompt
+      recording_event_index: 0
+      label: "Round 1 coder prompt"
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:28Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: coder
+      prompt_chars: 980
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:06:30Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: coder
+      section: feedback
+      recording_event_index: 87
+      label: "Round 1 coder feedback"
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:06:31Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      role: coder
+      response_type: ok
+      getting_closer: true
+
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:06:32Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 1
+      reviewer_response_type: needs_work
+      reviewer_response_text: "Missing tests for the new error path"
+      coder_response_type: ok
+      coder_response_text: "Tests added"
+
+  # ============== Round 2: ok → exchange completes ==============
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:08:00Z"
+    data: { issue_number: 7777, session_name: "issue-7777-exchange-1", round_index: 2 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:01Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 2
+      role: reviewer
+      section: prompt
+      recording_event_index: 130
+      label: "Round 2 reviewer prompt"
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:08:02Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 2
+      role: reviewer
+      prompt_chars: 1300
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:25Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 2
+      role: reviewer
+      section: feedback
+      recording_event_index: 175
+      label: "Round 2 reviewer feedback"
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:08:26Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 2
+      role: reviewer
+      response_type: ok
+      getting_closer: true
+
+  # `_complete_with_reviewer_ok` path: coder_response_type=null, status=ok.
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:08:27Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      round_index: 2
+      reviewer_response_type: ok
+      reviewer_response_text: "Looks good now"
+      coder_response_type: null
+
+  - event: review_exchange.completed
+    timestamp: "2026-05-04T00:08:28Z"
+    data:
+      issue_number: 7777
+      session_name: "issue-7777-exchange-1"
+      rounds: 2
+      status: ok
+      reason: reviewer_ok
+
+  # `CompletionProcessor._emit_review_outcome` maps ok → REVIEW_APPROVED.
+  # Carries `summary` (the reviewer's response_text), `rounds`, no pr_number.
+  - event: review.approved
+    timestamp: "2026-05-04T00:08:29Z"
+    data:
+      issue_number: 7777
+      task: review
+      agent: reviewer
+      review_exchange_mode: persistent
+      rounds: 2
+      summary: "Looks good now"
+
+  - event: review.merged
+    timestamp: "2026-05-04T00:09:00Z"
+    data: { issue_number: 7777, pr_number: 88 }
+
+  - event: issue.completed
+    timestamp: "2026-05-04T00:09:30Z"
+    data: { issue_number: 7777 }
+
+# `internal_timeline` and `external_timeline` are autogenerated below
+# by running `project_timeline()` + the fan-out pipeline against the
+# above records. To regenerate after intentional behavior changes:
+#
+#   python scripts/regenerate_golden_expectations.py \
+#       tests/fixtures/timeline/golden/persistent_rework_then_approved.yaml
+#
+# (Helper script lands in a follow-up; for now hand-update or use the
+# inline regen path in test_golden_timeline_internal.py / external.py.)
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-7777-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, parent_key: "session:issue-7777-1", detail: "Initial feature" }
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    parent_key: "review:88"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
+
+  # All review-exchange events project to parent_key="issue:7777"
+  # because none of them carry pr_number (the persistent runner
+  # emits with issue_number + session_name only).
+  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "issue:7777" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, parent_key: "issue:7777" }
+
+  # Round 1: needs_work → coder reworks
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:7777", detail: "Round 1. Missing tests for the new error path. Coder response: ok" }
+
+  # Round 2: ok → exchange completes
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:7777", detail: "Round 2. Looks good now" }
+
+  # `review_exchange.completed.summary` is "reviewer_ok" because
+  # `_summary_from_data` reads `data.reason` first; in the actual
+  # runner payload `reason="reviewer_ok"` is a machine code, not
+  # human-readable text. Worth a follow-up to either drop `reason`
+  # from the user-facing summary fallback chain or use a
+  # human-readable string.
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:7777", summary: "reviewer_ok" }
+
+  # `review.approved.summary` is the reviewer's response_text.
+  - { event: review.approved, phase: reviewing, step: approved, status: completed, parent_key: "issue:7777", summary: "Looks good now" }
+
+  # review.merged.parent_key = "review:88" because the merged event
+  # data carries pr_number (state machine sets entity_id=pr_number).
+  - { event: review.merged, phase: reviewing, step: merged, status: completed, parent_key: "review:88" }
+
+  - { event: issue.completed, phase: completed, step: completed, status: completed, parent_key: "issue:7777" }
+
+# Chapter events are `_ops`-only per VIEW_REGISTRY — they do NOT appear
+# in the user view, which is what users see. The user view shows only
+# the "narrative spine" (round started → reviewer prompted → reviewer
+# feedback → coder prompted → coder feedback → round completed).
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - { event: agent.completed, status: completed, narrative: "Issue completed", detail: "Initial feature" }
+  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - event: pr.created
+    status: completed
+    narrative: "PR #88 created"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
+  - { event: review.started, status: started, narrative: "Code review started" }
+  - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
+
+  # Round 1
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 1) — needs_work" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
+  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 1 completed — needs_work", detail: "Round 1. Missing tests for the new error path. Coder response: ok" }
+
+  # Round 2
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 2 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 2)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 2) — ok" }
+  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 2 completed — ok", detail: "Round 2. Looks good now" }
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)", summary: "reviewer_ok" }
+  - { event: review.approved, status: completed, narrative: "Review approved after 2 rounds", summary: "Looks good now" }
+  - { event: review.merged, status: completed, narrative: "PR merged" }
+  - { event: issue.completed, status: completed, narrative: "Issue completed" }
