@@ -186,7 +186,7 @@ external_timeline:
   - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
   - event: agent.completed
     status: completed
-    narrative: "Issue completed"
+    narrative: "Coding session completed"
     detail: "Added the feature"
   - event: validation.failed
     status: failed
@@ -203,7 +203,7 @@ external_timeline:
   - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
   - event: agent.completed
     status: completed
-    narrative: "Issue completed"
+    narrative: "Coding session completed"
     detail: "Fixed the failing tests"
   - event: validation.passed
     status: completed
