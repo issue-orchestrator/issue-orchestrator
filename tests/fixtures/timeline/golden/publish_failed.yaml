@@ -52,30 +52,14 @@ records:
       retryable: true
 
 internal_timeline:
-  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-4242-1" }
-  - event: session.completed
-    phase: in_progress
-    step: completed
-    status: completed
-    detail: "Implemented the fix"
-  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
-  - event: publish.failed
-    phase: orchestrator
-    step: publish.failed
-    status: failed
-    summary: "PR creation failed: API rate limit exceeded; retry after 60s"
-    detail: "Branch: fix/feature-x. Retryable: yes"
+  - { event: session.started, phase: in_progress, step: started, status: started, level: detail, parent_key: "session:issue-4242-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, level: detail, detail: Implemented the fix, parent_key: "session:issue-4242-1" }
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed, level: detail, parent_key: "session:issue-4242-1" }
+  - { event: publish.failed, phase: orchestrator, step: publish.failed, status: failed, level: detail, summary: "PR creation failed: API rate limit exceeded; retry after 60s", detail: "Branch: fix/feature-x. Retryable: yes", parent_key: "session:issue-4242-1" }
 
 external_view: user
 external_timeline:
-  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
-  - event: agent.completed
-    status: completed
-    narrative: "Coding session completed"
-    detail: "Implemented the fix"
-  - { event: validation.passed, status: completed, narrative: "Validation passed" }
-  - event: publish.failed
-    status: failed
-    narrative: "Publish failed"
-    summary: "PR creation failed: API rate limit exceeded; retry after 60s"
-    detail: "Branch: fix/feature-x. Retryable: yes"
+  - { event: agent.coding_started, phase: in_progress, step: started, status: started, level: detail, logical_phase: coding, narrative: Coding agent started, parent_key: "session:issue-4242-1" }
+  - { event: agent.completed, phase: in_progress, step: completed, status: completed, level: detail, logical_phase: orchestrator, narrative: Coding session completed, detail: Implemented the fix, parent_key: "session:issue-4242-1" }
+  - { event: validation.passed, phase: orchestrator, step: validation_passed, status: completed, level: detail, logical_phase: orchestrator, narrative: Validation passed, parent_key: "session:issue-4242-1" }
+  - { event: publish.failed, phase: orchestrator, step: publish.failed, status: failed, level: detail, logical_phase: orchestrator, narrative: Publish failed, summary: "PR creation failed: API rate limit exceeded; retry after 60s", detail: "Branch: fix/feature-x. Retryable: yes", parent_key: "session:issue-4242-1" }

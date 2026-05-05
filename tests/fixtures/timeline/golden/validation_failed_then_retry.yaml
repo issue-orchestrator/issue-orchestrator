@@ -134,85 +134,84 @@ records:
       issue_number: 5678
 
 internal_timeline:
-  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-5678-1" }
-  - { event: observation.completion_detected, phase: in_progress, step: completion_detected, status: completed }
-  - event: session.completed
-    phase: in_progress
-    step: completed
-    status: completed
-    detail: "Added the feature"
-  - { event: validation.started, phase: orchestrator, step: validation.started, status: started }
-  - { event: validation.completed, phase: orchestrator, step: validation.completed, status: completed }
+  - { event: session.started, phase: in_progress, step: started, status: started, level: detail, parent_key: "session:issue-5678-1" }
+  - { event: observation.completion_detected, phase: in_progress, step: completion_detected, status: completed, level: detail, parent_key: "session:issue-5678-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, level: detail, detail: Added the feature, parent_key: "session:issue-5678-1" }
+  - { event: validation.started, phase: orchestrator, step: validation.started, status: started, level: detail, parent_key: "session:issue-5678-1" }
+  - { event: validation.completed, phase: orchestrator, step: validation.completed, status: completed, level: detail, parent_key: "session:issue-5678-1" }
   - event: session.validation_failed
     phase: orchestrator
     step: validation_failed
     status: failed
+    level: detail
     detail: "2 unit tests failed: test_foo, test_bar"
+    parent_key: "session:issue-5678-1"
     artifacts:
-      - { type: validation, label: Validation, value: "/runs/issue-5678/run-001/validation-record.json" }
-      - { type: run_dir, label: Run Dir, value: "/runs/issue-5678/run-001" }
-  - event: session.validation_retry_needed
-    phase: orchestrator
-    step: validation_retry_needed
-    status: failed
-    detail: "2 unit tests failed: test_foo, test_bar. Source: make test-unit"
-  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-5678-2" }
-  - { event: observation.completion_detected, phase: in_progress, step: completion_detected, status: completed }
-  - event: session.completed
-    phase: in_progress
-    step: completed
-    status: completed
-    detail: "Fixed the failing tests"
-  - { event: validation.started, phase: orchestrator, step: validation.started, status: started }
-  - { event: validation.completed, phase: orchestrator, step: validation.completed, status: completed }
+      - { type: validation, label: Validation, value: /runs/issue-5678/run-001/validation-record.json }
+      - { type: run_dir, label: Run Dir, value: /runs/issue-5678/run-001 }
+  - { event: session.validation_retry_needed, phase: orchestrator, step: validation_retry_needed, status: failed, level: detail, detail: "2 unit tests failed: test_foo, test_bar. Source: make test-unit", parent_key: "session:issue-5678-1" }
+  - { event: session.started, phase: in_progress, step: started, status: started, level: detail, parent_key: "session:issue-5678-2" }
+  - { event: observation.completion_detected, phase: in_progress, step: completion_detected, status: completed, level: detail, parent_key: "session:issue-5678-2" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, level: detail, detail: Fixed the failing tests, parent_key: "session:issue-5678-2" }
+  - { event: validation.started, phase: orchestrator, step: validation.started, status: started, level: detail, parent_key: "session:issue-5678-2" }
+  - { event: validation.completed, phase: orchestrator, step: validation.completed, status: completed, level: detail, parent_key: "session:issue-5678-2" }
   - event: session.validation_passed
     phase: orchestrator
     step: validation_passed
     status: completed
+    level: detail
+    parent_key: "session:issue-5678-2"
     artifacts:
-      - { type: validation, label: Validation, value: "/runs/issue-5678/run-002/validation-record.json" }
+      - { type: validation, label: Validation, value: /runs/issue-5678/run-002/validation-record.json }
   - event: issue.pr_created
     phase: orchestrator
     step: pr_created
     status: completed
+    level: phase
     parent_key: "review:99"
     artifacts:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/99" }
-  - { event: issue.completed, phase: completed, step: completed, status: completed, parent_key: "issue:5678" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, level: phase, parent_key: "issue:5678" }
 
 external_view: user
 external_timeline:
-  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
-  - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
-  - event: agent.completed
-    status: completed
-    narrative: "Coding session completed"
-    detail: "Added the feature"
+  - { event: agent.coding_started, phase: in_progress, step: started, status: started, level: detail, logical_phase: coding, narrative: Coding agent started, parent_key: "session:issue-5678-1" }
+  - { event: agent.coding_completed, phase: in_progress, step: completion_detected, status: completed, level: detail, logical_phase: coding, narrative: Agent finished coding, parent_key: "session:issue-5678-1" }
+  - { event: agent.completed, phase: in_progress, step: completed, status: completed, level: detail, logical_phase: orchestrator, narrative: Coding session completed, detail: Added the feature, parent_key: "session:issue-5678-1" }
   - event: validation.failed
+    phase: orchestrator
+    step: validation_failed
     status: failed
-    narrative: "Validation failed"
+    level: detail
+    logical_phase: orchestrator
+    narrative: Validation failed
     detail: "2 unit tests failed: test_foo, test_bar"
+    parent_key: "session:issue-5678-1"
     artifacts:
-      - { type: validation, label: Validation, value: "/runs/issue-5678/run-001/validation-record.json" }
-      - { type: run_dir, label: Run Dir, value: "/runs/issue-5678/run-001" }
-  - event: validation.retry
-    status: failed
-    narrative: "Validation failed — retrying"
-    detail: "2 unit tests failed: test_foo, test_bar. Source: make test-unit"
-  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
-  - { event: agent.coding_completed, status: completed, narrative: "Agent finished coding" }
-  - event: agent.completed
-    status: completed
-    narrative: "Coding session completed"
-    detail: "Fixed the failing tests"
+      - { type: validation, label: Validation, value: /runs/issue-5678/run-001/validation-record.json }
+      - { type: run_dir, label: Run Dir, value: /runs/issue-5678/run-001 }
+  - { event: validation.retry, phase: orchestrator, step: validation_retry_needed, status: failed, level: detail, logical_phase: orchestrator, narrative: Validation failed — retrying, detail: "2 unit tests failed: test_foo, test_bar. Source: make test-unit", parent_key: "session:issue-5678-1" }
+  - { event: agent.coding_started, phase: in_progress, step: started, status: started, level: detail, logical_phase: coding, narrative: Coding agent started, parent_key: "session:issue-5678-2" }
+  - { event: agent.coding_completed, phase: in_progress, step: completion_detected, status: completed, level: detail, logical_phase: coding, narrative: Agent finished coding, parent_key: "session:issue-5678-2" }
+  - { event: agent.completed, phase: in_progress, step: completed, status: completed, level: detail, logical_phase: orchestrator, narrative: Coding session completed, detail: Fixed the failing tests, parent_key: "session:issue-5678-2" }
   - event: validation.passed
+    phase: orchestrator
+    step: validation_passed
     status: completed
-    narrative: "Validation passed"
+    level: detail
+    logical_phase: orchestrator
+    narrative: Validation passed
+    parent_key: "session:issue-5678-2"
     artifacts:
-      - { type: validation, label: Validation, value: "/runs/issue-5678/run-002/validation-record.json" }
+      - { type: validation, label: Validation, value: /runs/issue-5678/run-002/validation-record.json }
   - event: pr.created
+    phase: orchestrator
+    step: pr_created
     status: completed
+    level: phase
+    logical_phase: orchestrator
     narrative: "PR #99 created"
+    parent_key: "review:99"
     artifacts:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/99" }
-  - { event: issue.completed, status: completed, narrative: "Issue completed" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, level: phase, logical_phase: orchestrator, narrative: Issue completed, parent_key: "issue:5678" }
