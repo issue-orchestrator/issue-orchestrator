@@ -90,6 +90,30 @@ def test_dashboard_shutdown_payload_includes_reason_and_actor() -> None:
     )
 
 
+def test_dashboard_shutdown_wait_checks_response_ok() -> None:
+    """``shutdownWait()`` must not enter the waiting/polling state on a failed request.
+
+    Reviewer concern on PR #6263: the call previously did ``await fetch(...)``
+    and ignored the result, so a 400 (missing reason), 401 (auth), or 503
+    (orchestrator not running) response would still flip the modal to
+    "Waiting for sessions to complete..." while no shutdown was in
+    progress. We require an explicit response.ok check + early return.
+    """
+    source = _read(CONTROLS_REFRESH_JS)
+    fn_start = source.find("async function shutdownWait()")
+    assert fn_start != -1, "shutdownWait function must exist"
+    # Slice from fn_start to the next top-level "async function" so the
+    # check stays scoped to this function body.
+    next_fn = source.find("async function ", fn_start + 1)
+    body = source[fn_start: next_fn if next_fn != -1 else len(source)]
+    assert "response.ok" in body, (
+        "shutdownWait() must check response.ok before switching to the waiting state"
+    )
+    assert "showToast" in body, (
+        "shutdownWait() must surface server errors via a toast on rejection"
+    )
+
+
 def test_no_shutdown_route_is_invoked_without_reason() -> None:
     """No JS file may POST to a reason-required route without a body containing 'reason'."""
     for route in _SHUTDOWN_REASON_ROUTES:

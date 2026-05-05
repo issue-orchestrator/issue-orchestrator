@@ -109,6 +109,7 @@ from .control_api_shutdown_state import (
     finish_engine_shutdown_operation,
     global_shutdown_in_progress,
 )
+from .shutdown_reason_support import parse_shutdown_reason
 from .control_api_shutdown_support import (
     ControlApiShutdownDependencies,
     install_control_api_shutdown_dependencies,
@@ -505,37 +506,21 @@ async def stop_repo_orchestrator(repo_id: str, request: Request) -> JSONResponse
     repo_path = unquote(repo_id)
     path = Path(repo_path)
 
-    # Parse body — reason is mandatory.
-    force = False
-    raw_reason = None
-    raw_actor = None
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — empty / malformed body
         body = {}
-    if isinstance(body, dict):
-        if "force" in body:
-            force = bool(body["force"])
-        raw_reason = body.get("reason")
-        raw_actor = body.get("actor")
-    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-    if not reason:
-        return JSONResponse(
-            {
-                "error": "reason is required",
-                "hint": (
-                    "POST /api/repos/{repo_id}/stop now requires a "
-                    "non-empty 'reason' so each engine shutdown is "
-                    "traceable in the orchestrator log."
-                ),
-            },
-            status_code=400,
-        )
-    actor = raw_actor.strip() if isinstance(raw_actor, str) else ""
-    actor = actor or "control_api.stop_repo"
+    parsed = parse_shutdown_reason(
+        body,
+        endpoint="/api/repos/{repo_id}/stop",
+        default_actor="control_api.stop_repo",
+    )
+    if isinstance(parsed, JSONResponse):
+        return parsed
 
-    # Use supervisor to stop
-    stopped = _supervisor.stop(path, force=force, reason=reason, actor=actor)
+    force = bool(body.get("force", False)) if isinstance(body, dict) else False
+
+    stopped = _supervisor.stop(path, force=force, reason=parsed.reason, actor=parsed.actor)
     return JSONResponse({"status": "stopped" if stopped else "failed"})
 
 
