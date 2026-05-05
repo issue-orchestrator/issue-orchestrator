@@ -418,6 +418,113 @@ class TestReconcileHistoryEntryAction:
         assert result.details["noop_reason"] == "missing"
         assert "history reconciliation missing entry" in caplog.text
 
+    def test_reconcile_history_entry_releases_pair_on_merged(
+        self, applier, mock_events,
+    ):
+        """PR-merge release boundary (ADR 0026 / B2 review feedback,
+        PR #6212 finding 1). When awaiting-merge reconciliation flips
+        the entry to ``merged``, the persistent exchange pair must be
+        released — otherwise a successfully merged issue keeps its
+        coder/reviewer subprocesses alive until orchestrator shutdown
+        even though no more exchanges can occur for it.
+        """
+        from unittest.mock import MagicMock
+
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.pair_registry = MagicMock(name="pair_registry")
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        applier.pair_registry.release.assert_called_once_with(
+            228, reason="issue-completed",
+        )
+
+    def test_reconcile_history_entry_releases_pair_on_closed(
+        self, applier,
+    ):
+        """An issue closed without merge (e.g. abandoned PR) is also
+        terminal — the pair has nothing left to do, so the same
+        ``issue-completed`` release fires."""
+        from unittest.mock import MagicMock
+
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.pair_registry = MagicMock(name="pair_registry")
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="closed",
+            source="pull_request",
+            reason="PR closed without merge",
+        )
+
+        applier.apply(action)
+
+        applier.pair_registry.release.assert_called_once_with(
+            228, reason="issue-completed",
+        )
+
+    def test_reconcile_history_entry_does_not_release_on_noop_path(
+        self, applier,
+    ):
+        """If the history entry is already terminal (idempotent
+        no-op), the reconcile action returns early without firing the
+        HISTORY_RECONCILED event — and must NOT call release a second
+        time. Otherwise an already-released pair would receive a
+        second release call (idempotent, but noisy in logs)."""
+        from unittest.mock import MagicMock
+
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="merged",  # already terminal
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="PR merged; awaiting merge reconciled",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.pair_registry = MagicMock(name="pair_registry")
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        applier.apply(action)
+
+        applier.pair_registry.release.assert_not_called()
+
 
 class TestSyncLabelsAction:
     """Tests for SYNC_LABELS action."""

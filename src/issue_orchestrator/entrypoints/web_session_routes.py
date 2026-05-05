@@ -74,11 +74,41 @@ def _is_persistent_layout(recording_path: Path, role: str) -> bool:
     return "review-exchange" not in recording_path.parts
 
 
+def _phase_chapter_sidecar_path(
+    *,
+    run_dir: Path,
+    recording_path: Path,
+    role: str,
+) -> Path:
+    """Resolve the chapter sidecar path for a persistent-layout recording.
+
+    B1 layout (recording at ``<run_dir>/<role>/...``): sidecar is at
+    ``<run_dir>/<role>/chapters.json`` — same dir as the recording.
+
+    B2 layout (recording at ``<state>/persistent-pairs/issue-N/<role>/...``):
+    sidecar is still at ``<run_dir>/<role>/chapters.json`` — chapters
+    are per-exchange so they live with the run, not with the
+    pair-scoped recording. Without this branch the route would look
+    in the pair scope and 404 (PR #6212 review feedback).
+
+    Discriminator: if the recording's parent is a child of ``run_dir``
+    we have the B1 layout; otherwise it's the B2 manifest-pointed
+    pair-scoped layout and chapters live in ``run_dir``.
+    """
+    try:
+        recording_path.parent.relative_to(run_dir)
+        return recording_path.parent / EXCHANGE_CHAPTERS_NAME
+    except ValueError:
+        return run_dir / role / EXCHANGE_CHAPTERS_NAME
+
+
 def _load_phase_chapter_sidecar(
+    *,
+    run_dir: Path,
     recording_path: Path,
     role: str,
 ) -> ExchangeChapterSidecar | None:
-    """Read the chapter sidecar that sits next to a persistent-layout recording.
+    """Read the chapter sidecar that pairs with a persistent-layout recording.
 
     Returns ``None`` only when the sidecar simply does not exist — the
     legacy spawn-per-phase layout has no sidecar by design and the
@@ -87,7 +117,9 @@ def _load_phase_chapter_sidecar(
     fails closed instead of silently degrading to the whole-role
     recording (which would show the wrong round in the UI).
     """
-    sidecar_path = recording_path.parent / EXCHANGE_CHAPTERS_NAME
+    sidecar_path = _phase_chapter_sidecar_path(
+        run_dir=run_dir, recording_path=recording_path, role=role,
+    )
     if not sidecar_path.exists():
         return None
     try:
@@ -196,6 +228,8 @@ def _resolve_phase_scope(
 
 def _slice_events_to_phase_window(
     all_events: list[dict[str, Any]],
+    *,
+    run_dir: Path,
     recording_path: Path,
     scope: _PhaseScope,
 ) -> tuple[
@@ -205,12 +239,15 @@ def _slice_events_to_phase_window(
 
     Returns ``(events, total_events, sidecar_or_none, window_start)``.
 
-    Persistent layout (``<run_dir>/<role>/...``): the recording is one
-    continuous stream covering all rounds, so the chapter sidecar is
-    load-bearing — without it we cannot tell rounds apart and serving
-    the whole role recording for a phase-scoped request would silently
-    show the wrong content. Failures (sidecar missing, malformed, or
-    no prompt chapter for the requested round) raise
+    Persistent layout — recording at ``<run_dir>/<role>/...`` (B1) or
+    ``<state>/persistent-pairs/issue-N/<role>/...`` (B2): the recording
+    is one continuous stream covering all rounds, so the chapter
+    sidecar is load-bearing — without it we cannot tell rounds apart
+    and serving the whole role recording for a phase-scoped request
+    would silently show the wrong content. Chapters always live at
+    ``<run_dir>/<role>/chapters.json`` (per-exchange), even when the
+    recording is pair-scoped. Failures (sidecar missing, malformed,
+    or no prompt chapter for the requested round) raise
     :class:`PhaseChapterError` so the caller fails the request.
 
     Legacy layout (``<run_dir>/review-exchange/round-NNN/<role>/...``):
@@ -220,14 +257,25 @@ def _slice_events_to_phase_window(
     if scope.round_index is None or scope.session_role is None:
         return all_events, len(all_events), None, 0
     persistent = _is_persistent_layout(recording_path, scope.session_role)
-    sidecar = _load_phase_chapter_sidecar(recording_path, scope.session_role)
+    sidecar = _load_phase_chapter_sidecar(
+        run_dir=run_dir,
+        recording_path=recording_path,
+        role=scope.session_role,
+    )
+    sidecar_path = _phase_chapter_sidecar_path(
+        run_dir=run_dir,
+        recording_path=recording_path,
+        role=scope.session_role,
+    )
     if sidecar is None or not sidecar.chapters:
         if persistent:
             raise PhaseChapterError(
                 f"Persistent recording at {recording_path} has no chapters "
-                f"sidecar; cannot scope to round {scope.round_index}",
+                f"sidecar at {sidecar_path}; cannot scope to round "
+                f"{scope.round_index}",
                 diagnostic={
                     "recording_path": str(recording_path),
+                    "sidecar_path": str(sidecar_path),
                     "reason": (
                         "missing_sidecar" if sidecar is None else "empty_sidecar"
                     ),
@@ -240,10 +288,11 @@ def _slice_events_to_phase_window(
     if window is None:
         if persistent:
             raise PhaseChapterError(
-                f"Chapter sidecar at {recording_path.parent / EXCHANGE_CHAPTERS_NAME} "
-                f"has no prompt chapter for round {scope.round_index}",
+                f"Chapter sidecar at {sidecar_path} has no prompt chapter "
+                f"for round {scope.round_index}",
                 diagnostic={
                     "recording_path": str(recording_path),
+                    "sidecar_path": str(sidecar_path),
                     "reason": "missing_round",
                     "round_index": str(scope.round_index),
                     "session_role": scope.session_role,
@@ -305,7 +354,12 @@ def _resolve_phase_slice_or_404(
     (its file is already round-scoped).
     """
     try:
-        return _slice_events_to_phase_window(all_events, recording_path, scope)
+        return _slice_events_to_phase_window(
+            all_events,
+            run_dir=run_identity.run_dir,
+            recording_path=recording_path,
+            scope=scope,
+        )
     except PhaseChapterError as exc:
         return JSONResponse(
             {

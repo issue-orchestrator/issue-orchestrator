@@ -63,12 +63,19 @@ def _make_pair(
     reviewer_worktree: Path | None = None,
     created_at: float = 100.0,
 ) -> PersistentExchangePair:
+    base = Path(f"/tmp/fake-pair-{issue_key}")
     return PersistentExchangePair(
         coder_session=_FakeSession(pid=coder_pid),
         reviewer_session=_FakeSession(pid=reviewer_pid),
         reviewer_worktree_path=reviewer_worktree or Path("/tmp/fake-reviewer-wt"),
         issue_key=issue_key,
         created_at=created_at,
+        coder_response_path=base / "coder/review-response.json",
+        reviewer_response_path=base / "reviewer/review-response.json",
+        coder_recording_path=base / "coder/terminal-recording.jsonl",
+        reviewer_recording_path=base / "reviewer/terminal-recording.jsonl",
+        coder_completion_path=base / "coder/completion-coder.json",
+        validation_record_path=base / "validation-record.json",
     )
 
 

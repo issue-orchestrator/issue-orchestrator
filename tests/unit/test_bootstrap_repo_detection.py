@@ -329,6 +329,77 @@ class TestBuildOrchestratorForTesting:
             orch.deps.pair_registry, InMemoryPersistentExchangePairRegistry,
         )
 
+    def test_pair_registry_release_reclaims_reviewer_worktree(
+        self, minimal_config: Config, mock_github: MagicMock,
+        tmp_path,
+    ) -> None:
+        """B2's reviewer-worktree lifecycle hangs on bootstrap wiring
+        an ``on_release`` hook into the registry — without it, every
+        release path (escalation, reset, shutdown, merge) closes the
+        PTY processes but leaves the sibling worktree on disk
+        (PR #6212 finding 2).
+
+        This test fakes a pair (so we don't have to start real
+        subprocesses) and asserts that the registry's release path
+        invokes ``remove_reviewer_worktree`` against the pair's
+        worktree path.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch as _patch
+        from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
+            PersistentExchangePair,
+        )
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+        pair_registry = orch.deps.pair_registry
+        assert pair_registry is not None
+
+        worktree_path = tmp_path / "fake-reviewer-wt"
+        worktree_path.mkdir()
+        coder = SimpleNamespace(proc=SimpleNamespace(pid=1001, poll=lambda: None))
+        reviewer = SimpleNamespace(proc=SimpleNamespace(pid=1002, poll=lambda: None))
+        pair = PersistentExchangePair(
+            coder_session=coder,  # type: ignore[arg-type]
+            reviewer_session=reviewer,  # type: ignore[arg-type]
+            reviewer_worktree_path=worktree_path,
+            issue_key=42,
+            created_at=0.0,
+            coder_response_path=tmp_path / "coder/r.json",
+            reviewer_response_path=tmp_path / "reviewer/r.json",
+            coder_recording_path=tmp_path / "coder/rec.jsonl",
+            reviewer_recording_path=tmp_path / "reviewer/rec.jsonl",
+            coder_completion_path=tmp_path / "coder/c.json",
+            validation_record_path=tmp_path / "v.json",
+        )
+        pair_registry.acquire(issue_key=42, spawn=lambda: pair)
+
+        # Patch at the source module — bootstrap imports
+        # ``remove_reviewer_worktree`` lazily inside ``build_orchestrator``
+        # (a function-scoped import), so it never lives on the
+        # bootstrap module's namespace as an attribute. The closure
+        # captures the function reference at construction time;
+        # patching the source module is what intercepts the call.
+        with _patch(
+            "issue_orchestrator.execution.reviewer_worktree.remove_reviewer_worktree",
+        ) as mock_remove, _patch(
+            "issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory.close_persistent_session",
+        ):
+            pair_registry.release(42, reason="test-release-boundary")
+
+        mock_remove.assert_called_once()
+        kwargs = mock_remove.call_args.kwargs
+        assert kwargs.get("force") is True, (
+            "on_release hook must call remove_reviewer_worktree with "
+            "force=True so a stuck checkout doesn't strand the worktree"
+        )
+        positional = mock_remove.call_args.args[0]
+        assert positional.path == worktree_path
+
     def test_orchestrator_close_calls_pair_registry_shutdown_all(
         self, minimal_config: Config, mock_github: MagicMock
     ) -> None:

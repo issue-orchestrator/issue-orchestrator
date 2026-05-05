@@ -42,6 +42,9 @@ from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
+    from ..ports.persistent_exchange_pair_registry import (
+        PersistentExchangePairRegistry,
+    )
     from .session_history import SessionHistoryOwner
 from .reconciliation import (
     ExternalSnapshot,
@@ -163,6 +166,11 @@ class ActionApplier:
     lease_id_lookup: Optional[LeaseIdLookup] = None
     # Optional label persistence store for write-through tracking
     label_store: Optional["LabelStore"] = None
+    # Issue-scoped persistent coder/reviewer subprocess pair registry.
+    # Used by ``_apply_escalate`` to terminate the pair when an issue
+    # is escalated to human (the automated retry loop is over, the pair
+    # is no longer useful). ADR 0026 / B2.
+    pair_registry: Optional["PersistentExchangePairRegistry"] = None
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -862,6 +870,9 @@ class ActionApplier:
         3. Remove needs-rework label from the PR
         4. Post an explanatory comment
         5. Emit trace event
+        6. Release the persistent coder/reviewer pair — escalation
+           ends the automated retry loop so the pair is no longer
+           useful. ADR 0026 / B2 lifecycle release boundary.
         """
         assert isinstance(action, EscalateToHumanAction)
 
@@ -870,6 +881,15 @@ class ActionApplier:
         # Verify claim ownership before write (raises ClaimLostError)
         # Claims are on issues, not PRs, so use issue_number
         self._verify_claim_before_write(action, action.issue_number)
+
+        # Tear down the pair before label mutations so a partial
+        # escalation (e.g. label add succeeds, comment fails) still
+        # ends with the agent processes terminated. The lifecycle
+        # contract is "escalation kills the pair, full stop".
+        if self.pair_registry is not None:
+            self.pair_registry.release(
+                action.issue_number, reason="escalated-to-human",
+            )
 
         errors = []
         comment_url = ""
@@ -1066,6 +1086,21 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "source": action.source,
                 },
             ))
+
+        # Awaiting-merge reconciliation that flips an issue's history
+        # entry to a terminal state (``merged`` or ``closed``) is the
+        # canonical "issue done" boundary. Release the persistent
+        # exchange pair here so it doesn't linger until orchestrator
+        # shutdown — ADR 0026 / B2 review feedback (PR #6212): without
+        # this, a successfully merged issue keeps its coder/reviewer
+        # processes alive even though no more exchanges can occur.
+        if (
+            self.pair_registry is not None
+            and outcome.status in {"merged", "closed"}
+        ):
+            self.pair_registry.release(
+                action.issue_number, reason="issue-completed",
+            )
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,

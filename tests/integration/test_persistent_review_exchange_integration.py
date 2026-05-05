@@ -163,6 +163,9 @@ def _bootstrap_git_worktree(tmp_path: Path) -> tuple[Path, str]:
 
 def _make_review_exchange_runner(
     session_output: FileSystemSessionOutput,
+    *,
+    persistent_pair_root: Path,
+    pair_registry: InMemoryPersistentExchangePairRegistry | None = None,
 ) -> PersistentReviewExchangeRunner:
     """Centralized constructor for the integration tests' review-exchange runner.
 
@@ -170,9 +173,18 @@ def _make_review_exchange_runner(
     change doesn't require updating every call site (PR #6209 review
     finding: a previous signature change drifted because of scattered
     constructor calls in different test files).
+
+    ``pair_registry`` defaults to a fresh in-memory registry; tests
+    that want to inspect the registry across exchanges (e.g.
+    ``test_persistent_pair_survives_two_back_to_back_exchanges``)
+    pass one in. ``persistent_pair_root`` is required because B2's
+    pair-scoped path layout means the runner cannot pick a default
+    that's both deterministic and isolated from other tests.
     """
     return PersistentReviewExchangeRunner(
-        session_output, InMemoryPersistentExchangePairRegistry(),
+        session_output,
+        pair_registry or InMemoryPersistentExchangePairRegistry(),
+        persistent_pair_root,
     )
 
 
@@ -245,12 +257,17 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         def publish(self, event):
             captured_events.append(event)
 
+    pair_registry = InMemoryPersistentExchangePairRegistry()
     cre = CompletionReviewExchange(
         config=config,
         session_output=session_output,
         emit_review_started=_emit_started,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=_make_review_exchange_runner(session_output),
+        review_exchange_runner=_make_review_exchange_runner(
+            session_output,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            pair_registry=pair_registry,
+        ),
     )
 
     from issue_orchestrator.events import EventContext
@@ -280,10 +297,18 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
     assert EventName.REVIEW_EXCHANGE_STARTED in event_names
     assert EventName.REVIEW_EXCHANGE_COMPLETED in event_names
 
-    # Persistent recording layout
-    reviewer_recording = run_dir / "reviewer" / "terminal-recording.jsonl"
-    coder_recording = run_dir / "coder" / "terminal-recording.jsonl"
-    assert reviewer_recording.exists(), f"reviewer recording missing at {reviewer_recording}"
+    # B2 recording layout: pair-scoped (under
+    # ``<state>/persistent-pairs/issue-<n>/<role>/...``), referenced
+    # from each exchange's manifest. The replay UI looks the path up
+    # via the manifest, not via a fixed run_dir/<role>/... convention,
+    # because exchange 2's run_dir would otherwise see no recording
+    # on a registry cache hit.
+    manifest_payload = json.loads((run_dir / "manifest.json").read_text())
+    reviewer_recording = Path(manifest_payload["reviewer_recording"])
+    coder_recording = Path(manifest_payload["coder_recording"])
+    assert reviewer_recording.exists(), (
+        f"reviewer recording missing at manifest-pointed path {reviewer_recording}"
+    )
     # Coder runs only when reviewer says changes_requested; reviewer stub
     # responds ok on round 1, so coder may not run. Just check that if
     # the file exists, it parses.
@@ -319,10 +344,26 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
     )
     assert artifact.path == reviewer_recording
 
-    # Reviewer sibling worktree was reclaimed.
+    # B2: the reviewer sibling worktree PERSISTS past one exchange.
+    # The pair owns it for the lifetime of the issue; lifecycle
+    # release at issue-completion / reset / shutdown is what
+    # reclaims it. Calling ``shutdown_all`` here simulates that
+    # boundary so the test cleans up after itself.
     sibling_pattern = list(coder_wt.parent.glob(f"{coder_wt.name}-review-*"))
-    assert sibling_pattern == [], \
-        f"reviewer worktree leaked: {sibling_pattern}"
+    assert len(sibling_pattern) == 1, (
+        "reviewer worktree should still exist after the exchange — "
+        "B2 makes it pair-scoped, not per-exchange"
+    )
+
+    pair_registry.shutdown_all(reason="test-cleanup")
+    sibling_pattern_after = list(coder_wt.parent.glob(f"{coder_wt.name}-review-*"))
+    # The on_release hook (B3 will wire it) is responsible for
+    # filesystem reclamation; B2 leaves it manual via this test
+    # cleanup so that bootstrap can choose a hook implementation
+    # without breaking this test. The directory may or may not be
+    # gone depending on bootstrap wiring — that's covered by
+    # ``test_persistent_exchange_pair_registry_inmemory``.
+    del sibling_pattern_after
 
 
 def test_persistent_review_exchange_multi_round_changes_then_ok(
@@ -369,7 +410,10 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=_make_review_exchange_runner(_session_output_for_test),
+        review_exchange_runner=_make_review_exchange_runner(
+            _session_output_for_test,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+        ),
     )
 
     from issue_orchestrator.events import EventContext
@@ -447,7 +491,10 @@ def test_persistent_review_exchange_max_rounds_exhausted(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=_make_review_exchange_runner(_session_output_for_test),
+        review_exchange_runner=_make_review_exchange_runner(
+            _session_output_for_test,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+        ),
     )
 
     from issue_orchestrator.events import EventContext
@@ -543,7 +590,10 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=_make_review_exchange_runner(_session_output_for_test),
+        review_exchange_runner=_make_review_exchange_runner(
+            _session_output_for_test,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+        ),
     )
 
     from issue_orchestrator.events import EventContext
@@ -620,3 +670,128 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
             f"round {evt.round_index} is not in the 'user' view "
             f"(views={evt.views}); end users won't see it on the dashboard"
         )
+
+
+def test_persistent_pair_survives_two_back_to_back_exchanges(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The user-visible "1 process for the life of the exchanges" benefit.
+
+    This is the test ADR 0026's B2 commits to: spawn a pair on the
+    first exchange, run a second exchange for the same issue, and
+    assert the second exchange reuses *the same coder PID and the
+    same reviewer PID*. A regression where the registry's release
+    crept back into ``run_persistent_session_exchange`` would fail
+    here as fresh PIDs.
+
+    The agent stub responds ``ok`` to every reviewer prompt, so each
+    exchange completes in one round. Both calls run on the same
+    ``CompletionReviewExchange`` (and therefore the same registry
+    instance), which is what production wires.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+
+    pair_registry = InMemoryPersistentExchangePairRegistry()
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(
+            session_output,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            pair_registry=pair_registry,
+        ),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    def _run_one(session_name: str) -> "ReviewExchangeOutcome":  # noqa: F821
+        return cre.run_review_exchange_loop(
+            worktree=coder_wt,
+            issue_number=9001,
+            issue_title="Persistence integration",
+            session_name=session_name,
+            agent_label="agent:backend",
+            on_started=lambda _run_dir: None,
+            events=MagicMock(),
+            event_context=EventContext(),
+        )
+
+    first = _run_one("issue-9001-first")
+    assert first.status == "ok"
+
+    snapshot_after_first = pair_registry.snapshot()
+    assert len(snapshot_after_first) == 1, (
+        "exactly one pair should be cached for this issue after exchange 1"
+    )
+    coder_pid_first = snapshot_after_first[0]["coder_pid"]
+    reviewer_pid_first = snapshot_after_first[0]["reviewer_pid"]
+
+    second = _run_one("issue-9001-second")
+    assert second.status == "ok"
+
+    snapshot_after_second = pair_registry.snapshot()
+    assert len(snapshot_after_second) == 1, (
+        "second exchange must NOT have spawned a second pair — the "
+        "cached one should have been reused"
+    )
+    assert snapshot_after_second[0]["coder_pid"] == coder_pid_first, (
+        "coder PID changed between exchanges — the persistent-pair "
+        "contract is broken (B2 ADR 0026 regression)"
+    )
+    assert snapshot_after_second[0]["reviewer_pid"] == reviewer_pid_first, (
+        "reviewer PID changed between exchanges — the persistent-pair "
+        "contract is broken (B2 ADR 0026 regression)"
+    )
+
+    # Recording-mirror cache-hit regression (PR #6212 review):
+    # both exchanges' run_dirs must surface the canonical pair-scoped
+    # recording via their manifest. The previous design wired
+    # ``additional_recording_paths`` at first spawn, so on cache hit
+    # the second exchange's run_dir got no recording. The fix is to
+    # publish the pair-scoped path through the manifest and have
+    # ManifestAccessor read from it. Both exchanges must point at
+    # the same pair-scoped recording file, since the pair runs one
+    # continuous PTY across both exchanges.
+    first_run_dir = first.exchange_dir.parent
+    second_run_dir = second.exchange_dir.parent
+    first_manifest = json.loads((first_run_dir / "manifest.json").read_text())
+    second_manifest = json.loads((second_run_dir / "manifest.json").read_text())
+    assert first_manifest["coder_recording"] == second_manifest["coder_recording"], (
+        "coder recording path drifted between exchanges — both should "
+        "point at the same pair-scoped file (PR #6212 finding 3)"
+    )
+    assert first_manifest["reviewer_recording"] == second_manifest["reviewer_recording"], (
+        "reviewer recording path drifted between exchanges"
+    )
+    assert Path(second_manifest["reviewer_recording"]).exists(), (
+        "exchange 2's manifest-pointed recording is missing on disk"
+    )
+
+    accessor = ManifestAccessor(
+        RunIdentity(issue_number=9001, run_dir=second_run_dir),
+    )
+    artifact = accessor.get_review_exchange_phase_terminal_recording(
+        round_index=1, role="reviewer",
+    )
+    assert artifact.path == Path(second_manifest["reviewer_recording"]), (
+        "ManifestAccessor must follow the manifest's pair-scoped "
+        "pointer for second-exchange runs (#6212 finding 3 fix)"
+    )
+
+    # Cleanup so the test doesn't leak PTY agents past the test run.
+    pair_registry.shutdown_all(reason="test-cleanup")

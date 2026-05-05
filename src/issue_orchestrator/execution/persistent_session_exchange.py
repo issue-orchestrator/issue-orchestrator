@@ -81,8 +81,10 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
     pair_registry: InMemoryPersistentExchangePairRegistry,
+    persistent_pair_root: Path,
     coder_worktree_path: Path,
-    reviewer_worktree_path: Path,
+    reviewer_worktree_factory: Callable[[], Path],
+    coder_branch: str | None = None,
     issue_number: int,
     issue_title: str,
     coder_label: str,
@@ -101,12 +103,25 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange against a registry-owned persistent pair.
 
-    Acquires a pair from ``pair_registry`` (spawns one on cache miss),
-    drives the round loop, and releases the pair when the exchange
-    ends. In B1 the release runs unconditionally per exchange so
-    behavior is identical to the pre-registry world; in B2 the
-    release moves to issue-completion sites so the same pair can
-    serve multiple back-to-back exchanges.
+    Acquires a pair from ``pair_registry``. On cache miss the spawn
+    closure invokes ``reviewer_worktree_factory`` to create the
+    reviewer worktree, opens both PTY-attached sessions with their
+    env pointing at *pair-scoped* response/recording files (under
+    ``persistent_pair_root``), and caches the pair. On cache hit
+    the existing pair is reused — same coder PID, same reviewer PID,
+    same recording continuing where it left off.
+
+    The release at issue-lifetime boundaries (PR merge, reset-retry,
+    escalation, orchestrator shutdown) is the *caller's*
+    responsibility — this function does not release per exchange.
+    Holding the pair past one exchange is precisely the user-visible
+    benefit of the registry; ADR 0026 explains the lifecycle map.
+
+    ``reviewer_worktree_factory`` is invoked at most once per pair —
+    on the first cache miss for the issue. Subsequent exchanges reuse
+    the worktree stored on the cached pair and rely on the
+    ``before_reviewer_round`` callback to fast-forward it to the
+    coder's latest tip.
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     session_name = f"review-exchange-{issue_number}-{timestamp}"
@@ -121,11 +136,6 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     run_dir = run.run_dir
     run_id = run.run_id
     exchange_run_id = run_id
-
-    if initial_validation_record_path is not None and initial_validation_record_path.exists():
-        seed_target = run_dir / "validation-record.json"
-        if not seed_target.exists():
-            seed_target.write_bytes(initial_validation_record_path.read_bytes())
 
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
@@ -155,12 +165,42 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         "exchange_dir": str(exchange_dir),
     })
 
-    coder_recording = run_dir / "coder" / TERMINAL_RECORDING_FILENAME
-    reviewer_recording = run_dir / "reviewer" / TERMINAL_RECORDING_FILENAME
-    coder_response = run_dir / "coder" / "review-response.json"
-    reviewer_response = run_dir / "reviewer" / "review-response.json"
+    # Pair-scoped paths: the same physical files survive across every
+    # exchange the pair handles. The agent's env points at
+    # ``coder_response_path`` (and the completion / validation paths)
+    # once at spawn; if the pair is reused for exchange 2, exchange
+    # 2's rounds read/write the same files.
+    pair_dir = persistent_pair_root / f"issue-{issue_number}"
+    coder_pair_dir = pair_dir / "coder"
+    reviewer_pair_dir = pair_dir / "reviewer"
+    coder_response = coder_pair_dir / "review-response.json"
+    reviewer_response = reviewer_pair_dir / "review-response.json"
+    coder_recording = coder_pair_dir / TERMINAL_RECORDING_FILENAME
+    reviewer_recording = reviewer_pair_dir / TERMINAL_RECORDING_FILENAME
+    coder_completion = coder_pair_dir / "completion-coder.json"
+    pair_validation_record = pair_dir / "validation-record.json"
+
+    # Surface the pair-scoped file locations on every exchange's
+    # manifest so the session viewer (which reads run_dir) can find
+    # the canonical recording. Without this, exchange 2's run_dir
+    # looks empty because the recording lives at the pair scope.
+    session_output.update_manifest(run_dir, {
+        "persistent_pair_dir": str(pair_dir),
+        "coder_recording": str(coder_recording),
+        "reviewer_recording": str(reviewer_recording),
+    })
+
+    _seed_pair_validation_record(
+        pair_dir=pair_dir,
+        pair_validation_record=pair_validation_record,
+        source=initial_validation_record_path,
+    )
 
     def _spawn_pair() -> PersistentExchangePair:
+        # Cache miss: this is the first exchange for the issue (or the
+        # previous pair died). Create the reviewer worktree and open
+        # both sessions with pair-scoped env paths.
+        reviewer_wt_path = reviewer_worktree_factory()
         coder = _open_role_session(
             role="coder",
             agent=coder_agent,
@@ -168,6 +208,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             run_dir=run_dir,
             recording_path=coder_recording,
             response_file=coder_response,
+            completion_path=coder_completion,
+            validation_output_dir=pair_dir,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -182,14 +224,19 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         # already-opened session in ``finally``; the registry
         # version preserves that guarantee here so a partial spawn
         # never returns a half-built pair to the registry's cache.
+        # (Reviewer doesn't write a coding-done completion, but we
+        # still pass pair-scoped completion / validation paths so the
+        # env layout is consistent across roles.)
         try:
             reviewer = _open_role_session(
                 role="reviewer",
                 agent=reviewer_agent,
-                worktree=reviewer_worktree_path,
+                worktree=reviewer_wt_path,
                 run_dir=run_dir,
                 recording_path=reviewer_recording,
                 response_file=reviewer_response,
+                completion_path=reviewer_pair_dir / "completion-reviewer.json",
+                validation_output_dir=pair_dir,
                 agent_label=reviewer_label,
                 web_port=web_port,
                 issue_number=issue_number,
@@ -203,12 +250,41 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         return PersistentExchangePair(
             coder_session=coder,
             reviewer_session=reviewer,
-            reviewer_worktree_path=reviewer_worktree_path,
+            reviewer_worktree_path=reviewer_wt_path,
             issue_key=issue_number,
             created_at=_wall_clock(),
+            coder_response_path=coder_response,
+            reviewer_response_path=reviewer_response,
+            coder_recording_path=coder_recording,
+            reviewer_recording_path=reviewer_recording,
+            coder_completion_path=coder_completion,
+            validation_record_path=pair_validation_record,
         )
 
     pair = pair_registry.acquire(issue_key=issue_number, spawn=_spawn_pair)
+
+    # Always fast-forward the reviewer worktree at the start of every
+    # reviewer round, including round 1. Round 1 of a *fresh* pair is a
+    # no-op (the worktree was just created at the coder tip); round 1
+    # of a *cached* pair from a previous exchange is the load-bearing
+    # case — the coder may have advanced its branch between exchanges
+    # and the reviewer needs the new tip. The caller-supplied
+    # ``before_reviewer_round`` (if any) runs after the FF.
+    def _ff_then_caller_hook(round_index: int) -> None:
+        if coder_branch is not None:
+            from .reviewer_worktree import (
+                ReviewerWorktree,
+                fast_forward_reviewer_worktree,
+            )
+            fast_forward_reviewer_worktree(
+                ReviewerWorktree(
+                    path=pair.reviewer_worktree_path,
+                    coder_branch=coder_branch,
+                ),
+            )
+        if before_reviewer_round is not None:
+            before_reviewer_round(round_index)
+
     try:
         outcome = _drive_rounds(
             session_output=session_output,
@@ -220,16 +296,22 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             exchange_run_id=exchange_run_id,
             coder_session=pair.coder_session,
             reviewer_session=pair.reviewer_session,
-            coder_response=coder_response,
-            reviewer_response=reviewer_response,
-            coder_recording=coder_recording,
-            reviewer_recording=reviewer_recording,
+            # Round-loop reads/writes pair-scoped files (stable across
+            # exchanges) — never the run_dir-derived defaults that B1
+            # used. On cache hit, ``pair.coder_response_path`` points
+            # to the same file the agent's env was set to at spawn.
+            coder_response=pair.coder_response_path,
+            reviewer_response=pair.reviewer_response_path,
+            coder_recording=pair.coder_recording_path,
+            reviewer_recording=pair.reviewer_recording_path,
+            coder_completion_path=pair.coder_completion_path,
+            validation_record_path=pair.validation_record_path,
             coder_timeout_seconds=coder_agent.timeout_minutes * 60,
             reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
-            before_reviewer_round=before_reviewer_round,
+            before_reviewer_round=_ff_then_caller_hook,
             emit=_emit,
         )
     except Exception as exc:
@@ -241,14 +323,35 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             "exception_type": type(exc).__name__,
         })
         raise
-    finally:
-        # B1: release per exchange — same external behavior as the
-        # pre-registry world. ADR 0026 / B2 moves this release to
-        # issue-completion sites so the pair survives across rework
-        # cycles for the same issue.
-        pair_registry.release(issue_number, reason="exchange-complete")
 
     return outcome
+
+
+def _seed_pair_validation_record(
+    *,
+    pair_dir: Path,
+    pair_validation_record: Path,
+    source: Path | None,
+) -> None:
+    """Copy the caller-supplied validation record into the pair scope.
+
+    Extracted from ``run_persistent_session_exchange`` to keep that
+    function under the C901 complexity ceiling. The pair-scoped seed
+    is load-bearing for B2: the coder-protocol guardrail reads
+    ``pair_validation_record`` on every exchange, so leaving the
+    seed at the per-exchange run_dir would mean exchange 2 sees no
+    prior validation evidence even when the caller supplied one.
+
+    No-op when ``source`` is missing or the seed already exists
+    (exchange 2 reusing the cached pair must NOT overwrite the
+    record from a fresh validation that ran since exchange 1).
+    """
+    if source is None or not source.exists():
+        return
+    pair_dir.mkdir(parents=True, exist_ok=True)
+    if pair_validation_record.exists():
+        return
+    pair_validation_record.write_bytes(source.read_bytes())
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +359,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 # ---------------------------------------------------------------------------
 
 
-def _open_role_session(
+def _open_role_session(  # noqa: PLR0913
     *,
     role: str,
     agent: AgentConfig,
@@ -264,13 +367,23 @@ def _open_role_session(
     run_dir: Path,
     recording_path: Path,
     response_file: Path,
+    completion_path: Path,
+    validation_output_dir: Path,
     agent_label: str,
     web_port: int | None,
     issue_number: int,
     issue_title: str,
     session_name: str,
 ) -> PersistentSession:
-    """Build the launch command + env for one role and open the persistent session."""
+    """Build the launch command + env for one role and open the persistent session.
+
+    Per-role files (``response_file``, ``completion_path``,
+    ``validation_output_dir``) are pair-scoped: the pair lives across
+    every exchange the issue runs, so the agent's env points at
+    stable paths. ``run_dir`` is per-exchange and is used only for
+    the chapter-mirror recording path so the session viewer keeps
+    seeing per-exchange snapshots.
+    """
     bootstrap = _BOOTSTRAP_PROMPT_TEMPLATE.format(
         role=role, issue_number=issue_number, issue_title=issue_title,
     )
@@ -300,11 +413,13 @@ def _open_role_session(
     command = shlex.split(command_str)
 
     response_file.parent.mkdir(parents=True, exist_ok=True)
+    completion_path.parent.mkdir(parents=True, exist_ok=True)
+    validation_output_dir.mkdir(parents=True, exist_ok=True)
     env = _build_role_env(
-        run_dir=run_dir,
         response_file=response_file,
+        completion_path=completion_path,
+        validation_output_dir=validation_output_dir,
         worktree=worktree,
-        role=role,
         agent_label=agent_label,
         web_port=web_port,
         issue_number=issue_number,
@@ -315,16 +430,27 @@ def _open_role_session(
         working_dir=worktree,
         env=env,
         recording_path=recording_path,
-        additional_recording_paths=[run_dir / TERMINAL_RECORDING_FILENAME],
+        # No ``additional_recording_paths`` here — the original B2
+        # design tried to mirror the pair-scoped recording into
+        # ``run_dir/<role>/terminal-recording.jsonl`` for backward
+        # compat, but the writer's mirror paths are fixed at spawn
+        # time. On a registry cache hit (exchange 2+), the pair's
+        # writer keeps writing to exchange 1's run_dir mirror — the
+        # second exchange's run_dir would never see a recording.
+        # ManifestAccessor now reads ``coder_recording`` /
+        # ``reviewer_recording`` from the per-exchange manifest
+        # instead (they point at the pair-scoped canonical file),
+        # which is the right shape: one continuous recording per
+        # pair, multiple exchanges referencing it via manifest.
     )
 
 
 def _build_role_env(
     *,
-    run_dir: Path,
     response_file: Path,
+    completion_path: Path,
+    validation_output_dir: Path,
     worktree: Path,
-    role: str,
     agent_label: str,
     web_port: int | None,
     issue_number: int,
@@ -340,16 +466,18 @@ def _build_role_env(
     goes through this same helper for the same reason; bypassing it here
     would let coder/reviewer agents run with admin GitHub tokens, the
     Control API admin bearer, etc.
+
+    All three file paths (``response_file``, ``completion_path``,
+    ``validation_output_dir``) are pair-scoped — the agent's env is
+    set once at spawn and points at locations that survive across
+    every exchange the persistent pair handles.
     """
     from ..control.isolation import build_runtime_tool_env
     from .agent_runner_env import build_filtered_env
 
-    completion_path = (
-        f".issue-orchestrator/sessions/{run_dir.name}/{role}/completion-{role}.json"
-    )
     overrides: dict[str, str] = {
-        f"{ENV_PREFIX}COMPLETION_PATH": completion_path,
-        f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR": str(run_dir),
+        f"{ENV_PREFIX}COMPLETION_PATH": str(completion_path),
+        f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR": str(validation_output_dir),
         f"{ENV_PREFIX}AGENT_LABEL": agent_label,
         f"{ENV_PREFIX}ISSUE_NUMBER": str(issue_number),
         f"{ENV_PREFIX}REVIEW_RESPONSE_FILE": str(response_file),
@@ -382,6 +510,8 @@ def _drive_rounds(  # noqa: PLR0913
     reviewer_response: Path,
     coder_recording: Path,
     reviewer_recording: Path,
+    coder_completion_path: Path,
+    validation_record_path: Path,
     coder_timeout_seconds: float,
     reviewer_timeout_seconds: float,
     max_rounds: int,
@@ -459,7 +589,7 @@ def _drive_rounds(  # noqa: PLR0913
                 session_name=session_name,
             )
 
-        if require_validation and reviewer.response_type == "ok" and not _validation_passed(run_dir):
+        if require_validation and reviewer.response_type == "ok" and not _validation_passed(validation_record_path):
             reviewer = ReviewExchangeResponse(
                 response_type="changes_requested",
                 response_text=(
@@ -528,7 +658,7 @@ def _drive_rounds(  # noqa: PLR0913
         # from round N-1 cannot satisfy round N's protocol guardrail —
         # the guardrail must observe an artifact freshly written during
         # *this* round's coding-done invocation.
-        _clear_coder_completion(run_dir)
+        _clear_coder_completion(coder_completion_path)
         coder = _send_role_round(
             session=coder_session,
             role="coder",
@@ -564,6 +694,8 @@ def _drive_rounds(  # noqa: PLR0913
             exchange_dir=exchange_dir,
             coder_response=coder_response,
             coder_recording=coder_recording,
+            coder_completion_path=coder_completion_path,
+            validation_record_path=validation_record_path,
             coder_timeout_seconds=coder_timeout_seconds,
             require_validation=require_validation,
             exchange_run_id=exchange_run_id,
@@ -618,6 +750,8 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     exchange_dir: Path,
     coder_response: Path,
     coder_recording: Path,
+    coder_completion_path: Path,
+    validation_record_path: Path,
     coder_timeout_seconds: float,
     require_validation: bool,
     exchange_run_id: str,
@@ -635,7 +769,9 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     only the review-response file while skipping coding-done.
     """
     protocol_error = _validate_coder_completion(
-        run_dir, require_validation=require_validation,
+        completion_path=coder_completion_path,
+        validation_record_path=validation_record_path,
+        require_validation=require_validation,
     )
     retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
     while protocol_error is not None and retries_remaining > 0:
@@ -670,7 +806,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         })
         # Same freshness invariant as the initial turn: drop any file
         # left over from the previous attempt before the retry runs.
-        _clear_coder_completion(run_dir)
+        _clear_coder_completion(coder_completion_path)
         retry_response = _send_role_round(
             session=coder_session,
             role="coder",
@@ -698,7 +834,9 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             )
         coder = retry_response
         protocol_error = _validate_coder_completion(
-            run_dir, require_validation=require_validation,
+            completion_path=coder_completion_path,
+            validation_record_path=validation_record_path,
+            require_validation=require_validation,
         )
     if protocol_error is not None:
         return coder, _build_outcome_for_protocol_error(
@@ -1083,8 +1221,7 @@ def _record_chapter(  # noqa: PLR0913
     })
 
 
-def _validation_passed(run_dir: Path) -> bool:
-    record_path = run_dir / "validation-record.json"
+def _validation_passed(record_path: Path) -> bool:
     if not record_path.exists():
         return False
     try:
@@ -1094,12 +1231,7 @@ def _validation_passed(run_dir: Path) -> bool:
     return bool(data.get("passed"))
 
 
-def _coder_completion_path(run_dir: Path) -> Path:
-    """Single source of truth for where the coder writes its completion artifact."""
-    return run_dir / "coder" / "completion-coder.json"
-
-
-def _clear_coder_completion(run_dir: Path) -> None:
+def _clear_coder_completion(completion_path: Path) -> None:
     """Unlink any prior coder completion artifact so the protocol guardrail
     observes only the file freshly written during the current turn.
 
@@ -1107,15 +1239,16 @@ def _clear_coder_completion(run_dir: Path) -> None:
     from an earlier round and accepts a coder that skipped coding-done
     on this turn entirely. The active runner avoids this because each
     round spawns a fresh coder process whose env points at a per-round
-    path; the persistent runner shares the path across rounds, so we
-    have to invalidate explicitly.
+    path; the persistent runner shares the path across rounds — and
+    across exchanges, in B2 — so we have to invalidate explicitly.
     """
-    _coder_completion_path(run_dir).unlink(missing_ok=True)
+    completion_path.unlink(missing_ok=True)
 
 
 def _validate_coder_completion(
-    run_dir: Path,
     *,
+    completion_path: Path,
+    validation_record_path: Path,
     require_validation: bool,
 ) -> str | None:
     """Mirror of control/review_exchange_loop._validate_coder_protocol.
@@ -1126,7 +1259,6 @@ def _validate_coder_completion(
     review-response file but skips coding-done would otherwise advance
     the exchange by accident.
     """
-    completion_path = _coder_completion_path(run_dir)
     if not completion_path.exists():
         return f"missing completion artifact: {completion_path}"
     if completion_path.stat().st_size <= 0:
@@ -1137,7 +1269,7 @@ def _validate_coder_completion(
         return f"completion artifact is not valid JSON: {completion_path}"
     if not isinstance(payload, dict):
         return f"completion artifact must be a JSON object: {completion_path}"
-    if require_validation and not _validation_passed(run_dir):
+    if require_validation and not _validation_passed(validation_record_path):
         return "validation-record.json missing or did not pass"
     return None
 
