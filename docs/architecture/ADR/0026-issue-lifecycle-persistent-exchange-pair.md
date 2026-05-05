@@ -32,41 +32,103 @@ The persistence gap is entirely **orchestrator-side**: `run_persistent_session_e
 
 Concretely:
 
-1. **New port `PersistentExchangePairRegistry`** (in `ports/`):
+1. **New port `PersistentExchangePairRegistry`** (in `ports/`). The
+   registry's API expresses *behavior*, not subprocess plumbing.
+   Spawn is supplied by the caller so the registry never needs to
+   know how an agent is launched (which command, env, recording
+   path), and the returned pair carries its sessions as opaque
+   handles — concrete `PersistentSession` types live in `execution/`
+   and are forbidden from leaking through ports per the
+   import-linter "ports must not depend on execution" rule.
    ```python
    class PersistentExchangePairRegistry(Protocol):
-       def get_or_create(
+       def acquire(
            self,
            *,
-           issue_key: IssueKey,
-           coder_command: list[str],
-           reviewer_command: list[str],
-           coder_env: Mapping[str, str],
-           reviewer_env: Mapping[str, str],
-           coder_working_dir: Path,
-           reviewer_working_dir: Path,
-           ...
+           issue_key: Hashable,
+           spawn: Callable[[], PersistentExchangePair],
        ) -> PersistentExchangePair: ...
 
-       def release(self, issue_key: IssueKey, *, reason: str) -> None: ...
+       def release(self, issue_key: Hashable, *, reason: str) -> None: ...
 
        def shutdown_all(self, *, reason: str) -> None: ...
    ```
 
 2. **`PersistentExchangePair`** holds:
-   - `coder: PersistentSession`, `reviewer: PersistentSession`
-   - `reviewer_worktree: Path` (created once, fast-forwarded between rounds AND between exchanges)
+   - `coder_session: Any`, `reviewer_session: Any` — *opaque*
+     handles at the port boundary. The execution-layer adapter
+     constructs each pair with strictly-typed `PersistentSession`
+     instances, but the port stays agnostic so future adapters
+     (e.g. a non-PTY backend, a remote-process backend) can plug
+     in without touching the port. See the in-tree comment on the
+     dataclass for why `Any` rather than a tighter Protocol.
+   - `reviewer_worktree_path: Path` (created once, fast-forwarded
+     at the start of every reviewer round, removed when the pair
+     is released)
+   - `coder_response_path`, `reviewer_response_path`,
+     `coder_recording_path`, `reviewer_recording_path`,
+     `coder_completion_path`, `validation_record_path`:
+     pair-scoped paths the agent's env points at. The agent's env
+     is set once at spawn; if the pair survives across exchanges,
+     every round of every exchange reads/writes the same physical
+     files. Per-exchange `run_dir` still holds chapters / summary;
+     recordings are mirrored from the pair scope into
+     `run_dir/<role>/` for backward compat with tooling that
+     watches per-exchange paths.
    - `created_at`, `last_used_at` (for diagnostics + idle reaping)
-   - `is_alive(): bool` — fail-fast probe; if either side died, registry evicts and the next caller gets a fresh pair
+   - `is_alive() -> bool` — fail-fast probe; if either side died,
+     registry evicts and the next caller gets a fresh pair
 
-3. **`run_persistent_session_exchange` change**: instead of `_open_role_session` for both roles inline, call `registry.get_or_create(...)` once. The `finally` block no longer closes the pair — it calls `registry.mark_used(issue_key)` so idle-reaping can advance.
+3. **`run_persistent_session_exchange` change**: instead of
+   `_open_role_session` for both roles inline, build a `spawn`
+   closure that creates the reviewer worktree, opens both sessions,
+   and returns a populated `PersistentExchangePair`; pass the
+   closure to `registry.acquire(...)`. The function no longer
+   `release`s in `finally` — pair lifetime is now owned by the
+   registry's lifecycle hooks (see boundaries below). `last_used_at`
+   is refreshed inside `acquire` on cache hit so the registry can
+   still drive idle-reaping without an explicit `mark_used` call.
 
-4. **Lifecycle boundaries** (when does a pair die?):
-   - **Issue completes (PR merged or issue closed):** `release(issue_key, reason="issue-closed")`. The owning code is the same place that drops the `in-progress` label.
-   - **Orchestrator stops:** `shutdown_all(reason="orchestrator-shutdown")` from the bootstrap teardown.
-   - **Pair process exits unexpectedly:** registry's `is_alive()` check returns False on the next `get_or_create` call; registry evicts the dead pair and spawns fresh. (Same behavior as a crash today, just centralized.)
-   - **Reset-and-retry from scratch:** explicit `release(issue_key, reason="reset-retry")` at the start of the reset path. The pair was tied to the prior worktree state; we want a clean slate.
-   - **Idle reaping (optional, deferred):** if the pair sits unused for >N minutes, reap. **Not in scope for the first cut** — without it the worst case is "PTY agents idle while the issue waits for human triage." That's a memory cost, not a correctness cost.
+4. **Lifecycle boundaries** (when does a pair die?). These are the
+   *single owner* of pair termination — no other path may call
+   `release` or close subprocesses directly.
+
+   - **Issue completes (PR merged or issue closed):**
+     `release(issue_key, reason="issue-closed")`. The owning code
+     is the same place that drops the `in-progress` label.
+   - **Orchestrator stops:** `shutdown_all(reason="orchestrator-shutdown")`
+     from the bootstrap teardown.
+   - **Pair process exits unexpectedly:** registry's `is_alive()`
+     check returns False on the next `acquire` call; registry
+     evicts the dead pair and spawns fresh. (Same behavior as a
+     crash today, just centralized.)
+   - **Reset-and-retry from scratch:**
+     `release(issue_key, reason="reset-retry")` at the start of
+     the reset path. The pair was tied to the prior worktree
+     state; we want a clean slate.
+   - **Escalation to human:**
+     `release(issue_key, reason="escalated-to-human")` from
+     `ActionApplier._apply_escalate`. Escalation is **terminal
+     for the pair** because the orchestrator's automated retry
+     loop has explicitly given up — `EscalateToHumanAction` only
+     fires after `max_rework_cycles` is exhausted. If a human
+     un-escalates and the orchestrator picks the issue back up,
+     the next exchange will spawn a fresh pair (fresh agent
+     context is what a human resuming would want anyway). Treating
+     escalation as terminal also avoids long-tail PTY agents
+     drifting on issues that are no longer the orchestrator's
+     responsibility — the "memory cost only" framing in the next
+     bullet covers transient idleness within an active issue, not
+     escalated-and-handed-off issues.
+   - **Idle reaping (optional, deferred):** if the pair sits
+     unused for >N minutes *while the issue is still actively
+     under orchestrator control*, reap. **Not in scope for the
+     first cut** — within an active issue's lifetime the worst
+     case is "PTY agents idle while a rework cycle waits on a
+     slow validation step or a flaky CI." That's a memory cost,
+     not a correctness cost. Escalation and other terminal
+     transitions above are handled explicitly, so idle reaping
+     does not need to cover them.
 
 5. **Restart-from-labels recovery:** unchanged in semantics. Subprocesses don't survive an orchestrator restart, so on first `get_or_create` after restart the registry sees an empty cache and spawns. The cached `summary.json` mechanism in `completion_review_exchange.load_existing_review_exchange_outcome` is orthogonal and continues to work — if the validation cache is fresh, we never enter `run_persistent_session_exchange` at all.
 
@@ -92,10 +154,27 @@ Introduce the registry, but every call still does `get_or_create` followed by `r
 - Validates the abstraction without changing user-visible behavior.
 
 **PR B2 — Drop the per-exchange `release`; survive across exchanges within an issue.**
-Stop calling `release()` at the end of each exchange. Add `release()` calls at the canonical issue-completion sites (PR merge, reset-retry, escalation-to-human). This is the change that delivers what the user asked for.
-- New tests: integration test that runs three review exchanges back-to-back for one issue and asserts the same coder PID and the same reviewer PID across all three.
-- New tests: registry evicts and respawns when a process dies between exchanges.
-- E2E sweep: confirm the reset-retry-from-scratch test still works (it kills the issue's pair as part of reset).
+Stop calling `release()` at the end of each exchange. Add
+`release()` calls at the canonical lifecycle boundaries enumerated
+in section 4 above — orchestrator shutdown (`shutdown_all`),
+reset-and-retry, and escalation-to-human. The PR-merged /
+issue-closed boundary may land in a follow-up if no single
+canonical owner exists in the codebase yet; the pair is bounded
+in the worst case by orchestrator shutdown. This is the change
+that delivers what the user asked for.
+- New tests: integration test that runs two-or-more review
+  exchanges back-to-back for one issue and asserts the same coder
+  PID and the same reviewer PID across all of them.
+- New tests: registry evicts and respawns when a process dies
+  between exchanges.
+- E2E sweep: confirm the reset-retry-from-scratch test still
+  works (it kills the issue's pair as part of reset).
+- Path-scope refactor: the agent's env points at *pair-scoped*
+  paths under `<state_dir>/persistent-pairs/issue-<n>/{coder,reviewer}/...`
+  so a cached pair handed to exchange 2 reads/writes the same
+  files exchange 1 did. Per-exchange `run_dir` keeps `chapters.json`
+  and `summary.json`; recordings are mirrored from pair scope into
+  `run_dir/<role>/` for backward compat.
 
 **PR B3 — Diagnostics + observability.**
 Add control-API endpoints for `GET /control/exchange-pairs` returning current pairs (issue_key, coder_pid, reviewer_pid, age, last_used_at). Add a UI badge on the issue card showing "persistent pair: alive / restarted / never spawned". Add structured events for pair lifecycle transitions.
