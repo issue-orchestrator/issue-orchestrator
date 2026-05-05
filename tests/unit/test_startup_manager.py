@@ -698,6 +698,56 @@ class TestStartupManagerResumePartialWork:
         # Since we mocked the callback, we verify state wasn't modified with label removal
         mock_action_applier.apply.assert_not_called()
 
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_start_paused_queues_partial_work_without_launching(
+        self,
+        mock_analyze,
+        sample_state,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_repository_host,
+        mock_action_applier,
+        mock_issue_branches_fn,
+        mock_label_store,
+    ):
+        """Start-paused recovery must not launch fresh sessions for partial work."""
+        sample_state.paused = True
+        mock_issue_branches_fn.return_value = {1: "1-feature"}
+        mock_config.agents = {"agent:web": MagicMock()}
+
+        issue = Issue(number=1, title="Test Issue", labels=["agent:web", "in-progress"])
+        mock_repository_host.list_issues.return_value = [issue]
+
+        mock_state = MagicMock()
+        mock_state.has_session = False
+        mock_state.has_open_pr = False
+        mock_state.has_partial_work = True
+        mock_state.branch = "1-feature"
+        mock_analyze.return_value = mock_state
+
+        launch_session = MagicMock()
+        manager = StartupManager(
+            config=mock_config,
+            events=mock_events,
+            runner=mock_runner,
+            repository_host=mock_repository_host,
+            action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=launch_session,
+            update_queue_cache_fn=lambda: None,
+            label_store=mock_label_store,
+        )
+
+        await manager.run_startup(sample_state)
+
+        launch_session.assert_not_called()
+        assert sample_state.active_sessions == []
+        assert sample_state.priority_queue == [1]
+
 
 class TestStartupManagerValidationRetryRecovery:
     """Tests for validation retry state recovery."""

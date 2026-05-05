@@ -771,6 +771,17 @@ class StartupManager:
         if not issues_to_resume:
             return
 
+        if state.paused:
+            state.startup_message = f"Queueing {len(issues_to_resume)} in-progress issue(s)..."
+            print(
+                f"\nStartup is paused; queueing {len(issues_to_resume)} "
+                "in-progress issue(s) with partial work."
+            )
+            for issue, _agent_label in issues_to_resume:
+                self._queue_partial_work_resume(state, issue)
+                print(f"  #{issue.number}: Queued for resume")
+            return
+
         state.startup_message = f"Resuming {len(issues_to_resume)} in-progress issue(s)..."
         print(f"\n🔄 Resuming {len(issues_to_resume)} in-progress issue(s) with partial work...")
 
@@ -778,8 +789,7 @@ class StartupManager:
             # Check capacity
             if len(state.active_sessions) >= self.config.max_concurrent_sessions:
                 print(f"  #{issue.number}: At max capacity, will resume when slot available")
-                if issue.number not in state.priority_queue:
-                    state.priority_queue.insert(0, issue.number)
+                self._queue_partial_work_resume(state, issue)
                 continue
 
             print(f"  #{issue.number}: Starting session to resume work...")
@@ -789,3 +799,7 @@ class StartupManager:
                 print(f"  #{issue.number}: ✅ Session started")
             else:
                 print(f"  #{issue.number}: ❌ Failed to start session")
+
+    def _queue_partial_work_resume(self, state: OrchestratorState, issue: Issue) -> None:
+        if issue.number not in state.priority_queue:
+            state.priority_queue.insert(0, issue.number)
