@@ -664,10 +664,13 @@ async def orchestrator_watcher(
     if port <= 0:
         pytest.skip("Control API disabled; async watcher unavailable")
 
-    stream = SSEEventStream(f"http://localhost:{port}/api/events")
+    # Both watcher paths (this fixture and ``create_watcher_for_port``
+    # in flows.py) route through ``build_watcher_clients`` so the
+    # auth-wiring contract has one owner; see
+    # ``tests/e2e/_watcher_auth.py``.
+    from tests.e2e._watcher_auth import build_watcher_clients
+    stream, snapshot_provider, replay_provider = build_watcher_clients(port)
     await stream.start()
-    snapshot_provider = HTTPSnapshotProvider(f"http://localhost:{port}/api/snapshot")
-    replay_provider = HTTPReplayProvider(f"http://localhost:{port}/api/events_since")
     watcher = await OrchestratorWatcher.create(
         event_stream=stream,
         snapshot_provider=snapshot_provider,

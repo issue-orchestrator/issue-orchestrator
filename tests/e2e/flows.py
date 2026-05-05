@@ -92,10 +92,13 @@ async def start_orchestrator_runtime(
 
 
 async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEventStream]:
-    stream = SSEEventStream(f"http://localhost:{port}/api/events")
+    # Both watcher paths (this one and ``orchestrator_watcher`` in
+    # conftest.py) route through ``build_watcher_clients`` so the
+    # auth-wiring contract has one owner; see
+    # ``tests/e2e/_watcher_auth.py``.
+    from tests.e2e._watcher_auth import build_watcher_clients
+    stream, snapshot_provider, replay_provider = build_watcher_clients(port)
     await stream.start()
-    snapshot_provider = HTTPSnapshotProvider(f"http://localhost:{port}/api/snapshot")
-    replay_provider = HTTPReplayProvider(f"http://localhost:{port}/api/events_since")
     watcher = await OrchestratorWatcher.create(
         event_stream=stream,
         snapshot_provider=snapshot_provider,
