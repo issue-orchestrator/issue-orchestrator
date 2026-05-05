@@ -116,7 +116,7 @@ class TestSupervisorStop:
         """Return stopped when no orchestrator is running (goal achieved)."""
         response = supervisor_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(tmp_path)},
+            json={"repo_root": str(tmp_path), "reason": "test stop with no lock"},
         )
 
         assert response.status_code == 200
@@ -124,13 +124,41 @@ class TestSupervisorStop:
         # When no lock exists, the orchestrator is already stopped - goal achieved
         assert data["status"] == "stopped"
 
+    def test_stop_rejects_missing_reason(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return 400 when 'reason' is missing — the contract is
+        "tell us why" so the target log records the calling intent
+        (the signal handler can't attribute SIGTERM to a caller)."""
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 400
+        payload = response.json()
+        assert payload["error"] == "reason is required"
+        assert "hint" in payload
+
+    def test_stop_rejects_empty_reason(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Whitespace-only reason is treated as missing."""
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path), "reason": "   "},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "reason is required"
+
     def test_stop_rejects_invalid_repo_root(
         self, supervisor_client: TestClient
     ) -> None:
         """Return 400 for invalid repo_root."""
         response = supervisor_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": "/nonexistent/path"},
+            json={"repo_root": "/nonexistent/path", "reason": "test"},
         )
 
         assert response.status_code == 400
@@ -151,7 +179,7 @@ class TestSupervisorStop:
         """Return 400 for invalid port."""
         response = supervisor_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(tmp_path), "port": -1},
+            json={"repo_root": str(tmp_path), "reason": "test", "port": -1},
         )
 
         assert response.status_code == 400
@@ -173,7 +201,7 @@ class TestSupervisorStop:
 
         response = supervisor_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(tmp_path), "port": 19080},
+            json={"repo_root": str(tmp_path), "reason": "test", "port": 19080},
         )
 
         assert response.status_code == 409
@@ -196,7 +224,7 @@ class TestSupervisorStop:
 
         response = supervisor_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(tmp_path)},
+            json={"repo_root": str(tmp_path), "reason": "test"},
         )
 
         assert response.status_code == 409
@@ -586,8 +614,19 @@ class TestSupervisorReconcileMultiInstance:
             "pid": 102,
             "port": 19102,
         }]
-        mock_supervisor.stop.assert_any_call(tmp_path, force=False, instance_id="orchestrator-3")
-        mock_supervisor.stop_by_port.assert_any_call(19102, force=False)
+        mock_supervisor.stop.assert_any_call(
+            tmp_path,
+            force=False,
+            instance_id="orchestrator-3",
+            reason="reconcile-runtime: stale lock for failed multi-instance orchestrator",
+            actor="control-center.reconcile",
+        )
+        mock_supervisor.stop_by_port.assert_any_call(
+            19102,
+            force=False,
+            reason="reconcile-runtime: stop unresponsive multi-instance orchestrator",
+            actor="control-center.reconcile",
+        )
 
 
 class TestSupervisorStart:
@@ -695,7 +734,12 @@ class TestSupervisorStart:
 
         assert response.status_code == 200
         assert response.json()["status"] == "started"
-        mock_supervisor.stop_by_port.assert_called_once_with(19080, force=True)
+        mock_supervisor.stop_by_port.assert_called_once_with(
+            19080,
+            force=True,
+            reason="engine identity mismatch detected on /control/start",
+            actor="control-center",
+        )
 
     def test_annotate_identity_mismatch_ignores_dirty_state_drift(
         self,

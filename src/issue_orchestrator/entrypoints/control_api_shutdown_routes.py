@@ -207,6 +207,8 @@ def _process_shutdown_repo(*, operation_id: str, repo_path: str, supervisor: Sup
     stopped_count = supervisor.stop_all_instances(
         path,
         force=force_now,
+        reason="control-center global shutdown",
+        actor="control-center.global-shutdown",
         graceful_timeout_seconds=timeout_seconds,
         force_if_graceful_fails=True,
     )

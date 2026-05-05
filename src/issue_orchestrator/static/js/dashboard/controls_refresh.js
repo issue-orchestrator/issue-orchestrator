@@ -712,8 +712,18 @@ function closeShutdownModal() {
 }
 
 async function shutdownWait() {
-    // Set shutdown flag (stops new work)
-    await fetch('/api/shutdown', { method: 'POST' });
+    // Set shutdown flag (stops new work). The /api/shutdown endpoint
+    // now requires a non-empty 'reason' so each shutdown is traceable
+    // in the orchestrator log; without it the request 400s and the
+    // modal stalls.
+    await fetch('/api/shutdown', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            reason: 'dashboard: user clicked "Shutdown and Wait" in Engine controls',
+            actor: 'dashboard.shutdown_wait',
+        }),
+    });
 
     // Update modal to show waiting state
     const body = document.getElementById('shutdownModalBody');

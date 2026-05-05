@@ -493,25 +493,50 @@ async def stop_repo_orchestrator(repo_id: str, request: Request) -> JSONResponse
 
     The repo_id is the URL-encoded absolute path to the repo.
 
-    JSON body (optional):
-        force: bool - Force kill if graceful shutdown fails (default: false)
+    JSON body:
+        reason: str (REQUIRED) - The "why" behind this stop, threaded
+            into the target's ``/api/shutdown`` so the target log
+            records the calling intent. Empty/missing → 400.
+        actor: str (optional) - Source identifier for log grouping.
+        force: bool (optional, default false) - Force kill if
+            graceful shutdown fails.
     """
     from urllib.parse import unquote
 
     repo_path = unquote(repo_id)
     path = Path(repo_path)
 
-    # Parse optional force from body
+    # Parse body — reason is mandatory.
     force = False
+    raw_reason = None
+    raw_actor = None
     try:
         body = await request.json()
-        if isinstance(body, dict) and "force" in body:
+    except Exception:  # noqa: BLE001 — empty / malformed body
+        body = {}
+    if isinstance(body, dict):
+        if "force" in body:
             force = bool(body["force"])
-    except Exception:
-        pass
+        raw_reason = body.get("reason")
+        raw_actor = body.get("actor")
+    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+    if not reason:
+        return JSONResponse(
+            {
+                "error": "reason is required",
+                "hint": (
+                    "POST /api/repos/{repo_id}/stop now requires a "
+                    "non-empty 'reason' so each engine shutdown is "
+                    "traceable in the orchestrator log."
+                ),
+            },
+            status_code=400,
+        )
+    actor = raw_actor.strip() if isinstance(raw_actor, str) else ""
+    actor = actor or "control_api.stop_repo"
 
     # Use supervisor to stop
-    stopped = _supervisor.stop(path, force=force)
+    stopped = _supervisor.stop(path, force=force, reason=reason, actor=actor)
     return JSONResponse({"status": "stopped" if stopped else "failed"})
 
 

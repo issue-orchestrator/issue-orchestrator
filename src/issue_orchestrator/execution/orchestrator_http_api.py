@@ -145,8 +145,29 @@ class OrchestratorHttpApi(OrchestratorApi):
     def refresh(self, inflight_stable_ids: list[str]) -> dict[str, Any]:
         return self._request("POST", "/api/refresh", json_body={"inflight_stable_ids": inflight_stable_ids})
 
-    def shutdown(self, force: bool = False) -> dict[str, Any]:
-        return self._request("POST", f"/api/shutdown?force={str(force).lower()}")
+    def shutdown(
+        self,
+        *,
+        reason: str,
+        actor: str = "orchestrator_http_api.shutdown",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Request orchestrator shutdown via HTTP.
+
+        ``reason`` is required: the target's ``/api/shutdown``
+        endpoint rejects empty reasons (the contract is "tell us
+        why" so the target log records the calling intent).
+        """
+        if not reason or not reason.strip():
+            raise ValueError(
+                "shutdown() requires a non-empty reason; "
+                "the /api/shutdown contract rejects unreasoned shutdowns",
+            )
+        return self._request(
+            "POST",
+            f"/api/shutdown?force={str(force).lower()}",
+            json_body={"reason": reason, "actor": actor},
+        )
 
     def session_worktree(self, issue_number: int) -> dict[str, Any]:
         return self._request("GET", f"/api/session/worktree/{issue_number}")
@@ -261,8 +282,29 @@ class OrchestratorAsyncHttpApi:
     async def refresh(self, inflight_stable_ids: list[str]) -> dict[str, Any]:
         return await self._request("POST", "/api/refresh", json_body={"inflight_stable_ids": inflight_stable_ids})
 
-    async def shutdown(self, force: bool = False) -> dict[str, Any]:
-        return await self._request("POST", f"/api/shutdown?force={str(force).lower()}")
+    async def shutdown(
+        self,
+        *,
+        reason: str,
+        actor: str = "orchestrator_http_api.shutdown",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Request orchestrator shutdown via HTTP (async).
+
+        ``reason`` is required: the target's ``/api/shutdown``
+        endpoint rejects empty reasons (the contract is "tell us
+        why" so the target log records the calling intent).
+        """
+        if not reason or not reason.strip():
+            raise ValueError(
+                "shutdown() requires a non-empty reason; "
+                "the /api/shutdown contract rejects unreasoned shutdowns",
+            )
+        return await self._request(
+            "POST",
+            f"/api/shutdown?force={str(force).lower()}",
+            json_body={"reason": reason, "actor": actor},
+        )
 
     async def session_worktree(self, issue_number: int) -> dict[str, Any]:
         return await self._request("GET", f"/api/session/worktree/{issue_number}")

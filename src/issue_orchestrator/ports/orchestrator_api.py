@@ -41,7 +41,13 @@ class OrchestratorApi(Protocol):
     def refresh(self, inflight_stable_ids: list[str]) -> dict[str, Any]:
         ...
 
-    def shutdown(self, force: bool = False) -> dict[str, Any]:
+    def shutdown(
+        self,
+        *,
+        reason: str,
+        actor: str = "orchestrator_api.shutdown",
+        force: bool = False,
+    ) -> dict[str, Any]:
         ...
 
     def session_worktree(self, issue_number: int) -> dict[str, Any]:

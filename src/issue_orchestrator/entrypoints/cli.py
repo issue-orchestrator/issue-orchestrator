@@ -351,7 +351,12 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
             if choice in {"y", "yes"}:
                 return 1
             console.print("[yellow]Stopping existing orchestrator...[/yellow]")
-            stopped = supervisor.stop(config.repo_root, force=True)
+            stopped = supervisor.stop(
+                config.repo_root,
+                force=True,
+                reason="cli start: replacing existing orchestrator at user prompt",
+                actor="cli.start",
+            )
             if not stopped:
                 console.print("[red]Failed to stop existing orchestrator.[/red]")
                 return 1
@@ -568,11 +573,17 @@ def cmd_restart(args: argparse.Namespace) -> int:
         # Just start fresh
         return _start_fresh(args)
 
-    # Step 2: Send shutdown request
+    # Step 2: Send shutdown request (reason is required by /api/shutdown)
     console.print("[cyan]Sending shutdown request...[/cyan]")
     try:
         resp = httpx.post(
-            f"{base_url}/api/shutdown", timeout=5.0, headers=_control_api_headers()
+            f"{base_url}/api/shutdown",
+            timeout=5.0,
+            headers=_control_api_headers(),
+            json={
+                "reason": "cli restart: stopping existing orchestrator before fresh start",
+                "actor": "cli.restart",
+            },
         )
         if resp.status_code == 200:
             console.print("[green]Shutdown request accepted[/green]")

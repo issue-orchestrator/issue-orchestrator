@@ -394,19 +394,70 @@ async def open_agent_prompt(
 
 @web_operator_router.post("/api/shutdown")
 async def shutdown(
+    request: Request,
     orchestrator: WebOrchestratorDependency,
     operator_deps: WebOperatorDependency,
     force: bool = False,
 ) -> JSONResponse:
-    """Request orchestrator shutdown."""
+    """Request orchestrator shutdown.
+
+    Clients MUST include a non-empty ``reason`` in the JSON body so
+    later log reads can answer "what caused this shutdown?". Before
+    this requirement landed, the signal handler logged "Received
+    shutdown signal" with no source info and operators had to guess
+    whether it came from the cc, a browser tab, a CLI, or an external
+    SIGTERM. Requiring a reason here pushes the "who/why" answer
+    into the call site that knew it.
+
+    Body shape: ``{"reason": "<short string>", "actor": "<source>"}``.
+    ``actor`` is optional and carries a stable identifier for the
+    caller (cc, browser, cli, test-harness) so aggregated logs can
+    group shutdowns by source.
+    """
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body → handled below
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    raw_reason = payload.get("reason")
+    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+    if not reason:
+        return JSONResponse(
+            {
+                "error": "reason is required",
+                "hint": (
+                    "POST /api/shutdown now requires a non-empty "
+                    "'reason' in the JSON body so each shutdown is "
+                    "traceable in the orchestrator log."
+                ),
+            },
+            status_code=400,
+        )
+    actor = payload.get("actor")
+    actor_str = actor.strip() if isinstance(actor, str) else ""
 
     orchestrator.request_shutdown(force=force)
     active_count = len(orchestrator.state.active_sessions)
 
-    shutdown_manager.request_shutdown(reason="API /api/shutdown")
-    await operator_deps.broadcast_event("shutdown_requested", {"force": force, "active_sessions": active_count})
+    shutdown_log_reason = (
+        f"API /api/shutdown reason={reason!r}"
+        + (f" actor={actor_str!r}" if actor_str else "")
+        + (" force=true" if force else "")
+    )
+    shutdown_manager.request_shutdown(reason=shutdown_log_reason)
+    await operator_deps.broadcast_event(
+        "shutdown_requested",
+        {
+            "force": force,
+            "active_sessions": active_count,
+            "reason": reason,
+            "actor": actor_str or None,
+        },
+    )
     operator_deps.trigger_server_shutdown()
 
     timer = threading.Timer(0.2, shutdown_manager.exit)
@@ -416,6 +467,8 @@ async def shutdown(
     return JSONResponse({
         "status": "force_shutdown" if force else "shutdown_requested",
         "active_sessions": active_count,
+        "reason": reason,
+        "actor": actor_str or None,
     })
 
 

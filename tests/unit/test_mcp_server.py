@@ -117,8 +117,8 @@ def test_shutdown_graceful_does_not_require_confirm(monkeypatch: pytest.MonkeyPa
     """A non-forced shutdown runs without the confirm gate."""
     app = McpApp(_settings())
 
-    async def fake_shutdown(force: bool) -> dict:
-        return {"ok": True, "force": force}
+    async def fake_shutdown(force: bool, *, reason: str = "") -> dict:
+        return {"ok": True, "force": force, "reason": reason}
 
     # Replace the inner shutdown coroutine so we do not have to stand up
     # a real HTTP client for this unit.
@@ -126,7 +126,7 @@ def test_shutdown_graceful_does_not_require_confirm(monkeypatch: pytest.MonkeyPa
 
     result = asyncio.run(app.tool_shutdown(force=False))
 
-    assert result == {"ok": True, "force": False}
+    assert result == {"ok": True, "force": False, "reason": "mcp.tool_shutdown"}
 
 
 def test_validate_repo_start_path_rejects_missing(tmp_path: Path) -> None:
