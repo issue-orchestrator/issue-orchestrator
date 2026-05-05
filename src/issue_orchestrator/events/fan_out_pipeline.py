@@ -137,6 +137,15 @@ def _enrich_round_completed(data: dict[str, Any]) -> str | None:
     ri = data.get("round_index")
     if not isinstance(ri, int):
         return None
+    # When the coder hits a protocol error, the round terminates with
+    # `coder_response_type == "protocol_error"` rather than completing
+    # normally. Surface that explicitly so the user can see what
+    # happened from the timeline narrative alone — without it the row
+    # reads "Review round N completed — <whatever the last reviewer
+    # said>", silently hiding the coder error.
+    coder_type = data.get("coder_response_type")
+    if isinstance(coder_type, str) and coder_type == "protocol_error":
+        return f"Review round {ri} stopped — coder protocol error"
     verdict = data.get("reviewer_response_type")
     suffix = f" — {verdict}" if isinstance(verdict, str) and verdict else ""
     return f"Review round {ri} completed{suffix}"
@@ -195,11 +204,21 @@ def _enrich_pr_created(data: dict[str, Any]) -> str | None:
 
 def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
     rounds = data.get("rounds")
-    return (
-        f"Review exchange completed ({rounds} rounds)"
-        if isinstance(rounds, int)
-        else None
-    )
+    if not isinstance(rounds, int):
+        return None
+    # `review_exchange.completed` fires for ALL exchange end states —
+    # success, max-rounds-exceeded, AND coder protocol error. Without
+    # branching on `status`/`reason` the user sees the same generic
+    # "Review exchange completed (N rounds)" line whether the
+    # exchange ended cleanly or blew up, masking the failure on the
+    # dashboard.
+    status = data.get("status")
+    reason = data.get("reason")
+    if isinstance(status, str) and status not in {"", "ok"}:
+        if isinstance(reason, str) and reason:
+            return f"Review exchange ended ({status}, {rounds} rounds) — {reason}"
+        return f"Review exchange ended ({status}, {rounds} rounds)"
+    return f"Review exchange completed ({rounds} rounds)"
 
 
 def _role_label(role: Any) -> str | None:
