@@ -666,10 +666,26 @@ def _stream_file_observation(path: Path) -> dict[str, Any]:
     return data
 
 
-def _manifest_response(run_dir: Path, session_name: str | None) -> JSONResponse:
-    """Load RunManifest + analysis from run_dir and return as JSON."""
+def _manifest_response(
+    run_dir: Path,
+    session_name: str | None,
+    *,
+    config: Any = None,
+) -> JSONResponse:
+    """Load RunManifest + analysis from run_dir and return as JSON.
+
+    `config` is the orchestrator's runtime config; when supplied, it
+    threads `validation.junit_xml_paths` into the validation-failure
+    summary so the dashboard's `/api/dialog/validation-failure/` route
+    receives structured JUnit cases for repos that emit them. Without
+    this threading the dialog payload's `junit_cases` field is empty
+    even when JUnit XML is configured — see PR #6203 review.
+    """
     from ..control.session_analyzer import load_analysis
     from ..domain.run_manifest import RunManifest
+    from ..execution.validation_failure_summary import (
+        load_validation_failure_summary_with_config,
+    )
 
     try:
         manifest = RunManifest.load(run_dir)
@@ -704,7 +720,12 @@ def _manifest_response(run_dir: Path, session_name: str | None) -> JSONResponse:
             "suggestions": list(analysis.suggestions),
         }
 
-    validation_failure = load_validation_failure_summary(run_dir)
+    if config is not None:
+        validation_failure = load_validation_failure_summary_with_config(
+            run_dir, config=config,
+        )
+    else:
+        validation_failure = load_validation_failure_summary(run_dir)
     if validation_failure is not None:
         result["validation_failure"] = validation_failure.to_dict()
 
@@ -738,7 +759,9 @@ def session_manifest_response(
         if not session_name:
             session_name = session_output.session_name_from_path(str(resolved_run_dir))
         session_output.attach_claude_log(resolved_run_dir)
-        return _manifest_response(resolved_run_dir, session_name)
+        return _manifest_response(
+            resolved_run_dir, session_name, config=orchestrator.config,
+        )
 
     if not worktree_path:
         return JSONResponse(
@@ -762,7 +785,9 @@ def session_manifest_response(
             status_code=404,
         )
     session_output.attach_claude_log(resolved_run_dir)
-    return _manifest_response(resolved_run_dir, session_name)
+    return _manifest_response(
+        resolved_run_dir, session_name, config=orchestrator.config,
+    )
 
 
 @web_session_router.get("/api/session/manifest/{issue_number}")

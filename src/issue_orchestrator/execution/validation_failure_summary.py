@@ -151,6 +151,28 @@ def load_validation_failure_summary(
     )
 
 
+def load_validation_failure_summary_with_config(
+    run_dir: Path,
+    *,
+    config: Any,
+) -> ValidationFailureSummary | None:
+    """Config-aware wrapper that threads ``validation.junit_xml_paths``.
+
+    Both the dashboard's ``/api/dialog/validation-failure/`` route and
+    the issue-detail diagnostic path call this helper so they cannot
+    disagree on whether structured JUnit cases reach the user. If
+    ``config`` is None or has no ``validation`` block, JUnit parsing is
+    skipped (matches the bare ``load_validation_failure_summary``
+    behavior).
+    """
+    junit_paths: tuple[str, ...] = ()
+    if config is not None:
+        validation_cfg = getattr(config, "validation", None)
+        if validation_cfg is not None:
+            junit_paths = tuple(getattr(validation_cfg, "junit_xml_paths", ()) or ())
+    return load_validation_failure_summary(run_dir, junit_xml_paths=junit_paths)
+
+
 def _load_junit_cases(
     junit_xml_paths: tuple[str, ...] | list[str],
     search_root: Path,
