@@ -869,6 +869,161 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
+    def test_terminal_recording_b2_pair_scoped_recording_with_run_scoped_chapters(
+        self, tmp_path: Path,
+    ) -> None:
+        """B2 layout regression (PR #6212 review feedback): the recording
+        is pair-scoped (lives under
+        ``<state>/persistent-pairs/issue-N/<role>/...``) but chapters
+        are still per-exchange and live under the selected
+        ``<run_dir>/<role>/chapters.json``. The route's
+        ``/api/session/terminal-recording`` must follow the manifest
+        to find the recording AND look in ``run_dir`` for chapters,
+        otherwise the phase-scoped slice 404s with "Phase-scoped
+        recording cannot be resolved" because the sidecar lookup
+        would search next to the pair-scoped recording.
+        """
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-pair-scoped-recording"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+
+        # Recording lives at the pair scope, NOT under run_dir.
+        pair_recording_dir = (
+            tmp_path
+            / "persistent-pairs"
+            / "issue-123"
+            / "reviewer"
+        )
+        pair_recording_dir.mkdir(parents=True)
+        pair_recording = pair_recording_dir / "terminal-recording.jsonl"
+        events_lines = []
+        for index in range(6):
+            events_lines.append(
+                '{"data_b64":"aGk=","event_type":"output","offset_ms":'
+                + str(index)
+                + ',"schema_version":1}'
+            )
+        pair_recording.write_text("\n".join(events_lines) + "\n", encoding="utf-8")
+
+        # Manifest tells the accessor the canonical recording is the
+        # pair-scoped file.
+        session_output.update_manifest(run.run_dir, {
+            "reviewer_recording": str(pair_recording),
+        })
+
+        # Chapters stay per-exchange under run_dir.
+        chapters_path = run.run_dir / "reviewer" / "chapters.json"
+        chapters_path.parent.mkdir(parents=True, exist_ok=True)
+        chapters_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "role": "reviewer",
+                    "exchange_run_id": "exchange-1",
+                    "issue_number": 123,
+                    "chapters": [
+                        {
+                            "cycle_index": 1,
+                            "section": "prompt",
+                            "recording_event_index": 0,
+                            "recorded_at": "2026-05-04T00:00:00Z",
+                            "label": "Round 1 Prompt",
+                        },
+                        {
+                            "cycle_index": 2,
+                            "section": "prompt",
+                            "recording_event_index": 3,
+                            "recorded_at": "2026-05-04T00:00:02Z",
+                            "label": "Round 2 Prompt",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=1&session_role=reviewer"
+            )
+            assert response.status_code == 200, (
+                "B2 route lookup must follow the manifest's pair-scoped "
+                "recording AND look in run_dir for chapters; got "
+                f"{response.status_code}: {response.json()}"
+            )
+            payload = response.json()
+            # The served recording is the pair-scoped file.
+            assert payload["recording_path"] == str(pair_recording)
+            # Round 1 spans events [0, 3) — three of the six events.
+            assert payload["total_events"] == 3
+            assert payload["recording_event_index"] == 0
+            # Chapters resolved from the run-scoped sidecar.
+            assert payload["chapters"] is not None
+            assert len(payload["chapters"]) == 2
+            cycle_indices = sorted({ch["cycle_index"] for ch in payload["chapters"]})
+            assert cycle_indices == [1, 2]
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_b2_pair_scoped_recording_404s_when_chapters_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """B2 layout, missing run-scoped chapters: route must fail
+        closed with the explicit ``run_dir``-scoped sidecar path in
+        the diagnostic so the operator can find what's missing
+        (PR #6212 review feedback)."""
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-pair-scoped-no-chapters"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+
+        pair_recording_dir = (
+            tmp_path / "persistent-pairs" / "issue-123" / "reviewer"
+        )
+        pair_recording_dir.mkdir(parents=True)
+        pair_recording = pair_recording_dir / "terminal-recording.jsonl"
+        pair_recording.write_text(
+            '{"data_b64":"aGk=","event_type":"output","offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+        session_output.update_manifest(run.run_dir, {
+            "reviewer_recording": str(pair_recording),
+        })
+
+        # Deliberately do NOT write chapters.json in run_dir.
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/terminal-recording/123?run_dir={run.run_dir}"
+                "&round_index=1&session_role=reviewer"
+            )
+            assert response.status_code == 404
+            payload = response.json()
+            assert payload["diagnostic"]["reason"] == "missing_sidecar"
+            # The diagnostic must point at the run-scoped sidecar path
+            # so the operator knows where chapters were expected, not
+            # at the pair-scoped recording's parent dir.
+            expected_sidecar = run.run_dir / "reviewer" / "chapters.json"
+            assert payload["diagnostic"]["sidecar_path"] == str(expected_sidecar)
+        finally:
+            set_orchestrator(None)
+
     def test_terminal_recording_legacy_layout_still_serves_when_no_sidecar(
         self, tmp_path: Path,
     ) -> None:
