@@ -1047,6 +1047,25 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 "source": action.source,
             },
         ))
+        # When the PR reaches the merged terminal state, surface a
+        # user-visible "PR merged" event on the timeline. The catalog,
+        # spec, view registry, and issue-detail view-models are all
+        # already wired for `review.merged` — only the publication was
+        # missing, leaving the dashboard with a HISTORY_RECONCILED
+        # debug-only record after a successful merge. Emitting here
+        # closes that gap at the orchestrator's canonical merge-detection
+        # point (the awaiting-merge reconciler).
+        if outcome.status == "merged":
+            self.events.publish(make_trace_event(
+                EventName.REVIEW_MERGED,
+                {
+                    "issue_number": action.issue_number,
+                    "issue_key": action.issue_key or str(action.issue_number),
+                    "pr_number": action.pr_number,
+                    "pr_url": action.pr_url,
+                    "source": action.source,
+                },
+            ))
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,
