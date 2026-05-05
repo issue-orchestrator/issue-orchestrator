@@ -283,88 +283,68 @@ records:
 # inline regen path in test_golden_timeline_internal.py / external.py.)
 
 internal_timeline:
-  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-7777-1" }
-  - { event: session.completed, phase: in_progress, step: completed, status: completed, parent_key: "session:issue-7777-1", detail: "Initial feature" }
-  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - { event: session.started, phase: in_progress, step: started, status: started, level: detail, parent_key: "session:issue-7777-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, level: detail, detail: Initial feature, parent_key: "session:issue-7777-1" }
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed, level: detail, parent_key: "session:issue-7777-1" }
   - event: issue.pr_created
     phase: orchestrator
     step: pr_created
     status: completed
+    level: phase
     parent_key: "review:88"
     artifacts:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
-
-  # All review-exchange events project to parent_key="issue:7777"
-  # because none of them carry pr_number (the persistent runner
-  # emits with issue_number + session_name only).
-  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "issue:7777" }
-  - { event: review_exchange.started, phase: reviewing, step: started, status: started, parent_key: "issue:7777" }
-
-  # Round 1: needs_work → coder reworks
-  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:7777" }
+  - { event: review.started, phase: reviewing, step: started, status: started, level: phase, parent_key: "issue:7777" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, level: phase, parent_key: "issue:7777" }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, level: phase, parent_key: "issue:7777" }
   - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
-  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, level: phase, parent_key: "issue:7777" }
   - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
-  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, level: phase, parent_key: "issue:7777" }
   - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
-  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, level: phase, parent_key: "issue:7777" }
   - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
-  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
-  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:7777", detail: "Round 1. Missing tests for the new error path. Coder response: ok" }
-
-  # Round 2: ok → exchange completes
-  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, level: phase, parent_key: "issue:7777" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, level: phase, detail: "Round 1. Missing tests for the new error path. Coder response: ok", parent_key: "issue:7777" }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, level: phase, parent_key: "issue:7777" }
   - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
-  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, level: phase, parent_key: "issue:7777" }
   - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:7777" }
-  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:7777" }
-  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:7777", detail: "Round 2. Looks good now" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, level: phase, parent_key: "issue:7777" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, level: phase, detail: Round 2. Looks good now, parent_key: "issue:7777" }
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, level: phase, parent_key: "issue:7777" }
+  - { event: review.approved, phase: reviewing, step: approved, status: completed, level: phase, summary: Looks good now, parent_key: "issue:7777" }
+  - { event: review.merged, phase: reviewing, step: merged, status: completed, level: phase, parent_key: "review:88" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, level: phase, parent_key: "issue:7777" }
 
-  # `review_exchange.completed` no longer renders machine codes as
-  # summary; the narrative ("Review exchange completed (N rounds)")
-  # is the user-facing text.
-  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:7777" }
-
-  # `review.approved.summary` is the reviewer's response_text.
-  - { event: review.approved, phase: reviewing, step: approved, status: completed, parent_key: "issue:7777", summary: "Looks good now" }
-
-  # review.merged.parent_key = "review:88" because the merged event
-  # data carries pr_number (state machine sets entity_id=pr_number).
-  - { event: review.merged, phase: reviewing, step: merged, status: completed, parent_key: "review:88" }
-
-  - { event: issue.completed, phase: completed, step: completed, status: completed, parent_key: "issue:7777" }
-
-# Chapter events are `_ops`-only per VIEW_REGISTRY — they do NOT appear
-# in the user view, which is what users see. The user view shows only
-# the "narrative spine" (round started → reviewer prompted → reviewer
-# feedback → coder prompted → coder feedback → round completed).
 external_view: user
 external_timeline:
-  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
-  - { event: agent.completed, status: completed, narrative: "Coding session completed", detail: "Initial feature" }
-  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - { event: agent.coding_started, phase: in_progress, step: started, status: started, level: detail, logical_phase: coding, narrative: Coding agent started, parent_key: "session:issue-7777-1" }
+  - { event: agent.completed, phase: in_progress, step: completed, status: completed, level: detail, logical_phase: orchestrator, narrative: Coding session completed, detail: Initial feature, parent_key: "session:issue-7777-1" }
+  - { event: validation.passed, phase: orchestrator, step: validation_passed, status: completed, level: detail, logical_phase: orchestrator, narrative: Validation passed, parent_key: "session:issue-7777-1" }
   - event: pr.created
+    phase: orchestrator
+    step: pr_created
     status: completed
+    level: phase
+    logical_phase: orchestrator
     narrative: "PR #88 created"
+    parent_key: "review:88"
     artifacts:
       - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/88" }
-  - { event: review.started, status: started, narrative: "Code review started" }
-  - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
-
-  # Round 1
-  - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
-  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
-  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 1) — needs_work" }
-  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
-  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
-  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 1 completed — needs_work", detail: "Round 1. Missing tests for the new error path. Coder response: ok" }
-
-  # Round 2
-  - { event: review_exchange.round_started, status: completed, narrative: "Review round 2 started" }
-  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 2)" }
-  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 2) — ok" }
-  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 2 completed — ok", detail: "Round 2. Looks good now" }
-  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (2 rounds)" }
-  - { event: review.approved, status: completed, narrative: "Review approved after 2 rounds", summary: "Looks good now" }
-  - { event: review.merged, status: completed, narrative: "PR merged" }
-  - { event: issue.completed, status: completed, narrative: "Issue completed" }
+  - { event: review.started, phase: reviewing, step: started, status: started, level: phase, logical_phase: review, narrative: Code review started, parent_key: "issue:7777" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, level: phase, logical_phase: review, narrative: Review exchange started, parent_key: "issue:7777" }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, level: phase, logical_phase: review, narrative: Review round 1 started, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, level: phase, logical_phase: review, narrative: Reviewer prompt sent (round 1), parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, level: phase, logical_phase: review, narrative: Reviewer feedback (round 1) — needs_work, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, level: phase, logical_phase: review, narrative: Coder prompt sent (round 1), parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, level: phase, logical_phase: review, narrative: Coder feedback (round 1) — ok, parent_key: "issue:7777" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, level: phase, logical_phase: review, narrative: Review round 1 completed — needs_work, detail: "Round 1. Missing tests for the new error path. Coder response: ok", parent_key: "issue:7777" }
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, level: phase, logical_phase: review, narrative: Review round 2 started, parent_key: "issue:7777" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, level: phase, logical_phase: review, narrative: Reviewer prompt sent (round 2), parent_key: "issue:7777" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, level: phase, logical_phase: review, narrative: Reviewer feedback (round 2) — ok, parent_key: "issue:7777" }
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, level: phase, logical_phase: review, narrative: Review round 2 completed — ok, detail: Round 2. Looks good now, parent_key: "issue:7777" }
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, level: phase, logical_phase: review, narrative: Review exchange completed (2 rounds), parent_key: "issue:7777" }
+  - { event: review.approved, phase: reviewing, step: approved, status: completed, level: phase, logical_phase: review, narrative: Review approved after 2 rounds, summary: Looks good now, parent_key: "issue:7777" }
+  - { event: review.merged, phase: reviewing, step: merged, status: completed, level: phase, logical_phase: review, narrative: PR merged, parent_key: "review:88" }
+  - { event: issue.completed, phase: completed, step: completed, status: completed, level: phase, logical_phase: orchestrator, narrative: Issue completed, parent_key: "issue:7777" }
