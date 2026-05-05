@@ -541,6 +541,13 @@ def _summary_from_data(data: dict[str, Any], event_name: str = "") -> str | None
         return _e2e_summary(event_name, data)
     if event_name == "publish.failed":
         return _publish_failed_summary(data)
+    if event_name == "review_exchange.completed":
+        # The runner emits machine codes here (`reason="reviewer_ok"`,
+        # `status="ok"`) for downstream policy decisions, not user
+        # display. The narrative ("Review exchange completed (N
+        # rounds)") carries the user-facing text; suppress summary so
+        # raw machine codes don't render as the timeline summary line.
+        return None
     for key in ("reason", "summary", "error", "status", "outcome"):
         value = data.get(key)
         if isinstance(value, str) and value:
