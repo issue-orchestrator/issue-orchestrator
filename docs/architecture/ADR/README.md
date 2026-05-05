@@ -34,3 +34,4 @@ These ADRs capture the *few* architectural decisions that materially affect corr
 - [0023 Deterministic orchestrator required (cannot replace with agentic-first solution)](0023-deterministic-orchestrator-required.md)
 - [0024 Test-driven development workflow for agents](0024-tdd-workflow-for-agents.md)
 - [0025 PTY-first session UI with MCP as control plane](0025-pty-first-session-ui-mcp-control-plane.md)
+- [0026 Issue-lifecycle persistent coder/reviewer pair](0026-issue-lifecycle-persistent-exchange-pair.md)
