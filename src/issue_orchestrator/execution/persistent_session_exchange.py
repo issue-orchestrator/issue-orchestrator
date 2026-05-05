@@ -712,6 +712,11 @@ def _send_role_round(  # noqa: PLR0913
             prompt=prompt,
             response_file=response_file,
             timeout_seconds=timeout_seconds,
+            # Tag heartbeat/diagnostic logs with role + cycle so an
+            # interleaved coder + reviewer log is decodable without
+            # cross-referencing PIDs (#6160 e2e regression: 17 minutes
+            # of unattributed silence).
+            role_label=f"{role}@round-{cycle_index}",
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
         logger.warning(
