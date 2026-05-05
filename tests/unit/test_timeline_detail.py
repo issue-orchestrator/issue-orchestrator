@@ -84,11 +84,12 @@ class TestReviewDetail:
         assert detail is not None
         assert "Risk: high" in detail
 
-    def test_approved_with_summary(self) -> None:
-        data = {"review_summary": "Clean implementation, well tested"}
-        detail = _detail_from_data("review.approved", data, "Approved")
-        assert detail is not None
-        assert "Clean implementation" in detail
+    # `test_approved_with_summary` removed — the corresponding
+    # `_detail_from_data` branch read `data["review_summary"]`, but no
+    # production emitter populates that key. Approval text reaches the
+    # user via `_summary_from_data` (which reads `data["summary"]`).
+    # See the persistent-session goldens series for the audit that
+    # surfaced this dead code.
 
     def test_escalated_with_rework_info(self) -> None:
         data = {"rework_cycle": 3, "max_rework_cycles": 3}

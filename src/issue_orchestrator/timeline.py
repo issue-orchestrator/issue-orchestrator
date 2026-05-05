@@ -634,8 +634,11 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
         if isinstance(risk, str) and risk:
             parts.append(f"Risk: {risk}")
 
-    elif event_name == "review.approved":
-        _add_if_new(parts, data.get("review_summary"), summary_str)
+    # `review.approved` carries its text in `data["summary"]` (see
+    # `CompletionProcessor._emit_review_outcome`), which is already
+    # picked up by `_summary_from_data`. The legacy `review_summary`
+    # key was never populated on the local-exchange path; the branch
+    # was dead and has been removed.
 
     elif event_name == "review.comment_added":
         _add_if_new(parts, data.get("comment_excerpt"), summary_str)
