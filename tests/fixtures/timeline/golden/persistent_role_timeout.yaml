@@ -1,0 +1,206 @@
+scenario: persistent_role_timeout
+description: |
+  Reviewer-role timeout in the persistent-session runner. The
+  reviewer subprocess fails to write its response file within the
+  timeout — `_send_role_round` catches `PersistentRoundTimeoutError`,
+  records a `section=timeout` chapter, emits
+  `REVIEW_EXCHANGE_ROLE_TIMEOUT`, and returns None. The driver then
+  enters `_build_outcome_for_role_timeout` which emits a terminal
+  `REVIEW_EXCHANGE_COMPLETED` with `status=error` and
+  `reason=reviewer_no_completion`.
+
+  Source: `execution/persistent_session_exchange.py`:
+
+    - timeout chapter:                           line 720 → 1041
+    - `REVIEW_EXCHANGE_ROLE_TIMEOUT`:            line 733
+    - terminal `REVIEW_EXCHANGE_COMPLETED`:      line 903
+
+  Pinned in this fixture:
+
+    - The chapter event with `section: timeout` (distinct from the
+      `prompt`/`feedback` chapters in the success-path goldens).
+    - The terminal `REVIEW_EXCHANGE_COMPLETED` carrying
+      `status=error`, `reason="reviewer_no_completion"`. Status
+      "error" is not the same as a normal completion — review caches
+      keyed off this event must distinguish.
+    - The exchange ends without a `REVIEW_EXCHANGE_ROUND_COMPLETED`
+      for round 1 (the round did not finish successfully).
+    - No `REVIEW_APPROVED` follows; the orchestrator's downstream
+      handling (escalation / retry) is out of scope for this fixture.
+
+issue_number: 9999
+
+records:
+  # Initial coder pass + PR creation.
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data: { issue_number: 9999, session_id: "issue-9999-1", agent: coder, task: code }
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data: { issue_number: 9999, session_id: "issue-9999-1", implementation: "Implemented the feature" }
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:03:00Z"
+    data: { issue_number: 9999, session_id: "issue-9999-1" }
+
+  - event: issue.pr_created
+    timestamp: "2026-05-04T00:03:30Z"
+    data: { issue_number: 9999, pr_number: 100, pr_url: "https://github.com/example/repo/pull/100" }
+
+  - event: review.started
+    timestamp: "2026-05-04T00:04:00Z"
+    data: { issue_number: 9999, task: review, agent: reviewer }
+
+  - event: review_exchange.started
+    timestamp: "2026-05-04T00:04:01Z"
+    data: { issue_number: 9999, session_name: "issue-9999-exchange-1" }
+
+  # ============== Round 1: reviewer times out ==============
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:04:02Z"
+    data: { issue_number: 9999, session_name: "issue-9999-exchange-1", round_index: 1 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:03Z"
+    data:
+      issue_number: 9999
+      session_name: "issue-9999-exchange-1"
+      round_index: 1
+      role: reviewer
+      section: prompt
+      recording_event_index: 0
+      label: "Round 1 reviewer prompt"
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:04Z"
+    data:
+      issue_number: 9999
+      session_name: "issue-9999-exchange-1"
+      round_index: 1
+      role: reviewer
+      prompt_chars: 1234
+
+  # Reviewer fails to respond within the timeout. `_send_role_round`
+  # catches PersistentRoundTimeoutError and records the timeout chapter
+  # before emitting ROLE_TIMEOUT.
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:09:04Z"
+    data:
+      issue_number: 9999
+      session_name: "issue-9999-exchange-1"
+      round_index: 1
+      role: reviewer
+      section: timeout
+      recording_event_index: 38
+      label: "Round 1 reviewer timeout/error"
+
+  - event: review_exchange.role_timeout
+    timestamp: "2026-05-04T00:09:05Z"
+    data:
+      issue_number: 9999
+      session_name: "issue-9999-exchange-1"
+      round_index: 1
+      role: reviewer
+      reason: no_completion
+      detail: "Persistent round timed out after 300s"
+
+  # `_build_outcome_for_role_timeout` emits the terminal exchange event
+  # with status=error. No ROUND_COMPLETED — the round didn't finish.
+  - event: review_exchange.completed
+    timestamp: "2026-05-04T00:09:06Z"
+    data:
+      issue_number: 9999
+      session_name: "issue-9999-exchange-1"
+      rounds: 1
+      status: error
+      reason: reviewer_no_completion
+
+  # `CompletionReviewExchange._run_fresh_review_exchange()` then emits
+  # a downstream `review.changes_requested` for any non-`ok` exchange
+  # outcome (`control/completion_review_exchange.py:486-495`). This is
+  # the user-visible terminal review verdict — without it the timeline
+  # is missing a real production event.
+  - event: review.changes_requested
+    timestamp: "2026-05-04T00:09:07Z"
+    data:
+      issue_number: 9999
+      task: review
+      agent: reviewer
+      review_exchange_mode: persistent
+      rounds: 1
+      summary: "Review exchange halted: reviewer_no_completion"
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-9999-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, parent_key: "session:issue-9999-1", detail: "Implemented the feature" }
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    parent_key: "review:100"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/100" }
+  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "issue:9999" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, parent_key: "issue:9999" }
+
+  # Round 1 setup.
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:9999" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:9999" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:9999" }
+
+  # The timeout sequence.
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:9999" }
+  - event: review_exchange.role_timeout
+    phase: reviewing
+    step: role_timeout
+    status: failed
+    parent_key: "issue:9999"
+    summary: "no_completion"
+
+  # Terminal exchange.completed with error status. The user-visible
+  # signals are the upstream `role_timeout` row (status=failed) and
+  # the downstream `review.changes_requested` row (status=failed,
+  # summary="Review exchange halted: ...").
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:9999" }
+
+  # Downstream review-outcome event from
+  # CompletionReviewExchange._run_fresh_review_exchange(): for any
+  # non-`ok` exchange status, the wrapper emits review.changes_requested
+  # carrying summary="Review exchange halted: <reason>".
+  - { event: review.changes_requested, phase: reviewing, step: changes_requested, status: failed, parent_key: "issue:9999", summary: "Review exchange halted: reviewer_no_completion" }
+
+# `chapter_recorded` is ops-only; user view shows the narrative spine.
+# `review_exchange.completed` here renders the same way as a successful
+# exchange, so the user-visible signal that something went wrong is
+# the `role_timeout` row above with status=failed and the timeout
+# narrative.
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - { event: agent.completed, status: completed, narrative: "Coding session completed", detail: "Implemented the feature" }
+  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - event: pr.created
+    status: completed
+    narrative: "PR #100 created"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/100" }
+  - { event: review.started, status: started, narrative: "Code review started" }
+  - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
+
+  # The user-visible failure: role_timeout with the timeout reason.
+  - event: review_exchange.role_timeout
+    status: failed
+    narrative: "Reviewer timed out (round 1)"
+    summary: "no_completion"
+
+  # Exchange terminates. Narrative is the same plural-rules string as
+  # success on this PR; PR 6180 differentiates by status.
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange completed (1 round)" }
+  # Downstream review.changes_requested: production user-visible
+  # terminal verdict for any non-`ok` exchange outcome
+  # (`completion_review_exchange.py:486-495`).
+  - { event: review.changes_requested, status: failed, narrative: "Reviewer requested changes (round 1)", summary: "Review exchange halted: reviewer_no_completion" }
