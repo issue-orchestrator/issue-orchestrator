@@ -59,7 +59,29 @@ class ValidationFailureSummary:
             "validation_record_path": self.validation_record_path,
             "validation_stdout_path": self.validation_stdout_path,
             "validation_stderr_path": self.validation_stderr_path,
+            # Structured per-test results when JUnit XML is configured.
+            # The dashboard renders these as a per-test table with
+            # actual failure details — the actionable info users need
+            # to figure out what went wrong without scrolling stdout.
+            "junit_cases": [_junit_case_to_dict(case) for case in self.junit_cases],
         }
+
+
+def _junit_case_to_dict(case: JUnitCaseResult) -> dict[str, Any]:
+    """Serialize a `JUnitCaseResult` to the dict shape consumed by the
+    `ValidationFailureDialogPayload.junit_cases` field. Mirrors the
+    `JUnitCasePayload` schema in `docs/api/ui-openapi.json` exactly.
+    """
+    return {
+        "case_id": case.case_id,
+        "display_name": case.display_name,
+        "suite_name": case.suite_name,
+        "outcome": case.outcome,
+        "duration_seconds": case.duration_seconds,
+        "failure_details": case.failure_details,
+        "system_out": case.system_out,
+        "system_err": case.system_err,
+    }
 
 
 def load_validation_failure_summary(

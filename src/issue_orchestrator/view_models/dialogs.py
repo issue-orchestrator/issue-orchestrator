@@ -493,6 +493,16 @@ def build_validation_failure_dialog(
         for item in validation.get("stderr_excerpt", [])
         if isinstance(item, str)
     ]
+    # Structured per-test cases when validation produced JUnit XML.
+    # Each entry carries the test's nodeid, outcome, and (for failures
+    # / errors) the actual failure detail — letting the dashboard
+    # render a per-test table with the assertion error / traceback
+    # inline rather than as a stdout text blob.
+    junit_cases = [
+        item
+        for item in validation.get("junit_cases", [])
+        if isinstance(item, dict) and item.get("case_id")
+    ]
     actions = _build_session_diagnostics_actions(ctx)
     _append_run_scoped_action(
         actions,
@@ -515,6 +525,7 @@ def build_validation_failure_dialog(
         "failed_tests": failed_tests,
         "stdout_excerpt": stdout_excerpt,
         "stderr_excerpt": stderr_excerpt,
+        "junit_cases": junit_cases,
         "summary_rows": [row.to_dict() for row in summary_rows],
         "action_sections": action_sections,
     }
