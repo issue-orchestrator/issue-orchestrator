@@ -795,3 +795,160 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
 
     # Cleanup so the test doesn't leak PTY agents past the test run.
     pair_registry.shutdown_all(reason="test-cleanup")
+
+
+def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Pair-scoped paths beyond ``coder_recording``/``reviewer_recording``
+    must also stay identical across exchanges.
+
+    The ``PersistentExchangePair`` dataclass declares six pair-scoped
+    paths in addition to the two recordings:
+
+      - ``reviewer_worktree_path``
+      - ``coder_response_path``
+      - ``reviewer_response_path``
+      - ``coder_completion_path``
+      - ``validation_record_path``
+
+    The agent's environment is set once at spawn to point at these
+    stable paths (``ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE``,
+    ``ISSUE_ORCHESTRATOR_COMPLETION_PATH``, etc.). If the second
+    exchange writes to different paths the agent's recovery / replay
+    logic silently falls out of sync — the round 1 response on
+    exchange 2 lands in a file that no consumer is watching.
+
+    Companion test ``test_persistent_pair_survives_two_back_to_back_exchanges``
+    pins recording-path stability; this one extends the same fixture
+    to cover the *write-side* paths (response, completion, validation
+    record) and the reviewer worktree directory itself.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+
+    pair_registry = InMemoryPersistentExchangePairRegistry()
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(
+            session_output,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            pair_registry=pair_registry,
+        ),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    issue_number = 9101
+
+    def _run_one(session_name: str):
+        return cre.run_review_exchange_loop(
+            worktree=coder_wt,
+            issue_number=issue_number,
+            issue_title="Path-stability integration",
+            session_name=session_name,
+            agent_label="agent:backend",
+            on_started=lambda _run_dir: None,
+            events=MagicMock(),
+            event_context=EventContext(),
+        )
+
+    first = _run_one("issue-9101-first")
+    assert first.status == "ok"
+    # Snapshot ALL pair-scoped paths via the cache. Direct cache
+    # access is acceptable for a regression-style test that needs
+    # the dataclass fields not exposed by ``snapshot()`` — the test
+    # is the read site, not a control-layer caller.
+    cached_first = pair_registry._cache[issue_number]  # noqa: SLF001
+    paths_first = {
+        "reviewer_worktree": cached_first.reviewer_worktree_path,
+        "coder_response": cached_first.coder_response_path,
+        "reviewer_response": cached_first.reviewer_response_path,
+        "coder_completion": cached_first.coder_completion_path,
+        "validation_record": cached_first.validation_record_path,
+        "coder_recording": cached_first.coder_recording_path,
+        "reviewer_recording": cached_first.reviewer_recording_path,
+    }
+
+    second = _run_one("issue-9101-second")
+    assert second.status == "ok"
+    cached_second = pair_registry._cache[issue_number]  # noqa: SLF001
+
+    # Identity check, not just equality — registry must return the
+    # same dataclass instance from the cache, never a clone.
+    assert cached_first is cached_second, (
+        "registry returned a different dataclass instance across "
+        "exchanges; pair caching is broken"
+    )
+
+    paths_second = {
+        "reviewer_worktree": cached_second.reviewer_worktree_path,
+        "coder_response": cached_second.coder_response_path,
+        "reviewer_response": cached_second.reviewer_response_path,
+        "coder_completion": cached_second.coder_completion_path,
+        "validation_record": cached_second.validation_record_path,
+        "coder_recording": cached_second.coder_recording_path,
+        "reviewer_recording": cached_second.reviewer_recording_path,
+    }
+    for label, path_first in paths_first.items():
+        assert path_first == paths_second[label], (
+            f"{label} path drifted between exchanges. The agent's "
+            "env was set once at spawn to point at the first path; "
+            "writes from the second exchange land in a file no one "
+            "is watching.\n"
+            f"  first  ({label}): {path_first}\n"
+            f"  second ({label}): {paths_second[label]}"
+        )
+
+    # Liveness check on the paths the scenario actually touched:
+    # the reviewer worktree must still be a live directory (it's
+    # what the reviewer agent runs in), and any file paths whose
+    # parent dir doesn't exist would mean the second exchange
+    # tore down what the first one set up. Response/completion
+    # files may legitimately be absent in a 1-round-ok scenario
+    # (coder is never prompted when reviewer approves on round 1)
+    # so we only assert their *parent dirs* exist — the writable
+    # surface, not whether anything has been written yet.
+    assert paths_second["reviewer_worktree"].is_dir(), (
+        f"reviewer_worktree {paths_second['reviewer_worktree']} "
+        "should still be a live directory after the second exchange; "
+        "the second exchange's release path may have torn it down"
+    )
+    for label in (
+        "coder_response", "reviewer_response", "coder_completion",
+        "validation_record", "coder_recording", "reviewer_recording",
+    ):
+        parent = paths_second[label].parent
+        assert parent.is_dir(), (
+            f"{label} parent dir {parent} disappeared — agent has "
+            "no surface to write to on subsequent exchanges"
+        )
+
+    # And the reviewer recording — the only file the scenario is
+    # guaranteed to have produced (reviewer was prompted in round 1
+    # of both exchanges) — must exist on disk and be non-empty.
+    assert paths_second["reviewer_recording"].exists(), (
+        f"reviewer_recording {paths_second['reviewer_recording']} "
+        "missing on disk despite reviewer having been prompted"
+    )
+    assert paths_second["reviewer_recording"].stat().st_size > 0, (
+        "reviewer_recording is zero-length — the second exchange's "
+        "writes did not land at the pair-scoped path"
+    )
+
+    pair_registry.shutdown_all(reason="test-cleanup")

@@ -881,6 +881,142 @@ class TestEscalateToHumanAction:
 
         assert not result.success
 
+    def test_escalate_releases_pair_with_correct_reason(
+        self, applier, mock_labels,
+    ):
+        """ADR 0026 / B2: escalation kills the pair, full stop.
+
+        ``_apply_escalate_to_human`` must call
+        ``pair_registry.release(issue_number, reason="escalated-to-human")``
+        when a registry is wired. Without this, an escalated issue's
+        agent processes leak until orchestrator shutdown — defeating
+        the lifecycle contract that escalation is a terminal boundary.
+        """
+        from unittest.mock import MagicMock
+
+        applier.pair_registry = MagicMock(name="pair_registry")
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        applier.pair_registry.release.assert_called_once_with(
+            123, reason="escalated-to-human",
+        )
+
+    def test_escalate_releases_pair_before_label_mutations(
+        self, applier, mock_labels,
+    ):
+        """The release must run BEFORE label mutations.
+
+        If a label mutation fails partway, the contract still holds
+        ("escalation kills the pair, full stop"). This test pins
+        ordering: ``release`` is called before ``labels.add_label``.
+        """
+        from unittest.mock import MagicMock, call
+
+        # Use one parent mock so we can compare call ordering across
+        # the two collaborators.
+        parent = MagicMock()
+        applier.pair_registry = parent.pair_registry
+        applier.labels = parent.labels  # type: ignore[assignment]
+
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        applier.apply(action)
+
+        ordered_calls = parent.method_calls
+        release_index = next(
+            (i for i, c in enumerate(ordered_calls)
+             if c == call.pair_registry.release(123, reason="escalated-to-human")),
+            None,
+        )
+        first_label_index = next(
+            (i for i, c in enumerate(ordered_calls)
+             if c[0].startswith("labels.add_label")),
+            None,
+        )
+        assert release_index is not None, (
+            "pair_registry.release was never called on escalation"
+        )
+        assert first_label_index is not None, (
+            "labels.add_label was never called on escalation"
+        )
+        assert release_index < first_label_index, (
+            "pair_registry.release must run BEFORE label mutations on "
+            "escalation; otherwise a partial-failure escalation can "
+            "leave the agent processes alive after the lifecycle has "
+            f"moved on. Call order was: {ordered_calls}"
+        )
+
+    def test_escalate_releases_pair_even_when_label_add_fails(
+        self, applier, mock_labels,
+    ):
+        """Release-before-label means release fires on the failure
+        path too: ``add_label`` raising must not prevent the pair
+        from being terminated."""
+        from unittest.mock import MagicMock
+
+        applier.pair_registry = MagicMock(name="pair_registry")
+        mock_labels.add_label.side_effect = Exception("API error")
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        result = applier.apply(action)
+
+        # Action itself fails because label mutation failed — but the
+        # release call must still have happened first.
+        assert not result.success
+        applier.pair_registry.release.assert_called_once_with(
+            123, reason="escalated-to-human",
+        )
+
+    def test_escalate_skips_release_when_no_pair_registry(
+        self, applier, mock_labels,
+    ):
+        """When ``pair_registry`` is None (not wired), escalation
+        proceeds without raising. Sanity guard for environments that
+        run without the persistent-pair feature configured."""
+        # The default applier fixture leaves pair_registry unset.
+        # Confirm it's not present so the test below is meaningful.
+        assert getattr(applier, "pair_registry", None) is None
+
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        result = applier.apply(action)
+        assert result.success
+
 
 class TestCreateTriageIssueAction:
     """Tests for CREATE_TRIAGE_ISSUE action."""
