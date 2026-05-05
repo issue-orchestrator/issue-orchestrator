@@ -548,6 +548,12 @@ def _summary_from_data(data: dict[str, Any], event_name: str = "") -> str | None
         # rounds)") carries the user-facing text; suppress summary so
         # raw machine codes don't render as the timeline summary line.
         return None
+    if event_name == "review_exchange.role_timeout":
+        # Same rationale: `data["reason"]` here is a machine code
+        # (`"no_completion"`, `"protocol_error"`) for downstream
+        # policy. The narrative ("Reviewer timed out (round N)") is
+        # the user-facing text.
+        return None
     for key in ("reason", "summary", "error", "status", "outcome"):
         value = data.get(key)
         if isinstance(value, str) and value:
