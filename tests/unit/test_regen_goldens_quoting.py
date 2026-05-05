@@ -48,11 +48,15 @@ from scripts.regen_goldens import _needs_quoting, _yaml_scalar, regen_fixture  #
         "stage: push, retryable",      # both colon and comma
         "items: [a, b, c]",            # nested-looking
         "{key: value}",                # mapping-looking text
+        "first\nsecond",               # newline → line-fold corruption
+        "carriage\rreturn",            # \r → invisible mangle in some readers
+        "tabbed\there",                # tab → control whitespace
+        "multi\nline\nprose",          # multiple newlines (agent prose)
     ],
 )
 def test_flow_indicators_force_quoting(value: str) -> None:
     """`_needs_quoting` must return True for any string containing a
-    flow indicator anywhere in its body."""
+    flow indicator or control character anywhere in its body."""
     assert _needs_quoting(value), f"flow-indicator value not quoted: {value!r}"
 
 
@@ -63,6 +67,16 @@ def test_flow_indicators_force_quoting(value: str) -> None:
         "[bracketed]",
         "{braced}",
         "make test-unit, lint-arch",
+        # Control characters: a literal newline inside a double-quoted
+        # scalar gets folded by PyYAML into a space, silently changing
+        # the value. The renderer must escape it as backslash-n.
+        "first\nsecond",
+        "before\nafter\nend",
+        "with\rcarriage",
+        "with\ttab",
+        # Combined: newline + flow indicator. A common shape for an
+        # agent-written `implementation` summary.
+        "Step 1: did x\nStep 2: did y, then z",
     ],
 )
 def test_yaml_scalar_renders_flow_safe(value: str) -> None:
@@ -112,6 +126,20 @@ internal_timeline:
         ('"[wrapped]"', "[wrapped]"),
         ('"{stuff}"', "{stuff}"),
         ('"a, b, c"', "a, b, c"),
+        # Newline-bearing values (agent prose: implementation/problem
+        # summaries spanning multiple lines). Without explicit
+        # backslash-n escaping, the regen output puts a literal LF
+        # inside a flow-style double-quoted scalar, which PyYAML reads
+        # back as a space-folded single line and silently corrupts the
+        # detail.
+        (
+            '"first line\\nsecond line"',
+            "first line\nsecond line",
+        ),
+        (
+            '"step 1: did a, b\\nstep 2: did c"',
+            "step 1: did a, b\nstep 2: did c",
+        ),
     ],
 )
 def test_regen_emits_round_trippable_yaml_for_flow_indicator_values(

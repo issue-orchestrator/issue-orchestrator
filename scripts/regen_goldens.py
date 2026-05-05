@@ -194,7 +194,21 @@ def _yaml_scalar(value: Any) -> str:
         return str(value)
     if isinstance(value, str):
         if _needs_quoting(value):
-            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            # Order matters: backslashes first so we don't double-escape
+            # the escapes we add for the other characters. Then quotes,
+            # then control characters that would otherwise become real
+            # line/tab breaks inside the double-quoted scalar — e.g. an
+            # embedded "\n" must be emitted as the two characters
+            # backslash-n, not a literal LF, or PyYAML reads the value
+            # back as the line-folded space-joined form.
+            escaped = (
+                value
+                .replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t")
+            )
             return f'"{escaped}"'
         return value
     # Fallback: rely on yaml.safe_dump to do something reasonable.
@@ -227,8 +241,10 @@ def _needs_quoting(s: str) -> bool:
     if s[0] in " \t-?:#&*!|>'\"%@`" or s[-1] in " \t":
         return True
     # Any quoting-required character → quote. Conservative.
+    # Control characters (\n, \r, \t) must be escaped, not emitted
+    # raw, or PyYAML will line-fold / mangle them on read-back.
     for ch in s:
-        if ch in ":#'\"\n\\":
+        if ch in ":#'\"\n\r\t\\":
             return True
     # Looks like a number? quote.
     try:
