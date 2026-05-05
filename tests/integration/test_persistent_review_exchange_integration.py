@@ -215,6 +215,28 @@ def _clear_simulated_scenario_stubs(monkeypatch):
     # document the intent and to give a hook if conftest evolves later.
 
 
+@pytest.fixture
+def pair_registry_with_cleanup():
+    """Yields a fresh ``InMemoryPersistentExchangePairRegistry`` and
+    guarantees ``shutdown_all`` runs even if a test assertion fails.
+
+    The tests under this file drive real subprocess/PTY-backed agents.
+    Without guaranteed cleanup, an assertion failure mid-test leaves
+    the cached pair alive — agent processes keep running for the rest
+    of the suite, making the regression test itself a source of suite
+    instability exactly when it catches a regression.
+
+    Tests that need to call ``shutdown_all`` *as part of their
+    assertions* (e.g. asserting on side-effects of the release) should
+    not use this fixture; they manage the registry inline.
+    """
+    registry = InMemoryPersistentExchangePairRegistry()
+    try:
+        yield registry
+    finally:
+        registry.shutdown_all(reason="test-cleanup")
+
+
 def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path: Path) -> None:
     """Drive ``CompletionReviewExchange.run_review_exchange_loop`` end-to-end
     against a real git worktree + stub agent. Asserts:
@@ -673,7 +695,7 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
 
 
 def test_persistent_pair_survives_two_back_to_back_exchanges(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
 ) -> None:
     """The user-visible "1 process for the life of the exchanges" benefit.
 
@@ -703,7 +725,7 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
     )
     config = _make_config(tmp_path, agent)
 
-    pair_registry = InMemoryPersistentExchangePairRegistry()
+    pair_registry = pair_registry_with_cleanup
     session_output = FileSystemSessionOutput()
     cre = CompletionReviewExchange(
         config=config,
@@ -793,12 +815,12 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
         "pointer for second-exchange runs (#6212 finding 3 fix)"
     )
 
-    # Cleanup so the test doesn't leak PTY agents past the test run.
-    pair_registry.shutdown_all(reason="test-cleanup")
+    # Cleanup is guaranteed by the ``pair_registry_with_cleanup``
+    # fixture's finally-block, even if any of the assertions above fail.
 
 
 def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
 ) -> None:
     """Pair-scoped paths beyond ``coder_recording``/``reviewer_recording``
     must also stay identical across exchanges.
@@ -838,7 +860,7 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
     )
     config = _make_config(tmp_path, agent)
 
-    pair_registry = InMemoryPersistentExchangePairRegistry()
+    pair_registry = pair_registry_with_cleanup
     session_output = FileSystemSessionOutput()
     cre = CompletionReviewExchange(
         config=config,
@@ -951,4 +973,5 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
         "writes did not land at the pair-scoped path"
     )
 
-    pair_registry.shutdown_all(reason="test-cleanup")
+    # Cleanup is guaranteed by the ``pair_registry_with_cleanup``
+    # fixture's finally-block, even if any of the assertions above fail.
