@@ -202,17 +202,35 @@ def _yaml_scalar(value: Any) -> str:
 
 
 def _needs_quoting(s: str) -> bool:
+    """Decide whether a string scalar needs quoting in flow-style YAML.
+
+    Scalars produced by `_format_block` are emitted *inside* flow
+    mappings (`{ key: value, key: value }`). In that context, any
+    occurrence of YAML flow-indicator characters (`,`, `[`, `]`, `{`,
+    `}`) inside an unquoted value would be parsed as structural
+    syntax instead of scalar text — turning a `detail` like
+    `"test_foo, test_bar"` into a malformed mapping.
+
+    The conservative answer: quote any string that contains a
+    flow-indicator at any position, plus the usual problem cases
+    (leading whitespace, trailing whitespace, reserved tokens,
+    things that look like numbers, etc.).
+    """
     if not s:
         return True
     if s.lower() in {"true", "false", "null", "yes", "no", "on", "off"}:
         return True
-    if s[0] in " \t-?:[]{}#&*!|>'\"%@`," or s[-1] in " \t":
+    # Flow indicators anywhere in the string break unquoted scalars
+    # inside flow mappings. Always quote when present.
+    if any(ch in s for ch in ",[]{}"):
         return True
-    # Any non-identifier character → quote. Conservative.
+    if s[0] in " \t-?:#&*!|>'\"%@`" or s[-1] in " \t":
+        return True
+    # Any quoting-required character → quote. Conservative.
     for ch in s:
         if ch in ":#'\"\n\\":
             return True
-    # Looks like a number? quote
+    # Looks like a number? quote.
     try:
         float(s)
         return True
