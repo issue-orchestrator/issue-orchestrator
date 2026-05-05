@@ -297,10 +297,18 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
     assert EventName.REVIEW_EXCHANGE_STARTED in event_names
     assert EventName.REVIEW_EXCHANGE_COMPLETED in event_names
 
-    # Persistent recording layout
-    reviewer_recording = run_dir / "reviewer" / "terminal-recording.jsonl"
-    coder_recording = run_dir / "coder" / "terminal-recording.jsonl"
-    assert reviewer_recording.exists(), f"reviewer recording missing at {reviewer_recording}"
+    # B2 recording layout: pair-scoped (under
+    # ``<state>/persistent-pairs/issue-<n>/<role>/...``), referenced
+    # from each exchange's manifest. The replay UI looks the path up
+    # via the manifest, not via a fixed run_dir/<role>/... convention,
+    # because exchange 2's run_dir would otherwise see no recording
+    # on a registry cache hit.
+    manifest_payload = json.loads((run_dir / "manifest.json").read_text())
+    reviewer_recording = Path(manifest_payload["reviewer_recording"])
+    coder_recording = Path(manifest_payload["coder_recording"])
+    assert reviewer_recording.exists(), (
+        f"reviewer recording missing at manifest-pointed path {reviewer_recording}"
+    )
     # Coder runs only when reviewer says changes_requested; reviewer stub
     # responds ok on round 1, so coder may not run. Just check that if
     # the file exists, it parses.
@@ -748,6 +756,41 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
     assert snapshot_after_second[0]["reviewer_pid"] == reviewer_pid_first, (
         "reviewer PID changed between exchanges — the persistent-pair "
         "contract is broken (B2 ADR 0026 regression)"
+    )
+
+    # Recording-mirror cache-hit regression (PR #6212 review):
+    # both exchanges' run_dirs must surface the canonical pair-scoped
+    # recording via their manifest. The previous design wired
+    # ``additional_recording_paths`` at first spawn, so on cache hit
+    # the second exchange's run_dir got no recording. The fix is to
+    # publish the pair-scoped path through the manifest and have
+    # ManifestAccessor read from it. Both exchanges must point at
+    # the same pair-scoped recording file, since the pair runs one
+    # continuous PTY across both exchanges.
+    first_run_dir = first.exchange_dir.parent
+    second_run_dir = second.exchange_dir.parent
+    first_manifest = json.loads((first_run_dir / "manifest.json").read_text())
+    second_manifest = json.loads((second_run_dir / "manifest.json").read_text())
+    assert first_manifest["coder_recording"] == second_manifest["coder_recording"], (
+        "coder recording path drifted between exchanges — both should "
+        "point at the same pair-scoped file (PR #6212 finding 3)"
+    )
+    assert first_manifest["reviewer_recording"] == second_manifest["reviewer_recording"], (
+        "reviewer recording path drifted between exchanges"
+    )
+    assert Path(second_manifest["reviewer_recording"]).exists(), (
+        "exchange 2's manifest-pointed recording is missing on disk"
+    )
+
+    accessor = ManifestAccessor(
+        RunIdentity(issue_number=9001, run_dir=second_run_dir),
+    )
+    artifact = accessor.get_review_exchange_phase_terminal_recording(
+        round_index=1, role="reviewer",
+    )
+    assert artifact.path == Path(second_manifest["reviewer_recording"]), (
+        "ManifestAccessor must follow the manifest's pair-scoped "
+        "pointer for second-exchange runs (#6212 finding 3 fix)"
     )
 
     # Cleanup so the test doesn't leak PTY agents past the test run.

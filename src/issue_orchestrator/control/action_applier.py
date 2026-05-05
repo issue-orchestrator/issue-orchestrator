@@ -1086,6 +1086,21 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "source": action.source,
                 },
             ))
+
+        # Awaiting-merge reconciliation that flips an issue's history
+        # entry to a terminal state (``merged`` or ``closed``) is the
+        # canonical "issue done" boundary. Release the persistent
+        # exchange pair here so it doesn't linger until orchestrator
+        # shutdown — ADR 0026 / B2 review feedback (PR #6212): without
+        # this, a successfully merged issue keeps its coder/reviewer
+        # processes alive even though no more exchanges can occur.
+        if (
+            self.pair_registry is not None
+            and outcome.status in {"merged", "closed"}
+        ):
+            self.pair_registry.release(
+                action.issue_number, reason="issue-completed",
+            )
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,

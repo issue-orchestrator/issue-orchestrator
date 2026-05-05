@@ -118,6 +118,55 @@ def export_orchestrator_python() -> None:
     os.environ.setdefault(ISSUE_ORCHESTRATOR_PYTHON_ENV, sys.executable)
 
 
+def _build_pair_registry_with_worktree_hook():  # noqa: ANN201
+    """Build the persistent pair registry with the worktree-reclaim hook.
+
+    The hook reclaims the reviewer worktree at the same lifecycle
+    boundary that closes the subprocesses (PR #6212 review feedback).
+    Without it, B2's removal of the per-exchange
+    ``remove_reviewer_worktree`` call would leave sibling worktrees
+    on disk after every release path (escalation / reset / shutdown
+    / merge). Hook is best-effort: errors are logged inside the
+    registry's ``_tear_down`` so a failed ``git worktree remove``
+    doesn't mask whatever brought us into the release path.
+
+    Extracted to a module-level helper so the production and testing
+    bootstrap paths share one wiring (single owner) and so tests
+    that patch ``remove_reviewer_worktree`` at the source module see
+    a real registry that delegates to the patched function.
+    """
+    from ..execution.persistent_exchange_pair_registry_inmemory import (
+        InMemoryPersistentExchangePairRegistry,
+        PersistentExchangePair,
+    )
+
+    def _reclaim_reviewer_worktree(
+        pair: PersistentExchangePair, reason: str,
+    ) -> None:
+        # Resolve the worktree helpers lazily inside the hook so
+        # tests can patch
+        # ``issue_orchestrator.execution.reviewer_worktree.remove_reviewer_worktree``
+        # at the source module and have the patch take effect.
+        # ``coder_branch`` is unused by ``remove_reviewer_worktree`` —
+        # it only needs the path — so stamping a placeholder keeps
+        # the helper's existing signature working without forcing the
+        # pair to remember the branch.
+        from ..execution import reviewer_worktree as _rw  # noqa: PLR0402
+
+        del reason  # only used in the registry's structured log
+        _rw.remove_reviewer_worktree(
+            _rw.ReviewerWorktree(
+                path=pair.reviewer_worktree_path,
+                coder_branch="<unused-on-removal>",
+            ),
+            force=True,
+        )
+
+    return InMemoryPersistentExchangePairRegistry(
+        on_release=_reclaim_reviewer_worktree,
+    )
+
+
 def _resolve_repo(config: Config) -> str | None:
     """Resolve repo name from config or auto-detect from git remote."""
     repo = config.repo
@@ -663,13 +712,11 @@ def build_orchestrator(
     # review exchange. Built here (above completion components and
     # InfraServices) so the shutdown / reset / escalation paths can
     # reach it through ``deps.pair_registry``.
-    from ..execution.persistent_exchange_pair_registry_inmemory import (
-        InMemoryPersistentExchangePairRegistry,
-    )
-    pair_registry = InMemoryPersistentExchangePairRegistry()
+    pair_registry = _build_pair_registry_with_worktree_hook()
 
     # Wire the registry into action_applier so ``_apply_escalate``
-    # can release the pair when an issue is escalated to human.
+    # and ``_apply_reconcile_history_entry`` can release the pair at
+    # their lifecycle boundaries (escalation, await-merge terminal).
     if action_applier is not None:
         action_applier.pair_registry = pair_registry
 
@@ -957,13 +1004,10 @@ def build_orchestrator_for_testing(
     # Create CompletionProcessor for testing
     from ..control.completion_processor import CompletionProcessor
     from ..control.pre_publish_gate import PrePublishGate
-    from ..execution.persistent_exchange_pair_registry_inmemory import (
-        InMemoryPersistentExchangePairRegistry,
-    )
     from ..execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
     )
-    pair_registry_for_testing = InMemoryPersistentExchangePairRegistry()
+    pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
     persistent_pair_root_for_testing = (

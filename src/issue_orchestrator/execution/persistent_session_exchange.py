@@ -430,18 +430,18 @@ def _open_role_session(  # noqa: PLR0913
         working_dir=worktree,
         env=env,
         recording_path=recording_path,
-        # Mirror the canonical (pair-scoped) recording into this
-        # exchange's ``run_dir`` so tooling that looks under
-        # ``run_dir/<role>/terminal-recording.jsonl`` keeps finding
-        # the per-exchange snapshot it expects, while the canonical
-        # continuous recording lives at the pair scope. Round 2 of
-        # exchange 2 mirrors only that round's bytes into exchange
-        # 2's run_dir, but the pair-scoped recording carries the
-        # full continuous history.
-        additional_recording_paths=[
-            run_dir / role / TERMINAL_RECORDING_FILENAME,
-            run_dir / TERMINAL_RECORDING_FILENAME,
-        ],
+        # No ``additional_recording_paths`` here — the original B2
+        # design tried to mirror the pair-scoped recording into
+        # ``run_dir/<role>/terminal-recording.jsonl`` for backward
+        # compat, but the writer's mirror paths are fixed at spawn
+        # time. On a registry cache hit (exchange 2+), the pair's
+        # writer keeps writing to exchange 1's run_dir mirror — the
+        # second exchange's run_dir would never see a recording.
+        # ManifestAccessor now reads ``coder_recording`` /
+        # ``reviewer_recording`` from the per-exchange manifest
+        # instead (they point at the pair-scoped canonical file),
+        # which is the right shape: one continuous recording per
+        # pair, multiple exchanges referencing it via manifest.
     )
 
 

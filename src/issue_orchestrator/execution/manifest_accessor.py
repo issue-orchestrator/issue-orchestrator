@@ -88,14 +88,22 @@ class ManifestAccessor:
     ) -> ArtifactStream:
         """Return the raw terminal recording for one review-exchange phase.
 
-        Resolves the persistent-runner layout first (one continuous
-        recording per role at ``<run_dir>/<role>/terminal-recording.jsonl``,
-        with chapter offsets in ``<run_dir>/<role>/chapters.json`` keyed
-        by ``cycle_index`` + ``section`` for round/role scrubbing). Falls
-        back to the legacy spawn-per-phase layout
-        (``<run_dir>/review-exchange/round-NNN/<role>/terminal-recording.jsonl``)
-        for runs that pre-date the cutover or for spawn-per-phase
-        artifacts retained for back-compat.
+        Resolution order (newest layout first):
+
+        1. **Pair-scoped recording (B2 onward).** The per-exchange
+           manifest carries ``coder_recording`` / ``reviewer_recording``
+           keys pointing at
+           ``<state>/persistent-pairs/issue-<n>/<role>/terminal-recording.jsonl``.
+           Multiple exchanges for the same issue all reference this
+           one continuous file; chapter offsets in
+           ``chapters.json`` (still per-exchange in ``run_dir``) tell
+           the replay UI how to scrub.
+        2. **B1 / pre-B2 persistent layout.**
+           ``<run_dir>/<role>/terminal-recording.jsonl`` —
+           per-exchange recording, no manifest indirection.
+        3. **Legacy spawn-per-phase layout.**
+           ``<run_dir>/review-exchange/round-NNN/<role>/terminal-recording.jsonl``
+           for runs from before the persistent-session cutover.
         """
         run_dir = self.run_identity.run_dir
         self._require_run_dir_exists(run_dir)
@@ -105,6 +113,7 @@ class ManifestAccessor:
         if normalized_role not in {"reviewer", "coder"}:
             raise ArtifactNotFoundError(f"invalid review exchange role: {role}")
 
+        manifest_path = self._read_manifest_recording_path(normalized_role)
         persistent_path = run_dir / normalized_role / "terminal-recording.jsonl"
         legacy_path = (
             run_dir
@@ -114,36 +123,50 @@ class ManifestAccessor:
             / "terminal-recording.jsonl"
         )
 
-        # Prefer the persistent layout when it exists. The replay UI
-        # accepts the whole-role recording and uses chapter offsets
-        # (chapters.json) to scrub to the requested round; the legacy
-        # per-round-per-role file is what we still have to serve for
-        # pre-cutover runs.
-        if persistent_path.exists() and (allow_empty or persistent_path.stat().st_size > 0):
-            return self._artifact_stream(
-                "terminal_recording",
-                persistent_path,
-                content_type="application/x-ndjson",
-            )
-        if legacy_path.exists() and (allow_empty or legacy_path.stat().st_size > 0):
-            return self._artifact_stream(
-                "terminal_recording",
-                legacy_path,
-                content_type="application/x-ndjson",
-            )
-        if persistent_path.exists():
-            raise ArtifactNotFoundError(
-                f"review exchange role recording is empty: {persistent_path}"
-            )
-        if legacy_path.exists():
-            raise ArtifactNotFoundError(
-                f"review exchange phase recording is empty: {legacy_path}"
-            )
+        for candidate in (manifest_path, persistent_path, legacy_path):
+            if candidate is None:
+                continue
+            if candidate.exists() and (
+                allow_empty or candidate.stat().st_size > 0
+            ):
+                return self._artifact_stream(
+                    "terminal_recording",
+                    candidate,
+                    content_type="application/x-ndjson",
+                )
+
+        # All candidates either missing or empty; preserve the
+        # informative-empty diagnostic the previous code emitted.
+        for candidate in (manifest_path, persistent_path, legacy_path):
+            if candidate is not None and candidate.exists():
+                raise ArtifactNotFoundError(
+                    f"review exchange recording is empty: {candidate}"
+                )
         raise ArtifactNotFoundError(
             f"review exchange recording not found for "
             f"round={round_index} role={normalized_role}; "
-            f"checked persistent={persistent_path} legacy={legacy_path}"
+            f"checked manifest={manifest_path} "
+            f"persistent={persistent_path} legacy={legacy_path}"
         )
+
+    def _read_manifest_recording_path(self, role: str) -> Path | None:
+        """Resolve the role's pair-scoped recording from the manifest.
+
+        Returns ``None`` if the manifest is absent, is unreadable, or
+        does not carry a ``<role>_recording`` key (i.e. pre-B2 runs).
+        """
+        manifest_file = self.run_identity.run_dir / "manifest.json"
+        if not manifest_file.exists():
+            return None
+        try:
+            payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        key = f"{role}_recording"
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if not isinstance(value, str) or not value:
+            return None
+        return Path(value)
 
     def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
         """Return the canonical run-scoped agent recording stream."""

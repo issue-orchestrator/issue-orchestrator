@@ -1327,8 +1327,9 @@ class TestSpawnPartialConstructionCleanup:
             pse.run_persistent_session_exchange(
                 session_output=session_output,
                 pair_registry=registry,
+                persistent_pair_root=tmp_path / "persistent-pairs",
                 coder_worktree_path=coder_wt,
-                reviewer_worktree_path=reviewer_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
                 issue_number=42,
                 issue_title="Test",
                 coder_label="agent:backend",
