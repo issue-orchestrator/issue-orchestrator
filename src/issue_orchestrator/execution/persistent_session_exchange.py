@@ -47,6 +47,10 @@ from ..infra.logging_config import get_repo_log_path
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
+from .persistent_exchange_pair_registry_inmemory import (
+    InMemoryPersistentExchangePairRegistry,
+    PersistentExchangePair,
+)
 from .persistent_round_runner import (
     PersistentRoundError,
     PersistentRoundTimeoutError,
@@ -76,6 +80,7 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
 def run_persistent_session_exchange(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
     coder_worktree_path: Path,
     reviewer_worktree_path: Path,
     issue_number: int,
@@ -94,12 +99,14 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     on_started: Callable[[Path], None] | None = None,
     before_reviewer_round: Callable[[int], None] | None = None,
 ) -> ReviewExchangeOutcome:
-    """Run the coder↔reviewer exchange with persistent agent sessions.
+    """Run the coder↔reviewer exchange against a registry-owned persistent pair.
 
-    Both sessions are guaranteed to be terminated and reaped before this
-    function returns, even if an exception is raised mid-loop. The
-    reviewer/coder worktrees themselves are the caller's responsibility
-    to create and remove.
+    Acquires a pair from ``pair_registry`` (spawns one on cache miss),
+    drives the round loop, and releases the pair when the exchange
+    ends. In B1 the release runs unconditionally per exchange so
+    behavior is identical to the pre-registry world; in B2 the
+    release moves to issue-completion sites so the same pair can
+    serve multiple back-to-back exchanges.
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     session_name = f"review-exchange-{issue_number}-{timestamp}"
@@ -153,35 +160,56 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     coder_response = run_dir / "coder" / "review-response.json"
     reviewer_response = run_dir / "reviewer" / "review-response.json"
 
-    coder_session: PersistentSession | None = None
-    reviewer_session: PersistentSession | None = None
-    try:
-        coder_session = _open_role_session(
+    def _spawn_pair() -> PersistentExchangePair:
+        coder = _open_role_session(
             role="coder",
             agent=coder_agent,
             worktree=coder_worktree_path,
             run_dir=run_dir,
             recording_path=coder_recording,
-            response_file=reviewer_response if False else coder_response,  # explicit per-role
+            response_file=coder_response,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
         )
-        reviewer_session = _open_role_session(
-            role="reviewer",
-            agent=reviewer_agent,
-            worktree=reviewer_worktree_path,
-            run_dir=run_dir,
-            recording_path=reviewer_recording,
-            response_file=reviewer_response,
-            agent_label=reviewer_label,
-            web_port=web_port,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            session_name=session_name,
+        # Reviewer-spawn-after-coder-success is the canonical
+        # partial-construction case: if the reviewer's PTY/process
+        # bring-up raises, the coder is already running and would
+        # leak unless we close it explicitly. Pre-registry code
+        # paired the two opens inside one ``try`` and closed any
+        # already-opened session in ``finally``; the registry
+        # version preserves that guarantee here so a partial spawn
+        # never returns a half-built pair to the registry's cache.
+        try:
+            reviewer = _open_role_session(
+                role="reviewer",
+                agent=reviewer_agent,
+                worktree=reviewer_worktree_path,
+                run_dir=run_dir,
+                recording_path=reviewer_recording,
+                response_file=reviewer_response,
+                agent_label=reviewer_label,
+                web_port=web_port,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                session_name=session_name,
+            )
+        except BaseException:
+            close_persistent_session(coder)
+            raise
+        from time import time as _wall_clock
+        return PersistentExchangePair(
+            coder_session=coder,
+            reviewer_session=reviewer,
+            reviewer_worktree_path=reviewer_worktree_path,
+            issue_key=issue_number,
+            created_at=_wall_clock(),
         )
+
+    pair = pair_registry.acquire(issue_key=issue_number, spawn=_spawn_pair)
+    try:
         outcome = _drive_rounds(
             session_output=session_output,
             run_dir=run_dir,
@@ -190,8 +218,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_title=issue_title,
             session_name=session_name,
             exchange_run_id=exchange_run_id,
-            coder_session=coder_session,
-            reviewer_session=reviewer_session,
+            coder_session=pair.coder_session,
+            reviewer_session=pair.reviewer_session,
             coder_response=coder_response,
             reviewer_response=reviewer_response,
             coder_recording=coder_recording,
@@ -214,10 +242,11 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         })
         raise
     finally:
-        if reviewer_session is not None:
-            close_persistent_session(reviewer_session)
-        if coder_session is not None:
-            close_persistent_session(coder_session)
+        # B1: release per exchange — same external behavior as the
+        # pre-registry world. ADR 0026 / B2 moves this release to
+        # issue-completion sites so the pair survives across rework
+        # cycles for the same issue.
+        pair_registry.release(issue_number, reason="exchange-complete")
 
     return outcome
 

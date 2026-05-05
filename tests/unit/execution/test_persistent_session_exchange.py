@@ -1,9 +1,10 @@
 """Persistent-session review-exchange runner: control-flow tests.
 
-Mock-based: monkeypatches ``open_persistent_session`` / ``send_round`` /
-``close_persistent_session`` so the test drives every round transition
-deterministically and asserts on emitted events, chapter sidecar shape,
-and outcome semantics.
+Mock-based: monkeypatches ``open_persistent_session`` / ``send_round``
+and substitutes a ``_FakePairRegistry`` so each test drives every
+round transition deterministically and asserts on emitted events,
+chapter sidecar shape, outcome semantics, and pair-lifecycle
+transitions (acquire / release).
 
 End-to-end exercise of the real persistent_round_runner is covered in
 ``test_persistent_round_runner.py``; this file focuses on the
@@ -62,6 +63,34 @@ def _setup_worktrees(tmp_path: Path) -> tuple[Path, Path]:
     return coder, reviewer
 
 
+class _FakePairRegistry:
+    """Fake registry used by every exchange test in this module.
+
+    Records every spawn and release so tests can assert on pair
+    lifecycle. ``acquire`` always invokes the spawn callback (no
+    caching) which keeps B1 behavior identical to the pre-registry
+    world: every test's exchange spawns a fresh fake pair, releases
+    at the end. B2 will exercise the cache-hit path with separate
+    coverage that asserts spawn was *not* called.
+    """
+
+    def __init__(self) -> None:
+        self.acquired: list[Any] = []
+        self.released: list[tuple[Any, str]] = []
+        self.shutdowns: list[str] = []
+
+    def acquire(self, *, issue_key, spawn):  # noqa: ANN001, ANN201
+        pair = spawn()
+        self.acquired.append((issue_key, pair))
+        return pair
+
+    def release(self, issue_key, *, reason):  # noqa: ANN001, ANN201
+        self.released.append((issue_key, reason))
+
+    def shutdown_all(self, *, reason):  # noqa: ANN001, ANN201
+        self.shutdowns.append(reason)
+
+
 def _patch_persistent_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -81,9 +110,11 @@ def _patch_persistent_runner(
     coder protocol guardrail finds the artifact it expects. Tests that
     want to exercise the missing-completion path pass False.
     """
+    registry = _FakePairRegistry()
     state: dict[str, Any] = {
-        "opened": [], "rounds_seen": [], "closed": [],
+        "opened": [], "rounds_seen": [],
         "run_dir": None,
+        "registry": registry,
     }
 
     def _open(*, command, working_dir, env, recording_path=None,
@@ -132,14 +163,8 @@ def _patch_persistent_runner(
             )
         return head
 
-    def _close(session, **_):
-        state["closed"].append(session.role)
-        session.closed = True
-        return 0
-
     monkeypatch.setattr(pse, "open_persistent_session", _open)
     monkeypatch.setattr(pse, "send_round", _send)
-    monkeypatch.setattr(pse, "close_persistent_session", _close)
     return state
 
 
@@ -159,7 +184,7 @@ class TestPersistentSessionExchangeHappyPath:
         sink = _Sink()
         ctx = EventContext()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [{"response_type": "ok", "response_text": "Looks good", "getting_closer": True}],
@@ -169,6 +194,7 @@ class TestPersistentSessionExchangeHappyPath:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -213,6 +239,7 @@ class TestPersistentSessionExchangeHappyPath:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -229,9 +256,9 @@ class TestPersistentSessionExchangeHappyPath:
         assert outcome.rounds == 2
         # Round order: reviewer round 1 → coder round 1 → reviewer round 2.
         assert [role for role, _ in state["rounds_seen"]] == ["reviewer", "coder", "reviewer"]
-        # Both sessions opened and closed.
+        # Both sessions opened; pair released exactly once at exchange end.
         assert sorted(state["opened"]) == ["coder", "reviewer"]
-        assert sorted(state["closed"]) == ["coder", "reviewer"]
+        assert state["registry"].released == [(42, "exchange-complete")]
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +275,7 @@ class TestExchangeTerminationConditions:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [
@@ -263,6 +290,7 @@ class TestExchangeTerminationConditions:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -316,6 +344,7 @@ class TestExchangeTerminationConditions:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -347,7 +376,7 @@ class TestExchangeTerminationConditions:
         ctx = EventContext()
 
         from issue_orchestrator.execution.persistent_round_runner import PersistentRoundTimeoutError
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [PersistentRoundTimeoutError("simulated timeout")],
@@ -357,6 +386,7 @@ class TestExchangeTerminationConditions:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -396,7 +426,7 @@ class TestChapterSidecarAndEvents:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [
@@ -411,6 +441,7 @@ class TestChapterSidecarAndEvents:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -453,7 +484,7 @@ class TestChapterSidecarAndEvents:
         sink = _Sink()
         ctx = EventContext()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [{"response_type": "ok", "response_text": "Approved", "getting_closer": True}],
@@ -463,6 +494,7 @@ class TestChapterSidecarAndEvents:
 
         pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -504,7 +536,7 @@ class TestChapterSidecarAndEvents:
         sink = _Sink()
         ctx = EventContext()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [
@@ -523,6 +555,7 @@ class TestChapterSidecarAndEvents:
 
         pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -574,7 +607,7 @@ class TestCallerHooks:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [
@@ -590,6 +623,7 @@ class TestCallerHooks:
         round_invocations: list[int] = []
         pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -614,7 +648,7 @@ class TestCallerHooks:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [{"response_type": "ok", "response_text": "lgtm", "getting_closer": True}],
@@ -625,6 +659,7 @@ class TestCallerHooks:
         observed: list[Path] = []
         pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -685,6 +720,7 @@ class TestCoderProtocolGuardrail:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -776,10 +812,6 @@ class TestCoderProtocolGuardrail:
                 raise AssertionError("reviewer responses exhausted")
             return state["reviewer_responses"].pop(0)
 
-        def _close(session, **_):
-            session.closed = True
-            return 0
-
         # Both reviewer rounds say "changes_requested" so the coder runs
         # in both rounds. (If round 2's reviewer said "ok" the loop would
         # short-circuit before the coder turn and the bug wouldn't be
@@ -791,13 +823,14 @@ class TestCoderProtocolGuardrail:
                 {"response_type": "changes_requested", "response_text": "still fix",
                  "getting_closer": True},
             ],
+            "registry": _FakePairRegistry(),
         }
         monkeypatch.setattr(pse_mod, "open_persistent_session", _open)
         monkeypatch.setattr(pse_mod, "send_round", _send)
-        monkeypatch.setattr(pse_mod, "close_persistent_session", _close)
 
         outcome = pse_mod.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -842,6 +875,7 @@ class TestCoderProtocolGuardrail:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -877,7 +911,7 @@ class TestTerminalEventsOnError:
         from issue_orchestrator.execution.persistent_round_runner import (
             PersistentRoundTimeoutError,
         )
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [PersistentRoundTimeoutError("timeout")],
@@ -887,6 +921,7 @@ class TestTerminalEventsOnError:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -925,7 +960,7 @@ class TestTerminalEventsOnError:
         from issue_orchestrator.execution.persistent_round_runner import (
             PersistentRoundTimeoutError,
         )
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [PersistentRoundTimeoutError("timeout")],
@@ -935,6 +970,7 @@ class TestTerminalEventsOnError:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -971,7 +1007,7 @@ class TestRecordingContractFailLoud:
         # write_recording=False: helper does NOT seed the recording file,
         # so the first _record_chapter call hits a missing recording and
         # raises FileNotFoundError up the stack.
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [{"response_type": "ok", "response_text": "lgtm",
@@ -984,6 +1020,7 @@ class TestRecordingContractFailLoud:
         with pytest.raises(FileNotFoundError):
             pse.run_persistent_session_exchange(
                 session_output=session_output,
+                pair_registry=state["registry"],
                 coder_worktree_path=coder_wt,
                 reviewer_worktree_path=reviewer_wt,
                 issue_number=42,
@@ -1022,7 +1059,7 @@ class TestAtomicSummaryWrite:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        _patch_persistent_runner(
+        state = _patch_persistent_runner(
             monkeypatch,
             response_script={
                 "reviewer": [{"response_type": "ok", "response_text": "lgtm",
@@ -1046,6 +1083,7 @@ class TestAtomicSummaryWrite:
 
         outcome = pse.run_persistent_session_exchange(
             session_output=session_output,
+            pair_registry=state["registry"],
             coder_worktree_path=coder_wt,
             reviewer_worktree_path=reviewer_wt,
             issue_number=42,
@@ -1187,6 +1225,7 @@ class TestSessionCleanup:
         with pytest.raises(RuntimeError, match="unexpected"):
             pse.run_persistent_session_exchange(
                 session_output=session_output,
+                pair_registry=state["registry"],
                 coder_worktree_path=coder_wt,
                 reviewer_worktree_path=reviewer_wt,
                 issue_number=42,
@@ -1202,9 +1241,88 @@ class TestSessionCleanup:
                 event_context=ctx,
             )
 
-        # Both sessions must be closed.
-        assert sorted(state["closed"]) == ["coder", "reviewer"]
+        # Pair must be released even when the round loop raised.
+        assert state["registry"].released == [(42, "exchange-complete")]
         # And the failure event was emitted before raising.
         assert any(
             evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events
+        )
+
+
+class TestSpawnPartialConstructionCleanup:
+    """Regression for PR #6209 review finding: if reviewer spawn fails
+    after coder spawn succeeds, the coder PTY/process must be closed
+    before the spawn closure raises.
+
+    Pre-registry code wrapped both opens in a single ``try``; the
+    registry refactor (PR #6209) initially moved both opens into a
+    spawn closure that returned no value on partial failure, leaking
+    the coder. The fix wraps the reviewer open in a nested
+    ``try/except`` that closes the coder before re-raising. This
+    test pins that behavior so the leak doesn't come back.
+    """
+
+    def test_coder_session_is_closed_when_reviewer_open_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        opened_sessions: list[_FakeSession] = []
+        closed_sessions: list[_FakeSession] = []
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = (
+                "reviewer" if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
+            if role == "reviewer":
+                # Simulate a reviewer-side failure during PTY/process
+                # bring-up, after the coder has already opened.
+                raise RuntimeError("reviewer pty bring-up failed")
+            session = _FakeSession(role)
+            opened_sessions.append(session)
+            return session
+
+        def _close(session, **_):
+            closed_sessions.append(session)
+            session.closed = True
+            return 0
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "close_persistent_session", _close)
+
+        registry = _FakePairRegistry()
+        with pytest.raises(RuntimeError, match="reviewer pty bring-up failed"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=registry,
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_path=reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+
+        # The coder opened, the reviewer raised before opening — and
+        # the coder must have been closed by the spawn closure's
+        # cleanup ``except`` block. No partial pair must reach the
+        # registry's cache.
+        assert len(opened_sessions) == 1
+        assert opened_sessions[0].role == "coder"
+        assert closed_sessions == opened_sessions, (
+            "coder session leaked: registry refactor must close any "
+            "already-opened session if the partner spawn raises"
+        )
+        assert registry.acquired == [], (
+            "no pair must reach the registry on partial spawn failure"
         )

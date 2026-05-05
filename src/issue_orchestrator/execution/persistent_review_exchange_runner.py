@@ -21,6 +21,9 @@ from ..domain.models import AgentConfig
 from ..domain.review_exchange import ReviewExchangeOutcome
 from ..events import EventContext
 from ..ports.event_sink import EventSink
+from .persistent_exchange_pair_registry_inmemory import (
+    InMemoryPersistentExchangePairRegistry,
+)
 from ..ports.session_output import SessionOutput
 from .persistent_session_exchange import run_persistent_session_exchange
 from .reviewer_worktree import (
@@ -35,11 +38,17 @@ class PersistentReviewExchangeRunner:
     """Persistent-session implementation of :class:`ReviewExchangeRunner`.
 
     Constructed once at the composition root with the orchestrator's
-    :class:`SessionOutput`; reused for every exchange.
+    :class:`SessionOutput` and the issue-scoped pair registry; reused
+    for every exchange.
     """
 
-    def __init__(self, session_output: SessionOutput) -> None:
+    def __init__(
+        self,
+        session_output: SessionOutput,
+        pair_registry: InMemoryPersistentExchangePairRegistry,
+    ) -> None:
         self._session_output = session_output
+        self._pair_registry = pair_registry
 
     def run(  # noqa: PLR0913
         self,
@@ -77,6 +86,7 @@ class PersistentReviewExchangeRunner:
         try:
             return run_persistent_session_exchange(
                 session_output=self._session_output,
+                pair_registry=self._pair_registry,
                 coder_worktree_path=coder_worktree,
                 reviewer_worktree_path=reviewer_wt.path,
                 issue_number=issue_number,

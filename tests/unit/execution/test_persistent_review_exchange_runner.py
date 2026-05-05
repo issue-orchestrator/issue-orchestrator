@@ -115,7 +115,9 @@ def test_run_creates_reviewer_worktree_and_passes_path_through(
         return _canned_outcome()
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
-    runner = prer.PersistentReviewExchangeRunner(MagicMock(name="session_output"))
+    runner = prer.PersistentReviewExchangeRunner(
+        MagicMock(name="session_output"), MagicMock(name="pair_registry"),
+    )
 
     outcome = _run(runner, tmp_path)
 
@@ -139,7 +141,9 @@ def test_before_reviewer_round_fast_forwards_only_after_round_one(
         return _canned_outcome()
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
-    runner = prer.PersistentReviewExchangeRunner(MagicMock(name="session_output"))
+    runner = prer.PersistentReviewExchangeRunner(
+        MagicMock(name="session_output"), MagicMock(name="pair_registry"),
+    )
 
     _run(runner, tmp_path)
     before = captured["before_reviewer_round"]
@@ -160,7 +164,9 @@ def test_run_always_removes_reviewer_worktree_on_success(
         prer, "run_persistent_session_exchange",
         lambda **_: _canned_outcome(),
     )
-    runner = prer.PersistentReviewExchangeRunner(MagicMock(name="session_output"))
+    runner = prer.PersistentReviewExchangeRunner(
+        MagicMock(name="session_output"), MagicMock(name="pair_registry"),
+    )
 
     _run(runner, tmp_path)
 
@@ -179,7 +185,9 @@ def test_run_removes_reviewer_worktree_when_inner_runner_raises(
         raise RuntimeError("simulated runner failure")
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _explode)
-    runner = prer.PersistentReviewExchangeRunner(MagicMock(name="session_output"))
+    runner = prer.PersistentReviewExchangeRunner(
+        MagicMock(name="session_output"), MagicMock(name="pair_registry"),
+    )
 
     with pytest.raises(RuntimeError, match="simulated runner failure"):
         _run(runner, tmp_path)

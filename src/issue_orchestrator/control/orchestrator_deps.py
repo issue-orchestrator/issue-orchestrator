@@ -151,3 +151,14 @@ class OrchestratorDeps:
     @property
     def timeline_writer(self) -> "TimelineWriter":
         return self.services.timeline_writer
+
+    @property
+    def pair_registry(self):  # noqa: ANN201 — return type is the protocol
+        """The persistent exchange pair registry, or ``None`` in test deps.
+
+        Production bootstrap always provides one; legacy test fixtures
+        that build deps without going through ``InfraServices``'s
+        ``pair_registry`` field will see ``None``. ``Orchestrator.close``
+        and other lifecycle owners must guard accordingly.
+        """
+        return self.services.pair_registry
