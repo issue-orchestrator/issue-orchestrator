@@ -30,9 +30,9 @@
         } catch (_e) { /* probe never blocks page load */ }
     }());
     </script>
-    <link rel="stylesheet" href="/static/css/control_center.css">
-    <link rel="stylesheet" href="/static/css/ui_primitives.css">
-    <link rel="stylesheet" href="/static/css/control_center_setup.css">
+    <link rel="stylesheet" href="/static/css/control_center.css?v={{ static_version }}">
+    <link rel="stylesheet" href="/static/css/ui_primitives.css?v={{ static_version }}">
+    <link rel="stylesheet" href="/static/css/control_center_setup.css?v={{ static_version }}">
 </head>
 <body>
     {{ dev_no_auth_banner }}
@@ -929,7 +929,7 @@
         </div>
     </div>
 
-    <script src="/static/js/browser_auth.js"></script>
-    <script src="/static/js/control_center.js"></script>
+    <script src="/static/js/browser_auth.js?v={{ static_version }}"></script>
+    <script src="/static/js/control_center.js?v={{ static_version }}"></script>
 </body>
 </html>

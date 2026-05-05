@@ -888,7 +888,11 @@ def test_browser_auth_helper_is_shared_by_control_center_and_dashboard() -> None
     assert '<meta name="io-browser-auth-required" content="{{ browser_auth_required }}">' in dashboard
     assert '<meta name="io-browser-auth-required" content="{{ browser_auth_required }}">' in control_center
     assert '<script src="/static/js/browser_auth.js"></script>' in dashboard
-    assert '<script src="/static/js/browser_auth.js"></script>' in control_center
+    # Control Center adds a ``?v={{ static_version }}`` cache-buster on
+    # static URLs (see infra/static_version.py); the dashboard shape is
+    # unchanged. We pin the literal pre-render text here so a regression
+    # on either surface fails this guardrail explicitly.
+    assert '<script src="/static/js/browser_auth.js?v={{ static_version }}"></script>' in control_center
     assert dashboard.index('/static/js/browser_auth.js') < dashboard.index('/static/js/embedded_nav.js')
     assert dashboard.index('/static/js/browser_auth.js') < dashboard.index("{% for chunk in dashboard_js_chunks %}")
     assert control_center.index('/static/js/browser_auth.js') < control_center.index('/static/js/control_center.js')
