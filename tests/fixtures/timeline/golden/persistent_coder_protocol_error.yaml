@@ -1,0 +1,242 @@
+scenario: persistent_coder_protocol_error
+description: |
+  Coder violates the response-protocol contract — writes the review-
+  response file but skips writing a completion-record file via
+  `coding-done`. `_enforce_coder_protocol` re-prompts up to
+  `_CODER_PROTOCOL_RETRY_LIMIT = 2` times with a remediation prompt;
+  if all retries fail validation, `_build_outcome_for_protocol_error`
+  emits a terminal `REVIEW_EXCHANGE_ROUND_COMPLETED` (with
+  `coder_response_type="protocol_error"` and `detail=<error>`) plus a
+  `REVIEW_EXCHANGE_COMPLETED` (with `status="error"`,
+  `reason="coder_protocol_error"`, `detail=<error>`).
+
+  Source citations:
+    - retry loop emits:                      persistent_session_exchange.py:621-680
+    - `protocol_retry: True` flag on retry:  persistent_session_exchange.py:640
+    - terminal ROUND_COMPLETED + COMPLETED:  persistent_session_exchange.py:942, 952
+
+  Pinned in this fixture:
+
+    - The `protocol_retry: True` flag carried on retry-prompt events
+      (retries 1 and 2). Distinguishes them from the original coder
+      prompt and any normal next-round prompt.
+    - Two retries fire before exit, matching `_CODER_PROTOCOL_RETRY_LIMIT`.
+    - Terminal `REVIEW_EXCHANGE_ROUND_COMPLETED` carries
+      `coder_response_type: "protocol_error"` (a sentinel reserved
+      for this path) and a `detail` field describing what validation
+      found.
+    - Terminal `REVIEW_EXCHANGE_COMPLETED` carries `status: "error"`,
+      `reason: "coder_protocol_error"`. Per the prior PR in this
+      stack, the user-facing narrative renders as
+      `"Review exchange failed (1 round)"`.
+
+issue_number: 6666
+
+records:
+  - event: session.started
+    timestamp: "2026-05-04T00:00:00Z"
+    data: { issue_number: 6666, session_id: "issue-6666-1", agent: coder, task: code }
+
+  - event: session.completed
+    timestamp: "2026-05-04T00:02:00Z"
+    data: { issue_number: 6666, session_id: "issue-6666-1", implementation: "Initial feature" }
+
+  - event: session.validation_passed
+    timestamp: "2026-05-04T00:03:00Z"
+    data: { issue_number: 6666, session_id: "issue-6666-1" }
+
+  - event: issue.pr_created
+    timestamp: "2026-05-04T00:03:30Z"
+    data: { issue_number: 6666, pr_number: 55, pr_url: "https://github.com/example/repo/pull/55" }
+
+  - event: review.started
+    timestamp: "2026-05-04T00:04:00Z"
+    data: { issue_number: 6666, task: review, agent: reviewer }
+
+  - event: review_exchange.started
+    timestamp: "2026-05-04T00:04:01Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1" }
+
+  # ============== Round 1 ==============
+  - event: review_exchange.round_started
+    timestamp: "2026-05-04T00:04:02Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1 }
+
+  # Reviewer turn (says needs_work)
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:03Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: reviewer, section: prompt, recording_event_index: 0, label: "Round 1 reviewer prompt" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:04Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: reviewer, prompt_chars: 1100 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:25Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: reviewer, section: feedback, recording_event_index: 38, label: "Round 1 reviewer feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:04:26Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: reviewer, response_type: needs_work, getting_closer: true }
+
+  # Initial coder turn — coder writes review response but no completion record.
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:04:27Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, section: prompt, recording_event_index: 0, label: "Round 1 coder prompt" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:04:28Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, prompt_chars: 920 }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:06:30Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, section: feedback, recording_event_index: 80, label: "Round 1 coder feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:06:31Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, response_type: ok, getting_closer: true }
+
+  # _enforce_coder_protocol detects no completion record. Retry 1.
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:06:32Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, section: prompt, recording_event_index: 81, label: "Round 1 coder protocol-retry" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:06:33Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, prompt_chars: 480, protocol_retry: true }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:00Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, section: feedback, recording_event_index: 110, label: "Round 1 coder feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:08:01Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, response_type: ok, getting_closer: true }
+
+  # Retry 2.
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:08:02Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, section: prompt, recording_event_index: 111, label: "Round 1 coder protocol-retry" }
+
+  - event: review_exchange.role_prompted
+    timestamp: "2026-05-04T00:08:03Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, prompt_chars: 480, protocol_retry: true }
+
+  - event: review_exchange.chapter_recorded
+    timestamp: "2026-05-04T00:09:30Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, section: feedback, recording_event_index: 140, label: "Round 1 coder feedback" }
+
+  - event: review_exchange.role_feedback
+    timestamp: "2026-05-04T00:09:31Z"
+    data: { issue_number: 6666, session_name: "issue-6666-exchange-1", round_index: 1, role: coder, response_type: ok, getting_closer: true }
+
+  # Retries exhausted. _build_outcome_for_protocol_error emits terminal pair.
+  - event: review_exchange.round_completed
+    timestamp: "2026-05-04T00:09:32Z"
+    data:
+      issue_number: 6666
+      session_name: "issue-6666-exchange-1"
+      round_index: 1
+      reviewer_response_type: needs_work
+      reviewer_response_text: "Refactor the state-machine module"
+      coder_response_type: "protocol_error"
+      coder_response_text: "Refactored as requested"
+      detail: "Missing completion-coder.json after 2 retries; coder must run `coding-done` before responding."
+
+  - event: review_exchange.completed
+    timestamp: "2026-05-04T00:09:33Z"
+    data:
+      issue_number: 6666
+      session_name: "issue-6666-exchange-1"
+      rounds: 1
+      status: error
+      reason: coder_protocol_error
+      detail: "Missing completion-coder.json after 2 retries; coder must run `coding-done` before responding."
+
+  # Downstream review-outcome event from
+  # `CompletionReviewExchange._run_fresh_review_exchange()` for any
+  # non-`ok` exchange status (`completion_review_exchange.py:486-495`).
+  - event: review.changes_requested
+    timestamp: "2026-05-04T00:09:34Z"
+    data:
+      issue_number: 6666
+      task: review
+      agent: reviewer
+      review_exchange_mode: persistent
+      rounds: 1
+      summary: "Review exchange halted: coder_protocol_error"
+
+internal_timeline:
+  - { event: session.started, phase: in_progress, step: started, status: started, parent_key: "session:issue-6666-1" }
+  - { event: session.completed, phase: in_progress, step: completed, status: completed, parent_key: "session:issue-6666-1", detail: "Initial feature" }
+  - { event: session.validation_passed, phase: orchestrator, step: validation_passed, status: completed }
+  - event: issue.pr_created
+    phase: orchestrator
+    step: pr_created
+    status: completed
+    parent_key: "review:55"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/55" }
+  - { event: review.started, phase: reviewing, step: started, status: started, parent_key: "issue:6666" }
+  - { event: review_exchange.started, phase: reviewing, step: started, status: started, parent_key: "issue:6666" }
+
+  # Round 1 reviewer + initial coder
+  - { event: review_exchange.round_started, phase: reviewing, step: round_started, status: completed, parent_key: "issue:6666" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:6666" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:6666" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:6666" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:6666" }
+  # Retry 1
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:6666" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:6666" }
+  # Retry 2
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_prompted, phase: reviewing, step: role_prompted, status: completed, parent_key: "issue:6666" }
+  - { event: review_exchange.chapter_recorded, phase: reviewing, step: chapter_recorded, status: completed, level: detail, parent_key: "issue:6666" }
+  - { event: review_exchange.role_feedback, phase: reviewing, step: role_feedback, status: completed, parent_key: "issue:6666" }
+  # Terminal pair from the runner.
+  - { event: review_exchange.round_completed, phase: reviewing, step: round_completed, status: completed, parent_key: "issue:6666", detail: "Round 1. Refactor the state-machine module. Coder response: protocol_error" }
+  - { event: review_exchange.completed, phase: reviewing, step: completed, status: completed, parent_key: "issue:6666" }
+  # Downstream review-outcome event: production user-visible terminal
+  # verdict for any non-`ok` exchange outcome.
+  - { event: review.changes_requested, phase: reviewing, step: changes_requested, status: failed, parent_key: "issue:6666", summary: "Review exchange halted: coder_protocol_error" }
+
+external_view: user
+external_timeline:
+  - { event: agent.coding_started, status: started, narrative: "Coding agent started" }
+  - { event: agent.completed, status: completed, narrative: "Coding session completed", detail: "Initial feature" }
+  - { event: validation.passed, status: completed, narrative: "Validation passed" }
+  - event: pr.created
+    status: completed
+    narrative: "PR #55 created"
+    artifacts:
+      - { type: pull_request, label: PR, value: "https://github.com/example/repo/pull/55" }
+  - { event: review.started, status: started, narrative: "Code review started" }
+  - { event: review_exchange.started, status: started, narrative: "Review exchange started" }
+  - { event: review_exchange.round_started, status: completed, narrative: "Review round 1 started" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Reviewer prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Reviewer feedback (round 1) — needs_work" }
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
+  # Retry 1 narrative is identical to the original prompt — current
+  # `_enrich_role_prompted` doesn't differentiate. The `protocol_retry`
+  # flag is in data; future enricher could append " (protocol retry)".
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
+  # Retry 2
+  - { event: review_exchange.role_prompted, status: completed, narrative: "Coder prompt sent (round 1)" }
+  - { event: review_exchange.role_feedback, status: completed, narrative: "Coder feedback (round 1) — ok" }
+  # Terminal pair. round_completed renders detail with
+  # "Coder response: protocol_error" — the user-visible signal.
+  - { event: review_exchange.round_completed, status: completed, narrative: "Review round 1 completed — needs_work", detail: "Round 1. Refactor the state-machine module. Coder response: protocol_error" }
+  - { event: review_exchange.completed, status: completed, narrative: "Review exchange failed (1 round)" }
+  # Downstream review.changes_requested: production user-visible
+  # terminal verdict for any non-`ok` exchange outcome
+  # (`completion_review_exchange.py:486-495`).
+  - { event: review.changes_requested, status: failed, narrative: "Reviewer requested changes (round 1)", summary: "Review exchange halted: coder_protocol_error" }
