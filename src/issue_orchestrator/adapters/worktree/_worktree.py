@@ -1241,7 +1241,17 @@ def _remove_worktree_path(repo_root: Path, worktree_path: Path, *, force: bool) 
         worktree_path,
         result.stderr.strip(),
     )
-    shutil.rmtree(worktree_path, ignore_errors=True)
+    _force_delete_worktree_path(worktree_path)
+
+
+def _force_delete_worktree_path(worktree_path: Path) -> None:
+    if worktree_path.is_dir() and not worktree_path.is_symlink():
+        shutil.rmtree(worktree_path, ignore_errors=True)
+        return
+    try:
+        worktree_path.unlink()
+    except FileNotFoundError:
+        return
 
 
 def _delete_worktree_branch(repo_root: Path, branch_name: str | None) -> None:
@@ -1277,6 +1287,18 @@ def remove_worktree(worktree_path: Path, *, force: bool = False) -> None:
     try:
         repo_root = _resolve_repo_root_from_worktree(worktree_path)
         if repo_root is None:
+            if force:
+                logger.warning(
+                    "Forced worktree removal cannot resolve repo root; deleting path directly: %s",
+                    worktree_path,
+                )
+                _force_delete_worktree_path(worktree_path)
+                if worktree_path.exists():
+                    raise WorktreeError(
+                        f"Failed to remove orphaned worktree path after forced cleanup: {worktree_path}"
+                    )
+                logger.info("Orphaned worktree path removed: path=%s", worktree_path)
+                return
             raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
         branch_name = get_worktree_branch(worktree_path)
 

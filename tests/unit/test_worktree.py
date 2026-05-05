@@ -1002,6 +1002,22 @@ class TestRemoveWorktree:
 
         mock_rmtree.assert_called_once_with(worktree_path, ignore_errors=True)
 
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_remove_worktree_force_removes_orphaned_directory_without_git(
+        self,
+        mock_run,
+        tmp_path,
+    ):
+        """Force cleanup deletes stale directories that are no longer git worktrees."""
+        worktree_path = tmp_path / "worktree-123"
+        worktree_path.mkdir()
+        (worktree_path / "leftover.txt").write_text("stale")
+
+        remove_worktree(worktree_path, force=True)
+
+        assert not worktree_path.exists()
+        mock_run.assert_not_called()
+
     @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_branch_deletion_fails_silently(
