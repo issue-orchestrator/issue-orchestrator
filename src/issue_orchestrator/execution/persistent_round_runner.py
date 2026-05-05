@@ -51,6 +51,13 @@ _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 _DEFAULT_RESPONSE_DRAIN_SECONDS = 0.1
 _DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
 
+# Heartbeat cadence for the ``send_round`` poll loop. Without this, a
+# wedged agent shows up as 17 minutes of total log silence (#6160 e2e
+# regression). The heartbeat logs the deadline countdown, recording
+# growth, and the agent's process state so the next reproduction tells
+# us *which* step is wedged instead of just "something hung."
+_SEND_ROUND_HEARTBEAT_SECONDS = 30.0
+
 
 class PersistentRoundError(RuntimeError):
     """Raised when the persistent agent dies unexpectedly mid-exchange."""
@@ -131,6 +138,59 @@ def open_persistent_session(
     return PersistentSession(proc=proc, master_fd=master_fd, log_writer=log_writer)
 
 
+def _write_full(
+    fd: int,
+    payload: bytes,
+    *,
+    deadline: float,
+    now: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> int:
+    """Write all of ``payload`` to a non-blocking fd, looping on partial writes.
+
+    The PTY master fd is non-blocking (``open_persistent_session`` sets
+    ``os.set_blocking(master_fd, False)``). On a non-blocking fd
+    ``os.write`` can return *fewer* bytes than requested when the
+    kernel's PTY input buffer is nearly full. The previous
+    single-call ``os.write(fd, payload)`` ignored the return value;
+    any unwritten suffix was silently dropped, the agent got a
+    truncated prompt, and the round hung waiting for a response that
+    would never arrive (#6160 e2e regression).
+
+    Loops until the full payload is on the wire, retrying with a
+    short backoff on ``BlockingIOError`` (kernel buffer momentarily
+    full) and on zero-byte writes. Raises
+    :class:`PersistentRoundTimeoutError` if the deadline expires
+    before the buffer drains enough to accept the rest.
+    """
+    written = 0
+    backoff = 0.005
+    while written < len(payload):
+        if now() > deadline:
+            raise PersistentRoundTimeoutError(
+                f"Could not write {len(payload)} bytes to PTY fd={fd} "
+                f"within deadline ({written} bytes accepted before timeout)"
+            )
+        try:
+            n = os.write(fd, payload[written:])
+        except BlockingIOError:
+            sleep(backoff)
+            backoff = min(backoff * 2, 0.1)
+            continue
+        if n == 0:
+            sleep(backoff)
+            backoff = min(backoff * 2, 0.1)
+            continue
+        written += n
+        backoff = 0.005
+        if written < len(payload):
+            logger.debug(
+                "[send_round] partial PTY write fd=%d wrote=%d total=%d remaining=%d",
+                fd, n, written, len(payload) - written,
+            )
+    return written
+
+
 def send_round(
     session: PersistentSession,
     *,
@@ -141,6 +201,7 @@ def send_round(
     response_drain_seconds: float = _DEFAULT_RESPONSE_DRAIN_SECONDS,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    role_label: str | None = None,
 ) -> dict[str, Any]:
     """Inject ``prompt`` into the persistent agent and wait for its response file.
 
@@ -154,17 +215,48 @@ def send_round(
     write the rest) would race the orchestrator and surface as a fatal
     protocol error on the very first poll.
 
+    ``role_label`` is a short tag (``coder`` / ``reviewer``) included in
+    log messages so an interleaved coder + reviewer log is decodable
+    without cross-referencing PIDs.
+
     ``now`` and ``sleep`` are injectable for deterministic tests.
     """
     if session.closed:
         raise PersistentRoundError("Session already closed; cannot send another round")
-    response_file.unlink(missing_ok=True)
+    label = role_label or f"pid={session.proc.pid}"
     payload = (prompt + "\n").encode("utf-8")
-    os.write(session.master_fd, payload)
+    started_at = now()
+    logger.info(
+        "[send_round] start role=%s pid=%d response_file=%s prompt_bytes=%d "
+        "timeout=%.1fs poll_interval=%.2fs",
+        label, session.proc.pid, response_file, len(payload),
+        timeout_seconds, poll_interval_seconds,
+    )
 
-    deadline = now() + timeout_seconds
+    response_file.unlink(missing_ok=True)
+    write_deadline = started_at + timeout_seconds
+    written = _write_full(
+        session.master_fd, payload,
+        deadline=write_deadline, now=now, sleep=sleep,
+    )
+    write_elapsed = now() - started_at
+    logger.info(
+        "[send_round] prompt written role=%s bytes=%d in %.3fs",
+        label, written, write_elapsed,
+    )
+
+    deadline = started_at + timeout_seconds
+    last_heartbeat = now()
+    poll_iter = 0
+    bytes_drained_total = 0
     while now() < deadline:
-        _drain_pty_output(session)
+        poll_iter += 1
+        # Track how much we drained so the heartbeat can show
+        # "agent has produced N bytes since the prompt was sent" —
+        # zero bytes drained over a long interval means the agent
+        # hasn't even read its prompt yet, which is the failure
+        # mode that hung the test.
+        bytes_drained_total += _drain_pty_output(session)
         parsed = _try_read_response(response_file)
         if parsed is not None:
             _drain_pty_output_until_quiet(
@@ -173,25 +265,86 @@ def send_round(
                 now=now,
                 sleep=sleep,
             )
+            logger.info(
+                "[send_round] response received role=%s pid=%d in %.1fs "
+                "(poll_iters=%d bytes_drained=%d)",
+                label, session.proc.pid, now() - started_at,
+                poll_iter, bytes_drained_total,
+            )
             return parsed
         ret = session.proc.poll()
         if ret is not None:
-            # Agent exited. Give one final read so we don't miss a response
-            # that landed atomically right at exit.
             final = _try_read_response(response_file)
             if final is not None:
+                logger.info(
+                    "[send_round] response received at exit role=%s pid=%d "
+                    "exit_code=%d in %.1fs",
+                    label, session.proc.pid, ret, now() - started_at,
+                )
                 return final
             if response_file.exists():
+                logger.warning(
+                    "[send_round] agent exited with invalid JSON role=%s pid=%d "
+                    "exit_code=%d response_file=%s",
+                    label, session.proc.pid, ret, response_file,
+                )
                 raise PersistentRoundError(
                     f"Agent exited (code={ret}) leaving invalid JSON in {response_file}"
                 )
+            logger.warning(
+                "[send_round] agent exited before responding role=%s pid=%d "
+                "exit_code=%d after %.1fs (poll_iters=%d bytes_drained=%d)",
+                label, session.proc.pid, ret, now() - started_at,
+                poll_iter, bytes_drained_total,
+            )
             raise PersistentRoundError(
                 f"Agent exited unexpectedly (code={ret}) before responding"
             )
+        if now() - last_heartbeat >= _SEND_ROUND_HEARTBEAT_SECONDS:
+            recording_size = _safe_recording_size(session)
+            logger.info(
+                "[send_round] heartbeat role=%s pid=%d alive=%s elapsed=%.0fs "
+                "deadline_in=%.0fs poll_iters=%d bytes_drained=%d "
+                "response_file_exists=%s recording_bytes=%s",
+                label, session.proc.pid,
+                session.proc.poll() is None,
+                now() - started_at, deadline - now(),
+                poll_iter, bytes_drained_total,
+                response_file.exists(),
+                recording_size if recording_size is not None else "n/a",
+            )
+            last_heartbeat = now()
         sleep(poll_interval_seconds)
+    logger.warning(
+        "[send_round] timeout role=%s pid=%d after %.1fs "
+        "(poll_iters=%d bytes_drained=%d response_file_exists=%s)",
+        label, session.proc.pid, timeout_seconds,
+        poll_iter, bytes_drained_total, response_file.exists(),
+    )
     raise PersistentRoundTimeoutError(
         f"Agent did not produce valid JSON in {response_file} within {timeout_seconds}s"
     )
+
+
+def _safe_recording_size(session: PersistentSession) -> int | None:
+    """Best-effort read of the role recording's current size in bytes.
+
+    Used by ``send_round``'s heartbeat to surface "is the agent
+    producing output at all" — non-zero growth between heartbeats
+    means the agent is alive and emitting; zero growth means it
+    hasn't even started rendering its prompt yet (or the TUI is
+    wedged on a startup dialog with no auto-responder).
+    """
+    log_writer = session.log_writer
+    if log_writer is None:
+        return None
+    recording_path = getattr(log_writer, "recording_path", None)
+    if recording_path is None or not recording_path.exists():
+        return None
+    try:
+        return recording_path.stat().st_size
+    except OSError:
+        return None
 
 
 def _try_read_response(response_file: Path) -> dict[str, Any] | None:
@@ -391,23 +544,27 @@ def _require_int_field(
     return value
 
 
-def _drain_pty_output(session: PersistentSession) -> None:
+def _drain_pty_output(session: PersistentSession) -> int:
     """Read everything currently available on the master fd into the log.
 
     When no log writer is configured (tests that don't care about
     output), the chunks are discarded — they've been read off the PTY,
-    which is what matters to free the buffer.
+    which is what matters to free the buffer. Returns the total number
+    of bytes drained on this call so the caller can surface
+    agent-is-alive evidence in heartbeat logs.
     """
+    drained = 0
     while True:
         ready, _, _ = select.select([session.master_fd], [], [], 0)
         if not ready:
-            return
+            return drained
         try:
             chunk = os.read(session.master_fd, 4096)
         except (BlockingIOError, OSError):
-            return
+            return drained
         if not chunk:
-            return
+            return drained
+        drained += len(chunk)
         if session.log_writer is not None:
             session.log_writer.write(chunk)
 

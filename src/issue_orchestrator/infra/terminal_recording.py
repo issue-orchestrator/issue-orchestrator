@@ -141,6 +141,10 @@ class MirroredTerminalRecordingWriter:
         self._clock = effective_clock
         self._started = effective_clock()
         self._on_output = on_output
+        # Public so heartbeat/diagnostic logging in
+        # ``persistent_round_runner.send_round`` can sample the
+        # recording's growth without parsing the writer's name.
+        self.recording_path = recording_path
         recording_paths = [recording_path]
         for extra_path in additional_recording_paths or ():
             if extra_path not in recording_paths:

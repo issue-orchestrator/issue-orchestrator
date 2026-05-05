@@ -363,6 +363,101 @@ class TestPartialWriteTolerance:
 
 
 # ---------------------------------------------------------------------------
+# PTY prompt-write loop — locks in the #6160 e2e regression fix
+# ---------------------------------------------------------------------------
+
+
+class TestWriteFullHandlesNonBlockingPtyWrites:
+    """The PTY master fd is non-blocking, so ``os.write`` may return fewer
+    bytes than requested or raise ``BlockingIOError`` when the kernel's
+    PTY input buffer is nearly full. The previous code path called
+    ``os.write(fd, payload)`` once and ignored the return value, so any
+    unwritten suffix was silently dropped — the agent received a
+    truncated prompt and the round hung forever.
+
+    These tests pin ``_write_full`` against three failure modes:
+    short writes, ``BlockingIOError``, and zero-byte writes — all on
+    a deadline so a kernel that never drains raises the timeout error.
+    """
+
+    def test_loops_until_full_payload_is_written_through_short_writes(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+        from issue_orchestrator.execution.persistent_round_runner import (
+            _write_full,  # noqa: PLC2701 — private helper is the contract under test
+        )
+
+        payload = b"abcdefghij"
+        observed: list[bytes] = []
+        # Simulate a kernel that only accepts 3 bytes per call until done.
+        def fake_write(_fd: int, buf: bytes) -> int:
+            n = min(3, len(buf))
+            observed.append(buf[:n])
+            return n
+
+        monkeypatch.setattr(persistent_round_runner.os, "write", fake_write)
+        clock = _FakeClock()
+        sleeper = clock.make_sleeper()
+
+        written = _write_full(
+            fd=99, payload=payload,
+            deadline=clock.now() + 5.0, now=clock.now, sleep=sleeper,
+        )
+        assert written == len(payload)
+        assert b"".join(observed) == payload
+
+    def test_retries_on_blocking_io_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+        from issue_orchestrator.execution.persistent_round_runner import (
+            _write_full,  # noqa: PLC2701 — private helper is the contract under test
+        )
+
+        payload = b"hello"
+        attempts = {"count": 0}
+        def fake_write(_fd: int, buf: bytes) -> int:
+            attempts["count"] += 1
+            if attempts["count"] <= 2:
+                raise BlockingIOError("buffer full")
+            return len(buf)
+
+        monkeypatch.setattr(persistent_round_runner.os, "write", fake_write)
+        clock = _FakeClock()
+        sleeper = clock.make_sleeper()
+
+        written = _write_full(
+            fd=99, payload=payload,
+            deadline=clock.now() + 5.0, now=clock.now, sleep=sleeper,
+        )
+        assert written == len(payload)
+        assert attempts["count"] == 3
+
+    def test_raises_timeout_when_kernel_never_drains(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+        from issue_orchestrator.execution.persistent_round_runner import (
+            _write_full,  # noqa: PLC2701 — private helper is the contract under test
+        )
+
+        def always_blocking(_fd: int, _buf: bytes) -> int:
+            raise BlockingIOError("buffer perpetually full")
+
+        monkeypatch.setattr(persistent_round_runner.os, "write", always_blocking)
+        clock = _FakeClock()
+        # Deadline already in the past so the very first iteration trips.
+        sleeper = clock.make_sleeper()
+
+        with pytest.raises(PersistentRoundTimeoutError, match="Could not write"):
+            _write_full(
+                fd=99, payload=b"x",
+                deadline=clock.now() - 1.0, now=clock.now, sleep=sleeper,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Recording event count
 # ---------------------------------------------------------------------------
 
