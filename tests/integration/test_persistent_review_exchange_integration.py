@@ -161,6 +161,21 @@ def _bootstrap_git_worktree(tmp_path: Path) -> tuple[Path, str]:
     return repo, branch
 
 
+def _make_review_exchange_runner(
+    session_output: FileSystemSessionOutput,
+) -> PersistentReviewExchangeRunner:
+    """Centralized constructor for the integration tests' review-exchange runner.
+
+    Keeps the registry argument in one place so a future signature
+    change doesn't require updating every call site (PR #6209 review
+    finding: a previous signature change drifted because of scattered
+    constructor calls in different test files).
+    """
+    return PersistentReviewExchangeRunner(
+        session_output, InMemoryPersistentExchangePairRegistry(),
+    )
+
+
 def _make_config(tmp_path: Path, agent: AgentConfig) -> Config:
     config = Config()
     config.repo_root = tmp_path
@@ -235,9 +250,7 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         session_output=session_output,
         emit_review_started=_emit_started,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, InMemoryPersistentExchangePairRegistry(),
-        ),
+        review_exchange_runner=_make_review_exchange_runner(session_output),
     )
 
     from issue_orchestrator.events import EventContext
@@ -356,9 +369,7 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            _session_output_for_test, InMemoryPersistentExchangePairRegistry(),
-        ),
+        review_exchange_runner=_make_review_exchange_runner(_session_output_for_test),
     )
 
     from issue_orchestrator.events import EventContext
@@ -436,9 +447,7 @@ def test_persistent_review_exchange_max_rounds_exhausted(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            _session_output_for_test, InMemoryPersistentExchangePairRegistry(),
-        ),
+        review_exchange_runner=_make_review_exchange_runner(_session_output_for_test),
     )
 
     from issue_orchestrator.events import EventContext
@@ -534,7 +543,7 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(_session_output_for_test),
+        review_exchange_runner=_make_review_exchange_runner(_session_output_for_test),
     )
 
     from issue_orchestrator.events import EventContext
