@@ -192,14 +192,6 @@ class TestOrchestratorNotInitialized:
         assert response.status_code == 503
         assert response.json()["error"] == "Orchestrator not initialized"
 
-    def test_shutdown_returns_503(self, client_without_orchestrator):
-        """POST /api/shutdown returns 503 when orchestrator is None."""
-        response = client_without_orchestrator.post("/api/shutdown")
-
-        assert response.status_code == 503
-        assert response.json()["error"] == "Orchestrator not initialized"
-
-
 class TestEventHubNotInitialized:
     """Test SSE endpoints when event_hub is None."""
 
@@ -290,22 +282,6 @@ class TestResumeEndpoint:
         client.post("/api/resume")
 
         assert mock_orch.resume.call_count == 2
-
-
-class TestShutdownEndpoint:
-    """Test the POST /api/shutdown endpoint."""
-
-    def test_shutdown_calls_request_shutdown(self, client_with_orchestrator):
-        """Shutdown calls orchestrator.request_shutdown()."""
-        client, mock_orch = client_with_orchestrator
-
-        response = client.post("/api/shutdown")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "shutdown_requested"
-        assert "active_sessions" in data
-        mock_orch.request_shutdown.assert_called_once()
 
 
 class TestControlCenterTemplate:

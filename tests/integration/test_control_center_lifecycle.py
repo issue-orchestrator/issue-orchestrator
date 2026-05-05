@@ -379,7 +379,11 @@ class TestControlCenterLifecycle:
         logger.info("Stopping orchestrator via Control Center")
         resp = cc_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(test_repo)},
+            json={
+                "repo_root": str(test_repo),
+                "reason": "integration test cycle: stop step",
+                "actor": "test-control-center-lifecycle",
+            },
         )
         assert resp.status_code == 200, f"Stop failed: {resp.text}"
         data = resp.json()
@@ -430,7 +434,11 @@ class TestControlCenterLifecycle:
         # Stop
         resp = cc_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(test_repo)},
+            json={
+                "repo_root": str(test_repo),
+                "reason": "integration test restart: stop step",
+                "actor": "test-control-center-lifecycle",
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "stopped"
@@ -457,7 +465,11 @@ class TestControlCenterLifecycle:
         # Cleanup
         cc_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(test_repo)},
+            json={
+                "repo_root": str(test_repo),
+                "reason": "integration test restart: cleanup",
+                "actor": "test-control-center-lifecycle",
+            },
         )
 
         logger.info("✓ Restart cycle completed successfully")
@@ -504,7 +516,11 @@ class TestControlCenterLifecycle:
         # Cleanup
         cc_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(test_repo)},
+            json={
+                "repo_root": str(test_repo),
+                "reason": "integration test start-when-running: cleanup",
+                "actor": "test-control-center-lifecycle",
+            },
         )
 
         logger.info("✓ Start-when-running handled correctly")
@@ -536,6 +552,10 @@ class TestControlCenterLifecycle:
         try:
             orch_resp = httpx.post(
                 f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
+                json={
+                    "reason": "integration test self-shutdown",
+                    "actor": "test-control-center-lifecycle",
+                },
                 timeout=xdist_timeout(5.0),
             )
             assert orch_resp.status_code == 200
@@ -581,7 +601,12 @@ class TestControlCenterLifecycle:
         logger.info("Force stopping orchestrator")
         resp = cc_client.post(
             "/control/orchestrator/stop",
-            json={"repo_root": str(test_repo), "force": True},
+            json={
+                "repo_root": str(test_repo),
+                "force": True,
+                "reason": "integration test force stop",
+                "actor": "test-control-center-lifecycle",
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "stopped"
@@ -635,6 +660,10 @@ class TestControlCenterStatusConsistency:
         try:
             httpx.post(
                 f"http://127.0.0.1:{orchestrator_port}/api/shutdown",
+                json={
+                    "reason": "integration test status consistency check",
+                    "actor": "test-control-center-lifecycle",
+                },
                 timeout=xdist_timeout(5.0),
             )
         except httpx.RemoteProtocolError:
@@ -688,7 +717,11 @@ class TestControlCenterAPIInProcess:
                 # Stop (should succeed - nothing to stop means goal achieved)
                 resp = client.post(
                     "/control/orchestrator/stop",
-                    json={"repo_root": str(test_repo)},
+                    json={
+                        "repo_root": str(test_repo),
+                        "reason": "integration test stop-when-stopped",
+                        "actor": "test-control-center-lifecycle",
+                    },
                 )
                 assert resp.status_code == 200, f"Stop failed: {resp.text}"
                 data = resp.json()

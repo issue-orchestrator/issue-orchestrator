@@ -13,7 +13,6 @@ Control API endpoints (in-process):
 - GET /api/events_since - Fetch buffered events since an event id
 - POST /api/gh_audit_report - Emit GH audit report to disk
 - GET /api/snapshot - Fetch snapshot for test resync
-- POST /api/shutdown - Request graceful shutdown
 - POST /api/issues/{issue_number}/resume - Resume processing for a debug session
 - POST /api/issues/{issue_number}/debug-session - Launch interactive debug session
 
@@ -836,23 +835,17 @@ async def health() -> JSONResponse:
     return JSONResponse(health_data, status_code=status_code)
 
 
-@control_app.post("/api/shutdown")
-async def shutdown(request: Request) -> JSONResponse:
-    """Request graceful shutdown of the orchestrator (stops new work, waits for agents)."""
-    if _orchestrator is None:
-        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
-
-    # Log shutdown request with context
-    active_sessions = _orchestrator.state.active_sessions if _orchestrator.state else []
-    client_host = request.client.host if request.client else "unknown"
-    logger.info(
-        "Shutdown requested (graceful): source=web_ui, client=%s, active_sessions=%d",
-        client_host,
-        len(active_sessions),
-    )
-
-    _orchestrator.request_shutdown()
-    return JSONResponse({"status": "shutdown_requested", "active_sessions": len(active_sessions)})
+# NOTE: ``POST /api/shutdown`` is intentionally NOT defined here. It used
+# to live on ``control_app`` and accepted unreasoned shutdowns, which
+# made the orchestrator log unable to attribute who triggered a stop.
+# The route now lives only on ``web_operator_router`` (see
+# ``web_operator_routes.shutdown``) and requires a non-empty ``reason``
+# in the JSON body. Re-adding a duplicate here would silently bypass
+# that contract because ``app.include_router(web_operator_router)`` is
+# called before ``app.mount("", control_app)`` in ``web.py`` — the
+# operator route wins on the engine surface, but a duplicate would
+# still be reachable on the standalone cc surface and on
+# ``TestClient(control_app)`` paths, so we keep it deleted.
 
 
 @control_app.get("/favicon.ico")

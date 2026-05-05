@@ -18,6 +18,7 @@ from ..control.queue_cache import QueueCache
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost
 from ..execution.label_ops import LabelOperation, apply_label_operations
+from .shutdown_reason_support import parse_shutdown_reason
 from .web_session_context import WebOrchestratorDependency
 
 logger = logging.getLogger(__name__)
@@ -421,24 +422,15 @@ async def shutdown(
         payload = await request.json()
     except Exception:  # noqa: BLE001 — malformed body → handled below
         payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    raw_reason = payload.get("reason")
-    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-    if not reason:
-        return JSONResponse(
-            {
-                "error": "reason is required",
-                "hint": (
-                    "POST /api/shutdown now requires a non-empty "
-                    "'reason' in the JSON body so each shutdown is "
-                    "traceable in the orchestrator log."
-                ),
-            },
-            status_code=400,
-        )
-    actor = payload.get("actor")
-    actor_str = actor.strip() if isinstance(actor, str) else ""
+    parsed = parse_shutdown_reason(
+        payload,
+        endpoint="/api/shutdown",
+        default_actor="",
+    )
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    reason = parsed.reason
+    actor_str = parsed.actor  # "" when caller didn't supply one
 
     orchestrator.request_shutdown(force=force)
     active_count = len(orchestrator.state.active_sessions)

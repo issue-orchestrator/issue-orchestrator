@@ -34,6 +34,7 @@ from ..infra.supervisor import MultiInstanceStatus, SupervisorOps
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependency,
 )
+from .shutdown_reason_support import parse_shutdown_reason
 
 logger = logging.getLogger(__name__)
 
@@ -329,25 +330,16 @@ async def control_stop(
         logger.error("[control_stop] Invalid repo_root: %s", body.get("repo_root"))
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
-    raw_reason = body.get("reason")
-    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
-    if not reason:
+    parsed = parse_shutdown_reason(
+        body,
+        endpoint="/control/orchestrator/stop",
+        default_actor="control-center.stop",
+    )
+    if isinstance(parsed, JSONResponse):
         logger.error("[control_stop] Missing 'reason' in body")
-        return JSONResponse(
-            {
-                "error": "reason is required",
-                "hint": (
-                    "POST /control/orchestrator/stop now requires a "
-                    "non-empty 'reason' so each engine shutdown is "
-                    "traceable in the orchestrator log. Example: "
-                    "{'repo_root': '...', 'reason': 'user clicked Stop in dashboard'}"
-                ),
-            },
-            status_code=400,
-        )
-    raw_actor = body.get("actor")
-    actor = raw_actor.strip() if isinstance(raw_actor, str) else ""
-    actor = actor or "control-center.stop"
+        return parsed
+    reason = parsed.reason
+    actor = parsed.actor
 
     force = body.get("force", False)
     force_if_timeout = bool(body.get("force_if_timeout", True))
