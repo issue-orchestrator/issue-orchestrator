@@ -66,6 +66,12 @@ _EXPORTS = {
     "BackgroundJobRunner": (".background_job", "BackgroundJobRunner"),
     "CompletedJob": (".background_job", "CompletedJob"),
     "NullBackgroundJobRunner": (".background_job", "NullBackgroundJobRunner"),
+    "PersistentExchangePair": (
+        ".persistent_exchange_pair_registry", "PersistentExchangePair",
+    ),
+    "PersistentExchangePairRegistry": (
+        ".persistent_exchange_pair_registry", "PersistentExchangePairRegistry",
+    ),
 }
 
 __all__ = (
@@ -129,6 +135,8 @@ __all__ = (
     "BackgroundJobRunner",
     "CompletedJob",
     "NullBackgroundJobRunner",
+    "PersistentExchangePair",
+    "PersistentExchangePairRegistry",
 )
 
 

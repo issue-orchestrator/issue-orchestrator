@@ -91,6 +91,9 @@ if TYPE_CHECKING:
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..ports.e2e_issue_tracker import E2EIssueTracker
+    from ..ports.persistent_exchange_pair_registry import (
+        PersistentExchangePairRegistry,
+    )
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -312,25 +315,33 @@ def _create_completion_components(
     provider_resilience: ProviderResilienceManager | None = None,
     label_manager: "LabelManager | None" = None,
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
+    pair_registry: "PersistentExchangePairRegistry | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
     from ..control.pre_publish_gate import PrePublishGate
     from ..control.session_controller import SessionController
     from ..control.label_manager import LabelManager as _LM
+    from ..execution.persistent_exchange_pair_registry_inmemory import (
+        InMemoryPersistentExchangePairRegistry,
+    )
     from ..execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
     )
 
     if label_manager is None:
         label_manager = _LM(config)
+    if pair_registry is None:
+        pair_registry = InMemoryPersistentExchangePairRegistry()
 
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -928,15 +939,21 @@ def build_orchestrator_for_testing(
     # Create CompletionProcessor for testing
     from ..control.completion_processor import CompletionProcessor
     from ..control.pre_publish_gate import PrePublishGate
+    from ..execution.persistent_exchange_pair_registry_inmemory import (
+        InMemoryPersistentExchangePairRegistry,
+    )
     from ..execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
     )
+    pair_registry_for_testing = InMemoryPersistentExchangePairRegistry()
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry_for_testing,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,

@@ -32,6 +32,9 @@ import pytest
 from issue_orchestrator.control.completion_review_exchange import CompletionReviewExchange
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.manifest_accessor import ManifestAccessor, RunIdentity
+from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
+    InMemoryPersistentExchangePairRegistry,
+)
 from issue_orchestrator.execution.persistent_review_exchange_runner import (
     PersistentReviewExchangeRunner,
 )
@@ -232,7 +235,9 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         session_output=session_output,
         emit_review_started=_emit_started,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, InMemoryPersistentExchangePairRegistry(),
+        ),
     )
 
     from issue_orchestrator.events import EventContext
@@ -351,7 +356,9 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(_session_output_for_test),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            _session_output_for_test, InMemoryPersistentExchangePairRegistry(),
+        ),
     )
 
     from issue_orchestrator.events import EventContext
@@ -429,7 +436,9 @@ def test_persistent_review_exchange_max_rounds_exhausted(
         session_output=_session_output_for_test,
         emit_review_started=lambda **_: None,
         emit_review_outcome=lambda **_: None,
-        review_exchange_runner=PersistentReviewExchangeRunner(_session_output_for_test),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            _session_output_for_test, InMemoryPersistentExchangePairRegistry(),
+        ),
     )
 
     from issue_orchestrator.events import EventContext

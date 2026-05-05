@@ -251,6 +251,9 @@ class TestReviewExchangeExecution:
         return config
 
     def _make_processor(self, config: Config) -> CompletionProcessor:
+        from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
+            InMemoryPersistentExchangePairRegistry,
+        )
         from issue_orchestrator.execution.persistent_review_exchange_runner import (
             PersistentReviewExchangeRunner,
         )
@@ -260,7 +263,9 @@ class TestReviewExchangeExecution:
             pr_adapter=Mock(spec=PRAdapter),
             git_adapter=Mock(spec=GitAdapter),
             session_output=session_output,
-            review_exchange_runner=PersistentReviewExchangeRunner(session_output),
+            review_exchange_runner=PersistentReviewExchangeRunner(
+                session_output, InMemoryPersistentExchangePairRegistry(),
+            ),
             event_bus=EventBus(),
             label_config={},
             config=config,
