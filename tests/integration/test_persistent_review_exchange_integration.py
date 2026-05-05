@@ -449,3 +449,156 @@ def test_persistent_review_exchange_max_rounds_exhausted(
         f"unexpected outcome status: {outcome.status} (full: {outcome})"
     assert outcome.reason == "max_rounds_exceeded"
     assert outcome.rounds == 2
+
+
+def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Agent journey: in a two-round rework cycle, the projected
+    timeline must surface BOTH rounds distinguishably so an agent
+    debugging a stuck rework can answer "what did each round do?" by
+    reading the timeline alone — not by digging into reviewer artifacts.
+
+    The companion test
+    ``test_persistent_review_exchange_multi_round_changes_then_ok``
+    asserts the runner emits two REVIEW_EXCHANGE_ROUND_COMPLETED
+    TraceEvents. This test pins what reaches `project_timeline` once
+    those events flow through `DefaultTimelineWriter` (which fans out
+    via the same `produce_external_records` pipeline production uses):
+
+      - Exactly two `review_exchange.round_completed` events appear in
+        the projected timeline.
+      - They are in temporal order (earlier round first).
+      - `round_index` is 1 then 2, not duplicated or 0/0.
+      - `reviewer_response_type` differs per round so the agent can
+        identify the rework boundary (round 1 = changes_requested,
+        round 2 = ok).
+      - Each event carries a populated `narrative` so a human / agent
+        skimming the dashboard sees the per-round verdict at a glance,
+        not just a generic "round completed" string.
+      - Both rounds remain in the user-facing view (`views` includes
+        "user"), so they are not accidentally hidden behind the
+        ops/debug-only filter.
+    """
+    from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
+    from issue_orchestrator.execution.timeline_event_sink import TimelineEventSink
+    from issue_orchestrator.ports.timeline_store import TimelineRecord, TimelineStore
+    from issue_orchestrator.timeline import project_timeline
+
+    class _RecordingStore(TimelineStore):
+        def __init__(self) -> None:
+            self.records: list[TimelineRecord] = []
+
+        def append(self, issue_number: int, record: TimelineRecord) -> None:  # noqa: ARG002
+            self.records.append(record)
+
+        def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:  # noqa: ARG002
+            return list(self.records)
+
+        def delete(self, issue_number: int) -> int:  # noqa: ARG002
+            self.records.clear()
+            return 0
+
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "changes_requested,ok")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 3
+
+    store = _RecordingStore()
+    timeline_sink = TimelineEventSink(DefaultTimelineWriter(store))
+
+    _session_output_for_test = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=_session_output_for_test,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=PersistentReviewExchangeRunner(_session_output_for_test),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    issue_number = 4060
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=issue_number,
+        issue_title="Two-round projection",
+        session_name=f"issue-{issue_number}",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=timeline_sink,
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok"
+    assert outcome.rounds == 2
+
+    records = store.read(issue_number)
+    assert records, "timeline writer received no records — the sink wiring is broken"
+
+    projected = project_timeline(records, issue_number=issue_number)
+
+    round_completed = [
+        evt for evt in projected
+        if evt.event == "review_exchange.round_completed"
+    ]
+    assert len(round_completed) == 2, (
+        "expected two review_exchange.round_completed events in the "
+        f"projected timeline, got {len(round_completed)}: "
+        f"{[e.event for e in projected]}"
+    )
+
+    first, second = round_completed
+    assert first.timestamp <= second.timestamp, (
+        "round events out of temporal order — "
+        f"{first.timestamp} should precede {second.timestamp}"
+    )
+    assert first.round_index == 1
+    assert second.round_index == 2
+
+    assert first.reviewer_response_type == "changes_requested", (
+        "round 1 should report changes_requested so the agent sees "
+        "where the rework boundary is, got "
+        f"{first.reviewer_response_type!r}"
+    )
+    assert second.reviewer_response_type == "ok", (
+        "round 2 should report ok (the approval that ended the cycle), "
+        f"got {second.reviewer_response_type!r}"
+    )
+
+    # The narrative is what a human / agent skim-reads. It must
+    # distinguish the rounds — a generic "round completed" on both
+    # would force the user to click through to read each round's
+    # reviewer text just to know which one approved.
+    assert first.narrative, (
+        "round 1 narrative is empty; agent skimming the timeline can't "
+        "tell what the round did without drilling in"
+    )
+    assert second.narrative, "round 2 narrative is empty"
+    assert first.narrative != second.narrative, (
+        "both rounds share the same narrative "
+        f"({first.narrative!r}) — they look identical in the dashboard"
+    )
+    assert "changes_requested" in first.narrative
+    assert "ok" in second.narrative
+
+    # User-facing view filter: both rounds must reach the end-user view,
+    # not be debug- or ops-only. The dashboard's user view is what the
+    # human / agent reads first.
+    for evt in round_completed:
+        assert evt.views and "user" in evt.views, (
+            f"round {evt.round_index} is not in the 'user' view "
+            f"(views={evt.views}); end users won't see it on the dashboard"
+        )
