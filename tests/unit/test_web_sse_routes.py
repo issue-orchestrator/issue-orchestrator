@@ -139,11 +139,25 @@ class TestSSEFunctionality:
         monkeypatch.setattr(web_operator_routes.shutdown_manager, "exit", lambda: None)
 
         try:
-            response = await web_operator_routes.shutdown(orchestrator, operator_deps, force=False)
+            # Build a Request stub the new endpoint can read JSON
+            # body from. We can't import starlette's Request and
+            # construct one cheaply, so use the SimpleNamespace +
+            # async ``json()`` helper pattern.
+            class _RequestStub:
+                async def json(self):
+                    return {"reason": "sse test", "actor": "unit-test"}
+
+            response = await web_operator_routes.shutdown(
+                _RequestStub(),  # type: ignore[arg-type]
+                orchestrator,
+                operator_deps,
+                force=False,
+            )
             assert response.status_code == 200
             event = queue.get_nowait()
             assert event["type"] == "shutdown_requested"
             assert event["data"]["force"] is False
+            assert event["data"]["reason"] == "sse test"
             assert orchestrator.shutdown_called is True
             ShutdownRequestedPayload.model_validate(event["data"])
         finally:

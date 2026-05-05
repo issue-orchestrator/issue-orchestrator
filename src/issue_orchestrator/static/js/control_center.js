@@ -1615,6 +1615,9 @@ async function stopRepo(path, options = {}) {
     }
 
     try {
+        const stopReason = force
+            ? 'operator force-stopped engine via Control Center'
+            : 'operator stopped engine via Control Center';
         const response = await fetch('/control/orchestrator/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1623,6 +1626,8 @@ async function stopRepo(path, options = {}) {
                 force,
                 graceful_timeout_seconds: gracefulTimeoutSeconds,
                 force_if_timeout: forceIfTimeout,
+                reason: stopReason,
+                actor: 'control-center.web-ui',
             }),
         });
 

@@ -208,6 +208,44 @@ def _configure_dashboard_auth(dev_no_auth: bool, config: Any) -> None:
     os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
 
 
+def _install_shutdown_signal_handlers(
+    orchestrator: Any,
+    trigger_server_shutdown: Any,
+) -> None:
+    """Install asyncio-safe per-signal handlers on the running loop.
+
+    Per-signal handlers so the log can name *which* signal arrived,
+    not just "a shutdown signal". Posix doesn't give us the sender
+    PID through asyncio's signal API, but recording our own PPID
+    at signal time helps narrow it down — if the parent process
+    died (PPID became 1), the child got reaped; if PPID matches a
+    cc/launcher process the user can correlate manually. Without
+    this, an operator reading the log later can't tell SIGTERM
+    (typical from a supervisor.stop / kill) apart from SIGINT
+    (typical Ctrl+C in the foreground terminal).
+    """
+    def make_handler(sig: signal.Signals):
+        def handle_signal() -> None:
+            try:
+                ppid = os.getppid()
+            except OSError:
+                ppid = -1
+            logger.warning(
+                "Received %s (signum=%d) from ppid=%d; requesting shutdown. "
+                "Operators: prefer POST /api/shutdown with a 'reason' so the "
+                "source is recorded — signal-based shutdowns can't be attributed "
+                "to a caller.",
+                sig.name, int(sig), ppid,
+            )
+            orchestrator.request_shutdown()
+            trigger_server_shutdown()
+        return handle_signal
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, make_handler(sig))
+
+
 async def run(
     repo_root: Path,
     port: int,
@@ -276,15 +314,7 @@ async def run(
     # Import here to avoid circular import at module level
     from .web import trigger_server_shutdown
 
-    # Set up asyncio-safe signal handlers (must be done inside running event loop)
-    def handle_signal():
-        logger.info("Received shutdown signal, requesting shutdown")
-        orchestrator.request_shutdown()
-        trigger_server_shutdown()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, handle_signal)
+    _install_shutdown_signal_handlers(orchestrator, trigger_server_shutdown)
 
     # Run with web dashboard
     logger.info("Starting orchestrator on port %d", port)

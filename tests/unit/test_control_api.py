@@ -148,3 +148,66 @@ def mock_supervisor():
     set_supervisor(mock)
     yield mock
     set_supervisor(DefaultSupervisorOps())
+
+
+class TestStopRepoOrchestratorEndpoint:
+    """``POST /api/repos/{repo_id}/stop`` must consume the shared reason gate.
+
+    The reviewer flagged on PR #6263 that this route was parsing
+    ``reason``/``actor`` itself instead of routing through
+    ``parse_shutdown_reason()``, leaving the policy with two owners.
+    These tests pin the route to the shared validator's behavior so a
+    future drift would fail here, not in production.
+    """
+
+    def test_stop_repo_rejects_missing_reason(self, mock_supervisor):
+        client = TestClient(control_app)
+
+        response = client.post("/api/repos/test-repo/stop", json={})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "reason is required"
+        mock_supervisor.stop.assert_not_called()
+
+    def test_stop_repo_rejects_empty_reason(self, mock_supervisor):
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/api/repos/test-repo/stop",
+            json={"reason": "   "},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "reason is required"
+        mock_supervisor.stop.assert_not_called()
+
+    def test_stop_repo_threads_reason_and_actor_into_supervisor(self, mock_supervisor):
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/api/repos/test-repo/stop",
+            json={
+                "reason": "operator stop via /api/repos endpoint",
+                "actor": "test-control-api",
+                "force": False,
+            },
+        )
+
+        assert response.status_code == 200
+        mock_supervisor.stop.assert_called_once()
+        kwargs = mock_supervisor.stop.call_args.kwargs
+        assert kwargs["reason"] == "operator stop via /api/repos endpoint"
+        assert kwargs["actor"] == "test-control-api"
+        assert kwargs["force"] is False
+
+    def test_stop_repo_default_actor_when_omitted(self, mock_supervisor):
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/api/repos/test-repo/stop",
+            json={"reason": "explicit reason without actor"},
+        )
+
+        assert response.status_code == 200
+        kwargs = mock_supervisor.stop.call_args.kwargs
+        assert kwargs["actor"] == "control_api.stop_repo"

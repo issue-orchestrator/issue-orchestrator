@@ -13,7 +13,6 @@ Control API endpoints (in-process):
 - GET /api/events_since - Fetch buffered events since an event id
 - POST /api/gh_audit_report - Emit GH audit report to disk
 - GET /api/snapshot - Fetch snapshot for test resync
-- POST /api/shutdown - Request graceful shutdown
 - POST /api/issues/{issue_number}/resume - Resume processing for a debug session
 - POST /api/issues/{issue_number}/debug-session - Launch interactive debug session
 
@@ -110,6 +109,7 @@ from .control_api_shutdown_state import (
     finish_engine_shutdown_operation,
     global_shutdown_in_progress,
 )
+from .shutdown_reason_support import parse_shutdown_reason
 from .control_api_shutdown_support import (
     ControlApiShutdownDependencies,
     install_control_api_shutdown_dependencies,
@@ -493,25 +493,34 @@ async def stop_repo_orchestrator(repo_id: str, request: Request) -> JSONResponse
 
     The repo_id is the URL-encoded absolute path to the repo.
 
-    JSON body (optional):
-        force: bool - Force kill if graceful shutdown fails (default: false)
+    JSON body:
+        reason: str (REQUIRED) - The "why" behind this stop, threaded
+            into the target's ``/api/shutdown`` so the target log
+            records the calling intent. Empty/missing → 400.
+        actor: str (optional) - Source identifier for log grouping.
+        force: bool (optional, default false) - Force kill if
+            graceful shutdown fails.
     """
     from urllib.parse import unquote
 
     repo_path = unquote(repo_id)
     path = Path(repo_path)
 
-    # Parse optional force from body
-    force = False
     try:
         body = await request.json()
-        if isinstance(body, dict) and "force" in body:
-            force = bool(body["force"])
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001 — empty / malformed body
+        body = {}
+    parsed = parse_shutdown_reason(
+        body,
+        endpoint="/api/repos/{repo_id}/stop",
+        default_actor="control_api.stop_repo",
+    )
+    if isinstance(parsed, JSONResponse):
+        return parsed
 
-    # Use supervisor to stop
-    stopped = _supervisor.stop(path, force=force)
+    force = bool(body.get("force", False)) if isinstance(body, dict) else False
+
+    stopped = _supervisor.stop(path, force=force, reason=parsed.reason, actor=parsed.actor)
     return JSONResponse({"status": "stopped" if stopped else "failed"})
 
 
@@ -811,23 +820,17 @@ async def health() -> JSONResponse:
     return JSONResponse(health_data, status_code=status_code)
 
 
-@control_app.post("/api/shutdown")
-async def shutdown(request: Request) -> JSONResponse:
-    """Request graceful shutdown of the orchestrator (stops new work, waits for agents)."""
-    if _orchestrator is None:
-        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
-
-    # Log shutdown request with context
-    active_sessions = _orchestrator.state.active_sessions if _orchestrator.state else []
-    client_host = request.client.host if request.client else "unknown"
-    logger.info(
-        "Shutdown requested (graceful): source=web_ui, client=%s, active_sessions=%d",
-        client_host,
-        len(active_sessions),
-    )
-
-    _orchestrator.request_shutdown()
-    return JSONResponse({"status": "shutdown_requested", "active_sessions": len(active_sessions)})
+# NOTE: ``POST /api/shutdown`` is intentionally NOT defined here. It used
+# to live on ``control_app`` and accepted unreasoned shutdowns, which
+# made the orchestrator log unable to attribute who triggered a stop.
+# The route now lives only on ``web_operator_router`` (see
+# ``web_operator_routes.shutdown``) and requires a non-empty ``reason``
+# in the JSON body. Re-adding a duplicate here would silently bypass
+# that contract because ``app.include_router(web_operator_router)`` is
+# called before ``app.mount("", control_app)`` in ``web.py`` — the
+# operator route wins on the engine surface, but a duplicate would
+# still be reachable on the standalone cc surface and on
+# ``TestClient(control_app)`` paths, so we keep it deleted.
 
 
 @control_app.get("/favicon.ico")

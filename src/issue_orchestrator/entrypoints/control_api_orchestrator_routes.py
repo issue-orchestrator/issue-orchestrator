@@ -34,6 +34,7 @@ from ..infra.supervisor import MultiInstanceStatus, SupervisorOps
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependency,
 )
+from .shutdown_reason_support import parse_shutdown_reason
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,12 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
             expected_identity=expected_identity,
         )
         if detected and detected.get("identity_mismatch"):
-            stopped = sv.stop_by_port(detected["port"], force=True)
+            stopped = sv.stop_by_port(
+                detected["port"],
+                force=True,
+                reason="engine identity mismatch detected on /control/start",
+                actor="control-center",
+            )
             if not stopped:
                 return JSONResponse(
                     {
@@ -168,7 +174,12 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
                 status_code=409,
             )
         if detected and force_restart:
-            stopped = sv.stop_by_port(detected["port"], force=True)
+            stopped = sv.stop_by_port(
+                detected["port"],
+                force=True,
+                reason="force_restart=true on /control/start",
+                actor="control-center",
+            )
             if not stopped:
                 return JSONResponse(
                     {
@@ -247,7 +258,11 @@ async def control_start(  # noqa: C901, PLR0912 - startup orchestration spans va
         if is_shutdown_complete(exc.port):
             logger.info("Orchestrator in shutdown-complete state, restarting: %s", repo_root)
             try:
-                sv.stop(repo_root)
+                sv.stop(
+                    repo_root,
+                    reason="restart after shutdown-complete state on /control/start",
+                    actor="control-center.start",
+                )
                 time.sleep(0.5)
                 info = sv.start(
                     repo_root,
@@ -315,6 +330,17 @@ async def control_stop(
         logger.error("[control_stop] Invalid repo_root: %s", body.get("repo_root"))
         return JSONResponse({"error": "Invalid or missing repo_root"}, status_code=400)
 
+    parsed = parse_shutdown_reason(
+        body,
+        endpoint="/control/orchestrator/stop",
+        default_actor="control-center.stop",
+    )
+    if isinstance(parsed, JSONResponse):
+        logger.error("[control_stop] Missing 'reason' in body")
+        return parsed
+    reason = parsed.reason
+    actor = parsed.actor
+
     force = body.get("force", False)
     force_if_timeout = bool(body.get("force_if_timeout", True))
     graceful_timeout_seconds = deps.coerce_graceful_timeout_seconds(
@@ -359,12 +385,16 @@ async def control_stop(
                     },
                     status_code=409,
                 )
-            stopped = sv.stop_by_port(port_override, force=force)
+            stopped = sv.stop_by_port(
+                port_override, force=force, reason=reason, actor=actor,
+            )
             stopped_count = 1 if stopped else 0
         else:
             stopped_count = sv.stop_all_instances(
                 repo_root,
                 force=force,
+                reason=reason,
+                actor=actor,
                 graceful_timeout_seconds=graceful_timeout_seconds,
                 force_if_graceful_fails=force_if_timeout or force,
             )
@@ -475,7 +505,12 @@ def _reconcile_repo_runtime(
     status_info = sv.status(repo_path)
     if status_info.state == "failed":
         return {
-            "reconciled_stale_lock": sv.stop(repo_path, force=False),
+            "reconciled_stale_lock": sv.stop(
+                repo_path,
+                force=False,
+                reason="reconcile-runtime: stale lock for failed orchestrator",
+                actor="control-center.reconcile",
+            ),
             "orphaned_detected": [],
             "stopped_orphaned": False,
             "unresponsive_detected": [],
@@ -494,7 +529,12 @@ def _reconcile_repo_runtime(
             }
         orphaned_entry = {"repo_root": str(repo_path), "port": detected.get("port")}
         if stop_orphaned and detected.get("port"):
-            stopped = sv.stop_by_port(int(detected["port"]), force=force)
+            stopped = sv.stop_by_port(
+                int(detected["port"]),
+                force=force,
+                reason="reconcile-runtime: stop orphaned orchestrator with no lock",
+                actor="control-center.reconcile",
+            )
             return {
                 "reconciled_stale_lock": False,
                 "orphaned_detected": [orphaned_entry],
@@ -533,7 +573,12 @@ def _reconcile_repo_runtime(
             "orphaned_detected": [],
             "stopped_orphaned": False,
             "unresponsive_detected": [unresponsive_entry],
-            "stopped_unresponsive": sv.stop(repo_path, force=force),
+            "stopped_unresponsive": sv.stop(
+                repo_path,
+                force=force,
+                reason="reconcile-runtime: stop unresponsive orchestrator",
+                actor="control-center.reconcile",
+            ),
         }
     return {
         "reconciled_stale_lock": False,
@@ -579,7 +624,13 @@ def _reconcile_multi_instance_repo_runtime(
     for instance_id in deduped_ids:
         status_info = sv.status(repo_path, instance_id=instance_id)
         if status_info.state == "failed":
-            if sv.stop(repo_path, force=False, instance_id=instance_id):
+            if sv.stop(
+                repo_path,
+                force=False,
+                instance_id=instance_id,
+                reason="reconcile-runtime: stale lock for failed multi-instance orchestrator",
+                actor="control-center.reconcile",
+            ):
                 reconciled_stale_lock = True
             continue
 
@@ -608,10 +659,20 @@ def _reconcile_multi_instance_repo_runtime(
             continue
 
         port = payload.get("port")
-        stopped = sv.stop_by_port(port, force=force) if isinstance(port, int) else sv.stop(
+        unresponsive_reason = (
+            "reconcile-runtime: stop unresponsive multi-instance orchestrator"
+        )
+        stopped = sv.stop_by_port(
+            port,
+            force=force,
+            reason=unresponsive_reason,
+            actor="control-center.reconcile",
+        ) if isinstance(port, int) else sv.stop(
             repo_path,
             force=force,
             instance_id=instance_id,
+            reason=unresponsive_reason,
+            actor="control-center.reconcile",
         )
         if stopped:
             stopped_unresponsive = True

@@ -584,7 +584,28 @@ class TestShutdownEndpoint:
     """Test the POST /api/shutdown endpoint."""
 
     def test_shutdown_success(self):
-        """Test successful shutdown request."""
+        """Test successful shutdown request with required reason."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.post(
+            "/api/shutdown",
+            json={"reason": "test shutdown", "actor": "unit-test"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "shutdown_requested"
+        assert body["reason"] == "test shutdown"
+        assert body["actor"] == "unit-test"
+        mock_orch.request_shutdown.assert_called_once()
+
+    def test_shutdown_rejects_missing_reason(self):
+        """Empty body → 400. Reason is required so the orchestrator
+        log records the calling intent (signal handler can't
+        attribute SIGTERM to a caller)."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         set_orchestrator(mock_orch)
@@ -592,9 +613,24 @@ class TestShutdownEndpoint:
         client = TestClient(app)
         response = client.post("/api/shutdown")
 
-        assert response.status_code == 200
-        assert response.json()["status"] == "shutdown_requested"
-        mock_orch.request_shutdown.assert_called_once()
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"] == "reason is required"
+        assert "hint" in body
+        mock_orch.request_shutdown.assert_not_called()
+
+    def test_shutdown_rejects_empty_reason(self):
+        """Whitespace-only reason is treated as missing."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.post("/api/shutdown", json={"reason": "  "})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "reason is required"
+        mock_orch.request_shutdown.assert_not_called()
 
     def test_shutdown_when_orchestrator_not_running(self):
         """Test shutdown returns 503 when orchestrator not initialized."""
@@ -602,7 +638,10 @@ class TestShutdownEndpoint:
         set_orchestrator(None)
 
         client = TestClient(app)
-        response = client.post("/api/shutdown")
+        response = client.post(
+            "/api/shutdown",
+            json={"reason": "test shutdown when down"},
+        )
 
         assert response.status_code == 503
         assert "error" in response.json()

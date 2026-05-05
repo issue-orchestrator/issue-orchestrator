@@ -101,6 +101,15 @@ class StartupCompletePayload(ContractBase):
 
 class ShutdownRequestedPayload(ContractBase):
     force: bool
+    # ``reason`` is the calling-site's "why" string. Required on the
+    # API contract (see ``/api/shutdown`` in ``web_operator_routes``)
+    # so each shutdown is traceable in the orchestrator log.
+    reason: str | None = None
+    # ``actor`` identifies the source (cc, dashboard, cli, mcp, …)
+    # for log-aggregation grouping. Optional on the wire because
+    # legacy clients haven't been updated yet.
+    actor: str | None = None
+    active_sessions: int | None = None
 
 
 class TimelineArtifactContract(ContractBase):

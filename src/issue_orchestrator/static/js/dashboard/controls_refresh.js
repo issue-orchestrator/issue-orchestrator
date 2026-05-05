@@ -712,8 +712,38 @@ function closeShutdownModal() {
 }
 
 async function shutdownWait() {
-    // Set shutdown flag (stops new work)
-    await fetch('/api/shutdown', { method: 'POST' });
+    // Set shutdown flag (stops new work). The /api/shutdown endpoint
+    // now requires a non-empty 'reason' and can return 400/401/503;
+    // we MUST check response.ok before switching the modal to the
+    // waiting/polling state, otherwise the operator sees "waiting for
+    // sessions to complete" while the shutdown request was actually
+    // rejected and no shutdown is in progress.
+    let response;
+    try {
+        response = await fetch('/api/shutdown', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                reason: 'dashboard: user clicked "Shutdown and Wait" in Engine controls',
+                actor: 'dashboard.shutdown_wait',
+            }),
+        });
+    } catch (networkErr) {
+        showToast(`Shutdown request failed: ${networkErr.message || networkErr}`, 'error');
+        return;
+    }
+
+    if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try {
+            const payload = await response.json();
+            detail = payload?.error || payload?.detail || detail;
+        } catch (_) {
+            // Best-effort; fall through with the HTTP status.
+        }
+        showToast(`Shutdown rejected: ${detail}`, 'error');
+        return;
+    }
 
     // Update modal to show waiting state
     const body = document.getElementById('shutdownModalBody');

@@ -315,7 +315,10 @@ class McpApp:
                     "type": "ConfirmationRequired",
                 }
             }
-        return await self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
+        return await self._safe(
+            "orchestrator.shutdown",
+            lambda: self.shutdown(force, reason="mcp.tool_shutdown"),
+        )
 
     async def tool_snapshot(self) -> dict[str, Any]:
         return await self._safe("orchestrator.snapshot", self.snapshot)
@@ -427,10 +430,22 @@ class McpApp:
             logger.exception("Failed to start orchestrator for %s", repo_path)
             return {"error": str(e)}
 
-    def stop_repo(self, repo_path: str, force: bool = False) -> dict[str, Any]:
-        """Stop orchestrator for a specific repo."""
+    def stop_repo(
+        self,
+        repo_path: str,
+        force: bool = False,
+        *,
+        reason: str = "mcp_server.stop_repo",
+    ) -> dict[str, Any]:
+        """Stop orchestrator for a specific repo.
+
+        ``reason`` is required by the underlying supervisor; the
+        default identifies MCP as the source. MCP clients should
+        thread their own reason when they have one (e.g. operator
+        intent passed in via tool args).
+        """
         path = Path(repo_path)
-        stopped = supervisor.stop(path, force=force)
+        stopped = supervisor.stop(path, force=force, reason=reason, actor="mcp")
         return {"status": "stopped" if stopped else "failed"}
 
     async def status(self) -> dict[str, Any]:
@@ -460,11 +475,18 @@ class McpApp:
             return result
         return {"supervisor": status.to_dict()}
 
-    def stop(self, force: bool = False) -> dict[str, Any]:
+    def stop(
+        self,
+        force: bool = False,
+        *,
+        reason: str = "mcp_server.stop",
+    ) -> dict[str, Any]:
         stopped = supervisor.stop(
             self._settings.repo_root,
             instance_id=self._settings.instance_id,
             force=force,
+            reason=reason,
+            actor="mcp",
         )
         return {"stopped": stopped}
 
@@ -477,8 +499,13 @@ class McpApp:
     async def refresh(self, inflight_stable_ids: list[str] | None) -> dict[str, Any]:
         return await self._api.refresh(inflight_stable_ids or [])
 
-    async def shutdown(self, force: bool = False) -> dict[str, Any]:
-        return await self._api.shutdown(force=force)
+    async def shutdown(
+        self,
+        force: bool = False,
+        *,
+        reason: str = "mcp_server.async_shutdown",
+    ) -> dict[str, Any]:
+        return await self._api.shutdown(force=force, reason=reason, actor="mcp")
 
     async def snapshot(self) -> dict[str, Any]:
         return {

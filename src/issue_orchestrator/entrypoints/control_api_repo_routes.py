@@ -138,7 +138,11 @@ async def remove_repo_endpoint(
     if body.get("stop_orchestrator", True):
         path = Path(normalized)
         if path.exists():
-            deps.get_supervisor().stop(path)
+            deps.get_supervisor().stop(
+                path,
+                reason="repo removed via /control/repos/remove",
+                actor="control-center.repos.remove",
+            )
 
     if remove_repo(normalized):
         return JSONResponse({"status": "removed", "repo_root": normalized})
