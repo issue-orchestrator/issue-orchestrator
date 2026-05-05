@@ -472,6 +472,17 @@ export interface IssueRowsPayload {
   rows: IssueRowPayload[];
 }
 
+export interface JUnitCasePayload {
+  case_id: string;
+  display_name: string;
+  duration_seconds?: number | null;
+  failure_details?: string | null;
+  outcome: "passed" | "failed" | "error" | "skipped";
+  suite_name?: string | null;
+  system_err?: string | null;
+  system_out?: string | null;
+}
+
 export interface LinkedIssueLifecyclePayload {
   command: OpenIssueTimelineCommandPayload;
   issue_number: number;
@@ -789,6 +800,7 @@ export interface ValidationFailureDialogPayload {
   ended_at: string;
   exit_code: number | null;
   failed_tests: string[];
+  junit_cases: JUnitCasePayload[];
   reason: string;
   started_at: string;
   stderr_excerpt: string[];

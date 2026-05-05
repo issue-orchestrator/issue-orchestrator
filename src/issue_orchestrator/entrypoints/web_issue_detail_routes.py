@@ -14,7 +14,6 @@ from ..contracts.ui_openapi_models import (
     IssueDetailPayload,
 )
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES
-from ..execution.validation_failure_summary import load_validation_failure_summary
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..view_models.dashboard import issue_url_for
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
@@ -68,10 +67,16 @@ def _current_run_validation_diagnostic(
     run_dir = context.run_dir
     if run_dir is None:
         return None
-    junit_paths: tuple[str, ...] = ()
-    if orchestrator and getattr(orchestrator.config, "validation", None):
-        junit_paths = tuple(orchestrator.config.validation.junit_xml_paths or ())
-    summary = load_validation_failure_summary(run_dir, junit_xml_paths=junit_paths)
+    # Use the shared config-aware loader so this path and the
+    # `/api/dialog/validation-failure/` route can never disagree on
+    # whether structured JUnit cases are surfaced.
+    from ..execution.validation_failure_summary import (
+        load_validation_failure_summary_with_config,
+    )
+    summary = load_validation_failure_summary_with_config(
+        run_dir,
+        config=orchestrator.config if orchestrator else None,
+    )
     if summary is None:
         return None
     return {

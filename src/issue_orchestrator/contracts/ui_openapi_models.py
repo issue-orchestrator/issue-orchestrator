@@ -481,6 +481,17 @@ class IssueRowsPayload(BaseModel):
     count: int
     rows: list[IssueRowPayload]
 
+class JUnitCasePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str
+    display_name: str
+    duration_seconds: float | None = None
+    failure_details: str | None = None
+    outcome: Literal['passed', 'failed', 'error', 'skipped']
+    suite_name: str | None = None
+    system_err: str | None = None
+    system_out: str | None = None
+
 class LinkedIssueLifecyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: OpenIssueTimelineCommandPayload
@@ -798,6 +809,7 @@ class ValidationFailureDialogPayload(BaseModel):
     ended_at: str
     exit_code: int | None
     failed_tests: list[str]
+    junit_cases: list[JUnitCasePayload]
     reason: str
     started_at: str
     stderr_excerpt: list[str]

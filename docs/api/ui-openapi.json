@@ -1019,6 +1019,21 @@
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
         }
       },
+      "JUnitCasePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "display_name", "outcome"],
+        "properties": {
+          "case_id": {"type": "string"},
+          "display_name": {"type": "string"},
+          "suite_name": {"type": ["string", "null"]},
+          "outcome": {"type": "string", "enum": ["passed", "failed", "error", "skipped"]},
+          "duration_seconds": {"type": ["number", "null"]},
+          "failure_details": {"type": ["string", "null"]},
+          "system_out": {"type": ["string", "null"]},
+          "system_err": {"type": ["string", "null"]}
+        }
+      },
       "ValidationFailureDialogPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1033,6 +1048,7 @@
           "failed_tests",
           "stdout_excerpt",
           "stderr_excerpt",
+          "junit_cases",
           "summary_rows",
           "action_sections"
         ],
@@ -1047,6 +1063,7 @@
           "failed_tests": {"type": "array", "items": {"type": "string"}},
           "stdout_excerpt": {"type": "array", "items": {"type": "string"}},
           "stderr_excerpt": {"type": "array", "items": {"type": "string"}},
+          "junit_cases": {"type": "array", "items": {"$ref": "#/components/schemas/JUnitCasePayload"}},
           "summary_rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
           "action_sections": {"type": "array", "items": {"$ref": "#/components/schemas/ValidationFailureActionSectionPayload"}}
         }

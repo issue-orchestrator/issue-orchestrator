@@ -59,7 +59,29 @@ class ValidationFailureSummary:
             "validation_record_path": self.validation_record_path,
             "validation_stdout_path": self.validation_stdout_path,
             "validation_stderr_path": self.validation_stderr_path,
+            # Structured per-test results when JUnit XML is configured.
+            # The dashboard renders these as a per-test table with
+            # actual failure details — the actionable info users need
+            # to figure out what went wrong without scrolling stdout.
+            "junit_cases": [_junit_case_to_dict(case) for case in self.junit_cases],
         }
+
+
+def _junit_case_to_dict(case: JUnitCaseResult) -> dict[str, Any]:
+    """Serialize a `JUnitCaseResult` to the dict shape consumed by the
+    `ValidationFailureDialogPayload.junit_cases` field. Mirrors the
+    `JUnitCasePayload` schema in `docs/api/ui-openapi.json` exactly.
+    """
+    return {
+        "case_id": case.case_id,
+        "display_name": case.display_name,
+        "suite_name": case.suite_name,
+        "outcome": case.outcome,
+        "duration_seconds": case.duration_seconds,
+        "failure_details": case.failure_details,
+        "system_out": case.system_out,
+        "system_err": case.system_err,
+    }
 
 
 def load_validation_failure_summary(
@@ -127,6 +149,28 @@ def load_validation_failure_summary(
         validation_stderr_path=str(stderr_path) if stderr_path else None,
         junit_cases=junit_cases,
     )
+
+
+def load_validation_failure_summary_with_config(
+    run_dir: Path,
+    *,
+    config: Any,
+) -> ValidationFailureSummary | None:
+    """Config-aware wrapper that threads ``validation.junit_xml_paths``.
+
+    Both the dashboard's ``/api/dialog/validation-failure/`` route and
+    the issue-detail diagnostic path call this helper so they cannot
+    disagree on whether structured JUnit cases reach the user. If
+    ``config`` is None or has no ``validation`` block, JUnit parsing is
+    skipped (matches the bare ``load_validation_failure_summary``
+    behavior).
+    """
+    junit_paths: tuple[str, ...] = ()
+    if config is not None:
+        validation_cfg = getattr(config, "validation", None)
+        if validation_cfg is not None:
+            junit_paths = tuple(getattr(validation_cfg, "junit_xml_paths", ()) or ())
+    return load_validation_failure_summary(run_dir, junit_xml_paths=junit_paths)
 
 
 def _load_junit_cases(
