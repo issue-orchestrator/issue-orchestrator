@@ -91,8 +91,8 @@ if TYPE_CHECKING:
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..ports.e2e_issue_tracker import E2EIssueTracker
-    from ..ports.persistent_exchange_pair_registry import (
-        PersistentExchangePairRegistry,
+    from ..execution.persistent_exchange_pair_registry_inmemory import (
+        InMemoryPersistentExchangePairRegistry,
     )
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
@@ -315,7 +315,7 @@ def _create_completion_components(
     provider_resilience: ProviderResilienceManager | None = None,
     label_manager: "LabelManager | None" = None,
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
-    pair_registry: "PersistentExchangePairRegistry | None" = None,
+    pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -657,11 +657,22 @@ def build_orchestrator(
     from ..control.background_job_supervisor import BackgroundJobSupervisor
     background_job_supervisor = BackgroundJobSupervisor(background_job_runner)
 
+    # The persistent exchange pair registry is process-scoped: one
+    # registry for the orchestrator's lifetime, shared across every
+    # review exchange. Built here (above completion components and
+    # InfraServices) so ``Orchestrator.close``'s shutdown_all hook
+    # can reach it through ``deps.pair_registry``.
+    from ..execution.persistent_exchange_pair_registry_inmemory import (
+        InMemoryPersistentExchangePairRegistry,
+    )
+    pair_registry = InMemoryPersistentExchangePairRegistry()
+
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
         label_manager=label_manager,
         background_job_supervisor=background_job_supervisor,
+        pair_registry=pair_registry,
     )
 
     # Create async completion components (observer + executor)
@@ -733,6 +744,7 @@ def build_orchestrator(
         timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        pair_registry=pair_registry,
         background_job_supervisor=background_job_supervisor,
         instance_id=instance_id,
         state_health_check=timeline_store.check_health,
@@ -1034,6 +1046,7 @@ def build_orchestrator_for_testing(
         timeline_store=NullTimelineStore(),
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        pair_registry=pair_registry_for_testing,
     )
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)

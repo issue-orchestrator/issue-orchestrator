@@ -21,8 +21,6 @@ import pytest
 
 from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
-)
-from issue_orchestrator.ports.persistent_exchange_pair_registry import (
     PersistentExchangePair,
 )
 
@@ -109,7 +107,13 @@ class TestAcquireAndRelease:
 
         pair = registry.acquire(issue_key=42, spawn=_spawn)
         assert spawn_calls["n"] == 1
-        assert pair.is_alive()
+        # Aliveness lives at module scope, not on the pair, so the
+        # value type stays free of "reach through ``proc.poll()``"
+        # semantics — see PR #6209 review.
+        from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
+            _pair_is_alive,  # noqa: PLC2701 — adapter-internal helper under test
+        )
+        assert _pair_is_alive(pair)
 
     def test_second_acquire_for_same_key_returns_cached_pair_without_spawn(
         self, patched_close: list[Any],

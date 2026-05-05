@@ -977,6 +977,16 @@ class Orchestrator:
         # doesn't leave half-written summary.json / round-NNN.json files.
         self._drain_background_jobs()
 
+        # Tear down every persistent coder/reviewer pair (ADR 0026:
+        # ``shutdown_all`` is the canonical owner of pair termination
+        # at orchestrator stop). The cache is empty in B1 today
+        # because the per-exchange release runs in
+        # ``run_persistent_session_exchange``'s finally block; B2
+        # drops that release and this hook becomes load-bearing.
+        pair_registry = getattr(self.deps, "pair_registry", None)
+        if pair_registry is not None:
+            pair_registry.shutdown_all(reason="orchestrator-shutdown")
+
         # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
         goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
@@ -1046,6 +1056,17 @@ class Orchestrator:
         """Release external resources for test harnesses and short-lived runs."""
         self._cleanup_e2e_runner()
         self.shutdown_publish_executor(wait=True, timeout=60.0)
+        # Tear down every persistent coder/reviewer pair the
+        # orchestrator spawned so PTY-attached agent processes don't
+        # leak past the orchestrator's lifetime. ADR 0026: the
+        # registry's ``shutdown_all`` is the canonical owner of
+        # process termination at orchestrator stop. (B1 also calls
+        # ``release`` per exchange so the cache is empty here in
+        # production today; B2 drops the per-exchange release and
+        # this hook becomes load-bearing.)
+        pair_registry = getattr(self.deps, "pair_registry", None)
+        if pair_registry is not None:
+            pair_registry.shutdown_all(reason="orchestrator-shutdown")
         self.deps.runner.on_orchestrator_shutdown()
         goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
         if goal_pilot_store is not None:

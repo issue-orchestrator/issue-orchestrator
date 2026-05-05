@@ -46,15 +46,16 @@ from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import EventSink, make_trace_event
-from ..ports.persistent_exchange_pair_registry import (
-    PersistentExchangePair,
-    PersistentExchangePairRegistry,
-)
 from ..ports.session_output import SessionOutput
+from .persistent_exchange_pair_registry_inmemory import (
+    InMemoryPersistentExchangePairRegistry,
+    PersistentExchangePair,
+)
 from .persistent_round_runner import (
     PersistentRoundError,
     PersistentRoundTimeoutError,
     PersistentSession,
+    close_persistent_session,
     open_persistent_session,
     recording_event_count,
     send_round,
@@ -79,7 +80,7 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
 def run_persistent_session_exchange(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
-    pair_registry: PersistentExchangePairRegistry,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
     coder_worktree_path: Path,
     reviewer_worktree_path: Path,
     issue_number: int,
@@ -173,19 +174,31 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_title=issue_title,
             session_name=session_name,
         )
-        reviewer = _open_role_session(
-            role="reviewer",
-            agent=reviewer_agent,
-            worktree=reviewer_worktree_path,
-            run_dir=run_dir,
-            recording_path=reviewer_recording,
-            response_file=reviewer_response,
-            agent_label=reviewer_label,
-            web_port=web_port,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            session_name=session_name,
-        )
+        # Reviewer-spawn-after-coder-success is the canonical
+        # partial-construction case: if the reviewer's PTY/process
+        # bring-up raises, the coder is already running and would
+        # leak unless we close it explicitly. Pre-registry code
+        # paired the two opens inside one ``try`` and closed any
+        # already-opened session in ``finally``; the registry
+        # version preserves that guarantee here so a partial spawn
+        # never returns a half-built pair to the registry's cache.
+        try:
+            reviewer = _open_role_session(
+                role="reviewer",
+                agent=reviewer_agent,
+                worktree=reviewer_worktree_path,
+                run_dir=run_dir,
+                recording_path=reviewer_recording,
+                response_file=reviewer_response,
+                agent_label=reviewer_label,
+                web_port=web_port,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                session_name=session_name,
+            )
+        except BaseException:
+            close_persistent_session(coder)
+            raise
         from time import time as _wall_clock
         return PersistentExchangePair(
             coder_session=coder,

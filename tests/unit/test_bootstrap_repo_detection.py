@@ -300,6 +300,67 @@ class TestBuildOrchestratorForTesting:
             assert orch.config is minimal_config
             assert orch.deps.repository_host is mock_github
 
+    def test_build_orchestrator_wires_pair_registry_for_shutdown(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """The persistent-pair registry is the canonical owner of pair
+        termination at orchestrator stop (ADR 0026 / PR #6209 review).
+        Bootstrap must thread it into ``deps.pair_registry`` so
+        ``Orchestrator.close`` can call ``shutdown_all`` on it; if the
+        wiring lapses, ``deps.pair_registry`` returns ``None`` and the
+        guard in ``close`` silently skips teardown — leaving PTY agents
+        leaked across orchestrator restarts.
+        """
+        from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
+            InMemoryPersistentExchangePairRegistry,
+        )
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+        assert orch.deps.pair_registry is not None, (
+            "deps.pair_registry must be wired by bootstrap so "
+            "Orchestrator.close can shut down PTY agents on stop"
+        )
+        assert isinstance(
+            orch.deps.pair_registry, InMemoryPersistentExchangePairRegistry,
+        )
+
+    def test_orchestrator_close_calls_pair_registry_shutdown_all(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """``Orchestrator.close`` must call ``shutdown_all`` on the
+        registry so PTY agents are reaped at orchestrator stop. Pin
+        the call here so a regression that drops the wiring (e.g.
+        a refactor of ``close`` that forgets the new line) fails
+        loudly instead of leaking subprocesses.
+        """
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+        assert orch.deps.pair_registry is not None
+        # Wrap the registry's ``shutdown_all`` to record invocations.
+        original = orch.deps.pair_registry.shutdown_all
+        calls: list[str] = []
+
+        def _track(*, reason: str) -> None:
+            calls.append(reason)
+            original(reason=reason)
+
+        orch.deps.pair_registry.shutdown_all = _track  # type: ignore[method-assign]
+        orch.close()
+
+        assert calls == ["orchestrator-shutdown"], (
+            "Orchestrator.close must call pair_registry.shutdown_all "
+            "with reason='orchestrator-shutdown'"
+        )
+
     def test_build_orchestrator_for_testing_with_custom_events(
         self, minimal_config: Config, mock_github: MagicMock
     ) -> None:

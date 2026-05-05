@@ -1247,3 +1247,82 @@ class TestSessionCleanup:
         assert any(
             evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events
         )
+
+
+class TestSpawnPartialConstructionCleanup:
+    """Regression for PR #6209 review finding: if reviewer spawn fails
+    after coder spawn succeeds, the coder PTY/process must be closed
+    before the spawn closure raises.
+
+    Pre-registry code wrapped both opens in a single ``try``; the
+    registry refactor (PR #6209) initially moved both opens into a
+    spawn closure that returned no value on partial failure, leaking
+    the coder. The fix wraps the reviewer open in a nested
+    ``try/except`` that closes the coder before re-raising. This
+    test pins that behavior so the leak doesn't come back.
+    """
+
+    def test_coder_session_is_closed_when_reviewer_open_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        opened_sessions: list[_FakeSession] = []
+        closed_sessions: list[_FakeSession] = []
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = (
+                "reviewer" if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
+            if role == "reviewer":
+                # Simulate a reviewer-side failure during PTY/process
+                # bring-up, after the coder has already opened.
+                raise RuntimeError("reviewer pty bring-up failed")
+            session = _FakeSession(role)
+            opened_sessions.append(session)
+            return session
+
+        def _close(session, **_):
+            closed_sessions.append(session)
+            session.closed = True
+            return 0
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "close_persistent_session", _close)
+
+        registry = _FakePairRegistry()
+        with pytest.raises(RuntimeError, match="reviewer pty bring-up failed"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=registry,
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_path=reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+
+        # The coder opened, the reviewer raised before opening — and
+        # the coder must have been closed by the spawn closure's
+        # cleanup ``except`` block. No partial pair must reach the
+        # registry's cache.
+        assert len(opened_sessions) == 1
+        assert opened_sessions[0].role == "coder"
+        assert closed_sessions == opened_sessions, (
+            "coder session leaked: registry refactor must close any "
+            "already-opened session if the partner spawn raises"
+        )
+        assert registry.acquired == [], (
+            "no pair must reach the registry on partial spawn failure"
+        )

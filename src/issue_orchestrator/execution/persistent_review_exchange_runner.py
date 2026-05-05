@@ -21,7 +21,9 @@ from ..domain.models import AgentConfig
 from ..domain.review_exchange import ReviewExchangeOutcome
 from ..events import EventContext
 from ..ports.event_sink import EventSink
-from ..ports.persistent_exchange_pair_registry import PersistentExchangePairRegistry
+from .persistent_exchange_pair_registry_inmemory import (
+    InMemoryPersistentExchangePairRegistry,
+)
 from ..ports.session_output import SessionOutput
 from .persistent_session_exchange import run_persistent_session_exchange
 from .reviewer_worktree import (
@@ -43,7 +45,7 @@ class PersistentReviewExchangeRunner:
     def __init__(
         self,
         session_output: SessionOutput,
-        pair_registry: PersistentExchangePairRegistry,
+        pair_registry: InMemoryPersistentExchangePairRegistry,
     ) -> None:
         self._session_output = session_output
         self._pair_registry = pair_registry

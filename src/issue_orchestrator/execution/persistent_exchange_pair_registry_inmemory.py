@@ -1,14 +1,20 @@
-"""In-memory implementation of :class:`PersistentExchangePairRegistry`.
+"""In-memory adapter for ``PersistentExchangePairRegistry``.
 
 Owned by the composition root (one instance per orchestrator process)
 and shared across all review-exchange invocations. Tear-down is wired
 into orchestrator shutdown so no PTY-attached agent processes leak
 when the orchestrator stops.
 
-ADR 0026 documents the design and migration plan. In B1 the registry
-is in place but every exchange still calls ``release`` at the end, so
-the cache never has hits; B2 drops the per-exchange ``release`` and
-the registry's caching starts to matter.
+This module also defines :class:`PersistentExchangePair`, the value
+type the adapter caches and returns from :meth:`acquire`. The
+dataclass and ``acquire`` live in execution/ on purpose: they
+reference :class:`PersistentSession` (a subprocess-backed handle),
+which the port boundary forbids exposing. Control-layer callers
+that only need the ``release`` / ``shutdown_all`` lifecycle verbs
+depend on the narrow port; execution-layer callers that need
+``acquire`` import this concrete adapter directly.
+
+ADR 0026 documents the design and migration plan.
 """
 
 from __future__ import annotations
@@ -16,16 +22,56 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Hashable
+from dataclasses import dataclass, field
+from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from ..ports.persistent_exchange_pair_registry import (
-    PersistentExchangePair,
-    PersistentExchangePairRegistry,
-)
-from .persistent_round_runner import close_persistent_session
+from ..ports.persistent_exchange_pair_registry import PersistentExchangePairRegistry
+from .persistent_round_runner import PersistentSession, close_persistent_session
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PersistentExchangePair:
+    """One issue's coder + reviewer subprocess pair plus its reviewer worktree.
+
+    Lives in execution/ so the dataclass can name
+    :class:`PersistentSession` directly without violating the port
+    boundary. Returned by :meth:`InMemoryPersistentExchangePairRegistry.acquire`
+    to execution-layer callers.
+
+    ``created_at`` is wall-clock seconds since epoch, set once at
+    construction. ``last_used_at`` is updated on every cache hit so
+    future diagnostics / idle-reaping can see when the pair was
+    last touched. The dataclass is mutable so the registry can
+    update ``last_used_at`` in place; callers must treat it as
+    read-only and route lifecycle changes through
+    ``release`` / ``shutdown_all``.
+    """
+
+    coder_session: PersistentSession
+    reviewer_session: PersistentSession
+    reviewer_worktree_path: Path
+    issue_key: Hashable
+    created_at: float
+    last_used_at: float = field(default=0.0)
+
+
+def _pair_is_alive(pair: PersistentExchangePair) -> bool:
+    """Both subprocesses are still running.
+
+    Lives at module scope, not as a method on the dataclass, because
+    aliveness is a subprocess-shape question — keeping it out of the
+    value type means the type stays free of "reach through ``proc.poll()``"
+    semantics that the reviewer flagged as a port-boundary smell on
+    PR #6209.
+    """
+    return (
+        pair.coder_session.proc.poll() is None
+        and pair.reviewer_session.proc.poll() is None
+    )
 
 
 class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
@@ -40,6 +86,10 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
     caller-supplied ``on_release`` hook (registered at construction)
     so worktree removal can call into the existing reviewer-worktree
     helpers without this module growing a dependency on them.
+
+    ``acquire`` is execution-only: callers that need it import this
+    concrete class instead of the narrow port. Control-layer callers
+    only see ``release`` / ``shutdown_all`` via the port.
     """
 
     def __init__(
@@ -59,10 +109,24 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
         issue_key: Hashable,
         spawn: Callable[[], PersistentExchangePair],
     ) -> PersistentExchangePair:
+        """Return a live pair for ``issue_key``.
+
+        On cache hit (and pair still alive): returns the cached pair
+        with ``last_used_at`` refreshed.
+
+        On cache miss or evicted-dead-pair: invokes ``spawn`` to
+        build a new pair, caches it, and returns it.
+
+        ``spawn`` is supplied by the caller because *how* to spawn
+        (which command, env, recording paths) is a policy the
+        registry deliberately does not own — the registry only owns
+        *when* and *for how long*. ``spawn`` is invoked at most
+        once per acquire.
+        """
         with self._lock:
             existing = self._cache.get(issue_key)
             if existing is not None:
-                if existing.is_alive():
+                if _pair_is_alive(existing):
                     existing.last_used_at = self._clock()
                     logger.debug(
                         "[exchange-pair-registry] cache hit issue_key=%s "
@@ -164,7 +228,7 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
                     "coder_pid": pair.coder_session.proc.pid,
                     "reviewer_pid": pair.reviewer_session.proc.pid,
                     "reviewer_worktree": str(pair.reviewer_worktree_path),
-                    "alive": pair.is_alive(),
+                    "alive": _pair_is_alive(pair),
                     "age_seconds": now - pair.created_at,
                     "idle_seconds": now - pair.last_used_at,
                 }
