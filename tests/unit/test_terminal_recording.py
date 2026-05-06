@@ -236,3 +236,113 @@ def test_mirrored_terminal_recording_writer_preserves_per_path_base_offsets(
     aggregate_offsets = [event["offset_ms"] for event in aggregate_events[-2:]]
     assert primary_offsets == [0, 1]
     assert aggregate_offsets == [1, 2]
+
+
+def test_add_mirror_recording_fans_subsequent_writes_only(tmp_path) -> None:
+    """``add_mirror_recording`` attached mid-stream must NOT backfill
+    earlier events into the new mirror — it sees only writes that
+    happen after registration. Without this guarantee a slice attached
+    to a cached pair would inherit the previous exchange's content."""
+    recording_path = tmp_path / "pair.jsonl"
+    slice_path = tmp_path / "slice.jsonl"
+    clock = ManualClock(100.0)
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        initial_rows=24,
+        initial_cols=80,
+        clock=clock,
+    )
+    try:
+        clock.advance(0.001)
+        writer.write("BEFORE\n")
+        # Attach the slice mid-stream.
+        registered = writer.add_mirror_recording(slice_path, seed_resize=False)
+        assert registered is True
+        # Re-registering the same path is a no-op (returns False).
+        assert writer.add_mirror_recording(slice_path, seed_resize=False) is False
+        clock.advance(0.001)
+        writer.write("AFTER-1\n")
+        clock.advance(0.001)
+        writer.write("AFTER-2\n")
+    finally:
+        writer.close()
+
+    pair_events = list(iter_terminal_recording(recording_path))
+    slice_events = list(iter_terminal_recording(slice_path))
+
+    # Pair has resize + BEFORE + AFTER-1 + AFTER-2 = 4 events.
+    assert len(pair_events) == 4
+    # Slice has only AFTER-1 + AFTER-2 = 2 events (no resize because
+    # seed_resize=False; no BEFORE because it was written pre-attach).
+    assert len(slice_events) == 2
+    # Decode payloads to confirm content alignment.
+    import base64
+    payloads = [
+        base64.b64decode(e["data_b64"]).decode("utf-8")
+        for e in slice_events
+    ]
+    assert payloads == ["AFTER-1\n", "AFTER-2\n"]
+
+
+def test_add_mirror_recording_seed_resize_emits_initial_geometry(tmp_path) -> None:
+    """When ``seed_resize=True``, the new mirror gets a synthetic resize
+    event so a viewer attaching to the slice has initial PTY geometry.
+    The geometry matches the writer's most recent shape."""
+    recording_path = tmp_path / "pair.jsonl"
+    slice_path = tmp_path / "slice.jsonl"
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        initial_rows=40,
+        initial_cols=120,
+    )
+    try:
+        writer.write("first\n")
+        registered = writer.add_mirror_recording(slice_path, seed_resize=True)
+        assert registered is True
+    finally:
+        writer.close()
+
+    slice_events = list(iter_terminal_recording(slice_path))
+    # First event in the slice is the synthetic resize matching the
+    # writer's current geometry. Subsequent agent writes (none here)
+    # would follow.
+    assert len(slice_events) == 1
+    assert slice_events[0]["event_type"] == "resize"
+    assert slice_events[0]["rows"] == 40
+    assert slice_events[0]["cols"] == 120
+
+
+def test_remove_mirror_recording_stops_fan_out(tmp_path) -> None:
+    """``remove_mirror_recording`` detaches a mirror so subsequent
+    writes no longer touch it. Idempotent — calling twice returns
+    False the second time. Removing the canonical recording_path
+    raises ``ValueError``."""
+    recording_path = tmp_path / "pair.jsonl"
+    slice_path = tmp_path / "slice.jsonl"
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        initial_rows=24,
+        initial_cols=80,
+    )
+    try:
+        writer.add_mirror_recording(slice_path, seed_resize=False)
+        writer.write("attached\n")
+        slice_events_before_detach = list(iter_terminal_recording(slice_path))
+
+        removed = writer.remove_mirror_recording(slice_path)
+        assert removed is True
+        # Idempotent: second remove returns False.
+        assert writer.remove_mirror_recording(slice_path) is False
+
+        writer.write("after-detach\n")
+        slice_events_after_detach = list(iter_terminal_recording(slice_path))
+        assert slice_events_after_detach == slice_events_before_detach, (
+            "writer continued to mirror after remove_mirror_recording"
+        )
+
+        # Cannot remove the canonical recording.
+        import pytest as _pt
+        with _pt.raises(ValueError, match="cannot remove the canonical"):
+            writer.remove_mirror_recording(recording_path)
+    finally:
+        writer.close()

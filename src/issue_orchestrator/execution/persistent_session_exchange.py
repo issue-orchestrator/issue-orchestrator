@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -80,48 +80,30 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
 
 @dataclass
 class _RoleSliceMirror:
-    """Project a slice of the pair-scoped recording into the per-session run_dir.
+    """Translate pair-recording event indices into per-session slice indices.
 
-    The pair recording (``pair_dir/<role>/terminal-recording.jsonl``) is
-    the canonical continuous PTY capture written by the long-lived agent
-    process. It outlives any single exchange, so a session's run_dir only
-    sees a sliver of its content. That left the timeline viewer with
-    nothing useful to show per-session — chapter offsets that pointed
-    into a file the run_dir did not own.
+    The slice file at ``<run_dir>/<role>/terminal-recording.jsonl`` is
+    written **continuously** by the role's
+    ``MirroredTerminalRecordingWriter`` — registered at exchange start
+    via ``add_mirror_recording`` and removed at exchange end. The
+    timeline viewer therefore sees agent output update in near real time
+    rather than waiting for a chapter boundary to flush.
 
-    This mirror appends new events to a per-exchange slice
-    (``run_dir/<role>/terminal-recording.jsonl``) at every chapter
-    boundary. By the end of the exchange the slice contains exactly
-    the events emitted during this exchange and nothing else, making
-    the run_dir self-contained for the viewer. Worktree teardown takes
-    the slice with it, which is the natural lifetime — long-term
-    forensics still go through the pair recording (kept in the manifest's
-    ``<role>_recording_pair`` field) and the timeline DB.
-
-    ``slice_base`` is the pair recording's event count *at exchange start*
-    — the first event the slice will mirror. ``last_event_idx`` starts
-    equal to ``slice_base`` and advances as the mirror appends. The
-    distinction matters because the chapter sidecar's
-    ``recording_event_index`` must be slice-relative (the manifest
-    points the viewer at the slice file), so the chapter writer subtracts
-    ``slice_base`` from each captured pair offset. Without that
-    translation, a cached pair on exchange 2 would record chapter
-    offsets in the hundreds while the slice file holds dozens of
-    events, and the web replay route's ``all_events[offset:]`` would
-    return an empty window.
+    What this dataclass owns is the **offset translation** between the
+    pair recording (long-lived, accumulates across every exchange the
+    pair handles) and the slice (per-exchange, freshly attached). Its
+    ``slice_base`` is the pair recording's event count *at exchange
+    start* — the first event the slice will mirror. Chapter sidecars
+    store ``pair_event_idx - slice_base`` so the viewer can scrub the
+    manifest-pointed slice directly. Without that translation, a cached
+    pair on exchange 2 would record chapter offsets in the hundreds
+    while the slice file holds dozens of events and the web replay
+    route's ``all_events[offset:]`` would return an empty window.
     """
 
     pair_recording: Path
     session_slice: Path
-    last_event_idx: int
-    slice_base: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        # ``slice_base`` is fixed at construction. It defines the
-        # slice's "zero" — every chapter offset recorded for this
-        # exchange is computed as ``pair_event_idx - slice_base`` so
-        # the viewer can index into the slice directly.
-        self.slice_base = self.last_event_idx
+    slice_base: int
 
     def pair_to_slice_offset(self, pair_event_idx: int) -> int:
         """Translate a pair-recording event index into a slice-local index.
@@ -132,81 +114,72 @@ class _RoleSliceMirror:
         store these slice-local offsets so the viewer can scrub the
         manifest-pointed slice directly.
 
-        Pair indices below ``slice_base`` belong to prior exchanges and
-        clamp to 0 (no negative offsets — those would index past the
-        start of the slice and silently return wrong content).
+        Pair indices at or below ``slice_base`` belong to prior
+        exchanges and clamp to 0 (no negative offsets — those would
+        index past the start of the slice and silently return wrong
+        content).
         """
         if pair_event_idx <= self.slice_base:
             return 0
         return pair_event_idx - self.slice_base
 
-    def mirror_through(self, current_event_idx: int) -> int:
-        """Append events ``[last_event_idx, current_event_idx)`` to the slice.
 
-        Returns the number of events written. ``mirror_through`` is
-        chapter-driven: each call corresponds to "the agent has
-        produced N more events since the last chapter; capture them
-        for the per-session slice now." Failure during slicing is
-        deliberately swallowed and logged — the slice is a viewer aid,
-        not a load-bearing artifact, and an unhealthy slice writer
-        must not abort the round and re-trigger the runaway loop.
-        """
-        if current_event_idx <= self.last_event_idx:
-            return 0
-        if not self.pair_recording.exists():
-            return 0
-        try:
-            self.session_slice.parent.mkdir(parents=True, exist_ok=True)
-            written = _copy_event_range(
-                source=self.pair_recording,
-                destination=self.session_slice,
-                start_event_idx=self.last_event_idx,
-                end_event_idx=current_event_idx,
-            )
-        except OSError:
-            logger.exception(
-                "Failed to mirror pair recording slice into run_dir; "
-                "continuing without per-session mirror "
-                "(pair=%s slice=%s start=%d end=%d)",
-                self.pair_recording, self.session_slice,
-                self.last_event_idx, current_event_idx,
-            )
-            return 0
-        self.last_event_idx = current_event_idx
-        return written
+def _attach_slice_mirror(
+    session: PersistentSession,
+    slice_path: Path,
+) -> bool:
+    """Register a per-session slice with the role's PTY writer.
 
-
-def _copy_event_range(
-    *,
-    source: Path,
-    destination: Path,
-    start_event_idx: int,
-    end_event_idx: int,
-) -> int:
-    """Append events ``[start, end)`` from a JSONL recording to another file.
-
-    Event indexing matches ``recording_event_count``: blank lines do
-    not count, so ``start`` / ``end`` are positions in the stream of
-    *non-blank* lines. The destination is opened in append mode; the
-    caller is responsible for treating it as append-only across
-    successive calls (``_RoleSliceMirror`` does, by tracking
-    ``last_event_idx``).
+    Returns True when the slice was registered, False when the writer
+    is absent (test fixtures that opened the session without a
+    recording, etc.). Failure to register the slice is logged but
+    deliberately non-fatal: the timeline viewer would lose live mirror
+    capability for this exchange but the round itself proceeds, and
+    chapter offsets still resolve into the pair recording via the
+    ``<role>_recording_pair`` manifest fallback.
     """
-    written = 0
-    event_idx = 0
-    with source.open("r", encoding="utf-8") as src, destination.open(
-        "a", encoding="utf-8",
-    ) as dst:
-        for raw in src:
-            if not raw.strip():
-                continue
-            if start_event_idx <= event_idx < end_event_idx:
-                dst.write(raw)
-                written += 1
-            event_idx += 1
-            if event_idx >= end_event_idx:
-                break
-    return written
+    writer = session.log_writer
+    if writer is None:
+        return False
+    try:
+        # ``seed_resize=False`` keeps the slice indexing aligned with
+        # the offset translator: the first slice event corresponds to
+        # the first pair event written *after* exchange start, with no
+        # synthetic leading event to throw off ``pair_to_slice_offset``.
+        return writer.add_mirror_recording(slice_path, seed_resize=False)
+    except OSError:
+        logger.exception(
+            "Failed to attach per-session slice mirror at %s; "
+            "exchange will run without live mirror, viewer will fall "
+            "back to the pair-scoped recording via the manifest",
+            slice_path,
+        )
+        return False
+
+
+def _detach_slice_mirror(
+    session: PersistentSession,
+    slice_path: Path,
+) -> None:
+    """Stop mirroring writes to the per-session slice path.
+
+    Idempotent — silently succeeds when the slice was never attached
+    or the writer is absent. Called from a ``finally`` block so a
+    raise during ``_drive_rounds`` cannot leave the writer pinned to
+    a slice path under a torn-down run_dir.
+    """
+    writer = session.log_writer
+    if writer is None:
+        return
+    try:
+        writer.remove_mirror_recording(slice_path)
+    except (OSError, ValueError):
+        logger.exception(
+            "Failed to detach per-session slice mirror at %s; "
+            "subsequent writes from this writer may continue to "
+            "target the slice file",
+            slice_path,
+        )
 
 
 def _prepare_session_slice(slice_path: Path) -> None:
@@ -457,25 +430,46 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         if before_reviewer_round is not None:
             before_reviewer_round(round_index)
 
-    # Build per-role mirrors after the pair is acquired so the start
-    # offsets are sampled from the *current* pair recording size — i.e.
+    # Build per-role mirrors after the pair is acquired so the slice
+    # bases are sampled from the *current* pair recording size — i.e.
     # everything the agent has emitted up to this exchange's first
     # round. Cached pairs have prior exchanges' content already in the
-    # pair recording; mirrors must skip past it.
+    # pair recording; the per-session slice must skip past it. The
+    # mirror only owns offset translation now (chapter sidecars +
+    # SSE payloads) — actual per-event mirroring is wired into the
+    # role's ``MirroredTerminalRecordingWriter`` below so the slice
+    # file fills in near real time, not just at chapter boundaries.
+    coder_slice_base = recording_event_count(
+        pair.coder_recording_path, require_recording=False,
+    )
+    reviewer_slice_base = recording_event_count(
+        pair.reviewer_recording_path, require_recording=False,
+    )
     coder_mirror = _RoleSliceMirror(
         pair_recording=pair.coder_recording_path,
         session_slice=coder_session_slice,
-        last_event_idx=recording_event_count(
-            pair.coder_recording_path, require_recording=False,
-        ),
+        slice_base=coder_slice_base,
     )
     reviewer_mirror = _RoleSliceMirror(
         pair_recording=pair.reviewer_recording_path,
         session_slice=reviewer_session_slice,
-        last_event_idx=recording_event_count(
-            pair.reviewer_recording_path, require_recording=False,
-        ),
+        slice_base=reviewer_slice_base,
     )
+
+    # Live mirror registration. From this point on, every event the
+    # agent's PTY drains into the canonical pair recording is *also*
+    # appended to the per-session slice file. A user inspecting the
+    # timeline mid-round (during a long reviewer think, or while a
+    # round is hung waiting for response-file delivery) sees agent
+    # output in near real time instead of waiting for a chapter
+    # boundary to fire.
+    #
+    # The detach in ``finally`` is load-bearing: leaving the slice
+    # path attached past exchange end means the writer keeps writing
+    # to a path under a possibly-torn-down run_dir, polluting the
+    # next exchange's slice with the previous exchange's tail bytes.
+    _attach_slice_mirror(pair.coder_session, coder_session_slice)
+    _attach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
     try:
         outcome = _drive_rounds(
             session_output=session_output,
@@ -516,6 +510,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             "exception_type": type(exc).__name__,
         })
         raise
+    finally:
+        _detach_slice_mirror(pair.coder_session, coder_session_slice)
+        _detach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
 
     return outcome
 
@@ -1412,9 +1409,12 @@ def _record_chapter(  # noqa: PLR0913
     The chapter event is emitted *after* the sidecar write succeeds so
     SSE/timeline consumers see the same offset that's now durable on disk;
     on failure the exception propagates and no event fires (consistent
-    with the rest of the runner's emit-on-success contract). Slice
-    mirroring runs *after* both the sidecar and the event so the viewer
-    can never see a chapter pointer that has not yet been mirrored.
+    with the rest of the runner's emit-on-success contract).
+
+    Per-event slice mirroring is no longer chapter-driven — the role's
+    ``MirroredTerminalRecordingWriter`` writes to both the pair file
+    and the per-session slice on every event drained from the PTY,
+    so chapters only own offset translation here.
     """
     pair_event_index = recording_event_count(recording_path)
     # Slice-relative when a mirror is in play so the viewer can scrub
@@ -1422,8 +1422,7 @@ def _record_chapter(  # noqa: PLR0913
     # cached pair on exchange 2 records pair-relative offsets in the
     # hundreds while the slice file only holds dozens of events, and
     # the web replay route slices ``all_events[chapter_offset:]`` to
-    # an empty window — re-breaking the timeline for the cached-pair
-    # case this PR is fixing.
+    # an empty window.
     sidecar_event_index = (
         mirror.pair_to_slice_offset(pair_event_index)
         if mirror is not None
@@ -1449,8 +1448,6 @@ def _record_chapter(  # noqa: PLR0913
         "recording_event_index": sidecar_event_index,
         "label": label,
     })
-    if mirror is not None:
-        mirror.mirror_through(pair_event_index)
     return pair_event_index
 
 
