@@ -811,6 +811,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         if require_validation and reviewer.response_type == "ok" and not _validation_passed(validation_record_path):
@@ -833,6 +834,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
         if reviewer.getting_closer is False:
             no_progress_count += 1
@@ -846,6 +848,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         last_reviewer_text = reviewer.response_text
@@ -909,6 +912,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         coder, protocol_outcome = _enforce_coder_protocol(
@@ -949,6 +953,7 @@ def _drive_rounds(  # noqa: PLR0913
         exchange_dir, max_rounds,
         status="stopped", reason="max_rounds_exceeded",
         reviewer_response=None,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
@@ -1061,6 +1066,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
         coder = retry_response
         protocol_error = _validate_coder_completion(
@@ -1076,6 +1082,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             last_coder=coder,
             protocol_error=protocol_error,
             emit=emit,
+            validation_record_path=validation_record_path,
             issue_number=issue_number,
             session_name=session_name,
         )
@@ -1213,10 +1220,12 @@ def _complete_with_reviewer_ok(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
         status="ok", reason="reviewer_ok", reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1251,11 +1260,13 @@ def _stop_for_no_progress(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
         status="stopped", reason="reviewer_reports_no_progress",
         reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1291,6 +1302,7 @@ def _build_outcome_for_role_timeout(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     """Build the ``error`` outcome when a role times out / dies / fails protocol.
 
@@ -1304,6 +1316,7 @@ def _build_outcome_for_role_timeout(
     summary = _write_summary(
         exchange_dir, round_index,
         status="error", reason=reason, reviewer_response=last_reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
@@ -1332,6 +1345,7 @@ def _build_outcome_for_protocol_error(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     """Build the ``error`` outcome when the coder fails its protocol contract.
 
@@ -1343,6 +1357,7 @@ def _build_outcome_for_protocol_error(
         exchange_dir, round_index,
         status="error", reason="coder_protocol_error",
         reviewer_response=last_reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1372,6 +1387,35 @@ def _build_outcome_for_protocol_error(
     )
 
 
+def _read_validation_facts(
+    path: Path | None,
+) -> tuple[str | None, bool | None]:
+    """Read ``(head_sha, passed)`` from a validation-record.json.
+
+    Returns ``(None, None)`` when the path is None, missing, or
+    unreadable as JSON. ``head_sha`` is None when the field is
+    absent/empty; ``passed`` is None when the field is absent or
+    not a bool.
+
+    The summary writer (and the cache loader, in a later commit)
+    use this to populate ``ResumeFacts`` without leaking validation-
+    record schema concerns into other modules.
+    """
+    if path is None or not path.exists():
+        return None, None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    head_sha = data.get("head_sha")
+    if not isinstance(head_sha, str) or not head_sha:
+        head_sha = None
+    passed = data.get("passed")
+    if not isinstance(passed, bool):
+        passed = None
+    return head_sha, passed
+
+
 def _write_summary(
     exchange_dir: Path,
     round_index: int,
@@ -1379,19 +1423,45 @@ def _write_summary(
     status: str,
     reason: str,
     reviewer_response: ReviewExchangeResponse | None,
+    validation_record_path: Path | None,
 ) -> dict[str, Any]:
-    """Persist summary.json atomically using the same shape the active
-    runner emits, so the publish-cache contract is uniform across both
-    runners. ``status`` is the ReviewExchangeOutcome status value
-    ("ok"/"stopped"/"error"); ``reason`` carries the matching reason
-    token."""
-    summary = {
+    """Persist summary.json atomically.
+
+    The summary records *facts* about the exchange that just ran:
+    ``status``, ``reason``, ``completed_rounds``, ``response_text``,
+    ``timestamp``, plus — when the validation record is readable —
+    ``head_sha`` and ``validation_passed``. Policy (cacheable / halt
+    / retry / stale) is NOT encoded here; the cache loader feeds
+    these fields into ``ReviewExchangeResumeDecision.decide`` to
+    determine the next-tick action.
+
+    Pre-this-commit, the writer encoded policy by selectively
+    omitting ``head_sha`` based on status. That dual-purpose use of
+    one field (fact AND control signal) was the root cause of the
+    PR #6270 review-feedback whack-a-mole: every patch that adjusted
+    "which statuses cache-hit" mutated which facts got persisted,
+    and downstream consumers re-inferred policy at three different
+    sites. Recording facts unconditionally and centralizing policy
+    in one named helper ends that drift.
+
+    ``head_sha`` and ``validation_passed`` are still omitted (rather
+    than written as None) when the validation record cannot be
+    read at all — the caller should treat absence as "we don't
+    know" rather than "validation explicitly failed." The cache
+    loader's ``ResumeFacts`` mapping handles each case.
+    """
+    summary: dict[str, Any] = {
         "completed_rounds": round_index,
         "status": status,
         "response_text": reviewer_response.response_text if reviewer_response else None,
         "reason": reason,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    head_sha, passed = _read_validation_facts(validation_record_path)
+    if head_sha is not None:
+        summary["head_sha"] = head_sha
+    if passed is not None:
+        summary["validation_passed"] = passed
     _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary
 
