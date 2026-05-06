@@ -114,47 +114,60 @@ class _RoleSliceMirror:
         store these slice-local offsets so the viewer can scrub the
         manifest-pointed slice directly.
 
-        Pair indices at or below ``slice_base`` belong to prior
-        exchanges and clamp to 0 (no negative offsets — those would
-        index past the start of the slice and silently return wrong
-        content).
+        Raises ``ValueError`` when ``pair_event_idx < slice_base``.
+        Chapter recording happens during the exchange, after slice
+        attach; an index from before exchange start is a wrong-source
+        bug (caller fed an index from a different recording) and
+        masking it with a clamp would silently return wrong content.
         """
-        if pair_event_idx <= self.slice_base:
-            return 0
+        if pair_event_idx < self.slice_base:
+            raise ValueError(
+                f"pair_event_idx={pair_event_idx} is below "
+                f"slice_base={self.slice_base}; chapter offsets must "
+                "be sampled after the slice mirror is attached at "
+                "exchange start. A negative slice index would index "
+                "past the start of the slice and silently return "
+                "content from prior exchanges.",
+            )
         return pair_event_idx - self.slice_base
 
 
 def _attach_slice_mirror(
     session: PersistentSession,
     slice_path: Path,
-) -> bool:
+) -> None:
     """Register a per-session slice with the role's PTY writer.
 
-    Returns True when the slice was registered, False when the writer
-    is absent (test fixtures that opened the session without a
-    recording, etc.). Failure to register the slice is logged but
-    deliberately non-fatal: the timeline viewer would lose live mirror
-    capability for this exchange but the round itself proceeds, and
-    chapter offsets still resolve into the pair recording via the
-    ``<role>_recording_pair`` manifest fallback.
+    Fails loudly. The slice mirror is load-bearing for the per-session
+    timeline contract — without it the viewer reads an empty slice
+    file from the manifest while the agent's output continues to flow
+    only into the pair recording, recreating the exact "I can't see
+    what the reviewer is doing" symptom this PR is supposed to fix.
+    Failures here propagate up to ``run_persistent_session_exchange``'s
+    top-level handler, which emits ``REVIEW_EXCHANGE_FAILED`` and
+    re-raises so the orchestrator's loop bound (PR #6267) can govern
+    retries / escalation rather than the silent empty-timeline mode.
+
+    ``log_writer is None`` is a production invariant violation: every
+    role session opened by ``open_persistent_session`` carries a real
+    ``MirroredTerminalRecordingWriter``. Test fixtures that construct
+    sessions directly must wire a writer too — not doing so would mean
+    the test was getting a free pass on the live-mirror invariant.
     """
     writer = session.log_writer
     if writer is None:
-        return False
-    try:
-        # ``seed_resize=False`` keeps the slice indexing aligned with
-        # the offset translator: the first slice event corresponds to
-        # the first pair event written *after* exchange start, with no
-        # synthetic leading event to throw off ``pair_to_slice_offset``.
-        return writer.add_mirror_recording(slice_path, seed_resize=False)
-    except OSError:
-        logger.exception(
-            "Failed to attach per-session slice mirror at %s; "
-            "exchange will run without live mirror, viewer will fall "
-            "back to the pair-scoped recording via the manifest",
-            slice_path,
+        raise RuntimeError(
+            f"PersistentSession has no log_writer; cannot attach "
+            f"per-session slice mirror at {slice_path}. Production "
+            "sessions always carry a writer; this indicates either a "
+            "regression in open_persistent_session or a test fixture "
+            "that bypassed the writer wiring.",
         )
-        return False
+    # ``seed_resize=False`` keeps the slice indexing aligned with the
+    # offset translator: the first slice event corresponds to the
+    # first pair event written *after* exchange start, with no
+    # synthetic leading event to throw off ``pair_to_slice_offset``.
+    writer.add_mirror_recording(slice_path, seed_resize=False)
 
 
 def _detach_slice_mirror(
@@ -163,21 +176,31 @@ def _detach_slice_mirror(
 ) -> None:
     """Stop mirroring writes to the per-session slice path.
 
-    Idempotent — silently succeeds when the slice was never attached
-    or the writer is absent. Called from a ``finally`` block so a
-    raise during ``_drive_rounds`` cannot leave the writer pinned to
-    a slice path under a torn-down run_dir.
+    Called from a ``finally`` block, so any exception here would
+    obscure the exception that put us in the finally — log and
+    continue rather than mask the real failure. The flip side of
+    ``_attach_slice_mirror``'s fail-fast: if attach succeeded, detach
+    almost never fails (the writer's path map is in-process state),
+    and if detach somehow fails the worst case is the next exchange
+    seeing tail bytes from this exchange in its slice — caught by
+    ``test_slice_detaches_at_exchange_end_no_leak_to_next_exchange``.
     """
     writer = session.log_writer
     if writer is None:
+        # The attach helper would have raised before we got here, so
+        # reaching this branch means someone called detach without
+        # ever calling attach. Tolerate so a partial-construction
+        # cleanup path stays simple.
         return
     try:
         writer.remove_mirror_recording(slice_path)
     except (OSError, ValueError):
         logger.exception(
-            "Failed to detach per-session slice mirror at %s; "
-            "subsequent writes from this writer may continue to "
-            "target the slice file",
+            "Failed to detach per-session slice mirror at %s during "
+            "exchange teardown; subsequent writes from this writer "
+            "may continue to target the slice file. Logging and "
+            "continuing — raising here would mask the original "
+            "exception that triggered the finally block.",
             slice_path,
         )
 
@@ -464,13 +487,20 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     # output in near real time instead of waiting for a chapter
     # boundary to fire.
     #
-    # The detach in ``finally`` is load-bearing: leaving the slice
-    # path attached past exchange end means the writer keeps writing
-    # to a path under a possibly-torn-down run_dir, polluting the
-    # next exchange's slice with the previous exchange's tail bytes.
-    _attach_slice_mirror(pair.coder_session, coder_session_slice)
-    _attach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
+    # Attach is INSIDE the try block so a failure here lands in the
+    # REVIEW_EXCHANGE_FAILED handler — the orchestrator's loop bound
+    # (PR #6267) governs retries / escalation rather than letting an
+    # attach failure silently leave the timeline empty. The detach in
+    # ``finally`` is load-bearing for the success path: leaving the
+    # slice path attached past exchange end means the writer keeps
+    # writing to a path under a possibly-torn-down run_dir, polluting
+    # the next exchange's slice with the previous exchange's tail
+    # bytes. ``_detach_slice_mirror`` is a no-op when the path was
+    # never attached, so a partial attach (coder succeeded, reviewer
+    # raised) cleans up safely.
     try:
+        _attach_slice_mirror(pair.coder_session, coder_session_slice)
+        _attach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
         outcome = _drive_rounds(
             session_output=session_output,
             run_dir=run_dir,

@@ -78,6 +78,27 @@ def _make_agent(prompt_path: Path) -> AgentConfig:
     return AgentConfig(prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1)
 
 
+def _build_pty_writer(recording_path: Path) -> Any:
+    """Build a real ``MirroredTerminalRecordingWriter`` for a fake session.
+
+    The runner's fail-fast ``_attach_slice_mirror`` requires a real
+    writer on every PersistentSession; tests that build sessions
+    inline must honor the production invariant. Centralizes the
+    construction so the geometry and clock defaults stay consistent
+    across every inline ``_open`` helper in this file.
+    """
+    from issue_orchestrator.infra.terminal_recording import (
+        MirroredTerminalRecordingWriter,
+    )
+
+    recording_path.parent.mkdir(parents=True, exist_ok=True)
+    return MirroredTerminalRecordingWriter(
+        recording_path,
+        initial_rows=40,
+        initial_cols=120,
+    )
+
+
 def _setup_worktrees(tmp_path: Path) -> tuple[Path, Path]:
     coder = tmp_path / "coder-wt"
     reviewer = tmp_path / "reviewer-wt"
@@ -146,15 +167,37 @@ def _patch_persistent_runner(
         # contain ``reviewer`` because pytest names tmp dirs after the
         # test, which would mislabel both sessions.
         role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-        if write_recording and recording_path is not None:
-            recording_path.parent.mkdir(parents=True, exist_ok=True)
-            # Seed with one canonical TerminalRecordingEvent so the strict
-            # validation in recording_event_count is satisfied.
-            recording_path.write_text(
-                '{"schema_version":1,"event_type":"resize","offset_ms":0,'
-                '"rows":40,"cols":120}\n',
-                encoding="utf-8",
-            )
+        # Always provide a real ``MirroredTerminalRecordingWriter`` so
+        # the runner's fail-fast ``_attach_slice_mirror`` step succeeds.
+        # Production invariant: every PersistentSession opened with a
+        # ``recording_path`` carries a real writer. Tests that previously
+        # passed with ``log_writer=None`` were getting a free pass on
+        # the live-mirror contract — the runner now raises if the
+        # invariant is violated, so the fixture has to honor it.
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+        assert recording_path is not None, (
+            "_patch_persistent_runner: production always passes a "
+            "recording_path; the fixture mirrors that invariant"
+        )
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = MirroredTerminalRecordingWriter(
+            recording_path,
+            initial_rows=40,
+            initial_cols=120,
+        )
+        if not write_recording:
+            # Tests exercising "what if the recording is missing at
+            # chapter time?" delete the file after the writer has
+            # already opened its append-mode handle. The writer's
+            # subsequent writes go to the orphan inode (invisible to
+            # other readers); ``recording_event_count`` reads from
+            # the path, which no longer exists, and raises
+            # FileNotFoundError — which is exactly what the test
+            # asserts the exchange propagates as a definitive failure.
+            recording_path.unlink()
+        state.setdefault("writers", {})[role] = writer
         state["opened"].append(role)
         completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
         validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
@@ -162,6 +205,7 @@ def _patch_persistent_runner(
             role,
             completion_path=Path(completion_env) if completion_env else None,
             validation_output_dir=Path(validation_env) if validation_env else None,
+            log_writer=writer,
         )
 
     def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
@@ -830,19 +874,15 @@ class TestCoderProtocolGuardrail:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
             validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
             return _FakeSession(
                 role,
                 completion_path=Path(completion_env) if completion_env else None,
                 validation_output_dir=Path(validation_env) if validation_env else None,
+                log_writer=writer,
             )
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
@@ -1293,16 +1333,11 @@ class TestResponseFileInsideWorktree:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             captured[f"{role}_response"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
             captured[f"{role}_working_dir"] = Path(working_dir)
-            return _FakeSession(role)
+            return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             captured.setdefault(f"{session.role}_response_arg", response_file)
@@ -1358,15 +1393,10 @@ class TestResponseFileInsideWorktree:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             captured[role] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
-            return _FakeSession(role)
+            return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
@@ -1517,13 +1547,18 @@ class TestPerSessionRecordingMirror:
             slice_base=100,
         )
         assert cached.slice_base == 100
-        # Pair offsets at or below slice_base belong to prior exchanges
-        # and clamp to 0 (no negative offsets — those would index past
-        # the start of the slice and silently return wrong content).
-        assert cached.pair_to_slice_offset(50) == 0
+        # An index AT slice_base maps to slice offset 0 (the first
+        # post-attach event in the slice).
         assert cached.pair_to_slice_offset(100) == 0
         # Pair offset 150 in exchange 2 is event 50 of the slice file.
         assert cached.pair_to_slice_offset(150) == 50
+        # Pair offsets BELOW slice_base raise loudly: a negative slice
+        # index would index past the start of the slice and silently
+        # return wrong content. Fail-fast — masking with a clamp would
+        # hide a real bug (chapter recording reading from a stale
+        # source / wrong recording).
+        with pytest.raises(ValueError, match="below slice_base"):
+            cached.pair_to_slice_offset(50)
 
     def test_chapter_offsets_are_slice_relative_for_cached_pair(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1856,18 +1891,13 @@ class TestAgentEnvPathIsolation:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             captured[role] = {
                 "working_dir": str(working_dir),
                 **{k: v for k, v in env.items() if k.startswith("ISSUE_ORCHESTRATOR_")},
             }
-            return _FakeSession(role)
+            return _FakeSession(role, log_writer=writer)
 
         def _send(session, **_):  # noqa: ANN003
             return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
@@ -2673,6 +2703,137 @@ class TestContinuousSliceMirroring:
             round_index=1, role="reviewer", allow_empty=True,
         )
         assert artifact.path.is_relative_to(run_dir), artifact.path
+
+    def test_attach_failure_propagates_loudly_no_silent_empty_timeline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If ``add_mirror_recording`` raises during attach, the exchange
+        must propagate the failure (REVIEW_EXCHANGE_FAILED + re-raise),
+        NOT continue silently with an empty slice the viewer would
+        return as a successful empty artifact.
+
+        Regression guard for PR #6268 review feedback. The earlier
+        design swallowed OSError in ``_attach_slice_mirror`` and
+        returned False; the manifest still pointed at the (now
+        empty) slice file; the timeline viewer happily served empty
+        content for a session whose pair recording had real bytes.
+        That recreated the exact "I can't see what the reviewer is
+        doing" symptom this PR is supposed to eliminate. Fail-fast
+        forces the failure into the orchestrator's loop bound where
+        retry / escalate is governed deterministically.
+        """
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+
+        # Build a writer subclass that raises on add_mirror_recording.
+        # Mirrors a real-world failure mode (filesystem permissions,
+        # disk full, parent dir vanished mid-exchange).
+        class _PoisonAttachWriter(MirroredTerminalRecordingWriter):
+            def add_mirror_recording(self, path, *, seed_resize=True):  # noqa: ARG002
+                raise OSError("simulated attach failure")
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = _PoisonAttachWriter(
+                recording_path, initial_rows=40, initial_cols=120,
+            )
+            return _FakeSession(role, log_writer=writer)
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            # Should never reach the round loop — attach raised before.
+            raise AssertionError(
+                "send_round invoked despite attach failure; the "
+                "exchange continued past a failed slice mirror "
+                "instead of failing loudly",
+            )
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        with pytest.raises(OSError, match="simulated attach failure"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+                events=sink,
+                event_context=EventContext(),
+            )
+
+        # The orchestrator must hear about the failure as a
+        # definitive REVIEW_EXCHANGE_FAILED — not silent continuation.
+        assert any(
+            evt.event_type is EventName.REVIEW_EXCHANGE_FAILED
+            for evt in sink.events
+        ), (
+            "attach failure did not surface as REVIEW_EXCHANGE_FAILED; "
+            "the loop bound (PR #6267) cannot govern retries on a "
+            "failure mode it never sees"
+        )
+
+    def test_attach_failure_when_log_writer_missing_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Production invariant: every PersistentSession opened with a
+        recording_path carries a real writer. If a fixture (or a
+        regression in open_persistent_session) hands the runner a
+        session with ``log_writer=None``, the runner must raise rather
+        than silently skip the slice — silently skipping recreates the
+        empty-timeline failure mode."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            # Simulated regression: session opened without a writer.
+            return _FakeSession(role, log_writer=None)
+
+        def _send(session, **_):  # noqa: ANN003
+            raise AssertionError("send_round must not be reached")
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        with pytest.raises(RuntimeError, match="no log_writer"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
 
     def test_slice_detaches_at_exchange_end_no_leak_to_next_exchange(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
