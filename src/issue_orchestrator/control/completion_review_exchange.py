@@ -907,6 +907,14 @@ class CompletionReviewExchange:
         Returns None when the summary is missing required fields
         (status, completed_rounds). Caller treats None as
         ``INVALID_SUMMARY``.
+
+        The outcome's ``reason`` is the cached summary's real reason
+        (e.g. ``coder_protocol_error``, ``max_rounds_exceeded``,
+        ``reviewer_ok``) — losing that to a literal ``"cached_summary"``
+        would erase the actionable failure cause from operator-visible
+        error messages and event payloads. The "this is a replay"
+        signal lives on ``cache_metadata`` instead, which the emitters
+        already pass through as ``cached=True``.
         """
         if cached is None:
             return None
@@ -914,12 +922,18 @@ class CompletionReviewExchange:
         rounds = cached.summary.get("completed_rounds")
         if not isinstance(status, str) or not isinstance(rounds, int):
             return None
+        cached_reason = cached.summary.get("reason")
+        # Legacy summaries written before the state-machine refactor may
+        # not carry ``reason``; fall back so we never emit ``None``.
+        # Replay-vs-fresh is signalled separately via ``cached=True`` on
+        # the emitted events — we do not need to overload ``reason``.
+        reason = cached_reason if isinstance(cached_reason, str) and cached_reason else "cached_summary"
         from ..domain.review_exchange import ReviewExchangeOutcome, ReviewExchangeResponse
 
         return ReviewExchangeOutcome(
             status=status,
             rounds=rounds,
-            reason="cached_summary",
+            reason=reason,
             reviewer_response=ReviewExchangeResponse(
                 response_type=status,
                 response_text=cached.summary.get("response_text") or "",

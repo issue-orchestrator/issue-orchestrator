@@ -920,8 +920,109 @@ class TestReviewExchangeExecution:
         assert review_changes is not None
         assert review_started.data.get("cached") is True
         assert review_changes.data.get("cached") is True
+        # The summary string must surface the real failure cause
+        # (``coder_protocol_error``) — not a literal ``cached_summary``
+        # placeholder. Operators read this string to decide what's
+        # broken; opaque "cached_summary" hides the actual reason.
+        assert "coder_protocol_error" in review_changes.data.get("summary", "")
         # Fresh review.approved must not be emitted on the non-ok cache path.
         assert sink.last_event(str(EventName.REVIEW_APPROVED)) is None
+        # The processor's recorded errors should also carry the real
+        # reason so downstream halt messages and ticket-routing don't
+        # collapse distinct failure modes onto one opaque token.
+        assert any(
+            "coder_protocol_error" in err for err in result.errors
+        ), result.errors
+
+    def test_cached_exchange_max_rounds_exceeded_preserves_real_reason(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        monkeypatch,
+    ) -> None:
+        # Second matrix point: a cached ``max_rounds_exceeded`` halt
+        # surfaces the real reason in the emitted summary and recorded
+        # errors. The earlier ``coder_protocol_error`` test pins one
+        # row of the ``REUSE_HALT`` matrix; this one pins a second
+        # (different) row so a regression that re-introduces the
+        # ``"cached_summary"`` overwrite breaks both tests, not one.
+        config = self._make_config(tmp_path)
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        sink = InMemoryEventSink()
+        processor.set_event_emitter(sink, EventContext())
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        (exchange_dir / "summary.json").write_text(
+            json.dumps({
+                "completed_rounds": 5,
+                "status": "stopped",
+                "reason": "max_rounds_exceeded",
+                "response_text": "Hit round limit without convergence.",
+                "timestamp": "2026-02-01T00:00:00Z",
+                "head_sha": "same-sha",
+                "validation_passed": True,
+            })
+        )
+        validation_record = run_dir / "validation-record.json"
+        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            validation_record_path=str(validation_record),
+        )
+        completion_path = (
+            ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
+            "completion-coder.json"
+        )
+        completion_file = worktree / completion_path
+        completion_file.parent.mkdir(parents=True, exist_ok=True)
+        completion_file.write_text(json.dumps(record.to_dict()))
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            side_effect=AssertionError("exchange should not re-run on cache hit")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+            completion_path=completion_path,
+        )
+
+        assert result.success is False
+        review_changes = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert review_changes is not None
+        assert review_changes.data.get("cached") is True
+        assert "max_rounds_exceeded" in review_changes.data.get("summary", "")
+        assert any(
+            "max_rounds_exceeded" in err for err in result.errors
+        ), result.errors
 
     def test_cached_exchange_requires_validation_record(
         self,
