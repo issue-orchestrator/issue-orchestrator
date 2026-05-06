@@ -302,10 +302,13 @@ class TestControlCenterTemplate:
         assert "/favicon.ico" not in body
         assert 'id="shutdownBtn"' not in body
         assert 'id="menuCloseCC"' not in body
-        assert 'href="/static/css/control_center.css"' in body
-        assert 'href="/static/css/control_center_setup.css"' in body
-        assert 'src="/static/js/browser_auth.js"' in body
-        assert 'src="/static/js/control_center.js"' in body
+        # Static asset URLs carry a ``?v=<token>`` cache-buster so a
+        # cc restart automatically invalidates the browser cache. The
+        # exact token varies per process, so just assert the prefix.
+        assert 'href="/static/css/control_center.css?v=' in body
+        assert 'href="/static/css/control_center_setup.css?v=' in body
+        assert 'src="/static/js/browser_auth.js?v=' in body
+        assert 'src="/static/js/control_center.js?v=' in body
         assert "Closing this window does not stop repository engines" in body
         assert ">Stopped<" not in body
         assert 'id="sidebarRepoList"' not in body
@@ -327,6 +330,47 @@ class TestControlCenterTemplate:
         assert logo_response.status_code == 200
         assert "image/svg+xml" in logo_response.headers.get("content-type", "")
         assert "<svg" in logo_response.text
+
+    def test_control_center_cache_buster_is_consistent_across_assets(
+        self, client_without_orchestrator,
+    ):
+        """All ``?v=<token>`` query strings on a single render must share the same token.
+
+        If two assets render with different tokens, the browser still
+        eagerly fetches both — but the inconsistency would hide a real
+        bug where the substitution dropped before some references.
+        """
+        import re
+
+        body = client_without_orchestrator.get("/").text
+        tokens = set(re.findall(r"/static/[^\"']+\?v=([^\"'&]+)", body))
+
+        assert tokens, "Expected at least one ?v= cache-buster on a static URL"
+        assert len(tokens) == 1, (
+            f"All static assets should share one cache-buster per render, "
+            f"got: {tokens}"
+        )
+        # Defensive: token should never be the literal placeholder.
+        assert "{{" not in next(iter(tokens))
+
+    def test_control_center_cache_buster_is_stable_within_a_process(
+        self, client_without_orchestrator,
+    ):
+        """Two requests in the same process get the same token.
+
+        Token churn within a single cc lifetime would make every page
+        load refetch every asset — defeats the cache entirely. The
+        token is computed once at module import time.
+        """
+        import re
+
+        body_a = client_without_orchestrator.get("/").text
+        body_b = client_without_orchestrator.get("/").text
+        token_a = re.search(r"/static/js/control_center\.js\?v=([^\"'&]+)", body_a)
+        token_b = re.search(r"/static/js/control_center\.js\?v=([^\"'&]+)", body_b)
+
+        assert token_a and token_b
+        assert token_a.group(1) == token_b.group(1)
 
     def test_control_center_favicon_uses_packaged_logo(self, client_without_orchestrator):
         response = client_without_orchestrator.get("/favicon.ico")

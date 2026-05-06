@@ -305,8 +305,11 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     template = (source_root / "templates" / "control_center.html").read_text(encoding="utf-8")
     script = (source_root / "static" / "js" / "control_center.js").read_text(encoding="utf-8")
 
-    assert '<script src="/static/js/browser_auth.js"></script>' in template
-    assert '<script src="/static/js/control_center.js"></script>' in template
+    # Static script URLs carry a ``?v={{ static_version }}`` cache-buster
+    # placeholder; the route handler substitutes the token at render time.
+    # Test against the template's pre-render shape.
+    assert '<script src="/static/js/browser_auth.js?v={{ static_version }}"></script>' in template
+    assert '<script src="/static/js/control_center.js?v={{ static_version }}"></script>' in template
     assert "document.getElementById('sidebarCloseCC').addEventListener('click'" in script
     assert "menuCloseCC" not in script
     assert "const pendingRepoStarts = new Set();" in script

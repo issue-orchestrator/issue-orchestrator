@@ -883,13 +883,26 @@ async def control_center_ui(request: Request) -> HTMLResponse:
         )
 
     from .. import __version__
-    from ..infra.repo_identity import get_repo_head_sha
+    from ..infra.static_version import STATIC_VERSION_TOKEN, resolve_cc_commit_sha
 
-    commit_sha = get_repo_head_sha(Path.cwd())
+    # Sidebar SHA: resolve from the package install location, not
+    # ``Path.cwd()``. Operators frequently launch the cc from outside
+    # any git checkout (e.g., from /), which made the sidebar show
+    # "unknown" and left them unable to tell whether the running cc
+    # picked up a recent merge. The package-relative resolver finds
+    # the source repo when running from a development checkout and
+    # cleanly returns ``None`` for non-source installs.
+    commit_sha = resolve_cc_commit_sha()
     commit_short = commit_sha[:7] if commit_sha else "unknown"
     content = template_path.read_text()
     content = content.replace("{{ version }}", __version__)
     content = content.replace("{{ commit_sha }}", commit_short)
+    # Cache-buster for ``/static/*`` URLs: every cc restart produces a
+    # new token (commit SHA when running from source; process-start
+    # epoch for wheel installs), so the browser refetches stale JS/CSS
+    # automatically instead of the operator hard-reloading. See
+    # PR #6263 for the incident this prevents.
+    content = content.replace("{{ static_version }}", STATIC_VERSION_TOKEN)
     content = content.replace("{{ browser_auth_required }}", "0" if auth_disabled else "1")
     content = content.replace("{{ csrf_token }}", csrf_token or "")
     # Render the dev-mode banner only when the operator has
