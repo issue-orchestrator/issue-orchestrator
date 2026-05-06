@@ -780,28 +780,49 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
         "contract is broken (B2 ADR 0026 regression)"
     )
 
-    # Recording-mirror cache-hit regression (PR #6212 review):
-    # both exchanges' run_dirs must surface the canonical pair-scoped
-    # recording via their manifest. The previous design wired
-    # ``additional_recording_paths`` at first spawn, so on cache hit
-    # the second exchange's run_dir got no recording. The fix is to
-    # publish the pair-scoped path through the manifest and have
-    # ManifestAccessor read from it. Both exchanges must point at
-    # the same pair-scoped recording file, since the pair runs one
-    # continuous PTY across both exchanges.
+    # Recording-mirror manifest contract (post per-session-slice fix):
+    # ``<role>_recording`` now points at the per-session slice inside
+    # the run_dir (so the timeline viewer's run_dir is self-contained
+    # and the per-session view doesn't bleed across exchanges).
+    # The canonical pair-scoped recording — the continuous PTY capture
+    # that PR #6212 added manifest indirection for — is preserved
+    # under ``<role>_recording_pair`` so power users / forensic tooling
+    # can still find it. Both invariants matter:
+    #   - per-session keys MUST drift between exchanges (each exchange
+    #     gets its own slice file), and
+    #   - pair-scoped keys MUST stay identical (one continuous PTY).
     first_run_dir = first.exchange_dir.parent
     second_run_dir = second.exchange_dir.parent
     first_manifest = json.loads((first_run_dir / "manifest.json").read_text())
     second_manifest = json.loads((second_run_dir / "manifest.json").read_text())
-    assert first_manifest["coder_recording"] == second_manifest["coder_recording"], (
-        "coder recording path drifted between exchanges — both should "
-        "point at the same pair-scoped file (PR #6212 finding 3)"
+
+    # Per-session keys: must differ across exchanges (different run_dirs).
+    assert first_manifest["coder_recording"] != second_manifest["coder_recording"], (
+        "coder per-session slice path matched across exchanges; the "
+        "per-session manifest indirection broke and the viewer would "
+        "see exchange 1 content while looking at exchange 2"
     )
-    assert first_manifest["reviewer_recording"] == second_manifest["reviewer_recording"], (
-        "reviewer recording path drifted between exchanges"
+    assert first_manifest["reviewer_recording"] != second_manifest["reviewer_recording"], (
+        "reviewer per-session slice path matched across exchanges"
+    )
+    assert Path(first_manifest["coder_recording"]).is_relative_to(first_run_dir), (
+        "exchange 1 coder slice escaped its run_dir"
+    )
+    assert Path(second_manifest["coder_recording"]).is_relative_to(second_run_dir), (
+        "exchange 2 coder slice escaped its run_dir"
+    )
+
+    # Pair-scoped keys: must stay identical across exchanges (the
+    # original PR #6212 invariant — one continuous PTY per pair).
+    assert first_manifest["coder_recording_pair"] == second_manifest["coder_recording_pair"], (
+        "pair-scoped coder recording path drifted between exchanges — "
+        "both should point at the same continuous PTY capture"
+    )
+    assert first_manifest["reviewer_recording_pair"] == second_manifest["reviewer_recording_pair"], (
+        "pair-scoped reviewer recording path drifted between exchanges"
     )
     assert Path(second_manifest["reviewer_recording"]).exists(), (
-        "exchange 2's manifest-pointed recording is missing on disk"
+        "exchange 2's manifest-pointed reviewer slice is missing on disk"
     )
 
     accessor = ManifestAccessor(
@@ -810,9 +831,19 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
     artifact = accessor.get_review_exchange_phase_terminal_recording(
         round_index=1, role="reviewer",
     )
+    # ManifestAccessor follows the per-session ``<role>_recording`` key
+    # (not the pair-scoped one) so the viewer renders this exchange's
+    # content alone — no leakage from exchange 1.
     assert artifact.path == Path(second_manifest["reviewer_recording"]), (
-        "ManifestAccessor must follow the manifest's pair-scoped "
-        "pointer for second-exchange runs (#6212 finding 3 fix)"
+        "ManifestAccessor must follow the per-session reviewer pointer "
+        "for second-exchange runs; the pair-scoped pointer would mix "
+        "exchange 1 + exchange 2 content together"
+    )
+    assert not artifact.path.is_relative_to(
+        Path(second_manifest["reviewer_recording_pair"]).parent,
+    ), (
+        "viewer landed in pair-scoped storage instead of the per-session "
+        "slice — the manifest indirection regressed"
     )
 
     # Cleanup is guaranteed by the ``pair_registry_with_cleanup``
