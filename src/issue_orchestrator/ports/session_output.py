@@ -478,11 +478,16 @@ class SessionOutput(Protocol):
         """Count consecutive recent review-exchange summaries that ended in
         ``status=error reason=*_no_completion``, newest first.
 
-        Stops counting at the first summary whose status / reason does not
-        match (i.e. an ``ok`` exchange resets the count to zero), or at the
-        ``not_before_started_at`` boundary (typically the scratch-reset
-        boundary — failures from before a scratch reset must not count
-        against the current attempt).
+        Stops counting at any of:
+
+        - A summary whose status / reason does not match (a clean ``ok``
+          exchange or a different error reason resets the count to zero).
+        - A run_dir that is not a review-exchange (i.e. a coding/rework
+          session). This treats each coding turn as a fresh attempt —
+          failures from a prior coding session do not carry across a
+          successful coder turn into the new session's quota.
+        - Crossing the ``not_before_started_at`` boundary (typically the
+          scratch-reset boundary).
 
         Powers the bound on the
         ``review_exchange.role_timeout → review_exchange.completed (error) →
@@ -494,7 +499,12 @@ class SessionOutput(Protocol):
 
         Args:
             worktree_path: Path to the worktree.
-            session_name: Session name whose review-exchange runs are counted.
+            session_name: Reserved for future per-coding-session scoping;
+                today the function relies on the coding-session boundary
+                detection (non-review-exchange run_dir stops the count)
+                rather than name-based filtering, since review-exchange
+                runs do not store their parent coding session in the
+                manifest.
             not_before_started_at: Optional ISO timestamp boundary; runs
                 that started before this timestamp do not contribute.
 

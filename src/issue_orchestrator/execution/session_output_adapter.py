@@ -630,17 +630,26 @@ Timestamp: {self._now_iso()}
     def count_consecutive_review_exchange_no_completion(
         self,
         worktree_path: Path,
-        session_name: str,
+        session_name: str,  # noqa: ARG002 — kept for port signature symmetry
         *,
         not_before_started_at: str | None = None,
     ) -> int:
         """Count consecutive ``status=error reason=*_no_completion`` review
         summaries, newest-first, in this worktree's sessions/.
 
-        See the port docstring for semantics. Implementation walks the
-        sessions dir in mtime-desc order. Any non-error summary, any
-        non-``*_no_completion`` reason, or crossing the
-        ``not_before_started_at`` boundary stops the count.
+        See the port docstring for semantics. Walks the sessions dir in
+        mtime-desc order and stops at the first of:
+
+        - Crossing the ``not_before_started_at`` boundary (scratch reset).
+        - A review-exchange summary with any other status/reason (clean
+          run resets the streak).
+        - A non-review-exchange run_dir (a coding/rework session). Each
+          new coding turn is a fresh attempt — failures from an earlier
+          coding session must NOT carry across a successful coder turn
+          into the new session's quota. Otherwise two timeouts on
+          coding session A, then a fresh coding session B, then one
+          timeout on B would count as 3 consecutive failures and
+          escalate B to needs-human after a single round.
         """
         base_dir = self.sessions_base_dir(worktree_path)
         if not base_dir.exists():
@@ -666,8 +675,14 @@ Timestamp: {self._now_iso()}
             )
             summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
             if not summary_path.exists():
-                # Not a review-exchange run; ignore (don't break).
-                continue
+                # Not a review-exchange run. The simplest reliable
+                # discriminator: a coding/rework run produces a session
+                # log + completion artifact but no review-exchange
+                # summary. Anything we encounter newer than the current
+                # streak that isn't a review-exchange is, by definition,
+                # a coding boundary — stop the count so each coding
+                # turn gets its own quota.
+                break
             summary = self._read_json(summary_path)
             if not isinstance(summary, dict):
                 # Unparseable summary — treat as "noise", not as a clean run

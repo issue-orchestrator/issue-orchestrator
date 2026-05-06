@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -98,14 +98,47 @@ class _RoleSliceMirror:
     forensics still go through the pair recording (kept in the manifest's
     ``<role>_recording_pair`` field) and the timeline DB.
 
-    ``last_event_idx`` starts at the pair recording's event count
-    *at exchange start*, so events from prior exchanges in the same
-    long-lived pair stay out of this exchange's slice.
+    ``slice_base`` is the pair recording's event count *at exchange start*
+    — the first event the slice will mirror. ``last_event_idx`` starts
+    equal to ``slice_base`` and advances as the mirror appends. The
+    distinction matters because the chapter sidecar's
+    ``recording_event_index`` must be slice-relative (the manifest
+    points the viewer at the slice file), so the chapter writer subtracts
+    ``slice_base`` from each captured pair offset. Without that
+    translation, a cached pair on exchange 2 would record chapter
+    offsets in the hundreds while the slice file holds dozens of
+    events, and the web replay route's ``all_events[offset:]`` would
+    return an empty window.
     """
 
     pair_recording: Path
     session_slice: Path
     last_event_idx: int
+    slice_base: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        # ``slice_base`` is fixed at construction. It defines the
+        # slice's "zero" — every chapter offset recorded for this
+        # exchange is computed as ``pair_event_idx - slice_base`` so
+        # the viewer can index into the slice directly.
+        self.slice_base = self.last_event_idx
+
+    def pair_to_slice_offset(self, pair_event_idx: int) -> int:
+        """Translate a pair-recording event index into a slice-local index.
+
+        The slice file is written as a strict subset of the pair
+        recording starting at ``slice_base``; the slice's event N
+        corresponds to pair event ``slice_base + N``. Chapter sidecars
+        store these slice-local offsets so the viewer can scrub the
+        manifest-pointed slice directly.
+
+        Pair indices below ``slice_base`` belong to prior exchanges and
+        clamp to 0 (no negative offsets — those would index past the
+        start of the slice and silently return wrong content).
+        """
+        if pair_event_idx <= self.slice_base:
+            return 0
+        return pair_event_idx - self.slice_base
 
     def mirror_through(self, current_event_idx: int) -> int:
         """Append events ``[last_event_idx, current_event_idx)`` to the slice.
@@ -1361,7 +1394,12 @@ def _record_chapter(  # noqa: PLR0913
     provided) project the new events into the per-session run_dir slice.
 
     Returns the captured ``event_index`` so callers can chain behavior
-    onto it without having to count the recording themselves.
+    onto it without having to count the recording themselves. The
+    returned value is **always pair-relative** so callers tracking
+    exchange-wide event progression see absolute positions; the
+    chapter sidecar and the SSE payload, by contrast, hold the
+    slice-relative offset (when a ``mirror`` is provided) because the
+    manifest points the viewer at the slice file.
 
     Errors propagate. Role recordings are created at session open and the
     chapter offset is the UI contract for scrubbing the persistent
@@ -1378,7 +1416,19 @@ def _record_chapter(  # noqa: PLR0913
     mirroring runs *after* both the sidecar and the event so the viewer
     can never see a chapter pointer that has not yet been mirrored.
     """
-    event_index = recording_event_count(recording_path)
+    pair_event_index = recording_event_count(recording_path)
+    # Slice-relative when a mirror is in play so the viewer can scrub
+    # the manifest-pointed slice directly. Without the translation, a
+    # cached pair on exchange 2 records pair-relative offsets in the
+    # hundreds while the slice file only holds dozens of events, and
+    # the web replay route slices ``all_events[chapter_offset:]`` to
+    # an empty window — re-breaking the timeline for the cached-pair
+    # case this PR is fixing.
+    sidecar_event_index = (
+        mirror.pair_to_slice_offset(pair_event_index)
+        if mirror is not None
+        else pair_event_index
+    )
     session_output.record_exchange_chapter(
         run_dir,
         role=role,
@@ -1386,7 +1436,7 @@ def _record_chapter(  # noqa: PLR0913
         issue_number=issue_number,
         cycle_index=cycle_index,
         section=section,
-        recording_event_index=event_index,
+        recording_event_index=sidecar_event_index,
         recorded_at=datetime.now(timezone.utc).isoformat(),
         label=label,
     )
@@ -1396,12 +1446,12 @@ def _record_chapter(  # noqa: PLR0913
         "round_index": cycle_index,
         "role": role,
         "section": section,
-        "recording_event_index": event_index,
+        "recording_event_index": sidecar_event_index,
         "label": label,
     })
     if mirror is not None:
-        mirror.mirror_through(event_index)
-    return event_index
+        mirror.mirror_through(pair_event_index)
+    return pair_event_index
 
 
 def _validation_passed(record_path: Path) -> bool:

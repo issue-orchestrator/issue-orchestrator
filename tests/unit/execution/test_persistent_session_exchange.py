@@ -1526,6 +1526,163 @@ class TestPerSessionRecordingMirror:
         written = mirror.mirror_through(3)
         assert written == 0
 
+    def test_slice_base_freezes_at_construction_for_offset_translation(
+        self, tmp_path: Path,
+    ) -> None:
+        """``slice_base`` is the immutable starting offset that defines
+        the slice's "zero". Chapter sidecars store
+        ``pair_event_idx - slice_base`` so the viewer can scrub the
+        manifest-pointed slice directly. Without that translation,
+        cached pairs on exchange 2+ record offsets the slice file
+        cannot satisfy and the timeline plays back empty."""
+        pair_recording = tmp_path / "pair" / "terminal-recording.jsonl"
+        pair_recording.parent.mkdir(parents=True)
+        pair_recording.write_text("", encoding="utf-8")
+        slice_path = tmp_path / "run" / "reviewer" / "terminal-recording.jsonl"
+
+        # Fresh pair: slice starts at the very beginning of the pair
+        # recording. Slice-relative offset == pair offset.
+        fresh = pse._RoleSliceMirror(  # noqa: SLF001
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=0,
+        )
+        assert fresh.slice_base == 0
+        assert fresh.pair_to_slice_offset(0) == 0
+        assert fresh.pair_to_slice_offset(50) == 50
+
+        # Cached pair on exchange 2: prior exchange already wrote 100
+        # events into the pair recording. Slice-relative offsets must
+        # be (pair_idx - 100) so the chapter sidecar matches the
+        # slice's local indexing.
+        cached = pse._RoleSliceMirror(  # noqa: SLF001
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=100,
+        )
+        assert cached.slice_base == 100
+        # Pair offsets at or below slice_base belong to prior exchanges
+        # and clamp to 0 (no negative offsets — those would index past
+        # the start of the slice and silently return wrong content).
+        assert cached.pair_to_slice_offset(50) == 0
+        assert cached.pair_to_slice_offset(100) == 0
+        # Pair offset 150 in exchange 2 is event 50 of the slice file.
+        assert cached.pair_to_slice_offset(150) == 50
+
+        # slice_base does NOT advance when last_event_idx advances —
+        # the translation reference must stay anchored to exchange
+        # start so every chapter in the exchange uses the same zero.
+        cached.last_event_idx = 175
+        assert cached.slice_base == 100
+        assert cached.pair_to_slice_offset(175) == 75
+
+    def test_chapter_offsets_are_slice_relative_for_cached_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end chapter contract: when the manifest points at the
+        per-session slice, chapter offsets must index INTO the slice,
+        not into the pair recording. Catches the cached-pair regression
+        where slice-relative semantics drift back to pair-relative and
+        the web replay route returns empty windows."""
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        # Pre-seed the pair recording with 50 "prior exchange" events
+        # before the test exchange even starts. The test then runs one
+        # exchange whose chapters must record offsets relative to the
+        # slice (which begins at index 50 of the pair recording).
+        prior_pair_recording = (
+            tmp_path / "persistent-pairs" / "issue-42" / "reviewer"
+            / "terminal-recording.jsonl"
+        )
+        prior_pair_recording.parent.mkdir(parents=True, exist_ok=True)
+        prior_pair_recording.write_text(
+            "\n".join(
+                json.dumps({
+                    "schema_version": 1, "event_type": "resize",
+                    "offset_ms": i, "rows": 40, "cols": 120,
+                })
+                for i in range(50)
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            # Reviewer writer appends to the pre-seeded pair recording.
+            # Coder writer uses a fresh recording — only the reviewer
+            # path matters for this test's assertions.
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            session = _FakeSession(role)
+            session.log_writer = writer
+            return session
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            writers[session.role].write(b"agent output\n")
+            return {"response_type": "ok", "response_text": "ok",
+                    "getting_closer": True}
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        run_dir = _find_review_exchange_run_dir(coder_wt)
+        chapters_path = run_dir / "reviewer" / "chapters.json"
+        chapters_data = json.loads(chapters_path.read_text(encoding="utf-8"))
+        slice_lines = [
+            line for line in (
+                run_dir / "reviewer" / "terminal-recording.jsonl"
+            ).read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+        slice_event_count = len(slice_lines)
+        # Every chapter offset must be reachable inside the slice file.
+        # If they remained pair-relative they'd be in the 50+ range
+        # while the slice file holds at most a handful of events.
+        for chapter in chapters_data["chapters"]:
+            offset = chapter["recording_event_index"]
+            assert 0 <= offset <= slice_event_count, (
+                f"chapter at slice-relative offset {offset} is unreachable "
+                f"in slice with {slice_event_count} events; chapter "
+                f"section={chapter.get('section')} round={chapter.get('cycle_index')}. "
+                "If offsets are still pair-relative, the web replay "
+                "route's all_events[offset:] will return empty content."
+            )
+
     def test_role_slice_mirror_skips_prior_exchange_content(
         self, tmp_path: Path,
     ) -> None:
@@ -2272,6 +2429,71 @@ class TestLoopBoundCounting:
         assert so.count_consecutive_review_exchange_no_completion(
             wt, "coding-1",
         ) == 0
+
+    def test_coding_session_run_dir_resets_count(self, tmp_path: Path) -> None:
+        """A non-review-exchange run_dir between failures must stop the
+        count. Otherwise old failures from coding session A would carry
+        across a successful coder turn into the new session B's quota
+        and trigger false escalation after a single failure on B.
+
+        Sequence (oldest → newest):
+          - 2 reviewer_no_completion summaries (coding session A)
+          - a fresh coding session run_dir (no review-exchange summary)
+          - 1 reviewer_no_completion summary (coding session B)
+
+        With a default cap of 3, the bug counted 3 → escalate. Correct
+        behavior counts 1 → continue.
+        """
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        def _make_review_exchange(idx: int, summary: dict[str, Any]) -> None:
+            run_dir = sessions_dir / (
+                f"2026010{idx + 1}T000000Z__review-exchange-42-r{idx}"
+            )
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({
+                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                    "review_exchange_dir": str(run_dir / "review-exchange"),
+                }), encoding="utf-8",
+            )
+            exchange_dir = run_dir / "review-exchange"
+            exchange_dir.mkdir()
+            (exchange_dir / "summary.json").write_text(
+                json.dumps(summary), encoding="utf-8",
+            )
+            os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
+
+        def _make_coding(idx: int) -> None:
+            run_dir = sessions_dir / f"2026010{idx + 1}T000000Z__coding-1"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({
+                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                }), encoding="utf-8",
+            )
+            os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
+
+        # idx 0, 1: failures from prior coding session A
+        _make_review_exchange(0, {"status": "error", "reason": "reviewer_no_completion"})
+        _make_review_exchange(1, {"status": "error", "reason": "reviewer_no_completion"})
+        # idx 2: fresh coding session B kicked off (NEW coder turn)
+        _make_coding(2)
+        # idx 3: first review-exchange under B fails
+        _make_review_exchange(3, {"status": "error", "reason": "reviewer_no_completion"})
+
+        so = FileSystemSessionOutput()
+        # Newest-first walk: error (1), coding-1 (boundary — STOP).
+        # Pre-fix this returned 3 (counts skipped the coding-1 dir).
+        assert so.count_consecutive_review_exchange_no_completion(
+            worktree, "coding-1",
+        ) == 1, (
+            "loop bound bled across a coding-session boundary; the new "
+            "coder turn must reset the no-completion quota"
+        )
 
     def test_boundary_excludes_pre_scratch_reset_failures(
         self, tmp_path: Path,
