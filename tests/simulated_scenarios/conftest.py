@@ -158,6 +158,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         max_rounds,
         max_no_progress,
         require_validation,
+        parent_session_name=None,  # noqa: ARG001 — added in PR #6271
         initial_validation_record_path=None,
         web_port=None,  # noqa: ARG001
         events=None,
