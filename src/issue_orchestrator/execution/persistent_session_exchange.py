@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,150 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
     "Then wait for the next prompt. Do not exit on your own; the orchestrator "
     "will terminate you when the exchange is done.\n"
 )
+
+
+@dataclass
+class _RoleSliceMirror:
+    """Project a slice of the pair-scoped recording into the per-session run_dir.
+
+    The pair recording (``pair_dir/<role>/terminal-recording.jsonl``) is
+    the canonical continuous PTY capture written by the long-lived agent
+    process. It outlives any single exchange, so a session's run_dir only
+    sees a sliver of its content. That left the timeline viewer with
+    nothing useful to show per-session — chapter offsets that pointed
+    into a file the run_dir did not own.
+
+    This mirror appends new events to a per-exchange slice
+    (``run_dir/<role>/terminal-recording.jsonl``) at every chapter
+    boundary. By the end of the exchange the slice contains exactly
+    the events emitted during this exchange and nothing else, making
+    the run_dir self-contained for the viewer. Worktree teardown takes
+    the slice with it, which is the natural lifetime — long-term
+    forensics still go through the pair recording (kept in the manifest's
+    ``<role>_recording_pair`` field) and the timeline DB.
+
+    ``slice_base`` is the pair recording's event count *at exchange start*
+    — the first event the slice will mirror. ``last_event_idx`` starts
+    equal to ``slice_base`` and advances as the mirror appends. The
+    distinction matters because the chapter sidecar's
+    ``recording_event_index`` must be slice-relative (the manifest
+    points the viewer at the slice file), so the chapter writer subtracts
+    ``slice_base`` from each captured pair offset. Without that
+    translation, a cached pair on exchange 2 would record chapter
+    offsets in the hundreds while the slice file holds dozens of
+    events, and the web replay route's ``all_events[offset:]`` would
+    return an empty window.
+    """
+
+    pair_recording: Path
+    session_slice: Path
+    last_event_idx: int
+    slice_base: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        # ``slice_base`` is fixed at construction. It defines the
+        # slice's "zero" — every chapter offset recorded for this
+        # exchange is computed as ``pair_event_idx - slice_base`` so
+        # the viewer can index into the slice directly.
+        self.slice_base = self.last_event_idx
+
+    def pair_to_slice_offset(self, pair_event_idx: int) -> int:
+        """Translate a pair-recording event index into a slice-local index.
+
+        The slice file is written as a strict subset of the pair
+        recording starting at ``slice_base``; the slice's event N
+        corresponds to pair event ``slice_base + N``. Chapter sidecars
+        store these slice-local offsets so the viewer can scrub the
+        manifest-pointed slice directly.
+
+        Pair indices below ``slice_base`` belong to prior exchanges and
+        clamp to 0 (no negative offsets — those would index past the
+        start of the slice and silently return wrong content).
+        """
+        if pair_event_idx <= self.slice_base:
+            return 0
+        return pair_event_idx - self.slice_base
+
+    def mirror_through(self, current_event_idx: int) -> int:
+        """Append events ``[last_event_idx, current_event_idx)`` to the slice.
+
+        Returns the number of events written. ``mirror_through`` is
+        chapter-driven: each call corresponds to "the agent has
+        produced N more events since the last chapter; capture them
+        for the per-session slice now." Failure during slicing is
+        deliberately swallowed and logged — the slice is a viewer aid,
+        not a load-bearing artifact, and an unhealthy slice writer
+        must not abort the round and re-trigger the runaway loop.
+        """
+        if current_event_idx <= self.last_event_idx:
+            return 0
+        if not self.pair_recording.exists():
+            return 0
+        try:
+            self.session_slice.parent.mkdir(parents=True, exist_ok=True)
+            written = _copy_event_range(
+                source=self.pair_recording,
+                destination=self.session_slice,
+                start_event_idx=self.last_event_idx,
+                end_event_idx=current_event_idx,
+            )
+        except OSError:
+            logger.exception(
+                "Failed to mirror pair recording slice into run_dir; "
+                "continuing without per-session mirror "
+                "(pair=%s slice=%s start=%d end=%d)",
+                self.pair_recording, self.session_slice,
+                self.last_event_idx, current_event_idx,
+            )
+            return 0
+        self.last_event_idx = current_event_idx
+        return written
+
+
+def _copy_event_range(
+    *,
+    source: Path,
+    destination: Path,
+    start_event_idx: int,
+    end_event_idx: int,
+) -> int:
+    """Append events ``[start, end)`` from a JSONL recording to another file.
+
+    Event indexing matches ``recording_event_count``: blank lines do
+    not count, so ``start`` / ``end`` are positions in the stream of
+    *non-blank* lines. The destination is opened in append mode; the
+    caller is responsible for treating it as append-only across
+    successive calls (``_RoleSliceMirror`` does, by tracking
+    ``last_event_idx``).
+    """
+    written = 0
+    event_idx = 0
+    with source.open("r", encoding="utf-8") as src, destination.open(
+        "a", encoding="utf-8",
+    ) as dst:
+        for raw in src:
+            if not raw.strip():
+                continue
+            if start_event_idx <= event_idx < end_event_idx:
+                dst.write(raw)
+                written += 1
+            event_idx += 1
+            if event_idx >= end_event_idx:
+                break
+    return written
+
+
+def _prepare_session_slice(slice_path: Path) -> None:
+    """Create the per-session slice directory and seed an empty file.
+
+    Pre-creating an empty file keeps the timeline viewer's recording
+    lookup (``ManifestAccessor.get_review_exchange_recording``) from
+    404'ing while a hung exchange is mid-round and no slice events
+    have been mirrored yet. ``allow_empty=False`` callers still see
+    "empty" as a recoverable condition rather than "missing".
+    """
+    slice_path.parent.mkdir(parents=True, exist_ok=True)
+    slice_path.touch(exist_ok=True)
 
 
 def run_persistent_session_exchange(  # noqa: PLR0913
@@ -166,28 +311,51 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     })
 
     # Pair-scoped paths: the same physical files survive across every
-    # exchange the pair handles. The agent's env points at
-    # ``coder_response_path`` (and the completion / validation paths)
-    # once at spawn; if the pair is reused for exchange 2, exchange
-    # 2's rounds read/write the same files.
+    # exchange the pair handles. The agent's env points at the pair-
+    # scoped completion / validation paths once at spawn; if the pair
+    # is reused for exchange 2, exchange 2's rounds read/write the
+    # same files.
+    #
+    # The per-round response file is the one exception: the agent
+    # writes it itself, and codex's per-shell-tool seatbelt sandbox
+    # constrains writes to the role's worktree (its cwd). A response
+    # file under ``pair_dir`` is unreachable from inside that sandbox
+    # — every write attempt fails with ``operation not permitted``,
+    # the round runner's polling never sees the file, the round times
+    # out, and the orchestrator relaunches the exchange forever.
+    # Putting the response file inside the role's worktree keeps it
+    # within the writable root. The orchestrator process itself is
+    # unsandboxed and reads from any path, so polling continues to
+    # work unchanged. The file is per-round transient (unlinked at
+    # the start of each round in ``send_round``), so losing it on
+    # worktree teardown is correct, not a regression.
     pair_dir = persistent_pair_root / f"issue-{issue_number}"
     coder_pair_dir = pair_dir / "coder"
     reviewer_pair_dir = pair_dir / "reviewer"
-    coder_response = coder_pair_dir / "review-response.json"
-    reviewer_response = reviewer_pair_dir / "review-response.json"
+    coder_response = coder_worktree_path / ".issue-orchestrator" / "review-response.json"
     coder_recording = coder_pair_dir / TERMINAL_RECORDING_FILENAME
     reviewer_recording = reviewer_pair_dir / TERMINAL_RECORDING_FILENAME
     coder_completion = coder_pair_dir / "completion-coder.json"
     pair_validation_record = pair_dir / "validation-record.json"
 
-    # Surface the pair-scoped file locations on every exchange's
-    # manifest so the session viewer (which reads run_dir) can find
-    # the canonical recording. Without this, exchange 2's run_dir
-    # looks empty because the recording lives at the pair scope.
+    # Per-session slice paths: each role's run_dir gets its own
+    # ``terminal-recording.jsonl`` populated incrementally at chapter
+    # boundaries (see ``_RoleSliceMirror``). The manifest's primary
+    # ``<role>_recording`` key points here so the timeline viewer's
+    # ``ManifestAccessor.get_review_exchange_recording`` returns the
+    # per-session projection by default. The canonical pair recording
+    # is preserved under ``<role>_recording_pair`` for power users
+    # and cross-exchange forensics.
+    coder_session_slice = run_dir / "coder" / TERMINAL_RECORDING_FILENAME
+    reviewer_session_slice = run_dir / "reviewer" / TERMINAL_RECORDING_FILENAME
+    _prepare_session_slice(coder_session_slice)
+    _prepare_session_slice(reviewer_session_slice)
     session_output.update_manifest(run_dir, {
         "persistent_pair_dir": str(pair_dir),
-        "coder_recording": str(coder_recording),
-        "reviewer_recording": str(reviewer_recording),
+        "coder_recording": str(coder_session_slice),
+        "reviewer_recording": str(reviewer_session_slice),
+        "coder_recording_pair": str(coder_recording),
+        "reviewer_recording_pair": str(reviewer_recording),
     })
 
     _seed_pair_validation_record(
@@ -201,6 +369,10 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         # previous pair died). Create the reviewer worktree and open
         # both sessions with pair-scoped env paths.
         reviewer_wt_path = reviewer_worktree_factory()
+        # Reviewer response file lives inside the reviewer worktree
+        # (writable root for the reviewer's seatbelt sandbox); see
+        # the ``coder_response`` comment above for the full rationale.
+        reviewer_response = reviewer_wt_path / ".issue-orchestrator" / "review-response.json"
         coder = _open_role_session(
             role="coder",
             agent=coder_agent,
@@ -285,6 +457,25 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         if before_reviewer_round is not None:
             before_reviewer_round(round_index)
 
+    # Build per-role mirrors after the pair is acquired so the start
+    # offsets are sampled from the *current* pair recording size — i.e.
+    # everything the agent has emitted up to this exchange's first
+    # round. Cached pairs have prior exchanges' content already in the
+    # pair recording; mirrors must skip past it.
+    coder_mirror = _RoleSliceMirror(
+        pair_recording=pair.coder_recording_path,
+        session_slice=coder_session_slice,
+        last_event_idx=recording_event_count(
+            pair.coder_recording_path, require_recording=False,
+        ),
+    )
+    reviewer_mirror = _RoleSliceMirror(
+        pair_recording=pair.reviewer_recording_path,
+        session_slice=reviewer_session_slice,
+        last_event_idx=recording_event_count(
+            pair.reviewer_recording_path, require_recording=False,
+        ),
+    )
     try:
         outcome = _drive_rounds(
             session_output=session_output,
@@ -313,6 +504,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             require_validation=require_validation,
             before_reviewer_round=_ff_then_caller_hook,
             emit=_emit,
+            coder_mirror=coder_mirror,
+            reviewer_mirror=reviewer_mirror,
         )
     except Exception as exc:
         _emit(EventName.REVIEW_EXCHANGE_FAILED, {
@@ -519,6 +712,8 @@ def _drive_rounds(  # noqa: PLR0913
     require_validation: bool,
     before_reviewer_round: Callable[[int], None] | None,
     emit: Callable[[EventName, dict[str, Any]], None],
+    coder_mirror: _RoleSliceMirror,
+    reviewer_mirror: _RoleSliceMirror,
 ) -> ReviewExchangeOutcome:
     no_progress_count = 0
     last_reviewer_text: str | None = None
@@ -555,6 +750,7 @@ def _drive_rounds(  # noqa: PLR0913
             label=f"Round {round_index} reviewer prompt",
             session_name=session_name,
             emit=emit,
+            mirror=reviewer_mirror,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
@@ -577,6 +773,7 @@ def _drive_rounds(  # noqa: PLR0913
             cycle_index=round_index,
             session_name=session_name,
             emit=emit,
+            mirror=reviewer_mirror,
         )
         if reviewer is None:
             return _build_outcome_for_role_timeout(
@@ -646,6 +843,7 @@ def _drive_rounds(  # noqa: PLR0913
             label=f"Round {round_index} coder prompt",
             session_name=session_name,
             emit=emit,
+            mirror=coder_mirror,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
@@ -673,6 +871,7 @@ def _drive_rounds(  # noqa: PLR0913
             cycle_index=round_index,
             session_name=session_name,
             emit=emit,
+            mirror=coder_mirror,
         )
         if coder is None:
             return _build_outcome_for_role_timeout(
@@ -703,6 +902,7 @@ def _drive_rounds(  # noqa: PLR0913
             session_name=session_name,
             cycle_index=round_index,
             emit=emit,
+            coder_mirror=coder_mirror,
         )
         if protocol_outcome is not None:
             return protocol_outcome
@@ -759,6 +959,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     session_name: str,
     cycle_index: int,
     emit: Callable[[EventName, dict[str, Any]], None],
+    coder_mirror: _RoleSliceMirror,
 ) -> tuple[ReviewExchangeResponse, ReviewExchangeOutcome | None]:
     """Validate the coder produced its completion-coder.json artifact, retry
     with a remediation prompt up to ``_CODER_PROTOCOL_RETRY_LIMIT`` times,
@@ -795,6 +996,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             label=f"Round {cycle_index} coder protocol-retry",
             session_name=session_name,
             emit=emit,
+            mirror=coder_mirror,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
@@ -821,6 +1023,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             cycle_index=cycle_index,
             session_name=session_name,
             emit=emit,
+            mirror=coder_mirror,
         )
         if retry_response is None:
             return coder, _build_outcome_for_role_timeout(
@@ -867,6 +1070,7 @@ def _send_role_round(  # noqa: PLR0913
     cycle_index: int,
     session_name: str,
     emit: Callable[[EventName, dict[str, Any]], None],
+    mirror: _RoleSliceMirror,
 ) -> ReviewExchangeResponse | None:
     """Send one role's round prompt and convert the response to a domain object.
 
@@ -901,6 +1105,7 @@ def _send_role_round(  # noqa: PLR0913
             label=f"Round {cycle_index} {role} timeout/error",
             session_name=session_name,
             emit=emit,
+            mirror=mirror,
         )
         emit(EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT, {
             "issue_number": issue_number,
@@ -925,6 +1130,7 @@ def _send_role_round(  # noqa: PLR0913
         label=f"Round {cycle_index} {role} feedback",
         session_name=session_name,
         emit=emit,
+        mirror=mirror,
     )
     emit(EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK, {
         "issue_number": issue_number,
@@ -1181,9 +1387,19 @@ def _record_chapter(  # noqa: PLR0913
     label: str,
     session_name: str,
     emit: Callable[[EventName, dict[str, Any]], None],
-) -> None:
+    mirror: _RoleSliceMirror | None = None,
+) -> int:
     """Capture the recording's current event index, append a chapter,
-    and emit ``REVIEW_EXCHANGE_CHAPTER_RECORDED``.
+    emit ``REVIEW_EXCHANGE_CHAPTER_RECORDED``, and (when ``mirror`` is
+    provided) project the new events into the per-session run_dir slice.
+
+    Returns the captured ``event_index`` so callers can chain behavior
+    onto it without having to count the recording themselves. The
+    returned value is **always pair-relative** so callers tracking
+    exchange-wide event progression see absolute positions; the
+    chapter sidecar and the SSE payload, by contrast, hold the
+    slice-relative offset (when a ``mirror`` is provided) because the
+    manifest points the viewer at the slice file.
 
     Errors propagate. Role recordings are created at session open and the
     chapter offset is the UI contract for scrubbing the persistent
@@ -1196,9 +1412,23 @@ def _record_chapter(  # noqa: PLR0913
     The chapter event is emitted *after* the sidecar write succeeds so
     SSE/timeline consumers see the same offset that's now durable on disk;
     on failure the exception propagates and no event fires (consistent
-    with the rest of the runner's emit-on-success contract).
+    with the rest of the runner's emit-on-success contract). Slice
+    mirroring runs *after* both the sidecar and the event so the viewer
+    can never see a chapter pointer that has not yet been mirrored.
     """
-    event_index = recording_event_count(recording_path)
+    pair_event_index = recording_event_count(recording_path)
+    # Slice-relative when a mirror is in play so the viewer can scrub
+    # the manifest-pointed slice directly. Without the translation, a
+    # cached pair on exchange 2 records pair-relative offsets in the
+    # hundreds while the slice file only holds dozens of events, and
+    # the web replay route slices ``all_events[chapter_offset:]`` to
+    # an empty window — re-breaking the timeline for the cached-pair
+    # case this PR is fixing.
+    sidecar_event_index = (
+        mirror.pair_to_slice_offset(pair_event_index)
+        if mirror is not None
+        else pair_event_index
+    )
     session_output.record_exchange_chapter(
         run_dir,
         role=role,
@@ -1206,7 +1436,7 @@ def _record_chapter(  # noqa: PLR0913
         issue_number=issue_number,
         cycle_index=cycle_index,
         section=section,
-        recording_event_index=event_index,
+        recording_event_index=sidecar_event_index,
         recorded_at=datetime.now(timezone.utc).isoformat(),
         label=label,
     )
@@ -1216,9 +1446,12 @@ def _record_chapter(  # noqa: PLR0913
         "round_index": cycle_index,
         "role": role,
         "section": section,
-        "recording_event_index": event_index,
+        "recording_event_index": sidecar_event_index,
         "label": label,
     })
+    if mirror is not None:
+        mirror.mirror_through(pair_event_index)
+    return pair_event_index
 
 
 def _validation_passed(record_path: Path) -> bool:

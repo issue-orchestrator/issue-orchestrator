@@ -79,6 +79,7 @@ _Auto-generated from settings schema._
 | `review.exchange.loop.max_rounds` | integer | `10` | Max coder/reviewer rounds before stopping the MCP loop | `5`, `10`, `20` | Higher values allow longer back-and-forth reviews. |
 | `review.exchange.loop.max_no_progress` | integer | `2` | Max rounds where reviewer reports no progress before stopping | `1`, `2`, `3` | Limits loops when reviewer is not seeing improvements. |
 | `review.exchange.loop.require_validation` | boolean | `True` | Require a validation record before reviewer can approve | `true`, `false` | Disable only if you accept reviewer approvals without validation. |
+| `review.max_consecutive_review_exchange_failures` | integer | `3` | Escalate to needs-human after this many consecutive review-exchange runs ended in reviewer/coder no-completion timeouts. | `2`, `3`, `5` | Bounds the runaway loop where a reviewer agent keeps timing out without writing its verdict file. Each consecutive no-completion summary on the same coding session counts; any clean (non-error) summary, scratch-reset boundary, or different reason resets the count. |
 | `review.triage_review_agent` | string (optional) | `None` | Agent for batch reviews (optional) | `agent:triage` | Must match a label defined under agents. |
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) | `0`, `5`, `10` | Set to 0 to only trigger triage manually. |
 
@@ -133,5 +134,4 @@ _Auto-generated from settings schema._
 | `worktrees.seed_ref` | string (optional) | `None` | Optional local ref used to seed fresh issue worktrees before review/PR creation | `HEAD`, `main`, `fc42d4c` | Use for local iteration when fresh issue worktrees should inherit a specific local ref. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
 | `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic. |
-
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

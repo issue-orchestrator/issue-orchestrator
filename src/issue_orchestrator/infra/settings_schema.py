@@ -730,6 +730,29 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.exchange.loop.require_validation",
         },
     )
+    max_consecutive_review_exchange_failures: int = Field(
+        3,
+        title="Max Consecutive Review-Exchange Failures",
+        description=(
+            "Escalate to needs-human after this many consecutive "
+            "review-exchange runs ended in reviewer/coder no-completion timeouts."
+        ),
+        ge=1,
+        le=20,
+        json_schema_extra={
+            "doc_examples": ["2", "3", "5"],
+            "doc_notes": (
+                "Bounds the runaway loop where a reviewer agent keeps timing "
+                "out without writing its verdict file. Each consecutive "
+                "no-completion summary on the same coding session counts; "
+                "any clean (non-error) summary, scratch-reset boundary, or "
+                "different reason resets the count."
+            ),
+            "section": "Code Review Workflow",
+            "config_attr": "max_consecutive_review_exchange_failures",
+            "yaml_path": "review.max_consecutive_review_exchange_failures",
+        },
+    )
     triage_agent: Optional[str] = Field(
         None,
         title="Triage Review Agent",

@@ -237,6 +237,34 @@ class CompletionReviewExchange:
             )
             return mode, outcome, halt, False
 
+        # Bound the no-completion runaway. When the agent's sandbox blocks
+        # the response-file write, every retry produces another
+        # ``status=error reason=*_no_completion`` summary, the cache lookup
+        # rejects it (no validation record), and we relaunch the exchange
+        # forever. After N consecutive matches on the same coding session,
+        # halt and surface a definite review_exchange error so the
+        # completion processor escalates to needs-human instead of
+        # spawning attempt N+1.
+        max_failures = self._max_consecutive_review_exchange_failures()
+        if session_name is not None and max_failures > 0:
+            consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
+                worktree,
+                session_name,
+                not_before_started_at=review_cache_boundary_started_at,
+            )
+            if consecutive >= max_failures:
+                logger.error(
+                    "[REVIEW_EXCHANGE] no-completion runaway detected; "
+                    "halting issue=%d session=%s consecutive=%d max=%d",
+                    issue_number, session_name, consecutive, max_failures,
+                )
+                errors.append(
+                    f"review_exchange: {consecutive} consecutive "
+                    f"reviewer/coder no-completion failures (max {max_failures}) — "
+                    "escalating to needs-human"
+                )
+                return exchange_mode, None, True, False
+
         job_id = _review_exchange_job_id(issue_number, session_name)
 
         # If a previous background attempt raised, the supervisor recorded
@@ -517,6 +545,19 @@ class CompletionReviewExchange:
             exchange_result=exchange_result,
         )
         return exchange_mode, exchange_result, False
+
+    def _max_consecutive_review_exchange_failures(self) -> int:
+        """Return the configured cap on consecutive ``*_no_completion``
+        failures before escalating, or 0 if config is absent (in which
+        case the bound is disabled)."""
+        if self._config is None:
+            return 0
+        max_failures = getattr(
+            self._config, "max_consecutive_review_exchange_failures", 0,
+        )
+        if not isinstance(max_failures, int) or max_failures < 0:
+            return 0
+        return max_failures
 
     def resolve_required_review_run_dir(
         self,

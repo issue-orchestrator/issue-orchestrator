@@ -280,6 +280,12 @@ class Config:
     review_exchange_max_rounds: int = 10
     review_exchange_max_no_progress: int = 2
     review_exchange_require_validation: bool = True
+    # Cap on consecutive review-exchange failures with reason
+    # ``*_no_completion`` (reviewer or coder timed out without writing
+    # a verdict). After N failures in a row on the same coding session,
+    # escalate to needs-human instead of relaunching forever. Mirrors
+    # ``max_consecutive_publish_failures`` for publish loops.
+    max_consecutive_review_exchange_failures: int = 3
 
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
@@ -618,6 +624,7 @@ class Config:
                 },
                 "max_rework_cycles": self.max_rework_cycles,
                 "max_consecutive_publish_failures": self.max_consecutive_publish_failures,
+                "max_consecutive_review_exchange_failures": self.max_consecutive_review_exchange_failures,
                 "reviewer_feedback_cache_minutes": self.reviewer_feedback_cache_minutes,
             },
             "cleanup": {
@@ -942,6 +949,8 @@ class Config:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
         if self.max_consecutive_publish_failures != 3:
             review_dict["max_consecutive_publish_failures"] = self.max_consecutive_publish_failures
+        if self.max_consecutive_review_exchange_failures != 3:
+            review_dict["max_consecutive_review_exchange_failures"] = self.max_consecutive_review_exchange_failures
         if self.review_keep_current_approach_label != "reviewer-keep-current-approach":
             review_dict["keep_current_approach_label"] = self.review_keep_current_approach_label
         if self.review_run_audit_min_runtime_minutes != 20:

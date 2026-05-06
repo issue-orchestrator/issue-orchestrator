@@ -44,11 +44,27 @@ class _Sink:
 class _FakeSession:
     """Mock PersistentSession passed back to the exchange runner."""
 
-    def __init__(self, role: str) -> None:
+    def __init__(
+        self,
+        role: str,
+        *,
+        completion_path: Path | None = None,
+        validation_output_dir: Path | None = None,
+    ) -> None:
         self.role = role
         self.closed = False
         self.proc = SimpleNamespace(returncode=None, pid=12345, poll=lambda: None)
         self.master_fd = -1
+        # Captured from the agent env at open time so ``_send`` can
+        # write protocol-guardrail artifacts (completion, validation
+        # record) to the same paths production reads from. The test
+        # used to derive the pair_dir as ``response_file.parent.parent``,
+        # but the response file moved into the role's worktree (so the
+        # agent's seatbelt sandbox can write it). Env-driven discovery
+        # is the same indirection production agents use, so the test
+        # stays correct as path layout evolves.
+        self.completion_path = completion_path
+        self.validation_output_dir = validation_output_dir
 
 
 def _make_agent(prompt_path: Path) -> AgentConfig:
@@ -133,7 +149,13 @@ def _patch_persistent_runner(
                 encoding="utf-8",
             )
         state["opened"].append(role)
-        return _FakeSession(role)
+        completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
+        validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
+        return _FakeSession(
+            role,
+            completion_path=Path(completion_env) if completion_env else None,
+            validation_output_dir=Path(validation_env) if validation_env else None,
+        )
 
     def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
         role = session.role
@@ -146,9 +168,12 @@ def _patch_persistent_runner(
         # Stub the coder's completion artifact write so the protocol
         # guardrail in pse._validate_coder_completion has the file it expects.
         if role == "coder" and write_coder_completion:
-            run_dir = response_file.parent.parent
-            state["run_dir"] = run_dir
-            completion = run_dir / "coder" / "completion-coder.json"
+            completion = session.completion_path
+            assert completion is not None, (
+                "test fixture: coder fake session must have completion_path "
+                "captured from env at open time"
+            )
+            state["completion_path"] = completion
             completion.parent.mkdir(parents=True, exist_ok=True)
             completion.write_text(
                 json.dumps({"outcome": "completed", "implementation": "stub"}),
@@ -158,7 +183,10 @@ def _patch_persistent_runner(
             # require_validation=True tests don't blow up on the coder
             # guardrail. Tests exercising missing-validation set
             # ``write_coder_completion=False``.
-            (run_dir / "validation-record.json").write_text(
+            validation_dir = session.validation_output_dir
+            assert validation_dir is not None
+            validation_dir.mkdir(parents=True, exist_ok=True)
+            (validation_dir / "validation-record.json").write_text(
                 json.dumps({"passed": True}), encoding="utf-8",
             )
         return head
@@ -802,20 +830,30 @@ class TestCoderProtocolGuardrail:
                     '"offset_ms":0,"rows":40,"cols":120}\n',
                     encoding="utf-8",
                 )
-            return _FakeSession(role)
+            completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
+            validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
+            return _FakeSession(
+                role,
+                completion_path=Path(completion_env) if completion_env else None,
+                validation_output_dir=Path(validation_env) if validation_env else None,
+            )
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             role = session.role
             if role == "coder":
                 coder_call_count["n"] += 1
-                run_dir = response_file.parent.parent
                 if coder_call_count["n"] == 1:
                     # Round 1: write a completion + passing validation.
-                    (run_dir / "coder" / "completion-coder.json").write_text(
+                    completion = session.completion_path
+                    validation_dir = session.validation_output_dir
+                    assert completion is not None and validation_dir is not None
+                    completion.parent.mkdir(parents=True, exist_ok=True)
+                    completion.write_text(
                         json.dumps({"outcome": "completed", "round": 1}),
                         encoding="utf-8",
                     )
-                    (run_dir / "validation-record.json").write_text(
+                    validation_dir.mkdir(parents=True, exist_ok=True)
+                    (validation_dir / "validation-record.json").write_text(
                         json.dumps({"passed": True}), encoding="utf-8",
                     )
                 # Round 2 and retries: do NOT write completion. The runner
@@ -1220,6 +1258,1344 @@ class TestRoleEnvironmentScrubbing:
             session_name="exchange-1",
         )
         assert env.get("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN") == "scoped-cb-token"
+
+
+class TestResponseFileInsideWorktree:
+    """The per-round response file must live inside the role's worktree.
+
+    Regression guard for the runaway-loop bug fixed in this PR: the
+    reviewer agent's seatbelt sandbox restricts writes to its cwd
+    (the reviewer worktree). When the response file lived under the
+    base-repo persistent-pair dir, every reviewer write attempt failed
+    with ``operation not permitted``; the round timed out without a
+    response file, the orchestrator relaunched the exchange, repeat
+    forever. Keep these assertions tight — moving the response path
+    back outside the worktree would silently re-introduce the loop.
+    """
+
+    def test_response_paths_resolve_inside_role_worktrees(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        captured: dict[str, Path] = {}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            if recording_path is not None:
+                recording_path.parent.mkdir(parents=True, exist_ok=True)
+                recording_path.write_text(
+                    '{"schema_version":1,"event_type":"resize",'
+                    '"offset_ms":0,"rows":40,"cols":120}\n',
+                    encoding="utf-8",
+                )
+            captured[f"{role}_response"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
+            captured[f"{role}_working_dir"] = Path(working_dir)
+            return _FakeSession(role)
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            captured.setdefault(f"{session.role}_response_arg", response_file)
+            return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
+
+        registry = _FakePairRegistry()
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=registry,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        # The agent's env var ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE
+        # must point inside the role's working_dir (its sandbox-writable
+        # root). The runner's ``send_round`` call must use the same path.
+        assert captured["coder_response"].is_relative_to(coder_wt), (
+            f"coder response file {captured['coder_response']} is not inside "
+            f"the coder worktree {coder_wt}"
+        )
+        assert captured["reviewer_response"].is_relative_to(reviewer_wt), (
+            f"reviewer response file {captured['reviewer_response']} is not "
+            f"inside the reviewer worktree {reviewer_wt}"
+        )
+        assert captured["reviewer_response_arg"] == captured["reviewer_response"]
+
+    def test_response_paths_are_outside_persistent_pair_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Belt-and-suspenders: reject any drift back into the base-repo
+        persistent-pair dir, which is what the seatbelt sandbox rejects."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        persistent_pair_root = tmp_path / "persistent-pairs"
+
+        captured: dict[str, Path] = {}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            if recording_path is not None:
+                recording_path.parent.mkdir(parents=True, exist_ok=True)
+                recording_path.write_text(
+                    '{"schema_version":1,"event_type":"resize",'
+                    '"offset_ms":0,"rows":40,"cols":120}\n',
+                    encoding="utf-8",
+                )
+            captured[role] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
+            return _FakeSession(role)
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=_FakePairRegistry(),
+            persistent_pair_root=persistent_pair_root,
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        for role, path in captured.items():
+            assert not str(path).startswith(str(persistent_pair_root)), (
+                f"{role} response file {path} drifted back under "
+                f"persistent_pair_root {persistent_pair_root}; this is the "
+                "exact path the agent's sandbox rejects"
+            )
+
+
+class TestPerSessionRecordingMirror:
+    """Per-session recording slice in run_dir/<role>/terminal-recording.jsonl.
+
+    Without this projection, the session run-dir has only chapter
+    offsets that point into a pair-scoped recording the run_dir
+    doesn't own — the timeline viewer for review-exchange sessions
+    looked empty even when the agent had emitted megabytes of output.
+    The slice + manifest indirection make each run_dir self-contained.
+    """
+
+    def test_role_slice_files_seeded_and_manifest_points_at_them(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """At exchange start, a viewer hitting the run_dir mid-round must
+        see the per-session slice files (not 404), and the manifest's
+        ``coder_recording`` / ``reviewer_recording`` keys must point at
+        them. The pair-scoped recording remains discoverable under
+        ``coder_recording_pair`` / ``reviewer_recording_pair``."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "ok",
+                              "getting_closer": True}],
+                "coder": [],
+            },
+        )
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        # Find the actual run_dir from the coder worktree's sessions/.
+        # session_output also creates a friendly-name symlink alongside
+        # the timestamped real dir; filter symlinks so we land on the
+        # real dir (which is the only one that holds manifest.json).
+        runs = list((coder_wt / ".issue-orchestrator" / "sessions").iterdir())
+        runs = [
+            r for r in runs
+            if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
+        ]
+        assert len(runs) == 1, f"expected one run_dir, got {runs}"
+        run_dir = runs[0]
+
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        assert "coder_recording" in manifest
+        assert "reviewer_recording" in manifest
+        assert "coder_recording_pair" in manifest
+        assert "reviewer_recording_pair" in manifest
+
+        coder_slice = Path(manifest["coder_recording"])
+        reviewer_slice = Path(manifest["reviewer_recording"])
+        # Per-session slices must live inside the run_dir itself so
+        # worktree teardown is the one and only lifetime they care about.
+        assert coder_slice.is_relative_to(run_dir), coder_slice
+        assert reviewer_slice.is_relative_to(run_dir), reviewer_slice
+        assert coder_slice.exists()
+        assert reviewer_slice.exists()
+        # The pair-scoped pointers must NOT collide with the per-session
+        # slices — that would mean the manifest is silently overwriting
+        # one with the other.
+        assert manifest["coder_recording"] != manifest["coder_recording_pair"]
+        assert manifest["reviewer_recording"] != manifest["reviewer_recording_pair"]
+
+    def test_role_slice_mirror_copies_pair_events_into_run_dir(
+        self, tmp_path: Path,
+    ) -> None:
+        """``_RoleSliceMirror`` projects pair-recording events into the
+        per-session slice deterministically: it appends only events in
+        ``[last_event_idx, current_event_idx)`` and updates
+        ``last_event_idx`` so successive calls don't re-copy."""
+        pair_recording = tmp_path / "pair" / "terminal-recording.jsonl"
+        pair_recording.parent.mkdir(parents=True)
+        # Three canonical resize events, distinguishable so we can assert
+        # the slice contains exactly the right ones.
+        events = [
+            json.dumps({"schema_version": 1, "event_type": "resize",
+                        "offset_ms": i * 100, "rows": 40, "cols": 120 + i})
+            for i in range(3)
+        ]
+        pair_recording.write_text("\n".join(events) + "\n", encoding="utf-8")
+
+        slice_path = tmp_path / "run" / "reviewer" / "terminal-recording.jsonl"
+        # Start at index 0 — first call should mirror events 0 and 1.
+        mirror = pse._RoleSliceMirror(  # noqa: SLF001 — testing internal contract
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=0,
+        )
+        written = mirror.mirror_through(2)
+        assert written == 2
+        assert mirror.last_event_idx == 2
+        slice_lines = [
+            line for line in slice_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(slice_lines) == 2
+        assert json.loads(slice_lines[0])["cols"] == 120
+        assert json.loads(slice_lines[1])["cols"] == 121
+
+        # Second call mirrors only the remaining event.
+        written = mirror.mirror_through(3)
+        assert written == 1
+        assert mirror.last_event_idx == 3
+        slice_lines = [
+            line for line in slice_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(slice_lines) == 3
+        assert json.loads(slice_lines[2])["cols"] == 122
+
+        # No-op if current <= last.
+        written = mirror.mirror_through(3)
+        assert written == 0
+
+    def test_slice_base_freezes_at_construction_for_offset_translation(
+        self, tmp_path: Path,
+    ) -> None:
+        """``slice_base`` is the immutable starting offset that defines
+        the slice's "zero". Chapter sidecars store
+        ``pair_event_idx - slice_base`` so the viewer can scrub the
+        manifest-pointed slice directly. Without that translation,
+        cached pairs on exchange 2+ record offsets the slice file
+        cannot satisfy and the timeline plays back empty."""
+        pair_recording = tmp_path / "pair" / "terminal-recording.jsonl"
+        pair_recording.parent.mkdir(parents=True)
+        pair_recording.write_text("", encoding="utf-8")
+        slice_path = tmp_path / "run" / "reviewer" / "terminal-recording.jsonl"
+
+        # Fresh pair: slice starts at the very beginning of the pair
+        # recording. Slice-relative offset == pair offset.
+        fresh = pse._RoleSliceMirror(  # noqa: SLF001
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=0,
+        )
+        assert fresh.slice_base == 0
+        assert fresh.pair_to_slice_offset(0) == 0
+        assert fresh.pair_to_slice_offset(50) == 50
+
+        # Cached pair on exchange 2: prior exchange already wrote 100
+        # events into the pair recording. Slice-relative offsets must
+        # be (pair_idx - 100) so the chapter sidecar matches the
+        # slice's local indexing.
+        cached = pse._RoleSliceMirror(  # noqa: SLF001
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=100,
+        )
+        assert cached.slice_base == 100
+        # Pair offsets at or below slice_base belong to prior exchanges
+        # and clamp to 0 (no negative offsets — those would index past
+        # the start of the slice and silently return wrong content).
+        assert cached.pair_to_slice_offset(50) == 0
+        assert cached.pair_to_slice_offset(100) == 0
+        # Pair offset 150 in exchange 2 is event 50 of the slice file.
+        assert cached.pair_to_slice_offset(150) == 50
+
+        # slice_base does NOT advance when last_event_idx advances —
+        # the translation reference must stay anchored to exchange
+        # start so every chapter in the exchange uses the same zero.
+        cached.last_event_idx = 175
+        assert cached.slice_base == 100
+        assert cached.pair_to_slice_offset(175) == 75
+
+    def test_chapter_offsets_are_slice_relative_for_cached_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end chapter contract: when the manifest points at the
+        per-session slice, chapter offsets must index INTO the slice,
+        not into the pair recording. Catches the cached-pair regression
+        where slice-relative semantics drift back to pair-relative and
+        the web replay route returns empty windows."""
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        # Pre-seed the pair recording with 50 "prior exchange" events
+        # before the test exchange even starts. The test then runs one
+        # exchange whose chapters must record offsets relative to the
+        # slice (which begins at index 50 of the pair recording).
+        prior_pair_recording = (
+            tmp_path / "persistent-pairs" / "issue-42" / "reviewer"
+            / "terminal-recording.jsonl"
+        )
+        prior_pair_recording.parent.mkdir(parents=True, exist_ok=True)
+        prior_pair_recording.write_text(
+            "\n".join(
+                json.dumps({
+                    "schema_version": 1, "event_type": "resize",
+                    "offset_ms": i, "rows": 40, "cols": 120,
+                })
+                for i in range(50)
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            # Reviewer writer appends to the pre-seeded pair recording.
+            # Coder writer uses a fresh recording — only the reviewer
+            # path matters for this test's assertions.
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            session = _FakeSession(role)
+            session.log_writer = writer
+            return session
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            writers[session.role].write(b"agent output\n")
+            return {"response_type": "ok", "response_text": "ok",
+                    "getting_closer": True}
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        run_dir = _find_review_exchange_run_dir(coder_wt)
+        chapters_path = run_dir / "reviewer" / "chapters.json"
+        chapters_data = json.loads(chapters_path.read_text(encoding="utf-8"))
+        slice_lines = [
+            line for line in (
+                run_dir / "reviewer" / "terminal-recording.jsonl"
+            ).read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+        slice_event_count = len(slice_lines)
+        # Every chapter offset must be reachable inside the slice file.
+        # If they remained pair-relative they'd be in the 50+ range
+        # while the slice file holds at most a handful of events.
+        for chapter in chapters_data["chapters"]:
+            offset = chapter["recording_event_index"]
+            assert 0 <= offset <= slice_event_count, (
+                f"chapter at slice-relative offset {offset} is unreachable "
+                f"in slice with {slice_event_count} events; chapter "
+                f"section={chapter.get('section')} round={chapter.get('cycle_index')}. "
+                "If offsets are still pair-relative, the web replay "
+                "route's all_events[offset:] will return empty content."
+            )
+
+    def test_role_slice_mirror_skips_prior_exchange_content(
+        self, tmp_path: Path,
+    ) -> None:
+        """Cached pairs carry events from previous exchanges in the pair
+        recording. The per-session slice must skip those events: the
+        mirror's ``last_event_idx`` is initialized to the pair recording's
+        size *at exchange start*, so prior content stays out."""
+        pair_recording = tmp_path / "pair" / "terminal-recording.jsonl"
+        pair_recording.parent.mkdir(parents=True)
+        events = [
+            json.dumps({"schema_version": 1, "event_type": "resize",
+                        "offset_ms": i * 100, "rows": 40, "cols": 120 + i})
+            for i in range(5)
+        ]
+        pair_recording.write_text("\n".join(events) + "\n", encoding="utf-8")
+
+        slice_path = tmp_path / "run" / "reviewer" / "terminal-recording.jsonl"
+        # Simulate "this exchange started after the first 3 events were
+        # already in the pair recording from an earlier exchange."
+        mirror = pse._RoleSliceMirror(  # noqa: SLF001
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=3,
+        )
+        written = mirror.mirror_through(5)
+        assert written == 2
+        slice_lines = [
+            line for line in slice_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [json.loads(line)["cols"] for line in slice_lines] == [123, 124]
+
+
+class TestEndToEndTimelineReadback:
+    """Exercise the full viewer-side read path against real artifacts.
+
+    The original empty-reviewer-timeline bug shipped past 27 unit tests
+    because every test asserted on the chapter sidecar / manifest
+    *internals* but no test ever asked the question "if a UI consumed
+    the manifest's ``<role>_recording`` and read it, would it see the
+    agent's output?" These tests close that gap by using the real
+    ``MirroredTerminalRecordingWriter`` to populate the pair recording
+    and the real ``ManifestAccessor`` to read it back.
+    """
+
+    def test_per_session_slice_returns_real_agent_output_to_viewer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end: agent writes events to the pair recording during
+        rounds, the chapter-driven mirror appends them to the run-dir
+        slice, and ``ManifestAccessor.get_review_exchange_phase_terminal_recording``
+        returns the slice with the agent's events. Without this, the
+        timeline viewer sees an empty file even though the agent
+        produced megabytes of output."""
+        from issue_orchestrator.execution.manifest_accessor import (
+            ManifestAccessor,
+            RunIdentity,
+        )
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        registry = _FakePairRegistry()
+        # Track real writers so _send can simulate agent output bytes
+        # flowing through the same writer used at session open.
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            session = _FakeSession(role)
+            # Stash the writer on the fake session so close-time tests
+            # can flush. Not strictly required for read-back but mirrors
+            # production where close_persistent_session calls writer.close().
+            session.log_writer = writer
+            return session
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            role = session.role
+            # Simulate the agent producing output bytes during the round.
+            # The MirroredTerminalRecordingWriter writes a real
+            # ``output`` event per call, which is exactly what the
+            # production PTY drain path produces.
+            payload = f"agent {role} responding to: {prompt[:40]}\n".encode()
+            writers[role].write(payload)
+            return {
+                "response_type": "ok",
+                "response_text": f"{role} ok",
+                "getting_closer": True,
+            }
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=registry,
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        run_dir = _find_review_exchange_run_dir(coder_wt)
+
+        # Reviewer slice must be present and non-empty when read by the
+        # viewer-side accessor.
+        accessor = ManifestAccessor(
+            run_identity=RunIdentity(issue_number=42, run_dir=run_dir),
+        )
+        reviewer_stream = accessor.get_review_exchange_phase_terminal_recording(
+            round_index=1, role="reviewer",
+        )
+        reviewer_path = reviewer_stream.path
+        reviewer_text = reviewer_path.read_text(encoding="utf-8")
+        assert reviewer_text.strip(), (
+            "viewer-side read returned empty content for reviewer slice; "
+            "this is exactly the user-visible 'crappy timeline' bug"
+        )
+        # Decode the slice and assert the agent's payload survived the
+        # mirror round-trip.
+        decoded = _decode_terminal_recording(reviewer_path)
+        assert any(
+            "agent reviewer" in chunk for chunk in decoded
+        ), f"reviewer slice did not contain agent output; events={decoded}"
+
+    def test_viewer_accessor_reads_slice_not_pair_recording(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The manifest's ``<role>_recording`` key must point at the
+        per-session slice (inside run_dir), not the pair-scoped
+        recording. Otherwise the viewer would see content from prior
+        exchanges leaking into this exchange's playback."""
+        from issue_orchestrator.execution.manifest_accessor import (
+            ManifestAccessor,
+            RunIdentity,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "ok",
+                              "getting_closer": True}],
+                "coder": [],
+            },
+        )
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        run_dir = _find_review_exchange_run_dir(coder_wt)
+        accessor = ManifestAccessor(
+            run_identity=RunIdentity(issue_number=42, run_dir=run_dir),
+        )
+        # allow_empty=True because the patched _send returns canned dicts
+        # without writing real PTY bytes — the slice is touched empty.
+        # The point of this test is the *path*, not the content.
+        reviewer_stream = accessor.get_review_exchange_phase_terminal_recording(
+            round_index=1, role="reviewer", allow_empty=True,
+        )
+        # The viewer must land inside the run_dir, not in the pair dir
+        # under persistent-pairs/. Otherwise a worktree teardown leaves
+        # the viewer 404'ing on a still-live recording.
+        assert reviewer_stream.path.is_relative_to(run_dir), (
+            f"viewer resolved reviewer recording to {reviewer_stream.path}, "
+            f"which is NOT inside run_dir {run_dir} — the per-session "
+            "manifest indirection broke"
+        )
+
+
+class TestAgentEnvPathIsolation:
+    """Audit every agent-facing env var that holds a path.
+
+    The seatbelt sandbox blocks writes outside the role's working_dir.
+    Any ``ISSUE_ORCHESTRATOR_*`` env var that names a path the agent
+    might write to must therefore resolve under ``working_dir`` (or
+    appear on an explicit allowlist with documented justification).
+    Catches the next "we added a new path env var pointing into
+    base-repo state" before it ships.
+    """
+
+    # Paths the agent receives as env vars but never writes to directly
+    # (the orchestrator writes them via HTTP / from outside the sandbox).
+    # Each entry must come with a justification — adding to this list is
+    # how a reviewer says "yes, this is intentional, here's why the
+    # sandbox can't reach it."
+    _DOCUMENTED_NON_AGENT_WRITTEN_PATHS = {
+        "ISSUE_ORCHESTRATOR_COMPLETION_PATH": (
+            "Written by the orchestrator process via the coding-done CLI's "
+            "HTTP call to the Control API; agent never writes directly."
+        ),
+        "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": (
+            "Written by the orchestrator-side validation gate; agent does "
+            "not write into this directory directly."
+        ),
+        "ISSUE_ORCHESTRATOR_REPO_ROOT": (
+            "Read-only orientation hint inherited from the orchestrator's "
+            "process env so agents/tools that need the repo root know "
+            "where it is. Agents never write to this path."
+        ),
+    }
+
+    def test_every_agent_path_env_var_is_inside_worktree_or_allowlisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        captured: dict[str, dict[str, str]] = {}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            if recording_path is not None:
+                recording_path.parent.mkdir(parents=True, exist_ok=True)
+                recording_path.write_text(
+                    '{"schema_version":1,"event_type":"resize",'
+                    '"offset_ms":0,"rows":40,"cols":120}\n',
+                    encoding="utf-8",
+                )
+            captured[role] = {
+                "working_dir": str(working_dir),
+                **{k: v for k, v in env.items() if k.startswith("ISSUE_ORCHESTRATOR_")},
+            }
+            return _FakeSession(role)
+
+        def _send(session, **_):  # noqa: ANN003
+            return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=_FakePairRegistry(),
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        for role, env in captured.items():
+            working_dir = Path(env.pop("working_dir"))
+            for key, raw_value in env.items():
+                if not _looks_like_path(raw_value):
+                    continue
+                path = Path(raw_value)
+                if key in self._DOCUMENTED_NON_AGENT_WRITTEN_PATHS:
+                    # Allowlisted — must still verify the justification
+                    # exists (forces reviewer attention on changes here).
+                    assert self._DOCUMENTED_NON_AGENT_WRITTEN_PATHS[key], (
+                        f"{key} appears in the non-agent-written allowlist "
+                        "with no justification — add a docstring before "
+                        "shipping this env var"
+                    )
+                    continue
+                assert path.is_relative_to(working_dir), (
+                    f"{role} env var {key}={path} is outside working_dir "
+                    f"{working_dir}; if the agent writes here from inside "
+                    f"its sandbox, the write will silently fail. Either "
+                    f"move the path inside the worktree (preferred) or "
+                    f"add it to TestAgentEnvPathIsolation."
+                    f"_DOCUMENTED_NON_AGENT_WRITTEN_PATHS with a "
+                    "justification."
+                )
+
+
+class TestSliceIsolationAcrossExchanges:
+    """The per-session slice for exchange N must contain ONLY events
+    produced during exchange N. With cached pairs, the pair recording
+    accumulates across every exchange the pair handles — we must not
+    leak prior content into the new exchange's slice."""
+
+    def test_two_exchanges_on_cached_pair_have_independent_slices(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        # Cache pairs across acquire calls so exchange 2 reuses the same
+        # writer (== same pair recording) that exchange 1 wrote into.
+        cached_pair: dict[str, Any] = {}
+
+        class _CachingFakePairRegistry(_FakePairRegistry):
+            def acquire(self, *, issue_key, spawn):  # type: ignore[override]
+                if "pair" not in cached_pair:
+                    cached_pair["pair"] = spawn()
+                self.acquired.append((issue_key, cached_pair["pair"]))
+                return cached_pair["pair"]
+
+        registry = _CachingFakePairRegistry()
+        round_payloads: dict[str, list[bytes]] = {"coder": [], "reviewer": []}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            session = _FakeSession(role)
+            session.log_writer = writer
+            return session
+
+        exchange_counter = {"n": 0}
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            role = session.role
+            payload = f"exchange-{exchange_counter['n']}-{role}-payload\n".encode()
+            writers[role].write(payload)
+            round_payloads[role].append(payload)
+            return {
+                "response_type": "ok",
+                "response_text": f"{role} ok",
+                "getting_closer": True,
+            }
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            for n in (1, 2):
+                exchange_counter["n"] = n
+                pse.run_persistent_session_exchange(
+                    session_output=session_output,
+                    pair_registry=registry,
+                    persistent_pair_root=tmp_path / "persistent-pairs",
+                    coder_worktree_path=coder_wt,
+                    reviewer_worktree_factory=lambda: reviewer_wt,
+                    issue_number=42,
+                    issue_title="Test",
+                    coder_label="agent:backend",
+                    reviewer_label="agent:reviewer",
+                    coder_agent=_make_agent(prompt_path),
+                    reviewer_agent=_make_agent(prompt_path),
+                    max_rounds=1,
+                    max_no_progress=2,
+                    require_validation=False,
+                )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        runs = sorted(
+            [
+                r for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
+                if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
+            ],
+            key=lambda p: p.stat().st_mtime,
+        )
+        assert len(runs) == 2, f"expected two run_dirs, got {runs}"
+
+        for run_idx, run_dir in enumerate(runs, start=1):
+            slice_path = run_dir / "reviewer" / "terminal-recording.jsonl"
+            decoded = _decode_terminal_recording(slice_path)
+            joined = "".join(decoded)
+            # Exchange N's slice must contain its OWN payload.
+            assert f"exchange-{run_idx}-reviewer" in joined, (
+                f"run {run_idx} slice missing its own payload; events={decoded}"
+            )
+            # And must NOT contain the OTHER exchange's payload.
+            other = 2 if run_idx == 1 else 1
+            assert f"exchange-{other}-reviewer" not in joined, (
+                f"run {run_idx} slice contains exchange-{other} content; "
+                f"the cached-pair last_event_idx initialization leaked. "
+                f"events={decoded}"
+            )
+
+    def test_coder_and_reviewer_slices_dont_cross_contaminate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each role's mirror writes only to its own role's slice. If
+        we accidentally pass coder_mirror to reviewer's _send_role_round
+        (or vice versa), this catches it because the slices would
+        contain the wrong role's events."""
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
+            validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
+            session = _FakeSession(
+                role,
+                completion_path=Path(completion_env) if completion_env else None,
+                validation_output_dir=Path(validation_env) if validation_env else None,
+            )
+            session.log_writer = writer
+            return session
+
+        # Both roles produce role-tagged output during their rounds. The
+        # exchange runs reviewer → coder → reviewer (a 2-round changes
+        # then ok exchange), so each role writes at least once.
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            role = session.role
+            writers[role].write(f"ROLE-MARKER-{role}\n".encode())
+            if role == "coder":
+                # Stub completion artifact so the protocol guardrail passes.
+                completion = session.completion_path
+                assert completion is not None
+                completion.parent.mkdir(parents=True, exist_ok=True)
+                completion.write_text(
+                    json.dumps({"outcome": "completed", "implementation": "stub"}),
+                    encoding="utf-8",
+                )
+            if role == "reviewer":
+                # First reviewer response: changes_requested. Second: ok.
+                if not _send.first_reviewer_done:  # type: ignore[attr-defined]
+                    _send.first_reviewer_done = True  # type: ignore[attr-defined]
+                    return {"response_type": "changes_requested",
+                            "response_text": "fix x", "getting_closer": True}
+                return {"response_type": "ok", "response_text": "ok",
+                        "getting_closer": True}
+            return {"response_type": "ok", "response_text": "fixed",
+                    "getting_closer": True}
+
+        _send.first_reviewer_done = False  # type: ignore[attr-defined]
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=3,
+                max_no_progress=2,
+                require_validation=False,
+            )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        run_dir = _find_review_exchange_run_dir(coder_wt)
+        coder_slice = "".join(
+            _decode_terminal_recording(run_dir / "coder" / "terminal-recording.jsonl"),
+        )
+        reviewer_slice = "".join(
+            _decode_terminal_recording(run_dir / "reviewer" / "terminal-recording.jsonl"),
+        )
+
+        assert "ROLE-MARKER-coder" in coder_slice, "coder slice missing coder marker"
+        assert "ROLE-MARKER-reviewer" in reviewer_slice, "reviewer slice missing reviewer marker"
+        # The smoking gun: cross-contamination.
+        assert "ROLE-MARKER-reviewer" not in coder_slice, (
+            "reviewer marker leaked into coder slice — mirrors got crossed"
+        )
+        assert "ROLE-MARKER-coder" not in reviewer_slice, (
+            "coder marker leaked into reviewer slice — mirrors got crossed"
+        )
+
+    def test_concurrent_issues_have_isolated_slices(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two issues running in parallel must not share manifest slice
+        paths. A path collision would silently mix issue #360's reviewer
+        output into issue #361's timeline."""
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+
+        def _setup(issue: int) -> tuple[Path, Path]:
+            coder = tmp_path / f"coder-wt-{issue}"
+            reviewer = tmp_path / f"reviewer-wt-{issue}"
+            coder.mkdir()
+            reviewer.mkdir()
+            return coder, reviewer
+
+        worktrees = {360: _setup(360), 361: _setup(361)}
+        writers_by_issue: dict[int, dict[str, MirroredTerminalRecordingWriter]] = {
+            360: {}, 361: {},
+        }
+        active_issue = {"n": 360}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = (
+                "reviewer" if "reviewer-wt-" in Path(working_dir).name else "coder"
+            )
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = MirroredTerminalRecordingWriter(
+                recording_path, initial_rows=40, initial_cols=120,
+            )
+            writers_by_issue[active_issue["n"]][role] = writer
+            session = _FakeSession(role)
+            session.log_writer = writer
+            return session
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            role = session.role
+            issue = active_issue["n"]
+            writers_by_issue[issue][role].write(f"ISSUE-{issue}-{role}\n".encode())
+            return {"response_type": "ok", "response_text": f"{role} ok",
+                    "getting_closer": True}
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+        session_output = FileSystemSessionOutput()
+
+        try:
+            for issue, (coder_wt, reviewer_wt) in worktrees.items():
+                active_issue["n"] = issue
+                pse.run_persistent_session_exchange(
+                    session_output=session_output,
+                    pair_registry=_FakePairRegistry(),
+                    persistent_pair_root=tmp_path / "persistent-pairs",
+                    coder_worktree_path=coder_wt,
+                    reviewer_worktree_factory=lambda r=reviewer_wt: r,
+                    issue_number=issue,
+                    issue_title=f"Issue {issue}",
+                    coder_label="agent:backend",
+                    reviewer_label="agent:reviewer",
+                    coder_agent=_make_agent(prompt_path),
+                    reviewer_agent=_make_agent(prompt_path),
+                    max_rounds=1,
+                    max_no_progress=2,
+                    require_validation=False,
+                )
+        finally:
+            for wmap in writers_by_issue.values():
+                for w in wmap.values():
+                    w.close()
+
+        for issue, (coder_wt, _) in worktrees.items():
+            run_dir = _find_review_exchange_run_dir(coder_wt)
+            reviewer_slice = "".join(
+                _decode_terminal_recording(run_dir / "reviewer" / "terminal-recording.jsonl"),
+            )
+            other = 360 if issue == 361 else 361
+            assert f"ISSUE-{issue}-reviewer" in reviewer_slice
+            assert f"ISSUE-{other}-reviewer" not in reviewer_slice, (
+                f"issue {issue} reviewer slice contains issue {other} content"
+            )
+
+
+class TestSliceMirrorRobustness:
+    """The slice mirror is a viewer aid — it must NEVER abort a round
+    or raise into the orchestrator main loop. Doing so would re-trigger
+    the runaway loop the loop-bound fix is designed to prevent."""
+
+    def test_mirror_through_swallows_oserror_and_returns_zero(
+        self, tmp_path: Path,
+    ) -> None:
+        # Simulate an unreadable pair recording (file replaced with a
+        # symlink pointing nowhere). mirror_through must log + return 0.
+        pair_recording = tmp_path / "pair-broken.jsonl"
+        slice_path = tmp_path / "slice.jsonl"
+        # Create then break: open a real source file, then replace with
+        # a symlink to a missing target so .open() fails with OSError.
+        pair_recording.write_text("garbage", encoding="utf-8")
+        pair_recording.unlink()
+        # On macOS/linux, a dangling symlink causes .exists() to return
+        # False, which the mirror short-circuits via the early exit. Use
+        # an unreadable directory instead so .open() raises OSError on
+        # an existing path.
+        pair_recording.mkdir()  # path exists but isn't a regular file
+        mirror = pse._RoleSliceMirror(  # noqa: SLF001
+            pair_recording=pair_recording,
+            session_slice=slice_path,
+            last_event_idx=0,
+        )
+        # Must not raise. Returns 0 because the open() raised OSError.
+        written = mirror.mirror_through(5)
+        assert written == 0
+        # last_event_idx must NOT have advanced — a future successful
+        # mirror call should still see those events as "new."
+        assert mirror.last_event_idx == 0
+
+
+class TestLoopBoundCounting:
+    """Direct adapter-level tests of count_consecutive_review_exchange_no_completion."""
+
+    def _session_output_with_summaries(
+        self,
+        tmp_path: Path,
+        summaries: list[dict[str, Any]],
+        *,
+        session_name: str = "coding-1",
+    ) -> tuple[FileSystemSessionOutput, Path]:
+        """Build a sessions/ tree with the given summaries, oldest first.
+
+        Each entry is the JSON content of summary.json. The sessions
+        directory layout matches what FileSystemSessionOutput produces.
+        """
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        # Use distinct mtimes so newest-first ordering is deterministic.
+        for idx, summary in enumerate(summaries):
+            run_dir = sessions_dir / (
+                f"2026010{idx + 1}T000000Z__review-exchange-42-r{idx}"
+            )
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({
+                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                    "review_exchange_dir": str(run_dir / "review-exchange"),
+                }),
+                encoding="utf-8",
+            )
+            exchange_dir = run_dir / "review-exchange"
+            exchange_dir.mkdir()
+            (exchange_dir / "summary.json").write_text(
+                json.dumps(summary), encoding="utf-8",
+            )
+            # Force ascending mtime (idx=0 oldest, idx=N-1 newest).
+            os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
+        return FileSystemSessionOutput(), worktree
+
+    def test_all_no_completion_summaries_count_to_their_total(
+        self, tmp_path: Path,
+    ) -> None:
+        so, wt = self._session_output_with_summaries(tmp_path, [
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+        ])
+        assert so.count_consecutive_review_exchange_no_completion(
+            wt, "coding-1",
+        ) == 3
+
+    def test_clean_ok_resets_count_to_zero(self, tmp_path: Path) -> None:
+        # Sequence (oldest → newest): error, error, ok, error, error.
+        # Newest-first traversal: error, error, ok → stop at ok.
+        so, wt = self._session_output_with_summaries(tmp_path, [
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "ok", "reason": "reviewer_ok"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+        ])
+        assert so.count_consecutive_review_exchange_no_completion(
+            wt, "coding-1",
+        ) == 2
+
+    def test_different_error_reason_resets_count(self, tmp_path: Path) -> None:
+        # A coder_protocol_error is a different failure mode — not the
+        # runaway we're trying to bound. Counter must stop at it.
+        so, wt = self._session_output_with_summaries(tmp_path, [
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "coder_protocol_error"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+        ])
+        # Newest-first: error/no_completion (1), error/protocol_error (stop).
+        assert so.count_consecutive_review_exchange_no_completion(
+            wt, "coding-1",
+        ) == 1
+
+    def test_no_summaries_returns_zero(self, tmp_path: Path) -> None:
+        so, wt = self._session_output_with_summaries(tmp_path, [])
+        assert so.count_consecutive_review_exchange_no_completion(
+            wt, "coding-1",
+        ) == 0
+
+    def test_coding_session_run_dir_resets_count(self, tmp_path: Path) -> None:
+        """A non-review-exchange run_dir between failures must stop the
+        count. Otherwise old failures from coding session A would carry
+        across a successful coder turn into the new session B's quota
+        and trigger false escalation after a single failure on B.
+
+        Sequence (oldest → newest):
+          - 2 reviewer_no_completion summaries (coding session A)
+          - a fresh coding session run_dir (no review-exchange summary)
+          - 1 reviewer_no_completion summary (coding session B)
+
+        With a default cap of 3, the bug counted 3 → escalate. Correct
+        behavior counts 1 → continue.
+        """
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        def _make_review_exchange(idx: int, summary: dict[str, Any]) -> None:
+            run_dir = sessions_dir / (
+                f"2026010{idx + 1}T000000Z__review-exchange-42-r{idx}"
+            )
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({
+                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                    "review_exchange_dir": str(run_dir / "review-exchange"),
+                }), encoding="utf-8",
+            )
+            exchange_dir = run_dir / "review-exchange"
+            exchange_dir.mkdir()
+            (exchange_dir / "summary.json").write_text(
+                json.dumps(summary), encoding="utf-8",
+            )
+            os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
+
+        def _make_coding(idx: int) -> None:
+            run_dir = sessions_dir / f"2026010{idx + 1}T000000Z__coding-1"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({
+                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                }), encoding="utf-8",
+            )
+            os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
+
+        # idx 0, 1: failures from prior coding session A
+        _make_review_exchange(0, {"status": "error", "reason": "reviewer_no_completion"})
+        _make_review_exchange(1, {"status": "error", "reason": "reviewer_no_completion"})
+        # idx 2: fresh coding session B kicked off (NEW coder turn)
+        _make_coding(2)
+        # idx 3: first review-exchange under B fails
+        _make_review_exchange(3, {"status": "error", "reason": "reviewer_no_completion"})
+
+        so = FileSystemSessionOutput()
+        # Newest-first walk: error (1), coding-1 (boundary — STOP).
+        # Pre-fix this returned 3 (counts skipped the coding-1 dir).
+        assert so.count_consecutive_review_exchange_no_completion(
+            worktree, "coding-1",
+        ) == 1, (
+            "loop bound bled across a coding-session boundary; the new "
+            "coder turn must reset the no-completion quota"
+        )
+
+    def test_boundary_excludes_pre_scratch_reset_failures(
+        self, tmp_path: Path,
+    ) -> None:
+        so, wt = self._session_output_with_summaries(tmp_path, [
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+            {"status": "error", "reason": "reviewer_no_completion"},
+        ])
+        # Only the newest summary (started_at 2026-01-03) is past the
+        # boundary; the older two are pre-reset and don't count.
+        boundary = "2026-01-03T00:00:00+00:00"
+        assert so.count_consecutive_review_exchange_no_completion(
+            wt, "coding-1", not_before_started_at=boundary,
+        ) == 1
+
+
+class TestLoopBoundEscalation:
+    """The bound must halt the spawn AND surface an error string the
+    completion processor recognizes as a needs-human escalation."""
+
+    def test_halt_error_is_recognized_by_review_exchange_classifier(
+        self,
+    ) -> None:
+        """The exact error prefix we append must trigger the
+        review-exchange-halted branch in completion_action_planner.
+        Catches "someone renamed the prefix" silent breakage."""
+        from issue_orchestrator.control.completion_action_planner import (
+            has_review_exchange_errors,
+        )
+        sample = (
+            "review_exchange: 3 consecutive reviewer/coder no-completion "
+            "failures (max 3) — escalating to needs-human"
+        )
+        assert has_review_exchange_errors([sample]), (
+            "halt error string is not classified as a review-exchange "
+            "halt; the escalation will silently no-op"
+        )
+
+    def test_halt_error_is_recognized_by_result_artifacts_classifier(
+        self,
+    ) -> None:
+        """The other halting check is an inline ``startswith`` in
+        completion_result_artifacts. If the prefix changes, that
+        path also silently stops escalating. Lock the prefix in."""
+        sample = (
+            "review_exchange: 3 consecutive reviewer/coder no-completion "
+            "failures (max 3) — escalating to needs-human"
+        )
+        # Must start with the canonical "review_exchange:" prefix that
+        # build_processing_result_with_completion uses to classify
+        # halts (see completion_result_artifacts.py:119).
+        assert sample.startswith("review_exchange:"), (
+            "halt error string lost its review_exchange: prefix; "
+            "the inline classifier in completion_result_artifacts "
+            "will not flag this as a review-exchange halt"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test helpers shared by the new test classes
+# ---------------------------------------------------------------------------
+
+
+def _find_review_exchange_run_dir(coder_wt: Path) -> Path:
+    """Locate the single timestamped review-exchange run_dir under a
+    coder worktree (filtering symlinks the friendly-name layer creates)."""
+    runs = [
+        r for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
+        if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
+    ]
+    assert len(runs) == 1, f"expected one run_dir, got {runs}"
+    return runs[0]
+
+
+def _decode_terminal_recording(path: Path) -> list[str]:
+    """Decode a terminal recording's output events into UTF-8 strings.
+
+    Filters out non-output (resize) events so callers can grep for
+    agent payload markers without false positives from geometry frames.
+    """
+    import base64
+
+    decoded: list[str] = []
+    for raw in path.read_text("utf-8").splitlines():
+        if not raw.strip():
+            continue
+        event = json.loads(raw)
+        if event.get("event_type") != "output":
+            continue
+        data = event.get("data_b64")
+        if not data:
+            continue
+        decoded.append(base64.b64decode(data).decode("utf-8", errors="replace"))
+    return decoded
+
+
+def _looks_like_path(value: str) -> bool:
+    """Heuristic: env-var values that look like filesystem paths."""
+    if not value:
+        return False
+    return value.startswith("/") or value.startswith("~")
 
 
 class TestSessionCleanup:
