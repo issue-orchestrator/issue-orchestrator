@@ -145,6 +145,13 @@ class MirroredTerminalRecordingWriter:
         # ``persistent_round_runner.send_round`` can sample the
         # recording's growth without parsing the writer's name.
         self.recording_path = recording_path
+        # Track the latest geometry so dynamically-added recordings can
+        # seed themselves with a resize event matching the agent's
+        # current PTY shape. Without this, a slice attached mid-stream
+        # would have no initial geometry and the player would render
+        # with a default that doesn't match the agent's actual cols/rows.
+        self._latest_rows = initial_rows
+        self._latest_cols = initial_cols
         recording_paths = [recording_path]
         for extra_path in additional_recording_paths or ():
             if extra_path not in recording_paths:
@@ -157,12 +164,104 @@ class MirroredTerminalRecordingWriter:
             )
             for path in recording_paths
         ]
+        # Map path → writer for the dynamic-mirror API. Initial writers
+        # are registered here; ``add_mirror_recording`` and
+        # ``remove_mirror_recording`` mutate this map alongside
+        # ``_recordings`` so list order (used by ``write``) and lookup
+        # by path (used by ``remove``) stay in lockstep.
+        self._recording_by_path: dict[Path, TerminalRecordingWriter] = {
+            path: writer
+            for path, writer in zip(recording_paths, self._recordings, strict=True)
+        }
         if initial_rows is not None and initial_cols is not None:
             self._write_resize(rows=initial_rows, cols=initial_cols, elapsed_ms=0)
         self._mirror = None
         if mirror_path is not None:
             mirror_path.parent.mkdir(parents=True, exist_ok=True)
             self._mirror = open(mirror_path, "a", encoding="utf-8")  # noqa: SIM115
+
+    def add_mirror_recording(
+        self,
+        path: Path,
+        *,
+        seed_resize: bool = True,
+    ) -> bool:
+        """Attach an additional recording target mid-stream.
+
+        Subsequent ``write`` calls fan out to this path alongside the
+        canonical recording. The new writer shares the canonical
+        writer's ``_started`` clock so its ``offset_ms`` values stay
+        on the same timeline as the canonical recording — important
+        for chapter-driven scrubbing where a sidecar offset must
+        resolve to a coherent event sequence.
+
+        ``seed_resize=True`` writes the latest known geometry as a
+        first resize event so a viewer attaching to this slice has
+        initial PTY shape (otherwise the player falls back to a
+        default that doesn't match the agent's actual cols/rows).
+        Skipped silently if no geometry is known.
+
+        Returns True when a new recording was registered, False when
+        ``path`` is already registered (idempotent — re-registering
+        the same path during a retry must not duplicate writes).
+        """
+        if path in self._recording_by_path:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        writer = TerminalRecordingWriter(
+            path,
+            started_at=self._started,
+            clock=self._clock,
+        )
+        self._recordings.append(writer)
+        self._recording_by_path[path] = writer
+        if seed_resize and self._latest_rows is not None and self._latest_cols is not None:
+            writer.write_resize(
+                rows=self._latest_rows,
+                cols=self._latest_cols,
+                elapsed_ms=self._elapsed_ms(),
+            )
+        return True
+
+    def remove_mirror_recording(self, path: Path) -> bool:
+        """Detach a previously-added recording target.
+
+        Closes the writer for ``path`` (flushing any pending bytes)
+        and removes it from the fan-out list. Subsequent ``write``
+        calls no longer touch this file. Returns True when a writer
+        was removed, False when ``path`` was not registered (lets
+        callers idempotently tear down without exception).
+
+        The canonical recording (the one passed to ``__init__``)
+        cannot be removed — removing it would break the
+        ``recording_path`` invariant the heartbeat / diagnostics
+        layers depend on. Attempting to remove it raises
+        ``ValueError``.
+        """
+        if path == self.recording_path:
+            raise ValueError(
+                "cannot remove the canonical recording_path "
+                f"{path}; it is the writer's primary target",
+            )
+        writer = self._recording_by_path.pop(path, None)
+        if writer is None:
+            return False
+        try:
+            self._recordings.remove(writer)
+        except ValueError:
+            # Should be impossible (map and list maintained in
+            # lockstep), but tolerate to keep teardown idempotent.
+            pass
+        try:
+            writer.close()
+        except OSError:
+            logger.exception(
+                "Failed to close removed mirror recording at %s; "
+                "subsequent writes will not target it but the file "
+                "may have a half-written final event",
+                path,
+            )
+        return True
 
     @property
     def name(self) -> str:
@@ -205,6 +304,10 @@ class MirroredTerminalRecordingWriter:
         return int((self._clock() - self._started) * 1000)
 
     def _write_resize(self, *, rows: int, cols: int, elapsed_ms: int) -> None:
+        # Cache the geometry so dynamically-added mirror recordings
+        # can seed themselves with the agent's current PTY shape.
+        self._latest_rows = rows
+        self._latest_cols = cols
         for recording in self._recordings:
             recording.write_resize(rows=rows, cols=cols, elapsed_ms=elapsed_ms)
 
