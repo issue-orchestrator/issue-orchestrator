@@ -25,6 +25,7 @@ from ..infra.terminal_cleaning import (
     is_spinner_fragment,
 )
 from ..infra.terminal_recording import append_output_event
+from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
     ChapterSidecarIdentityMismatch,
@@ -690,12 +691,22 @@ Timestamp: {self._now_iso()}
                 # signal, but don't increment.
                 continue
             status = summary.get("status")
-            reason = summary.get("reason") or ""
-            if status == "error" and isinstance(reason, str) and reason.endswith("_no_completion"):
+            reason = summary.get("reason")
+            # Classification is owned by ``domain.review_exchange_resume``
+            # — the same module ``CompletionReviewExchange`` uses to
+            # decide whether to spawn a fresh exchange or halt. Pre-PR
+            # #6271 the adapter encoded the ``_no_completion`` suffix
+            # rule inline, which let the runner's reasons drift apart
+            # from the counter's classification (review feedback on
+            # PR #6270). Routing both consumers through one classifier
+            # function ends that drift.
+            if status == "error" and is_no_completion_reason(
+                reason if isinstance(reason, str) else None,
+            ):
                 count += 1
                 continue
-            # First clean (non-error / different reason) summary stops the
-            # streak — the loop is no longer the no-completion runaway.
+            # First clean (non-no-completion) summary stops the streak —
+            # the loop is no longer the no-completion runaway.
             break
         return count
 
