@@ -346,6 +346,35 @@ class TestPersistentSessionExchangeHappyPath:
         assert len(state["registry"].acquired) == 1
 
 
+class TestPairValidationSeeding:
+    def test_current_validation_seed_replaces_existing_pair_record(
+        self, tmp_path: Path,
+    ) -> None:
+        pair_dir = tmp_path / "pair"
+        pair_record = pair_dir / "validation-record.json"
+        pair_dir.mkdir()
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "old-sha"}),
+            encoding="utf-8",
+        )
+        current_record = tmp_path / "current-validation-record.json"
+        current_record.write_text(
+            json.dumps({"passed": True, "head_sha": "new-sha"}),
+            encoding="utf-8",
+        )
+
+        pse._seed_pair_validation_record(  # noqa: SLF001
+            pair_dir=pair_dir,
+            pair_validation_record=pair_record,
+            source=current_record,
+        )
+
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "new-sha",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Turn-packet / turn-result on-disk artifacts
 # ---------------------------------------------------------------------------

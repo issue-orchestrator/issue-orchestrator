@@ -258,10 +258,11 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     Acquires a pair from ``pair_registry``. On cache miss the spawn
     closure invokes ``reviewer_worktree_factory`` to create the
     reviewer worktree, opens both PTY-attached sessions with their
-    env pointing at *pair-scoped* response/recording files (under
-    ``persistent_pair_root``), and caches the pair. On cache hit
-    the existing pair is reused — same coder PID, same reviewer PID,
-    same recording continuing where it left off.
+    env pointing at *pair-scoped* response/recording files (under the
+    caller-supplied, worktree-scoped ``persistent_pair_root``), and
+    caches the pair. On cache hit the existing pair is reused — same
+    coder PID, same reviewer PID, same recording continuing where it
+    left off.
 
     The release at issue-lifetime boundaries (PR merge, reset-retry,
     escalation, orchestrator shutdown) is the *caller's*
@@ -581,15 +582,15 @@ def _seed_pair_validation_record(
     seed at the per-exchange run_dir would mean exchange 2 sees no
     prior validation evidence even when the caller supplied one.
 
-    No-op when ``source`` is missing or the seed already exists
-    (exchange 2 reusing the cached pair must NOT overwrite the
-    record from a fresh validation that ran since exchange 1).
+    No-op when ``source`` is missing. When a caller supplies a current
+    validation record, it is authoritative for the exchange being
+    started and must refresh any existing pair-scoped record. Otherwise
+    a live pair reused across attempts can keep writing summaries for an
+    older head after the coder worktree has moved on.
     """
     if source is None or not source.exists():
         return
     pair_dir.mkdir(parents=True, exist_ok=True)
-    if pair_validation_record.exists():
-        return
     pair_validation_record.write_bytes(source.read_bytes())
 
 

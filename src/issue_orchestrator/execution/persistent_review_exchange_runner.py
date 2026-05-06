@@ -34,23 +34,34 @@ from .reviewer_worktree import (
 )
 
 
+def persistent_pair_root_for_worktree(coder_worktree: Path) -> Path:
+    """Return the attempt-scoped persistent-pair storage root.
+
+    The repository engine owns the live pair registry, but durable pair
+    artifacts are attempt-scoped: deleting the issue worktree must delete
+    validation and recording state for that attempt. Keeping the root under
+    the coder worktree preserves stable paths for live PTYs while making
+    reset-from-scratch a real storage boundary.
+    """
+    return coder_worktree / ".issue-orchestrator" / "persistent-pairs"
+
+
 class PersistentReviewExchangeRunner:
     """Persistent-session implementation of :class:`ReviewExchangeRunner`.
 
     Constructed once at the composition root with the orchestrator's
-    :class:`SessionOutput`, the issue-scoped pair registry, and the
-    pair-scoped state directory root. Reused for every exchange.
+    :class:`SessionOutput` and issue-scoped pair registry. Reused for
+    every exchange. Pair filesystem state is resolved per coder worktree
+    at run time so worktree teardown clears attempt-scoped artifacts.
     """
 
     def __init__(
         self,
         session_output: SessionOutput,
         pair_registry: InMemoryPersistentExchangePairRegistry,
-        persistent_pair_root: Path,
     ) -> None:
         self._session_output = session_output
         self._pair_registry = pair_registry
-        self._persistent_pair_root = persistent_pair_root
 
     def run(  # noqa: PLR0913
         self,
@@ -91,7 +102,7 @@ class PersistentReviewExchangeRunner:
         return run_persistent_session_exchange(
             session_output=self._session_output,
             pair_registry=self._pair_registry,
-            persistent_pair_root=self._persistent_pair_root,
+            persistent_pair_root=persistent_pair_root_for_worktree(coder_worktree),
             coder_worktree_path=coder_worktree,
             reviewer_worktree_factory=_make_reviewer_worktree,
             coder_branch=coder_branch,

@@ -170,11 +170,13 @@ that delivers what the user asked for.
 - E2E sweep: confirm the reset-retry-from-scratch test still
   works (it kills the issue's pair as part of reset).
 - Path-scope refactor: the agent's env points at *pair-scoped*
-  paths under `<state_dir>/persistent-pairs/issue-<n>/{coder,reviewer}/...`
+  paths under `<coder-worktree>/.issue-orchestrator/persistent-pairs/issue-<n>/{coder,reviewer}/...`
   so a cached pair handed to exchange 2 reads/writes the same
-  files exchange 1 did. Per-exchange `run_dir` keeps `chapters.json`
-  and `summary.json`; recordings are mirrored from pair scope into
-  `run_dir/<role>/` for backward compat.
+  files exchange 1 did, while reset-from-scratch still wipes
+  attempt-authoritative artifacts by deleting the worktree.
+  Per-exchange `run_dir` keeps `chapters.json` and `summary.json`;
+  recordings are mirrored from pair scope into `run_dir/<role>/`
+  for backward compat.
 
 **PR B3 — Diagnostics + observability.**
 Add control-API endpoints for `GET /control/exchange-pairs` returning current pairs (issue_key, coder_pid, reviewer_pid, age, last_used_at). Add a UI badge on the issue card showing "persistent pair: alive / restarted / never spawned". Add structured events for pair lifecycle transitions.
