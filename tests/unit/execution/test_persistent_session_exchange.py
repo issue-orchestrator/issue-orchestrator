@@ -2256,6 +2256,390 @@ class TestSliceIsolationAcrossExchanges:
             )
 
 
+class TestSummaryEmbedsHeadSha:
+    """``_write_summary`` stamps ``head_sha`` into summary.json so the
+    cache loader can decide freshness from the summary alone.
+
+    Regression guard for the runaway loop on tixmeup #359 / #361
+    (PR #6270 motivation): when validation lives at the pair scope
+    (persistent-session path) and the summary lives in a per-exchange
+    run_dir, the cache loader's filesystem walk to discover the
+    validation record returns ``None`` for the review-exchange
+    run_dir — and every reviewer-OK summary read as
+    ``validation=None`` and got discarded, spawning a redundant
+    review-exchange that timed out. Embedding ``head_sha`` in the
+    summary at write time makes the summary self-describing; the
+    loader doesn't have to walk the filesystem to know which commit
+    the review covers.
+    """
+
+    @staticmethod
+    def _write_validation_record(path: Path, head_sha: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "suite": "agent_gate",
+                "head_sha": head_sha,
+                "passed": True,
+                "exit_code": 0,
+            }),
+            encoding="utf-8",
+        )
+
+    def test_summary_embeds_head_sha_when_validation_record_present(
+        self, tmp_path: Path,
+    ) -> None:
+        exchange_dir = tmp_path / "exchange"
+        exchange_dir.mkdir()
+        validation_record = tmp_path / "validation-record.json"
+        self._write_validation_record(validation_record, head_sha="abc123")
+
+        pse._write_summary(  # noqa: SLF001
+            exchange_dir,
+            round_index=1,
+            status="ok",
+            reason="reviewer_ok",
+            reviewer_response=None,
+            validation_record_path=validation_record,
+        )
+
+        summary = json.loads(
+            (exchange_dir / "summary.json").read_text(encoding="utf-8"),
+        )
+        assert summary["head_sha"] == "abc123", (
+            "summary must embed head_sha so the cache loader can "
+            "verify the cache without rediscovering validation-record.json"
+        )
+        assert summary["status"] == "ok"
+        assert summary["reason"] == "reviewer_ok"
+
+    def test_summary_omits_head_sha_when_validation_record_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """When the validation record is absent, the summary should not
+        carry a ``head_sha`` key at all (rather than ``None`` or empty
+        string). Readers detect "legacy summary" by absence and fall
+        back to filesystem-derived behavior."""
+        exchange_dir = tmp_path / "exchange"
+        exchange_dir.mkdir()
+
+        pse._write_summary(  # noqa: SLF001
+            exchange_dir,
+            round_index=1,
+            status="error",
+            reason="reviewer_no_completion",
+            reviewer_response=None,
+            validation_record_path=tmp_path / "does-not-exist.json",
+        )
+
+        summary = json.loads(
+            (exchange_dir / "summary.json").read_text(encoding="utf-8"),
+        )
+        assert "head_sha" not in summary, (
+            "head_sha must be absent (not present-as-None) when the "
+            "validation record cannot be read; readers depend on key "
+            "absence to detect legacy summaries"
+        )
+
+    def test_summary_omits_head_sha_when_validation_record_malformed(
+        self, tmp_path: Path,
+    ) -> None:
+        exchange_dir = tmp_path / "exchange"
+        exchange_dir.mkdir()
+        bad_record = tmp_path / "validation-record.json"
+        bad_record.write_text("not json {", encoding="utf-8")
+
+        pse._write_summary(  # noqa: SLF001
+            exchange_dir,
+            round_index=1,
+            status="ok",
+            reason="reviewer_ok",
+            reviewer_response=None,
+            validation_record_path=bad_record,
+        )
+
+        summary = json.loads(
+            (exchange_dir / "summary.json").read_text(encoding="utf-8"),
+        )
+        assert "head_sha" not in summary
+
+    def test_summary_omits_head_sha_when_field_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """Validation record exists and is valid JSON but doesn't carry
+        a head_sha (older schema). Summary writer must not invent one."""
+        exchange_dir = tmp_path / "exchange"
+        exchange_dir.mkdir()
+        record = tmp_path / "validation-record.json"
+        record.write_text(json.dumps({"passed": True}), encoding="utf-8")
+
+        pse._write_summary(  # noqa: SLF001
+            exchange_dir,
+            round_index=1,
+            status="ok",
+            reason="reviewer_ok",
+            reviewer_response=None,
+            validation_record_path=record,
+        )
+
+        summary = json.loads(
+            (exchange_dir / "summary.json").read_text(encoding="utf-8"),
+        )
+        assert "head_sha" not in summary
+
+
+class TestEndToEndCacheReuse:
+    """Production-shape regression guard for the tixmeup #359 / #361
+    runaway loop.
+
+    The pre-PR layout was: validation-record.json lives in the coder's
+    run_dir (and at the pair-scoped path), but the cache loader's
+    discovery looked for ``<review-exchange-run-dir>/validation-record.json``
+    — which never exists. Result: every reviewer-OK summary read as
+    ``validation=None``, the cache check rejected it, and a fresh
+    review-exchange spawned. The user sees the round 1 OK, then a
+    second review starts 5 seconds later, then times out.
+
+    These tests exercise the FULL disk layout (real
+    ``FileSystemSessionOutput`` + real ``CompletionReviewExchange``)
+    and assert that a reviewer-OK summary at head ``X`` is reused on
+    the next tick when the current head is still ``X``. The unit
+    tests above lock the contract (summary embeds head_sha, loader
+    prefers it); these tests prove the contract holds end-to-end
+    against the actual filesystem layout production produces.
+    """
+
+    @staticmethod
+    def _write_validation_record(path: Path, head_sha: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "suite": "agent_gate",
+                "head_sha": head_sha,
+                "passed": True,
+                "exit_code": 0,
+            }),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_summary_with_head_sha(
+        exchange_dir: Path,
+        head_sha: str,
+        *,
+        status: str = "ok",
+        reason: str = "reviewer_ok",
+    ) -> None:
+        """Build a self-describing summary the way ``_write_summary``
+        produces in production after PR #6270."""
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        validation_record = exchange_dir.parent / "_seed_validation.json"
+        validation_record.write_text(
+            json.dumps({"head_sha": head_sha, "passed": True}),
+            encoding="utf-8",
+        )
+        pse._write_summary(  # noqa: SLF001
+            exchange_dir,
+            round_index=1,
+            status=status,
+            reason=reason,
+            reviewer_response=None,
+            validation_record_path=validation_record,
+        )
+        validation_record.unlink()
+
+    def _build_completion_review_exchange(
+        self,
+        tmp_path: Path,
+        session_output: FileSystemSessionOutput,
+    ) -> Any:
+        from issue_orchestrator.control.completion_review_exchange import (
+            CompletionReviewExchange,
+        )
+        from issue_orchestrator.domain.models import AgentConfig
+        from issue_orchestrator.infra.config import Config
+
+        cfg = Config(repo_root=tmp_path)
+        cfg.review_exchange_mode = "via-local-loop"
+        cfg.review_exchange_require_validation = True
+        cfg.code_review_agent = "agent:reviewer"
+        cfg.agents = {
+            "agent:backend": AgentConfig(
+                prompt_path=tmp_path / "backend.md",
+                command="claude --print",
+                reviewer="agent:reviewer",
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=tmp_path / "reviewer.md",
+                command="claude --print",
+            ),
+        }
+        return CompletionReviewExchange(
+            config=cfg,
+            session_output=session_output,
+            emit_review_started=lambda **_: None,
+            emit_review_outcome=lambda **_: None,
+            review_exchange_runner=SimpleNamespace(
+                run_review_exchange=lambda **_: None,
+            ),
+        )
+
+    def _layout_persistent_session_run(
+        self,
+        tmp_path: Path,
+        head_sha: str,
+    ) -> tuple[Path, Path, Path]:
+        """Stage the disk layout the persistent-session runner produces
+        (post PR #6268 + this PR): a coder run with validation-record,
+        a review-exchange run with summary.json embedding head_sha,
+        and a current validation-record at the pair scope."""
+        worktree = tmp_path / "wt"
+        sessions = worktree / ".issue-orchestrator" / "sessions"
+        sessions.mkdir(parents=True)
+
+        coder_run = sessions / "20260506-100000Z__coding-1"
+        coder_run.mkdir()
+        (coder_run / "manifest.json").write_text(
+            json.dumps({
+                "started_at": "2026-05-06T10:00:00+00:00",
+                "session_name": "coding-1",
+            }), encoding="utf-8",
+        )
+        # The coder writes validation-record.json. This is where the
+        # canonical record lives in production. The pair-scoped seed
+        # is a copy at <persistent-pairs>/issue-N/validation-record.json.
+        self._write_validation_record(coder_run / "validation-record.json", head_sha)
+
+        # The review-exchange run_dir (slightly later) has the summary
+        # but does NOT have a validation-record.json. This is the
+        # filesystem layout that broke the legacy cache loader.
+        exchange_run = sessions / "20260506-100500Z__review-exchange-359-r1"
+        exchange_dir = exchange_run / "review-exchange"
+        exchange_dir.mkdir(parents=True)
+        (exchange_run / "manifest.json").write_text(
+            json.dumps({
+                "started_at": "2026-05-06T10:05:00+00:00",
+                "review_exchange_dir": str(exchange_dir),
+            }), encoding="utf-8",
+        )
+        self._write_summary_with_head_sha(exchange_dir, head_sha)
+
+        return worktree, coder_run, exchange_run
+
+    def test_reviewer_ok_summary_is_reused_on_next_tick_when_head_matches(
+        self, tmp_path: Path,
+    ) -> None:
+        """The exact production scenario behind tixmeup #359's runaway:
+        coder ran validation at head X (validation-record.json in
+        coder run_dir), review-exchange produced an OK summary at the
+        same head X (summary.json in the review-exchange run_dir, no
+        sibling validation-record.json). On the next tick the cache
+        loader must REUSE that OK summary. Pre-PR it discarded the
+        cache because it couldn't find a validation-record next to the
+        summary; the orchestrator spawned a new review-exchange every
+        ~5 seconds until needs-human escalation."""
+        head_sha = "abc123def456"
+        worktree, coder_run, _exchange_run = self._layout_persistent_session_run(
+            tmp_path, head_sha,
+        )
+        session_output = FileSystemSessionOutput()
+        review = self._build_completion_review_exchange(tmp_path, session_output)
+
+        outcome = review.load_existing_review_exchange_outcome(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+
+        assert outcome is not None, (
+            "OK summary at head X must be reused when current head is X. "
+            "If this returns None, the orchestrator will spawn a "
+            "redundant review-exchange — the exact runaway loop on "
+            "tixmeup #359 / #361."
+        )
+        assert outcome.status == "ok"
+        # Cache-hit outcomes carry ``reason="cached_summary"`` so the
+        # caller can distinguish "fresh OK from this round" from "OK
+        # we recovered from a prior exchange's summary." The summary
+        # itself still has ``reason="reviewer_ok"``.
+        assert outcome.reason == "cached_summary"
+        assert outcome.summary.get("reason") == "reviewer_ok"
+        assert outcome.summary.get("head_sha") == head_sha
+
+    def test_summary_at_old_head_is_invalidated_when_current_head_advances(
+        self, tmp_path: Path,
+    ) -> None:
+        """Inverse: the cache must NOT be reused when the current head
+        has advanced past the cached head. A new commit means new code
+        to review."""
+        worktree, coder_run, _exchange_run = self._layout_persistent_session_run(
+            tmp_path, head_sha="OLD_SHA",
+        )
+        # Update the coder's validation record to a NEW head_sha,
+        # simulating "coder pushed a follow-up commit and re-validated."
+        self._write_validation_record(
+            coder_run / "validation-record.json", head_sha="NEW_SHA",
+        )
+        session_output = FileSystemSessionOutput()
+        review = self._build_completion_review_exchange(tmp_path, session_output)
+
+        outcome = review.load_existing_review_exchange_outcome(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+
+        assert outcome is None, (
+            "cached summary at OLD_SHA must NOT be reused after head "
+            "advances to NEW_SHA — a new commit needs a new review"
+        )
+
+    def test_legacy_summary_without_head_sha_field_falls_back_to_filesystem(
+        self, tmp_path: Path,
+    ) -> None:
+        """Backwards compatibility: summaries written before PR #6270
+        don't carry a ``head_sha`` field. The loader falls back to
+        the original filesystem-derived behavior (look for
+        ``<run_dir>/validation-record.json``). For review-exchange
+        run_dirs that returns None and the cache is rejected — the
+        same pre-PR behavior. New summaries take the fast path; old
+        ones drain naturally as exchanges complete."""
+        head_sha = "abc123"
+        worktree, coder_run, exchange_run = self._layout_persistent_session_run(
+            tmp_path, head_sha,
+        )
+        # Overwrite the summary with the legacy shape (no head_sha).
+        legacy_summary = {
+            "completed_rounds": 1,
+            "status": "ok",
+            "response_text": "Looks good",
+            "reason": "reviewer_ok",
+            "timestamp": "2026-05-06T10:05:30+00:00",
+        }
+        (exchange_run / "review-exchange" / "summary.json").write_text(
+            json.dumps(legacy_summary), encoding="utf-8",
+        )
+        session_output = FileSystemSessionOutput()
+        review = self._build_completion_review_exchange(tmp_path, session_output)
+
+        outcome = review.load_existing_review_exchange_outcome(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+
+        # Legacy path: validation-record.json sibling lookup against
+        # the exchange run_dir returns None → cache is rejected. This
+        # preserves the pre-PR behavior for cached summaries written
+        # before the embedding existed.
+        assert outcome is None
+
+
 class TestLoopBoundCounting:
     """Direct adapter-level tests of count_consecutive_review_exchange_no_completion."""
 

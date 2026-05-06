@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ..domain.models import CompletionRecord, RequestedAction
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
-from ..ports.session_output import SessionOutput
+from ..ports.session_output import ReviewExchangeSummary, SessionOutput
 from .background_job_supervisor import BackgroundJobSupervisor
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
@@ -627,6 +627,36 @@ class CompletionReviewExchange:
             return self._session_output.find_run_dir(worktree, session_name)
         return None
 
+    def _resolve_cached_head_sha_and_validity(
+        self,
+        cached: ReviewExchangeSummary,
+    ) -> tuple[str | None, bool, str]:
+        """Decide cached head_sha + validation status for the cache check.
+
+        Prefers the summary-embedded ``head_sha`` (PR #6270 self-
+        describing summary). Falls back to walking the filesystem for
+        ``validation-record.json`` for legacy summaries that predate
+        the embedding. Returns
+        ``(cached_head_sha, cache_validation_passed, cache_source)``
+        where ``cache_source`` is a short label for the diagnostic log.
+
+        Extracted from ``load_existing_review_exchange_outcome`` to
+        keep that function under the C901 complexity ceiling.
+        """
+        embedded = cached.summary.get("head_sha")
+        if isinstance(embedded, str) and embedded:
+            # The runner only embeds head_sha when the validation
+            # record was readable at summary-write time, which on the
+            # persistent path is the pair-scoped record seeded from
+            # the coder's passing validation. Presence implies the
+            # cache is valid for ``embedded``.
+            return embedded, True, "summary_head_sha"
+        return (
+            self._validation_head_sha(cached.validation_record_path),
+            self.review_exchange_validation_passed(cached.validation_record_path),
+            "filesystem",
+        )
+
     def load_existing_review_exchange_outcome(
         self,
         worktree: Path,
@@ -645,29 +675,40 @@ class CompletionReviewExchange:
         )
         if not cached:
             return None
-        cached_head_sha = self._validation_head_sha(cached.validation_record_path)
+
+        # The persistent-session runner stamps ``head_sha`` into
+        # ``summary.json`` so the cache loader can decide freshness
+        # from the summary alone (PR #6270). Pre-#6270 summaries fall
+        # back to the legacy filesystem-walk path, which works for
+        # coder run_dirs but NOT for review-exchange run_dirs
+        # (validation lives at the pair scope on the persistent path)
+        # — without the embedding every reviewer-OK summary read as
+        # ``validation=None`` and was discarded, spawning a redundant
+        # exchange that timed out (tixmeup #359 / #361 runaway).
+        cached_head_sha, cache_validation_passed, cache_source = (
+            self._resolve_cached_head_sha_and_validity(cached)
+        )
         current_head_sha = self._validation_head_sha(current_validation_record_path)
         logger.info(
             "[REVIEW_EXCHANGE] Evaluating cached summary: session=%s summary=%s "
-            "validation=%s cached_head_sha=%s current_head_sha=%s require_validation=%s "
-            "boundary=%s",
+            "cache_source=%s cached_head_sha=%s current_head_sha=%s "
+            "cache_validation_passed=%s require_validation=%s boundary=%s",
             session_name,
             cached.summary_path,
-            cached.validation_record_path,
+            cache_source,
             cached_head_sha or "(none)",
             current_head_sha or "(none)",
+            cache_validation_passed,
             require_validation,
             not_before_started_at or "(none)",
         )
-        if require_validation and not self.review_exchange_validation_passed(
-            cached.validation_record_path
-        ):
+        if require_validation and not cache_validation_passed:
             logger.info(
                 "[REVIEW_EXCHANGE] Ignoring cached summary without passing validation: "
-                "session=%s summary=%s validation=%s",
+                "session=%s summary=%s cache_source=%s",
                 session_name,
                 cached.summary_path,
-                cached.validation_record_path,
+                cache_source,
             )
             return None
         if require_validation and not current_head_sha:
@@ -679,17 +720,23 @@ class CompletionReviewExchange:
                 current_validation_record_path,
             )
             return None
-        if not self._review_exchange_validation_matches_current(
-            cached.validation_record_path,
-            current_validation_record_path,
-        ):
+        # Match the legacy ``_review_exchange_validation_matches_current``
+        # semantics: when the current head_sha is known, the cached
+        # head_sha must match it. ``cached_head_sha=None`` (cache could
+        # not prove which commit it covers) is treated as "doesn't
+        # match" — we reject rather than silently approving an unknown
+        # commit. When current is unknown, we don't reject on this
+        # branch (other guards above already handled the missing-
+        # current case for require_validation=True).
+        if current_head_sha is not None and cached_head_sha != current_head_sha:
             logger.info(
                 "[REVIEW_EXCHANGE] Ignoring cached summary due to head_sha mismatch: "
-                "session=%s summary=%s cached_head_sha=%s current_head_sha=%s",
+                "session=%s summary=%s cache_source=%s cached_head_sha=%s current_head_sha=%s",
                 session_name,
                 cached.summary_path,
+                cache_source,
                 cached_head_sha or "(none)",
-                current_head_sha or "(none)",
+                current_head_sha,
             )
             return None
         # Same commit, cached approval, but the *current* validation explicitly
