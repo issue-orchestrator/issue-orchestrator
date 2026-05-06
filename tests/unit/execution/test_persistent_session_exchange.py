@@ -2639,6 +2639,99 @@ class TestEndToEndCacheReuse:
         # before the embedding existed.
         assert outcome is None
 
+    def test_error_summary_does_not_embed_head_sha(
+        self, tmp_path: Path,
+    ) -> None:
+        """Error summaries (reviewer_no_completion / coder_no_completion /
+        coder_protocol_error) must NOT carry an embedded ``head_sha``.
+
+        PR #6270 review feedback: ``_handle_cached_review_exchange_outcome``
+        treats a cached non-OK outcome as a terminal halt. If error
+        summaries cache-hit (because head_sha matches), the orchestrator
+        halts the exchange after the very first ``reviewer_no_completion``
+        — bypassing PR #6267's ``max_consecutive_review_exchange_failures``
+        counter that's supposed to allow N retries before escalating
+        to needs-human. Skipping the embedding for error summaries
+        keeps them on the legacy filesystem-walk path → returns None →
+        new exchange spawned → loop bound governs.
+        """
+        exchange_dir = tmp_path / "exchange"
+        exchange_dir.mkdir()
+        validation_record = tmp_path / "validation-record.json"
+        validation_record.write_text(
+            json.dumps({"head_sha": "abc123", "passed": True}),
+            encoding="utf-8",
+        )
+
+        for status, reason in (
+            ("error", "reviewer_no_completion"),
+            ("error", "coder_no_completion"),
+            ("error", "coder_protocol_error"),
+        ):
+            (exchange_dir / "summary.json").unlink(missing_ok=True)
+            pse._write_summary(  # noqa: SLF001
+                exchange_dir,
+                round_index=1,
+                status=status,
+                reason=reason,
+                reviewer_response=None,
+                validation_record_path=validation_record,
+            )
+            summary = json.loads(
+                (exchange_dir / "summary.json").read_text(encoding="utf-8"),
+            )
+            assert "head_sha" not in summary, (
+                f"status={status} reason={reason} summary embedded "
+                f"head_sha={summary.get('head_sha')!r}; this would "
+                "bypass max_consecutive_review_exchange_failures and "
+                "halt the exchange after the first failure"
+            )
+            assert summary["status"] == status
+            assert summary["reason"] == reason
+
+    def test_error_summary_does_not_short_circuit_loop_bound(
+        self, tmp_path: Path,
+    ) -> None:
+        """Joint coverage: a real ``CompletionReviewExchange`` reading a
+        real ``FileSystemSessionOutput`` must NOT cache-hit an error
+        summary. The cache loader returns None, the caller proceeds to
+        spawn a fresh exchange, and the loop-bound counter governs.
+        Pre-fix this test would FAIL because error summaries embedded
+        head_sha and got reused as a halting non-OK cache hit."""
+        head_sha = "stable-sha"
+        worktree, coder_run, exchange_run = self._layout_persistent_session_run(
+            tmp_path, head_sha,
+        )
+        # Overwrite the OK summary that _layout_persistent_session_run
+        # produces with an error summary written by the production
+        # _write_summary helper (so any embedding change is visible
+        # via the same code path production uses).
+        (exchange_run / "review-exchange" / "summary.json").unlink()
+        pse._write_summary(  # noqa: SLF001
+            exchange_run / "review-exchange",
+            round_index=1,
+            status="error",
+            reason="reviewer_no_completion",
+            reviewer_response=None,
+            validation_record_path=coder_run / "validation-record.json",
+        )
+
+        session_output = FileSystemSessionOutput()
+        review = self._build_completion_review_exchange(tmp_path, session_output)
+
+        outcome = review.load_existing_review_exchange_outcome(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+
+        assert outcome is None, (
+            "error summary returned as a cache hit; this halts the "
+            "exchange after the first reviewer_no_completion, "
+            "bypassing max_consecutive_review_exchange_failures"
+        )
+
 
 class TestLoopBoundCounting:
     """Direct adapter-level tests of count_consecutive_review_exchange_no_completion."""

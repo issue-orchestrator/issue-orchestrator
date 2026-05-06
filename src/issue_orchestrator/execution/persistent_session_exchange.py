@@ -1408,6 +1408,31 @@ def _read_validation_head_sha(path: Path | None) -> str | None:
     return head_sha if isinstance(head_sha, str) and head_sha else None
 
 
+# Statuses for which the cache loader is allowed to short-circuit the
+# next tick by reusing the prior outcome:
+#
+# - ``"ok"``: reviewer reached a definitive approval; the outcome is
+#   the verdict.
+# - ``"stopped"``: the runner halted the exchange after a bounded
+#   policy ran its course (max_no_progress, max_rounds_exceeded). The
+#   outcome IS definitive — replaying it would just produce the same
+#   bounded halt — so the cache should reuse it rather than re-running
+#   the whole exchange.
+#
+# Statuses NOT in this set (today: ``"error"`` for reviewer/coder
+# no-completion timeouts and coder_protocol_error) must NOT carry an
+# embedded ``head_sha``. The cache loader's filesystem fallback will
+# then return None for them, causing
+# ``CompletionReviewExchange`` to submit a fresh exchange — and PR
+# #6267's ``max_consecutive_review_exchange_failures`` counter
+# governs retries / escalation. Embedding ``head_sha`` on an error
+# summary would short-circuit that counter via
+# ``_handle_cached_review_exchange_outcome``'s "non-OK cached
+# outcome → halt" path, escalating to needs-human after the first
+# timeout instead of after N. (PR #6270 review feedback.)
+_CACHEABLE_SUMMARY_STATUSES: frozenset[str] = frozenset({"ok", "stopped"})
+
+
 def _write_summary(
     exchange_dir: Path,
     round_index: int,
@@ -1423,19 +1448,27 @@ def _write_summary(
     ("ok"/"stopped"/"error"); ``reason`` carries the matching reason
     token.
 
-    The summary embeds ``head_sha`` (read from
+    For cacheable outcomes (status in ``_CACHEABLE_SUMMARY_STATUSES``),
+    the summary embeds ``head_sha`` (read from
     ``validation_record_path``) so cache freshness can be decided from
-    the summary alone. Without it, the cache loader has to look for a
-    sibling ``validation-record.json`` in the run_dir — which exists
-    for coder run_dirs but NOT for review-exchange run_dirs (validation
-    runs during the coder turn; review-exchange run_dirs only own
-    summary + chapters). On the persistent-session path that mismatch
-    caused every reviewer-OK summary to be discarded with
-    ``validation=None``, spawning a redundant review-exchange that
-    timed out — observed in production on tixmeup #359 / #361 (PR
-    #6270 motivation). When the validation record is missing or
-    unreadable, ``head_sha`` is omitted; readers must tolerate its
-    absence.
+    the summary alone. Without that embedding the cache loader has to
+    look for a sibling ``validation-record.json`` in the run_dir —
+    which exists for coder run_dirs but NOT for review-exchange
+    run_dirs (validation runs during the coder turn; review-exchange
+    run_dirs only own summary + chapters). On the persistent-session
+    path that mismatch caused every reviewer-OK summary to be
+    discarded with ``validation=None``, spawning a redundant
+    review-exchange that timed out — observed in production on
+    tixmeup #359 / #361 (PR #6270 motivation).
+
+    Error outcomes deliberately omit ``head_sha`` so the cache loader
+    treats them as legacy summaries → returns None → caller submits
+    a fresh exchange and the no-completion bound (PR #6267) governs
+    retries. Embedding ``head_sha`` on errors would short-circuit
+    that bound via the cached non-OK halt path. When the validation
+    record itself is missing or unreadable, ``head_sha`` is also
+    omitted; readers must tolerate its absence (legacy / error /
+    pre-validation summaries all look the same to them).
     """
     summary: dict[str, Any] = {
         "completed_rounds": round_index,
@@ -1444,9 +1477,10 @@ def _write_summary(
         "reason": reason,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    head_sha = _read_validation_head_sha(validation_record_path)
-    if head_sha is not None:
-        summary["head_sha"] = head_sha
+    if status in _CACHEABLE_SUMMARY_STATUSES:
+        head_sha = _read_validation_head_sha(validation_record_path)
+        if head_sha is not None:
+            summary["head_sha"] = head_sha
     _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary
 
