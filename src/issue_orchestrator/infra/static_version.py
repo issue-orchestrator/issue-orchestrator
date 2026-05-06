@@ -29,22 +29,64 @@ from typing import Optional
 from .repo_identity import _resolve_git_dir, get_repo_head_sha
 
 
-def _walk_up_for_git_dir(start: Path) -> Optional[Path]:
-    """Walk up parents from ``start`` looking for a directory that contains a git dir.
+def _candidate_holds_running_package(candidate: Path, package_init: Path) -> bool:
+    """Return True iff ``candidate`` exposes the *same* ``__init__.py`` we imported.
 
-    ``_resolve_git_dir`` only checks the directory it is given, so a
-    package installed at ``…/src/issue_orchestrator/`` would never see
-    the worktree root's ``.git``. This helper closes the gap.
+    Naive ancestor-of-``__file__`` walks accept any parent ``.git`` they
+    encounter, which is wrong for a wheel installed under a target
+    repo's ``.venv/lib/.../site-packages/issue_orchestrator``: the
+    walker would land on the *target* repo and report its SHA. The
+    samefile check rules that out — the target repo doesn't carry a
+    file that resolves to *our* running ``__init__.py``.
+
+    Two layouts are accepted: src-layout (``src/issue_orchestrator/``)
+    and flat layout (``issue_orchestrator/``). Anything else falls
+    through and the resolver returns ``None``.
     """
+    for relative in (
+        candidate / "src" / "issue_orchestrator" / "__init__.py",
+        candidate / "issue_orchestrator" / "__init__.py",
+    ):
+        try:
+            if relative.samefile(package_init):
+                return True
+        except (OSError, ValueError):
+            # samefile raises FileNotFoundError when either side is
+            # missing; that just means this layout doesn't apply.
+            continue
+    return False
+
+
+def _resolve_source_repo_root(
+    start: Path,
+    *,
+    package_init: Path,
+) -> Optional[Path]:
+    """Walk up; return only the ``.git``-bearing candidate that *is* our source.
+
+    Stops at the first ``.git`` we encounter — if that root does not
+    expose our running package, we return ``None`` rather than keep
+    walking. Continuing past an unrelated repo would risk landing in
+    an even less related grandparent (``~/dev/.git`` covering many
+    siblings, etc.) and feeding its SHA into the cache-buster.
+    """
+    package_init = package_init.resolve()
     current = start.resolve()
     for candidate in (current, *current.parents):
-        if _resolve_git_dir(candidate) is not None:
+        if _resolve_git_dir(candidate) is None:
+            continue
+        if _candidate_holds_running_package(candidate, package_init):
             return candidate
+        return None
     return None
 
 
-_PACKAGE_DIR = Path(__file__).resolve().parent.parent  # …/src/issue_orchestrator
-_PACKAGE_REPO_ROOT = _walk_up_for_git_dir(_PACKAGE_DIR)
+_RUNNING_PACKAGE_INIT = Path(__file__).resolve().parent.parent / "__init__.py"
+_PACKAGE_DIR = _RUNNING_PACKAGE_INIT.parent  # …/src/issue_orchestrator
+_PACKAGE_REPO_ROOT = _resolve_source_repo_root(
+    _PACKAGE_DIR,
+    package_init=_RUNNING_PACKAGE_INIT,
+)
 
 
 def resolve_cc_commit_sha() -> Optional[str]:
