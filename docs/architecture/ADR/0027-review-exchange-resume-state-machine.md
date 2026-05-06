@@ -147,8 +147,12 @@ Three downstream consumers route through the same module:
   a closed `TurnResultKind` enum. Protocol errors carry a named
   `protocol_error_reason` (`missing_response`,
   `missing_response_type`, `missing_response_text`,
-  `unknown_response_type`) so a failed exchange's on-disk state
-  identifies the parser branch that fired. Both types live in
+  `unknown_response_type`, `no_completion`) so a failed exchange's
+  on-disk state identifies the parser branch that fired — including
+  the timeout / role-died path, which uses
+  `ReviewExchangeTurnResult.for_no_completion(detail)` so the
+  artifact survives even when the agent never wrote a response.
+  Both types live in
   `domain/review_exchange_turn.py` with `to_manifest_fields` /
   `from_manifest` symmetry, and the runner persists every turn's
   packet and result as JSON at
