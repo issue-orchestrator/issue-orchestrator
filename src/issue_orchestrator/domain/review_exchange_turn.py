@@ -196,6 +196,33 @@ class ReviewExchangeTurnResult:
     protocol_error_reason: str | None = None
 
     @classmethod
+    def for_no_completion(
+        cls, detail: str,
+    ) -> "ReviewExchangeTurnResult":
+        """Construct a typed result for a turn that never produced a response.
+
+        Used when the persistent-session round timed out, the role
+        process died, or any other condition prevented the agent from
+        writing its JSON response file. Distinct from
+        ``from_agent_dict(None)`` (which is also a missing-response,
+        but the caller did not have an exception detail to surface).
+
+        ``detail`` typically carries the underlying exception's
+        ``str(exc)`` so an operator inspecting the persisted
+        ``round-<n>-<role>.result.json`` sees the same root cause the
+        ``REVIEW_EXCHANGE_ROLE_TIMEOUT`` event reports — without
+        having to cross-reference event logs and the recording stream.
+        """
+        return cls(
+            kind=TurnResultKind.PROTOCOL_ERROR,
+            response_text=detail or "Agent produced no response",
+            getting_closer=False,
+            raw_json=None,
+            raw_output=detail or None,
+            protocol_error_reason="no_completion",
+        )
+
+    @classmethod
     def from_agent_dict(
         cls,
         parsed: Mapping[str, Any] | None,

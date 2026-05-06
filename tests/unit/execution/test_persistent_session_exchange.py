@@ -486,6 +486,149 @@ class TestTurnArtifactsPersisted:
         assert r2_review_result is not None
         assert r2_review_result.kind is TurnResultKind.OK
 
+    def test_timeout_persists_no_completion_result_with_packet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reviewer round-1 times out. The runner must still persist
+        BOTH the packet (the orchestrator-side input) and a typed
+        result with ``protocol_error_reason="no_completion"`` —
+        operators inspecting a hung exchange need the on-disk trail
+        for the rounds where the agent failed to respond, which is
+        exactly the case the previous artifact contract dropped.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnPacket,
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [PersistentRoundTimeoutError("simulated 60s timeout")],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        assert turns_dir.is_dir()
+
+        packet_path = turns_dir / "round-1-reviewer.packet.json"
+        result_path = turns_dir / "round-1-reviewer.result.json"
+        assert packet_path.exists(), (
+            f"packet artifact missing at {packet_path}; turns_dir contains "
+            f"{[p.name for p in turns_dir.iterdir()]}"
+        )
+        assert result_path.exists(), (
+            f"result artifact missing on timeout path at {result_path}; "
+            f"turns_dir contains {[p.name for p in turns_dir.iterdir()]}"
+        )
+
+        packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads(packet_path.read_text())
+        )
+        assert packet is not None
+        assert packet.round_index == 1
+
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        # The exception detail must surface in response_text so an
+        # operator inspecting the artifact sees the same root cause
+        # the REVIEW_EXCHANGE_ROLE_TIMEOUT event reports.
+        assert "simulated 60s timeout" in result.response_text
+
+    def test_coder_timeout_persists_no_completion_result_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Symmetric to the reviewer-timeout test, but for the coder.
+        The two roles share one persistence helper, but a regression
+        that wires only the reviewer side would leave the coder side
+        silent — this test pins both."""
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "fix x", "getting_closer": True},
+                ],
+                "coder": [PersistentRoundTimeoutError("coder hung at 60s")],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        coder_result_path = (
+            outcome.exchange_dir / "turns" / "round-1-coder.result.json"
+        )
+        assert coder_result_path.exists(), (
+            f"coder timeout result artifact missing at {coder_result_path}"
+        )
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(coder_result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        assert "coder hung at 60s" in result.response_text
+
     def test_protocol_error_response_is_persisted_with_named_reason(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

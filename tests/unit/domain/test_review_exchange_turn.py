@@ -255,6 +255,47 @@ class TestReviewExchangeTurnResultFromAgentDict:
         assert result.getting_closer is None
 
 
+class TestReviewExchangeTurnResultForNoCompletion:
+    """Exception-path factory: the runner uses this when a turn
+    timed out or the role process died, so a typed result artifact
+    still lands on disk for replay/forensics."""
+
+    def test_returns_typed_protocol_error_with_named_reason(self) -> None:
+        result = ReviewExchangeTurnResult.for_no_completion(
+            "PersistentRoundTimeoutError: 60s elapsed",
+        )
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        # The detail surfaces in response_text so an operator
+        # inspecting the on-disk artifact sees the same root cause
+        # the REVIEW_EXCHANGE_ROLE_TIMEOUT event reports.
+        assert "PersistentRoundTimeoutError" in result.response_text
+        assert result.raw_output == "PersistentRoundTimeoutError: 60s elapsed"
+        assert result.getting_closer is False
+
+    def test_empty_detail_falls_back_to_generic_message(self) -> None:
+        # A detail-less call still produces a usable response_text
+        # rather than an empty string the manifest reader would
+        # reject as wrong-typed.
+        result = ReviewExchangeTurnResult.for_no_completion("")
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        assert result.response_text == "Agent produced no response"
+        assert result.raw_output is None
+
+    def test_round_trips_through_manifest(self) -> None:
+        original = ReviewExchangeTurnResult.for_no_completion(
+            "process exited with signal 9",
+        )
+        recovered = ReviewExchangeTurnResult.from_manifest(
+            original.to_manifest_fields(),
+        )
+        assert recovered is not None
+        assert recovered.kind is TurnResultKind.PROTOCOL_ERROR
+        assert recovered.protocol_error_reason == "no_completion"
+        assert "process exited with signal 9" in recovered.response_text
+
+
 # ---------------------------------------------------------------------------
 # ReviewExchangeTurnResult — round-trip
 # ---------------------------------------------------------------------------

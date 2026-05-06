@@ -1161,6 +1161,17 @@ def _send_role_round(  # noqa: PLR0913
         logger.warning(
             "%s round %d failed: %s", role, cycle_index, exc,
         )
+        # The typed result artifact must exist on the failure path
+        # too — this is the case operators most need to inspect, and
+        # an asymmetric "result.json only on the happy path" contract
+        # would leave the on-disk trail incomplete for exactly the
+        # rounds that need replay/forensics.
+        _persist_turn_result(
+            exchange_dir,
+            round_index=cycle_index,
+            role=Role(role),
+            result=ReviewExchangeTurnResult.for_no_completion(str(exc)),
+        )
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
