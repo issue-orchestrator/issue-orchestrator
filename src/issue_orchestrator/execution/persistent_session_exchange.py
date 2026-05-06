@@ -30,6 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_exchange_manifest import (
+    ReviewExchangeManifestHeader,
+    ReviewExchangeRecordingPaths,
+)
 from ..domain.exchange_chapter import (
     CHAPTER_SECTION_FEEDBACK,
     CHAPTER_SECTION_PROMPT,
@@ -281,18 +285,14 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
-    # Stamp the parent coding session into the manifest. The cache
-    # loader and the consecutive-failure counter use this to scope
-    # candidates to runs that originated from the SAME coding session,
-    # rather than walking ``sessions/`` in mtime-desc order and
-    # inferring boundaries from run_dir name patterns. Pre-PR #6271
-    # the inference was layout-sensitive — failures from coding
-    # session A could carry across into B's quota when the discriminator
-    # heuristic missed a coding boundary.
-    manifest_extras: dict[str, Any] = {"review_exchange_dir": str(exchange_dir)}
-    if parent_session_name is not None:
-        manifest_extras["parent_session_name"] = parent_session_name
-    session_output.update_manifest(run_dir, manifest_extras)
+    _write_review_exchange_manifest_header(
+        session_output,
+        run_dir,
+        ReviewExchangeManifestHeader(
+            exchange_dir=exchange_dir,
+            parent_session_name=parent_session_name,
+        ),
+    )
     if on_started is not None:
         on_started(run_dir)
 
@@ -356,13 +356,16 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     reviewer_session_slice = run_dir / "reviewer" / TERMINAL_RECORDING_FILENAME
     _prepare_session_slice(coder_session_slice)
     _prepare_session_slice(reviewer_session_slice)
-    session_output.update_manifest(run_dir, {
-        "persistent_pair_dir": str(pair_dir),
-        "coder_recording": str(coder_session_slice),
-        "reviewer_recording": str(reviewer_session_slice),
-        "coder_recording_pair": str(coder_recording),
-        "reviewer_recording_pair": str(reviewer_recording),
-    })
+    session_output.update_manifest(
+        run_dir,
+        ReviewExchangeRecordingPaths(
+            persistent_pair_dir=pair_dir,
+            coder_recording=coder_session_slice,
+            reviewer_recording=reviewer_session_slice,
+            coder_recording_pair=coder_recording,
+            reviewer_recording_pair=reviewer_recording,
+        ).to_manifest_fields(),
+    )
 
     _seed_pair_validation_record(
         pair_dir=pair_dir,
@@ -1395,6 +1398,22 @@ def _build_outcome_for_protocol_error(
         exchange_dir=exchange_dir,
         summary=summary,
     )
+
+
+def _write_review_exchange_manifest_header(
+    session_output: SessionOutput,
+    run_dir: Path,
+    header: ReviewExchangeManifestHeader,
+) -> None:
+    """Stamp the review-exchange manifest header.
+
+    Extracted to keep ``run_persistent_session_exchange`` under the
+    C901 ceiling and to give the manifest section a typed name. The
+    header itself documents the contract; this helper is the seam
+    where the typed value crosses into the loose-dict
+    ``update_manifest`` API.
+    """
+    session_output.update_manifest(run_dir, header.to_manifest_fields())
 
 
 def _read_validation_facts(

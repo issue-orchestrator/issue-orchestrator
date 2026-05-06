@@ -25,6 +25,7 @@ from ..infra.terminal_cleaning import (
     is_spinner_fragment,
 )
 from ..infra.terminal_recording import append_output_event
+from ..domain.review_exchange_manifest import ReviewExchangeManifestHeader
 from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
@@ -736,11 +737,17 @@ Timestamp: {self._now_iso()}
             None  — manifest has no ``parent_session_name`` (legacy
                     run, pre-PR #6271); caller falls back to the
                     older mtime-walk filtering.
+
+        Implementation routes through
+        ``ReviewExchangeManifestHeader.from_manifest`` so the
+        manifest section's typed contract is honored on the read
+        side too — readers and writers consume the same dataclass
+        rather than poking at loose ``dict.get`` calls.
         """
-        recorded = manifest.get("parent_session_name")
-        if not isinstance(recorded, str) or not recorded:
+        header = ReviewExchangeManifestHeader.from_manifest(manifest)
+        if header is None or header.parent_session_name is None:
             return None
-        return recorded == parent_session_name
+        return header.parent_session_name == parent_session_name
 
     def load_review_exchange_summary(
         self,

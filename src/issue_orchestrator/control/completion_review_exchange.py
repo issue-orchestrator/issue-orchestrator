@@ -12,7 +12,6 @@ from ..domain.review_exchange_resume import (
     ResumeDecision,
     ResumeFacts,
     decide,
-    is_no_completion_reason,
 )
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
@@ -252,76 +251,25 @@ class CompletionReviewExchange:
             current_validation_record_path=initial_validation_record_path,
             not_before_started_at=review_cache_boundary_started_at,
         )
-
-        # REUSE_APPROVAL: cached OK at current head. Surface the
-        # cached outcome as success; no new exchange.
-        if resolution.decision is ResumeDecision.REUSE_APPROVAL:
-            assert resolution.outcome is not None
-            mode, outcome, halt = self._handle_cached_review_exchange_outcome(
-                exchange_mode=exchange_mode,
-                existing_outcome=resolution.outcome,
-                issue_number=issue_number,
-                session_name=session_name,
-                worktree=worktree,
-                reviewer_label=reviewer_label,
-                errors=errors,
-                actions_taken=actions_taken,
-            )
-            return mode, outcome, halt, False
-
-        # REUSE_HALT: deterministic terminal outcome (stopped/* or
-        # coder_protocol_error). Surface it as a halt — won't fix
-        # itself by retrying on the same head. Skips the no-completion
-        # budget entirely (this isn't a no-completion failure).
-        if resolution.decision is ResumeDecision.REUSE_HALT:
-            assert resolution.outcome is not None
-            mode, outcome, halt = self._handle_cached_review_exchange_outcome(
-                exchange_mode=exchange_mode,
-                existing_outcome=resolution.outcome,
-                issue_number=issue_number,
-                session_name=session_name,
-                worktree=worktree,
-                reviewer_label=reviewer_label,
-                errors=errors,
-                actions_taken=actions_taken,
-            )
-            return mode, outcome, halt, False
-
-        # COUNT_NO_COMPLETION_AND_RETRY: cached *_no_completion at
-        # current head. Consult the budget (PR #6267); escalate to
-        # needs-human if exceeded, otherwise fall through to spawn
-        # a fresh exchange. Pre-state-machine refactor this branch
-        # was implicit — bare ``None`` from the loader meant "spawn
-        # fresh" and the budget was checked unconditionally; that
-        # implicit conflation is what let ``coder_protocol_error``
-        # escape the budget (review feedback on PR #6270).
-        if resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY:
-            max_failures = self._max_consecutive_review_exchange_failures()
-            if session_name is not None and max_failures > 0:
-                consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
-                    worktree,
-                    session_name,
-                    not_before_started_at=review_cache_boundary_started_at,
-                )
-                if consecutive >= max_failures:
-                    logger.error(
-                        "[REVIEW_EXCHANGE] no-completion runaway detected; "
-                        "halting issue=%d session=%s consecutive=%d max=%d",
-                        issue_number, session_name, consecutive, max_failures,
-                    )
-                    errors.append(
-                        f"review_exchange: {consecutive} consecutive "
-                        f"reviewer/coder no-completion failures (max {max_failures}) — "
-                        "escalating to needs-human"
-                    )
-                    return exchange_mode, None, True, False
-            # Under budget — fall through to spawn fresh exchange.
-
-        # IGNORE_STALE / NO_CACHE / INVALID_SUMMARY all fall through
-        # to spawning a fresh exchange below. Stale and no-cache are
-        # benign (head moved, first run); INVALID_SUMMARY is logged
-        # by ``decide_review_exchange_resumption`` and treated as
-        # spawn-fresh so corrupted state doesn't strand the issue.
+        early = self._dispatch_resume_decision(
+            resolution=resolution,
+            exchange_mode=exchange_mode,
+            issue_number=issue_number,
+            session_name=session_name,
+            worktree=worktree,
+            reviewer_label=reviewer_label,
+            errors=errors,
+            actions_taken=actions_taken,
+            review_cache_boundary_started_at=review_cache_boundary_started_at,
+        )
+        if early is not None:
+            return early
+        # IGNORE_STALE / NO_CACHE / INVALID_SUMMARY / under-budget
+        # COUNT_NO_COMPLETION_AND_RETRY all reach here and fall
+        # through to the fresh-exchange spawn below. Stale and
+        # no-cache are benign (head moved, first run);
+        # INVALID_SUMMARY is logged by the decide path and treated
+        # as spawn-fresh so corrupted state doesn't strand the issue.
 
         job_id = _review_exchange_job_id(issue_number, session_name)
 
@@ -459,6 +407,103 @@ class CompletionReviewExchange:
             )
 
         return self._job_supervisor.submit(job_id, _job)
+
+    def _dispatch_resume_decision(
+        self,
+        *,
+        resolution: ResumeResolution,
+        exchange_mode: str,
+        issue_number: int,
+        session_name: str | None,
+        worktree: Path,
+        reviewer_label: str | None,
+        errors: list[str],
+        actions_taken: list[str],
+        review_cache_boundary_started_at: str | None,
+    ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool] | None:
+        """Translate a ``ResumeResolution`` into the early-return tuple
+        that ``run_review_exchange_if_needed`` expects, or ``None`` to
+        signal "fall through and spawn a fresh exchange."
+
+        Extracted to keep the parent function under the C901 ceiling
+        and to make the dispatch matrix readable at a glance: each
+        cache-hit decision is one branch; the budget consultation for
+        the no-completion case lives next to the variant that asks
+        about it.
+        """
+        decision = resolution.decision
+        if decision is ResumeDecision.REUSE_APPROVAL:
+            assert resolution.outcome is not None
+            mode, outcome, halt = self._handle_cached_review_exchange_outcome(
+                exchange_mode=exchange_mode,
+                existing_outcome=resolution.outcome,
+                issue_number=issue_number,
+                session_name=session_name,
+                worktree=worktree,
+                reviewer_label=reviewer_label,
+                errors=errors,
+                actions_taken=actions_taken,
+            )
+            return mode, outcome, halt, False
+        if decision is ResumeDecision.REUSE_HALT:
+            assert resolution.outcome is not None
+            mode, outcome, halt = self._handle_cached_review_exchange_outcome(
+                exchange_mode=exchange_mode,
+                existing_outcome=resolution.outcome,
+                issue_number=issue_number,
+                session_name=session_name,
+                worktree=worktree,
+                reviewer_label=reviewer_label,
+                errors=errors,
+                actions_taken=actions_taken,
+            )
+            return mode, outcome, halt, False
+        if decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY:
+            return self._maybe_escalate_no_completion_budget(
+                exchange_mode=exchange_mode,
+                issue_number=issue_number,
+                session_name=session_name,
+                worktree=worktree,
+                errors=errors,
+                review_cache_boundary_started_at=review_cache_boundary_started_at,
+            )
+        # Stale / no-cache / invalid-summary → spawn fresh.
+        return None
+
+    def _maybe_escalate_no_completion_budget(
+        self,
+        *,
+        exchange_mode: str,
+        issue_number: int,
+        session_name: str | None,
+        worktree: Path,
+        errors: list[str],
+        review_cache_boundary_started_at: str | None,
+    ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool] | None:
+        """Consult the no-completion budget. Returns the early-halt
+        tuple if the threshold has been reached; ``None`` to let the
+        caller spawn a fresh exchange."""
+        max_failures = self._max_consecutive_review_exchange_failures()
+        if session_name is None or max_failures <= 0:
+            return None
+        consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
+            worktree,
+            session_name,
+            not_before_started_at=review_cache_boundary_started_at,
+        )
+        if consecutive < max_failures:
+            return None
+        logger.error(
+            "[REVIEW_EXCHANGE] no-completion runaway detected; "
+            "halting issue=%d session=%s consecutive=%d max=%d",
+            issue_number, session_name, consecutive, max_failures,
+        )
+        errors.append(
+            f"review_exchange: {consecutive} consecutive "
+            f"reviewer/coder no-completion failures (max {max_failures}) — "
+            "escalating to needs-human"
+        )
+        return exchange_mode, None, True, False
 
     def _handle_cached_review_exchange_outcome(
         self,
