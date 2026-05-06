@@ -52,7 +52,7 @@ class _FakeReviewExchangeRunner:
             reason="reviewer_ok",
             reviewer_response=None,
             exchange_dir=None,
-            summary={"status": "ok", "completed_rounds": 1},
+            summary={"status": "ok", "reason": "reviewer_ok", "completed_rounds": 1},
         )
 
 
@@ -209,6 +209,7 @@ def _store_cached_approval(
         "review-exchange-230",
         {
             "status": "ok",
+            "reason": "reviewer_ok",
             "completed_rounds": 1,
             "response_text": "Looks good.",
         },
@@ -354,6 +355,7 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
             exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "ok",
+                "reason": "reviewer_ok",
                 "completed_rounds": 1,
                 "response_text": "Looks good.",
             },
@@ -712,6 +714,7 @@ def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
             exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "ok",
+                "reason": "reviewer_ok",
                 "completed_rounds": 1,
                 "response_text": "Looks good.",
             },

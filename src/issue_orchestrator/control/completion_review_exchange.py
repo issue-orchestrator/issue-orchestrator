@@ -3,15 +3,43 @@
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain.models import CompletionRecord, RequestedAction
+from ..domain.review_exchange_resume import (
+    ResumeDecision,
+    ResumeFacts,
+    decide,
+    is_no_completion_reason,
+)
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
-from ..ports.session_output import SessionOutput
+from ..ports.session_output import ReviewExchangeSummary, SessionOutput
 from .background_job_supervisor import BackgroundJobSupervisor
 from .review_publish_pipeline import resolve_review_publish_pipeline
+
+
+@dataclass(frozen=True)
+class ResumeResolution:
+    """The cache loader's answer to "what should the next tick do?".
+
+    Replaces ``Outcome | None`` returns from the legacy loader. Bare
+    ``None`` is gone — every "no cache" reason is one of the named
+    ``ResumeDecision`` variants. Callers dispatch on ``decision`` and
+    consume ``outcome`` (populated for ``REUSE_APPROVAL`` /
+    ``REUSE_HALT``) and ``cache_metadata`` (populated whenever a
+    cached summary was found, regardless of decision).
+    """
+
+    decision: ResumeDecision
+    outcome: "ReviewExchangeOutcome | None" = None
+    cache_metadata: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def no_cache(cls) -> "ResumeResolution":
+        return cls(decision=ResumeDecision.NO_CACHE)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -217,17 +245,21 @@ class CompletionReviewExchange:
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
         )
-        existing_outcome = self.load_existing_review_exchange_outcome(
+        resolution = self.decide_review_exchange_resumption(
             worktree,
             session_name,
             require_validation=require_validation,
             current_validation_record_path=initial_validation_record_path,
             not_before_started_at=review_cache_boundary_started_at,
         )
-        if existing_outcome:
+
+        # REUSE_APPROVAL: cached OK at current head. Surface the
+        # cached outcome as success; no new exchange.
+        if resolution.decision is ResumeDecision.REUSE_APPROVAL:
+            assert resolution.outcome is not None
             mode, outcome, halt = self._handle_cached_review_exchange_outcome(
                 exchange_mode=exchange_mode,
-                existing_outcome=existing_outcome,
+                existing_outcome=resolution.outcome,
                 issue_number=issue_number,
                 session_name=session_name,
                 worktree=worktree,
@@ -237,33 +269,59 @@ class CompletionReviewExchange:
             )
             return mode, outcome, halt, False
 
-        # Bound the no-completion runaway. When the agent's sandbox blocks
-        # the response-file write, every retry produces another
-        # ``status=error reason=*_no_completion`` summary, the cache lookup
-        # rejects it (no validation record), and we relaunch the exchange
-        # forever. After N consecutive matches on the same coding session,
-        # halt and surface a definite review_exchange error so the
-        # completion processor escalates to needs-human instead of
-        # spawning attempt N+1.
-        max_failures = self._max_consecutive_review_exchange_failures()
-        if session_name is not None and max_failures > 0:
-            consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
-                worktree,
-                session_name,
-                not_before_started_at=review_cache_boundary_started_at,
+        # REUSE_HALT: deterministic terminal outcome (stopped/* or
+        # coder_protocol_error). Surface it as a halt — won't fix
+        # itself by retrying on the same head. Skips the no-completion
+        # budget entirely (this isn't a no-completion failure).
+        if resolution.decision is ResumeDecision.REUSE_HALT:
+            assert resolution.outcome is not None
+            mode, outcome, halt = self._handle_cached_review_exchange_outcome(
+                exchange_mode=exchange_mode,
+                existing_outcome=resolution.outcome,
+                issue_number=issue_number,
+                session_name=session_name,
+                worktree=worktree,
+                reviewer_label=reviewer_label,
+                errors=errors,
+                actions_taken=actions_taken,
             )
-            if consecutive >= max_failures:
-                logger.error(
-                    "[REVIEW_EXCHANGE] no-completion runaway detected; "
-                    "halting issue=%d session=%s consecutive=%d max=%d",
-                    issue_number, session_name, consecutive, max_failures,
+            return mode, outcome, halt, False
+
+        # COUNT_NO_COMPLETION_AND_RETRY: cached *_no_completion at
+        # current head. Consult the budget (PR #6267); escalate to
+        # needs-human if exceeded, otherwise fall through to spawn
+        # a fresh exchange. Pre-state-machine refactor this branch
+        # was implicit — bare ``None`` from the loader meant "spawn
+        # fresh" and the budget was checked unconditionally; that
+        # implicit conflation is what let ``coder_protocol_error``
+        # escape the budget (review feedback on PR #6270).
+        if resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY:
+            max_failures = self._max_consecutive_review_exchange_failures()
+            if session_name is not None and max_failures > 0:
+                consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
+                    worktree,
+                    session_name,
+                    not_before_started_at=review_cache_boundary_started_at,
                 )
-                errors.append(
-                    f"review_exchange: {consecutive} consecutive "
-                    f"reviewer/coder no-completion failures (max {max_failures}) — "
-                    "escalating to needs-human"
-                )
-                return exchange_mode, None, True, False
+                if consecutive >= max_failures:
+                    logger.error(
+                        "[REVIEW_EXCHANGE] no-completion runaway detected; "
+                        "halting issue=%d session=%s consecutive=%d max=%d",
+                        issue_number, session_name, consecutive, max_failures,
+                    )
+                    errors.append(
+                        f"review_exchange: {consecutive} consecutive "
+                        f"reviewer/coder no-completion failures (max {max_failures}) — "
+                        "escalating to needs-human"
+                    )
+                    return exchange_mode, None, True, False
+            # Under budget — fall through to spawn fresh exchange.
+
+        # IGNORE_STALE / NO_CACHE / INVALID_SUMMARY all fall through
+        # to spawning a fresh exchange below. Stale and no-cache are
+        # benign (head moved, first run); INVALID_SUMMARY is logged
+        # by ``decide_review_exchange_resumption`` and treated as
+        # spawn-fresh so corrupted state doesn't strand the issue.
 
         job_id = _review_exchange_job_id(issue_number, session_name)
 
@@ -627,7 +685,7 @@ class CompletionReviewExchange:
             return self._session_output.find_run_dir(worktree, session_name)
         return None
 
-    def load_existing_review_exchange_outcome(
+    def decide_review_exchange_resumption(
         self,
         worktree: Path,
         session_name: str | None,
@@ -635,99 +693,182 @@ class CompletionReviewExchange:
         require_validation: bool,
         current_validation_record_path: Path | None = None,
         not_before_started_at: str | None = None,
-    ) -> ReviewExchangeOutcome | None:
+    ) -> ResumeResolution:
+        """Decide what the next tick should do with any cached summary.
+
+        Replaces the legacy ``load_existing_review_exchange_outcome``
+        which returned bare ``Outcome | None``. Bare ``None`` meant
+        seven different things (no summary / stale head / unvalidated /
+        retryable no-completion / malformed / boundary-crossed / etc.)
+        and forced every caller to reinfer policy. This method returns
+        a ``ResumeResolution`` whose ``decision`` field names exactly
+        what action the caller should take.
+
+        Pure dispatch: gathers facts from filesystem + cached summary,
+        feeds them into ``review_exchange_resume.decide``, and packages
+        the answer (plus a reconstituted outcome for the reuse cases).
+        Adding a new ``(status, reason)`` cell is a one-line change in
+        ``decide`` and a row in its parametrized state-table test;
+        nothing here moves.
+        """
         if not session_name:
-            return None
+            return ResumeResolution.no_cache()
         cached = self._session_output.load_review_exchange_summary(
             worktree,
             session_name,
             not_before_started_at=not_before_started_at,
         )
-        if not cached:
-            return None
-        cached_head_sha = self._validation_head_sha(cached.validation_record_path)
-        current_head_sha = self._validation_head_sha(current_validation_record_path)
+        facts, cache_metadata = self._build_resume_facts(
+            cached=cached,
+            current_validation_record_path=current_validation_record_path,
+            require_validation=require_validation,
+        )
+        decision = decide(facts)
         logger.info(
-            "[REVIEW_EXCHANGE] Evaluating cached summary: session=%s summary=%s "
-            "validation=%s cached_head_sha=%s current_head_sha=%s require_validation=%s "
-            "boundary=%s",
+            "[REVIEW_EXCHANGE] resume decision=%s session=%s summary=%s "
+            "status=%s reason=%s cached_head_sha=%s current_head_sha=%s "
+            "cached_validation_passed=%s current_validation_failed=%s "
+            "require_validation=%s boundary=%s",
+            decision.value,
             session_name,
-            cached.summary_path,
-            cached.validation_record_path,
-            cached_head_sha or "(none)",
-            current_head_sha or "(none)",
+            cached.summary_path if cached else "(none)",
+            facts.status or "(none)",
+            facts.reason or "(none)",
+            facts.cached_head_sha or "(none)",
+            facts.current_head_sha or "(none)",
+            facts.cached_validation_passed,
+            facts.current_validation_failed,
             require_validation,
             not_before_started_at or "(none)",
         )
-        if require_validation and not self.review_exchange_validation_passed(
-            cached.validation_record_path
-        ):
-            logger.info(
-                "[REVIEW_EXCHANGE] Ignoring cached summary without passing validation: "
-                "session=%s summary=%s validation=%s",
-                session_name,
-                cached.summary_path,
+        if decision in (ResumeDecision.REUSE_APPROVAL, ResumeDecision.REUSE_HALT):
+            outcome = self._cached_outcome_from_summary(cached, cache_metadata)
+            if outcome is None:
+                # Defensive: decide() said reuse but the summary
+                # couldn't be reconstituted (status/rounds missing or
+                # malformed). Treat as INVALID_SUMMARY so the caller
+                # spawns fresh rather than reusing a corrupted record.
+                logger.warning(
+                    "[REVIEW_EXCHANGE] decide() returned %s but summary "
+                    "could not be reconstituted; treating as INVALID_SUMMARY: "
+                    "session=%s summary=%s",
+                    decision.value, session_name,
+                    cached.summary_path if cached else "(none)",
+                )
+                return ResumeResolution(
+                    decision=ResumeDecision.INVALID_SUMMARY,
+                    outcome=None,
+                    cache_metadata={},
+                )
+            return ResumeResolution(
+                decision=decision,
+                outcome=outcome,
+                cache_metadata=cache_metadata,
+            )
+        return ResumeResolution(
+            decision=decision,
+            outcome=None,
+            cache_metadata={},
+        )
+
+    def _build_resume_facts(
+        self,
+        *,
+        cached: ReviewExchangeSummary | None,
+        current_validation_record_path: Path | None,
+        require_validation: bool,
+    ) -> tuple[ResumeFacts, dict[str, str]]:
+        """Translate filesystem state + cached summary into ``ResumeFacts``.
+
+        Prefers the summary-embedded ``head_sha`` / ``validation_passed``
+        (the post-PR self-describing-summary contract). Falls back to
+        the legacy filesystem walk via ``cached.validation_record_path``
+        for summaries that predate the embedding.
+
+        Also produces ``cache_metadata`` (paths the caller logs / emits
+        on reuse). Returning both together keeps callers from re-walking
+        the same cached object.
+        """
+        if cached is None:
+            return (
+                ResumeFacts(
+                    status=None,
+                    reason=None,
+                    cached_head_sha=None,
+                    cached_validation_passed=None,
+                    current_head_sha=self._validation_head_sha(
+                        current_validation_record_path,
+                    ),
+                    current_validation_failed=self._current_validation_explicitly_failed(
+                        current_validation_record_path,
+                    ),
+                    no_completion_count=0,
+                    require_validation=require_validation,
+                ),
+                {},
+            )
+        status = cached.summary.get("status")
+        reason = cached.summary.get("reason")
+        # Prefer summary-embedded fields (PR self-describing summary).
+        # Fall back to filesystem-derived fields for legacy summaries.
+        embedded_head_sha = cached.summary.get("head_sha")
+        if isinstance(embedded_head_sha, str) and embedded_head_sha:
+            cached_head_sha: str | None = embedded_head_sha
+        else:
+            cached_head_sha = self._validation_head_sha(cached.validation_record_path)
+        embedded_passed = cached.summary.get("validation_passed")
+        if isinstance(embedded_passed, bool):
+            cached_validation_passed: bool | None = embedded_passed
+        elif cached.validation_record_path is not None and cached.validation_record_path.exists():
+            cached_validation_passed = self.review_exchange_validation_passed(
                 cached.validation_record_path,
             )
-            return None
-        if require_validation and not current_head_sha:
-            logger.info(
-                "[REVIEW_EXCHANGE] Ignoring cached summary without current validation head_sha: "
-                "session=%s summary=%s current_validation=%s",
-                session_name,
-                cached.summary_path,
-                current_validation_record_path,
-            )
-            return None
-        if not self._review_exchange_validation_matches_current(
-            cached.validation_record_path,
-            current_validation_record_path,
-        ):
-            logger.info(
-                "[REVIEW_EXCHANGE] Ignoring cached summary due to head_sha mismatch: "
-                "session=%s summary=%s cached_head_sha=%s current_head_sha=%s",
-                session_name,
-                cached.summary_path,
-                cached_head_sha or "(none)",
-                current_head_sha or "(none)",
-            )
-            return None
-        # Same commit, cached approval, but the *current* validation explicitly
-        # failed — the prior approval no longer holds. Replaying the cached
-        # "ok" here is the bug that loops the validation-failed reroute: the
-        # caller would treat the cached approval as authoritative and never
-        # invoke the coder to fix the failure. Force a fresh exchange instead.
-        if self._current_validation_explicitly_failed(current_validation_record_path):
-            logger.info(
-                "[REVIEW_EXCHANGE] Ignoring cached summary because current validation failed: "
-                "session=%s summary=%s current_validation=%s",
-                session_name,
-                cached.summary_path,
-                current_validation_record_path,
-            )
-            return None
-        status = cached.summary.get("status")
-        rounds = cached.summary.get("completed_rounds")
-        if not status or rounds is None:
-            return None
-        cache_metadata = {
+        else:
+            cached_validation_passed = None
+        cache_metadata: dict[str, str] = {
             "review_cache_summary_path": str(cached.summary_path),
         }
         if cached.validation_record_path:
             cache_metadata["review_cache_validation_record_path"] = str(
-                cached.validation_record_path
+                cached.validation_record_path,
             )
         if cached_head_sha:
             cache_metadata["review_cache_head_sha"] = cached_head_sha
-        logger.info(
-            "[REVIEW_EXCHANGE] Reusing cached summary: session=%s summary=%s status=%s "
-            "rounds=%s head_sha=%s",
-            session_name,
-            cached.summary_path,
-            status,
-            rounds,
-            cached_head_sha or "(none)",
+        return (
+            ResumeFacts(
+                status=status if isinstance(status, str) else None,
+                reason=reason if isinstance(reason, str) else None,
+                cached_head_sha=cached_head_sha,
+                cached_validation_passed=cached_validation_passed,
+                current_head_sha=self._validation_head_sha(
+                    current_validation_record_path,
+                ),
+                current_validation_failed=self._current_validation_explicitly_failed(
+                    current_validation_record_path,
+                ),
+                no_completion_count=0,
+                require_validation=require_validation,
+            ),
+            cache_metadata,
         )
+
+    def _cached_outcome_from_summary(
+        self,
+        cached: ReviewExchangeSummary | None,
+        cache_metadata: dict[str, str],
+    ) -> ReviewExchangeOutcome | None:
+        """Reconstitute a ``ReviewExchangeOutcome`` from the cached summary.
+
+        Returns None when the summary is missing required fields
+        (status, completed_rounds). Caller treats None as
+        ``INVALID_SUMMARY``.
+        """
+        if cached is None:
+            return None
+        status = cached.summary.get("status")
+        rounds = cached.summary.get("completed_rounds")
+        if not isinstance(status, str) or not isinstance(rounds, int):
+            return None
         from ..domain.review_exchange import ReviewExchangeOutcome, ReviewExchangeResponse
 
         return ReviewExchangeOutcome(

@@ -301,9 +301,15 @@ def _is_stale(facts: ResumeFacts) -> bool:
     """
     if facts.require_validation and facts.current_head_sha is None:
         return True
+    # When the current head is known, the cached head_sha must match
+    # — including when the cache can't prove a head_sha at all. A
+    # cached summary that doesn't know which commit it covers cannot
+    # be safely reused for a known current commit. (This rejects the
+    # "cache present but pre-PR — no head_sha embedded — coexists
+    # with a known current head_sha" case, even when
+    # require_validation=False.)
     if (
-        facts.cached_head_sha is not None
-        and facts.current_head_sha is not None
+        facts.current_head_sha is not None
         and facts.cached_head_sha != facts.current_head_sha
     ):
         return True

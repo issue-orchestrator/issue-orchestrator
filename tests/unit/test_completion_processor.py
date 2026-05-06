@@ -769,6 +769,7 @@ class TestReviewExchangeExecution:
             json.dumps({
                 "completed_rounds": 2,
                 "status": "ok",
+                "reason": "reviewer_ok",
                 "response_text": "Looks good",
                 "timestamp": "2026-02-01T00:00:00Z",
             })
@@ -860,12 +861,22 @@ class TestReviewExchangeExecution:
         run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
+        # Use a real production halt status — coder_protocol_error
+        # — instead of the non-production "changes_requested" the
+        # legacy test used. The state-machine refactor (PR #6271)
+        # only recognizes statuses the runner actually writes
+        # (ok / stopped / error). Both old and new implementations
+        # halt on this cache hit; the test's intent (cached non-OK
+        # → replay marker, no fresh exchange) is preserved.
         (exchange_dir / "summary.json").write_text(
             json.dumps({
                 "completed_rounds": 3,
-                "status": "changes_requested",
+                "status": "error",
+                "reason": "coder_protocol_error",
                 "response_text": "Still three open comments.",
                 "timestamp": "2026-02-01T00:00:00Z",
+                "head_sha": "same-sha",
+                "validation_passed": True,
             })
         )
         validation_record = run_dir / "validation-record.json"
@@ -951,6 +962,7 @@ class TestReviewExchangeExecution:
             json.dumps({
                 "completed_rounds": 2,
                 "status": "ok",
+                "reason": "reviewer_ok",
                 "response_text": "Looks good",
                 "timestamp": "2026-02-01T00:00:00Z",
             })
@@ -1024,6 +1036,7 @@ class TestReviewExchangeExecution:
             json.dumps({
                 "completed_rounds": 2,
                 "status": "ok",
+                "reason": "reviewer_ok",
                 "response_text": "Looks good",
                 "timestamp": "2026-02-01T00:00:00Z",
             })
@@ -2822,6 +2835,7 @@ class TestRunScopedArtifacts:
                 summary={
                     "completed_rounds": 1,
                     "status": "ok",
+                    "reason": "reviewer_ok",
                     "response_text": "Looks good",
                     "timestamp": "2026-02-01T00:00:00Z",
                 },
@@ -2914,6 +2928,7 @@ class TestRunScopedArtifacts:
                 summary={
                     "completed_rounds": 1,
                     "status": "ok",
+                    "reason": "reviewer_ok",
                     "response_text": "Looks good",
                     "timestamp": "2026-02-01T00:00:00Z",
                 },
