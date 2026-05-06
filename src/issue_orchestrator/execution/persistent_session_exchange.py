@@ -46,6 +46,12 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
+from ..domain.review_exchange_turn import (
+    ReviewExchangeTurnPacket,
+    ReviewExchangeTurnResult,
+    Role,
+    TurnResultKind,
+)
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
@@ -764,15 +770,18 @@ def _drive_rounds(  # noqa: PLR0913
             before_reviewer_round(round_index)
 
         # ----- Reviewer turn -----
-        reviewer_prompt_text = build_reviewer_prompt(
+        reviewer_packet = ReviewExchangeTurnPacket(
             issue_number=issue_number,
             issue_title=issue_title,
             round_index=round_index,
-            last_coder_text=last_coder_text,
-            last_reviewer_text=last_reviewer_text,
+            role=Role.REVIEWER,
             require_validation=require_validation,
             run_dir=run_dir,
+            last_coder_text=last_coder_text,
+            last_reviewer_text=last_reviewer_text,
         )
+        _persist_turn_packet(exchange_dir, reviewer_packet)
+        reviewer_prompt_text = build_reviewer_prompt(reviewer_packet)
         emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
             "issue_number": issue_number,
             "session_name": session_name,
@@ -808,6 +817,7 @@ def _drive_rounds(  # noqa: PLR0913
             timeout_seconds=reviewer_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=round_index,
@@ -867,13 +877,17 @@ def _drive_rounds(  # noqa: PLR0913
         last_reviewer_text = reviewer.response_text
 
         # ----- Coder turn -----
-        coder_prompt_text = build_coder_prompt(
+        coder_packet = ReviewExchangeTurnPacket(
             issue_number=issue_number,
             issue_title=issue_title,
             round_index=round_index,
-            reviewer_feedback=reviewer.response_text,
+            role=Role.CODER,
+            require_validation=require_validation,
             run_dir=run_dir,
+            reviewer_feedback=reviewer.response_text,
         )
+        _persist_turn_packet(exchange_dir, coder_packet)
+        coder_prompt_text = build_coder_prompt(coder_packet)
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
@@ -909,6 +923,7 @@ def _drive_rounds(  # noqa: PLR0913
             timeout_seconds=coder_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=round_index,
@@ -1063,6 +1078,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             timeout_seconds=coder_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=cycle_index,
@@ -1112,6 +1128,7 @@ def _send_role_round(  # noqa: PLR0913
     timeout_seconds: float,
     session_output: SessionOutput,
     run_dir: Path,
+    exchange_dir: Path,
     exchange_run_id: str,
     issue_number: int,
     cycle_index: int,
@@ -1123,6 +1140,10 @@ def _send_role_round(  # noqa: PLR0913
 
     Returns ``None`` if the role timed out or died — the caller emits
     REVIEW_EXCHANGE_ROLE_TIMEOUT and bails out of the exchange.
+
+    Persists the per-turn parsed result as a session artifact under
+    ``<exchange_dir>/turns/round-<n>-<role>.result.json`` for replay
+    and diagnostics.
     """
     try:
         parsed = send_round(
@@ -1164,7 +1185,16 @@ def _send_role_round(  # noqa: PLR0913
         })
         return None
 
-    response = _normalize_role_response(parsed)
+    typed_result = ReviewExchangeTurnResult.from_agent_dict(
+        parsed, raw_output=None,
+    )
+    _persist_turn_result(
+        exchange_dir,
+        round_index=cycle_index,
+        role=Role(role),
+        result=typed_result,
+    )
+    response = _legacy_response_from_typed_result(typed_result)
     _record_chapter(
         session_output=session_output,
         run_dir=run_dir,
@@ -1193,31 +1223,89 @@ def _send_role_round(  # noqa: PLR0913
 def _normalize_role_response(parsed: dict[str, Any]) -> ReviewExchangeResponse:
     """Convert the raw JSON dict into a domain ReviewExchangeResponse.
 
-    Missing required fields are tolerated by surfacing a synthetic
-    response_type that the caller can treat as a protocol error if it
-    chooses to. Today's contract is: the agent writes
-    {response_type, response_text, [getting_closer]}; anything else is
-    surfaced as response_type='protocol_error'.
+    Delegates to ``ReviewExchangeTurnResult.from_agent_dict`` for the
+    parser policy (every protocol-error branch is named there), then
+    bridges to the legacy ``ReviewExchangeResponse`` shape that the
+    rest of this runner consumes. The bridge is a one-line mapping
+    from the closed ``TurnResultKind`` enum to the legacy magic-string
+    ``response_type``; once the rest of the runner moves to the typed
+    result, the bridge can be deleted.
     """
-    response_type = str(parsed.get("response_type") or "").strip()
-    response_text = str(parsed.get("response_text") or "").strip()
-    if not response_type or not response_text:
+    typed = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
+    return _legacy_response_from_typed_result(typed)
+
+
+def _legacy_response_from_typed_result(
+    result: ReviewExchangeTurnResult,
+) -> ReviewExchangeResponse:
+    if result.kind is TurnResultKind.PROTOCOL_ERROR:
         return ReviewExchangeResponse(
             response_type="protocol_error",
-            response_text=(
-                "Agent response missing required response_type/response_text fields"
-            ),
-            getting_closer=False,
-            raw_json=parsed,
-            raw_output=None,
+            response_text=result.response_text,
+            getting_closer=result.getting_closer if result.getting_closer is not None else False,
+            raw_json=result.raw_json,
+            raw_output=result.raw_output,
         )
     return ReviewExchangeResponse(
-        response_type=response_type,
-        response_text=response_text,
-        getting_closer=parsed.get("getting_closer"),
-        raw_json=parsed,
-        raw_output=None,
+        response_type=result.kind.value,
+        response_text=result.response_text,
+        getting_closer=result.getting_closer,
+        raw_json=result.raw_json,
+        raw_output=result.raw_output,
     )
+
+
+def _persist_turn_packet(
+    exchange_dir: Path, packet: ReviewExchangeTurnPacket,
+) -> None:
+    """Write the per-turn input packet as a session artifact.
+
+    The artifact lives at
+    ``<exchange_dir>/turns/round-<round>-<role>.packet.json`` so a
+    failed exchange can be replayed/inspected from the on-disk state
+    without walking the recording stream. Best-effort: write failures
+    do not abort the round (the round itself is the system of record;
+    artifacts are diagnostic).
+    """
+    try:
+        turns_dir = exchange_dir / "turns"
+        turns_dir.mkdir(parents=True, exist_ok=True)
+        path = turns_dir / f"round-{packet.round_index}-{packet.role.value}.packet.json"
+        path.write_text(
+            json.dumps(packet.to_manifest_fields(), indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist turn packet for round=%d role=%s: %s",
+            packet.round_index, packet.role.value, exc,
+        )
+
+
+def _persist_turn_result(
+    exchange_dir: Path,
+    *,
+    round_index: int,
+    role: Role,
+    result: ReviewExchangeTurnResult,
+) -> None:
+    """Write the per-turn parsed result as a session artifact.
+
+    Sibling to ``_persist_turn_packet``: a failed exchange leaves both
+    the packet (what the orchestrator gave the agent) and the result
+    (what the orchestrator parsed from the agent's response) on disk.
+    """
+    try:
+        turns_dir = exchange_dir / "turns"
+        turns_dir.mkdir(parents=True, exist_ok=True)
+        path = turns_dir / f"round-{round_index}-{role.value}.result.json"
+        path.write_text(
+            json.dumps(result.to_manifest_fields(), indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist turn result for round=%d role=%s: %s",
+            round_index, role.value, exc,
+        )
 
 
 # ---------------------------------------------------------------------------

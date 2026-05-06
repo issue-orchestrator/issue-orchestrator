@@ -347,6 +347,210 @@ class TestPersistentSessionExchangeHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# Turn-packet / turn-result on-disk artifacts
+# ---------------------------------------------------------------------------
+
+
+class TestTurnArtifactsPersisted:
+    """The runner persists every turn's packet and result as JSON
+    artifacts under ``<exchange_dir>/turns/`` so a failed exchange
+    leaves a complete on-disk trail (orchestrator-side input + parsed
+    agent output) that an operator or replay test can inspect without
+    walking the recording stream.
+
+    These tests pin:
+    1. The artifact path layout (``round-<n>-<role>.packet.json`` and
+       ``.result.json``).
+    2. Round-trip parseability via ``ReviewExchangeTurnPacket.from_manifest``
+       and ``ReviewExchangeTurnResult.from_manifest``.
+    3. Field content matches the data the runner observed at that turn.
+
+    A regression that drops the persistence calls or drifts the
+    field set away from the manifest contract breaks these tests.
+    """
+
+    def test_two_round_exchange_persists_packet_and_result_per_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnPacket,
+            ReviewExchangeTurnResult,
+            Role,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
+                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        assert turns_dir.is_dir(), f"Expected turns dir at {turns_dir}"
+
+        # Three turns happened (reviewer round 1 → coder round 1 →
+        # reviewer round 2), so six artifacts (packet + result each).
+        artifact_names = sorted(p.name for p in turns_dir.iterdir())
+        assert artifact_names == [
+            "round-1-coder.packet.json",
+            "round-1-coder.result.json",
+            "round-1-reviewer.packet.json",
+            "round-1-reviewer.result.json",
+            "round-2-reviewer.packet.json",
+            "round-2-reviewer.result.json",
+        ]
+
+        # Round 1 reviewer packet: typed, role REVIEWER, no prior
+        # texts, validation off.
+        r1_packet_data = json.loads((turns_dir / "round-1-reviewer.packet.json").read_text())
+        r1_packet = ReviewExchangeTurnPacket.from_manifest(r1_packet_data)
+        assert r1_packet is not None
+        assert r1_packet.role is Role.REVIEWER
+        assert r1_packet.round_index == 1
+        assert r1_packet.issue_number == 42
+        assert r1_packet.issue_title == "Test"
+        assert r1_packet.require_validation is False
+        assert r1_packet.last_coder_text is None
+        assert r1_packet.last_reviewer_text is None
+
+        # Round 1 reviewer result: changes_requested.
+        r1_review_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-1-reviewer.result.json").read_text())
+        )
+        assert r1_review_result is not None
+        assert r1_review_result.kind is TurnResultKind.CHANGES_REQUESTED
+        assert r1_review_result.response_text == "Fix typo"
+        assert r1_review_result.getting_closer is True
+
+        # Round 1 coder packet: typed, role CODER, reviewer_feedback
+        # carries the round-1 reviewer text (the runner copies the
+        # most-recent reviewer response into the coder packet).
+        r1_coder_packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads((turns_dir / "round-1-coder.packet.json").read_text())
+        )
+        assert r1_coder_packet is not None
+        assert r1_coder_packet.role is Role.CODER
+        assert r1_coder_packet.reviewer_feedback == "Fix typo"
+
+        # Round 1 coder result: ok.
+        r1_coder_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-1-coder.result.json").read_text())
+        )
+        assert r1_coder_result is not None
+        assert r1_coder_result.kind is TurnResultKind.OK
+        assert r1_coder_result.response_text == "Fixed typo"
+
+        # Round 2 reviewer packet carries the prior round's coder and
+        # reviewer texts so the prompt builder can render them.
+        r2_packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads((turns_dir / "round-2-reviewer.packet.json").read_text())
+        )
+        assert r2_packet is not None
+        assert r2_packet.last_coder_text == "Fixed typo"
+        assert r2_packet.last_reviewer_text == "Fix typo"
+
+        # Round 2 reviewer result: ok (terminal — no coder round 2).
+        r2_review_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-2-reviewer.result.json").read_text())
+        )
+        assert r2_review_result is not None
+        assert r2_review_result.kind is TurnResultKind.OK
+
+    def test_protocol_error_response_is_persisted_with_named_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Agent emits a malformed response; runner persists the
+        result as ``protocol_error`` with a named ``protocol_error_reason``
+        so an operator inspecting the on-disk artifact can tell which
+        parser branch fired.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                # Reviewer writes JSON missing response_type — the
+                # parser flags this as a protocol error with reason
+                # missing_response_type. The runner treats a non-ok
+                # reviewer response by continuing to the coder turn,
+                # then approving on round 2 to terminate cleanly.
+                "reviewer": [
+                    {"response_text": "I forgot to declare myself"},
+                    {"response_type": "ok", "response_text": "ok now", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        result_path = outcome.exchange_dir / "turns" / "round-1-reviewer.result.json"
+        assert result_path.exists()
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "missing_response_type"
+
+
+# ---------------------------------------------------------------------------
 # Termination conditions
 # ---------------------------------------------------------------------------
 
