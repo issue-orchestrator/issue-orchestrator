@@ -1040,6 +1040,7 @@ class CompletionReviewExchange:
             max_rounds=self._config.review_exchange_max_rounds,
             max_no_progress=self._config.review_exchange_max_no_progress,
             require_validation=self._config.review_exchange_require_validation,
+            parent_session_name=session_name,
             initial_validation_record_path=initial_validation_record_path,
             web_port=self._config.control_api_port,
             events=events,

@@ -235,6 +235,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    parent_session_name: str | None = None,
     initial_validation_record_path: Path | None = None,
     web_port: int | None = None,
     events: EventSink | None = None,
@@ -280,9 +281,18 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
-    session_output.update_manifest(
-        run_dir, {"review_exchange_dir": str(exchange_dir)},
-    )
+    # Stamp the parent coding session into the manifest. The cache
+    # loader and the consecutive-failure counter use this to scope
+    # candidates to runs that originated from the SAME coding session,
+    # rather than walking ``sessions/`` in mtime-desc order and
+    # inferring boundaries from run_dir name patterns. Pre-PR #6271
+    # the inference was layout-sensitive — failures from coding
+    # session A could carry across into B's quota when the discriminator
+    # heuristic missed a coding boundary.
+    manifest_extras: dict[str, Any] = {"review_exchange_dir": str(exchange_dir)}
+    if parent_session_name is not None:
+        manifest_extras["parent_session_name"] = parent_session_name
+    session_output.update_manifest(run_dir, manifest_extras)
     if on_started is not None:
         on_started(run_dir)
 
