@@ -145,6 +145,17 @@ class _FakeSessionOutput:
             summary_path=self._run_dir / "review-exchange" / "summary.json",
         )
 
+    def count_consecutive_review_exchange_no_completion(
+        self,
+        worktree: Path,  # noqa: ARG002
+        session_name: str,  # noqa: ARG002
+        *,
+        not_before_started_at: str | None = None,  # noqa: ARG002
+    ) -> int:
+        # Bound is irrelevant to this fixture's tests; return 0 so the
+        # spawn-decision path falls through unchanged.
+        return 0
+
 
 def _make_config(tmp_path: Path, *, require_validation: bool = False) -> Config:
     cfg = Config(repo_root=tmp_path)

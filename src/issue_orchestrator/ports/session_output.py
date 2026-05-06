@@ -468,6 +468,41 @@ class SessionOutput(Protocol):
         """
         ...
 
+    def count_consecutive_review_exchange_no_completion(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        *,
+        not_before_started_at: str | None = None,
+    ) -> int:
+        """Count consecutive recent review-exchange summaries that ended in
+        ``status=error reason=*_no_completion``, newest first.
+
+        Stops counting at the first summary whose status / reason does not
+        match (i.e. an ``ok`` exchange resets the count to zero), or at the
+        ``not_before_started_at`` boundary (typically the scratch-reset
+        boundary — failures from before a scratch reset must not count
+        against the current attempt).
+
+        Powers the bound on the
+        ``review_exchange.role_timeout → review_exchange.completed (error) →
+        relaunch`` runaway loop: when a reviewer agent can't complete its
+        round (e.g. its sandbox blocks the response-file write, or the
+        prompt is unreachable), every retry produces another
+        ``reviewer_no_completion`` summary. Without an upper bound this
+        cycles for the lifetime of the orchestrator process.
+
+        Args:
+            worktree_path: Path to the worktree.
+            session_name: Session name whose review-exchange runs are counted.
+            not_before_started_at: Optional ISO timestamp boundary; runs
+                that started before this timestamp do not contribute.
+
+        Returns:
+            Number of consecutive matching error summaries.
+        """
+        ...
+
     # -------------------------------------------------------------------------
     # Session Metadata
     # -------------------------------------------------------------------------

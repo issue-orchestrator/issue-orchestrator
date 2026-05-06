@@ -627,6 +627,63 @@ Timestamp: {self._now_iso()}
             validation_record_path=stored_validation,
         )
 
+    def count_consecutive_review_exchange_no_completion(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        *,
+        not_before_started_at: str | None = None,
+    ) -> int:
+        """Count consecutive ``status=error reason=*_no_completion`` review
+        summaries, newest-first, in this worktree's sessions/.
+
+        See the port docstring for semantics. Implementation walks the
+        sessions dir in mtime-desc order. Any non-error summary, any
+        non-``*_no_completion`` reason, or crossing the
+        ``not_before_started_at`` boundary stops the count.
+        """
+        base_dir = self.sessions_base_dir(worktree_path)
+        if not base_dir.exists():
+            return 0
+        runs = sorted(
+            (d for d in base_dir.iterdir() if d.is_dir() and not d.is_symlink()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        count = 0
+        for run_dir in runs:
+            manifest = self.read_manifest(run_dir) or {}
+            if not_before_started_at is not None:
+                started_at = manifest.get("started_at")
+                if not isinstance(started_at, str) or started_at < not_before_started_at:
+                    # Crossed the scratch-reset boundary; stop counting.
+                    break
+            manifest_dir = manifest.get("review_exchange_dir")
+            exchange_dir = (
+                Path(manifest_dir)
+                if manifest_dir
+                else run_dir / REVIEW_EXCHANGE_DIR_NAME
+            )
+            summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+            if not summary_path.exists():
+                # Not a review-exchange run; ignore (don't break).
+                continue
+            summary = self._read_json(summary_path)
+            if not isinstance(summary, dict):
+                # Unparseable summary — treat as "noise", not as a clean run
+                # that resets the count. Keep going to find a definitive
+                # signal, but don't increment.
+                continue
+            status = summary.get("status")
+            reason = summary.get("reason") or ""
+            if status == "error" and isinstance(reason, str) and reason.endswith("_no_completion"):
+                count += 1
+                continue
+            # First clean (non-error / different reason) summary stops the
+            # streak — the loop is no longer the no-completion runaway.
+            break
+        return count
+
     def load_review_exchange_summary(
         self,
         worktree_path: Path,

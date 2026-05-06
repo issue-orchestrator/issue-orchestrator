@@ -377,6 +377,9 @@ def load_review_section(config: "Config", review_section: dict) -> None:
     config.max_consecutive_publish_failures = review_section.get(
         "max_consecutive_publish_failures", 3
     )
+    config.max_consecutive_review_exchange_failures = review_section.get(
+        "max_consecutive_review_exchange_failures", 3
+    )
     config.reviewer_feedback_cache_minutes = review_section.get(
         "reviewer_feedback_cache_minutes", 5
     )

@@ -212,6 +212,7 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "triage_review_on_failure": LEAF,
         "max_rework_cycles": LEAF,
         "max_consecutive_publish_failures": LEAF,
+        "max_consecutive_review_exchange_failures": LEAF,
         "reviewer_feedback_cache_minutes": LEAF,
         "keep_current_approach_label": LEAF,
         "run_audit": _leaf_keys("min_runtime_minutes", "on_timeout"),

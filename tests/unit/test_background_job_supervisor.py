@@ -153,6 +153,18 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
         ):
             return None
 
+        def count_consecutive_review_exchange_no_completion(  # noqa: ARG002
+            self,
+            worktree,
+            session_name,
+            *,
+            not_before_started_at=None,
+        ):
+            # No no-completion failures recorded for this fake — the
+            # bound never triggers, so the test exercises the
+            # supervisor-failure halt path it's actually about.
+            return 0
+
     runner = ThreadBackgroundJobRunner()
     supervisor = BackgroundJobSupervisor(runner)
 
