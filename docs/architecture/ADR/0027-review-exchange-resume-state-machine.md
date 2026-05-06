@@ -138,16 +138,42 @@ Three downstream consumers route through the same module:
   `dict.get`. Threading those through typed dataclasses is future
   work; this ADR establishes the pattern.
 
-### Deferred
+#### Adjacent decisions made in the same PR (continued)
 
-- **Turn packets.** The original review feedback also proposed making
-  the agent contract narrower: orchestrator builds a complete
-  `ReviewExchangeTurnPacket` for each role's round, agent reads one
-  packet and writes one result, no artifact discovery from the
-  agent's side. That's a separate refactor on the agent contract,
-  meaningful but distinct from the cache-policy seam this ADR owns.
-  The resume-decision boundary established here is the clean
-  attachment point for that follow-up.
+- **Turn packets and typed turn results.** The runner builds a typed
+  `ReviewExchangeTurnPacket` for each role's round (the prompt
+  builder's only argument, validated by role) and parses every agent
+  response into a typed `ReviewExchangeTurnResult` whose `kind` is
+  a closed `TurnResultKind` enum. Protocol errors carry a named
+  `protocol_error_reason` (`missing_response`,
+  `missing_response_type`, `missing_response_text`,
+  `unknown_response_type`) so a failed exchange's on-disk state
+  identifies the parser branch that fired. Both types live in
+  `domain/review_exchange_turn.py` with `to_manifest_fields` /
+  `from_manifest` symmetry, and the runner persists every turn's
+  packet and result as JSON at
+  `<exchange_dir>/turns/round-<n>-<role>.{packet,result}.json` so
+  replay and operator inspection do not require walking the
+  recording stream.
+
+  This narrows the runner's seam to *one typed in, one typed out*:
+  policy bugs that previously leaked across the prompt-builder
+  signature or the response-parsing dict are now type errors. The
+  legacy `ReviewExchangeResponse` is preserved as a one-line bridge
+  (`_legacy_response_from_typed_result`) so downstream call sites in
+  the runner can be migrated incrementally.
+
+## Deferred
+
+- **Agent-side packet consumption.** Agents (Codex, Claude Code)
+  today read a string prompt built from the packet, rather than the
+  packet path itself. Pushing the packet path into a role-env-var so
+  the agent's CLI tooling reads the typed packet directly (and
+  writes a typed result file format the orchestrator parses
+  unchanged) is a separate refactor of the `coding-done` /
+  `reviewer-done` agent contract. The packet/result types and
+  on-disk artifacts established here are the stable attachment
+  point.
 
 ## Related
 

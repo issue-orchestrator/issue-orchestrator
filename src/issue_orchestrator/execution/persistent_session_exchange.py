@@ -1220,21 +1220,6 @@ def _send_role_round(  # noqa: PLR0913
     return response
 
 
-def _normalize_role_response(parsed: dict[str, Any]) -> ReviewExchangeResponse:
-    """Convert the raw JSON dict into a domain ReviewExchangeResponse.
-
-    Delegates to ``ReviewExchangeTurnResult.from_agent_dict`` for the
-    parser policy (every protocol-error branch is named there), then
-    bridges to the legacy ``ReviewExchangeResponse`` shape that the
-    rest of this runner consumes. The bridge is a one-line mapping
-    from the closed ``TurnResultKind`` enum to the legacy magic-string
-    ``response_type``; once the rest of the runner moves to the typed
-    result, the bridge can be deleted.
-    """
-    typed = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
-    return _legacy_response_from_typed_result(typed)
-
-
 def _legacy_response_from_typed_result(
     result: ReviewExchangeTurnResult,
 ) -> ReviewExchangeResponse:
