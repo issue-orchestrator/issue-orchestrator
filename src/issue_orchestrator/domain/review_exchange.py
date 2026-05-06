@@ -18,7 +18,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .review_exchange_turn import ReviewExchangeTurnPacket
 
 
 @dataclass(frozen=True)
@@ -45,32 +48,34 @@ class ReviewExchangeOutcome:
     cache_metadata: dict[str, str] | None = None
 
 
-def build_reviewer_prompt(
-    *,
-    issue_number: int,
-    issue_title: str,
-    round_index: int,
-    last_coder_text: str | None,
-    last_reviewer_text: str | None,
-    require_validation: bool,
-    run_dir: Path,
-) -> str:
-    """Build the reviewer's prompt for one round of the exchange."""
+def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
+    """Build the reviewer's prompt for one round of the exchange.
+
+    Consumes a ``ReviewExchangeTurnPacket`` (must have
+    ``role == Role.REVIEWER``); the caller is responsible for
+    constructing the packet so all per-turn inputs go through one
+    typed seam rather than a free keyword-arg signature.
+    """
+    from .review_exchange_turn import Role
+    if packet.role is not Role.REVIEWER:
+        raise ValueError(
+            f"build_reviewer_prompt requires Role.REVIEWER packet, got {packet.role!r}"
+        )
     validation_note = ""
-    if require_validation:
+    if packet.require_validation:
         validation_note = (
             "Validation is required. Only respond ok if validation-record.json exists "
-            f"and passed in {run_dir}. If missing or failed, respond changes_requested "
+            f"and passed in {packet.run_dir}. If missing or failed, respond changes_requested "
             "asking the coder to run validation and fix any failures."
         )
     prior = ""
-    if last_coder_text:
-        prior += f"\nCoder response:\n{last_coder_text}\n"
-    if last_reviewer_text:
-        prior += f"\nPrevious review feedback:\n{last_reviewer_text}\n"
+    if packet.last_coder_text:
+        prior += f"\nCoder response:\n{packet.last_coder_text}\n"
+    if packet.last_reviewer_text:
+        prior += f"\nPrevious review feedback:\n{packet.last_reviewer_text}\n"
     return (
-        f"You are the reviewer in a coder↔reviewer exchange for issue #{issue_number}: {issue_title}.\n"
-        f"Round {round_index}.\n"
+        f"You are the reviewer in a coder↔reviewer exchange for issue #{packet.issue_number}: {packet.issue_title}.\n"
+        f"Round {packet.round_index}.\n"
         f"{validation_note}\n"
         "Review the current worktree changes.\n"
         "Consider:\n"
@@ -86,18 +91,26 @@ def build_reviewer_prompt(
     )
 
 
-def build_coder_prompt(
-    *,
-    issue_number: int,
-    issue_title: str,
-    round_index: int,
-    reviewer_feedback: str,
-    run_dir: Path,
-) -> str:
-    """Build the coder's prompt for one round of the exchange."""
+def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
+    """Build the coder's prompt for one round of the exchange.
+
+    Consumes a ``ReviewExchangeTurnPacket`` with
+    ``role == Role.CODER`` and ``reviewer_feedback`` set. Runner is
+    expected to copy the most-recent reviewer response_text into the
+    packet's ``reviewer_feedback`` slot.
+    """
+    from .review_exchange_turn import Role
+    if packet.role is not Role.CODER:
+        raise ValueError(
+            f"build_coder_prompt requires Role.CODER packet, got {packet.role!r}"
+        )
+    if packet.reviewer_feedback is None:
+        raise ValueError(
+            "build_coder_prompt requires packet.reviewer_feedback to be set"
+        )
     return (
-        f"You are the coder in a review exchange for issue #{issue_number}: {issue_title}.\n"
-        f"Round {round_index}.\n"
+        f"You are the coder in a review exchange for issue #{packet.issue_number}: {packet.issue_title}.\n"
+        f"Round {packet.round_index}.\n"
         "Review the feedback below and update the worktree accordingly.\n"
         "\n"
         "Steps:\n"
@@ -106,8 +119,8 @@ def build_coder_prompt(
         "3. Run `coding-done completed --implementation '...' --problems '...'`\n"
         "4. Write one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE\n"
         "\n"
-        f"Session output dir: {run_dir}\n"
-        f"\nReviewer feedback:\n{reviewer_feedback}\n"
+        f"Session output dir: {packet.run_dir}\n"
+        f"\nReviewer feedback:\n{packet.reviewer_feedback}\n"
         "\n"
         "After coding-done succeeds, write your JSON response to "
         "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"

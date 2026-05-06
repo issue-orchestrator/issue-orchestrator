@@ -25,6 +25,8 @@ from ..infra.terminal_cleaning import (
     is_spinner_fragment,
 )
 from ..infra.terminal_recording import append_output_event
+from ..domain.review_exchange_manifest import ReviewExchangeManifestHeader
+from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
     ChapterSidecarIdentityMismatch,
@@ -662,6 +664,16 @@ Timestamp: {self._now_iso()}
         count = 0
         for run_dir in runs:
             manifest = self.read_manifest(run_dir) or {}
+            # Explicit parent-session filter when the field is present
+            # (PR #6271). Skipping a different-parent run with
+            # ``continue`` (rather than ``break``) preserves the
+            # legacy behavior where unrelated runs were silently
+            # ignored on the way to finding the streak. Legacy runs
+            # (no field) fall through to the existing
+            # coding-boundary inference below.
+            match = self._manifest_matches_parent_session(manifest, session_name)
+            if match is False:
+                continue
             if not_before_started_at is not None:
                 started_at = manifest.get("started_at")
                 if not isinstance(started_at, str) or started_at < not_before_started_at:
@@ -690,14 +702,52 @@ Timestamp: {self._now_iso()}
                 # signal, but don't increment.
                 continue
             status = summary.get("status")
-            reason = summary.get("reason") or ""
-            if status == "error" and isinstance(reason, str) and reason.endswith("_no_completion"):
+            reason = summary.get("reason")
+            # Classification is owned by ``domain.review_exchange_resume``
+            # — the same module ``CompletionReviewExchange`` uses to
+            # decide whether to spawn a fresh exchange or halt. Pre-PR
+            # #6271 the adapter encoded the ``_no_completion`` suffix
+            # rule inline, which let the runner's reasons drift apart
+            # from the counter's classification (review feedback on
+            # PR #6270). Routing both consumers through one classifier
+            # function ends that drift.
+            if status == "error" and is_no_completion_reason(
+                reason if isinstance(reason, str) else None,
+            ):
                 count += 1
                 continue
-            # First clean (non-error / different reason) summary stops the
-            # streak — the loop is no longer the no-completion runaway.
+            # First clean (non-no-completion) summary stops the streak —
+            # the loop is no longer the no-completion runaway.
             break
         return count
+
+    @staticmethod
+    def _manifest_matches_parent_session(
+        manifest: dict[str, Any], parent_session_name: str,
+    ) -> bool | None:
+        """Filter a candidate manifest by ``parent_session_name``.
+
+        Returns:
+            True  — manifest carries ``parent_session_name`` and it
+                    matches; this candidate belongs to the requested
+                    parent coding session.
+            False — manifest carries ``parent_session_name`` but it
+                    DOESN'T match; explicitly belongs to a different
+                    parent — skip.
+            None  — manifest has no ``parent_session_name`` (legacy
+                    run, pre-PR #6271); caller falls back to the
+                    older mtime-walk filtering.
+
+        Implementation routes through
+        ``ReviewExchangeManifestHeader.from_manifest`` so the
+        manifest section's typed contract is honored on the read
+        side too — readers and writers consume the same dataclass
+        rather than poking at loose ``dict.get`` calls.
+        """
+        header = ReviewExchangeManifestHeader.from_manifest(manifest)
+        if header is None or header.parent_session_name is None:
+            return None
+        return header.parent_session_name == parent_session_name
 
     def load_review_exchange_summary(
         self,
@@ -707,21 +757,17 @@ Timestamp: {self._now_iso()}
         not_before_started_at: str | None = None,
     ) -> ReviewExchangeSummary | None:
         # Resolve against the newest run that has a review-exchange summary.
-        # Prefer runs associated with the requested session name, but also
-        # consider dedicated review-exchange runs in the same issue worktree.
+        # Pre-PR #6271 the only way to scope to a coding session was to
+        # walk all runs in mtime order and infer boundaries from
+        # run_dir name patterns. Now the runner stamps
+        # ``parent_session_name`` on each review-exchange manifest, so
+        # the filter is a direct dict lookup. The mtime walk remains
+        # as a backwards-compat fallback for runs written before the
+        # field existed.
         base_dir = self.sessions_base_dir(worktree_path)
         if not base_dir.exists():
             return None
 
-        session_candidates = sorted(
-            [
-                d
-                for d in base_dir.iterdir()
-                if d.is_dir() and d.name.endswith(f"__{session_name}")
-            ],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
         all_candidates = sorted(
             (d for d in base_dir.iterdir() if d.is_dir()),
             key=lambda p: p.stat().st_mtime,
@@ -729,10 +775,23 @@ Timestamp: {self._now_iso()}
         )
         if not all_candidates:
             return None
+        # Legacy fallback: candidates whose run_dir name ends with
+        # ``__{session_name}`` (the pre-PR #6271 scoping heuristic).
+        legacy_session_candidates = [
+            d for d in all_candidates
+            if d.name.endswith(f"__{session_name}")
+        ]
 
-        for candidates in (session_candidates, all_candidates):
+        for candidates in (legacy_session_candidates, all_candidates):
             for run_dir in candidates:
                 manifest = self.read_manifest(run_dir) or {}
+                # Explicit parent-session filter when the field is
+                # present. Skip candidates that explicitly belong to
+                # a DIFFERENT parent. Legacy candidates (None) fall
+                # through to the historical behavior.
+                match = self._manifest_matches_parent_session(manifest, session_name)
+                if match is False:
+                    continue
                 if not_before_started_at is not None:
                     started_at = manifest.get("started_at")
                     if not isinstance(started_at, str) or started_at < not_before_started_at:

@@ -347,6 +347,353 @@ class TestPersistentSessionExchangeHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# Turn-packet / turn-result on-disk artifacts
+# ---------------------------------------------------------------------------
+
+
+class TestTurnArtifactsPersisted:
+    """The runner persists every turn's packet and result as JSON
+    artifacts under ``<exchange_dir>/turns/`` so a failed exchange
+    leaves a complete on-disk trail (orchestrator-side input + parsed
+    agent output) that an operator or replay test can inspect without
+    walking the recording stream.
+
+    These tests pin:
+    1. The artifact path layout (``round-<n>-<role>.packet.json`` and
+       ``.result.json``).
+    2. Round-trip parseability via ``ReviewExchangeTurnPacket.from_manifest``
+       and ``ReviewExchangeTurnResult.from_manifest``.
+    3. Field content matches the data the runner observed at that turn.
+
+    A regression that drops the persistence calls or drifts the
+    field set away from the manifest contract breaks these tests.
+    """
+
+    def test_two_round_exchange_persists_packet_and_result_per_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnPacket,
+            ReviewExchangeTurnResult,
+            Role,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
+                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        assert turns_dir.is_dir(), f"Expected turns dir at {turns_dir}"
+
+        # Three turns happened (reviewer round 1 → coder round 1 →
+        # reviewer round 2), so six artifacts (packet + result each).
+        artifact_names = sorted(p.name for p in turns_dir.iterdir())
+        assert artifact_names == [
+            "round-1-coder.packet.json",
+            "round-1-coder.result.json",
+            "round-1-reviewer.packet.json",
+            "round-1-reviewer.result.json",
+            "round-2-reviewer.packet.json",
+            "round-2-reviewer.result.json",
+        ]
+
+        # Round 1 reviewer packet: typed, role REVIEWER, no prior
+        # texts, validation off.
+        r1_packet_data = json.loads((turns_dir / "round-1-reviewer.packet.json").read_text())
+        r1_packet = ReviewExchangeTurnPacket.from_manifest(r1_packet_data)
+        assert r1_packet is not None
+        assert r1_packet.role is Role.REVIEWER
+        assert r1_packet.round_index == 1
+        assert r1_packet.issue_number == 42
+        assert r1_packet.issue_title == "Test"
+        assert r1_packet.require_validation is False
+        assert r1_packet.last_coder_text is None
+        assert r1_packet.last_reviewer_text is None
+
+        # Round 1 reviewer result: changes_requested.
+        r1_review_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-1-reviewer.result.json").read_text())
+        )
+        assert r1_review_result is not None
+        assert r1_review_result.kind is TurnResultKind.CHANGES_REQUESTED
+        assert r1_review_result.response_text == "Fix typo"
+        assert r1_review_result.getting_closer is True
+
+        # Round 1 coder packet: typed, role CODER, reviewer_feedback
+        # carries the round-1 reviewer text (the runner copies the
+        # most-recent reviewer response into the coder packet).
+        r1_coder_packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads((turns_dir / "round-1-coder.packet.json").read_text())
+        )
+        assert r1_coder_packet is not None
+        assert r1_coder_packet.role is Role.CODER
+        assert r1_coder_packet.reviewer_feedback == "Fix typo"
+
+        # Round 1 coder result: ok.
+        r1_coder_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-1-coder.result.json").read_text())
+        )
+        assert r1_coder_result is not None
+        assert r1_coder_result.kind is TurnResultKind.OK
+        assert r1_coder_result.response_text == "Fixed typo"
+
+        # Round 2 reviewer packet carries the prior round's coder and
+        # reviewer texts so the prompt builder can render them.
+        r2_packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads((turns_dir / "round-2-reviewer.packet.json").read_text())
+        )
+        assert r2_packet is not None
+        assert r2_packet.last_coder_text == "Fixed typo"
+        assert r2_packet.last_reviewer_text == "Fix typo"
+
+        # Round 2 reviewer result: ok (terminal — no coder round 2).
+        r2_review_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-2-reviewer.result.json").read_text())
+        )
+        assert r2_review_result is not None
+        assert r2_review_result.kind is TurnResultKind.OK
+
+    def test_timeout_persists_no_completion_result_with_packet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reviewer round-1 times out. The runner must still persist
+        BOTH the packet (the orchestrator-side input) and a typed
+        result with ``protocol_error_reason="no_completion"`` —
+        operators inspecting a hung exchange need the on-disk trail
+        for the rounds where the agent failed to respond, which is
+        exactly the case the previous artifact contract dropped.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnPacket,
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [PersistentRoundTimeoutError("simulated 60s timeout")],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        assert turns_dir.is_dir()
+
+        packet_path = turns_dir / "round-1-reviewer.packet.json"
+        result_path = turns_dir / "round-1-reviewer.result.json"
+        assert packet_path.exists(), (
+            f"packet artifact missing at {packet_path}; turns_dir contains "
+            f"{[p.name for p in turns_dir.iterdir()]}"
+        )
+        assert result_path.exists(), (
+            f"result artifact missing on timeout path at {result_path}; "
+            f"turns_dir contains {[p.name for p in turns_dir.iterdir()]}"
+        )
+
+        packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads(packet_path.read_text())
+        )
+        assert packet is not None
+        assert packet.round_index == 1
+
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        # The exception detail must surface in response_text so an
+        # operator inspecting the artifact sees the same root cause
+        # the REVIEW_EXCHANGE_ROLE_TIMEOUT event reports.
+        assert "simulated 60s timeout" in result.response_text
+
+    def test_coder_timeout_persists_no_completion_result_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Symmetric to the reviewer-timeout test, but for the coder.
+        The two roles share one persistence helper, but a regression
+        that wires only the reviewer side would leave the coder side
+        silent — this test pins both."""
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "fix x", "getting_closer": True},
+                ],
+                "coder": [PersistentRoundTimeoutError("coder hung at 60s")],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        coder_result_path = (
+            outcome.exchange_dir / "turns" / "round-1-coder.result.json"
+        )
+        assert coder_result_path.exists(), (
+            f"coder timeout result artifact missing at {coder_result_path}"
+        )
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(coder_result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        assert "coder hung at 60s" in result.response_text
+
+    def test_protocol_error_response_is_persisted_with_named_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Agent emits a malformed response; runner persists the
+        result as ``protocol_error`` with a named ``protocol_error_reason``
+        so an operator inspecting the on-disk artifact can tell which
+        parser branch fired.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                # Reviewer writes JSON missing response_type — the
+                # parser flags this as a protocol error with reason
+                # missing_response_type. The runner treats a non-ok
+                # reviewer response by continuing to the coder turn,
+                # then approving on round 2 to terminate cleanly.
+                "reviewer": [
+                    {"response_text": "I forgot to declare myself"},
+                    {"response_type": "ok", "response_text": "ok now", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        result_path = outcome.exchange_dir / "turns" / "round-1-reviewer.result.json"
+        assert result_path.exists()
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "missing_response_type"
+
+
+# ---------------------------------------------------------------------------
 # Termination conditions
 # ---------------------------------------------------------------------------
 
@@ -2954,6 +3301,400 @@ def _decode_writer_output(text: str) -> str:
             continue
         pieces.append(base64.b64decode(data).decode("utf-8", errors="replace"))
     return "".join(pieces)
+
+
+class TestProductionLayoutCacheResolution:
+    """Joint coverage: real ``CompletionReviewExchange`` + real
+    ``FileSystemSessionOutput`` over the production filesystem layout.
+
+    This is the regression guard for the tixmeup #359 / #361 runaway.
+    Pre-state-machine, every reviewer-OK summary read back as
+    ``validation=None`` because validation lives in the coder run_dir
+    (not next to the review-exchange summary), and the cache loader
+    would discard the OK and respawn — cycling forever until the
+    no-completion bound (or until a human noticed). The unit tests
+    against ``decide()`` lock the policy in isolation; this class
+    locks the END-TO-END behavior over the actual disk layout
+    production produces, with a real adapter.
+
+    Every cell in the state-table matrix gets one production-shaped
+    test case.
+    """
+
+    @staticmethod
+    def _write_validation_record(
+        path: Path, *, head_sha: str, passed: bool = True,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "suite": "agent_gate",
+                "head_sha": head_sha,
+                "passed": passed,
+                "exit_code": 0 if passed else 1,
+            }),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_summary_with_facts(
+        exchange_dir: Path,
+        *,
+        status: str,
+        reason: str,
+        head_sha: str | None,
+        validation_passed: bool | None = True,
+        rounds: int = 1,
+    ) -> None:
+        """Write a production-shape summary.json matching what
+        ``_write_summary`` produces post-state-machine."""
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        summary: dict[str, Any] = {
+            "completed_rounds": rounds,
+            "status": status,
+            "reason": reason,
+            "response_text": "test response",
+            "timestamp": "2026-05-06T10:30:00+00:00",
+        }
+        if head_sha is not None:
+            summary["head_sha"] = head_sha
+        if validation_passed is not None:
+            summary["validation_passed"] = validation_passed
+        (exchange_dir / "summary.json").write_text(
+            json.dumps(summary), encoding="utf-8",
+        )
+
+    def _build_completion_review_exchange(
+        self,
+        tmp_path: Path,
+        session_output: FileSystemSessionOutput,
+    ) -> Any:
+        from issue_orchestrator.control.completion_review_exchange import (
+            CompletionReviewExchange,
+        )
+        from issue_orchestrator.domain.models import AgentConfig
+        from issue_orchestrator.infra.config import Config
+
+        cfg = Config(repo_root=tmp_path)
+        cfg.review_exchange_mode = "via-local-loop"
+        cfg.review_exchange_require_validation = True
+        cfg.code_review_agent = "agent:reviewer"
+        cfg.agents = {
+            "agent:backend": AgentConfig(
+                prompt_path=tmp_path / "backend.md",
+                command="claude --print",
+                reviewer="agent:reviewer",
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=tmp_path / "reviewer.md",
+                command="claude --print",
+            ),
+        }
+        return CompletionReviewExchange(
+            config=cfg,
+            session_output=session_output,
+            emit_review_started=lambda **_: None,
+            emit_review_outcome=lambda **_: None,
+            review_exchange_runner=SimpleNamespace(run=lambda **_: None),
+        )
+
+    def _stage_run(
+        self,
+        tmp_path: Path,
+        *,
+        coder_session_name: str = "coding-1",
+        coder_head_sha: str = "HEAD_X",
+        review_status: str,
+        review_reason: str,
+        review_head_sha: str | None,
+        validation_passed: bool | None = True,
+        review_parent_session: str | None = None,
+    ) -> tuple[Path, Path]:
+        """Stage the production filesystem layout: a coder run_dir
+        with validation-record.json at ``coder_head_sha``, and a
+        review-exchange run_dir with the requested summary fields.
+
+        ``review_parent_session`` (default: ``coder_session_name``)
+        controls the manifest's ``parent_session_name`` pointer.
+        Pass ``"<legacy>"`` to omit the field entirely (simulates
+        pre-state-machine summaries).
+        """
+        worktree = tmp_path / "wt"
+        sessions = worktree / ".issue-orchestrator" / "sessions"
+        sessions.mkdir(parents=True)
+
+        coder_run = sessions / f"20260506-100000Z__{coder_session_name}"
+        coder_run.mkdir()
+        (coder_run / "manifest.json").write_text(
+            json.dumps({
+                "started_at": "2026-05-06T10:00:00+00:00",
+                "session_name": coder_session_name,
+            }), encoding="utf-8",
+        )
+        self._write_validation_record(
+            coder_run / "validation-record.json",
+            head_sha=coder_head_sha,
+        )
+
+        exchange_run = sessions / "20260506-100500Z__review-exchange-359-r1"
+        exchange_dir = exchange_run / "review-exchange"
+        exchange_dir.mkdir(parents=True)
+        manifest: dict[str, Any] = {
+            "started_at": "2026-05-06T10:05:00+00:00",
+            "review_exchange_dir": str(exchange_dir),
+        }
+        parent = (
+            review_parent_session
+            if review_parent_session is not None
+            else coder_session_name
+        )
+        if parent != "<legacy>":
+            manifest["parent_session_name"] = parent
+        (exchange_run / "manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8",
+        )
+        self._write_summary_with_facts(
+            exchange_dir,
+            status=review_status,
+            reason=review_reason,
+            head_sha=review_head_sha,
+            validation_passed=validation_passed,
+        )
+
+        return worktree, coder_run
+
+    # -----------------------------------------------------------------
+    # Keystone: the tixmeup #359 / #361 runaway scenario
+    # -----------------------------------------------------------------
+
+    def test_reviewer_ok_summary_at_current_head_is_reused(
+        self, tmp_path: Path,
+    ) -> None:
+        """The exact production scenario behind the runaway: coder
+        ran validation at head X, review-exchange produced an OK
+        summary at the same head X, no sibling validation-record in
+        the review-exchange run_dir. On the next tick the loader
+        must REUSE that OK. Pre-state-machine this returned None
+        and the orchestrator spawned a redundant review-exchange
+        every ~5 seconds until needs-human."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_APPROVAL
+        assert resolution.outcome is not None
+        assert resolution.outcome.status == "ok"
+        assert resolution.outcome.summary.get("head_sha") == "HEAD_X"
+
+    # -----------------------------------------------------------------
+    # State-table cells, one production-layout case each
+    # -----------------------------------------------------------------
+
+    def test_reviewer_ok_at_old_head_is_ignored_stale(
+        self, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_NEW",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha="HEAD_OLD",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.IGNORE_STALE
+
+    def test_stopped_no_progress_at_current_head_reuses_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="stopped",
+            review_reason="reviewer_reports_no_progress",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_HALT
+
+    def test_max_rounds_exceeded_at_current_head_reuses_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="stopped",
+            review_reason="max_rounds_exceeded",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_HALT
+
+    def test_coder_protocol_error_at_current_head_reuses_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        """Critical: ``coder_protocol_error`` is deterministic terminal —
+        won't fix itself by retrying on the same head. Must reuse-halt
+        rather than respawn. Pre-state-machine this respawned forever
+        (review feedback on PR #6270 part 2)."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="error",
+            review_reason="coder_protocol_error",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_HALT
+
+    def test_reviewer_no_completion_returns_count_and_retry(
+        self, tmp_path: Path,
+    ) -> None:
+        """``*_no_completion`` errors do NOT cache-hit; caller spawns
+        fresh and the budget governs retries. The loader returns
+        ``COUNT_NO_COMPLETION_AND_RETRY`` so the caller knows to
+        consult the budget — distinct from ``IGNORE_STALE`` (which
+        does NOT count toward the budget)."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="error",
+            review_reason="reviewer_no_completion",
+            review_head_sha="HEAD_X",
+            validation_passed=True,
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY
+        # Outcome NOT populated for retry paths — caller must spawn
+        # fresh, not reuse the failure.
+        assert resolution.outcome is None
+
+    def test_legacy_summary_without_head_sha_is_stale(
+        self, tmp_path: Path,
+    ) -> None:
+        """Backwards compat: pre-state-machine summaries don't carry
+        ``head_sha`` / ``validation_passed`` in the JSON. Under
+        ``require_validation=True`` the cache cannot prove validation
+        — IGNORE_STALE. Same effective behavior as pre-fix (where
+        the cache rejected for the wrong reason; now rejects for the
+        right reason)."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha=None,
+            validation_passed=None,
+            review_parent_session="<legacy>",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.IGNORE_STALE
+
+    def test_parent_session_name_filter_isolates_coding_sessions(
+        self, tmp_path: Path,
+    ) -> None:
+        """A review-exchange run whose ``parent_session_name`` doesn't
+        match the requested session must be skipped. Coding session
+        A's failures cannot leak into coding session B's quota."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, _coder_run = self._stage_run(
+            tmp_path,
+            coder_session_name="coding-2",
+            coder_head_sha="HEAD_X",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha="HEAD_X",
+            review_parent_session="coding-1",  # belongs to a DIFFERENT session
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-2",
+            require_validation=True,
+            current_validation_record_path=(
+                worktree / ".issue-orchestrator" / "sessions"
+                / "20260506-100000Z__coding-2" / "validation-record.json"
+            ),
+        )
+        # The cached OK belongs to coding-1, not coding-2. Loader skips it.
+        assert resolution.decision is ResumeDecision.NO_CACHE
 
 
 class TestSessionCleanup:

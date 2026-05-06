@@ -30,6 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_exchange_manifest import (
+    ReviewExchangeManifestHeader,
+    ReviewExchangeRecordingPaths,
+)
 from ..domain.exchange_chapter import (
     CHAPTER_SECTION_FEEDBACK,
     CHAPTER_SECTION_PROMPT,
@@ -41,6 +45,12 @@ from ..domain.review_exchange import (
     ReviewExchangeResponse,
     build_coder_prompt,
     build_reviewer_prompt,
+)
+from ..domain.review_exchange_turn import (
+    ReviewExchangeTurnPacket,
+    ReviewExchangeTurnResult,
+    Role,
+    TurnResultKind,
 )
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
@@ -235,6 +245,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    parent_session_name: str | None = None,
     initial_validation_record_path: Path | None = None,
     web_port: int | None = None,
     events: EventSink | None = None,
@@ -280,8 +291,13 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
-    session_output.update_manifest(
-        run_dir, {"review_exchange_dir": str(exchange_dir)},
+    _write_review_exchange_manifest_header(
+        session_output,
+        run_dir,
+        ReviewExchangeManifestHeader(
+            exchange_dir=exchange_dir,
+            parent_session_name=parent_session_name,
+        ),
     )
     if on_started is not None:
         on_started(run_dir)
@@ -346,13 +362,16 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     reviewer_session_slice = run_dir / "reviewer" / TERMINAL_RECORDING_FILENAME
     _prepare_session_slice(coder_session_slice)
     _prepare_session_slice(reviewer_session_slice)
-    session_output.update_manifest(run_dir, {
-        "persistent_pair_dir": str(pair_dir),
-        "coder_recording": str(coder_session_slice),
-        "reviewer_recording": str(reviewer_session_slice),
-        "coder_recording_pair": str(coder_recording),
-        "reviewer_recording_pair": str(reviewer_recording),
-    })
+    session_output.update_manifest(
+        run_dir,
+        ReviewExchangeRecordingPaths(
+            persistent_pair_dir=pair_dir,
+            coder_recording=coder_session_slice,
+            reviewer_recording=reviewer_session_slice,
+            coder_recording_pair=coder_recording,
+            reviewer_recording_pair=reviewer_recording,
+        ).to_manifest_fields(),
+    )
 
     _seed_pair_validation_record(
         pair_dir=pair_dir,
@@ -751,15 +770,18 @@ def _drive_rounds(  # noqa: PLR0913
             before_reviewer_round(round_index)
 
         # ----- Reviewer turn -----
-        reviewer_prompt_text = build_reviewer_prompt(
+        reviewer_packet = ReviewExchangeTurnPacket(
             issue_number=issue_number,
             issue_title=issue_title,
             round_index=round_index,
-            last_coder_text=last_coder_text,
-            last_reviewer_text=last_reviewer_text,
+            role=Role.REVIEWER,
             require_validation=require_validation,
             run_dir=run_dir,
+            last_coder_text=last_coder_text,
+            last_reviewer_text=last_reviewer_text,
         )
+        _persist_turn_packet(exchange_dir, reviewer_packet)
+        reviewer_prompt_text = build_reviewer_prompt(reviewer_packet)
         emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
             "issue_number": issue_number,
             "session_name": session_name,
@@ -795,6 +817,7 @@ def _drive_rounds(  # noqa: PLR0913
             timeout_seconds=reviewer_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=round_index,
@@ -811,6 +834,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         if require_validation and reviewer.response_type == "ok" and not _validation_passed(validation_record_path):
@@ -833,6 +857,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
         if reviewer.getting_closer is False:
             no_progress_count += 1
@@ -846,18 +871,23 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         last_reviewer_text = reviewer.response_text
 
         # ----- Coder turn -----
-        coder_prompt_text = build_coder_prompt(
+        coder_packet = ReviewExchangeTurnPacket(
             issue_number=issue_number,
             issue_title=issue_title,
             round_index=round_index,
-            reviewer_feedback=reviewer.response_text,
+            role=Role.CODER,
+            require_validation=require_validation,
             run_dir=run_dir,
+            reviewer_feedback=reviewer.response_text,
         )
+        _persist_turn_packet(exchange_dir, coder_packet)
+        coder_prompt_text = build_coder_prompt(coder_packet)
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
@@ -893,6 +923,7 @@ def _drive_rounds(  # noqa: PLR0913
             timeout_seconds=coder_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=round_index,
@@ -909,6 +940,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         coder, protocol_outcome = _enforce_coder_protocol(
@@ -949,6 +981,7 @@ def _drive_rounds(  # noqa: PLR0913
         exchange_dir, max_rounds,
         status="stopped", reason="max_rounds_exceeded",
         reviewer_response=None,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
@@ -1045,6 +1078,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             timeout_seconds=coder_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=cycle_index,
@@ -1061,6 +1095,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
         coder = retry_response
         protocol_error = _validate_coder_completion(
@@ -1076,6 +1111,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             last_coder=coder,
             protocol_error=protocol_error,
             emit=emit,
+            validation_record_path=validation_record_path,
             issue_number=issue_number,
             session_name=session_name,
         )
@@ -1092,6 +1128,7 @@ def _send_role_round(  # noqa: PLR0913
     timeout_seconds: float,
     session_output: SessionOutput,
     run_dir: Path,
+    exchange_dir: Path,
     exchange_run_id: str,
     issue_number: int,
     cycle_index: int,
@@ -1103,6 +1140,10 @@ def _send_role_round(  # noqa: PLR0913
 
     Returns ``None`` if the role timed out or died — the caller emits
     REVIEW_EXCHANGE_ROLE_TIMEOUT and bails out of the exchange.
+
+    Persists the per-turn parsed result as a session artifact under
+    ``<exchange_dir>/turns/round-<n>-<role>.result.json`` for replay
+    and diagnostics.
     """
     try:
         parsed = send_round(
@@ -1119,6 +1160,17 @@ def _send_role_round(  # noqa: PLR0913
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
         logger.warning(
             "%s round %d failed: %s", role, cycle_index, exc,
+        )
+        # The typed result artifact must exist on the failure path
+        # too — this is the case operators most need to inspect, and
+        # an asymmetric "result.json only on the happy path" contract
+        # would leave the on-disk trail incomplete for exactly the
+        # rounds that need replay/forensics.
+        _persist_turn_result(
+            exchange_dir,
+            round_index=cycle_index,
+            role=Role(role),
+            result=ReviewExchangeTurnResult.for_no_completion(str(exc)),
         )
         _record_chapter(
             session_output=session_output,
@@ -1144,7 +1196,16 @@ def _send_role_round(  # noqa: PLR0913
         })
         return None
 
-    response = _normalize_role_response(parsed)
+    typed_result = ReviewExchangeTurnResult.from_agent_dict(
+        parsed, raw_output=None,
+    )
+    _persist_turn_result(
+        exchange_dir,
+        round_index=cycle_index,
+        role=Role(role),
+        result=typed_result,
+    )
+    response = _legacy_response_from_typed_result(typed_result)
     _record_chapter(
         session_output=session_output,
         run_dir=run_dir,
@@ -1170,34 +1231,77 @@ def _send_role_round(  # noqa: PLR0913
     return response
 
 
-def _normalize_role_response(parsed: dict[str, Any]) -> ReviewExchangeResponse:
-    """Convert the raw JSON dict into a domain ReviewExchangeResponse.
-
-    Missing required fields are tolerated by surfacing a synthetic
-    response_type that the caller can treat as a protocol error if it
-    chooses to. Today's contract is: the agent writes
-    {response_type, response_text, [getting_closer]}; anything else is
-    surfaced as response_type='protocol_error'.
-    """
-    response_type = str(parsed.get("response_type") or "").strip()
-    response_text = str(parsed.get("response_text") or "").strip()
-    if not response_type or not response_text:
+def _legacy_response_from_typed_result(
+    result: ReviewExchangeTurnResult,
+) -> ReviewExchangeResponse:
+    if result.kind is TurnResultKind.PROTOCOL_ERROR:
         return ReviewExchangeResponse(
             response_type="protocol_error",
-            response_text=(
-                "Agent response missing required response_type/response_text fields"
-            ),
-            getting_closer=False,
-            raw_json=parsed,
-            raw_output=None,
+            response_text=result.response_text,
+            getting_closer=result.getting_closer if result.getting_closer is not None else False,
+            raw_json=result.raw_json,
+            raw_output=result.raw_output,
         )
     return ReviewExchangeResponse(
-        response_type=response_type,
-        response_text=response_text,
-        getting_closer=parsed.get("getting_closer"),
-        raw_json=parsed,
-        raw_output=None,
+        response_type=result.kind.value,
+        response_text=result.response_text,
+        getting_closer=result.getting_closer,
+        raw_json=result.raw_json,
+        raw_output=result.raw_output,
     )
+
+
+def _persist_turn_packet(
+    exchange_dir: Path, packet: ReviewExchangeTurnPacket,
+) -> None:
+    """Write the per-turn input packet as a session artifact.
+
+    The artifact lives at
+    ``<exchange_dir>/turns/round-<round>-<role>.packet.json`` so a
+    failed exchange can be replayed/inspected from the on-disk state
+    without walking the recording stream. Best-effort: write failures
+    do not abort the round (the round itself is the system of record;
+    artifacts are diagnostic).
+    """
+    try:
+        turns_dir = exchange_dir / "turns"
+        turns_dir.mkdir(parents=True, exist_ok=True)
+        path = turns_dir / f"round-{packet.round_index}-{packet.role.value}.packet.json"
+        path.write_text(
+            json.dumps(packet.to_manifest_fields(), indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist turn packet for round=%d role=%s: %s",
+            packet.round_index, packet.role.value, exc,
+        )
+
+
+def _persist_turn_result(
+    exchange_dir: Path,
+    *,
+    round_index: int,
+    role: Role,
+    result: ReviewExchangeTurnResult,
+) -> None:
+    """Write the per-turn parsed result as a session artifact.
+
+    Sibling to ``_persist_turn_packet``: a failed exchange leaves both
+    the packet (what the orchestrator gave the agent) and the result
+    (what the orchestrator parsed from the agent's response) on disk.
+    """
+    try:
+        turns_dir = exchange_dir / "turns"
+        turns_dir.mkdir(parents=True, exist_ok=True)
+        path = turns_dir / f"round-{round_index}-{role.value}.result.json"
+        path.write_text(
+            json.dumps(result.to_manifest_fields(), indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist turn result for round=%d role=%s: %s",
+            round_index, role.value, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1213,10 +1317,12 @@ def _complete_with_reviewer_ok(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
         status="ok", reason="reviewer_ok", reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1251,11 +1357,13 @@ def _stop_for_no_progress(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
         status="stopped", reason="reviewer_reports_no_progress",
         reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1291,6 +1399,7 @@ def _build_outcome_for_role_timeout(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     """Build the ``error`` outcome when a role times out / dies / fails protocol.
 
@@ -1304,6 +1413,7 @@ def _build_outcome_for_role_timeout(
     summary = _write_summary(
         exchange_dir, round_index,
         status="error", reason=reason, reviewer_response=last_reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
@@ -1332,6 +1442,7 @@ def _build_outcome_for_protocol_error(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     """Build the ``error`` outcome when the coder fails its protocol contract.
 
@@ -1343,6 +1454,7 @@ def _build_outcome_for_protocol_error(
         exchange_dir, round_index,
         status="error", reason="coder_protocol_error",
         reviewer_response=last_reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1372,6 +1484,51 @@ def _build_outcome_for_protocol_error(
     )
 
 
+def _write_review_exchange_manifest_header(
+    session_output: SessionOutput,
+    run_dir: Path,
+    header: ReviewExchangeManifestHeader,
+) -> None:
+    """Stamp the review-exchange manifest header.
+
+    Extracted to keep ``run_persistent_session_exchange`` under the
+    C901 ceiling and to give the manifest section a typed name. The
+    header itself documents the contract; this helper is the seam
+    where the typed value crosses into the loose-dict
+    ``update_manifest`` API.
+    """
+    session_output.update_manifest(run_dir, header.to_manifest_fields())
+
+
+def _read_validation_facts(
+    path: Path | None,
+) -> tuple[str | None, bool | None]:
+    """Read ``(head_sha, passed)`` from a validation-record.json.
+
+    Returns ``(None, None)`` when the path is None, missing, or
+    unreadable as JSON. ``head_sha`` is None when the field is
+    absent/empty; ``passed`` is None when the field is absent or
+    not a bool.
+
+    The summary writer (and the cache loader, in a later commit)
+    use this to populate ``ResumeFacts`` without leaking validation-
+    record schema concerns into other modules.
+    """
+    if path is None or not path.exists():
+        return None, None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    head_sha = data.get("head_sha")
+    if not isinstance(head_sha, str) or not head_sha:
+        head_sha = None
+    passed = data.get("passed")
+    if not isinstance(passed, bool):
+        passed = None
+    return head_sha, passed
+
+
 def _write_summary(
     exchange_dir: Path,
     round_index: int,
@@ -1379,19 +1536,45 @@ def _write_summary(
     status: str,
     reason: str,
     reviewer_response: ReviewExchangeResponse | None,
+    validation_record_path: Path | None,
 ) -> dict[str, Any]:
-    """Persist summary.json atomically using the same shape the active
-    runner emits, so the publish-cache contract is uniform across both
-    runners. ``status`` is the ReviewExchangeOutcome status value
-    ("ok"/"stopped"/"error"); ``reason`` carries the matching reason
-    token."""
-    summary = {
+    """Persist summary.json atomically.
+
+    The summary records *facts* about the exchange that just ran:
+    ``status``, ``reason``, ``completed_rounds``, ``response_text``,
+    ``timestamp``, plus — when the validation record is readable —
+    ``head_sha`` and ``validation_passed``. Policy (cacheable / halt
+    / retry / stale) is NOT encoded here; the cache loader feeds
+    these fields into ``ReviewExchangeResumeDecision.decide`` to
+    determine the next-tick action.
+
+    Pre-this-commit, the writer encoded policy by selectively
+    omitting ``head_sha`` based on status. That dual-purpose use of
+    one field (fact AND control signal) was the root cause of the
+    PR #6270 review-feedback whack-a-mole: every patch that adjusted
+    "which statuses cache-hit" mutated which facts got persisted,
+    and downstream consumers re-inferred policy at three different
+    sites. Recording facts unconditionally and centralizing policy
+    in one named helper ends that drift.
+
+    ``head_sha`` and ``validation_passed`` are still omitted (rather
+    than written as None) when the validation record cannot be
+    read at all — the caller should treat absence as "we don't
+    know" rather than "validation explicitly failed." The cache
+    loader's ``ResumeFacts`` mapping handles each case.
+    """
+    summary: dict[str, Any] = {
         "completed_rounds": round_index,
         "status": status,
         "response_text": reviewer_response.response_text if reviewer_response else None,
         "reason": reason,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    head_sha, passed = _read_validation_facts(validation_record_path)
+    if head_sha is not None:
+        summary["head_sha"] = head_sha
+    if passed is not None:
+        summary["validation_passed"] = passed
     _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary
 
