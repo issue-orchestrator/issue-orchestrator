@@ -85,7 +85,8 @@ def _phase_chapter_sidecar_path(
     B1 layout (recording at ``<run_dir>/<role>/...``): sidecar is at
     ``<run_dir>/<role>/chapters.json`` — same dir as the recording.
 
-    B2 layout (recording at ``<state>/persistent-pairs/issue-N/<role>/...``):
+    B2 pair-scoped layout (recording at
+    ``<coder-worktree>/.issue-orchestrator/persistent-pairs/issue-N/<role>/...``):
     sidecar is still at ``<run_dir>/<role>/chapters.json`` — chapters
     are per-exchange so they live with the run, not with the
     pair-scoped recording. Without this branch the route would look
@@ -240,9 +241,9 @@ def _slice_events_to_phase_window(
     Returns ``(events, total_events, sidecar_or_none, window_start)``.
 
     Persistent layout — recording at ``<run_dir>/<role>/...`` (B1) or
-    ``<state>/persistent-pairs/issue-N/<role>/...`` (B2): the recording
-    is one continuous stream covering all rounds, so the chapter
-    sidecar is load-bearing — without it we cannot tell rounds apart
+    ``<coder-worktree>/.issue-orchestrator/persistent-pairs/issue-N/<role>/...``
+    (B2): the recording is one continuous stream covering all rounds, so
+    the chapter sidecar is load-bearing — without it we cannot tell rounds apart
     and serving the whole role recording for a phase-scoped request
     would silently show the wrong content. Chapters always live at
     ``<run_dir>/<role>/chapters.json`` (per-exchange), even when the

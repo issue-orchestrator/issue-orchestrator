@@ -226,10 +226,6 @@ def _patch_persistent_runner(
             )
             state["completion_path"] = completion
             completion.parent.mkdir(parents=True, exist_ok=True)
-            completion.write_text(
-                json.dumps({"outcome": "completed", "implementation": "stub"}),
-                encoding="utf-8",
-            )
             # Also stub a passing validation-record.json by default so
             # require_validation=True tests don't blow up on the coder
             # guardrail. Tests exercising missing-validation set
@@ -237,8 +233,17 @@ def _patch_persistent_runner(
             validation_dir = session.validation_output_dir
             assert validation_dir is not None
             validation_dir.mkdir(parents=True, exist_ok=True)
-            (validation_dir / "validation-record.json").write_text(
+            validation_record = validation_dir / "validation-record.json"
+            validation_record.write_text(
                 json.dumps({"passed": True}), encoding="utf-8",
+            )
+            completion.write_text(
+                json.dumps({
+                    "outcome": "completed",
+                    "implementation": "stub",
+                    "validation_record_path": str(validation_record),
+                }),
+                encoding="utf-8",
             )
         return head
 
@@ -344,6 +349,209 @@ class TestPersistentSessionExchangeHappyPath:
         assert sorted(state["opened"]) == ["coder", "reviewer"]
         assert state["registry"].released == []
         assert len(state["registry"].acquired) == 1
+
+
+class TestPairValidationMirror:
+    def test_current_validation_seed_replaces_existing_pair_record(
+        self, tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        pair_dir.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "old-sha"}),
+            encoding="utf-8",
+        )
+        current_record = tmp_path / "current-validation-record.json"
+        current_record.write_text(
+            json.dumps({"passed": True, "head_sha": "new-sha"}),
+            encoding="utf-8",
+        )
+
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+        mirror.replace_from_initial(current_record)
+
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "new-sha",
+        }
+
+    def test_missing_initial_validation_source_clears_stale_pair_record(
+        self, tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        pair_dir.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "old-sha"}),
+            encoding="utf-8",
+        )
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        mirror.replace_from_initial(None)
+
+        assert not pair_record.exists()
+
+    def test_completion_validation_record_replaces_stale_pair_head(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        current_record = coder_wt / ".issue-orchestrator" / "validation" / "head-b.json"
+        pair_record.parent.mkdir(parents=True)
+        completion.parent.mkdir(parents=True)
+        current_record.parent.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}),
+            encoding="utf-8",
+        )
+        current_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-b"}),
+            encoding="utf-8",
+        )
+        completion.write_text(
+            json.dumps({
+                "outcome": "completed",
+                "validation_record_path": str(current_record),
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=tmp_path / "run" / "validation-record.json",
+            require_validation=True,
+        )
+
+        assert error is None
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "head-b",
+        }
+
+    def test_stale_completion_validation_head_fails_current_head_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        stale_record = coder_wt / ".issue-orchestrator" / "validation" / "head-a.json"
+        completion.parent.mkdir(parents=True)
+        stale_record.parent.mkdir(parents=True)
+        stale_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}),
+            encoding="utf-8",
+        )
+        completion.write_text(
+            json.dumps({
+                "outcome": "completed",
+                "validation_record_path": str(stale_record),
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=tmp_path / "run" / "validation-record.json",
+            require_validation=True,
+        )
+
+        assert error is not None
+        assert "does not match current HEAD" in error
+        assert json.loads(pair_record.read_text(encoding="utf-8"))["head_sha"] == "head-a"
+
+    def test_completion_without_validation_source_clears_stale_pair_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        pair_record.parent.mkdir(parents=True)
+        completion.parent.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}),
+            encoding="utf-8",
+        )
+        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=tmp_path / "run" / "validation-record.json",
+            require_validation=True,
+        )
+
+        assert error == "validation-record.json missing"
+        assert not pair_record.exists()
+
+    def test_completion_without_payload_uses_run_dir_validation_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        run_record = coder_wt / ".issue-orchestrator" / "sessions" / "run" / "validation-record.json"
+        completion.parent.mkdir(parents=True)
+        run_record.parent.mkdir(parents=True)
+        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
+        run_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-b"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=run_record,
+            require_validation=True,
+        )
+
+        assert error is None
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "head-b",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1242,13 +1450,18 @@ class TestCoderProtocolGuardrail:
                     validation_dir = session.validation_output_dir
                     assert completion is not None and validation_dir is not None
                     completion.parent.mkdir(parents=True, exist_ok=True)
-                    completion.write_text(
-                        json.dumps({"outcome": "completed", "round": 1}),
-                        encoding="utf-8",
-                    )
                     validation_dir.mkdir(parents=True, exist_ok=True)
-                    (validation_dir / "validation-record.json").write_text(
+                    validation_record = validation_dir / "validation-record.json"
+                    validation_record.write_text(
                         json.dumps({"passed": True}), encoding="utf-8",
+                    )
+                    completion.write_text(
+                        json.dumps({
+                            "outcome": "completed",
+                            "round": 1,
+                            "validation_record_path": str(validation_record),
+                        }),
+                        encoding="utf-8",
                     )
                 # Round 2 and retries: do NOT write completion. The runner
                 # must have cleared the round-1 file before sending this

@@ -90,14 +90,13 @@ class ManifestAccessor:
 
         Resolution order (newest layout first):
 
-        1. **Pair-scoped recording (B2 onward).** The per-exchange
+        1. **Persistent runner slice (B2 onward).** The per-exchange
            manifest carries ``coder_recording`` / ``reviewer_recording``
-           keys pointing at
-           ``<state>/persistent-pairs/issue-<n>/<role>/terminal-recording.jsonl``.
-           Multiple exchanges for the same issue all reference this
-           one continuous file; chapter offsets in
-           ``chapters.json`` (still per-exchange in ``run_dir``) tell
-           the replay UI how to scrub.
+           keys pointing at ``<run_dir>/<role>/terminal-recording.jsonl``.
+           The continuous pair-scoped recordings live under the coder
+           worktree and are exposed separately via ``*_recording_pair``.
+           Chapter offsets in ``chapters.json`` tell the replay UI how
+           to scrub each per-exchange slice.
         2. **B1 / pre-B2 persistent layout.**
            ``<run_dir>/<role>/terminal-recording.jsonl`` —
            per-exchange recording, no manifest indirection.

@@ -265,7 +265,6 @@ class TestReviewExchangeExecution:
             session_output=session_output,
             review_exchange_runner=PersistentReviewExchangeRunner(
                 session_output, InMemoryPersistentExchangePairRegistry(),
-                Path("/tmp/test-completion-processor-persistent-pairs"),
             ),
             event_bus=EventBus(),
             label_config={},

@@ -382,15 +382,13 @@ def _create_completion_components(
         label_manager = _LM(config)
     if pair_registry is None:
         pair_registry = InMemoryPersistentExchangePairRegistry()
-    persistent_pair_root = state_dir(config.repo_root) / "persistent-pairs"
-
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, pair_registry, persistent_pair_root,
+            session_output, pair_registry,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
@@ -1010,9 +1008,6 @@ def build_orchestrator_for_testing(
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
-    persistent_pair_root_for_testing = (
-        state_dir(config.repo_root) / "persistent-pairs"
-    )
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -1020,7 +1015,6 @@ def build_orchestrator_for_testing(
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output, pair_registry_for_testing,
-            persistent_pair_root_for_testing,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
