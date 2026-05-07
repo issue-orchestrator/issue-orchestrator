@@ -78,6 +78,35 @@ logger = logging.getLogger(__name__)
 
 _CODER_PROTOCOL_RETRY_LIMIT = 2
 
+
+def review_exchange_supervisor_timeout_seconds(
+    *,
+    coder_timeout_seconds: float,
+    reviewer_timeout_seconds: float,
+    max_rounds: int,
+    grace_seconds: float = 300.0,
+) -> float:
+    """Return the outer wall-clock deadline for one persistent exchange.
+
+    The persistent runner owns coder protocol retries. The background
+    supervisor deadline must include that retry budget so it only catches a
+    wedged runner, not a legitimate exchange still inside its per-role
+    deadlines.
+    """
+    if coder_timeout_seconds <= 0:
+        raise ValueError("coder_timeout_seconds must be positive")
+    if reviewer_timeout_seconds <= 0:
+        raise ValueError("reviewer_timeout_seconds must be positive")
+    if grace_seconds < 0:
+        raise ValueError("grace_seconds must be non-negative")
+    rounds = max(1, int(max_rounds))
+    coder_attempts_per_round = 1 + _CODER_PROTOCOL_RETRY_LIMIT
+    per_round = reviewer_timeout_seconds + (
+        coder_timeout_seconds * coder_attempts_per_round
+    )
+    return float(per_round * rounds + grace_seconds)
+
+
 _BOOTSTRAP_PROMPT_TEMPLATE = (
     "You are the {role} in a coder↔reviewer review exchange for issue "
     "#{issue_number}: {issue_title}.\n\n"

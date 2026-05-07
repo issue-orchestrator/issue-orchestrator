@@ -27,7 +27,10 @@ from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
 )
 from ..ports.session_output import SessionOutput
-from .persistent_session_exchange import run_persistent_session_exchange
+from .persistent_session_exchange import (
+    review_exchange_supervisor_timeout_seconds,
+    run_persistent_session_exchange,
+)
 from .reviewer_worktree import (
     create_reviewer_worktree,
     resolve_current_branch,
@@ -62,6 +65,23 @@ class PersistentReviewExchangeRunner:
     ) -> None:
         self._session_output = session_output
         self._pair_registry = pair_registry
+
+    def job_timeout_seconds(
+        self,
+        *,
+        coder_agent: AgentConfig,
+        reviewer_agent: AgentConfig,
+        max_rounds: int,
+    ) -> float | None:
+        coder_timeout = coder_agent.timeout_minutes * 60
+        reviewer_timeout = reviewer_agent.timeout_minutes * 60
+        if coder_timeout <= 0 or reviewer_timeout <= 0:
+            return None
+        return review_exchange_supervisor_timeout_seconds(
+            coder_timeout_seconds=coder_timeout,
+            reviewer_timeout_seconds=reviewer_timeout,
+            max_rounds=max_rounds,
+        )
 
     def run(  # noqa: PLR0913
         self,

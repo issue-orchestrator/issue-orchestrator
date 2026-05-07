@@ -22,11 +22,25 @@ Two surfaces here:
 
 from __future__ import annotations
 
+import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
 
 from .repo_identity import _resolve_git_dir, get_repo_head_sha
+
+_CC_COMMIT_SHA_ENV = "ISSUE_ORCHESTRATOR_CC_COMMIT_SHA"
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _commit_sha_from_env() -> str | None:
+    raw = os.environ.get(_CC_COMMIT_SHA_ENV, "").strip().lower()
+    if not raw:
+        return None
+    if not _FULL_SHA_RE.fullmatch(raw):
+        return None
+    return raw
 
 
 def _candidate_holds_running_package(candidate: Path, package_init: Path) -> bool:
@@ -92,10 +106,15 @@ _PACKAGE_REPO_ROOT = _resolve_source_repo_root(
 def resolve_cc_commit_sha() -> Optional[str]:
     """Return the cc's source commit SHA, or ``None`` for non-source installs.
 
-    Prefers the package-relative repo root (where the running code
-    actually lives) over ``Path.cwd()``, which is whatever directory
-    the operator ran the launcher from and is rarely a useful repo.
+    Prefers the launcher-published commit when present. The Control Center
+    normally imports from a frozen source snapshot that intentionally has no
+    ``.git`` directory, so the launcher is the only component that can know
+    the exact source commit copied into that snapshot. Source-checkout runs
+    still fall back to the package-relative repo root.
     """
+    env_sha = _commit_sha_from_env()
+    if env_sha:
+        return env_sha
     if _PACKAGE_REPO_ROOT is None:
         return None
     return get_repo_head_sha(_PACKAGE_REPO_ROOT)

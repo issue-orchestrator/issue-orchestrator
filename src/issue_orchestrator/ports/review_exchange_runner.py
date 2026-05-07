@@ -54,6 +54,22 @@ class ReviewExchangeRunner(Protocol):
     ) -> "ReviewExchangeOutcome":
         ...
 
+    def job_timeout_seconds(
+        self,
+        *,
+        coder_agent: "AgentConfig",
+        reviewer_agent: "AgentConfig",
+        max_rounds: int,
+    ) -> float | None:
+        """Return the supervisor wall-clock budget for one background run.
+
+        The runner owns round-loop retry semantics, so it also owns the
+        derived outer deadline used by the background supervisor. Returning
+        ``None`` means the runner cannot derive a meaningful budget from the
+        supplied agent configuration.
+        """
+        ...
+
 
 class NullReviewExchangeRunner:
     """Default :class:`ReviewExchangeRunner` for tests that don't exercise it.
@@ -72,3 +88,6 @@ class NullReviewExchangeRunner:
             "a real ReviewExchangeRunner (e.g. PersistentReviewExchangeRunner) "
             "at the composition root."
         )
+
+    def job_timeout_seconds(self, **_: Any) -> float | None:
+        return None

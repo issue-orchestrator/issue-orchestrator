@@ -5,6 +5,8 @@ test the resolver directly so a regression here surfaces before the
 broader rendered-template tests.
 """
 
+# ruff: noqa: SLF001
+
 from __future__ import annotations
 
 import os
@@ -41,6 +43,22 @@ def test_static_version_token_is_non_empty_and_short():
     assert len(token) <= 32
     assert "{{" not in token
     assert "/" not in token
+
+
+def test_resolve_cc_commit_sha_prefers_launcher_published_snapshot_sha(monkeypatch):
+    """Frozen CC snapshots have no .git, so the launcher-published SHA wins."""
+    sha = "abcdef1234567890abcdef1234567890abcdef12"
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_COMMIT_SHA", sha)
+    monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)
+
+    assert static_version.resolve_cc_commit_sha() == sha
+
+
+def test_resolve_cc_commit_sha_ignores_invalid_launcher_sha(monkeypatch):
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_COMMIT_SHA", "unknown")
+    monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)
+
+    assert static_version.resolve_cc_commit_sha() is None
 
 
 def test_resolve_source_repo_root_finds_source_checkout(tmp_path: Path):
