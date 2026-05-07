@@ -8,6 +8,7 @@ depends on.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest
 
 from issue_orchestrator.infra.cc_snapshot import (
     SNAPSHOT_DIR_NAME,
+    SOURCE_METADATA_FILE,
     clean_snapshots,
     create_snapshot,
     snapshot_root,
@@ -69,6 +71,38 @@ class TestCreateSnapshot:
         frozen_brand = snapshot_dir / "src" / "issue_orchestrator" / "static" / "brand"
         assert (frozen_brand / "logo.svg").read_text() == "<svg>logo</svg>\n"
         assert (frozen_brand / "tray-icon.png").read_bytes() == b"png"
+
+    def test_snapshot_records_source_commit_sha(self, repo: Path) -> None:
+        """The frozen snapshot carries the source identity used by the CC footer."""
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "src"], cwd=repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        expected_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            text=True,
+        ).strip()
+
+        snapshot_dir = create_snapshot(repo)
+
+        metadata = json.loads((snapshot_dir / SOURCE_METADATA_FILE).read_text(encoding="utf-8"))
+        assert metadata["schema_version"] == 1
+        assert metadata["source_repo_root"] == str(repo.resolve())
+        assert metadata["commit_sha"] == expected_sha
 
     def test_fails_fast_when_no_src_tree(self, tmp_path: Path) -> None:
         """Without a ``src/`` tree there is nothing to freeze; caller

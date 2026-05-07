@@ -7,10 +7,24 @@ broader rendered-template tests.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from issue_orchestrator.infra import static_version
+
+
+def _write_snapshot_metadata(tmp_path: Path, commit_sha: object) -> Path:
+    snapshot_dir = tmp_path / ".control-center-snapshot" / "launch-1"
+    package_dir = snapshot_dir / "src" / "issue_orchestrator"
+    package_dir.mkdir(parents=True)
+    package_init = package_dir / "__init__.py"
+    package_init.write_text("# frozen package\n", encoding="utf-8")
+    (snapshot_dir / "source-metadata.json").write_text(
+        json.dumps({"schema_version": 1, "commit_sha": commit_sha}) + "\n",
+        encoding="utf-8",
+    )
+    return package_init
 
 
 def test_resolve_cc_commit_sha_returns_string_or_none():
@@ -41,6 +55,54 @@ def test_static_version_token_is_non_empty_and_short():
     assert len(token) <= 32
     assert "{{" not in token
     assert "/" not in token
+
+
+def test_resolve_cc_commit_sha_uses_frozen_snapshot_metadata(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Frozen CC snapshots report the source SHA captured at launch.
+
+    PR #6266 made package-relative repo discovery reject unrelated
+    parent repos. That is correct, but the frozen snapshot is a copy
+    under ``.control-center-snapshot``; its ``__init__.py`` is not the
+    same file as the live repo's ``src/`` copy, so source discovery
+    returns ``None`` there. The snapshot metadata is the immutable
+    source identity for that runtime.
+    """
+    sha = "abcdef1234567890abcdef1234567890abcdef12"
+    package_init = _write_snapshot_metadata(tmp_path, sha)
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_SNAPSHOT", str(package_init.parent.parent))
+    monkeypatch.setattr(static_version, "_RUNNING_PACKAGE_INIT", package_init)
+    monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)
+
+    assert static_version.resolve_cc_commit_sha() == sha
+
+
+def test_resolve_cc_commit_sha_ignores_invalid_frozen_snapshot_metadata(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Malformed launch metadata must not be shown as a commit."""
+    package_init = _write_snapshot_metadata(tmp_path, "not-a-sha")
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_SNAPSHOT", str(package_init.parent.parent))
+    monkeypatch.setattr(static_version, "_RUNNING_PACKAGE_INIT", package_init)
+    monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)
+
+    assert static_version.resolve_cc_commit_sha() is None
+
+
+def test_resolve_cc_commit_sha_ignores_snapshot_metadata_without_snapshot_marker(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Snapshot metadata outside the frozen CC launch path should not override source discovery."""
+    package_init = _write_snapshot_metadata(tmp_path, "abcdef1234567890abcdef1234567890abcdef12")
+    monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_SNAPSHOT", raising=False)
+    monkeypatch.setattr(static_version, "_RUNNING_PACKAGE_INIT", package_init)
+    monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)
+
+    assert static_version.resolve_cc_commit_sha() is None
 
 
 def test_resolve_source_repo_root_finds_source_checkout(tmp_path: Path):
