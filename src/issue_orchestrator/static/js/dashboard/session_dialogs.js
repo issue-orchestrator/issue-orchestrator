@@ -177,24 +177,14 @@ async function openSessionManifest(issueNumber, runDir = null) {
     openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
 }
 
-async function openValidationFailure(issueNumber, runDir = null, mode = 'modal') {
-    const params = new URLSearchParams();
-    if (runDir) params.set('run_dir', runDir);
-    const suffix = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error) {
-        const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
-        if (mode === 'inline') {
-            showToast(message, 'error');
-            return;
-        }
-        openModal(`Validation Failure #${issueNumber}`, `<div class="diag-action-message" style="display:block;">${escapeHtml(message)}</div>`);
-        return;
-    }
-
+// Pure data → DOM mapping. Takes the dialog payload (the "command result"
+// from /api/dialog/validation-failure/) and returns {title, html, runDir}.
+// No fetch, no globals beyond rendering helpers — so unit tests can call
+// this directly with hand-rolled payloads instead of stubbing the network
+// and going through the openValidationFailure entry point.
+function renderValidationDialog(data, issueNumber, runDir = null) {
     const actionSections = Array.isArray(data.action_sections) ? data.action_sections : [];
-    currentDiagnosticsRunDir = runDir || firstRunDirFromActionSections(actionSections);
+    const resolvedRunDir = runDir || firstRunDirFromActionSections(actionSections);
     const failedTests = Array.isArray(data.failed_tests) ? data.failed_tests : [];
     const stdoutExcerpt = Array.isArray(data.stdout_excerpt) ? data.stdout_excerpt : [];
     const stderrExcerpt = Array.isArray(data.stderr_excerpt) ? data.stderr_excerpt : [];
@@ -266,7 +256,32 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     html += '<div class="diag-footnote">Validation details come from the run-scoped validation record and log artifacts.</div>';
     html += '</div>';
 
-    openModal(data.title || `Validation Failure #${issueNumber}`, html);
+    return {
+        title: data.title || `Validation Failure #${issueNumber}`,
+        html,
+        runDir: resolvedRunDir,
+    };
+}
+
+async function openValidationFailure(issueNumber, runDir = null, mode = 'modal') {
+    const params = new URLSearchParams();
+    if (runDir) params.set('run_dir', runDir);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+        const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
+        if (mode === 'inline') {
+            showToast(message, 'error');
+            return;
+        }
+        openModal(`Validation Failure #${issueNumber}`, `<div class="diag-action-message" style="display:block;">${escapeHtml(message)}</div>`);
+        return;
+    }
+
+    const rendered = renderValidationDialog(data, issueNumber, runDir);
+    currentDiagnosticsRunDir = rendered.runDir;
+    openModal(rendered.title, rendered.html);
 }
 
 function renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {

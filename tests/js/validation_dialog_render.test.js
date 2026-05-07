@@ -1,13 +1,15 @@
-// Behavioral tests for openValidationFailure() — the dashboard JS path that
-// renders both passed and failed validation runs in a single modal.
+// Pure data → DOM mapping tests for renderValidationDialog().
 //
-// Why this exists: PR #6274 added a `status: "passed"` rendering branch in
-// session_dialogs.js but the original PR shipped only backend/contract tests
-// (Pydantic payload, route, dialog-builder). A regression in the actual
-// browser HTML rendering would have slipped past CI. These VM tests stub the
-// dialog endpoint and assert the rendered modal title + section structure
-// for both outcomes, so any future change to the passed-vs-failed branch is
-// caught at the layer where the bug actually shows up — the DOM.
+// The "command pattern" in two layers:
+//   1. Backend command produces a payload — covered by Python integration
+//      tests (test_validation_failure_dialog_endpoint.py) that hit the real
+//      FastAPI route and assert the payload shape.
+//   2. Payload → DOM mapping — covered HERE: hand-roll a payload, call
+//      renderValidationDialog() directly, assert the rendered HTML.
+//
+// No fetch stub, no openModal capture, no DOM emulation — just a pure
+// function call. Any future change to the passed-vs-failed render branch
+// is caught at the layer where the bug actually shows up: the markup.
 //
 // Mirrors the stdlib-only vm pattern from `tests/js/e2e_run_view_actions.test.js`.
 
@@ -17,50 +19,26 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function loadSessionDialogs(payload) {
-    // Capture every openModal(title, html) call so tests can inspect the
-    // rendered HTML directly. We don't run a DOM — innerHTML is just a string.
-    const modals = [];
-    const toasts = [];
-
+function loadSessionDialogs() {
     const context = {
         console,
         URLSearchParams,
-        // Module-level state declared without `var/let/const` in the source
-        // gets implicitly attached to the vm context; pre-seed so the load
-        // step doesn't throw on `currentDiagnosticsRunDir = ...`.
-        currentDiagnosticsRunDir: null,
-        // Browser-global stubs: minimal surface — only what session_dialogs.js
-        // actually touches in the openValidationFailure() path.
-        window: {
-            dashboardData: { startupComplete: true },
-        },
+        // Browser globals stubbed minimally — session_dialogs.js touches them
+        // only at module-load time, not in the render path.
+        window: { dashboardData: { startupComplete: true } },
         document: {
             getElementById: () => ({ innerHTML: '' }),
             addEventListener: () => {},
         },
-        fetch: async (url) => {
-            // The endpoint path is exercised by the Python integration test
-            // (test_validation_failure_dialog_endpoint.py); here we stub it so
-            // the JS branch under test is the dialog renderer, not the network.
-            modals.push(['fetch', String(url)]);
-            return {
-                ok: true,
-                status: 200,
-                json: async () => payload,
-            };
-        },
-        // External JS helpers from other files in the runtime bundle.
+        // Render helpers from sibling source files in the runtime bundle.
+        // The render path reaches into these — they're real (escapeHtml) or
+        // identity-leaning stubs (escapeAttr) that do not affect the
+        // structural assertions below.
         escapeHtml: (value) => String(value == null ? '' : value)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
         escapeAttr: (value) => String(value == null ? '' : value)
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
-        openModal: (title, html) => modals.push(['openModal', String(title), String(html)]),
-        showToast: (message, severity) => toasts.push([String(message), severity]),
-        // Other functions in session_dialogs.js that openValidationFailure
-        // happens to call indirectly. Any of these can stay as the real impl
-        // because they're defined in the same source file we load below.
     };
     vm.createContext(context);
     const source = fs.readFileSync(
@@ -68,8 +46,11 @@ function loadSessionDialogs(payload) {
         'utf8',
     );
     vm.runInContext(source, context, { filename: 'session_dialogs.js' });
-    return { context, modals, toasts };
+    return context;
 }
+
+const _ctx = loadSessionDialogs();
+const renderValidationDialog = _ctx.renderValidationDialog;
 
 const _PASSED_PAYLOAD = {
     title: 'Validation Passed #4244',
@@ -115,21 +96,13 @@ const _FAILED_PAYLOAD = {
     action_sections: [],
 };
 
-async function _renderModal(payload) {
-    const { context, modals } = loadSessionDialogs(payload);
-    await context.openValidationFailure(payload.title.match(/#(\d+)/)[1], '/run/r1', 'modal');
-    const modalCall = modals.find(([kind]) => kind === 'openModal');
-    assert.ok(modalCall, 'openModal must be invoked exactly once');
-    return { title: modalCall[1], html: modalCall[2] };
-}
-
-test('passed run: title flips to "Validation Passed #N"', async () => {
-    const { title } = await _renderModal(_PASSED_PAYLOAD);
+test('passed run: title flips to "Validation Passed #N"', () => {
+    const { title } = renderValidationDialog(_PASSED_PAYLOAD, 4244);
     assert.strictEqual(title, 'Validation Passed #4244');
 });
 
-test('passed run: renders Tests section, not Failed Tests', async () => {
-    const { html } = await _renderModal(_PASSED_PAYLOAD);
+test('passed run: renders Tests section, not Failed Tests', () => {
+    const { html } = renderValidationDialog(_PASSED_PAYLOAD, 4244);
     // Section heading flips so the modal doesn't read like a failure.
     assert.match(html, /<div class="diag-section-title">Tests<\/div>/);
     assert.doesNotMatch(html, /<div class="diag-section-title">Failed Tests/);
@@ -137,45 +110,74 @@ test('passed run: renders Tests section, not Failed Tests', async () => {
     assert.match(html, /All tests passed\./);
 });
 
-test('passed run: outcome chip is is-ok green, not is-warn red', async () => {
-    const { html } = await _renderModal(_PASSED_PAYLOAD);
+test('passed run: outcome chip is is-ok green, not is-warn red', () => {
+    const { html } = renderValidationDialog(_PASSED_PAYLOAD, 4244);
     // Operators eyeballing the chip row need an at-a-glance signal.
     assert.match(html, /diag-chip is-ok">passed<\/span>/);
     assert.doesNotMatch(html, /diag-chip is-warn">failed/);
 });
 
-test('passed run: stdout excerpt section still renders for spot-checking the green run', async () => {
-    const { html } = await _renderModal(_PASSED_PAYLOAD);
+test('passed run: stdout excerpt section still renders for spot-checking the green run', () => {
+    const { html } = renderValidationDialog(_PASSED_PAYLOAD, 4244);
     // The whole point of #6274: passing runs should let users SEE the test
     // tail ("142 passed in 41.21s"). Regression here defeats the feature.
     assert.match(html, /Validation Output Excerpt/);
     assert.match(html, /142 passed in 41\.21s/);
 });
 
-test('failed run: title stays "Validation Failure #N"', async () => {
-    const { title } = await _renderModal(_FAILED_PAYLOAD);
+test('failed run: title stays "Validation Failure #N"', () => {
+    const { title } = renderValidationDialog(_FAILED_PAYLOAD, 4242);
     assert.strictEqual(title, 'Validation Failure #4242');
 });
 
-test('failed run: renders Failed Tests section with each failing nodeid', async () => {
-    const { html } = await _renderModal(_FAILED_PAYLOAD);
+test('failed run: renders Failed Tests section with each failing nodeid', () => {
+    const { html } = renderValidationDialog(_FAILED_PAYLOAD, 4242);
     assert.match(html, /<div class="diag-section-title">Failed Tests \(2\)<\/div>/);
     assert.match(html, /tests\/unit\/test_one\.py::test_a/);
     assert.match(html, /tests\/unit\/test_two\.py::test_b/);
 });
 
-test('failed run: outcome chip is is-warn red', async () => {
-    const { html } = await _renderModal(_FAILED_PAYLOAD);
+test('failed run: outcome chip is is-warn red', () => {
+    const { html } = renderValidationDialog(_FAILED_PAYLOAD, 4242);
     assert.match(html, /diag-chip is-warn">failed<\/span>/);
 });
 
-test('payload missing status field falls back to failed rendering (back-compat)', async () => {
+test('payload missing status field falls back to failed rendering (back-compat)', () => {
     // Defensive: an older server (or a regression in the contract layer)
     // could omit `status`. The renderer must default to the failure UX so
     // operators don't see a false-green dialog.
     const legacyPayload = { ..._FAILED_PAYLOAD };
     delete legacyPayload.status;
-    const { html } = await _renderModal(legacyPayload);
+    const { html } = renderValidationDialog(legacyPayload, 4242);
     assert.match(html, /diag-chip is-warn">failed<\/span>/);
     assert.match(html, /Failed Tests/);
+});
+
+test('runDir falls back to first action-section run_dir when caller passes null', () => {
+    // openValidationFailure passes runDir=null when the timeline action
+    // didn't carry one; the renderer must extract a run_dir from the
+    // payload's action sections so the modal's "Open ..." buttons work.
+    const payload = {
+        ..._FAILED_PAYLOAD,
+        action_sections: [{
+            title: 'Validation Artifacts',
+            actions: [{ type: 'open_path', label: 'Open Validation Record', path: '/tmp/r1/validation-record.json', group: 'validation_artifacts', run_dir: '/run/r1' }],
+        }],
+    };
+    const { runDir } = renderValidationDialog(payload, 4242, null);
+    assert.strictEqual(runDir, '/run/r1');
+});
+
+test('runDir from caller takes precedence over payload', () => {
+    // When the timeline action carried a run_dir, that's the authoritative
+    // scope (the dialog might be opened on a different run than the latest).
+    const payload = {
+        ..._FAILED_PAYLOAD,
+        action_sections: [{
+            title: 'Validation Artifacts',
+            actions: [{ type: 'open_path', label: 'X', path: '/y', group: 'validation_artifacts', run_dir: '/run/payload-suggests' }],
+        }],
+    };
+    const { runDir } = renderValidationDialog(payload, 4242, '/run/caller-knows-best');
+    assert.strictEqual(runDir, '/run/caller-knows-best');
 });
