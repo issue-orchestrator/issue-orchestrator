@@ -303,7 +303,12 @@ function _timelineActionShortLabel(action) {
     const type = String(action.type || '');
     const label = String(action.label || '').trim();
     if (type === 'show_event_details') return 'Event Details';
-    if (type === 'open_agent_log') return 'Session Recording';
+    if (type === 'open_agent_log') {
+        if (/Reviewer Session Recording/i.test(label)) return 'Reviewer Recording';
+        if (/Coding Session Recording/i.test(label)) return 'Coding Recording';
+        if (/Rework Session Recording/i.test(label)) return 'Rework Recording';
+        return 'Session Recording';
+    }
     if (type === 'open_review_transcript') return 'Review Transcript';
     if (type === 'open_validation_failure') return 'Validation Details';
     if (type === 'view_claude_log') return 'Claude Log';

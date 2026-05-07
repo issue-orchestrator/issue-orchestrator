@@ -419,6 +419,8 @@ main() {
   # IO_DEV disables static file caching so CSS/JS changes are visible immediately
   export IO_DEV=1
   export ISSUE_ORCHESTRATOR_CC_REPO_ROOT="${ROOT_DIR}"
+  export ISSUE_ORCHESTRATOR_CC_COMMIT_SHA
+  ISSUE_ORCHESTRATOR_CC_COMMIT_SHA=$(cd "${ROOT_DIR}" && git rev-parse HEAD 2>/dev/null || true)
   # Prepend the frozen snapshot to PYTHONPATH. Python consults PYTHONPATH
   # before site-packages, so every ``import issue_orchestrator`` — in the
   # CC and in every subprocess that inherits this env (``coding-done``,

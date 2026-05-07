@@ -241,6 +241,14 @@ class CompletionReviewExchange:
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False, False
         reviewer_label = self.resolve_reviewer_label(agent_label) if agent_label else None
+        job_id = _review_exchange_job_id(issue_number, session_name)
+        background_failure = self._take_background_failure(
+            job_id=job_id,
+            issue_number=issue_number,
+            errors=errors,
+        )
+        if background_failure is not None:
+            return exchange_mode, None, True, False
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
         )
@@ -270,26 +278,16 @@ class CompletionReviewExchange:
         # no-cache are benign (head moved, first run);
         # INVALID_SUMMARY is logged by the decide path and treated
         # as spawn-fresh so corrupted state doesn't strand the issue.
-
-        job_id = _review_exchange_job_id(issue_number, session_name)
-
-        # If a previous background attempt raised, the supervisor recorded
-        # it. Surface that as a terminal halt rather than spawning another
-        # attempt — otherwise a crashing job would forkbomb the tick loop
-        # at one resubmit per iteration forever.
-        failure = self._job_supervisor.take_failure(job_id)
-        if failure is not None:
-            reason = (
-                f"review_exchange: background job raised: {failure.error}"
-            )
-            errors.append(reason)
-            logger.error(
-                "[REVIEW_EXCHANGE] background job failed; halting issue=%d job_id=%s",
-                issue_number,
-                job_id,
-                exc_info=(type(failure.error), failure.error, None),
-            )
-            return exchange_mode, None, True, False
+        loop_budget_halt = self._maybe_escalate_no_completion_budget(
+            exchange_mode=exchange_mode,
+            issue_number=issue_number,
+            session_name=session_name,
+            worktree=worktree,
+            errors=errors,
+            review_cache_boundary_started_at=review_cache_boundary_started_at,
+        )
+        if loop_budget_halt is not None:
+            return loop_budget_halt
 
         if self._job_supervisor.is_running(job_id):
             logger.info(
@@ -337,6 +335,27 @@ class CompletionReviewExchange:
             run_review_exchange_loop=run_review_exchange_loop,
         )
         return mode, outcome, halt, False
+
+    def _take_background_failure(
+        self,
+        *,
+        job_id: str,
+        issue_number: int,
+        errors: list[str],
+    ) -> Any | None:
+        """Surface a recorded background failure as a terminal halt."""
+        failure = self._job_supervisor.take_failure(job_id)
+        if failure is None:
+            return None
+        reason = f"review_exchange: background job raised: {failure.error}"
+        errors.append(reason)
+        logger.error(
+            "[REVIEW_EXCHANGE] background job failed; halting issue=%d job_id=%s",
+            issue_number,
+            job_id,
+            exc_info=(type(failure.error), failure.error, None),
+        )
+        return failure
 
     def _submit_background_review_exchange(
         self,
@@ -406,7 +425,11 @@ class CompletionReviewExchange:
                 exchange_result=outcome,
             )
 
-        return self._job_supervisor.submit(job_id, _job)
+        return self._job_supervisor.submit(
+            job_id,
+            _job,
+            timeout_seconds=self._review_exchange_job_timeout_seconds(agent_label),
+        )
 
     def _dispatch_resume_decision(
         self,
@@ -661,6 +684,30 @@ class CompletionReviewExchange:
         if not isinstance(max_failures, int) or max_failures < 0:
             return 0
         return max_failures
+
+    def _review_exchange_job_timeout_seconds(self, agent_label: str | None) -> float | None:
+        """Return a hard wall-clock deadline for one deferred exchange job.
+
+        The runner owns the round/retry budget and exposes the derived
+        supervisor deadline through the injected port. Control only resolves
+        the active coder/reviewer configs.
+        """
+        if self._config is None or not agent_label:
+            return None
+        try:
+            reviewer_label = self.resolve_reviewer_label(agent_label)
+        except ValueError:
+            return None
+        coder_agent = self._config.agents.get(agent_label)
+        reviewer_agent = self._config.agents.get(reviewer_label)
+        if coder_agent is None or reviewer_agent is None:
+            return None
+        max_rounds = max(1, int(getattr(self._config, "review_exchange_max_rounds", 1)))
+        return self._review_exchange_runner.job_timeout_seconds(
+            coder_agent=coder_agent,
+            reviewer_agent=reviewer_agent,
+            max_rounds=max_rounds,
+        )
 
     def resolve_required_review_run_dir(
         self,

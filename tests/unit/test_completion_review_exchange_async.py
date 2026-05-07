@@ -55,6 +55,9 @@ class _FakeReviewExchangeRunner:
             summary={"status": "ok", "reason": "reviewer_ok", "completed_rounds": 1},
         )
 
+    def job_timeout_seconds(self, **_: Any) -> float | None:
+        return 60.0
+
 
 class _FakeJobRunner:
     """Records submitted jobs and lets tests control whether they are 'running'."""
@@ -84,6 +87,30 @@ class _FakeJobRunner:
         self._completed.append(CompletedJob(job_id=job_id, error=error))
 
 
+class _CapturingSupervisor:
+    def __init__(self) -> None:
+        self.submitted_timeout: float | None = None
+
+    def tick(self) -> None:
+        pass
+
+    def take_failure(self, job_id: str) -> CompletedJob | None:  # noqa: ARG002
+        return None
+
+    def is_running(self, job_id: str) -> bool:  # noqa: ARG002
+        return False
+
+    def submit(
+        self,
+        job_id: str,  # noqa: ARG002
+        fn: Callable[[], None],  # noqa: ARG002
+        *,
+        timeout_seconds: float | None = None,
+    ) -> bool:
+        self.submitted_timeout = timeout_seconds
+        return True
+
+
 @dataclass
 class _CapturedSummary:
     summary: dict[str, Any]
@@ -96,6 +123,7 @@ class _FakeSessionOutput:
     def __init__(self, worktree: Path) -> None:
         self._worktree = worktree
         self._summary: _CapturedSummary | None = None
+        self.no_completion_count = 0
         self._run_dir = worktree / ".sessions" / "exchange-run"
         (self._run_dir / "review-exchange").mkdir(parents=True, exist_ok=True)
 
@@ -152,9 +180,7 @@ class _FakeSessionOutput:
         *,
         not_before_started_at: str | None = None,  # noqa: ARG002
     ) -> int:
-        # Bound is irrelevant to this fixture's tests; return 0 so the
-        # spawn-decision path falls through unchanged.
-        return 0
+        return self.no_completion_count
 
 
 def _make_config(tmp_path: Path, *, require_validation: bool = False) -> Config:
@@ -293,6 +319,46 @@ def test_first_pass_submits_background_job_and_returns_deferred(tmp_path: Path) 
     assert called == []
     # Job id is stable for the same (issue, session_name).
     assert job_runner.submitted[0][0] == "review-exchange:230:coding-1"
+
+
+def test_background_deadline_is_derived_from_runner_port(tmp_path: Path) -> None:
+    class _TimeoutRunner(_FakeReviewExchangeRunner):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def job_timeout_seconds(self, **kwargs: Any) -> float | None:
+            self.calls.append(kwargs)
+            return 123.0
+
+    runner = _TimeoutRunner()
+    supervisor = _CapturingSupervisor()
+    cfg = _make_config(tmp_path)
+    review = CompletionReviewExchange(
+        config=cfg,
+        session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=runner,
+        job_supervisor=supervisor,  # type: ignore[arg-type]
+    )
+
+    (_, _, _, _, _, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=lambda **_: pytest.fail("must defer"),
+    )
+
+    assert deferred is True
+    assert supervisor.submitted_timeout == 123.0
+    assert runner.calls
+    assert runner.calls[0]["max_rounds"] == cfg.review_exchange_max_rounds
 
 
 def test_second_pass_while_running_keeps_deferring(tmp_path: Path) -> None:
@@ -496,6 +562,57 @@ def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) ->
     assert outcome is None
     assert actions_taken == []
     assert len(job_runner.submitted) == 1
+
+
+def test_stale_no_completion_summary_still_trips_loop_budget(tmp_path: Path) -> None:
+    """The no-completion cap must win even when a stale summary cannot cache-hit."""
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+    session_output.no_completion_count = 3
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="stale-sha")
+    _write_validation_record(current_validation, head_sha="current-sha")
+    session_output.store_review_exchange_summary(
+        tmp_path,
+        "review-exchange-230",
+        {
+            "status": "error",
+            "reason": "reviewer_no_completion",
+            "completed_rounds": 1,
+        },
+        validation_record_path=cached_validation,
+    )
+
+    errors: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=errors,
+        actions_taken=[],
+        run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(
+            AssertionError("loop budget must halt before another exchange starts"),
+        ),
+    )
+
+    assert deferred is False
+    assert halt is True
+    assert completed is False
+    assert outcome is None
+    assert job_runner.submitted == []
+    assert any("3 consecutive reviewer/coder no-completion failures" in err for err in errors)
 
 
 def test_cached_review_before_scratch_boundary_is_ignored(tmp_path: Path) -> None:

@@ -197,7 +197,7 @@ def _wire_event_to_session_dir(
 
     Updates both the ``run_dir`` column and the ``data_json.run_dir`` field
     of a single matching row so the action decorator's path-exists check
-    succeeds and a ``Session Recording`` button appears in the issue-detail
+    succeeds and a ``Coding Recording`` button appears in the issue-detail
     drawer for that event.
 
     Raises if the target event is not found — silent misses would leave
@@ -1211,7 +1211,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # The fixture stager wired one agent.coding_started event for
     # issue 5705 at a real tmp_path run_dir with a synthetic
     # terminal-recording.jsonl. The action decorator therefore emits
-    # a "Session Recording" action on that event; click it and verify
+    # a "Coding Recording" action on that event; click it and verify
     # the session-replay modal opens AND loads real terminal content
     # from the endpoint.
     #
@@ -1241,7 +1241,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     session_recording_btn = journey.locator(
         ".timeline-event-actions > .timeline-action-btn",
-        has_text="Session Recording",
+        has_text="Coding Recording",
     ).first
     expect(session_recording_btn).to_be_visible(timeout=5000)
     session_recording_btn.scroll_into_view_if_needed()

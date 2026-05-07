@@ -464,6 +464,23 @@ def test_render_issue_detail_toggles_retry_publish_button_from_actions() -> None
     assert "action.id === 'retry_publish'" in body
 
 
+def test_render_issue_detail_title_preserves_issue_number() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderIssueDetail")
+    title_body = _function_body(js, "formatIssueDetailTitle")
+    assert "formatIssueDetailTitle(d)" in body
+    assert "`#${detail.issue_number}`" in title_body
+    assert "return `${issueNumber}: ${title}`" in title_body
+
+
+def test_copy_journey_timeline_formats_raw_timestamps_locally() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "copyJourneyTimeline")
+    assert "formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '')" in body
+    assert "formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || '')" in body
+    assert "formatJourneyStepTimestamp(s.timestamp || '', s.time_label || '')" in body
+
+
 def test_render_issue_detail_renders_validation_failure_callout() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderIssueDetailValidation")
@@ -654,6 +671,14 @@ def test_timeline_prefers_session_recording_before_review_transcript() -> None:
     assert timeline_body.index("'open_agent_log'") < timeline_body.index("'open_review_transcript'")
     assert "Session Recording" in short_label_body
     assert "Review Transcript" in short_label_body
+
+
+def test_timeline_session_recording_labels_keep_role_context() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_timelineActionShortLabel")
+    assert "Reviewer Recording" in body
+    assert "Coding Recording" in body
+    assert "Rework Recording" in body
 
 
 def test_session_replay_terminal_wrap_allows_scroll_for_fixed_geometry() -> None:

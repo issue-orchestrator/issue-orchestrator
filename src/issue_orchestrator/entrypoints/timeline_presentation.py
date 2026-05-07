@@ -868,6 +868,8 @@ def _preferred_run_scoped_session_action(
         "issue_number": issue_number,
     }
     context = _agent_log_context_for_event(event, event_name)
+    if not context and _is_review_exchange_aggregate_event(event, event_name):
+        return None
     if context:
         accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(run_dir)))
         try:
@@ -893,6 +895,15 @@ def _preferred_run_scoped_session_action(
     if isinstance(session_role, str) and session_role:
         dedupe_parts.append(session_role)
     return action, ":".join(dedupe_parts)
+
+
+def _is_review_exchange_aggregate_event(event: dict[str, Any], event_name: str) -> bool:
+    """Return True for review-exchange rows that are not role sessions."""
+    exchange_mode = str(event.get("review_exchange_mode") or "").strip()
+    return event_name == "review_exchange.completed" or (
+        event_name == "review.started"
+        and exchange_mode in {"via-local-loop", "via-mcp"}
+    )
 
 
 def _timeline_event_requires_run_dir(event: dict[str, Any]) -> bool:

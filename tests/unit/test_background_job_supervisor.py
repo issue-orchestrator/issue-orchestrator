@@ -12,6 +12,7 @@ import threading
 
 from issue_orchestrator.control.background_job_supervisor import (
     BackgroundJobSupervisor,
+    BackgroundJobTimeoutError,
 )
 from issue_orchestrator.execution.thread_background_job_runner import (
     ThreadBackgroundJobRunner,
@@ -114,6 +115,32 @@ def test_multiple_concurrent_jobs_each_record_their_own_failure() -> None:
     recovered = {jid: supervisor.take_failure(jid) for jid in ("a", "b", "c")}
     assert all(f is not None for f in recovered.values())
     assert {str(f.error) for f in recovered.values() if f is not None} == {"a", "b", "c"}
+
+
+def test_running_job_deadline_is_reported_as_failure() -> None:
+    runner = ThreadBackgroundJobRunner()
+    now = 1000.0
+    supervisor = BackgroundJobSupervisor(runner, clock=lambda: now)
+    started = threading.Event()
+    release = threading.Event()
+
+    def block() -> None:
+        started.set()
+        release.wait(timeout=5.0)
+
+    assert supervisor.submit("slow", block, timeout_seconds=10.0) is True
+    assert started.wait(timeout=5.0)
+
+    now = 1011.0
+    supervisor.tick()
+
+    failure = supervisor.take_failure("slow")
+    assert failure is not None
+    assert isinstance(failure.error, BackgroundJobTimeoutError)
+    assert "slow" in str(failure.error)
+
+    release.set()
+    assert runner.wait_until_idle(timeout=5.0)
 
 
 def test_review_exchange_halts_when_supervisor_records_failure() -> None:

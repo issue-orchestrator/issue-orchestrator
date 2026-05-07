@@ -153,6 +153,27 @@ def test_persistent_pair_root_helper_is_worktree_scoped(tmp_path: Path) -> None:
     )
 
 
+def test_job_timeout_budget_includes_coder_protocol_retries(tmp_path: Path) -> None:
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("hello")
+    coder = AgentConfig(prompt_path=prompt, timeout_minutes=10)
+    reviewer = AgentConfig(prompt_path=prompt, timeout_minutes=10)
+    runner = _make_runner(tmp_path)
+
+    timeout = runner.job_timeout_seconds(
+        coder_agent=coder,
+        reviewer_agent=reviewer,
+        max_rounds=1,
+    )
+
+    # One round can legitimately consume reviewer + coder + two coder
+    # protocol retries before returning a protocol outcome. The supervisor
+    # deadline should sit outside that runner-owned budget, with only a small
+    # cleanup/drain grace window after it.
+    max_legitimate_protocol_retry_duration = (10 * 60) + (3 * 10 * 60)
+    assert timeout == max_legitimate_protocol_retry_duration + 300
+
+
 def test_run_passes_reviewer_worktree_factory_invoked_lazily(
     monkeypatch, tmp_path: Path, stub_lifecycle,
 ):
