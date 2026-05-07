@@ -116,7 +116,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             if (target && target.dataset.path) {
                 openPath(target.dataset.path);
             }
-            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-more-item');
+            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-menu-item');
             if (actionTarget && actionTarget.dataset.action) {
                 try {
                     const action = JSON.parse(actionTarget.dataset.action);
@@ -131,7 +131,11 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             const menuTrigger = event.target.closest('.timeline-event-menu-trigger');
             if (menuTrigger) {
                 const ownerMenu = menuTrigger.closest('.timeline-event-menu');
+                const wasOpen = ownerMenu && ownerMenu.hasAttribute('open');
                 closeTimelineEventMenus(ownerMenu);
+                if (ownerMenu && !wasOpen) {
+                    requestAnimationFrame(() => positionTimelineEventMenu(ownerMenu));
+                }
                 return;
             }
             if (!event.target.closest('.timeline-event-menu')) {
@@ -253,19 +257,13 @@ function renderTimelineEventActions(actions, eventDetail = null, detailIds = nul
         return html;
     }
     html += '<details class="timeline-event-menu">';
-    html += '<summary class="timeline-event-menu-trigger" aria-label="Event details and more actions" title="Event details and more actions">⋯</summary>';
-    html += '<div class="timeline-event-menu-items">';
+    html += '<summary class="timeline-event-menu-trigger" aria-label="More actions for this event" title="More actions for this event">⋯</summary>';
+    html += '<div class="timeline-event-menu-items" role="menu">';
     if (detailsAction) {
-        html += renderBtn(detailsAction, 'Event Details', 'timeline-more-item timeline-detail-action');
+        html += renderBtn(detailsAction, 'Event Details', 'timeline-menu-item timeline-detail-action');
     }
-    if (secondary.length > 0) {
-        html += '<details class="timeline-more-menu">';
-        html += '<summary class="timeline-more-trigger">More ▾</summary>';
-        html += '<div class="timeline-more-items">';
-        for (const item of secondary) {
-            html += renderBtn(item.action, item.label, 'timeline-more-item');
-        }
-        html += '</div></details>';
+    for (const item of secondary) {
+        html += renderBtn(item.action, item.label, 'timeline-menu-item');
     }
     html += '</div></details></div>';
     return html;
@@ -331,9 +329,32 @@ function closeTimelineEventMenus(exceptMenu = null) {
         if (exceptMenu && menu === exceptMenu) return;
         menu.removeAttribute('open');
     });
-    document.querySelectorAll('.timeline-more-menu[open]').forEach(menu => {
-        menu.removeAttribute('open');
-    });
+}
+
+// Place the overflow popover below-right of its trigger using viewport
+// coordinates. position: fixed lets the popover escape ancestor overflow
+// containers (e.g. the e2e diagnosis modal's scrolling body) so it isn't
+// clipped or made unclickable when the trigger sits near a clipped edge.
+function positionTimelineEventMenu(menu) {
+    if (!menu) return;
+    const trigger = menu.querySelector('.timeline-event-menu-trigger');
+    const items = menu.querySelector('.timeline-event-menu-items');
+    if (!trigger || !items) return;
+    const margin = 8;
+    const triggerRect = trigger.getBoundingClientRect();
+    const itemsRect = items.getBoundingClientRect();
+    let top = triggerRect.bottom + 4;
+    if (top + itemsRect.height > window.innerHeight - margin) {
+        // Flip above the trigger if the popover would overflow the viewport bottom.
+        top = Math.max(margin, triggerRect.top - itemsRect.height - 4);
+    }
+    let left = triggerRect.right - itemsRect.width;
+    if (left < margin) left = margin;
+    if (left + itemsRect.width > window.innerWidth - margin) {
+        left = window.innerWidth - itemsRect.width - margin;
+    }
+    items.style.top = `${Math.round(top)}px`;
+    items.style.left = `${Math.round(left)}px`;
 }
 
 function runTimelineEventAction(action) {
