@@ -212,6 +212,31 @@ class RunManifest:
             setattr(self, key, value)
         self.save()
 
+    def artifact_paths(
+        self,
+        *,
+        kind: str,
+        key_prefix: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return recorded artifact paths matching a kind and optional key prefix."""
+        artifacts = self.artifacts if isinstance(self.artifacts, dict) else {}
+        paths: list[str] = []
+        for key, artifact in artifacts.items():
+            if key_prefix is not None and not str(key).startswith(key_prefix):
+                continue
+            if not isinstance(artifact, dict):
+                continue
+            if artifact.get("kind") != kind:
+                continue
+            path = artifact.get("path")
+            if isinstance(path, str) and path.strip():
+                paths.append(path)
+        return tuple(dict.fromkeys(paths))
+
+    def junit_xml_paths(self, *, key_prefix: str | None = None) -> tuple[str, ...]:
+        """Return recorded JUnit XML artifact paths."""
+        return self.artifact_paths(kind="junit_xml", key_prefix=key_prefix)
+
     def enrich_from_completion_record(
         self,
         record: Any,  # CompletionRecord — avoid circular import

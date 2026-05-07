@@ -22,6 +22,7 @@ class RunManifestArtifact(BaseModel):
         "validation_record",
         "validation_stdout",
         "validation_stderr",
+        "junit_xml",
         "diagnostic",
         "orchestrator_tail",
         "review_exchange_summary",
