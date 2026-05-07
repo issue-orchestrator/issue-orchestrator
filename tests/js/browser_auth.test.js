@@ -108,31 +108,99 @@ test('openAuthenticatedSseStream requests token when auth is enabled', async () 
     assert.deepEqual(fetches, [['/api/sse-token', { cache: 'no-store' }]]);
 });
 
-test('maybeReloadOnAuthExpiry reloads only once for authenticated API 401s', () => {
-    let reloads = 0;
-    const target = {
-        location: {
-            reload: () => {
-                reloads += 1;
+function fakeDomTarget() {
+    const elements = new Map();
+    const body = makeNode('body');
+    const doc = {
+        body,
+        createElement: (tag) => makeNode(tag),
+        getElementById: (id) => elements.get(id) || null,
+        _registerId(id, node) { elements.set(id, node); },
+    };
+    function makeNode(tag) {
+        const node = {
+            tagName: tag.toUpperCase(),
+            children: [],
+            attributes: {},
+            style: { cssText: '' },
+            listeners: {},
+            id: '',
+            type: '',
+            textContent: '',
+            setAttribute(name, value) { this.attributes[name] = String(value); },
+            getAttribute(name) { return this.attributes[name] ?? null; },
+            appendChild(child) { this.children.push(child); child._parent = this; return child; },
+            addEventListener(name, fn) { (this.listeners[name] = this.listeners[name] || []).push(fn); },
+            focus() { /* no-op */ },
+        };
+        Object.defineProperty(node, 'id', {
+            get() { return this._id || ''; },
+            set(value) {
+                this._id = value;
+                if (value) doc._registerId(value, this);
+            },
+        });
+        return node;
+    }
+    let assigned = null;
+    return {
+        target: {
+            document: doc,
+            location: {
+                assign: (url) => { assigned = url; },
             },
         },
+        getAssigned: () => assigned,
+        findById: (id) => elements.get(id) || null,
     };
+}
 
-    assert.equal(browserAuth.maybeReloadOnAuthExpiry({ status: 401, url: 'http://127.0.0.1/api/status' }, target), true);
-    assert.equal(browserAuth.maybeReloadOnAuthExpiry({ status: 401, url: 'http://127.0.0.1/api/status' }, target), false);
-    assert.equal(reloads, 1);
+test('maybeShowAuthExpiredOverlay renders overlay only once for authenticated API 401s', () => {
+    const { target, findById } = fakeDomTarget();
+
+    assert.equal(
+        browserAuth.maybeShowAuthExpiredOverlay({ status: 401, url: 'http://127.0.0.1/api/status' }, target),
+        true,
+    );
+    assert.equal(
+        browserAuth.maybeShowAuthExpiredOverlay({ status: 401, url: 'http://127.0.0.1/control/repos' }, target),
+        false,
+    );
+
+    const overlay = findById('io-auth-expired-overlay');
+    assert.ok(overlay, 'overlay should be inserted into the DOM');
+    assert.equal(overlay.getAttribute('role'), 'alertdialog');
+    assert.equal(overlay.getAttribute('aria-modal'), 'true');
 });
 
-test('maybeReloadOnAuthExpiry ignores non-auth paths', () => {
-    let reloads = 0;
-    const target = {
-        location: {
-            reload: () => {
-                reloads += 1;
-            },
-        },
-    };
+test('maybeShowAuthExpiredOverlay ignores non-auth paths', () => {
+    const { target, findById } = fakeDomTarget();
 
-    assert.equal(browserAuth.maybeReloadOnAuthExpiry({ status: 401, url: 'http://127.0.0.1/static/app.js' }, target), false);
-    assert.equal(reloads, 0);
+    assert.equal(
+        browserAuth.maybeShowAuthExpiredOverlay({ status: 401, url: 'http://127.0.0.1/static/app.js' }, target),
+        false,
+    );
+    assert.equal(findById('io-auth-expired-overlay'), null);
+});
+
+test('overlay sign-in button navigates to / on click', () => {
+    const { target, getAssigned, findById } = fakeDomTarget();
+
+    browserAuth.maybeShowAuthExpiredOverlay({ status: 401, url: 'http://127.0.0.1/api/state' }, target);
+
+    const button = findById('io-auth-expired-overlay-signin');
+    assert.ok(button, 'sign-in button should exist');
+    assert.equal(button.tagName, 'BUTTON');
+    assert.equal(typeof button.listeners.click?.[0], 'function');
+
+    button.listeners.click[0]();
+    assert.equal(getAssigned(), '/');
+});
+
+test('isAuthExpiredResponse only triggers on /api/ or /control/ 401s', () => {
+    assert.equal(browserAuth.isAuthExpiredResponse({ status: 401, url: '/api/state' }), true);
+    assert.equal(browserAuth.isAuthExpiredResponse({ status: 401, url: '/control/repos' }), true);
+    assert.equal(browserAuth.isAuthExpiredResponse({ status: 401, url: '/static/css/x.css' }), false);
+    assert.equal(browserAuth.isAuthExpiredResponse({ status: 200, url: '/api/state' }), false);
+    assert.equal(browserAuth.isAuthExpiredResponse(null), false);
 });
