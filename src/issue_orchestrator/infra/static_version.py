@@ -22,25 +22,30 @@ Two surfaces here:
 
 from __future__ import annotations
 
+import json
 import os
-import re
 import time
 from pathlib import Path
 from typing import Optional
 
+from .cc_snapshot import SNAPSHOT_DIR_NAME, SOURCE_METADATA_FILE
 from .repo_identity import _resolve_git_dir, get_repo_head_sha
 
+_CC_SNAPSHOT_ENV = "ISSUE_ORCHESTRATOR_CC_SNAPSHOT"
 _CC_COMMIT_SHA_ENV = "ISSUE_ORCHESTRATOR_CC_COMMIT_SHA"
-_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _normalized_commit_sha(value: object) -> Optional[str]:
+    raw = str(value).strip() if value is not None else ""
+    if len(raw) != 40:
+        return None
+    if any(char not in "0123456789abcdefABCDEF" for char in raw):
+        return None
+    return raw.lower()
 
 
 def _commit_sha_from_env() -> str | None:
-    raw = os.environ.get(_CC_COMMIT_SHA_ENV, "").strip().lower()
-    if not raw:
-        return None
-    if not _FULL_SHA_RE.fullmatch(raw):
-        return None
-    return raw
+    return _normalized_commit_sha(os.environ.get(_CC_COMMIT_SHA_ENV))
 
 
 def _candidate_holds_running_package(candidate: Path, package_init: Path) -> bool:
@@ -103,18 +108,61 @@ _PACKAGE_REPO_ROOT = _resolve_source_repo_root(
 )
 
 
+def _find_snapshot_metadata_path(package_init: Path) -> Optional[Path]:
+    """Return source metadata path when imported from a frozen CC snapshot."""
+    resolved_init = package_init.resolve()
+    for candidate in resolved_init.parents:
+        if candidate.name != "src":
+            continue
+        if candidate.parent.parent.name != SNAPSHOT_DIR_NAME:
+            continue
+        expected_init = candidate / "issue_orchestrator" / "__init__.py"
+        try:
+            if expected_init.samefile(resolved_init):
+                return candidate.parent / SOURCE_METADATA_FILE
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_snapshot_metadata_commit_sha(package_init: Path) -> Optional[str]:
+    """Return the immutable source SHA carried by a frozen CC snapshot.
+
+    The snapshot is a copy outside the source repo's ``.git``. PR #6266
+    correctly prevents that copied package from claiming the live repo's
+    ``src/issue_orchestrator/__init__.py`` as the same file, so the
+    snapshot carries its source identity in a metadata file written at
+    snapshot creation time.
+    """
+    if not os.environ.get(_CC_SNAPSHOT_ENV):
+        return None
+    metadata_path = _find_snapshot_metadata_path(package_init)
+    if metadata_path is None:
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    return _normalized_commit_sha(metadata.get("commit_sha"))
+
+
 def resolve_cc_commit_sha() -> Optional[str]:
     """Return the cc's source commit SHA, or ``None`` for non-source installs.
 
     Prefers the launcher-published commit when present. The Control Center
     normally imports from a frozen source snapshot that intentionally has no
-    ``.git`` directory, so the launcher is the only component that can know
-    the exact source commit copied into that snapshot. Source-checkout runs
-    still fall back to the package-relative repo root.
+    ``.git`` directory; if that env contract is absent, snapshot metadata is
+    the immutable source identity copied into the frozen package. Source-
+    checkout runs still fall back to the package-relative repo root.
     """
     env_sha = _commit_sha_from_env()
     if env_sha:
         return env_sha
+    snapshot_sha = _resolve_snapshot_metadata_commit_sha(_RUNNING_PACKAGE_INIT)
+    if snapshot_sha:
+        return snapshot_sha
     if _PACKAGE_REPO_ROOT is None:
         return None
     return get_repo_head_sha(_PACKAGE_REPO_ROOT)

@@ -2,6 +2,8 @@
 
 # ruff: noqa: F403,F405,SLF001
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from tests.unit import test_control_api as _support
@@ -314,6 +316,34 @@ class TestControlCenterTemplate:
         assert 'id="sidebarRepoList"' not in body
         assert "nav-repo-list" not in body
         assert "nav-repo-item" not in body
+
+    def test_control_center_ui_renders_frozen_snapshot_launch_sha(
+        self,
+        client_without_orchestrator,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from issue_orchestrator.infra import static_version
+
+        sha = "abcdef1234567890abcdef1234567890abcdef12"
+        snapshot_dir = tmp_path / ".control-center-snapshot" / "launch-1"
+        package_dir = snapshot_dir / "src" / "issue_orchestrator"
+        package_dir.mkdir(parents=True)
+        package_init = package_dir / "__init__.py"
+        package_init.write_text("# frozen package\n", encoding="utf-8")
+        (snapshot_dir / "source-metadata.json").write_text(
+            json.dumps({"schema_version": 1, "commit_sha": sha}) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_COMMIT_SHA", raising=False)
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_SNAPSHOT", str(snapshot_dir / "src"))
+        monkeypatch.setattr(static_version, "_RUNNING_PACKAGE_INIT", package_init)
+        monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)
+
+        response = client_without_orchestrator.get("/")
+
+        assert response.status_code == 200
+        assert f"({sha[:7]})" in response.text
 
     def test_control_center_static_assets_are_served(self, client_without_orchestrator):
         css_response = client_without_orchestrator.get("/static/css/control_center.css")

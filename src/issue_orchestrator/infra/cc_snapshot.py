@@ -54,6 +54,7 @@ bounded at one snapshot per live CC.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -61,9 +62,13 @@ import sys
 import time
 from pathlib import Path
 
+from .repo_identity import get_repo_head_sha
+
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_DIR_NAME = ".control-center-snapshot"
+SOURCE_METADATA_FILE = "source-metadata.json"
+SOURCE_METADATA_SCHEMA_VERSION = 1
 # Name of the file ``create_snapshot`` writes inside each snapshot dir
 # recording the PID of the CC claiming ownership. ``clean_snapshots``
 # skips dirs whose marker PID is still alive, so a stray ``cc_snapshot
@@ -172,7 +177,9 @@ def create_snapshot(repo_root: Path, *, now: float | None = None) -> Path:
     The snapshot dir is named by a monotonically-increasing launch id so
     concurrent launches from the same repo root don't clobber each
     other (though ``stop_all_orchestrators`` makes that concurrency
-    very unlikely in practice).
+    very unlikely in practice). The snapshot also carries source
+    metadata so the frozen Control Center can report the commit it was
+    launched from without consulting the mutable base checkout later.
     """
     src = repo_root / "src"
     if not src.is_dir():
@@ -198,6 +205,7 @@ def create_snapshot(repo_root: Path, *, now: float | None = None) -> Path:
     # moment.
     start = time.time()
     shutil.copytree(src, snapshot_dir / "src")
+    _write_source_metadata(snapshot_dir, repo_root)
     duration_ms = int((time.time() - start) * 1000)
     size_bytes = _tree_size(snapshot_dir / "src")
     # Observability: a slow snapshot creation (cold SSD, network FS) is
@@ -208,6 +216,18 @@ def create_snapshot(repo_root: Path, *, now: float | None = None) -> Path:
         file=sys.stderr,
     )
     return snapshot_dir
+
+
+def _write_source_metadata(snapshot_dir: Path, repo_root: Path) -> None:
+    metadata = {
+        "schema_version": SOURCE_METADATA_SCHEMA_VERSION,
+        "source_repo_root": str(repo_root.resolve()),
+        "commit_sha": get_repo_head_sha(repo_root),
+    }
+    (snapshot_dir / SOURCE_METADATA_FILE).write_text(
+        json.dumps(metadata, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _tree_size(path: Path) -> int:
