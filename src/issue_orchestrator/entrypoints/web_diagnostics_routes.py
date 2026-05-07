@@ -348,11 +348,17 @@ async def get_validation_failure_dialog(
     orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
 ) -> ValidationFailureDialogPayload | JSONResponse:
-    """Get a focused dialog for a failed validation run."""
+    """Get a focused dialog for a validation run (passed or failed).
+
+    The path name predates passed-run support; one endpoint now serves
+    both outcomes so the same dialog can render either. The payload's
+    ``status`` field indicates which.
+    """
     response = session_manifest_response(
         issue_number,
         orchestrator=orchestrator,
         run_dir=run_dir,
+        include_passed_validation=True,
     )
     if response.status_code != 200:
         return response
@@ -360,7 +366,7 @@ async def get_validation_failure_dialog(
     validation = payload.get("validation_failure")
     if not isinstance(validation, dict):
         return JSONResponse(
-            {"error": "No validation failure details found"},
+            {"error": "No validation details found for this run"},
             status_code=404,
         )
     return ValidationFailureDialogPayload.model_validate(

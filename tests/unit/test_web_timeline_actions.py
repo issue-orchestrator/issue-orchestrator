@@ -559,7 +559,7 @@ class TestTimelineActionWiring:
         assert validation_action["label"] == "Validation Details"
         assert validation_action["run_dir"] == str(run.run_dir)
 
-    def test_non_failed_validation_events_do_not_offer_failure_details(self, tmp_path: Path) -> None:
+    def test_validation_passed_events_offer_validation_details(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -568,8 +568,35 @@ class TestTimelineActionWiring:
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "coding-1", issue_number=1)
 
+        for event_name in ("validation.passed", "session.validation_passed"):
+            actions = _timeline_event_actions(
+                {
+                    "event": event_name,
+                    "issue_number": 1,
+                    "run_dir": str(run.run_dir),
+                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                },
+                1,
+            )
+            validation_action = next(
+                action for action in actions if action.get("type") == "open_validation_failure"
+            )
+            assert validation_action["label"] == "Validation Details", event_name
+
+    def test_in_flight_validation_events_do_not_offer_validation_details(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-validation-inflight-actions"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=1)
+
+        # `retry`, `started`, `completed` are in-flight signals — there's no
+        # finalized validation-record.json yet, so the dialog has nothing to
+        # render. The orchestrator-log action remains so users can still trace
+        # what happened.
         for event_name in (
-            "validation.passed",
             "validation.retry",
             "validation.started",
             "validation.completed",
