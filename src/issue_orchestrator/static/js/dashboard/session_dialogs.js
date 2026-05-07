@@ -198,10 +198,12 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     const failedTests = Array.isArray(data.failed_tests) ? data.failed_tests : [];
     const stdoutExcerpt = Array.isArray(data.stdout_excerpt) ? data.stdout_excerpt : [];
     const stderrExcerpt = Array.isArray(data.stderr_excerpt) ? data.stderr_excerpt : [];
+    const status = data.status === 'passed' ? 'passed' : 'failed';
     const summaryRows = Array.isArray(data.summary_rows) && data.summary_rows.length > 0
         ? data.summary_rows
         : [
-            { label: 'Reason', value: String(data.reason || 'Validation failed') },
+            { label: 'Outcome', value: status === 'passed' ? 'Passed' : 'Failed' },
+            { label: 'Reason', value: String(data.reason || (status === 'passed' ? 'Validation passed' : 'Validation failed')) },
             { label: 'Suite', value: String(data.suite || '-') },
             { label: 'Command', value: String(data.command || '-') },
             { label: 'Exit Code', value: String(data.exit_code ?? '-') },
@@ -212,7 +214,7 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     let html = '<div class="diag-modal diag-validation-shell">';
     html += '<div class="diag-header">';
     html += '<div class="diag-header-title">Validation Results</div>';
-    html += `<div class="diag-chip-row">${renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
+    html += `<div class="diag-chip-row">${renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
     html += '</div>';
 
     html += '<div class="diag-validation-grid">';
@@ -222,15 +224,20 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     html += '</section>';
 
     html += '<section class="diag-section">';
-    html += `<div class="diag-section-title">Failed Tests${failedTests.length > 0 ? ` (${failedTests.length})` : ''}</div>`;
-    if (failedTests.length > 0) {
-        html += '<ul class="diag-validation-tests">';
-        for (const testName of failedTests) {
-            html += `<li><code>${escapeHtml(String(testName))}</code></li>`;
-        }
-        html += '</ul>';
+    if (status === 'passed') {
+        html += '<div class="diag-section-title">Tests</div>';
+        html += '<div class="diag-empty">All tests passed. Open the JUnit / stdout sections below for the per-test breakdown.</div>';
     } else {
-        html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
+        html += `<div class="diag-section-title">Failed Tests${failedTests.length > 0 ? ` (${failedTests.length})` : ''}</div>`;
+        if (failedTests.length > 0) {
+            html += '<ul class="diag-validation-tests">';
+            for (const testName of failedTests) {
+                html += `<li><code>${escapeHtml(String(testName))}</code></li>`;
+            }
+            html += '</ul>';
+        } else {
+            html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
+        }
     }
     html += '</section>';
     html += '</div>';
@@ -262,12 +269,15 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     openModal(data.title || `Validation Failure #${issueNumber}`, html);
 }
 
-function renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
+function renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
     const artifactCount = (actionSections || []).reduce((count, section) => {
         const sectionActions = Array.isArray(section && section.actions) ? section.actions : [];
         return count + sectionActions.length;
     }, 0);
+    const outcomeChipClass = status === 'passed' ? 'is-ok' : 'is-warn';
+    const outcomeLabel = status === 'passed' ? 'passed' : 'failed';
     const chips = [
+        `<span class="diag-chip ${outcomeChipClass}">${outcomeLabel}</span>`,
         `<span class="diag-chip is-muted">${failedTests.length} failing test${failedTests.length === 1 ? '' : 's'}</span>`,
         `<span class="diag-chip ${stdoutExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stdoutExcerpt.length > 0 ? 'stdout excerpt captured' : 'no stdout excerpt'}</span>`,
         `<span class="diag-chip ${stderrExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stderrExcerpt.length > 0 ? 'stderr captured' : 'no stderr captured'}</span>`,

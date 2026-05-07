@@ -28,6 +28,11 @@ _FAILURES_END_MARKERS = (
 
 @dataclass(frozen=True)
 class ValidationFailureSummary:
+    # ``status`` is "passed" or "failed". The dataclass name predates passed-run
+    # support; the structure now represents either outcome so the same dialog
+    # can render both. ``failed_tests`` / ``stdout_excerpt`` may legitimately
+    # be empty for passed runs.
+    status: str
     reason: str
     suite: str
     command: str
@@ -40,13 +45,11 @@ class ValidationFailureSummary:
     validation_record_path: str | None
     validation_stdout_path: str | None
     validation_stderr_path: str | None
-    # Parsed JUnit cases (empty when validation didn't emit JUnit XML or no
-    # paths configured). When non-empty, the dashboard renders a structured
-    # test-results view scoped to this validation run.
     junit_cases: tuple[JUnitCaseResult, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "status": self.status,
             "reason": self.reason,
             "suite": self.suite,
             "command": self.command,
@@ -59,10 +62,6 @@ class ValidationFailureSummary:
             "validation_record_path": self.validation_record_path,
             "validation_stdout_path": self.validation_stdout_path,
             "validation_stderr_path": self.validation_stderr_path,
-            # Structured per-test results when JUnit XML is configured.
-            # The dashboard renders these as a per-test table with
-            # actual failure details — the actionable info users need
-            # to figure out what went wrong without scrolling stdout.
             "junit_cases": [_junit_case_to_dict(case) for case in self.junit_cases],
         }
 
@@ -89,8 +88,16 @@ def load_validation_failure_summary(
     *,
     junit_xml_paths: tuple[str, ...] | list[str] = (),
     junit_search_root: Path | None = None,
+    include_passed: bool = False,
 ) -> ValidationFailureSummary | None:
-    """Return a concise summary when a run's validation failed.
+    """Return a concise summary of a run's validation outcome.
+
+    By default returns a summary only when validation failed — preserves the
+    existing contract for callers like ``_current_run_validation_diagnostic``
+    that only flag failures on the issue list. The dialog endpoint passes
+    ``include_passed=True`` to also surface passed runs (so users can spot-
+    check JUnit / stdout for green runs), in which case the returned summary
+    has ``status="passed"`` and likely empty ``failed_tests`` / ``stdout``.
 
     When ``junit_xml_paths`` is non-empty, also parse JUnit XML rooted at
     ``junit_search_root`` (defaults to the manifest's worktree, or run_dir as
@@ -101,8 +108,10 @@ def load_validation_failure_summary(
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
 
-    if manifest.validation_status != "failed":
+    accepted_statuses = {"failed", "passed"} if include_passed else {"failed"}
+    if manifest.validation_status not in accepted_statuses:
         return None
+    status = manifest.validation_status or "failed"
 
     worktree = manifest.worktree if manifest.worktree else None
     record_path = _resolve_run_artifact(
@@ -134,8 +143,10 @@ def load_validation_failure_summary(
         junit_search_root or (Path(worktree) if worktree else run_dir),
     )
 
+    default_reason = "Validation passed" if status == "passed" else "Validation failed"
     return ValidationFailureSummary(
-        reason=manifest.validation_reason or "Validation failed",
+        status=status,
+        reason=manifest.validation_reason or default_reason,
         suite=record.suite if record else "",
         command=record.command if record else "",
         exit_code=record.exit_code if record else 0,
@@ -155,6 +166,7 @@ def load_validation_failure_summary_with_config(
     run_dir: Path,
     *,
     config: Any,
+    include_passed: bool = False,
 ) -> ValidationFailureSummary | None:
     """Config-aware wrapper that threads ``validation.junit_xml_paths``.
 
@@ -163,14 +175,18 @@ def load_validation_failure_summary_with_config(
     disagree on whether structured JUnit cases reach the user. If
     ``config`` is None or has no ``validation`` block, JUnit parsing is
     skipped (matches the bare ``load_validation_failure_summary``
-    behavior).
+    behavior). Pass ``include_passed=True`` to also return passed runs.
     """
     junit_paths: tuple[str, ...] = ()
     if config is not None:
         validation_cfg = getattr(config, "validation", None)
         if validation_cfg is not None:
             junit_paths = tuple(getattr(validation_cfg, "junit_xml_paths", ()) or ())
-    return load_validation_failure_summary(run_dir, junit_xml_paths=junit_paths)
+    return load_validation_failure_summary(
+        run_dir,
+        junit_xml_paths=junit_paths,
+        include_passed=include_passed,
+    )
 
 
 def _load_junit_cases(

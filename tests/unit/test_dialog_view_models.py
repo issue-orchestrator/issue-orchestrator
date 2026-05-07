@@ -312,6 +312,7 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
             },
             "run_dir": "/run/r1",
             "validation_failure": {
+                "status": "failed",
                 "reason": "Validation failed for deadbeef (exit_code=2)",
                 "suite": "publish_gate",
                 "command": "make validate",
@@ -325,11 +326,14 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
         },
     )
 
+    assert dialog["title"] == "Validation Failure #12"
+    assert dialog["status"] == "failed"
     assert dialog["reason"] == "Validation failed for deadbeef (exit_code=2)"
     assert dialog["failed_tests"] == ["tests/unit/test_web.py::test_one"]
     assert dialog["stdout_excerpt"] == ["FAILED tests/unit/test_web.py::test_one"]
     assert dialog["stderr_excerpt"] == ["make: *** [validate] Error 2"]
     assert dialog["summary_rows"] == [
+        {"label": "Outcome", "value": "Failed"},
         {"label": "Reason", "value": "Validation failed for deadbeef (exit_code=2)"},
         {"label": "Suite", "value": "publish_gate"},
         {"label": "Command", "value": "make validate"},
@@ -414,6 +418,41 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
         },
     ]
     assert "actions" not in dialog
+
+
+def test_build_validation_failure_dialog_renders_passed_run() -> None:
+    dialog = build_validation_failure_dialog(
+        14,
+        {
+            "manifest": {
+                "session_name": "sess-validate",
+                "worktree": "/wt",
+                "validation_record_path": "/wt/.issue-orchestrator/sessions/r3/validation-record.json",
+                "validation_stdout": "/wt/.issue-orchestrator/sessions/r3/validation-stdout.log",
+                "validation_stderr": "/wt/.issue-orchestrator/sessions/r3/validation-stderr.log",
+            },
+            "run_dir": "/run/r3",
+            "validation_failure": {
+                "status": "passed",
+                "reason": "Validation passed",
+                "suite": "publish_gate",
+                "command": "make validate",
+                "exit_code": 0,
+                "started_at": "2026-05-07T12:00:00Z",
+                "ended_at": "2026-05-07T12:04:30Z",
+                "failed_tests": [],
+                "stdout_excerpt": ["============= 142 passed in 41.21s ============="],
+                "stderr_excerpt": [],
+            },
+        },
+    )
+
+    assert dialog["title"] == "Validation Passed #14"
+    assert dialog["status"] == "passed"
+    assert dialog["reason"] == "Validation passed"
+    assert dialog["failed_tests"] == []
+    assert {"label": "Outcome", "value": "Passed"} in dialog["summary_rows"]
+    assert {"label": "Failing Tests", "value": "0"} in dialog["summary_rows"]
 
 
 def test_build_validation_failure_dialog_keeps_missing_exit_code_visible() -> None:

@@ -812,6 +812,7 @@ class ValidationFailureDialogPayload(BaseModel):
     junit_cases: list[JUnitCasePayload]
     reason: str
     started_at: str
+    status: Literal['passed', 'failed']
     stderr_excerpt: list[str]
     stdout_excerpt: list[str]
     suite: str

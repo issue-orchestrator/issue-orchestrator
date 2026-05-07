@@ -53,9 +53,11 @@ _TIMELINE_FAILURE_EVENTS = frozenset({
     "review.escalated",
     "review_exchange.role_timeout",
 })
-_VALIDATION_FAILURE_DETAIL_EVENTS = frozenset({
+_VALIDATION_DETAIL_EVENTS = frozenset({
     "validation.failed",
     "session.validation_failed",
+    "validation.passed",
+    "session.validation_passed",
 })
 _ORCHESTRATOR_ONLY_EVENTS = frozenset({
     "validation.passed",
@@ -346,7 +348,7 @@ def _timeline_event_recommended_actions(
             {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
             f"claude:{issue_number}",
         )
-    if event_name in _VALIDATION_FAILURE_DETAIL_EVENTS:
+    if event_name in _VALIDATION_DETAIL_EVENTS:
         add_action(
             {
                 "type": "open_validation_failure",

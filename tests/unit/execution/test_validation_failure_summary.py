@@ -67,6 +67,7 @@ def test_load_validation_failure_summary_extracts_failed_tests_and_excerpts(tmp_
     summary = load_validation_failure_summary(run_dir)
 
     assert summary is not None
+    assert summary.status == "failed"
     assert summary.reason == "Validation failed for deadbeef (exit_code=2)"
     assert summary.suite == "publish_gate"
     assert summary.command == "make validate"
@@ -79,7 +80,10 @@ def test_load_validation_failure_summary_extracts_failed_tests_and_excerpts(tmp_
     assert summary.stderr_excerpt[-1] == "error: failed to push some refs"
 
 
-def test_load_validation_failure_summary_returns_none_for_non_failed_runs(tmp_path: Path) -> None:
+def test_load_validation_failure_summary_returns_none_for_passed_runs_by_default(tmp_path: Path) -> None:
+    """Default (failure-only) gate preserves existing callers' contracts —
+    things like the issue-detail run diagnostic should not flag passed runs.
+    """
     worktree = tmp_path / "wt"
     run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-2"
     run_dir.mkdir(parents=True)
@@ -97,6 +101,54 @@ def test_load_validation_failure_summary_returns_none_for_non_failed_runs(tmp_pa
     )
 
     assert load_validation_failure_summary(run_dir) is None
+
+
+def test_load_validation_failure_summary_returns_passed_run_when_opted_in(tmp_path: Path) -> None:
+    worktree = tmp_path / "wt"
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-pass"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_name": "coding-pass",
+                "run_dir": str(run_dir),
+                "worktree": str(worktree),
+                "validation_status": "passed",
+                "validation_record_path": ".issue-orchestrator/sessions/run-pass/validation-record.json",
+                "validation_stdout": ".issue-orchestrator/sessions/run-pass/validation-stdout.log",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "validation-record.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "suite": "publish_gate",
+                "head_sha": "abc123",
+                "passed": True,
+                "exit_code": 0,
+                "command": "make validate",
+                "started_at": "2026-05-07T12:00:00Z",
+                "ended_at": "2026-05-07T12:04:30Z",
+                "timed_out": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "validation-stdout.log").write_text(
+        "============= 142 passed in 41.21s =============\n",
+        encoding="utf-8",
+    )
+
+    summary = load_validation_failure_summary(run_dir, include_passed=True)
+
+    assert summary is not None
+    assert summary.status == "passed"
+    assert summary.reason == "Validation passed"
+    assert summary.exit_code == 0
+    assert summary.failed_tests == ()
 
 
 def _seed_failed_validation(tmp_path: Path) -> tuple[Path, Path]:

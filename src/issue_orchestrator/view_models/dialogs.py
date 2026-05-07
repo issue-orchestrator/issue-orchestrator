@@ -478,6 +478,9 @@ def build_validation_failure_dialog(
 ) -> dict[str, Any]:
     ctx = SessionDiagnosticsContext.from_payload(issue_number, manifest_payload)
     validation = manifest_payload.get("validation_failure") or {}
+    raw_status = str(validation.get("status") or "")
+    status = raw_status if raw_status in ("passed", "failed") else "failed"
+    default_reason = "Validation passed" if status == "passed" else "Validation failed"
     failed_tests = [
         str(item)
         for item in validation.get("failed_tests", [])
@@ -493,11 +496,6 @@ def build_validation_failure_dialog(
         for item in validation.get("stderr_excerpt", [])
         if isinstance(item, str)
     ]
-    # Structured per-test cases when validation produced JUnit XML.
-    # Each entry carries the test's nodeid, outcome, and (for failures
-    # / errors) the actual failure detail — letting the dashboard
-    # render a per-test table with the assertion error / traceback
-    # inline rather than as a stdout text blob.
     junit_cases = [
         item
         for item in validation.get("junit_cases", [])
@@ -511,12 +509,16 @@ def build_validation_failure_dialog(
         label="Full Diagnostics",
         group="diagnostics",
     )
-    summary_rows = _build_validation_failure_summary_rows(validation, failed_tests)
+    summary_rows = _build_validation_failure_summary_rows(
+        validation, failed_tests, status,
+    )
     action_sections = _build_validation_failure_action_sections(actions)
 
+    title_outcome = "Passed" if status == "passed" else "Failure"
     return {
-        "title": f"Validation Failure #{issue_number}",
-        "reason": str(validation.get("reason") or ctx.validation_reason or "Validation failed"),
+        "title": f"Validation {title_outcome} #{issue_number}",
+        "status": status,
+        "reason": str(validation.get("reason") or ctx.validation_reason or default_reason),
         "suite": str(validation.get("suite") or ""),
         "command": str(validation.get("command") or ""),
         "exit_code": _optional_int(validation.get("exit_code")),
@@ -534,11 +536,14 @@ def build_validation_failure_dialog(
 def _build_validation_failure_summary_rows(
     validation: dict[str, Any],
     failed_tests: list[str],
+    status: str,
 ) -> list[DialogRow]:
     exit_code = _optional_int(validation.get("exit_code"))
     exit_code_display = str(exit_code) if exit_code is not None else "-"
+    default_reason = "Validation passed" if status == "passed" else "Validation failed"
     return [
-        DialogRow("Reason", str(validation.get("reason") or "Validation failed")),
+        DialogRow("Outcome", "Passed" if status == "passed" else "Failed"),
+        DialogRow("Reason", str(validation.get("reason") or default_reason)),
         DialogRow("Suite", str(validation.get("suite") or "-")),
         DialogRow("Command", str(validation.get("command") or "-")),
         DialogRow("Exit Code", exit_code_display),
