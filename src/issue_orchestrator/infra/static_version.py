@@ -32,6 +32,7 @@ from .cc_snapshot import SNAPSHOT_DIR_NAME, SOURCE_METADATA_FILE
 from .repo_identity import _resolve_git_dir, get_repo_head_sha
 
 _CC_SNAPSHOT_ENV = "ISSUE_ORCHESTRATOR_CC_SNAPSHOT"
+_CC_COMMIT_SHA_ENV = "ISSUE_ORCHESTRATOR_CC_COMMIT_SHA"
 
 
 def _normalized_commit_sha(value: object) -> Optional[str]:
@@ -41,6 +42,10 @@ def _normalized_commit_sha(value: object) -> Optional[str]:
     if any(char not in "0123456789abcdefABCDEF" for char in raw):
         return None
     return raw.lower()
+
+
+def _commit_sha_from_env() -> str | None:
+    return _normalized_commit_sha(os.environ.get(_CC_COMMIT_SHA_ENV))
 
 
 def _candidate_holds_running_package(candidate: Path, package_init: Path) -> bool:
@@ -146,10 +151,15 @@ def _resolve_snapshot_metadata_commit_sha(package_init: Path) -> Optional[str]:
 def resolve_cc_commit_sha() -> Optional[str]:
     """Return the cc's source commit SHA, or ``None`` for non-source installs.
 
-    Prefers the package-relative repo root (where the running code
-    actually lives) over ``Path.cwd()``, which is whatever directory
-    the operator ran the launcher from and is rarely a useful repo.
+    Prefers the launcher-published commit when present. The Control Center
+    normally imports from a frozen source snapshot that intentionally has no
+    ``.git`` directory; if that env contract is absent, snapshot metadata is
+    the immutable source identity copied into the frozen package. Source-
+    checkout runs still fall back to the package-relative repo root.
     """
+    env_sha = _commit_sha_from_env()
+    if env_sha:
+        return env_sha
     snapshot_sha = _resolve_snapshot_metadata_commit_sha(_RUNNING_PACKAGE_INIT)
     if snapshot_sha:
         return snapshot_sha

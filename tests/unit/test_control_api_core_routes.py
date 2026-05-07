@@ -335,6 +335,7 @@ class TestControlCenterTemplate:
             json.dumps({"schema_version": 1, "commit_sha": sha}) + "\n",
             encoding="utf-8",
         )
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CC_COMMIT_SHA", raising=False)
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_SNAPSHOT", str(snapshot_dir / "src"))
         monkeypatch.setattr(static_version, "_RUNNING_PACKAGE_INIT", package_init)
         monkeypatch.setattr(static_version, "_PACKAGE_REPO_ROOT", None)

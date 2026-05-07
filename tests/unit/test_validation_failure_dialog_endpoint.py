@@ -181,6 +181,90 @@ class TestValidationFailureDialogEndpointJUnit:
         finally:
             web.set_orchestrator(None)
 
+    def test_endpoint_returns_passed_run_payload(self, tmp_path: Path) -> None:
+        """Passed runs must reach the dialog too — same endpoint, same payload
+        shape, ``status`` flips to "passed".
+
+        This is the user-facing win: previously only failed runs got a
+        clickable dialog. Now a passing run can be inspected the same way
+        (junit table, command, exit code, stdout tail).
+        """
+        mock_orch = create_mock_orchestrator()  # noqa: F405
+        mock_orch.config.validation.junit_xml_paths = ("junit.xml",)
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-passed-dialog"
+        worktree.mkdir(parents=True)
+
+        run = session_output.start_run(worktree, "coding-1", issue_number=4244)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "passed",
+                "validation_record_path": str(
+                    run.run_dir.relative_to(worktree) / "validation-record.json"
+                ),
+                "validation_stdout": str(
+                    run.run_dir.relative_to(worktree) / "validation-stdout.log"
+                ),
+            },
+        )
+        passed_record = json.dumps({
+            "schema_version": 1,
+            "suite": "publish_gate",
+            "head_sha": "cafebabe",
+            "passed": True,
+            "exit_code": 0,
+            "command": "make validate",
+            "started_at": "2026-05-07T12:00:00Z",
+            "ended_at": "2026-05-07T12:04:30Z",
+            "timed_out": False,
+        })
+        (run.run_dir / "validation-record.json").write_text(passed_record)
+        (run.run_dir / "validation-stdout.log").write_text(
+            "============= 142 passed in 41.21s =============\n"
+        )
+        # All-green JUnit (one passing case) so we exercise the JUnit path
+        # for passed runs too — operators reviewing a green run still want
+        # the structured per-test view.
+        (worktree / "junit.xml").write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<testsuites>\n'
+            '  <testsuite name="pytest" tests="1" failures="0" errors="0" skipped="0">\n'
+            '    <testcase classname="tests.unit.test_one" name="test_pass" time="0.001"/>\n'
+            '  </testsuite>\n'
+            '</testsuites>\n'
+        )
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=4244,
+                title="Issue 4244",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+
+        web.set_orchestrator(mock_orch)
+        try:
+            client = TestClient(web.app)
+            response = client.get(
+                f"/api/dialog/validation-failure/4244?run_dir={run.run_dir}"
+            )
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["status"] == "passed"
+            assert payload["title"] == "Validation Passed #4244"
+            assert payload["exit_code"] == 0
+            assert payload["failed_tests"] == []
+            # Passed run still surfaces the JUnit table.
+            assert payload["junit_cases"]
+            assert payload["junit_cases"][0]["outcome"] == "passed"
+        finally:
+            web.set_orchestrator(None)
+
     def test_endpoint_returns_empty_junit_cases_when_config_unset(
         self, tmp_path: Path
     ) -> None:

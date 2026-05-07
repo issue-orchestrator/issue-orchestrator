@@ -50,6 +50,7 @@ class _FakeSession:
         *,
         completion_path: Path | None = None,
         validation_output_dir: Path | None = None,
+        log_writer: Any = None,
     ) -> None:
         self.role = role
         self.closed = False
@@ -65,10 +66,37 @@ class _FakeSession:
         # stays correct as path layout evolves.
         self.completion_path = completion_path
         self.validation_output_dir = validation_output_dir
+        # ``log_writer`` exists on the production PersistentSession so
+        # ``_attach_slice_mirror`` / ``_detach_slice_mirror`` can wire
+        # the per-session slice into the role's PTY writer.
+        # Test fixtures that don't care about live mirroring leave this
+        # as None — the attach/detach helpers handle absence by no-op.
+        self.log_writer = log_writer
 
 
 def _make_agent(prompt_path: Path) -> AgentConfig:
     return AgentConfig(prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1)
+
+
+def _build_pty_writer(recording_path: Path) -> Any:
+    """Build a real ``MirroredTerminalRecordingWriter`` for a fake session.
+
+    The runner's fail-fast ``_attach_slice_mirror`` requires a real
+    writer on every PersistentSession; tests that build sessions
+    inline must honor the production invariant. Centralizes the
+    construction so the geometry and clock defaults stay consistent
+    across every inline ``_open`` helper in this file.
+    """
+    from issue_orchestrator.infra.terminal_recording import (
+        MirroredTerminalRecordingWriter,
+    )
+
+    recording_path.parent.mkdir(parents=True, exist_ok=True)
+    return MirroredTerminalRecordingWriter(
+        recording_path,
+        initial_rows=40,
+        initial_cols=120,
+    )
 
 
 def _setup_worktrees(tmp_path: Path) -> tuple[Path, Path]:
@@ -139,15 +167,37 @@ def _patch_persistent_runner(
         # contain ``reviewer`` because pytest names tmp dirs after the
         # test, which would mislabel both sessions.
         role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-        if write_recording and recording_path is not None:
-            recording_path.parent.mkdir(parents=True, exist_ok=True)
-            # Seed with one canonical TerminalRecordingEvent so the strict
-            # validation in recording_event_count is satisfied.
-            recording_path.write_text(
-                '{"schema_version":1,"event_type":"resize","offset_ms":0,'
-                '"rows":40,"cols":120}\n',
-                encoding="utf-8",
-            )
+        # Always provide a real ``MirroredTerminalRecordingWriter`` so
+        # the runner's fail-fast ``_attach_slice_mirror`` step succeeds.
+        # Production invariant: every PersistentSession opened with a
+        # ``recording_path`` carries a real writer. Tests that previously
+        # passed with ``log_writer=None`` were getting a free pass on
+        # the live-mirror contract — the runner now raises if the
+        # invariant is violated, so the fixture has to honor it.
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+        assert recording_path is not None, (
+            "_patch_persistent_runner: production always passes a "
+            "recording_path; the fixture mirrors that invariant"
+        )
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = MirroredTerminalRecordingWriter(
+            recording_path,
+            initial_rows=40,
+            initial_cols=120,
+        )
+        if not write_recording:
+            # Tests exercising "what if the recording is missing at
+            # chapter time?" delete the file after the writer has
+            # already opened its append-mode handle. The writer's
+            # subsequent writes go to the orphan inode (invisible to
+            # other readers); ``recording_event_count`` reads from
+            # the path, which no longer exists, and raises
+            # FileNotFoundError — which is exactly what the test
+            # asserts the exchange propagates as a definitive failure.
+            recording_path.unlink()
+        state.setdefault("writers", {})[role] = writer
         state["opened"].append(role)
         completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
         validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
@@ -155,6 +205,7 @@ def _patch_persistent_runner(
             role,
             completion_path=Path(completion_env) if completion_env else None,
             validation_output_dir=Path(validation_env) if validation_env else None,
+            log_writer=writer,
         )
 
     def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
@@ -175,10 +226,6 @@ def _patch_persistent_runner(
             )
             state["completion_path"] = completion
             completion.parent.mkdir(parents=True, exist_ok=True)
-            completion.write_text(
-                json.dumps({"outcome": "completed", "implementation": "stub"}),
-                encoding="utf-8",
-            )
             # Also stub a passing validation-record.json by default so
             # require_validation=True tests don't blow up on the coder
             # guardrail. Tests exercising missing-validation set
@@ -186,8 +233,17 @@ def _patch_persistent_runner(
             validation_dir = session.validation_output_dir
             assert validation_dir is not None
             validation_dir.mkdir(parents=True, exist_ok=True)
-            (validation_dir / "validation-record.json").write_text(
+            validation_record = validation_dir / "validation-record.json"
+            validation_record.write_text(
                 json.dumps({"passed": True}), encoding="utf-8",
+            )
+            completion.write_text(
+                json.dumps({
+                    "outcome": "completed",
+                    "implementation": "stub",
+                    "validation_record_path": str(validation_record),
+                }),
+                encoding="utf-8",
             )
         return head
 
@@ -293,6 +349,556 @@ class TestPersistentSessionExchangeHappyPath:
         assert sorted(state["opened"]) == ["coder", "reviewer"]
         assert state["registry"].released == []
         assert len(state["registry"].acquired) == 1
+
+
+class TestPairValidationMirror:
+    def test_current_validation_seed_replaces_existing_pair_record(
+        self, tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        pair_dir.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "old-sha"}),
+            encoding="utf-8",
+        )
+        current_record = tmp_path / "current-validation-record.json"
+        current_record.write_text(
+            json.dumps({"passed": True, "head_sha": "new-sha"}),
+            encoding="utf-8",
+        )
+
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+        mirror.replace_from_initial(current_record)
+
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "new-sha",
+        }
+
+    def test_missing_initial_validation_source_clears_stale_pair_record(
+        self, tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        pair_dir.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "old-sha"}),
+            encoding="utf-8",
+        )
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        mirror.replace_from_initial(None)
+
+        assert not pair_record.exists()
+
+    def test_completion_validation_record_replaces_stale_pair_head(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        current_record = coder_wt / ".issue-orchestrator" / "validation" / "head-b.json"
+        pair_record.parent.mkdir(parents=True)
+        completion.parent.mkdir(parents=True)
+        current_record.parent.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}),
+            encoding="utf-8",
+        )
+        current_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-b"}),
+            encoding="utf-8",
+        )
+        completion.write_text(
+            json.dumps({
+                "outcome": "completed",
+                "validation_record_path": str(current_record),
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=tmp_path / "run" / "validation-record.json",
+            require_validation=True,
+        )
+
+        assert error is None
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "head-b",
+        }
+
+    def test_stale_completion_validation_head_fails_current_head_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        stale_record = coder_wt / ".issue-orchestrator" / "validation" / "head-a.json"
+        completion.parent.mkdir(parents=True)
+        stale_record.parent.mkdir(parents=True)
+        stale_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}),
+            encoding="utf-8",
+        )
+        completion.write_text(
+            json.dumps({
+                "outcome": "completed",
+                "validation_record_path": str(stale_record),
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=tmp_path / "run" / "validation-record.json",
+            require_validation=True,
+        )
+
+        assert error is not None
+        assert "does not match current HEAD" in error
+        assert json.loads(pair_record.read_text(encoding="utf-8"))["head_sha"] == "head-a"
+
+    def test_completion_without_validation_source_clears_stale_pair_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        pair_record.parent.mkdir(parents=True)
+        completion.parent.mkdir(parents=True)
+        pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-a"}),
+            encoding="utf-8",
+        )
+        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=tmp_path / "run" / "validation-record.json",
+            require_validation=True,
+        )
+
+        assert error == "validation-record.json missing"
+        assert not pair_record.exists()
+
+    def test_completion_without_payload_uses_run_dir_validation_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        completion = pair_dir / "coder" / "completion-coder.json"
+        run_record = coder_wt / ".issue-orchestrator" / "sessions" / "run" / "validation-record.json"
+        completion.parent.mkdir(parents=True)
+        run_record.parent.mkdir(parents=True)
+        completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
+        run_record.write_text(
+            json.dumps({"passed": True, "head_sha": "head-b"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+        )
+
+        error = pse._validate_coder_completion(  # noqa: SLF001
+            completion_path=completion,
+            pair_validation=mirror,
+            run_validation_record_path=run_record,
+            require_validation=True,
+        )
+
+        assert error is None
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == {
+            "passed": True,
+            "head_sha": "head-b",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Turn-packet / turn-result on-disk artifacts
+# ---------------------------------------------------------------------------
+
+
+class TestTurnArtifactsPersisted:
+    """The runner persists every turn's packet and result as JSON
+    artifacts under ``<exchange_dir>/turns/`` so a failed exchange
+    leaves a complete on-disk trail (orchestrator-side input + parsed
+    agent output) that an operator or replay test can inspect without
+    walking the recording stream.
+
+    These tests pin:
+    1. The artifact path layout (``round-<n>-<role>.packet.json`` and
+       ``.result.json``).
+    2. Round-trip parseability via ``ReviewExchangeTurnPacket.from_manifest``
+       and ``ReviewExchangeTurnResult.from_manifest``.
+    3. Field content matches the data the runner observed at that turn.
+
+    A regression that drops the persistence calls or drifts the
+    field set away from the manifest contract breaks these tests.
+    """
+
+    def test_two_round_exchange_persists_packet_and_result_per_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnPacket,
+            ReviewExchangeTurnResult,
+            Role,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
+                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        assert turns_dir.is_dir(), f"Expected turns dir at {turns_dir}"
+
+        # Three turns happened (reviewer round 1 → coder round 1 →
+        # reviewer round 2), so six artifacts (packet + result each).
+        artifact_names = sorted(p.name for p in turns_dir.iterdir())
+        assert artifact_names == [
+            "round-1-coder.packet.json",
+            "round-1-coder.result.json",
+            "round-1-reviewer.packet.json",
+            "round-1-reviewer.result.json",
+            "round-2-reviewer.packet.json",
+            "round-2-reviewer.result.json",
+        ]
+
+        # Round 1 reviewer packet: typed, role REVIEWER, no prior
+        # texts, validation off.
+        r1_packet_data = json.loads((turns_dir / "round-1-reviewer.packet.json").read_text())
+        r1_packet = ReviewExchangeTurnPacket.from_manifest(r1_packet_data)
+        assert r1_packet is not None
+        assert r1_packet.role is Role.REVIEWER
+        assert r1_packet.round_index == 1
+        assert r1_packet.issue_number == 42
+        assert r1_packet.issue_title == "Test"
+        assert r1_packet.require_validation is False
+        assert r1_packet.last_coder_text is None
+        assert r1_packet.last_reviewer_text is None
+
+        # Round 1 reviewer result: changes_requested.
+        r1_review_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-1-reviewer.result.json").read_text())
+        )
+        assert r1_review_result is not None
+        assert r1_review_result.kind is TurnResultKind.CHANGES_REQUESTED
+        assert r1_review_result.response_text == "Fix typo"
+        assert r1_review_result.getting_closer is True
+
+        # Round 1 coder packet: typed, role CODER, reviewer_feedback
+        # carries the round-1 reviewer text (the runner copies the
+        # most-recent reviewer response into the coder packet).
+        r1_coder_packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads((turns_dir / "round-1-coder.packet.json").read_text())
+        )
+        assert r1_coder_packet is not None
+        assert r1_coder_packet.role is Role.CODER
+        assert r1_coder_packet.reviewer_feedback == "Fix typo"
+
+        # Round 1 coder result: ok.
+        r1_coder_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-1-coder.result.json").read_text())
+        )
+        assert r1_coder_result is not None
+        assert r1_coder_result.kind is TurnResultKind.OK
+        assert r1_coder_result.response_text == "Fixed typo"
+
+        # Round 2 reviewer packet carries the prior round's coder and
+        # reviewer texts so the prompt builder can render them.
+        r2_packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads((turns_dir / "round-2-reviewer.packet.json").read_text())
+        )
+        assert r2_packet is not None
+        assert r2_packet.last_coder_text == "Fixed typo"
+        assert r2_packet.last_reviewer_text == "Fix typo"
+
+        # Round 2 reviewer result: ok (terminal — no coder round 2).
+        r2_review_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads((turns_dir / "round-2-reviewer.result.json").read_text())
+        )
+        assert r2_review_result is not None
+        assert r2_review_result.kind is TurnResultKind.OK
+
+    def test_timeout_persists_no_completion_result_with_packet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reviewer round-1 times out. The runner must still persist
+        BOTH the packet (the orchestrator-side input) and a typed
+        result with ``protocol_error_reason="no_completion"`` —
+        operators inspecting a hung exchange need the on-disk trail
+        for the rounds where the agent failed to respond, which is
+        exactly the case the previous artifact contract dropped.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnPacket,
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [PersistentRoundTimeoutError("simulated 60s timeout")],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        assert turns_dir.is_dir()
+
+        packet_path = turns_dir / "round-1-reviewer.packet.json"
+        result_path = turns_dir / "round-1-reviewer.result.json"
+        assert packet_path.exists(), (
+            f"packet artifact missing at {packet_path}; turns_dir contains "
+            f"{[p.name for p in turns_dir.iterdir()]}"
+        )
+        assert result_path.exists(), (
+            f"result artifact missing on timeout path at {result_path}; "
+            f"turns_dir contains {[p.name for p in turns_dir.iterdir()]}"
+        )
+
+        packet = ReviewExchangeTurnPacket.from_manifest(
+            json.loads(packet_path.read_text())
+        )
+        assert packet is not None
+        assert packet.round_index == 1
+
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        # The exception detail must surface in response_text so an
+        # operator inspecting the artifact sees the same root cause
+        # the REVIEW_EXCHANGE_ROLE_TIMEOUT event reports.
+        assert "simulated 60s timeout" in result.response_text
+
+    def test_coder_timeout_persists_no_completion_result_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Symmetric to the reviewer-timeout test, but for the coder.
+        The two roles share one persistence helper, but a regression
+        that wires only the reviewer side would leave the coder side
+        silent — this test pins both."""
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "fix x", "getting_closer": True},
+                ],
+                "coder": [PersistentRoundTimeoutError("coder hung at 60s")],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        coder_result_path = (
+            outcome.exchange_dir / "turns" / "round-1-coder.result.json"
+        )
+        assert coder_result_path.exists(), (
+            f"coder timeout result artifact missing at {coder_result_path}"
+        )
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(coder_result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "no_completion"
+        assert "coder hung at 60s" in result.response_text
+
+    def test_protocol_error_response_is_persisted_with_named_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Agent emits a malformed response; runner persists the
+        result as ``protocol_error`` with a named ``protocol_error_reason``
+        so an operator inspecting the on-disk artifact can tell which
+        parser branch fired.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                # Reviewer writes JSON missing response_type — the
+                # parser flags this as a protocol error with reason
+                # missing_response_type. The runner treats a non-ok
+                # reviewer response by continuing to the coder turn,
+                # then approving on round 2 to terminate cleanly.
+                "reviewer": [
+                    {"response_text": "I forgot to declare myself"},
+                    {"response_type": "ok", "response_text": "ok now", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.exchange_dir is not None
+        result_path = outcome.exchange_dir / "turns" / "round-1-reviewer.result.json"
+        assert result_path.exists()
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "missing_response_type"
 
 
 # ---------------------------------------------------------------------------
@@ -823,19 +1429,15 @@ class TestCoderProtocolGuardrail:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
             validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
             return _FakeSession(
                 role,
                 completion_path=Path(completion_env) if completion_env else None,
                 validation_output_dir=Path(validation_env) if validation_env else None,
+                log_writer=writer,
             )
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
@@ -848,13 +1450,18 @@ class TestCoderProtocolGuardrail:
                     validation_dir = session.validation_output_dir
                     assert completion is not None and validation_dir is not None
                     completion.parent.mkdir(parents=True, exist_ok=True)
-                    completion.write_text(
-                        json.dumps({"outcome": "completed", "round": 1}),
-                        encoding="utf-8",
-                    )
                     validation_dir.mkdir(parents=True, exist_ok=True)
-                    (validation_dir / "validation-record.json").write_text(
+                    validation_record = validation_dir / "validation-record.json"
+                    validation_record.write_text(
                         json.dumps({"passed": True}), encoding="utf-8",
+                    )
+                    completion.write_text(
+                        json.dumps({
+                            "outcome": "completed",
+                            "round": 1,
+                            "validation_record_path": str(validation_record),
+                        }),
+                        encoding="utf-8",
                     )
                 # Round 2 and retries: do NOT write completion. The runner
                 # must have cleared the round-1 file before sending this
@@ -1286,16 +1893,11 @@ class TestResponseFileInsideWorktree:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             captured[f"{role}_response"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
             captured[f"{role}_working_dir"] = Path(working_dir)
-            return _FakeSession(role)
+            return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             captured.setdefault(f"{session.role}_response_arg", response_file)
@@ -1351,15 +1953,10 @@ class TestResponseFileInsideWorktree:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             captured[role] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
-            return _FakeSession(role)
+            return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
@@ -1475,57 +2072,6 @@ class TestPerSessionRecordingMirror:
         assert manifest["coder_recording"] != manifest["coder_recording_pair"]
         assert manifest["reviewer_recording"] != manifest["reviewer_recording_pair"]
 
-    def test_role_slice_mirror_copies_pair_events_into_run_dir(
-        self, tmp_path: Path,
-    ) -> None:
-        """``_RoleSliceMirror`` projects pair-recording events into the
-        per-session slice deterministically: it appends only events in
-        ``[last_event_idx, current_event_idx)`` and updates
-        ``last_event_idx`` so successive calls don't re-copy."""
-        pair_recording = tmp_path / "pair" / "terminal-recording.jsonl"
-        pair_recording.parent.mkdir(parents=True)
-        # Three canonical resize events, distinguishable so we can assert
-        # the slice contains exactly the right ones.
-        events = [
-            json.dumps({"schema_version": 1, "event_type": "resize",
-                        "offset_ms": i * 100, "rows": 40, "cols": 120 + i})
-            for i in range(3)
-        ]
-        pair_recording.write_text("\n".join(events) + "\n", encoding="utf-8")
-
-        slice_path = tmp_path / "run" / "reviewer" / "terminal-recording.jsonl"
-        # Start at index 0 — first call should mirror events 0 and 1.
-        mirror = pse._RoleSliceMirror(  # noqa: SLF001 — testing internal contract
-            pair_recording=pair_recording,
-            session_slice=slice_path,
-            last_event_idx=0,
-        )
-        written = mirror.mirror_through(2)
-        assert written == 2
-        assert mirror.last_event_idx == 2
-        slice_lines = [
-            line for line in slice_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        assert len(slice_lines) == 2
-        assert json.loads(slice_lines[0])["cols"] == 120
-        assert json.loads(slice_lines[1])["cols"] == 121
-
-        # Second call mirrors only the remaining event.
-        written = mirror.mirror_through(3)
-        assert written == 1
-        assert mirror.last_event_idx == 3
-        slice_lines = [
-            line for line in slice_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        assert len(slice_lines) == 3
-        assert json.loads(slice_lines[2])["cols"] == 122
-
-        # No-op if current <= last.
-        written = mirror.mirror_through(3)
-        assert written == 0
-
     def test_slice_base_freezes_at_construction_for_offset_translation(
         self, tmp_path: Path,
     ) -> None:
@@ -1545,7 +2091,7 @@ class TestPerSessionRecordingMirror:
         fresh = pse._RoleSliceMirror(  # noqa: SLF001
             pair_recording=pair_recording,
             session_slice=slice_path,
-            last_event_idx=0,
+            slice_base=0,
         )
         assert fresh.slice_base == 0
         assert fresh.pair_to_slice_offset(0) == 0
@@ -1558,23 +2104,21 @@ class TestPerSessionRecordingMirror:
         cached = pse._RoleSliceMirror(  # noqa: SLF001
             pair_recording=pair_recording,
             session_slice=slice_path,
-            last_event_idx=100,
+            slice_base=100,
         )
         assert cached.slice_base == 100
-        # Pair offsets at or below slice_base belong to prior exchanges
-        # and clamp to 0 (no negative offsets — those would index past
-        # the start of the slice and silently return wrong content).
-        assert cached.pair_to_slice_offset(50) == 0
+        # An index AT slice_base maps to slice offset 0 (the first
+        # post-attach event in the slice).
         assert cached.pair_to_slice_offset(100) == 0
         # Pair offset 150 in exchange 2 is event 50 of the slice file.
         assert cached.pair_to_slice_offset(150) == 50
-
-        # slice_base does NOT advance when last_event_idx advances —
-        # the translation reference must stay anchored to exchange
-        # start so every chapter in the exchange uses the same zero.
-        cached.last_event_idx = 175
-        assert cached.slice_base == 100
-        assert cached.pair_to_slice_offset(175) == 75
+        # Pair offsets BELOW slice_base raise loudly: a negative slice
+        # index would index past the start of the slice and silently
+        # return wrong content. Fail-fast — masking with a clamp would
+        # hide a real bug (chapter recording reading from a stale
+        # source / wrong recording).
+        with pytest.raises(ValueError, match="below slice_base"):
+            cached.pair_to_slice_offset(50)
 
     def test_chapter_offsets_are_slice_relative_for_cached_pair(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1682,39 +2226,6 @@ class TestPerSessionRecordingMirror:
                 "If offsets are still pair-relative, the web replay "
                 "route's all_events[offset:] will return empty content."
             )
-
-    def test_role_slice_mirror_skips_prior_exchange_content(
-        self, tmp_path: Path,
-    ) -> None:
-        """Cached pairs carry events from previous exchanges in the pair
-        recording. The per-session slice must skip those events: the
-        mirror's ``last_event_idx`` is initialized to the pair recording's
-        size *at exchange start*, so prior content stays out."""
-        pair_recording = tmp_path / "pair" / "terminal-recording.jsonl"
-        pair_recording.parent.mkdir(parents=True)
-        events = [
-            json.dumps({"schema_version": 1, "event_type": "resize",
-                        "offset_ms": i * 100, "rows": 40, "cols": 120 + i})
-            for i in range(5)
-        ]
-        pair_recording.write_text("\n".join(events) + "\n", encoding="utf-8")
-
-        slice_path = tmp_path / "run" / "reviewer" / "terminal-recording.jsonl"
-        # Simulate "this exchange started after the first 3 events were
-        # already in the pair recording from an earlier exchange."
-        mirror = pse._RoleSliceMirror(  # noqa: SLF001
-            pair_recording=pair_recording,
-            session_slice=slice_path,
-            last_event_idx=3,
-        )
-        written = mirror.mirror_through(5)
-        assert written == 2
-        slice_lines = [
-            line for line in slice_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        assert [json.loads(line)["cols"] for line in slice_lines] == [123, 124]
-
 
 class TestEndToEndTimelineReadback:
     """Exercise the full viewer-side read path against real artifacts.
@@ -1940,18 +2451,13 @@ class TestAgentEnvPathIsolation:
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
-            if recording_path is not None:
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                recording_path.write_text(
-                    '{"schema_version":1,"event_type":"resize",'
-                    '"offset_ms":0,"rows":40,"cols":120}\n',
-                    encoding="utf-8",
-                )
+            assert recording_path is not None
+            writer = _build_pty_writer(recording_path)
             captured[role] = {
                 "working_dir": str(working_dir),
                 **{k: v for k, v in env.items() if k.startswith("ISSUE_ORCHESTRATOR_")},
             }
-            return _FakeSession(role)
+            return _FakeSession(role, log_writer=writer)
 
         def _send(session, **_):  # noqa: ANN003
             return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
@@ -2310,40 +2816,6 @@ class TestSliceIsolationAcrossExchanges:
             )
 
 
-class TestSliceMirrorRobustness:
-    """The slice mirror is a viewer aid — it must NEVER abort a round
-    or raise into the orchestrator main loop. Doing so would re-trigger
-    the runaway loop the loop-bound fix is designed to prevent."""
-
-    def test_mirror_through_swallows_oserror_and_returns_zero(
-        self, tmp_path: Path,
-    ) -> None:
-        # Simulate an unreadable pair recording (file replaced with a
-        # symlink pointing nowhere). mirror_through must log + return 0.
-        pair_recording = tmp_path / "pair-broken.jsonl"
-        slice_path = tmp_path / "slice.jsonl"
-        # Create then break: open a real source file, then replace with
-        # a symlink to a missing target so .open() fails with OSError.
-        pair_recording.write_text("garbage", encoding="utf-8")
-        pair_recording.unlink()
-        # On macOS/linux, a dangling symlink causes .exists() to return
-        # False, which the mirror short-circuits via the early exit. Use
-        # an unreadable directory instead so .open() raises OSError on
-        # an existing path.
-        pair_recording.mkdir()  # path exists but isn't a regular file
-        mirror = pse._RoleSliceMirror(  # noqa: SLF001
-            pair_recording=pair_recording,
-            session_slice=slice_path,
-            last_event_idx=0,
-        )
-        # Must not raise. Returns 0 because the open() raised OSError.
-        written = mirror.mirror_through(5)
-        assert written == 0
-        # last_event_idx must NOT have advanced — a future successful
-        # mirror call should still see those events as "new."
-        assert mirror.last_event_idx == 0
-
-
 class TestLoopBoundCounting:
     """Direct adapter-level tests of count_consecutive_review_exchange_no_completion."""
 
@@ -2596,6 +3068,846 @@ def _looks_like_path(value: str) -> bool:
     if not value:
         return False
     return value.startswith("/") or value.startswith("~")
+
+
+class TestContinuousSliceMirroring:
+    """The per-session slice must fill *during* a round, not just at
+    chapter boundaries.
+
+    The original chapter-driven mirror only flushed at prompt/feedback/
+    timeout boundaries. For a 20-minute reviewer round, that meant the
+    timeline was empty for 20 minutes — exactly the
+    "I can't see what the reviewer is doing right now" symptom on
+    tixmeup #362. These tests pin the new contract: every PTY event the
+    writer drains during the round flows into the slice as it happens.
+    """
+
+    def test_writer_fans_writes_to_slice_continuously_with_no_chapters(
+        self, tmp_path: Path,
+    ) -> None:
+        """Writer-level test: ``add_mirror_recording`` makes every
+        subsequent ``write`` fan out to both files. No chapter-driven
+        flush is involved — pure writer behavior."""
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        pair_path = tmp_path / "pair.jsonl"
+        slice_path = tmp_path / "run" / "reviewer" / "slice.jsonl"
+        writer = MirroredTerminalRecordingWriter(
+            pair_path,
+            initial_rows=40,
+            initial_cols=120,
+        )
+        try:
+            # Prior content into the pair recording (pre-mirror-attach)
+            # represents events from earlier exchanges. The slice must
+            # NOT contain any of these.
+            writer.write(b"PRE-MIRROR-EVENT\n")
+            assert not slice_path.exists(), (
+                "slice file should not exist before mirror is attached"
+            )
+
+            # Attach mid-stream — this is how the exchange runner enables
+            # live mirroring at exchange start on a cached pair.
+            registered = writer.add_mirror_recording(slice_path, seed_resize=False)
+            assert registered, "first registration must return True"
+
+            # Subsequent writes fan out to BOTH paths immediately.
+            writer.write(b"AFTER-ATTACH-1\n")
+            writer.write(b"AFTER-ATTACH-2\n")
+
+            slice_text = slice_path.read_text(encoding="utf-8")
+            assert "AFTER-ATTACH-1" in _decode_writer_output(slice_text), (
+                "first post-attach write missing from slice — the writer's "
+                "fan-out isn't reaching the new mirror path"
+            )
+            assert "AFTER-ATTACH-2" in _decode_writer_output(slice_text), (
+                "second post-attach write missing from slice"
+            )
+            assert "PRE-MIRROR-EVENT" not in _decode_writer_output(slice_text), (
+                "pre-attach event leaked into slice — the new mirror "
+                "must start empty, not be backfilled with prior content"
+            )
+
+            # Detach — subsequent writes must NOT touch the slice.
+            removed = writer.remove_mirror_recording(slice_path)
+            assert removed, "first removal must return True"
+            slice_text_after_detach_baseline = slice_path.read_text(encoding="utf-8")
+            writer.write(b"AFTER-DETACH-LEAK\n")
+            slice_text_after_detach = slice_path.read_text(encoding="utf-8")
+            assert slice_text_after_detach == slice_text_after_detach_baseline, (
+                "writer continued to mirror after remove_mirror_recording — "
+                "the slice would accumulate the next exchange's content"
+            )
+            # Repeat add/remove are idempotent (no-op return False).
+            assert writer.remove_mirror_recording(slice_path) is False
+        finally:
+            writer.close()
+
+    def test_slice_fills_mid_round_without_chapter_flush(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end: drive an exchange where the agent emits output
+        but the round never completes (round-end chapter never fires).
+        The slice file must still contain the agent's events. This is
+        the exact scenario behind the "tixmeup #362 reviewer timeline
+        is empty mid-round" report."""
+        from issue_orchestrator.execution.manifest_accessor import (
+            ManifestAccessor,
+            RunIdentity,
+        )
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            return _FakeSession(role, log_writer=writer)
+
+        # send_round simulates: agent produces a burst of output, then
+        # times out (no response file ever appears). The exchange ends
+        # via the timeout chapter, not feedback. Crucially, the test
+        # asserts the slice contained the burst BEFORE the timeout —
+        # the read happens via a recorded snapshot of the slice
+        # immediately after the writer's last fan-out.
+        slice_snapshots: dict[str, bytes] = {}
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            role = session.role
+            # Multiple discrete writes during the round — each one is
+            # an event drained from the PTY in production.
+            for chunk in (b"agent thinking step 1\n", b"agent thinking step 2\n",
+                          b"agent thinking step 3\n"):
+                writers[role].write(chunk)
+            # Capture the slice file's bytes right now — AT THE MOMENT
+            # the agent has emitted its output but BEFORE _send_role_round
+            # records the timeout chapter. If continuous mirroring works,
+            # this snapshot already contains the agent output.
+            run_dir = _find_review_exchange_run_dir(coder_wt)
+            slice_path = run_dir / role / "terminal-recording.jsonl"
+            if slice_path.exists():
+                slice_snapshots[role] = slice_path.read_bytes()
+            # Then time out so the round records a timeout chapter
+            # (not a feedback chapter). Old chapter-driven mirror would
+            # fire at this boundary — but we already snapshotted before.
+            from issue_orchestrator.execution.persistent_round_runner import (
+                PersistentRoundTimeoutError,
+            )
+            raise PersistentRoundTimeoutError("simulated mid-round read")
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            outcome = pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        # The exchange ended in error (reviewer timed out) — but the
+        # slice snapshot taken DURING the round already had agent output.
+        assert outcome.status == "error"
+        assert "reviewer" in slice_snapshots, (
+            "slice file did not exist while the agent was mid-round; "
+            "live mirroring is not attached at exchange start"
+        )
+        decoded = _decode_writer_output(slice_snapshots["reviewer"].decode("utf-8"))
+        for marker in ("agent thinking step 1", "agent thinking step 2",
+                       "agent thinking step 3"):
+            assert marker in decoded, (
+                f"slice snapshot taken mid-round missing {marker!r}; "
+                "the writer is not fanning out to the slice in real time. "
+                "This is the exact symptom users saw on tixmeup #362: "
+                "reviewer was alive and producing output, but the "
+                "timeline showed nothing because no chapter had fired."
+            )
+
+        # And after the exchange ends, the slice path still resolves
+        # via the manifest's ``<role>_recording`` pointer.
+        run_dir = _find_review_exchange_run_dir(coder_wt)
+        accessor = ManifestAccessor(
+            run_identity=RunIdentity(issue_number=42, run_dir=run_dir),
+        )
+        artifact = accessor.get_review_exchange_phase_terminal_recording(
+            round_index=1, role="reviewer", allow_empty=True,
+        )
+        assert artifact.path.is_relative_to(run_dir), artifact.path
+
+    def test_attach_failure_propagates_loudly_no_silent_empty_timeline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If ``add_mirror_recording`` raises during attach, the exchange
+        must propagate the failure (REVIEW_EXCHANGE_FAILED + re-raise),
+        NOT continue silently with an empty slice the viewer would
+        return as a successful empty artifact.
+
+        Regression guard for PR #6268 review feedback. The earlier
+        design swallowed OSError in ``_attach_slice_mirror`` and
+        returned False; the manifest still pointed at the (now
+        empty) slice file; the timeline viewer happily served empty
+        content for a session whose pair recording had real bytes.
+        That recreated the exact "I can't see what the reviewer is
+        doing" symptom this PR is supposed to eliminate. Fail-fast
+        forces the failure into the orchestrator's loop bound where
+        retry / escalate is governed deterministically.
+        """
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+
+        # Build a writer subclass that raises on add_mirror_recording.
+        # Mirrors a real-world failure mode (filesystem permissions,
+        # disk full, parent dir vanished mid-exchange).
+        class _PoisonAttachWriter(MirroredTerminalRecordingWriter):
+            def add_mirror_recording(self, path, *, seed_resize=True):  # noqa: ARG002
+                raise OSError("simulated attach failure")
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = _PoisonAttachWriter(
+                recording_path, initial_rows=40, initial_cols=120,
+            )
+            return _FakeSession(role, log_writer=writer)
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            # Should never reach the round loop — attach raised before.
+            raise AssertionError(
+                "send_round invoked despite attach failure; the "
+                "exchange continued past a failed slice mirror "
+                "instead of failing loudly",
+            )
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        with pytest.raises(OSError, match="simulated attach failure"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+                events=sink,
+                event_context=EventContext(),
+            )
+
+        # The orchestrator must hear about the failure as a
+        # definitive REVIEW_EXCHANGE_FAILED — not silent continuation.
+        assert any(
+            evt.event_type is EventName.REVIEW_EXCHANGE_FAILED
+            for evt in sink.events
+        ), (
+            "attach failure did not surface as REVIEW_EXCHANGE_FAILED; "
+            "the loop bound (PR #6267) cannot govern retries on a "
+            "failure mode it never sees"
+        )
+
+    def test_attach_failure_when_log_writer_missing_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Production invariant: every PersistentSession opened with a
+        recording_path carries a real writer. If a fixture (or a
+        regression in open_persistent_session) hands the runner a
+        session with ``log_writer=None``, the runner must raise rather
+        than silently skip the slice — silently skipping recreates the
+        empty-timeline failure mode."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            # Simulated regression: session opened without a writer.
+            return _FakeSession(role, log_writer=None)
+
+        def _send(session, **_):  # noqa: ANN003
+            raise AssertionError("send_round must not be reached")
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        with pytest.raises(RuntimeError, match="no log_writer"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=_FakePairRegistry(),
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+
+    def test_slice_detaches_at_exchange_end_no_leak_to_next_exchange(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``_detach_slice_mirror`` must run in a finally block so a
+        subsequent exchange (cached pair, reused writer) doesn't keep
+        writing to the previous exchange's slice path."""
+        from issue_orchestrator.infra.terminal_recording import (
+            MirroredTerminalRecordingWriter,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        writers: dict[str, MirroredTerminalRecordingWriter] = {}
+
+        cached_pair: dict[str, Any] = {}
+
+        class _CachingFakePairRegistry(_FakePairRegistry):
+            def acquire(self, *, issue_key, spawn):  # type: ignore[override]
+                if "pair" not in cached_pair:
+                    cached_pair["pair"] = spawn()
+                self.acquired.append((issue_key, cached_pair["pair"]))
+                return cached_pair["pair"]
+
+        def _open(*, command, working_dir, env, recording_path=None,
+                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            assert recording_path is not None
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = MirroredTerminalRecordingWriter(
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
+            )
+            writers[role] = writer
+            return _FakeSession(role, log_writer=writer)
+
+        exchange_n = {"n": 0}
+
+        def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+            writers[session.role].write(
+                f"exchange-{exchange_n['n']}-{session.role}\n".encode(),
+            )
+            return {"response_type": "ok", "response_text": "ok",
+                    "getting_closer": True}
+
+        monkeypatch.setattr(pse, "open_persistent_session", _open)
+        monkeypatch.setattr(pse, "send_round", _send)
+
+        try:
+            for n in (1, 2):
+                exchange_n["n"] = n
+                pse.run_persistent_session_exchange(
+                    session_output=session_output,
+                    pair_registry=_CachingFakePairRegistry(),
+                    persistent_pair_root=tmp_path / "persistent-pairs",
+                    coder_worktree_path=coder_wt,
+                    reviewer_worktree_factory=lambda: reviewer_wt,
+                    issue_number=42,
+                    issue_title="Test",
+                    coder_label="agent:backend",
+                    reviewer_label="agent:reviewer",
+                    coder_agent=_make_agent(prompt_path),
+                    reviewer_agent=_make_agent(prompt_path),
+                    max_rounds=1,
+                    max_no_progress=2,
+                    require_validation=False,
+                )
+        finally:
+            for w in writers.values():
+                w.close()
+
+        # Find both exchange run_dirs in mtime order.
+        runs = sorted(
+            [r for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
+             if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name],
+            key=lambda p: p.stat().st_mtime,
+        )
+        assert len(runs) == 2
+
+        for idx, run_dir in enumerate(runs, start=1):
+            slice_path = run_dir / "reviewer" / "terminal-recording.jsonl"
+            decoded = _decode_writer_output(slice_path.read_text("utf-8"))
+            other = 2 if idx == 1 else 1
+            assert f"exchange-{idx}-reviewer" in decoded, (
+                f"run {idx} slice missing its own reviewer output"
+            )
+            assert f"exchange-{other}-reviewer" not in decoded, (
+                f"run {idx} slice contains exchange-{other} reviewer output — "
+                "the writer kept mirroring after exchange end, leaking the "
+                "next exchange's bytes into the previous slice file"
+            )
+
+
+def _decode_writer_output(text: str) -> str:
+    """Decode the base64'd output events from a terminal recording.
+
+    Returns the joined string content of all output events. Useful when
+    asserting "did this byte sequence end up in the slice file" without
+    caring about the exact line-by-line structure.
+    """
+    import base64
+
+    pieces: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event_type") != "output":
+            continue
+        data = event.get("data_b64") or ""
+        if not data:
+            continue
+        pieces.append(base64.b64decode(data).decode("utf-8", errors="replace"))
+    return "".join(pieces)
+
+
+class TestProductionLayoutCacheResolution:
+    """Joint coverage: real ``CompletionReviewExchange`` + real
+    ``FileSystemSessionOutput`` over the production filesystem layout.
+
+    This is the regression guard for the tixmeup #359 / #361 runaway.
+    Pre-state-machine, every reviewer-OK summary read back as
+    ``validation=None`` because validation lives in the coder run_dir
+    (not next to the review-exchange summary), and the cache loader
+    would discard the OK and respawn — cycling forever until the
+    no-completion bound (or until a human noticed). The unit tests
+    against ``decide()`` lock the policy in isolation; this class
+    locks the END-TO-END behavior over the actual disk layout
+    production produces, with a real adapter.
+
+    Every cell in the state-table matrix gets one production-shaped
+    test case.
+    """
+
+    @staticmethod
+    def _write_validation_record(
+        path: Path, *, head_sha: str, passed: bool = True,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "suite": "agent_gate",
+                "head_sha": head_sha,
+                "passed": passed,
+                "exit_code": 0 if passed else 1,
+            }),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_summary_with_facts(
+        exchange_dir: Path,
+        *,
+        status: str,
+        reason: str,
+        head_sha: str | None,
+        validation_passed: bool | None = True,
+        rounds: int = 1,
+    ) -> None:
+        """Write a production-shape summary.json matching what
+        ``_write_summary`` produces post-state-machine."""
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        summary: dict[str, Any] = {
+            "completed_rounds": rounds,
+            "status": status,
+            "reason": reason,
+            "response_text": "test response",
+            "timestamp": "2026-05-06T10:30:00+00:00",
+        }
+        if head_sha is not None:
+            summary["head_sha"] = head_sha
+        if validation_passed is not None:
+            summary["validation_passed"] = validation_passed
+        (exchange_dir / "summary.json").write_text(
+            json.dumps(summary), encoding="utf-8",
+        )
+
+    def _build_completion_review_exchange(
+        self,
+        tmp_path: Path,
+        session_output: FileSystemSessionOutput,
+    ) -> Any:
+        from issue_orchestrator.control.completion_review_exchange import (
+            CompletionReviewExchange,
+        )
+        from issue_orchestrator.domain.models import AgentConfig
+        from issue_orchestrator.infra.config import Config
+
+        cfg = Config(repo_root=tmp_path)
+        cfg.review_exchange_mode = "via-local-loop"
+        cfg.review_exchange_require_validation = True
+        cfg.code_review_agent = "agent:reviewer"
+        cfg.agents = {
+            "agent:backend": AgentConfig(
+                prompt_path=tmp_path / "backend.md",
+                command="claude --print",
+                reviewer="agent:reviewer",
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=tmp_path / "reviewer.md",
+                command="claude --print",
+            ),
+        }
+        return CompletionReviewExchange(
+            config=cfg,
+            session_output=session_output,
+            emit_review_started=lambda **_: None,
+            emit_review_outcome=lambda **_: None,
+            review_exchange_runner=SimpleNamespace(run=lambda **_: None),
+        )
+
+    def _stage_run(
+        self,
+        tmp_path: Path,
+        *,
+        coder_session_name: str = "coding-1",
+        coder_head_sha: str = "HEAD_X",
+        review_status: str,
+        review_reason: str,
+        review_head_sha: str | None,
+        validation_passed: bool | None = True,
+        review_parent_session: str | None = None,
+    ) -> tuple[Path, Path]:
+        """Stage the production filesystem layout: a coder run_dir
+        with validation-record.json at ``coder_head_sha``, and a
+        review-exchange run_dir with the requested summary fields.
+
+        ``review_parent_session`` (default: ``coder_session_name``)
+        controls the manifest's ``parent_session_name`` pointer.
+        Pass ``"<legacy>"`` to omit the field entirely (simulates
+        pre-state-machine summaries).
+        """
+        worktree = tmp_path / "wt"
+        sessions = worktree / ".issue-orchestrator" / "sessions"
+        sessions.mkdir(parents=True)
+
+        coder_run = sessions / f"20260506-100000Z__{coder_session_name}"
+        coder_run.mkdir()
+        (coder_run / "manifest.json").write_text(
+            json.dumps({
+                "started_at": "2026-05-06T10:00:00+00:00",
+                "session_name": coder_session_name,
+            }), encoding="utf-8",
+        )
+        self._write_validation_record(
+            coder_run / "validation-record.json",
+            head_sha=coder_head_sha,
+        )
+
+        exchange_run = sessions / "20260506-100500Z__review-exchange-359-r1"
+        exchange_dir = exchange_run / "review-exchange"
+        exchange_dir.mkdir(parents=True)
+        manifest: dict[str, Any] = {
+            "started_at": "2026-05-06T10:05:00+00:00",
+            "review_exchange_dir": str(exchange_dir),
+        }
+        parent = (
+            review_parent_session
+            if review_parent_session is not None
+            else coder_session_name
+        )
+        if parent != "<legacy>":
+            manifest["parent_session_name"] = parent
+        (exchange_run / "manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8",
+        )
+        self._write_summary_with_facts(
+            exchange_dir,
+            status=review_status,
+            reason=review_reason,
+            head_sha=review_head_sha,
+            validation_passed=validation_passed,
+        )
+
+        return worktree, coder_run
+
+    # -----------------------------------------------------------------
+    # Keystone: the tixmeup #359 / #361 runaway scenario
+    # -----------------------------------------------------------------
+
+    def test_reviewer_ok_summary_at_current_head_is_reused(
+        self, tmp_path: Path,
+    ) -> None:
+        """The exact production scenario behind the runaway: coder
+        ran validation at head X, review-exchange produced an OK
+        summary at the same head X, no sibling validation-record in
+        the review-exchange run_dir. On the next tick the loader
+        must REUSE that OK. Pre-state-machine this returned None
+        and the orchestrator spawned a redundant review-exchange
+        every ~5 seconds until needs-human."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_APPROVAL
+        assert resolution.outcome is not None
+        assert resolution.outcome.status == "ok"
+        assert resolution.outcome.summary.get("head_sha") == "HEAD_X"
+
+    # -----------------------------------------------------------------
+    # State-table cells, one production-layout case each
+    # -----------------------------------------------------------------
+
+    def test_reviewer_ok_at_old_head_is_ignored_stale(
+        self, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_NEW",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha="HEAD_OLD",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.IGNORE_STALE
+
+    def test_stopped_no_progress_at_current_head_reuses_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="stopped",
+            review_reason="reviewer_reports_no_progress",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_HALT
+
+    def test_max_rounds_exceeded_at_current_head_reuses_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="stopped",
+            review_reason="max_rounds_exceeded",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_HALT
+
+    def test_coder_protocol_error_at_current_head_reuses_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        """Critical: ``coder_protocol_error`` is deterministic terminal —
+        won't fix itself by retrying on the same head. Must reuse-halt
+        rather than respawn. Pre-state-machine this respawned forever
+        (review feedback on PR #6270 part 2)."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="error",
+            review_reason="coder_protocol_error",
+            review_head_sha="HEAD_X",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.REUSE_HALT
+
+    def test_reviewer_no_completion_returns_count_and_retry(
+        self, tmp_path: Path,
+    ) -> None:
+        """``*_no_completion`` errors do NOT cache-hit; caller spawns
+        fresh and the budget governs retries. The loader returns
+        ``COUNT_NO_COMPLETION_AND_RETRY`` so the caller knows to
+        consult the budget — distinct from ``IGNORE_STALE`` (which
+        does NOT count toward the budget)."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="error",
+            review_reason="reviewer_no_completion",
+            review_head_sha="HEAD_X",
+            validation_passed=True,
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY
+        # Outcome NOT populated for retry paths — caller must spawn
+        # fresh, not reuse the failure.
+        assert resolution.outcome is None
+
+    def test_legacy_summary_without_head_sha_is_stale(
+        self, tmp_path: Path,
+    ) -> None:
+        """Backwards compat: pre-state-machine summaries don't carry
+        ``head_sha`` / ``validation_passed`` in the JSON. Under
+        ``require_validation=True`` the cache cannot prove validation
+        — IGNORE_STALE. Same effective behavior as pre-fix (where
+        the cache rejected for the wrong reason; now rejects for the
+        right reason)."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, coder_run = self._stage_run(
+            tmp_path,
+            coder_head_sha="HEAD_X",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha=None,
+            validation_passed=None,
+            review_parent_session="<legacy>",
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-1",
+            require_validation=True,
+            current_validation_record_path=coder_run / "validation-record.json",
+        )
+        assert resolution.decision is ResumeDecision.IGNORE_STALE
+
+    def test_parent_session_name_filter_isolates_coding_sessions(
+        self, tmp_path: Path,
+    ) -> None:
+        """A review-exchange run whose ``parent_session_name`` doesn't
+        match the requested session must be skipped. Coding session
+        A's failures cannot leak into coding session B's quota."""
+        from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
+
+        worktree, _coder_run = self._stage_run(
+            tmp_path,
+            coder_session_name="coding-2",
+            coder_head_sha="HEAD_X",
+            review_status="ok",
+            review_reason="reviewer_ok",
+            review_head_sha="HEAD_X",
+            review_parent_session="coding-1",  # belongs to a DIFFERENT session
+        )
+        review = self._build_completion_review_exchange(
+            tmp_path, FileSystemSessionOutput(),
+        )
+        resolution = review.decide_review_exchange_resumption(
+            worktree=worktree,
+            session_name="coding-2",
+            require_validation=True,
+            current_validation_record_path=(
+                worktree / ".issue-orchestrator" / "sessions"
+                / "20260506-100000Z__coding-2" / "validation-record.json"
+            ),
+        )
+        # The cached OK belongs to coding-1, not coding-2. Loader skips it.
+        assert resolution.decision is ResumeDecision.NO_CACHE
 
 
 class TestSessionCleanup:

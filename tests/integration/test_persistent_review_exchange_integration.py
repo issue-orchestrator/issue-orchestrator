@@ -164,7 +164,6 @@ def _bootstrap_git_worktree(tmp_path: Path) -> tuple[Path, str]:
 def _make_review_exchange_runner(
     session_output: FileSystemSessionOutput,
     *,
-    persistent_pair_root: Path,
     pair_registry: InMemoryPersistentExchangePairRegistry | None = None,
 ) -> PersistentReviewExchangeRunner:
     """Centralized constructor for the integration tests' review-exchange runner.
@@ -177,14 +176,13 @@ def _make_review_exchange_runner(
     ``pair_registry`` defaults to a fresh in-memory registry; tests
     that want to inspect the registry across exchanges (e.g.
     ``test_persistent_pair_survives_two_back_to_back_exchanges``)
-    pass one in. ``persistent_pair_root`` is required because B2's
-    pair-scoped path layout means the runner cannot pick a default
-    that's both deterministic and isolated from other tests.
+    pass one in. Pair filesystem state is derived from the coder
+    worktree at run time so each test's temporary worktree is the
+    isolation boundary.
     """
     return PersistentReviewExchangeRunner(
         session_output,
         pair_registry or InMemoryPersistentExchangePairRegistry(),
-        persistent_pair_root,
     )
 
 
@@ -287,7 +285,6 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         emit_review_outcome=lambda **_: None,
         review_exchange_runner=_make_review_exchange_runner(
             session_output,
-            persistent_pair_root=tmp_path / "persistent-pairs",
             pair_registry=pair_registry,
         ),
     )
@@ -319,12 +316,10 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
     assert EventName.REVIEW_EXCHANGE_STARTED in event_names
     assert EventName.REVIEW_EXCHANGE_COMPLETED in event_names
 
-    # B2 recording layout: pair-scoped (under
-    # ``<state>/persistent-pairs/issue-<n>/<role>/...``), referenced
-    # from each exchange's manifest. The replay UI looks the path up
-    # via the manifest, not via a fixed run_dir/<role>/... convention,
-    # because exchange 2's run_dir would otherwise see no recording
-    # on a registry cache hit.
+    # B2 recording layout: the manifest points the UI at per-session
+    # slices under run_dir/<role>/..., while the pair-scoped continuous
+    # recordings live under the coder worktree and are exposed via the
+    # *_recording_pair manifest keys.
     manifest_payload = json.loads((run_dir / "manifest.json").read_text())
     reviewer_recording = Path(manifest_payload["reviewer_recording"])
     coder_recording = Path(manifest_payload["coder_recording"])
@@ -434,7 +429,6 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         emit_review_outcome=lambda **_: None,
         review_exchange_runner=_make_review_exchange_runner(
             _session_output_for_test,
-            persistent_pair_root=tmp_path / "persistent-pairs",
         ),
     )
 
@@ -515,7 +509,6 @@ def test_persistent_review_exchange_max_rounds_exhausted(
         emit_review_outcome=lambda **_: None,
         review_exchange_runner=_make_review_exchange_runner(
             _session_output_for_test,
-            persistent_pair_root=tmp_path / "persistent-pairs",
         ),
     )
 
@@ -614,7 +607,6 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
         emit_review_outcome=lambda **_: None,
         review_exchange_runner=_make_review_exchange_runner(
             _session_output_for_test,
-            persistent_pair_root=tmp_path / "persistent-pairs",
         ),
     )
 
@@ -734,7 +726,6 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
         emit_review_outcome=lambda **_: None,
         review_exchange_runner=_make_review_exchange_runner(
             session_output,
-            persistent_pair_root=tmp_path / "persistent-pairs",
             pair_registry=pair_registry,
         ),
     )
@@ -900,7 +891,6 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
         emit_review_outcome=lambda **_: None,
         review_exchange_runner=_make_review_exchange_runner(
             session_output,
-            persistent_pair_root=tmp_path / "persistent-pairs",
             pair_registry=pair_registry,
         ),
     )
@@ -937,6 +927,19 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
         "coder_recording": cached_first.coder_recording_path,
         "reviewer_recording": cached_first.reviewer_recording_path,
     }
+    worktree_pair_root = (
+        coder_wt / ".issue-orchestrator" / "persistent-pairs" / f"issue-{issue_number}"
+    )
+    for label in (
+        "coder_completion",
+        "validation_record",
+        "coder_recording",
+        "reviewer_recording",
+    ):
+        assert paths_first[label].is_relative_to(worktree_pair_root), (
+            f"{label} should be scoped to the coder worktree so scratch reset "
+            f"wipes it; got {paths_first[label]}"
+        )
 
     second = _run_one("issue-9101-second")
     assert second.status == "ok"

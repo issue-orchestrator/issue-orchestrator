@@ -10,8 +10,8 @@ in B2:
   miss inside ``run_persistent_session_exchange``'s spawn closure.
 - ``coder_branch`` is threaded so the inner runner can fast-forward
   the reviewer worktree at the start of every reviewer round.
-- The registry, ``persistent_pair_root``, and ``session_output`` are
-  passed through unchanged.
+- The registry and ``session_output`` are passed through unchanged, while
+  ``persistent_pair_root`` is derived from the coder worktree.
 
 End-to-end behaviour against the real PTY runner is covered in
 ``tests/integration/test_persistent_review_exchange_integration.py``;
@@ -114,7 +114,6 @@ def _make_runner(tmp_path: Path) -> "prer.PersistentReviewExchangeRunner":
     return prer.PersistentReviewExchangeRunner(
         MagicMock(name="session_output"),
         MagicMock(name="pair_registry"),
-        tmp_path / "persistent-pairs",
     )
 
 
@@ -123,9 +122,8 @@ def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
 ):
     """The registry-owned pair lifecycle (B2 ADR 0026) hangs on the
     inner runner receiving the registry and pair-state root through
-    every call. A regression that built a fresh registry inline or
-    pointed pair state at a per-exchange dir would silently re-spawn
-    pairs each call."""
+    every call. Pair filesystem state is worktree-scoped so deleting
+    the issue worktree clears attempt-authoritative pair artifacts."""
     captured: dict[str, Any] = {}
 
     def _fake_inner(**kwargs):
@@ -139,9 +137,41 @@ def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
 
     assert outcome.status == "ok"
     assert captured["pair_registry"] is runner._pair_registry  # noqa: SLF001
-    assert captured["persistent_pair_root"] == tmp_path / "persistent-pairs"
+    assert (
+        captured["persistent_pair_root"]
+        == tmp_path / "coder" / ".issue-orchestrator" / "persistent-pairs"
+    )
     assert captured["coder_worktree_path"] == tmp_path / "coder"
     assert captured["session_output"] is runner._session_output  # noqa: SLF001
+
+
+def test_persistent_pair_root_helper_is_worktree_scoped(tmp_path: Path) -> None:
+    coder_worktree = tmp_path / "coder"
+
+    assert prer.persistent_pair_root_for_worktree(coder_worktree) == (
+        coder_worktree / ".issue-orchestrator" / "persistent-pairs"
+    )
+
+
+def test_job_timeout_budget_includes_coder_protocol_retries(tmp_path: Path) -> None:
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("hello")
+    coder = AgentConfig(prompt_path=prompt, timeout_minutes=10)
+    reviewer = AgentConfig(prompt_path=prompt, timeout_minutes=10)
+    runner = _make_runner(tmp_path)
+
+    timeout = runner.job_timeout_seconds(
+        coder_agent=coder,
+        reviewer_agent=reviewer,
+        max_rounds=1,
+    )
+
+    # One round can legitimately consume reviewer + coder + two coder
+    # protocol retries before returning a protocol outcome. The supervisor
+    # deadline should sit outside that runner-owned budget, with only a small
+    # cleanup/drain grace window after it.
+    max_legitimate_protocol_retry_duration = (10 * 60) + (3 * 10 * 60)
+    assert timeout == max_legitimate_protocol_retry_duration + 300
 
 
 def test_run_passes_reviewer_worktree_factory_invoked_lazily(

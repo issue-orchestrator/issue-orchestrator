@@ -803,6 +803,7 @@ export interface ValidationFailureDialogPayload {
   junit_cases: JUnitCasePayload[];
   reason: string;
   started_at: string;
+  status: "passed" | "failed";
   stderr_excerpt: string[];
   stdout_excerpt: string[];
   suite: string;

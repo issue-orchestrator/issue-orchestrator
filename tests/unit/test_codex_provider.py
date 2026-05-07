@@ -1,0 +1,102 @@
+"""Unit tests for ``CodexProvider.build_command``.
+
+Sandbox-clean: no subprocess, no network. Asserts on the assembled
+argv only.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from issue_orchestrator.execution.agent_runner_providers.codex import CodexProvider
+
+
+def _cmd(**kwargs: str) -> list[str]:
+    """Build the argv with sane defaults; return the list for assertions."""
+    return CodexProvider().build_command(prompt="task", **kwargs)
+
+
+class TestCodexJsonOutputDefault:
+    """The default for ``json_output`` is **off** so the PTY recording
+    captures codex's terminal UI (what a human sees at the terminal),
+    not its structured JSONL event stream.
+
+    Regression guard for tixmeup #362's reviewer-timeline content: with
+    ``--json`` set, the recording is a stream of
+    ``{"type":"thread.started"}`` / ``{"type":"item.completed"}`` /
+    etc., which the timeline viewer's terminal renderer concatenates
+    as raw, unstyled text. With ``--json`` unset, codex emits its
+    normal terminal UI (formatted, ANSI-coloured) and the renderer
+    plays it back faithfully.
+
+    Nothing in this codebase parses codex stdout for protocol data —
+    persistent-session review-exchange uses a response file, one-shot
+    runs use ``coding-done`` callbacks. So the JSON event stream
+    has no production consumer; defaulting it on was pure waste plus
+    a viewer-rendering bug. Keep this test tight: any path that flips
+    the default back without an explicit caller opt-in re-introduces
+    the empty-looking timeline symptom.
+    """
+
+    def test_default_does_not_pass_json_flag(self) -> None:
+        cmd = _cmd()
+        assert "--json" not in cmd, (
+            f"codex default invocation must NOT pass --json (recording "
+            f"would become unstyled JSONL); got argv={cmd}"
+        )
+
+    def test_explicit_false_does_not_pass_json_flag(self) -> None:
+        cmd = _cmd(json_output="false")
+        assert "--json" not in cmd
+
+    def test_explicit_true_does_pass_json_flag(self) -> None:
+        """The opt-in path is still wired — automation that genuinely
+        wants codex's JSONL events can request them via
+        ``provider_args: {json_output: "true"}`` per agent."""
+        cmd = _cmd(json_output="true")
+        assert "--json" in cmd
+
+    @pytest.mark.parametrize("yes_value", ["TRUE", "True", "tRuE"])
+    def test_truthy_string_case_insensitive_passes_json_flag(
+        self, yes_value: str,
+    ) -> None:
+        """Match historical behavior: ``json_output`` is parsed
+        case-insensitively. Locks the contract so a downstream caller
+        passing ``"True"`` keeps working."""
+        cmd = _cmd(json_output=yes_value)
+        assert "--json" in cmd
+
+    @pytest.mark.parametrize("no_value", ["", "0", "no", "off", "False"])
+    def test_falsey_strings_do_not_pass_json_flag(
+        self, no_value: str,
+    ) -> None:
+        """Any non-``true`` (case-insensitive) string is treated as
+        opt-out. This matches the original parser shape and keeps the
+        default safe even when someone passes a typo."""
+        cmd = _cmd(json_output=no_value)
+        assert "--json" not in cmd
+
+
+class TestCodexBaseCommand:
+    """Sanity-check the rest of the argv shape so a refactor that
+    moves the ``--json`` decision around doesn't accidentally drop
+    other flags. These aren't exhaustive — just enough to catch a
+    structural regression."""
+
+    def test_starts_with_codex_exec(self) -> None:
+        cmd = _cmd()
+        assert cmd[:2] == ["codex", "exec"]
+
+    def test_full_auto_default(self) -> None:
+        # Default approval_mode is "full-auto", which translates to
+        # the deprecated-but-still-supported ``--full-auto`` flag.
+        assert "--full-auto" in _cmd()
+
+    def test_yolo_swaps_to_dangerously_bypass(self) -> None:
+        cmd = _cmd(approval_mode="yolo")
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+        assert "--full-auto" not in cmd
+
+    def test_prompt_is_last_arg(self) -> None:
+        cmd = CodexProvider().build_command(prompt="hello world")
+        assert cmd[-1] == "hello world"

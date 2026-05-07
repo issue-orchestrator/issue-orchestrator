@@ -27,30 +27,61 @@ from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
 )
 from ..ports.session_output import SessionOutput
-from .persistent_session_exchange import run_persistent_session_exchange
+from .persistent_session_exchange import (
+    review_exchange_supervisor_timeout_seconds,
+    run_persistent_session_exchange,
+)
 from .reviewer_worktree import (
     create_reviewer_worktree,
     resolve_current_branch,
 )
 
 
+def persistent_pair_root_for_worktree(coder_worktree: Path) -> Path:
+    """Return the attempt-scoped persistent-pair storage root.
+
+    The repository engine owns the live pair registry, but durable pair
+    artifacts are attempt-scoped: deleting the issue worktree must delete
+    validation and recording state for that attempt. Keeping the root under
+    the coder worktree preserves stable paths for live PTYs while making
+    reset-from-scratch a real storage boundary.
+    """
+    return coder_worktree / ".issue-orchestrator" / "persistent-pairs"
+
+
 class PersistentReviewExchangeRunner:
     """Persistent-session implementation of :class:`ReviewExchangeRunner`.
 
     Constructed once at the composition root with the orchestrator's
-    :class:`SessionOutput`, the issue-scoped pair registry, and the
-    pair-scoped state directory root. Reused for every exchange.
+    :class:`SessionOutput` and issue-scoped pair registry. Reused for
+    every exchange. Pair filesystem state is resolved per coder worktree
+    at run time so worktree teardown clears attempt-scoped artifacts.
     """
 
     def __init__(
         self,
         session_output: SessionOutput,
         pair_registry: InMemoryPersistentExchangePairRegistry,
-        persistent_pair_root: Path,
     ) -> None:
         self._session_output = session_output
         self._pair_registry = pair_registry
-        self._persistent_pair_root = persistent_pair_root
+
+    def job_timeout_seconds(
+        self,
+        *,
+        coder_agent: AgentConfig,
+        reviewer_agent: AgentConfig,
+        max_rounds: int,
+    ) -> float | None:
+        coder_timeout = coder_agent.timeout_minutes * 60
+        reviewer_timeout = reviewer_agent.timeout_minutes * 60
+        if coder_timeout <= 0 or reviewer_timeout <= 0:
+            return None
+        return review_exchange_supervisor_timeout_seconds(
+            coder_timeout_seconds=coder_timeout,
+            reviewer_timeout_seconds=reviewer_timeout,
+            max_rounds=max_rounds,
+        )
 
     def run(  # noqa: PLR0913
         self,
@@ -65,6 +96,7 @@ class PersistentReviewExchangeRunner:
         max_rounds: int,
         max_no_progress: int,
         require_validation: bool,
+        parent_session_name: str | None = None,
         initial_validation_record_path: Path | None = None,
         web_port: int | None = None,
         events: EventSink | None = None,
@@ -90,7 +122,7 @@ class PersistentReviewExchangeRunner:
         return run_persistent_session_exchange(
             session_output=self._session_output,
             pair_registry=self._pair_registry,
-            persistent_pair_root=self._persistent_pair_root,
+            persistent_pair_root=persistent_pair_root_for_worktree(coder_worktree),
             coder_worktree_path=coder_worktree,
             reviewer_worktree_factory=_make_reviewer_worktree,
             coder_branch=coder_branch,
@@ -103,6 +135,7 @@ class PersistentReviewExchangeRunner:
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
+            parent_session_name=parent_session_name,
             initial_validation_record_path=initial_validation_record_path,
             web_port=web_port,
             events=events,

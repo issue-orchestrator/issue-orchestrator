@@ -177,31 +177,23 @@ async function openSessionManifest(issueNumber, runDir = null) {
     openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
 }
 
-async function openValidationFailure(issueNumber, runDir = null, mode = 'modal') {
-    const params = new URLSearchParams();
-    if (runDir) params.set('run_dir', runDir);
-    const suffix = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error) {
-        const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
-        if (mode === 'inline') {
-            showToast(message, 'error');
-            return;
-        }
-        openModal(`Validation Failure #${issueNumber}`, `<div class="diag-action-message" style="display:block;">${escapeHtml(message)}</div>`);
-        return;
-    }
-
+// Pure data → DOM mapping. Takes the dialog payload (the "command result"
+// from /api/dialog/validation-failure/) and returns {title, html, runDir}.
+// No fetch, no globals beyond rendering helpers — so unit tests can call
+// this directly with hand-rolled payloads instead of stubbing the network
+// and going through the openValidationFailure entry point.
+function renderValidationDialog(data, issueNumber, runDir = null) {
     const actionSections = Array.isArray(data.action_sections) ? data.action_sections : [];
-    currentDiagnosticsRunDir = runDir || firstRunDirFromActionSections(actionSections);
+    const resolvedRunDir = runDir || firstRunDirFromActionSections(actionSections);
     const failedTests = Array.isArray(data.failed_tests) ? data.failed_tests : [];
     const stdoutExcerpt = Array.isArray(data.stdout_excerpt) ? data.stdout_excerpt : [];
     const stderrExcerpt = Array.isArray(data.stderr_excerpt) ? data.stderr_excerpt : [];
+    const status = data.status === 'passed' ? 'passed' : 'failed';
     const summaryRows = Array.isArray(data.summary_rows) && data.summary_rows.length > 0
         ? data.summary_rows
         : [
-            { label: 'Reason', value: String(data.reason || 'Validation failed') },
+            { label: 'Outcome', value: status === 'passed' ? 'Passed' : 'Failed' },
+            { label: 'Reason', value: String(data.reason || (status === 'passed' ? 'Validation passed' : 'Validation failed')) },
             { label: 'Suite', value: String(data.suite || '-') },
             { label: 'Command', value: String(data.command || '-') },
             { label: 'Exit Code', value: String(data.exit_code ?? '-') },
@@ -212,7 +204,7 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     let html = '<div class="diag-modal diag-validation-shell">';
     html += '<div class="diag-header">';
     html += '<div class="diag-header-title">Validation Results</div>';
-    html += `<div class="diag-chip-row">${renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
+    html += `<div class="diag-chip-row">${renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
     html += '</div>';
 
     html += '<div class="diag-validation-grid">';
@@ -222,15 +214,20 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     html += '</section>';
 
     html += '<section class="diag-section">';
-    html += `<div class="diag-section-title">Failed Tests${failedTests.length > 0 ? ` (${failedTests.length})` : ''}</div>`;
-    if (failedTests.length > 0) {
-        html += '<ul class="diag-validation-tests">';
-        for (const testName of failedTests) {
-            html += `<li><code>${escapeHtml(String(testName))}</code></li>`;
-        }
-        html += '</ul>';
+    if (status === 'passed') {
+        html += '<div class="diag-section-title">Tests</div>';
+        html += '<div class="diag-empty">All tests passed. Open the JUnit / stdout sections below for the per-test breakdown.</div>';
     } else {
-        html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
+        html += `<div class="diag-section-title">Failed Tests${failedTests.length > 0 ? ` (${failedTests.length})` : ''}</div>`;
+        if (failedTests.length > 0) {
+            html += '<ul class="diag-validation-tests">';
+            for (const testName of failedTests) {
+                html += `<li><code>${escapeHtml(String(testName))}</code></li>`;
+            }
+            html += '</ul>';
+        } else {
+            html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
+        }
     }
     html += '</section>';
     html += '</div>';
@@ -259,15 +256,43 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     html += '<div class="diag-footnote">Validation details come from the run-scoped validation record and log artifacts.</div>';
     html += '</div>';
 
-    openModal(data.title || `Validation Failure #${issueNumber}`, html);
+    return {
+        title: data.title || `Validation Failure #${issueNumber}`,
+        html,
+        runDir: resolvedRunDir,
+    };
 }
 
-function renderValidationFailureChips(failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
+async function openValidationFailure(issueNumber, runDir = null, mode = 'modal') {
+    const params = new URLSearchParams();
+    if (runDir) params.set('run_dir', runDir);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+        const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
+        if (mode === 'inline') {
+            showToast(message, 'error');
+            return;
+        }
+        openModal(`Validation Failure #${issueNumber}`, `<div class="diag-action-message" style="display:block;">${escapeHtml(message)}</div>`);
+        return;
+    }
+
+    const rendered = renderValidationDialog(data, issueNumber, runDir);
+    currentDiagnosticsRunDir = rendered.runDir;
+    openModal(rendered.title, rendered.html);
+}
+
+function renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
     const artifactCount = (actionSections || []).reduce((count, section) => {
         const sectionActions = Array.isArray(section && section.actions) ? section.actions : [];
         return count + sectionActions.length;
     }, 0);
+    const outcomeChipClass = status === 'passed' ? 'is-ok' : 'is-warn';
+    const outcomeLabel = status === 'passed' ? 'passed' : 'failed';
     const chips = [
+        `<span class="diag-chip ${outcomeChipClass}">${outcomeLabel}</span>`,
         `<span class="diag-chip is-muted">${failedTests.length} failing test${failedTests.length === 1 ? '' : 's'}</span>`,
         `<span class="diag-chip ${stdoutExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stdoutExcerpt.length > 0 ? 'stdout excerpt captured' : 'no stdout excerpt'}</span>`,
         `<span class="diag-chip ${stderrExcerpt.length > 0 ? 'is-ok' : 'is-muted'}">${stderrExcerpt.length > 0 ? 'stderr captured' : 'no stderr captured'}</span>`,

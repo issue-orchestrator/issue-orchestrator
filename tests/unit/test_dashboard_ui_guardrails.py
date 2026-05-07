@@ -464,6 +464,23 @@ def test_render_issue_detail_toggles_retry_publish_button_from_actions() -> None
     assert "action.id === 'retry_publish'" in body
 
 
+def test_render_issue_detail_title_preserves_issue_number() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderIssueDetail")
+    title_body = _function_body(js, "formatIssueDetailTitle")
+    assert "formatIssueDetailTitle(d)" in body
+    assert "`#${detail.issue_number}`" in title_body
+    assert "return `${issueNumber}: ${title}`" in title_body
+
+
+def test_copy_journey_timeline_formats_raw_timestamps_locally() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "copyJourneyTimeline")
+    assert "formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '')" in body
+    assert "formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || '')" in body
+    assert "formatJourneyStepTimestamp(s.timestamp || '', s.time_label || '')" in body
+
+
 def test_render_issue_detail_renders_validation_failure_callout() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderIssueDetailValidation")
@@ -503,13 +520,21 @@ def test_issue_detail_validation_renders_structured_view_when_junit_cases_presen
 
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "openValidationFailure")
-    assert "/api/dialog/validation-failure/" in body
-    assert "Validation Results" in body
+    fetch_body = _function_body(js, "openValidationFailure")
+    # The fetch entry point hits the dedicated dialog endpoint and delegates
+    # rendering to renderValidationDialog (the pure data → DOM mapping).
+    assert "/api/dialog/validation-failure/" in fetch_body
+    assert "renderValidationDialog(" in fetch_body
+    assert "data.actions" not in fetch_body
+
+    render_body = _function_body(js, "renderValidationDialog")
+    # Render shape — these markers prove the modal scaffolding is intact and
+    # uses the structured action_sections payload, not the legacy
+    # data.actions field.
+    assert "Validation Results" in render_body
+    assert "action_sections" in render_body
+    assert "diag-validation-grid" in render_body
     assert "renderValidationFailureActionSections" in js
-    assert "action_sections" in body
-    assert "diag-validation-grid" in body
-    assert "data.actions" not in body
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:
@@ -654,6 +679,14 @@ def test_timeline_prefers_session_recording_before_review_transcript() -> None:
     assert timeline_body.index("'open_agent_log'") < timeline_body.index("'open_review_transcript'")
     assert "Session Recording" in short_label_body
     assert "Review Transcript" in short_label_body
+
+
+def test_timeline_session_recording_labels_keep_role_context() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_timelineActionShortLabel")
+    assert "Reviewer Recording" in body
+    assert "Coding Recording" in body
+    assert "Rework Recording" in body
 
 
 def test_session_replay_terminal_wrap_allows_scroll_for_fixed_geometry() -> None:
@@ -879,6 +912,25 @@ def test_dashboard_settings_nav_uses_shared_embedded_nav_helper() -> None:
     assert '<script src="/static/js/embedded_nav.js"></script>' in tmpl
 
 
+def test_browser_auth_shows_overlay_instead_of_silent_reload_on_401() -> None:
+    """A 401 from /api/ or /control/ must surface a visible 'Session expired'
+    overlay so users can sign in again. The previous behavior — calling
+    ``location.reload()`` silently — produced a white screen when the reload
+    landed on a non-recoverable URL or hit a render race, leaving the user
+    with no UI to recover. See PR fixing the white-screen-on-session-expiry bug.
+    """
+    js = _read(BROWSER_AUTH_JS)
+    assert "showAuthExpiredOverlay" in js
+    assert "io-auth-expired-overlay" in js
+    assert "Session expired" in js
+    assert "Sign in" in js
+    # Lock out the regression: no silent reload on auth-expiry path.
+    assert ".reload()" not in js, (
+        "browser_auth.js must not silently reload on 401 — show the "
+        "session-expired overlay so the user can recover"
+    )
+
+
 def test_browser_auth_helper_is_shared_by_control_center_and_dashboard() -> None:
     dashboard = _read(DASHBOARD_TEMPLATE)
     control_center = _read(ROOT / "src" / "issue_orchestrator" / "templates" / "control_center.html")
@@ -1041,61 +1093,55 @@ def test_theme_resolution_uses_shared_embedded_nav_helper() -> None:
     assert "storedTheme === 'system'" not in settings_apply
 
 
-def test_embedded_nav_module_behavior_verified_by_node_test_runner() -> None:
-    # Behavior-level regression: actually exercise buildHref() under Node so
-    # we verify real URL transformations, not just string presence in source.
-    # Fails hard if node is missing — this is a required runtime for the
-    # shared helper's contract tests, not optional infrastructure.
+def test_all_dashboard_js_node_tests_pass() -> None:
+    """Run every tests/js/*.test.js file via node --test in one invocation.
+
+    Centralized auto-discovery, on purpose: previously each new JS test had
+    to be hand-listed in a pytest wrapper, which led to a silent gap where
+    `tests/js/*.test.js` files could land on disk and never run in CI (the
+    PR #6274 review caught this for `validation_dialog_render.test.js`,
+    but the same was already true for several pre-existing files —
+    `compact_card_state`, `expanded_column_state`, `issue_row_state`,
+    `ui_action_contract`, `e2e_run_view_actions`).
+
+    Add a new file to tests/js/, it runs in CI. No further wiring.
+    """
     import shutil
     import subprocess
 
     node = shutil.which("node")
-    assert node, "node runtime is required to validate embedded_nav.js behavior"
+    assert node, "node runtime is required to validate JS test files"
+    js_test_dir = ROOT / "tests" / "js"
+    assert js_test_dir.exists(), f"JS test dir missing: {js_test_dir}"
+    test_files = sorted(js_test_dir.glob("*.test.js"))
+    assert test_files, f"no JS tests found in {js_test_dir}"
+
+    result = subprocess.run(
+        [node, "--test", *[str(p) for p in test_files]],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"node --test failed (exit {result.returncode})\n"
+        f"ran: {[p.name for p in test_files]}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_dashboard_js_node_test_sources_present() -> None:
+    """Source-tree guard: the JS files the node tests depend on must exist.
+
+    The test_all_dashboard_js_node_tests_pass runner above will fail loudly
+    if these go missing, but a focused existence check produces a clearer
+    failure message ("shared helper missing: …") than a node stack trace.
+    """
     assert THEME_RESOLUTION_JS.exists(), f"theme resolver missing: {THEME_RESOLUTION_JS}"
-    assert EMBEDDED_NAV_JS.exists(), f"shared helper missing: {EMBEDDED_NAV_JS}"
-    assert EMBEDDED_NAV_TEST_JS.exists(), f"node test missing: {EMBEDDED_NAV_TEST_JS}"
+    assert EMBEDDED_NAV_JS.exists(), f"embedded nav helper missing: {EMBEDDED_NAV_JS}"
+    assert EMBEDDED_NAV_TEST_JS.exists(), f"embedded nav test missing: {EMBEDDED_NAV_TEST_JS}"
     assert DASHBOARD_BOOT_JS.exists(), f"dashboard boot helper missing: {DASHBOARD_BOOT_JS}"
-
-    result = subprocess.run(
-        [
-            node,
-            "--test",
-            str(ROOT / "tests" / "js" / "theme_resolution.test.js"),
-            str(EMBEDDED_NAV_TEST_JS),
-            str(ROOT / "tests" / "js" / "dashboard_boot.test.js"),
-        ],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"node --test failed (exit {result.returncode})\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-
-
-def test_browser_auth_module_behavior_verified_by_node_test_runner() -> None:
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    assert node, "node runtime is required to validate browser_auth.js behavior"
-    test_file = ROOT / "tests" / "js" / "browser_auth.test.js"
-    assert BROWSER_AUTH_JS.exists(), f"shared helper missing: {BROWSER_AUTH_JS}"
-    assert test_file.exists(), f"node test missing: {test_file}"
-
-    result = subprocess.run(
-        [node, "--test", str(test_file)],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"node --test failed (exit {result.returncode})\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert BROWSER_AUTH_JS.exists(), f"browser auth helper missing: {BROWSER_AUTH_JS}"
 
 
 def test_journey_cycle_labels_use_run_local_numbering() -> None:

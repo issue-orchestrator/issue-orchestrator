@@ -85,7 +85,8 @@ def _phase_chapter_sidecar_path(
     B1 layout (recording at ``<run_dir>/<role>/...``): sidecar is at
     ``<run_dir>/<role>/chapters.json`` — same dir as the recording.
 
-    B2 layout (recording at ``<state>/persistent-pairs/issue-N/<role>/...``):
+    B2 pair-scoped layout (recording at
+    ``<coder-worktree>/.issue-orchestrator/persistent-pairs/issue-N/<role>/...``):
     sidecar is still at ``<run_dir>/<role>/chapters.json`` — chapters
     are per-exchange so they live with the run, not with the
     pair-scoped recording. Without this branch the route would look
@@ -240,9 +241,9 @@ def _slice_events_to_phase_window(
     Returns ``(events, total_events, sidecar_or_none, window_start)``.
 
     Persistent layout — recording at ``<run_dir>/<role>/...`` (B1) or
-    ``<state>/persistent-pairs/issue-N/<role>/...`` (B2): the recording
-    is one continuous stream covering all rounds, so the chapter
-    sidecar is load-bearing — without it we cannot tell rounds apart
+    ``<coder-worktree>/.issue-orchestrator/persistent-pairs/issue-N/<role>/...``
+    (B2): the recording is one continuous stream covering all rounds, so
+    the chapter sidecar is load-bearing — without it we cannot tell rounds apart
     and serving the whole role recording for a phase-scoped request
     would silently show the wrong content. Chapters always live at
     ``<run_dir>/<role>/chapters.json`` (per-exchange), even when the
@@ -725,15 +726,22 @@ def _manifest_response(
     session_name: str | None,
     *,
     config: Any = None,
+    include_passed_validation: bool = False,
 ) -> JSONResponse:
     """Load RunManifest + analysis from run_dir and return as JSON.
 
     `config` is the orchestrator's runtime config; when supplied, it
-    threads `validation.junit_xml_paths` into the validation-failure
-    summary so the dashboard's `/api/dialog/validation-failure/` route
-    receives structured JUnit cases for repos that emit them. Without
-    this threading the dialog payload's `junit_cases` field is empty
-    even when JUnit XML is configured — see PR #6203 review.
+    threads `validation.junit_xml_paths` into the validation summary so
+    the dashboard's `/api/dialog/validation-failure/` route receives
+    structured JUnit cases for repos that emit them. Without this
+    threading the dialog payload's `junit_cases` field is empty even
+    when JUnit XML is configured — see PR #6203 review.
+
+    `include_passed_validation` opts the dialog endpoint into a
+    `validation_failure` payload key for passed runs too (so the same
+    dialog can render both outcomes). Defaults to False to preserve the
+    existing /api/session/manifest/ contract — passed runs do not get a
+    `validation_failure` field there.
     """
     from ..control.session_analyzer import load_analysis
     from ..domain.run_manifest import RunManifest
@@ -776,10 +784,12 @@ def _manifest_response(
 
     if config is not None:
         validation_failure = load_validation_failure_summary_with_config(
-            run_dir, config=config,
+            run_dir, config=config, include_passed=include_passed_validation,
         )
     else:
-        validation_failure = load_validation_failure_summary(run_dir)
+        validation_failure = load_validation_failure_summary(
+            run_dir, include_passed=include_passed_validation,
+        )
     if validation_failure is not None:
         result["validation_failure"] = validation_failure.to_dict()
 
@@ -790,8 +800,15 @@ def session_manifest_response(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
+    *,
+    include_passed_validation: bool = False,
 ) -> JSONResponse:  # noqa: C901, PLR0912
-    """Build the session manifest response for an issue."""
+    """Build the session manifest response for an issue.
+
+    Pass ``include_passed_validation=True`` from the validation dialog
+    endpoint so passed runs also populate the ``validation_failure``
+    payload key — same dialog renders both outcomes.
+    """
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -814,7 +831,10 @@ def session_manifest_response(
             session_name = session_output.session_name_from_path(str(resolved_run_dir))
         session_output.attach_claude_log(resolved_run_dir)
         return _manifest_response(
-            resolved_run_dir, session_name, config=orchestrator.config,
+            resolved_run_dir,
+            session_name,
+            config=orchestrator.config,
+            include_passed_validation=include_passed_validation,
         )
 
     if not worktree_path:
@@ -840,7 +860,10 @@ def session_manifest_response(
         )
     session_output.attach_claude_log(resolved_run_dir)
     return _manifest_response(
-        resolved_run_dir, session_name, config=orchestrator.config,
+        resolved_run_dir,
+        session_name,
+        config=orchestrator.config,
+        include_passed_validation=include_passed_validation,
     )
 
 

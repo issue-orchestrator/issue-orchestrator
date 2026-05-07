@@ -43,7 +43,23 @@ class CodexProvider(CLIProvider):
                 - sandbox: Sandbox policy (read-only, workspace-write, danger-full-access)
                 - reasoning_effort: Codex reasoning effort (low, medium, high, xhigh)
                 - model_reasoning_effort: Alias for reasoning_effort
-                - json_output: Whether to emit JSON events (default: True)
+                - json_output: Emit ``--json`` (codex's structured event stream)
+                  instead of the default terminal UI. Defaults to **False**.
+
+                  Most production paths (persistent-session review-exchange,
+                  one-shot agent runs) hand off via a response file or HTTP
+                  callback — nothing in this codebase parses codex stdout
+                  for protocol data. The PTY-backed terminal-recording
+                  pipeline is the consumer that matters, and it captures
+                  the agent's terminal UI for replay in the timeline
+                  viewer. With ``--json`` set, the recording becomes a raw
+                  JSONL stream that the terminal renderer concatenates as
+                  unstyled text — exactly what the user saw on tixmeup
+                  #362's reviewer log. Defaulting off makes the recording
+                  match what a human running ``codex exec`` interactively
+                  would see. Automation that genuinely wants the JSON
+                  event stream can opt in per-agent via
+                  ``provider_args: { json_output: "true" }``.
         """
         # Use exec subcommand for non-interactive execution
         cmd = [self.executable, "exec"]
@@ -72,8 +88,14 @@ class CodexProvider(CLIProvider):
         if sandbox and approval_mode != "yolo":
             cmd.extend(["--sandbox", sandbox])
 
-        # JSON output for structured events (default: True for automation)
-        json_output = kwargs.get("json_output", "true").lower() == "true"
+        # JSON-event-stream mode is opt-in. The default leaves codex in
+        # terminal-UI mode so the PTY recording captures what a human
+        # would see at the terminal — the timeline viewer's terminal
+        # renderer can then play it back faithfully. ``--json`` flips
+        # codex to a structured JSONL stream on stdout that the
+        # terminal renderer cannot render without a structured-event
+        # parser. See the docstring above for the full rationale.
+        json_output = kwargs.get("json_output", "false").lower() == "true"
         if json_output:
             cmd.append("--json")
 

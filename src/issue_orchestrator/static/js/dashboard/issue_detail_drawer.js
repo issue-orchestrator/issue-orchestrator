@@ -411,13 +411,15 @@ function copyJourneyTimeline() {
     const title = issueDetailData.title || '';
     let text = `Issue #${issueNum}: ${title}\n`;
     for (const run of runs) {
-        text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${run.outcome || 'In progress'}  ${run.time_label || ''}\n`;
+        const runTime = formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '');
+        text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${run.outcome || 'In progress'}  ${runTime}\n`;
         for (const c of (run.cycles || [])) {
             const agent = c.agent ? ` (${c.agent})` : '';
             const cycleNum = c.cycle_in_run || c.cycle || '?';
-            text += `  ${c.cycle_label || `Cycle ${cycleNum}`}${agent} \u2014 ${c.outcome || 'In progress'}  ${c.time_label || ''}\n`;
+            const cycleTime = formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || '');
+            text += `  ${c.cycle_label || `Cycle ${cycleNum}`}${agent} \u2014 ${c.outcome || 'In progress'}  ${cycleTime}\n`;
             for (const s of (c.steps || [])) {
-                const time = s.time_label || '';
+                const time = formatJourneyStepTimestamp(s.timestamp || '', s.time_label || '');
                 const narrative = s.narrative || s.event || '';
                 text += `    ${time}  ${narrative}\n`;
                 if (s.detail) text += `      ${s.detail}\n`;
@@ -748,8 +750,7 @@ function renderIssueDetail() {
     if (!issueDetailData) return;
     const d = issueDetailData;
     applyLifecycleDataset(issueDetailDrawer, d.lifecycle || null);
-    const title = d.title || `Issue #${d.issue_number}`;
-    document.getElementById('issueDetailTitle').textContent = title;
+    document.getElementById('issueDetailTitle').textContent = formatIssueDetailTitle(d);
     document.getElementById('issueDetailGitHubBtn').href = d.issue_url || '#';
     document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(d.issue_number);
 
@@ -832,6 +833,14 @@ function renderIssueDetail() {
     };
 
     applyIssueDetailInitialFocus();
+}
+
+function formatIssueDetailTitle(detail) {
+    const issueNumber = detail && detail.issue_number ? `#${detail.issue_number}` : 'Issue';
+    const title = detail && detail.title ? String(detail.title).trim() : '';
+    if (!title) return issueNumber;
+    if (title.startsWith(issueNumber)) return title;
+    return `${issueNumber}: ${title}`;
 }
 
 function applyIssueDetailInitialFocus() {

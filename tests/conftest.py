@@ -761,7 +761,6 @@ def build_test_orchestrator_deps(
         session_output=session_output,
         review_exchange_runner=PersistentReviewExchangeRunner(
             session_output, InMemoryPersistentExchangePairRegistry(),
-            Path(config.repo_root) / ".issue-orchestrator" / "persistent-pairs",
         ),
         label_config={
             "blocked": config.get_label_blocked(),

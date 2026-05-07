@@ -45,12 +45,29 @@ class ReviewExchangeRunner(Protocol):
         max_rounds: int,
         max_no_progress: int,
         require_validation: bool,
+        parent_session_name: str | None = None,
         initial_validation_record_path: Path | None = None,
         web_port: int | None = None,
         events: "EventSink | None" = None,
         event_context: "EventContext | None" = None,
         on_started: Callable[[Path], None] | None = None,
     ) -> "ReviewExchangeOutcome":
+        ...
+
+    def job_timeout_seconds(
+        self,
+        *,
+        coder_agent: "AgentConfig",
+        reviewer_agent: "AgentConfig",
+        max_rounds: int,
+    ) -> float | None:
+        """Return the supervisor wall-clock budget for one background run.
+
+        The runner owns round-loop retry semantics, so it also owns the
+        derived outer deadline used by the background supervisor. Returning
+        ``None`` means the runner cannot derive a meaningful budget from the
+        supplied agent configuration.
+        """
         ...
 
 
@@ -71,3 +88,6 @@ class NullReviewExchangeRunner:
             "a real ReviewExchangeRunner (e.g. PersistentReviewExchangeRunner) "
             "at the composition root."
         )
+
+    def job_timeout_seconds(self, **_: Any) -> float | None:
+        return None

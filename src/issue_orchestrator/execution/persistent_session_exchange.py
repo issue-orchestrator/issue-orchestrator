@@ -25,11 +25,15 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_exchange_manifest import (
+    ReviewExchangeManifestHeader,
+    ReviewExchangeRecordingPaths,
+)
 from ..domain.exchange_chapter import (
     CHAPTER_SECTION_FEEDBACK,
     CHAPTER_SECTION_PROMPT,
@@ -42,9 +46,16 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
+from ..domain.review_exchange_turn import (
+    ReviewExchangeTurnPacket,
+    ReviewExchangeTurnResult,
+    Role,
+    TurnResultKind,
+)
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
+from ..infra.repo_identity import get_repo_head_sha
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
@@ -67,6 +78,35 @@ logger = logging.getLogger(__name__)
 
 _CODER_PROTOCOL_RETRY_LIMIT = 2
 
+
+def review_exchange_supervisor_timeout_seconds(
+    *,
+    coder_timeout_seconds: float,
+    reviewer_timeout_seconds: float,
+    max_rounds: int,
+    grace_seconds: float = 300.0,
+) -> float:
+    """Return the outer wall-clock deadline for one persistent exchange.
+
+    The persistent runner owns coder protocol retries. The background
+    supervisor deadline must include that retry budget so it only catches a
+    wedged runner, not a legitimate exchange still inside its per-role
+    deadlines.
+    """
+    if coder_timeout_seconds <= 0:
+        raise ValueError("coder_timeout_seconds must be positive")
+    if reviewer_timeout_seconds <= 0:
+        raise ValueError("reviewer_timeout_seconds must be positive")
+    if grace_seconds < 0:
+        raise ValueError("grace_seconds must be non-negative")
+    rounds = max(1, int(max_rounds))
+    coder_attempts_per_round = 1 + _CODER_PROTOCOL_RETRY_LIMIT
+    per_round = reviewer_timeout_seconds + (
+        coder_timeout_seconds * coder_attempts_per_round
+    )
+    return float(per_round * rounds + grace_seconds)
+
+
 _BOOTSTRAP_PROMPT_TEMPLATE = (
     "You are the {role} in a coder↔reviewer review exchange for issue "
     "#{issue_number}: {issue_title}.\n\n"
@@ -80,48 +120,30 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
 
 @dataclass
 class _RoleSliceMirror:
-    """Project a slice of the pair-scoped recording into the per-session run_dir.
+    """Translate pair-recording event indices into per-session slice indices.
 
-    The pair recording (``pair_dir/<role>/terminal-recording.jsonl``) is
-    the canonical continuous PTY capture written by the long-lived agent
-    process. It outlives any single exchange, so a session's run_dir only
-    sees a sliver of its content. That left the timeline viewer with
-    nothing useful to show per-session — chapter offsets that pointed
-    into a file the run_dir did not own.
+    The slice file at ``<run_dir>/<role>/terminal-recording.jsonl`` is
+    written **continuously** by the role's
+    ``MirroredTerminalRecordingWriter`` — registered at exchange start
+    via ``add_mirror_recording`` and removed at exchange end. The
+    timeline viewer therefore sees agent output update in near real time
+    rather than waiting for a chapter boundary to flush.
 
-    This mirror appends new events to a per-exchange slice
-    (``run_dir/<role>/terminal-recording.jsonl``) at every chapter
-    boundary. By the end of the exchange the slice contains exactly
-    the events emitted during this exchange and nothing else, making
-    the run_dir self-contained for the viewer. Worktree teardown takes
-    the slice with it, which is the natural lifetime — long-term
-    forensics still go through the pair recording (kept in the manifest's
-    ``<role>_recording_pair`` field) and the timeline DB.
-
-    ``slice_base`` is the pair recording's event count *at exchange start*
-    — the first event the slice will mirror. ``last_event_idx`` starts
-    equal to ``slice_base`` and advances as the mirror appends. The
-    distinction matters because the chapter sidecar's
-    ``recording_event_index`` must be slice-relative (the manifest
-    points the viewer at the slice file), so the chapter writer subtracts
-    ``slice_base`` from each captured pair offset. Without that
-    translation, a cached pair on exchange 2 would record chapter
-    offsets in the hundreds while the slice file holds dozens of
-    events, and the web replay route's ``all_events[offset:]`` would
-    return an empty window.
+    What this dataclass owns is the **offset translation** between the
+    pair recording (long-lived, accumulates across every exchange the
+    pair handles) and the slice (per-exchange, freshly attached). Its
+    ``slice_base`` is the pair recording's event count *at exchange
+    start* — the first event the slice will mirror. Chapter sidecars
+    store ``pair_event_idx - slice_base`` so the viewer can scrub the
+    manifest-pointed slice directly. Without that translation, a cached
+    pair on exchange 2 would record chapter offsets in the hundreds
+    while the slice file holds dozens of events and the web replay
+    route's ``all_events[offset:]`` would return an empty window.
     """
 
     pair_recording: Path
     session_slice: Path
-    last_event_idx: int
-    slice_base: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        # ``slice_base`` is fixed at construction. It defines the
-        # slice's "zero" — every chapter offset recorded for this
-        # exchange is computed as ``pair_event_idx - slice_base`` so
-        # the viewer can index into the slice directly.
-        self.slice_base = self.last_event_idx
+    slice_base: int
 
     def pair_to_slice_offset(self, pair_event_idx: int) -> int:
         """Translate a pair-recording event index into a slice-local index.
@@ -132,81 +154,95 @@ class _RoleSliceMirror:
         store these slice-local offsets so the viewer can scrub the
         manifest-pointed slice directly.
 
-        Pair indices below ``slice_base`` belong to prior exchanges and
-        clamp to 0 (no negative offsets — those would index past the
-        start of the slice and silently return wrong content).
+        Raises ``ValueError`` when ``pair_event_idx < slice_base``.
+        Chapter recording happens during the exchange, after slice
+        attach; an index from before exchange start is a wrong-source
+        bug (caller fed an index from a different recording) and
+        masking it with a clamp would silently return wrong content.
         """
-        if pair_event_idx <= self.slice_base:
-            return 0
+        if pair_event_idx < self.slice_base:
+            raise ValueError(
+                f"pair_event_idx={pair_event_idx} is below "
+                f"slice_base={self.slice_base}; chapter offsets must "
+                "be sampled after the slice mirror is attached at "
+                "exchange start. A negative slice index would index "
+                "past the start of the slice and silently return "
+                "content from prior exchanges.",
+            )
         return pair_event_idx - self.slice_base
 
-    def mirror_through(self, current_event_idx: int) -> int:
-        """Append events ``[last_event_idx, current_event_idx)`` to the slice.
 
-        Returns the number of events written. ``mirror_through`` is
-        chapter-driven: each call corresponds to "the agent has
-        produced N more events since the last chapter; capture them
-        for the per-session slice now." Failure during slicing is
-        deliberately swallowed and logged — the slice is a viewer aid,
-        not a load-bearing artifact, and an unhealthy slice writer
-        must not abort the round and re-trigger the runaway loop.
-        """
-        if current_event_idx <= self.last_event_idx:
-            return 0
-        if not self.pair_recording.exists():
-            return 0
-        try:
-            self.session_slice.parent.mkdir(parents=True, exist_ok=True)
-            written = _copy_event_range(
-                source=self.pair_recording,
-                destination=self.session_slice,
-                start_event_idx=self.last_event_idx,
-                end_event_idx=current_event_idx,
-            )
-        except OSError:
-            logger.exception(
-                "Failed to mirror pair recording slice into run_dir; "
-                "continuing without per-session mirror "
-                "(pair=%s slice=%s start=%d end=%d)",
-                self.pair_recording, self.session_slice,
-                self.last_event_idx, current_event_idx,
-            )
-            return 0
-        self.last_event_idx = current_event_idx
-        return written
+def _attach_slice_mirror(
+    session: PersistentSession,
+    slice_path: Path,
+) -> None:
+    """Register a per-session slice with the role's PTY writer.
 
+    Fails loudly. The slice mirror is load-bearing for the per-session
+    timeline contract — without it the viewer reads an empty slice
+    file from the manifest while the agent's output continues to flow
+    only into the pair recording, recreating the exact "I can't see
+    what the reviewer is doing" symptom this PR is supposed to fix.
+    Failures here propagate up to ``run_persistent_session_exchange``'s
+    top-level handler, which emits ``REVIEW_EXCHANGE_FAILED`` and
+    re-raises so the orchestrator's loop bound (PR #6267) can govern
+    retries / escalation rather than the silent empty-timeline mode.
 
-def _copy_event_range(
-    *,
-    source: Path,
-    destination: Path,
-    start_event_idx: int,
-    end_event_idx: int,
-) -> int:
-    """Append events ``[start, end)`` from a JSONL recording to another file.
-
-    Event indexing matches ``recording_event_count``: blank lines do
-    not count, so ``start`` / ``end`` are positions in the stream of
-    *non-blank* lines. The destination is opened in append mode; the
-    caller is responsible for treating it as append-only across
-    successive calls (``_RoleSliceMirror`` does, by tracking
-    ``last_event_idx``).
+    ``log_writer is None`` is a production invariant violation: every
+    role session opened by ``open_persistent_session`` carries a real
+    ``MirroredTerminalRecordingWriter``. Test fixtures that construct
+    sessions directly must wire a writer too — not doing so would mean
+    the test was getting a free pass on the live-mirror invariant.
     """
-    written = 0
-    event_idx = 0
-    with source.open("r", encoding="utf-8") as src, destination.open(
-        "a", encoding="utf-8",
-    ) as dst:
-        for raw in src:
-            if not raw.strip():
-                continue
-            if start_event_idx <= event_idx < end_event_idx:
-                dst.write(raw)
-                written += 1
-            event_idx += 1
-            if event_idx >= end_event_idx:
-                break
-    return written
+    writer = session.log_writer
+    if writer is None:
+        raise RuntimeError(
+            f"PersistentSession has no log_writer; cannot attach "
+            f"per-session slice mirror at {slice_path}. Production "
+            "sessions always carry a writer; this indicates either a "
+            "regression in open_persistent_session or a test fixture "
+            "that bypassed the writer wiring.",
+        )
+    # ``seed_resize=False`` keeps the slice indexing aligned with the
+    # offset translator: the first slice event corresponds to the
+    # first pair event written *after* exchange start, with no
+    # synthetic leading event to throw off ``pair_to_slice_offset``.
+    writer.add_mirror_recording(slice_path, seed_resize=False)
+
+
+def _detach_slice_mirror(
+    session: PersistentSession,
+    slice_path: Path,
+) -> None:
+    """Stop mirroring writes to the per-session slice path.
+
+    Called from a ``finally`` block, so any exception here would
+    obscure the exception that put us in the finally — log and
+    continue rather than mask the real failure. The flip side of
+    ``_attach_slice_mirror``'s fail-fast: if attach succeeded, detach
+    almost never fails (the writer's path map is in-process state),
+    and if detach somehow fails the worst case is the next exchange
+    seeing tail bytes from this exchange in its slice — caught by
+    ``test_slice_detaches_at_exchange_end_no_leak_to_next_exchange``.
+    """
+    writer = session.log_writer
+    if writer is None:
+        # The attach helper would have raised before we got here, so
+        # reaching this branch means someone called detach without
+        # ever calling attach. Tolerate so a partial-construction
+        # cleanup path stays simple.
+        return
+    try:
+        writer.remove_mirror_recording(slice_path)
+    except (OSError, ValueError):
+        logger.exception(
+            "Failed to detach per-session slice mirror at %s during "
+            "exchange teardown; subsequent writes from this writer "
+            "may continue to target the slice file. Logging and "
+            "continuing — raising here would mask the original "
+            "exception that triggered the finally block.",
+            slice_path,
+        )
 
 
 def _prepare_session_slice(slice_path: Path) -> None:
@@ -239,6 +275,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    parent_session_name: str | None = None,
     initial_validation_record_path: Path | None = None,
     web_port: int | None = None,
     events: EventSink | None = None,
@@ -251,10 +288,11 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     Acquires a pair from ``pair_registry``. On cache miss the spawn
     closure invokes ``reviewer_worktree_factory`` to create the
     reviewer worktree, opens both PTY-attached sessions with their
-    env pointing at *pair-scoped* response/recording files (under
-    ``persistent_pair_root``), and caches the pair. On cache hit
-    the existing pair is reused — same coder PID, same reviewer PID,
-    same recording continuing where it left off.
+    env pointing at *pair-scoped* response/recording files (under the
+    caller-supplied, worktree-scoped ``persistent_pair_root``), and
+    caches the pair. On cache hit the existing pair is reused — same
+    coder PID, same reviewer PID, same recording continuing where it
+    left off.
 
     The release at issue-lifetime boundaries (PR merge, reset-retry,
     escalation, orchestrator shutdown) is the *caller's*
@@ -284,8 +322,13 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
-    session_output.update_manifest(
-        run_dir, {"review_exchange_dir": str(exchange_dir)},
+    _write_review_exchange_manifest_header(
+        session_output,
+        run_dir,
+        ReviewExchangeManifestHeader(
+            exchange_dir=exchange_dir,
+            parent_session_name=parent_session_name,
+        ),
     )
     if on_started is not None:
         on_started(run_dir)
@@ -350,19 +393,23 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     reviewer_session_slice = run_dir / "reviewer" / TERMINAL_RECORDING_FILENAME
     _prepare_session_slice(coder_session_slice)
     _prepare_session_slice(reviewer_session_slice)
-    session_output.update_manifest(run_dir, {
-        "persistent_pair_dir": str(pair_dir),
-        "coder_recording": str(coder_session_slice),
-        "reviewer_recording": str(reviewer_session_slice),
-        "coder_recording_pair": str(coder_recording),
-        "reviewer_recording_pair": str(reviewer_recording),
-    })
-
-    _seed_pair_validation_record(
-        pair_dir=pair_dir,
-        pair_validation_record=pair_validation_record,
-        source=initial_validation_record_path,
+    session_output.update_manifest(
+        run_dir,
+        ReviewExchangeRecordingPaths(
+            persistent_pair_dir=pair_dir,
+            coder_recording=coder_session_slice,
+            reviewer_recording=reviewer_session_slice,
+            coder_recording_pair=coder_recording,
+            reviewer_recording_pair=reviewer_recording,
+        ).to_manifest_fields(),
     )
+
+    pair_validation = _PairValidationMirror(
+        pair_dir=pair_dir,
+        record_path=pair_validation_record,
+        coder_worktree_path=coder_worktree_path,
+    )
+    pair_validation.replace_from_initial(initial_validation_record_path)
 
     def _spawn_pair() -> PersistentExchangePair:
         # Cache miss: this is the first exchange for the issue (or the
@@ -457,26 +504,54 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         if before_reviewer_round is not None:
             before_reviewer_round(round_index)
 
-    # Build per-role mirrors after the pair is acquired so the start
-    # offsets are sampled from the *current* pair recording size — i.e.
+    # Build per-role mirrors after the pair is acquired so the slice
+    # bases are sampled from the *current* pair recording size — i.e.
     # everything the agent has emitted up to this exchange's first
     # round. Cached pairs have prior exchanges' content already in the
-    # pair recording; mirrors must skip past it.
+    # pair recording; the per-session slice must skip past it. The
+    # mirror only owns offset translation now (chapter sidecars +
+    # SSE payloads) — actual per-event mirroring is wired into the
+    # role's ``MirroredTerminalRecordingWriter`` below so the slice
+    # file fills in near real time, not just at chapter boundaries.
+    coder_slice_base = recording_event_count(
+        pair.coder_recording_path, require_recording=False,
+    )
+    reviewer_slice_base = recording_event_count(
+        pair.reviewer_recording_path, require_recording=False,
+    )
     coder_mirror = _RoleSliceMirror(
         pair_recording=pair.coder_recording_path,
         session_slice=coder_session_slice,
-        last_event_idx=recording_event_count(
-            pair.coder_recording_path, require_recording=False,
-        ),
+        slice_base=coder_slice_base,
     )
     reviewer_mirror = _RoleSliceMirror(
         pair_recording=pair.reviewer_recording_path,
         session_slice=reviewer_session_slice,
-        last_event_idx=recording_event_count(
-            pair.reviewer_recording_path, require_recording=False,
-        ),
+        slice_base=reviewer_slice_base,
     )
+
+    # Live mirror registration. From this point on, every event the
+    # agent's PTY drains into the canonical pair recording is *also*
+    # appended to the per-session slice file. A user inspecting the
+    # timeline mid-round (during a long reviewer think, or while a
+    # round is hung waiting for response-file delivery) sees agent
+    # output in near real time instead of waiting for a chapter
+    # boundary to fire.
+    #
+    # Attach is INSIDE the try block so a failure here lands in the
+    # REVIEW_EXCHANGE_FAILED handler — the orchestrator's loop bound
+    # (PR #6267) governs retries / escalation rather than letting an
+    # attach failure silently leave the timeline empty. The detach in
+    # ``finally`` is load-bearing for the success path: leaving the
+    # slice path attached past exchange end means the writer keeps
+    # writing to a path under a possibly-torn-down run_dir, polluting
+    # the next exchange's slice with the previous exchange's tail
+    # bytes. ``_detach_slice_mirror`` is a no-op when the path was
+    # never attached, so a partial attach (coder succeeded, reviewer
+    # raised) cleans up safely.
     try:
+        _attach_slice_mirror(pair.coder_session, coder_session_slice)
+        _attach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
         outcome = _drive_rounds(
             session_output=session_output,
             run_dir=run_dir,
@@ -497,6 +572,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             reviewer_recording=pair.reviewer_recording_path,
             coder_completion_path=pair.coder_completion_path,
             validation_record_path=pair.validation_record_path,
+            pair_validation=pair_validation,
             coder_timeout_seconds=coder_agent.timeout_minutes * 60,
             reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
             max_rounds=max_rounds,
@@ -516,35 +592,103 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             "exception_type": type(exc).__name__,
         })
         raise
+    finally:
+        _detach_slice_mirror(pair.coder_session, coder_session_slice)
+        _detach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
 
     return outcome
 
 
-def _seed_pair_validation_record(
-    *,
-    pair_dir: Path,
-    pair_validation_record: Path,
-    source: Path | None,
-) -> None:
-    """Copy the caller-supplied validation record into the pair scope.
+@dataclass(frozen=True)
+class _PairValidationMirror:
+    """Own the pair-scoped validation record's freshness contract.
 
-    Extracted from ``run_persistent_session_exchange`` to keep that
-    function under the C901 complexity ceiling. The pair-scoped seed
-    is load-bearing for B2: the coder-protocol guardrail reads
-    ``pair_validation_record`` on every exchange, so leaving the
-    seed at the per-exchange run_dir would mean exchange 2 sees no
-    prior validation evidence even when the caller supplied one.
-
-    No-op when ``source`` is missing or the seed already exists
-    (exchange 2 reusing the cached pair must NOT overwrite the
-    record from a fresh validation that ran since exchange 1).
+    The persistent pair lives across exchanges, but validation is only
+    valid for the coder worktree's current HEAD. This mirror is the
+    single owner for invalidating stale pair records, copying the
+    current validation owner's record into pair scope, and asserting
+    that a required validation record both passed and matches HEAD.
     """
-    if source is None or not source.exists():
-        return
-    pair_dir.mkdir(parents=True, exist_ok=True)
-    if pair_validation_record.exists():
-        return
-    pair_validation_record.write_bytes(source.read_bytes())
+
+    pair_dir: Path
+    record_path: Path
+    coder_worktree_path: Path
+
+    def replace_from_initial(self, source: Path | None) -> None:
+        """Mirror the caller's current validation source at exchange start.
+
+        A missing source clears any prior pair record. That is
+        intentional: an exchange without current validation evidence
+        must not inherit the last exchange's passing record.
+        """
+        self._replace_from(source)
+
+    def refresh_from_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        run_validation_record_path: Path,
+    ) -> str | None:
+        """Mirror validation evidence produced by this coder turn."""
+        source, error = self._completion_validation_source(
+            payload,
+            run_validation_record_path=run_validation_record_path,
+        )
+        if error is not None:
+            self._clear()
+            return error
+        self._replace_from(source)
+        return None
+
+    def current_validation_error(self) -> str | None:
+        return _validation_record_error(
+            self.record_path,
+            current_head_sha=get_repo_head_sha(self.coder_worktree_path),
+        )
+
+    def _completion_validation_source(
+        self,
+        payload: dict[str, Any],
+        *,
+        run_validation_record_path: Path,
+    ) -> tuple[Path | None, str | None]:
+        raw_path = payload.get("validation_record_path")
+        if raw_path is not None:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                return None, "completion validation_record_path must be a non-empty string"
+            return self._validated_worktree_path(raw_path)
+        if run_validation_record_path.exists():
+            return run_validation_record_path, None
+        return None, None
+
+    def _validated_worktree_path(self, raw_path: str) -> tuple[Path | None, str | None]:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = self.coder_worktree_path / candidate
+        try:
+            resolved = candidate.resolve()
+            worktree = self.coder_worktree_path.resolve()
+            if resolved != self.record_path.resolve():
+                resolved.relative_to(worktree)
+        except (OSError, ValueError):
+            return None, (
+                "completion validation_record_path must stay under the coder worktree"
+            )
+        if not resolved.exists():
+            return None, f"completion validation_record_path does not exist: {resolved}"
+        if not resolved.is_file():
+            return None, f"completion validation_record_path is not a file: {resolved}"
+        return resolved, None
+
+    def _replace_from(self, source: Path | None) -> None:
+        if source is None or not source.exists():
+            self._clear()
+            return
+        self.pair_dir.mkdir(parents=True, exist_ok=True)
+        self.record_path.write_bytes(source.read_bytes())
+
+    def _clear(self) -> None:
+        self.record_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +849,7 @@ def _drive_rounds(  # noqa: PLR0913
     reviewer_recording: Path,
     coder_completion_path: Path,
     validation_record_path: Path,
+    pair_validation: _PairValidationMirror,
     coder_timeout_seconds: float,
     reviewer_timeout_seconds: float,
     max_rounds: int,
@@ -724,15 +869,18 @@ def _drive_rounds(  # noqa: PLR0913
             before_reviewer_round(round_index)
 
         # ----- Reviewer turn -----
-        reviewer_prompt_text = build_reviewer_prompt(
+        reviewer_packet = ReviewExchangeTurnPacket(
             issue_number=issue_number,
             issue_title=issue_title,
             round_index=round_index,
-            last_coder_text=last_coder_text,
-            last_reviewer_text=last_reviewer_text,
+            role=Role.REVIEWER,
             require_validation=require_validation,
             run_dir=run_dir,
+            last_coder_text=last_coder_text,
+            last_reviewer_text=last_reviewer_text,
         )
+        _persist_turn_packet(exchange_dir, reviewer_packet)
+        reviewer_prompt_text = build_reviewer_prompt(reviewer_packet)
         emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
             "issue_number": issue_number,
             "session_name": session_name,
@@ -768,6 +916,7 @@ def _drive_rounds(  # noqa: PLR0913
             timeout_seconds=reviewer_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=round_index,
@@ -784,13 +933,15 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
-        if require_validation and reviewer.response_type == "ok" and not _validation_passed(validation_record_path):
+        validation_error = pair_validation.current_validation_error() if require_validation else None
+        if reviewer.response_type == "ok" and validation_error is not None:
             reviewer = ReviewExchangeResponse(
                 response_type="changes_requested",
                 response_text=(
-                    "Validation record missing or failed. Address the failing "
+                    f"{validation_error}. Address the failing "
                     "checks and continue."
                 ),
                 getting_closer=False,
@@ -806,6 +957,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
         if reviewer.getting_closer is False:
             no_progress_count += 1
@@ -819,18 +971,23 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         last_reviewer_text = reviewer.response_text
 
         # ----- Coder turn -----
-        coder_prompt_text = build_coder_prompt(
+        coder_packet = ReviewExchangeTurnPacket(
             issue_number=issue_number,
             issue_title=issue_title,
             round_index=round_index,
-            reviewer_feedback=reviewer.response_text,
+            role=Role.CODER,
+            require_validation=require_validation,
             run_dir=run_dir,
+            reviewer_feedback=reviewer.response_text,
         )
+        _persist_turn_packet(exchange_dir, coder_packet)
+        coder_prompt_text = build_coder_prompt(coder_packet)
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
@@ -866,6 +1023,7 @@ def _drive_rounds(  # noqa: PLR0913
             timeout_seconds=coder_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=round_index,
@@ -882,6 +1040,7 @@ def _drive_rounds(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
 
         coder, protocol_outcome = _enforce_coder_protocol(
@@ -895,6 +1054,7 @@ def _drive_rounds(  # noqa: PLR0913
             coder_recording=coder_recording,
             coder_completion_path=coder_completion_path,
             validation_record_path=validation_record_path,
+            pair_validation=pair_validation,
             coder_timeout_seconds=coder_timeout_seconds,
             require_validation=require_validation,
             exchange_run_id=exchange_run_id,
@@ -922,6 +1082,7 @@ def _drive_rounds(  # noqa: PLR0913
         exchange_dir, max_rounds,
         status="stopped", reason="max_rounds_exceeded",
         reviewer_response=None,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
@@ -952,6 +1113,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     coder_recording: Path,
     coder_completion_path: Path,
     validation_record_path: Path,
+    pair_validation: _PairValidationMirror,
     coder_timeout_seconds: float,
     require_validation: bool,
     exchange_run_id: str,
@@ -971,7 +1133,8 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     """
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
-        validation_record_path=validation_record_path,
+        pair_validation=pair_validation,
+        run_validation_record_path=run_dir / "validation-record.json",
         require_validation=require_validation,
     )
     retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
@@ -1018,6 +1181,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             timeout_seconds=coder_timeout_seconds,
             session_output=session_output,
             run_dir=run_dir,
+            exchange_dir=exchange_dir,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=cycle_index,
@@ -1034,11 +1198,13 @@ def _enforce_coder_protocol(  # noqa: PLR0913
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
+                validation_record_path=validation_record_path,
             )
         coder = retry_response
         protocol_error = _validate_coder_completion(
             completion_path=coder_completion_path,
-            validation_record_path=validation_record_path,
+            pair_validation=pair_validation,
+            run_validation_record_path=run_dir / "validation-record.json",
             require_validation=require_validation,
         )
     if protocol_error is not None:
@@ -1049,6 +1215,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             last_coder=coder,
             protocol_error=protocol_error,
             emit=emit,
+            validation_record_path=validation_record_path,
             issue_number=issue_number,
             session_name=session_name,
         )
@@ -1065,6 +1232,7 @@ def _send_role_round(  # noqa: PLR0913
     timeout_seconds: float,
     session_output: SessionOutput,
     run_dir: Path,
+    exchange_dir: Path,
     exchange_run_id: str,
     issue_number: int,
     cycle_index: int,
@@ -1076,6 +1244,10 @@ def _send_role_round(  # noqa: PLR0913
 
     Returns ``None`` if the role timed out or died — the caller emits
     REVIEW_EXCHANGE_ROLE_TIMEOUT and bails out of the exchange.
+
+    Persists the per-turn parsed result as a session artifact under
+    ``<exchange_dir>/turns/round-<n>-<role>.result.json`` for replay
+    and diagnostics.
     """
     try:
         parsed = send_round(
@@ -1092,6 +1264,17 @@ def _send_role_round(  # noqa: PLR0913
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
         logger.warning(
             "%s round %d failed: %s", role, cycle_index, exc,
+        )
+        # The typed result artifact must exist on the failure path
+        # too — this is the case operators most need to inspect, and
+        # an asymmetric "result.json only on the happy path" contract
+        # would leave the on-disk trail incomplete for exactly the
+        # rounds that need replay/forensics.
+        _persist_turn_result(
+            exchange_dir,
+            round_index=cycle_index,
+            role=Role(role),
+            result=ReviewExchangeTurnResult.for_no_completion(str(exc)),
         )
         _record_chapter(
             session_output=session_output,
@@ -1117,7 +1300,16 @@ def _send_role_round(  # noqa: PLR0913
         })
         return None
 
-    response = _normalize_role_response(parsed)
+    typed_result = ReviewExchangeTurnResult.from_agent_dict(
+        parsed, raw_output=None,
+    )
+    _persist_turn_result(
+        exchange_dir,
+        round_index=cycle_index,
+        role=Role(role),
+        result=typed_result,
+    )
+    response = _legacy_response_from_typed_result(typed_result)
     _record_chapter(
         session_output=session_output,
         run_dir=run_dir,
@@ -1143,34 +1335,77 @@ def _send_role_round(  # noqa: PLR0913
     return response
 
 
-def _normalize_role_response(parsed: dict[str, Any]) -> ReviewExchangeResponse:
-    """Convert the raw JSON dict into a domain ReviewExchangeResponse.
-
-    Missing required fields are tolerated by surfacing a synthetic
-    response_type that the caller can treat as a protocol error if it
-    chooses to. Today's contract is: the agent writes
-    {response_type, response_text, [getting_closer]}; anything else is
-    surfaced as response_type='protocol_error'.
-    """
-    response_type = str(parsed.get("response_type") or "").strip()
-    response_text = str(parsed.get("response_text") or "").strip()
-    if not response_type or not response_text:
+def _legacy_response_from_typed_result(
+    result: ReviewExchangeTurnResult,
+) -> ReviewExchangeResponse:
+    if result.kind is TurnResultKind.PROTOCOL_ERROR:
         return ReviewExchangeResponse(
             response_type="protocol_error",
-            response_text=(
-                "Agent response missing required response_type/response_text fields"
-            ),
-            getting_closer=False,
-            raw_json=parsed,
-            raw_output=None,
+            response_text=result.response_text,
+            getting_closer=result.getting_closer if result.getting_closer is not None else False,
+            raw_json=result.raw_json,
+            raw_output=result.raw_output,
         )
     return ReviewExchangeResponse(
-        response_type=response_type,
-        response_text=response_text,
-        getting_closer=parsed.get("getting_closer"),
-        raw_json=parsed,
-        raw_output=None,
+        response_type=result.kind.value,
+        response_text=result.response_text,
+        getting_closer=result.getting_closer,
+        raw_json=result.raw_json,
+        raw_output=result.raw_output,
     )
+
+
+def _persist_turn_packet(
+    exchange_dir: Path, packet: ReviewExchangeTurnPacket,
+) -> None:
+    """Write the per-turn input packet as a session artifact.
+
+    The artifact lives at
+    ``<exchange_dir>/turns/round-<round>-<role>.packet.json`` so a
+    failed exchange can be replayed/inspected from the on-disk state
+    without walking the recording stream. Best-effort: write failures
+    do not abort the round (the round itself is the system of record;
+    artifacts are diagnostic).
+    """
+    try:
+        turns_dir = exchange_dir / "turns"
+        turns_dir.mkdir(parents=True, exist_ok=True)
+        path = turns_dir / f"round-{packet.round_index}-{packet.role.value}.packet.json"
+        path.write_text(
+            json.dumps(packet.to_manifest_fields(), indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist turn packet for round=%d role=%s: %s",
+            packet.round_index, packet.role.value, exc,
+        )
+
+
+def _persist_turn_result(
+    exchange_dir: Path,
+    *,
+    round_index: int,
+    role: Role,
+    result: ReviewExchangeTurnResult,
+) -> None:
+    """Write the per-turn parsed result as a session artifact.
+
+    Sibling to ``_persist_turn_packet``: a failed exchange leaves both
+    the packet (what the orchestrator gave the agent) and the result
+    (what the orchestrator parsed from the agent's response) on disk.
+    """
+    try:
+        turns_dir = exchange_dir / "turns"
+        turns_dir.mkdir(parents=True, exist_ok=True)
+        path = turns_dir / f"round-{round_index}-{role.value}.result.json"
+        path.write_text(
+            json.dumps(result.to_manifest_fields(), indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist turn result for round=%d role=%s: %s",
+            round_index, role.value, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1186,10 +1421,12 @@ def _complete_with_reviewer_ok(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
         status="ok", reason="reviewer_ok", reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1224,11 +1461,13 @@ def _stop_for_no_progress(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
         status="stopped", reason="reviewer_reports_no_progress",
         reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1264,6 +1503,7 @@ def _build_outcome_for_role_timeout(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     """Build the ``error`` outcome when a role times out / dies / fails protocol.
 
@@ -1277,6 +1517,7 @@ def _build_outcome_for_role_timeout(
     summary = _write_summary(
         exchange_dir, round_index,
         status="error", reason=reason, reviewer_response=last_reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
         "issue_number": issue_number,
@@ -1305,6 +1546,7 @@ def _build_outcome_for_protocol_error(
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
+    validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
     """Build the ``error`` outcome when the coder fails its protocol contract.
 
@@ -1316,6 +1558,7 @@ def _build_outcome_for_protocol_error(
         exchange_dir, round_index,
         status="error", reason="coder_protocol_error",
         reviewer_response=last_reviewer,
+        validation_record_path=validation_record_path,
     )
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -1345,6 +1588,51 @@ def _build_outcome_for_protocol_error(
     )
 
 
+def _write_review_exchange_manifest_header(
+    session_output: SessionOutput,
+    run_dir: Path,
+    header: ReviewExchangeManifestHeader,
+) -> None:
+    """Stamp the review-exchange manifest header.
+
+    Extracted to keep ``run_persistent_session_exchange`` under the
+    C901 ceiling and to give the manifest section a typed name. The
+    header itself documents the contract; this helper is the seam
+    where the typed value crosses into the loose-dict
+    ``update_manifest`` API.
+    """
+    session_output.update_manifest(run_dir, header.to_manifest_fields())
+
+
+def _read_validation_facts(
+    path: Path | None,
+) -> tuple[str | None, bool | None]:
+    """Read ``(head_sha, passed)`` from a validation-record.json.
+
+    Returns ``(None, None)`` when the path is None, missing, or
+    unreadable as JSON. ``head_sha`` is None when the field is
+    absent/empty; ``passed`` is None when the field is absent or
+    not a bool.
+
+    The summary writer (and the cache loader, in a later commit)
+    use this to populate ``ResumeFacts`` without leaking validation-
+    record schema concerns into other modules.
+    """
+    if path is None or not path.exists():
+        return None, None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    head_sha = data.get("head_sha")
+    if not isinstance(head_sha, str) or not head_sha:
+        head_sha = None
+    passed = data.get("passed")
+    if not isinstance(passed, bool):
+        passed = None
+    return head_sha, passed
+
+
 def _write_summary(
     exchange_dir: Path,
     round_index: int,
@@ -1352,19 +1640,45 @@ def _write_summary(
     status: str,
     reason: str,
     reviewer_response: ReviewExchangeResponse | None,
+    validation_record_path: Path | None,
 ) -> dict[str, Any]:
-    """Persist summary.json atomically using the same shape the active
-    runner emits, so the publish-cache contract is uniform across both
-    runners. ``status`` is the ReviewExchangeOutcome status value
-    ("ok"/"stopped"/"error"); ``reason`` carries the matching reason
-    token."""
-    summary = {
+    """Persist summary.json atomically.
+
+    The summary records *facts* about the exchange that just ran:
+    ``status``, ``reason``, ``completed_rounds``, ``response_text``,
+    ``timestamp``, plus — when the validation record is readable —
+    ``head_sha`` and ``validation_passed``. Policy (cacheable / halt
+    / retry / stale) is NOT encoded here; the cache loader feeds
+    these fields into ``ReviewExchangeResumeDecision.decide`` to
+    determine the next-tick action.
+
+    Pre-this-commit, the writer encoded policy by selectively
+    omitting ``head_sha`` based on status. That dual-purpose use of
+    one field (fact AND control signal) was the root cause of the
+    PR #6270 review-feedback whack-a-mole: every patch that adjusted
+    "which statuses cache-hit" mutated which facts got persisted,
+    and downstream consumers re-inferred policy at three different
+    sites. Recording facts unconditionally and centralizing policy
+    in one named helper ends that drift.
+
+    ``head_sha`` and ``validation_passed`` are still omitted (rather
+    than written as None) when the validation record cannot be
+    read at all — the caller should treat absence as "we don't
+    know" rather than "validation explicitly failed." The cache
+    loader's ``ResumeFacts`` mapping handles each case.
+    """
+    summary: dict[str, Any] = {
         "completed_rounds": round_index,
         "status": status,
         "response_text": reviewer_response.response_text if reviewer_response else None,
         "reason": reason,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    head_sha, passed = _read_validation_facts(validation_record_path)
+    if head_sha is not None:
+        summary["head_sha"] = head_sha
+    if passed is not None:
+        summary["validation_passed"] = passed
     _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary
 
@@ -1412,9 +1726,12 @@ def _record_chapter(  # noqa: PLR0913
     The chapter event is emitted *after* the sidecar write succeeds so
     SSE/timeline consumers see the same offset that's now durable on disk;
     on failure the exception propagates and no event fires (consistent
-    with the rest of the runner's emit-on-success contract). Slice
-    mirroring runs *after* both the sidecar and the event so the viewer
-    can never see a chapter pointer that has not yet been mirrored.
+    with the rest of the runner's emit-on-success contract).
+
+    Per-event slice mirroring is no longer chapter-driven — the role's
+    ``MirroredTerminalRecordingWriter`` writes to both the pair file
+    and the per-session slice on every event drained from the PTY,
+    so chapters only own offset translation here.
     """
     pair_event_index = recording_event_count(recording_path)
     # Slice-relative when a mirror is in play so the viewer can scrub
@@ -1422,8 +1739,7 @@ def _record_chapter(  # noqa: PLR0913
     # cached pair on exchange 2 records pair-relative offsets in the
     # hundreds while the slice file only holds dozens of events, and
     # the web replay route slices ``all_events[chapter_offset:]`` to
-    # an empty window — re-breaking the timeline for the cached-pair
-    # case this PR is fixing.
+    # an empty window.
     sidecar_event_index = (
         mirror.pair_to_slice_offset(pair_event_index)
         if mirror is not None
@@ -1449,19 +1765,36 @@ def _record_chapter(  # noqa: PLR0913
         "recording_event_index": sidecar_event_index,
         "label": label,
     })
-    if mirror is not None:
-        mirror.mirror_through(pair_event_index)
     return pair_event_index
 
 
-def _validation_passed(record_path: Path) -> bool:
+def _validation_record_error(
+    record_path: Path,
+    *,
+    current_head_sha: str | None,
+) -> str | None:
     if not record_path.exists():
-        return False
+        return "validation-record.json missing"
     try:
         data = json.loads(record_path.read_text())
     except json.JSONDecodeError:
-        return False
-    return bool(data.get("passed"))
+        return "validation-record.json is not valid JSON"
+    if not isinstance(data, dict):
+        return "validation-record.json must be a JSON object"
+    if data.get("passed") is not True:
+        return "validation-record.json did not pass"
+    if current_head_sha is None:
+        return "cannot determine current HEAD for validation-record.json"
+    record_head_sha = data.get("head_sha")
+    if not isinstance(record_head_sha, str) or not record_head_sha:
+        return "validation-record.json missing head_sha"
+    if record_head_sha != current_head_sha:
+        return (
+            "validation-record.json head "
+            f"{record_head_sha[:12]} does not match current HEAD "
+            f"{current_head_sha[:12]}"
+        )
+    return None
 
 
 def _clear_coder_completion(completion_path: Path) -> None:
@@ -1481,7 +1814,8 @@ def _clear_coder_completion(completion_path: Path) -> None:
 def _validate_coder_completion(
     *,
     completion_path: Path,
-    validation_record_path: Path,
+    pair_validation: _PairValidationMirror,
+    run_validation_record_path: Path,
     require_validation: bool,
 ) -> str | None:
     """Mirror of control/review_exchange_loop._validate_coder_protocol.
@@ -1502,8 +1836,14 @@ def _validate_coder_completion(
         return f"completion artifact is not valid JSON: {completion_path}"
     if not isinstance(payload, dict):
         return f"completion artifact must be a JSON object: {completion_path}"
-    if require_validation and not _validation_passed(validation_record_path):
-        return "validation-record.json missing or did not pass"
+    validation_source_error = pair_validation.refresh_from_completion(
+        payload,
+        run_validation_record_path=run_validation_record_path,
+    )
+    if require_validation:
+        if validation_source_error is not None:
+            return validation_source_error
+        return pair_validation.current_validation_error()
     return None
 
 

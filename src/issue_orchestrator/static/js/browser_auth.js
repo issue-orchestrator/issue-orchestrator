@@ -50,20 +50,79 @@
         return { ...options, headers };
     }
 
-    function shouldReloadOnAuthExpiry(response) {
+    function isAuthExpiredResponse(response) {
         if (!response || response.status !== 401) return false;
         const url = typeof response.url === 'string' ? response.url : '';
         return url.includes('/api/') || url.includes('/control/');
     }
 
-    function maybeReloadOnAuthExpiry(response, target = root) {
-        if (!shouldReloadOnAuthExpiry(response)) return false;
-        if (target.__ioBrowserAuthReloadTriggered) return false;
-        target.__ioBrowserAuthReloadTriggered = true;
-        if (target.location && typeof target.location.reload === 'function') {
-            target.location.reload();
+    const OVERLAY_ID = 'io-auth-expired-overlay';
+
+    function showAuthExpiredOverlay(target = root) {
+        const doc = target && target.document;
+        if (!doc || typeof doc.createElement !== 'function' || !doc.body) {
+            return false;
+        }
+        if (doc.getElementById && doc.getElementById(OVERLAY_ID)) {
+            return false;
+        }
+        const overlay = doc.createElement('div');
+        overlay.id = OVERLAY_ID;
+        overlay.setAttribute('role', 'alertdialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', `${OVERLAY_ID}-title`);
+        // Inline styles so the overlay renders even before CSS loads or
+        // when the dashboard markup is in a partially-rendered state.
+        overlay.style.cssText = [
+            'position:fixed', 'inset:0', 'z-index:2147483647',
+            'background:rgba(15,20,25,0.92)',
+            'display:flex', 'align-items:center', 'justify-content:center',
+            'font-family:sans-serif', 'color:#e6e6e6',
+        ].join(';');
+        const card = doc.createElement('div');
+        card.style.cssText = [
+            'background:#1c2330', 'padding:32px', 'border-radius:8px',
+            'min-width:320px', 'max-width:420px',
+            'box-shadow:0 4px 16px rgba(0,0,0,0.4)',
+            'text-align:left',
+        ].join(';');
+        const title = doc.createElement('h1');
+        title.id = `${OVERLAY_ID}-title`;
+        title.textContent = 'Session expired';
+        title.style.cssText = 'margin:0 0 12px;font-size:20px';
+        const body = doc.createElement('p');
+        body.textContent = 'Your sign-in is no longer valid. Sign in again to continue.';
+        body.style.cssText = 'margin:0 0 20px;color:#9aa5b1;font-size:13px;line-height:1.4';
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.id = `${OVERLAY_ID}-signin`;
+        button.textContent = 'Sign in';
+        button.style.cssText = [
+            'width:100%', 'padding:10px', 'border:0', 'border-radius:4px',
+            'background:#3b82f6', 'color:#fff', 'font-weight:600',
+            'cursor:pointer', 'font-size:14px',
+        ].join(';');
+        button.addEventListener('click', () => {
+            if (target.location && typeof target.location.assign === 'function') {
+                target.location.assign('/');
+            }
+        });
+        card.appendChild(title);
+        card.appendChild(body);
+        card.appendChild(button);
+        overlay.appendChild(card);
+        doc.body.appendChild(overlay);
+        if (typeof button.focus === 'function') {
+            try { button.focus(); } catch (_e) { /* focus is best-effort */ }
         }
         return true;
+    }
+
+    function maybeShowAuthExpiredOverlay(response, target = root) {
+        if (!isAuthExpiredResponse(response)) return false;
+        if (target.__ioBrowserAuthReloadTriggered) return false;
+        target.__ioBrowserAuthReloadTriggered = true;
+        return showAuthExpiredOverlay(target);
     }
 
     function buildSseUrl(path, token) {
@@ -97,7 +156,7 @@
             const options = buildFetchOptions(input, init, csrfToken, target.Headers);
             const response = await originalFetch(input, options);
             if (isBrowserAuthRequired(target)) {
-                maybeReloadOnAuthExpiry(response, target);
+                maybeShowAuthExpiredOverlay(response, target);
             }
             return response;
         };
@@ -108,11 +167,12 @@
         buildSseUrl,
         getCsrfToken,
         installAuthenticatedFetch,
+        isAuthExpiredResponse,
         isBrowserAuthRequired,
-        maybeReloadOnAuthExpiry,
+        maybeShowAuthExpiredOverlay,
         openAuthenticatedSseStream,
         resolveRequestMethod,
-        shouldReloadOnAuthExpiry,
+        showAuthExpiredOverlay,
     };
 
     if (typeof module !== 'undefined' && module.exports) {

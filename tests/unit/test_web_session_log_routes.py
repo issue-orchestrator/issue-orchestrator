@@ -874,8 +874,8 @@ class TestIssueLogEndpointsUseLatestHistory:
     ) -> None:
         """B2 layout regression (PR #6212 review feedback): the recording
         is pair-scoped (lives under
-        ``<state>/persistent-pairs/issue-N/<role>/...``) but chapters
-        are still per-exchange and live under the selected
+        ``<coder-worktree>/.issue-orchestrator/persistent-pairs/issue-N/<role>/...``)
+        but chapters are still per-exchange and live under the selected
         ``<run_dir>/<role>/chapters.json``. The route's
         ``/api/session/terminal-recording`` must follow the manifest
         to find the recording AND look in ``run_dir`` for chapters,
