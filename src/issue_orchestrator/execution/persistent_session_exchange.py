@@ -55,6 +55,7 @@ from ..domain.review_exchange_turn import (
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
+from ..infra.repo_identity import get_repo_head_sha
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
@@ -374,11 +375,12 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         ).to_manifest_fields(),
     )
 
-    _seed_pair_validation_record(
+    pair_validation = _PairValidationMirror(
         pair_dir=pair_dir,
-        pair_validation_record=pair_validation_record,
-        source=initial_validation_record_path,
+        record_path=pair_validation_record,
+        coder_worktree_path=coder_worktree_path,
     )
+    pair_validation.replace_from_initial(initial_validation_record_path)
 
     def _spawn_pair() -> PersistentExchangePair:
         # Cache miss: this is the first exchange for the issue (or the
@@ -541,6 +543,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             reviewer_recording=pair.reviewer_recording_path,
             coder_completion_path=pair.coder_completion_path,
             validation_record_path=pair.validation_record_path,
+            pair_validation=pair_validation,
             coder_timeout_seconds=coder_agent.timeout_minutes * 60,
             reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
             max_rounds=max_rounds,
@@ -567,31 +570,96 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     return outcome
 
 
-def _seed_pair_validation_record(
-    *,
-    pair_dir: Path,
-    pair_validation_record: Path,
-    source: Path | None,
-) -> None:
-    """Copy the caller-supplied validation record into the pair scope.
+@dataclass(frozen=True)
+class _PairValidationMirror:
+    """Own the pair-scoped validation record's freshness contract.
 
-    Extracted from ``run_persistent_session_exchange`` to keep that
-    function under the C901 complexity ceiling. The pair-scoped seed
-    is load-bearing for B2: the coder-protocol guardrail reads
-    ``pair_validation_record`` on every exchange, so leaving the
-    seed at the per-exchange run_dir would mean exchange 2 sees no
-    prior validation evidence even when the caller supplied one.
-
-    No-op when ``source`` is missing. When a caller supplies a current
-    validation record, it is authoritative for the exchange being
-    started and must refresh any existing pair-scoped record. Otherwise
-    a live pair reused across attempts can keep writing summaries for an
-    older head after the coder worktree has moved on.
+    The persistent pair lives across exchanges, but validation is only
+    valid for the coder worktree's current HEAD. This mirror is the
+    single owner for invalidating stale pair records, copying the
+    current validation owner's record into pair scope, and asserting
+    that a required validation record both passed and matches HEAD.
     """
-    if source is None or not source.exists():
-        return
-    pair_dir.mkdir(parents=True, exist_ok=True)
-    pair_validation_record.write_bytes(source.read_bytes())
+
+    pair_dir: Path
+    record_path: Path
+    coder_worktree_path: Path
+
+    def replace_from_initial(self, source: Path | None) -> None:
+        """Mirror the caller's current validation source at exchange start.
+
+        A missing source clears any prior pair record. That is
+        intentional: an exchange without current validation evidence
+        must not inherit the last exchange's passing record.
+        """
+        self._replace_from(source)
+
+    def refresh_from_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        run_validation_record_path: Path,
+    ) -> str | None:
+        """Mirror validation evidence produced by this coder turn."""
+        source, error = self._completion_validation_source(
+            payload,
+            run_validation_record_path=run_validation_record_path,
+        )
+        if error is not None:
+            self._clear()
+            return error
+        self._replace_from(source)
+        return None
+
+    def current_validation_error(self) -> str | None:
+        return _validation_record_error(
+            self.record_path,
+            current_head_sha=get_repo_head_sha(self.coder_worktree_path),
+        )
+
+    def _completion_validation_source(
+        self,
+        payload: dict[str, Any],
+        *,
+        run_validation_record_path: Path,
+    ) -> tuple[Path | None, str | None]:
+        raw_path = payload.get("validation_record_path")
+        if raw_path is not None:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                return None, "completion validation_record_path must be a non-empty string"
+            return self._validated_worktree_path(raw_path)
+        if run_validation_record_path.exists():
+            return run_validation_record_path, None
+        return None, None
+
+    def _validated_worktree_path(self, raw_path: str) -> tuple[Path | None, str | None]:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = self.coder_worktree_path / candidate
+        try:
+            resolved = candidate.resolve()
+            worktree = self.coder_worktree_path.resolve()
+            if resolved != self.record_path.resolve():
+                resolved.relative_to(worktree)
+        except (OSError, ValueError):
+            return None, (
+                "completion validation_record_path must stay under the coder worktree"
+            )
+        if not resolved.exists():
+            return None, f"completion validation_record_path does not exist: {resolved}"
+        if not resolved.is_file():
+            return None, f"completion validation_record_path is not a file: {resolved}"
+        return resolved, None
+
+    def _replace_from(self, source: Path | None) -> None:
+        if source is None or not source.exists():
+            self._clear()
+            return
+        self.pair_dir.mkdir(parents=True, exist_ok=True)
+        self.record_path.write_bytes(source.read_bytes())
+
+    def _clear(self) -> None:
+        self.record_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +820,7 @@ def _drive_rounds(  # noqa: PLR0913
     reviewer_recording: Path,
     coder_completion_path: Path,
     validation_record_path: Path,
+    pair_validation: _PairValidationMirror,
     coder_timeout_seconds: float,
     reviewer_timeout_seconds: float,
     max_rounds: int,
@@ -838,11 +907,12 @@ def _drive_rounds(  # noqa: PLR0913
                 validation_record_path=validation_record_path,
             )
 
-        if require_validation and reviewer.response_type == "ok" and not _validation_passed(validation_record_path):
+        validation_error = pair_validation.current_validation_error() if require_validation else None
+        if reviewer.response_type == "ok" and validation_error is not None:
             reviewer = ReviewExchangeResponse(
                 response_type="changes_requested",
                 response_text=(
-                    "Validation record missing or failed. Address the failing "
+                    f"{validation_error}. Address the failing "
                     "checks and continue."
                 ),
                 getting_closer=False,
@@ -955,6 +1025,7 @@ def _drive_rounds(  # noqa: PLR0913
             coder_recording=coder_recording,
             coder_completion_path=coder_completion_path,
             validation_record_path=validation_record_path,
+            pair_validation=pair_validation,
             coder_timeout_seconds=coder_timeout_seconds,
             require_validation=require_validation,
             exchange_run_id=exchange_run_id,
@@ -1013,6 +1084,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     coder_recording: Path,
     coder_completion_path: Path,
     validation_record_path: Path,
+    pair_validation: _PairValidationMirror,
     coder_timeout_seconds: float,
     require_validation: bool,
     exchange_run_id: str,
@@ -1032,7 +1104,8 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     """
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
-        validation_record_path=validation_record_path,
+        pair_validation=pair_validation,
+        run_validation_record_path=run_dir / "validation-record.json",
         require_validation=require_validation,
     )
     retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
@@ -1101,7 +1174,8 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         coder = retry_response
         protocol_error = _validate_coder_completion(
             completion_path=coder_completion_path,
-            validation_record_path=validation_record_path,
+            pair_validation=pair_validation,
+            run_validation_record_path=run_dir / "validation-record.json",
             require_validation=require_validation,
         )
     if protocol_error is not None:
@@ -1665,14 +1739,33 @@ def _record_chapter(  # noqa: PLR0913
     return pair_event_index
 
 
-def _validation_passed(record_path: Path) -> bool:
+def _validation_record_error(
+    record_path: Path,
+    *,
+    current_head_sha: str | None,
+) -> str | None:
     if not record_path.exists():
-        return False
+        return "validation-record.json missing"
     try:
         data = json.loads(record_path.read_text())
     except json.JSONDecodeError:
-        return False
-    return bool(data.get("passed"))
+        return "validation-record.json is not valid JSON"
+    if not isinstance(data, dict):
+        return "validation-record.json must be a JSON object"
+    if data.get("passed") is not True:
+        return "validation-record.json did not pass"
+    if current_head_sha is None:
+        return "cannot determine current HEAD for validation-record.json"
+    record_head_sha = data.get("head_sha")
+    if not isinstance(record_head_sha, str) or not record_head_sha:
+        return "validation-record.json missing head_sha"
+    if record_head_sha != current_head_sha:
+        return (
+            "validation-record.json head "
+            f"{record_head_sha[:12]} does not match current HEAD "
+            f"{current_head_sha[:12]}"
+        )
+    return None
 
 
 def _clear_coder_completion(completion_path: Path) -> None:
@@ -1692,7 +1785,8 @@ def _clear_coder_completion(completion_path: Path) -> None:
 def _validate_coder_completion(
     *,
     completion_path: Path,
-    validation_record_path: Path,
+    pair_validation: _PairValidationMirror,
+    run_validation_record_path: Path,
     require_validation: bool,
 ) -> str | None:
     """Mirror of control/review_exchange_loop._validate_coder_protocol.
@@ -1713,8 +1807,14 @@ def _validate_coder_completion(
         return f"completion artifact is not valid JSON: {completion_path}"
     if not isinstance(payload, dict):
         return f"completion artifact must be a JSON object: {completion_path}"
-    if require_validation and not _validation_passed(validation_record_path):
-        return "validation-record.json missing or did not pass"
+    validation_source_error = pair_validation.refresh_from_completion(
+        payload,
+        run_validation_record_path=run_validation_record_path,
+    )
+    if require_validation:
+        if validation_source_error is not None:
+            return validation_source_error
+        return pair_validation.current_validation_error()
     return None
 
 
