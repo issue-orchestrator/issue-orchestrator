@@ -503,13 +503,21 @@ def test_issue_detail_validation_renders_structured_view_when_junit_cases_presen
 
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "openValidationFailure")
-    assert "/api/dialog/validation-failure/" in body
-    assert "Validation Results" in body
+    fetch_body = _function_body(js, "openValidationFailure")
+    # The fetch entry point hits the dedicated dialog endpoint and delegates
+    # rendering to renderValidationDialog (the pure data → DOM mapping).
+    assert "/api/dialog/validation-failure/" in fetch_body
+    assert "renderValidationDialog(" in fetch_body
+    assert "data.actions" not in fetch_body
+
+    render_body = _function_body(js, "renderValidationDialog")
+    # Render shape — these markers prove the modal scaffolding is intact and
+    # uses the structured action_sections payload, not the legacy
+    # data.actions field.
+    assert "Validation Results" in render_body
+    assert "action_sections" in render_body
+    assert "diag-validation-grid" in render_body
     assert "renderValidationFailureActionSections" in js
-    assert "action_sections" in body
-    assert "diag-validation-grid" in body
-    assert "data.actions" not in body
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:
