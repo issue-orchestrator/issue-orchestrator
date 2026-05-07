@@ -912,6 +912,25 @@ def test_dashboard_settings_nav_uses_shared_embedded_nav_helper() -> None:
     assert '<script src="/static/js/embedded_nav.js"></script>' in tmpl
 
 
+def test_browser_auth_shows_overlay_instead_of_silent_reload_on_401() -> None:
+    """A 401 from /api/ or /control/ must surface a visible 'Session expired'
+    overlay so users can sign in again. The previous behavior — calling
+    ``location.reload()`` silently — produced a white screen when the reload
+    landed on a non-recoverable URL or hit a render race, leaving the user
+    with no UI to recover. See PR fixing the white-screen-on-session-expiry bug.
+    """
+    js = _read(BROWSER_AUTH_JS)
+    assert "showAuthExpiredOverlay" in js
+    assert "io-auth-expired-overlay" in js
+    assert "Session expired" in js
+    assert "Sign in" in js
+    # Lock out the regression: no silent reload on auth-expiry path.
+    assert ".reload()" not in js, (
+        "browser_auth.js must not silently reload on 401 — show the "
+        "session-expired overlay so the user can recover"
+    )
+
+
 def test_browser_auth_helper_is_shared_by_control_center_and_dashboard() -> None:
     dashboard = _read(DASHBOARD_TEMPLATE)
     control_center = _read(ROOT / "src" / "issue_orchestrator" / "templates" / "control_center.html")
