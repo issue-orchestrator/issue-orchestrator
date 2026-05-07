@@ -1049,61 +1049,55 @@ def test_theme_resolution_uses_shared_embedded_nav_helper() -> None:
     assert "storedTheme === 'system'" not in settings_apply
 
 
-def test_embedded_nav_module_behavior_verified_by_node_test_runner() -> None:
-    # Behavior-level regression: actually exercise buildHref() under Node so
-    # we verify real URL transformations, not just string presence in source.
-    # Fails hard if node is missing — this is a required runtime for the
-    # shared helper's contract tests, not optional infrastructure.
+def test_all_dashboard_js_node_tests_pass() -> None:
+    """Run every tests/js/*.test.js file via node --test in one invocation.
+
+    Centralized auto-discovery, on purpose: previously each new JS test had
+    to be hand-listed in a pytest wrapper, which led to a silent gap where
+    `tests/js/*.test.js` files could land on disk and never run in CI (the
+    PR #6274 review caught this for `validation_dialog_render.test.js`,
+    but the same was already true for several pre-existing files —
+    `compact_card_state`, `expanded_column_state`, `issue_row_state`,
+    `ui_action_contract`, `e2e_run_view_actions`).
+
+    Add a new file to tests/js/, it runs in CI. No further wiring.
+    """
     import shutil
     import subprocess
 
     node = shutil.which("node")
-    assert node, "node runtime is required to validate embedded_nav.js behavior"
+    assert node, "node runtime is required to validate JS test files"
+    js_test_dir = ROOT / "tests" / "js"
+    assert js_test_dir.exists(), f"JS test dir missing: {js_test_dir}"
+    test_files = sorted(js_test_dir.glob("*.test.js"))
+    assert test_files, f"no JS tests found in {js_test_dir}"
+
+    result = subprocess.run(
+        [node, "--test", *[str(p) for p in test_files]],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"node --test failed (exit {result.returncode})\n"
+        f"ran: {[p.name for p in test_files]}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_dashboard_js_node_test_sources_present() -> None:
+    """Source-tree guard: the JS files the node tests depend on must exist.
+
+    The test_all_dashboard_js_node_tests_pass runner above will fail loudly
+    if these go missing, but a focused existence check produces a clearer
+    failure message ("shared helper missing: …") than a node stack trace.
+    """
     assert THEME_RESOLUTION_JS.exists(), f"theme resolver missing: {THEME_RESOLUTION_JS}"
-    assert EMBEDDED_NAV_JS.exists(), f"shared helper missing: {EMBEDDED_NAV_JS}"
-    assert EMBEDDED_NAV_TEST_JS.exists(), f"node test missing: {EMBEDDED_NAV_TEST_JS}"
+    assert EMBEDDED_NAV_JS.exists(), f"embedded nav helper missing: {EMBEDDED_NAV_JS}"
+    assert EMBEDDED_NAV_TEST_JS.exists(), f"embedded nav test missing: {EMBEDDED_NAV_TEST_JS}"
     assert DASHBOARD_BOOT_JS.exists(), f"dashboard boot helper missing: {DASHBOARD_BOOT_JS}"
-
-    result = subprocess.run(
-        [
-            node,
-            "--test",
-            str(ROOT / "tests" / "js" / "theme_resolution.test.js"),
-            str(EMBEDDED_NAV_TEST_JS),
-            str(ROOT / "tests" / "js" / "dashboard_boot.test.js"),
-        ],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"node --test failed (exit {result.returncode})\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-
-
-def test_browser_auth_module_behavior_verified_by_node_test_runner() -> None:
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    assert node, "node runtime is required to validate browser_auth.js behavior"
-    test_file = ROOT / "tests" / "js" / "browser_auth.test.js"
-    assert BROWSER_AUTH_JS.exists(), f"shared helper missing: {BROWSER_AUTH_JS}"
-    assert test_file.exists(), f"node test missing: {test_file}"
-
-    result = subprocess.run(
-        [node, "--test", str(test_file)],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"node --test failed (exit {result.returncode})\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert BROWSER_AUTH_JS.exists(), f"browser auth helper missing: {BROWSER_AUTH_JS}"
 
 
 def test_journey_cycle_labels_use_run_local_numbering() -> None:
