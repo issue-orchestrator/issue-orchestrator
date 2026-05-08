@@ -113,6 +113,17 @@ function makeMenu({ drawerLeft = 0, drawerTop = 0 } = {}) {
     return { menu, items };
 }
 
+function assertPositionForOffsetParent(offsetParentForContext, expected) {
+    const context = loadTimeline();
+    const { menu, items } = makeMenu();
+    items.offsetParent = offsetParentForContext(context);
+
+    context.positionTimelineEventMenu(menu);
+
+    assert.equal(items.style.left, expected.left);
+    assert.equal(items.style.top, expected.top);
+}
+
 test('positionTimelineEventMenu subtracts transformed fixed containing block offset', () => {
     const context = loadTimeline();
     const { menu, items } = makeMenu({ drawerLeft: 240 });
@@ -121,6 +132,22 @@ test('positionTimelineEventMenu subtracts transformed fixed containing block off
 
     assert.equal(items.style.left, '304px');
     assert.equal(items.style.top, '124px');
+});
+
+test('positionTimelineEventMenu leaves viewport coordinates unmodified without fixed containing block', () => {
+    assertPositionForOffsetParent(() => null, { left: '544px', top: '124px' });
+    assertPositionForOffsetParent(
+        context => context.document.body,
+        { left: '544px', top: '124px' },
+    );
+    assertPositionForOffsetParent(
+        context => context.document.documentElement,
+        { left: '544px', top: '124px' },
+    );
+    assertPositionForOffsetParent(
+        () => ({ getBoundingClientRect: () => ({ left: 240, top: 12 }) }),
+        { left: '544px', top: '124px' },
+    );
 });
 
 test('toggleTimelineEventMenu opens the clicked menu and closes other menus', () => {
@@ -154,6 +181,28 @@ test('handleTimelineEventActionsClick toggles overflow menus through shared dele
 
     context.handleTimelineEventActionsClick({
         target: menu.trigger,
+        preventDefault: () => calls.push('preventDefault'),
+        stopPropagation: () => calls.push('stopPropagation'),
+    });
+
+    assert.deepEqual(calls, ['preventDefault', 'stopPropagation']);
+    assert.equal(menu.hasAttribute('open'), true);
+    assert.equal(items.style.left, '304px');
+});
+
+test('handleTimelineEventActionsClick accepts a text-node target from the summary label', () => {
+    const context = loadTimeline();
+    const { menu, items } = makeMenu({ drawerLeft: 240 });
+    const calls = [];
+    menu.trigger.closest = (selector) => {
+        if (selector === '.timeline-event-menu-trigger') return menu.trigger;
+        if (selector === '.timeline-event-menu') return menu;
+        return null;
+    };
+    context.openMenus.push(menu);
+
+    context.handleTimelineEventActionsClick({
+        target: { parentElement: menu.trigger },
         preventDefault: () => calls.push('preventDefault'),
         stopPropagation: () => calls.push('stopPropagation'),
     });

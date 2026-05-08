@@ -1278,7 +1278,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     assert menu_hit_result["hitInside"], (
         f"coding journey overflow menu item is not hit-testable: {menu_hit_result!r}"
     )
-    coding_menu_trigger.evaluate("(element) => element.click()")
+    _dom_click_hit_tested(coding_menu_trigger, "coding journey overflow trigger close")
     expect(coding_step.locator(".timeline-event-menu[open]")).to_have_count(
         0, timeout=5000
     )

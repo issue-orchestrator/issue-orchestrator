@@ -140,6 +140,8 @@ function handleTimelineEventActionsClick(event) {
     const menuTrigger = clickTarget.closest('.timeline-event-menu-trigger');
     if (menuTrigger) {
         const ownerMenu = menuTrigger.closest('.timeline-event-menu');
+        // We own the <details> open state so positioning and close-on-second-click
+        // stay deterministic before the browser's native summary toggle runs.
         event.preventDefault();
         event.stopPropagation();
         toggleTimelineEventMenu(ownerMenu);
