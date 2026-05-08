@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import copy
+import logging
 import threading
 import time
 from typing import Any
 
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
+
+logger = logging.getLogger(__name__)
 
 E2E_PAGE_SIZE = 15
 E2E_STATUS_CACHE_TTL_SECONDS = 1.5
@@ -88,6 +91,7 @@ def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any
         "is_e2e": True,
         "e2e_failed_tests": failed_tests_data,
         "e2e_run_id": run_id,
+        "results_action": _e2e_run_results_action(run_id),
         "relative_time": last_run.get("relative_time", ""),
         "time": last_run.get("relative_time", ""),
     }]
@@ -159,6 +163,7 @@ def build_e2e_recent_run_items(db: Any, config: Any, e2e_status: dict[str, Any])
             "action_hint": "View run details",
             "is_e2e": True,
             "e2e_run_id": run.id,
+            "results_action": _e2e_run_results_action(run.id),
             "relative_time": relative_time,
             "time": relative_time,
             "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
@@ -178,6 +183,24 @@ def _e2e_run_status_label(status: str | None) -> str:
         "canceled": "Canceled",
         "error": "Error",
     }.get(str(status or "").lower(), str(status or "Unknown"))
+
+
+def _e2e_run_results_action(run_id: Any) -> dict[str, Any] | None:
+    if run_id in (None, ""):
+        return None
+    try:
+        parsed = int(run_id)
+    except (TypeError, ValueError):
+        logger.debug("dropping non-integer e2e results run_id %r", run_id)
+        return None
+    if parsed <= 0:
+        logger.debug("dropping non-positive e2e results run_id %r", run_id)
+        return None
+    return {
+        "kind": "e2e_run_results",
+        "run_id": parsed,
+        "label": "View Results",
+    }
 
 
 def _build_e2e_db_items(config: Any, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -345,6 +368,7 @@ def build_e2e_view_model(
             "untriaged_count": untriaged_count,
             "last_status": last_run.get("status", "unknown"),
             "last_run_label": last_run.get("relative_time") or last_run.get("started_at") or "No runs yet",
+            "results_action": _e2e_run_results_action(last_run.get("id")),
             "next_run_at": next_run.get("next_run_at", ""),
             "next_run_reason": next_run.get("next_run_reason", ""),
         },

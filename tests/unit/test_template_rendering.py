@@ -425,6 +425,40 @@ def test_e2e_tab_and_panels_render(jinja_env):
     assert soup.select_one("#panel-e2e") is not None
     assert soup.select_one("#e2eHeaderBadge") is not None
     assert soup.select_one("#e2eControls") is not None
+    latest_results = soup.select_one(".e2e-last-results-btn")
+    assert latest_results is not None
+    assert latest_results.get_text(strip=True) == "View Results"
+    assert latest_results.get("data-action") == "show-latest-e2e-run-results"
+    assert "Last Run Diagnosis" not in soup.select_one("#panel-e2e").get_text(" ")
+    run_results = soup.select_one(".e2e-run-results-btn")
+    assert run_results is not None
+    assert run_results.get_text(strip=True) == "View Results"
+    assert run_results.get("data-action") == "show-e2e-run-results"
+    assert run_results.get("data-run-id") == "9"
+
+
+def test_e2e_tab_disables_results_action_when_no_run_exists(jinja_env):
+    config = make_config()
+    config.e2e.enabled = True
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="e2e",
+        e2e_status_provider=lambda _: {
+            "enabled": True,
+            "running": False,
+            "needs_attention": False,
+            "untriaged_count": 0,
+            "failed_tests": [],
+        },
+    )
+    soup = render_dashboard(jinja_env, vm)
+
+    latest_results = soup.select_one(".e2e-last-results-btn")
+    assert latest_results is not None
+    assert latest_results.get_text(strip=True) == "No Results"
+    assert latest_results.has_attr("disabled")
+    assert latest_results.get("onclick") is None
 
 
 def test_server_rendered_card_carries_fingerprint_for_first_paint_no_flash(jinja_env):

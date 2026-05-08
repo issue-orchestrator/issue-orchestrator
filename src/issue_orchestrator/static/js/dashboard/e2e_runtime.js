@@ -58,18 +58,54 @@ function stopE2EPolling() {
     }
 }
 
-// Event delegation for triage modal and quarantine actions
-document.addEventListener('click', function(e) {
+function showLatestE2ERunResults() {
+    // Use the live E2E state rather than the server-rendered snapshot so this
+    // button follows newly completed runs without requiring a page reload.
+    const runId = Number(e2eLastRun && e2eLastRun.id);
+    if (!Number.isInteger(runId) || runId <= 0) {
+        showToast('No E2E run data available', true);
+        return;
+    }
+    return showUnifiedRunView(runId);
+}
+
+function showE2ERunResultsById(rawRunId) {
+    const runId = Number(rawRunId);
+    if (!Number.isInteger(runId) || runId <= 0) {
+        showToast('No E2E run data available', true);
+        return;
+    }
+    return showUnifiedRunView(runId);
+}
+
+function handleE2ERuntimeActionClick(e) {
     const target = e.target.closest('[data-action]');
-    if (!target || !target.dataset.nodeid) return;
+    if (!target) return;
 
     const action = target.dataset.action;
+    if (action === 'show-latest-e2e-run-results') {
+        e.preventDefault();
+        e.stopPropagation();
+        showLatestE2ERunResults();
+        return;
+    }
+    if (action === 'show-e2e-run-results') {
+        e.preventDefault();
+        e.stopPropagation();
+        showE2ERunResultsById(target.dataset.runId);
+        return;
+    }
+    if (!target.dataset.nodeid) return;
+
     const nodeid = target.dataset.nodeid;
 
     if (action === 'open-test-detail') {
         openTestFailureDetail(nodeid);
     }
-});
+}
+
+// Event delegation for triage modal, quarantine actions, and E2E run results.
+document.addEventListener('click', handleE2ERuntimeActionClick);
 
 // Event delegation for quarantine checkbox changes
 document.addEventListener('change', function(e) {

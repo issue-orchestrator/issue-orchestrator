@@ -332,7 +332,12 @@
                         <button class="issue-action-btn" onclick="showE2EStats()">Stats</button>
                         <button class="issue-action-btn" onclick="showFlakyTestsList()">Flaky Analysis</button>
                         <button class="issue-action-btn" onclick="showQuarantineViewer()">Quarantine</button>
-                        <button class="issue-action-btn" onclick="showE2EDiagnosis()">Last Run Diagnosis</button>
+                        {% set e2e_last_results_action = e2e_summary.results_action if e2e_summary.results_action else {} %}
+                        {% if e2e_last_results_action.run_id %}
+                        <button class="issue-action-btn e2e-last-results-btn" data-action="show-latest-e2e-run-results" title="View formatted test results for the latest E2E run">{{ e2e_last_results_action.label if e2e_last_results_action.label else 'View Results' }}</button>
+                        {% else %}
+                        <button class="issue-action-btn e2e-last-results-btn" disabled aria-disabled="true" title="No E2E run results available">No Results</button>
+                        {% endif %}
                     </div>
                 </article>
                 <article class="e2e-runs-card">
@@ -348,6 +353,11 @@
                                 {% endif %}
                                 <div class="card-line card-muted">{{ run.status_label if run.status_label else run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
                                 {% if run.note %}<div class="card-line card-muted e2e-run-note">{{ run.note }}</div>{% endif %}
+                                {% if run.results_action %}
+                                <div class="e2e-run-actions">
+                                    <button class="issue-action-btn e2e-run-results-btn" data-action="show-e2e-run-results" data-run-id="{{ run.results_action.run_id }}" aria-label="View formatted results for E2E run #{{ run.results_action.run_id }}" title="View formatted test results">{{ run.results_action.label }}</button>
+                                </div>
+                                {% endif %}
                                 {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
                                 <div class="attention-actions">
                                     <button class="issue-action-btn" onclick="triageE2ERun();event.stopPropagation();">Triage</button>
