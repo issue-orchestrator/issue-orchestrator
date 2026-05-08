@@ -286,6 +286,7 @@ class E2ETestOutputPayload(BaseModel):
 class E2ETimelineArtifactPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
+    render_mode: str | None = None
     type: str
     value: str
 
@@ -304,6 +305,7 @@ class E2ETimelineEventPayload(BaseModel):
     added: list[str] | None = None
     agent: str | None = None
     artifacts: list[E2ETimelineArtifactPayload]
+    attempt_index: int | None = None
     coder_response_text: str | None = None
     coder_response_type: str | None = None
     detail: str | None
@@ -329,6 +331,7 @@ class E2ETimelineEventPayload(BaseModel):
     reviewer_response_text: str | None = None
     reviewer_response_type: str | None = None
     rework_cycle: int | None = None
+    role: str | None = None
     round_index: int | None = None
     rounds: int | None = None
     run_dir: str | None

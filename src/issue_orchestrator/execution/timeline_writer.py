@@ -14,7 +14,7 @@ from ..domain.logical_event_semantics import enrich_logical_semantics
 from ..events.catalog import EVENT_SCHEMA_VERSION
 from ..events.fan_out_pipeline import produce_external_records
 from ..infra.timeline_trace import is_timeline_trace_enabled
-from ..timeline import TIMELINE_SCHEMA_VERSION
+from ..timeline import TIMELINE_SCHEMA_VERSION, validate_timeline_artifact_refs
 from .timeline_artifact_expectations import validate_event_artifact_expectations
 from ..ports.event_sink import TraceEvent
 from ..ports.timeline_store import TimelineStore
@@ -70,6 +70,7 @@ class DefaultTimelineWriter(TimelineWriter):
         safe_data["logical_phase"] = semantics.logical_phase
         safe_data["_logical_restart_pending"] = semantics.restart_pending
         safe_data["_logical_rework_driven"] = semantics.rework_driven
+        validate_timeline_artifact_refs(safe_data)
         validate_event_artifact_expectations(event.name, safe_data)
 
         base_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())

@@ -1776,7 +1776,8 @@
         "properties": {
           "type": {"type": "string"},
           "label": {"type": "string"},
-          "value": {"type": "string"}
+          "value": {"type": "string"},
+          "render_mode": {"type": ["string", "null"]}
         }
       },
       "E2ETimelineEventPayload": {
@@ -1833,6 +1834,8 @@
           "views": {"type": "array", "items": {"type": "string"}},
           "narrative": {"type": "string"},
           "round_index": {"type": "integer"},
+          "attempt_index": {"type": "integer"},
+          "role": {"type": "string"},
           "rounds": {"type": "integer"},
           "reviewer_response_type": {"type": "string"},
           "reviewer_response_text": {"type": "string"},
