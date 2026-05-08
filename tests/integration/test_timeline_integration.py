@@ -11,6 +11,23 @@ from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints import web
 from issue_orchestrator.events import EventName
+from issue_orchestrator.domain.artifact_contracts import (
+    AgentProvider,
+    AgentRole,
+    AgentTurnArtifactScope,
+    ChapterSidecarArtifact,
+    ExchangeRunId,
+    ExistingFile,
+    ExistingNonEmptyFile,
+    IssueNumber,
+    PositiveAttemptIndex,
+    PositiveRoundIndex,
+    PromptArtifact,
+    ReviewResponseArtifact,
+    ReviewerTurnCompleted,
+    ReviewerTurnStarted,
+    TerminalRecordingArtifact,
+)
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.execution.timeline_store import SqliteTimelineStore, TimelineStoreConfig
 from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
@@ -61,19 +78,7 @@ def _start_run_with_artifacts(
     worktree = repo_root / f"wt-{issue_number}-{session_name}"
     worktree.mkdir(parents=True, exist_ok=True)
     run = session_output.start_run(worktree, session_name, issue_number=issue_number)
-    (run.run_dir / "terminal-recording.jsonl").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "event_type": "output",
-                "offset_ms": 0,
-                "data_b64": base64.b64encode(b"agent output\n").decode("ascii"),
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_terminal_recording(run.run_dir / "terminal-recording.jsonl", "agent output\n")
     claude_log = run.run_dir / "claude.jsonl"
     claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
     completion_record = run.run_dir / "completion-agent_backend.json"
@@ -106,6 +111,18 @@ def _step_events(cycle: dict[str, object]) -> list[str]:
     ]
 
 
+def _step_by_event(cycle: dict[str, object], event_name: str) -> dict[str, object]:
+    """Return the single issue-detail step for an event name."""
+    steps = cycle.get("steps")
+    assert isinstance(steps, list) and steps
+    matches = [
+        step for step in steps
+        if isinstance(step, dict) and step.get("event") == event_name
+    ]
+    assert len(matches) == 1, f"expected one {event_name} step, got {_step_events(cycle)}"
+    return matches[0]
+
+
 def _latest_run(payload: dict[str, object]) -> dict[str, object]:
     """Return the latest run from issue-detail payload."""
     runs = payload.get("runs")
@@ -122,6 +139,23 @@ def _first_cycle(run: dict[str, object]) -> dict[str, object]:
     first = cycles[0]
     assert isinstance(first, dict), "cycle payload must be an object"
     return first
+
+
+def _write_terminal_recording(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event_type": "output",
+                "offset_ms": 0,
+                "data_b64": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_timeline_and_issue_detail_read_from_sqlite_store(sample_config, mock_repository_host):
@@ -199,6 +233,228 @@ def test_timeline_and_issue_detail_read_from_sqlite_store(sample_config, mock_re
         assert issue_detail_payload.get("summary", {}).get("timeline_diagnostic") is None
         latest_run = _latest_run(issue_detail_payload)
         assert latest_run["session_run_ids"] == ["run-code-1", "run-review-1"]
+    finally:
+        web.set_orchestrator(None)
+
+
+def test_issue_detail_uses_mocked_pipeline_artifact_refs_from_sqlite(
+    sample_config,
+    mock_repository_host,
+):
+    """Fake review pipeline refs should reach issue-detail as exact UI actions.
+
+    This is a non-browser UI integration test: it drives mocked pipeline
+    events through the real timeline writer/store/reader and issue-detail
+    route, using typed fake artifact refs as the producer-side contract.
+    """
+    orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(
+        sample_config,
+        mock_repository_host,
+    )
+    issue_number = 4091
+    run_id = "fake-review-exchange-run-1"
+    run_dir = _start_run_with_artifacts(
+        sample_config.repo_root,
+        issue_number=issue_number,
+        session_name="review-4091-fake-pipeline",
+    )
+    run_dir_path = Path(run_dir)
+    exchange_dir = run_dir_path / "review-exchange"
+    turns_dir = exchange_dir / "turns"
+    reviewer_dir = run_dir_path / "reviewer"
+    prompt_path = turns_dir / "round-1-reviewer-attempt-1.prompt.md"
+    response_path = turns_dir / "round-1-reviewer-attempt-1.result.json"
+    recording_path = reviewer_dir / "terminal-recording.jsonl"
+    chapters_path = reviewer_dir / "chapters.json"
+    transcript_path = exchange_dir / "transcript.log"
+
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text("fake reviewer prompt", encoding="utf-8")
+    response_path.write_text(
+        '{"kind":"changes_requested","response_text":"tighten this"}\n',
+        encoding="utf-8",
+    )
+    _write_terminal_recording(recording_path, "fake reviewer session output\n")
+    chapters_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "issue_number": issue_number,
+                "exchange_run_id": run_id,
+                "role": "reviewer",
+                "chapters": [],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text(
+        "[2026-05-08T19:00:00Z] round=1 role=reviewer section=prompt\n"
+        "fake reviewer prompt\n",
+        encoding="utf-8",
+    )
+    FileSystemSessionOutput().update_manifest(
+        run_dir_path,
+        {
+            "reviewer_recording": str(recording_path),
+            "review_exchange_transcript_path": str(transcript_path),
+        },
+    )
+
+    scope = AgentTurnArtifactScope(
+        issue_number=IssueNumber(issue_number),
+        exchange_run_id=ExchangeRunId(run_id),
+        round_index=PositiveRoundIndex(1),
+        attempt_index=PositiveAttemptIndex(1),
+        role=AgentRole.REVIEWER,
+        provider=AgentProvider("fake-reviewer"),
+    )
+    started = ReviewerTurnStarted(
+        scope=scope,
+        prompt=PromptArtifact(scope=scope, file=ExistingNonEmptyFile(prompt_path)),
+        terminal_recording=TerminalRecordingArtifact(
+            scope=scope,
+            file=ExistingFile(recording_path),
+        ),
+        chapters=ChapterSidecarArtifact(scope=scope, file=ExistingFile(chapters_path)),
+    )
+    completed = ReviewerTurnCompleted(
+        started=started,
+        response=ReviewResponseArtifact(
+            scope=scope,
+            file=ExistingNonEmptyFile(response_path),
+        ),
+        response_type="changes_requested",
+        response_text="tighten this",
+    )
+    orch.state.cached_queue_issues = [
+        Issue(
+            number=issue_number,
+            title="Mocked review pipeline artifact refs",
+            labels=["agent:reviewer"],
+        ),
+    ]
+
+    timeline_writer.record(
+        TraceEvent(
+            EventName.REVIEW_STARTED,
+            {
+                "issue_number": issue_number,
+                "run_id": run_id,
+                "run_dir": run_dir,
+                "task": "review",
+                "agent": "agent:reviewer",
+            },
+        )
+    )
+    timeline_writer.record(
+        TraceEvent(
+            EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+            {
+                "issue_number": issue_number,
+                "run_id": run_id,
+                "run_dir": run_dir,
+                "task": "review",
+                "agent": "agent:reviewer",
+                "round_index": 1,
+                "attempt_index": 1,
+                "role": "reviewer",
+                "artifact_refs": [
+                    ref.to_event_artifact() for ref in started.artifact_refs()
+                ],
+            },
+        )
+    )
+    timeline_writer.record(
+        TraceEvent(
+            EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+            {
+                "issue_number": issue_number,
+                "run_id": run_id,
+                "run_dir": run_dir,
+                "task": "review",
+                "agent": "agent:reviewer",
+                "round_index": 1,
+                "attempt_index": 1,
+                "role": "reviewer",
+                "response_type": "changes_requested",
+                "getting_closer": True,
+                "artifact_refs": [
+                    ref.to_event_artifact() for ref in completed.artifact_refs()
+                ],
+            },
+        )
+    )
+
+    web.set_orchestrator(orch)
+    try:
+        client = TestClient(web.app)
+        response = client.get(f"/api/issue-detail/{issue_number}")
+        assert response.status_code == 200
+        payload = response.json()
+        raw_events = payload.get("events")
+        assert isinstance(raw_events, list) and raw_events
+        prompted_event = [
+            event for event in raw_events
+            if event.get("event") == "review_exchange.role_prompted"
+        ]
+        assert len(prompted_event) == 1
+        assert prompted_event[0]["role"] == "reviewer"
+        assert prompted_event[0]["attempt_index"] == 1
+        cycle = _first_cycle(_latest_run(payload))
+
+        prompted = _step_by_event(cycle, "review_exchange.role_prompted")
+        prompted_actions = prompted.get("actions")
+        assert isinstance(prompted_actions, list) and prompted_actions
+        assert {
+            "type": "open_path",
+            "label": "Open Prompt",
+            "path": str(prompt_path),
+        } in prompted_actions
+        assert {
+            "type": "open_path",
+            "label": "Open Replay Chapters",
+            "path": str(chapters_path),
+        } in prompted_actions
+        prompted_session_actions = [
+            action for action in prompted_actions
+            if action.get("type") == "open_agent_log"
+        ]
+        assert prompted_session_actions
+        assert all(
+            action.get("run_dir") == run_dir
+            and action.get("round_index") == 1
+            and action.get("session_role") == "reviewer"
+            for action in prompted_session_actions
+        )
+        assert any(
+            action.get("type") == "open_review_transcript"
+            and action.get("run_dir") == run_dir
+            and action.get("round_index") == 1
+            and action.get("transcript_role") == "reviewer"
+            for action in prompted_actions
+        )
+
+        feedback = _step_by_event(cycle, "review_exchange.role_feedback")
+        feedback_actions = feedback.get("actions")
+        assert isinstance(feedback_actions, list) and feedback_actions
+        assert {
+            "type": "open_path",
+            "label": "Open Review Response",
+            "path": str(response_path),
+        } in feedback_actions
+        feedback_session_actions = [
+            action for action in feedback_actions
+            if action.get("type") == "open_agent_log"
+        ]
+        assert feedback_session_actions
+        assert all(
+            action.get("round_index") == 1
+            and action.get("session_role") == "reviewer"
+            for action in feedback_session_actions
+        )
     finally:
         web.set_orchestrator(None)
 
