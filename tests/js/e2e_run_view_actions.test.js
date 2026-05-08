@@ -630,6 +630,19 @@ test('render: empty history renders nothing (history cluster is opt-in)', () => 
 
 // ── Render shape: pills ──────────────────────────────────────────────────
 
+test('render headline: exposes structural count attributes', () => {
+    const ctx = loadE2ERunView();
+    const html = ctx.renderTestResultsHeadline([
+        _testFixture({ outcome: 'passed' }),
+        _testFixture({ outcome: 'failed', category: 'untriaged', result_category: 'untriaged' }),
+    ]);
+
+    assert.match(html, /data-total-count="2"/);
+    assert.match(html, /data-passed-count="1"/);
+    assert.match(html, /data-failed-count="1"/);
+    assert.match(html, /data-action-needed-count="1"/);
+});
+
 test('render pills: failed + untriaged shows Failed primary + Action needed (no Flaky pill)', () => {
     const ctx = loadE2ERunView();
     const html = ctx._renderTestResultPills(_testFixture({
