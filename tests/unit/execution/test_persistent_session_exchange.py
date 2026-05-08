@@ -141,6 +141,7 @@ def _patch_persistent_runner(
     response_script: dict[str, list[dict[str, Any] | Exception]],
     write_recording: bool = True,
     write_coder_completion: bool = True,
+    coder_completion_script: list[bool] | None = None,
 ) -> dict[str, Any]:
     """Patch the runner functions in pse to consume a per-role response script.
 
@@ -153,6 +154,9 @@ def _patch_persistent_runner(
     coder send_round also writes a stub ``completion-coder.json`` so the
     coder protocol guardrail finds the artifact it expects. Tests that
     want to exercise the missing-completion path pass False.
+
+    ``coder_completion_script`` lets a test vary that invariant per
+    coder attempt without timing or background coordination.
     """
     registry = _FakePairRegistry()
     state: dict[str, Any] = {
@@ -160,6 +164,11 @@ def _patch_persistent_runner(
         "run_dir": None,
         "registry": registry,
     }
+    completion_script = (
+        list(coder_completion_script)
+        if coder_completion_script is not None
+        else None
+    )
 
     def _open(*, command, working_dir, env, recording_path=None,
               additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
@@ -218,7 +227,12 @@ def _patch_persistent_runner(
             raise head
         # Stub the coder's completion artifact write so the protocol
         # guardrail in pse._validate_coder_completion has the file it expects.
-        if role == "coder" and write_coder_completion:
+        should_write_completion = write_coder_completion
+        if role == "coder" and completion_script is not None:
+            if not completion_script:
+                raise AssertionError("test fixture: coder_completion_script exhausted")
+            should_write_completion = completion_script.pop(0)
+        if role == "coder" and should_write_completion:
             completion = session.completion_path
             assert completion is not None, (
                 "test fixture: coder fake session must have completion_path "
@@ -1500,6 +1514,127 @@ class TestCoderProtocolGuardrail:
             and evt.data.get("reason") == "coder_protocol_error"
             for evt in sink.events
         )
+
+    def test_coder_protocol_retry_persists_distinct_attempt_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A retry that succeeds must leave both attempt artifacts intact.
+
+        The first coder attempt writes a malformed exchange response and
+        skips ``coding-done``. The second attempt fixes both. This pins
+        the attempt-scoped path layout for the non-terminal retry case:
+        future refactors must not reuse attempt-1 paths for attempt-2.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "fix",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "response_type": "protocol_error",
+                        "response_text": "I skipped coding-done",
+                        "getting_closer": False,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "fixed",
+                        "getting_closer": None,
+                    },
+                ],
+            },
+            coder_completion_script=[False, True],
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=5,
+            require_validation=False,
+            events=sink,
+            event_context=ctx,
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.reason == "reviewer_ok"
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        attempt_1_prompt = turns_dir / "round-1-coder-attempt-1.prompt.md"
+        attempt_2_prompt = turns_dir / "round-1-coder-attempt-2.prompt.md"
+        assert attempt_1_prompt.exists()
+        assert attempt_2_prompt.exists()
+        assert not (turns_dir / "round-1-coder-attempt-3.prompt.md").exists()
+
+        attempt_1_prompt_text = attempt_1_prompt.read_text(encoding="utf-8")
+        attempt_2_prompt_text = attempt_2_prompt.read_text(encoding="utf-8")
+        assert attempt_1_prompt_text != attempt_2_prompt_text
+        assert "missing completion artifact" in attempt_2_prompt_text
+        assert "coding-done completed" in attempt_2_prompt_text
+
+        attempt_1_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(
+                (turns_dir / "round-1-coder-attempt-1.result.json").read_text()
+            )
+        )
+        assert attempt_1_result is not None
+        assert attempt_1_result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert attempt_1_result.protocol_error_reason == "unknown_response_type"
+        assert "'protocol_error'" in attempt_1_result.response_text
+
+        attempt_2_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(
+                (turns_dir / "round-1-coder-attempt-2.result.json").read_text()
+            )
+        )
+        assert attempt_2_result is not None
+        assert attempt_2_result.kind is TurnResultKind.OK
+        assert attempt_2_result.response_text == "fixed"
+
+        coder_prompts = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
+            and evt.data.get("role") == "coder"
+        ]
+        assert [evt.data["attempt_index"] for evt in coder_prompts] == [1, 2]
+        assert [
+            Path(evt.data["artifact_refs"][0]["path"]).name
+            for evt in coder_prompts
+        ] == [
+            "round-1-coder-attempt-1.prompt.md",
+            "round-1-coder-attempt-2.prompt.md",
+        ]
 
     def test_stale_round1_completion_does_not_satisfy_round2_guardrail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

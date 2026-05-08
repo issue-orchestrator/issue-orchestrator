@@ -304,6 +304,8 @@ class TerminalRecordingArtifact(_FileArtifact):
     label: ClassVar[str] = "Terminal Recording"
     render_mode: ClassVar[RenderMode] = RenderMode.TERMINAL_RECORDING
     scope: AgentTurnArtifactScope
+    # Live turns can start before the PTY has emitted bytes; completed-turn
+    # non-empty guarantees belong in a narrower completed-recording contract.
     file: ExistingFile
 
 

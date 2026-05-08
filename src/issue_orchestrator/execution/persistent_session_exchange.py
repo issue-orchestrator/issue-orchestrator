@@ -1313,7 +1313,7 @@ def _drive_rounds(  # noqa: PLR0913
         })
         reviewer = _send_role_round(
             session=reviewer_session,
-            role="reviewer",
+            role=Role.REVIEWER,
             turn_started=reviewer_started,
             response_file=reviewer_response,
             recording_path=reviewer_recording,
@@ -1452,7 +1452,7 @@ def _drive_rounds(  # noqa: PLR0913
         _clear_coder_completion(coder_completion_path)
         coder = _send_role_round(
             session=coder_session,
-            role="coder",
+            role=Role.CODER,
             turn_started=coder_started,
             response_file=coder_response,
             recording_path=coder_recording,
@@ -1576,10 +1576,10 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         run_validation_record_path=run_dir / "validation-record.json",
         require_validation=require_validation,
     )
-    retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
-    while protocol_error is not None and retries_remaining > 0:
-        retries_remaining -= 1
-        attempt_index = _CODER_PROTOCOL_RETRY_LIMIT - retries_remaining + 1
+    next_attempt_index = 2
+    while protocol_error is not None and next_attempt_index <= _CODER_PROTOCOL_RETRY_LIMIT + 1:
+        attempt_index = next_attempt_index
+        next_attempt_index += 1
         retry_prompt = (
             f"{protocol_error}\n"
             "Run `coding-done completed --implementation '...' --problems '...'` "
@@ -1645,7 +1645,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         _clear_coder_completion(coder_completion_path)
         retry_response = _send_role_round(
             session=coder_session,
-            role="coder",
+            role=Role.CODER,
             turn_started=retry_started,
             response_file=coder_response,
             recording_path=coder_recording,
@@ -1697,7 +1697,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
 def _send_role_round(  # noqa: PLR0913
     *,
     session: PersistentSession,
-    role: str,
+    role: Role,
     turn_started: ReviewerTurnStarted | CoderTurnStarted,
     response_file: Path,
     recording_path: Path,
@@ -1722,7 +1722,7 @@ def _send_role_round(  # noqa: PLR0913
     ``<exchange_dir>/turns/round-<n>-<role>-attempt-<m>.result.json``
     for replay and diagnostics.
     """
-    role_enum = Role(role)
+    role_value = role.value
     attempt_index = turn_started.scope.attempt_index.value
     try:
         parsed = send_round(
@@ -1734,11 +1734,11 @@ def _send_role_round(  # noqa: PLR0913
             # interleaved coder + reviewer log is decodable without
             # cross-referencing PIDs (#6160 e2e regression: 17 minutes
             # of unattributed silence).
-            role_label=f"{role}@round-{cycle_index}",
+            role_label=f"{role_value}@round-{cycle_index}",
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
         logger.warning(
-            "%s round %d failed: %s", role, cycle_index, exc,
+            "%s round %d failed: %s", role_value, cycle_index, exc,
         )
         # The typed result artifact must exist on the failure path
         # too — this is the case operators most need to inspect, and
@@ -1749,7 +1749,7 @@ def _send_role_round(  # noqa: PLR0913
         result_path = _persist_turn_result(
             exchange_dir,
             round_index=cycle_index,
-            role=role_enum,
+            role=role,
             attempt_index=attempt_index,
             result=typed_result,
         )
@@ -1757,13 +1757,13 @@ def _send_role_round(  # noqa: PLR0913
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
-            role=role,
+            role=role_value,
             recording_path=recording_path,
             exchange_run_id=exchange_run_id,
             issue_number=issue_number,
             cycle_index=cycle_index,
             section=CHAPTER_SECTION_TIMEOUT,
-            label=f"Round {cycle_index} {role} timeout/error",
+            label=f"Round {cycle_index} {role_value} timeout/error",
             session_name=session_name,
             emit=emit,
             mirror=mirror,
@@ -1772,7 +1772,7 @@ def _send_role_round(  # noqa: PLR0913
         _persist_turn_contract(
             exchange_dir,
             round_index=cycle_index,
-            role=role_enum,
+            role=role,
             attempt_index=attempt_index,
             suffix="completed",
             fields=completed.to_manifest_fields(),
@@ -1782,7 +1782,7 @@ def _send_role_round(  # noqa: PLR0913
             "session_name": session_name,
             "round_index": cycle_index,
             "attempt_index": attempt_index,
-            "role": role,
+            "role": role_value,
             "reason": "no_completion",
             "detail": str(exc),
             "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
@@ -1795,7 +1795,7 @@ def _send_role_round(  # noqa: PLR0913
     result_path = _persist_turn_result(
         exchange_dir,
         round_index=cycle_index,
-        role=role_enum,
+        role=role,
         attempt_index=attempt_index,
         result=typed_result,
     )
@@ -1803,13 +1803,13 @@ def _send_role_round(  # noqa: PLR0913
     _record_chapter(
         session_output=session_output,
         run_dir=run_dir,
-        role=role,
+        role=role_value,
         recording_path=recording_path,
         exchange_run_id=exchange_run_id,
         issue_number=issue_number,
         cycle_index=cycle_index,
         section=CHAPTER_SECTION_FEEDBACK,
-        label=f"Round {cycle_index} {role} feedback",
+        label=f"Round {cycle_index} {role_value} feedback",
         session_name=session_name,
         emit=emit,
         mirror=mirror,
@@ -1818,7 +1818,7 @@ def _send_role_round(  # noqa: PLR0913
     _persist_turn_contract(
         exchange_dir,
         round_index=cycle_index,
-        role=role_enum,
+        role=role,
         attempt_index=attempt_index,
         suffix="completed",
         fields=completed.to_manifest_fields(),
@@ -1828,7 +1828,7 @@ def _send_role_round(  # noqa: PLR0913
         "session_name": session_name,
         "round_index": cycle_index,
         "attempt_index": attempt_index,
-        "role": role,
+        "role": role_value,
         "response_type": response.response_type,
         "getting_closer": response.getting_closer,
         "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
@@ -1839,6 +1839,11 @@ def _send_role_round(  # noqa: PLR0913
 def _legacy_response_from_typed_result(
     result: ReviewExchangeTurnResult,
 ) -> ReviewExchangeResponse:
+    """Adapter for outcome code still typed as ``ReviewExchangeResponse``.
+
+    Remove once exchange outcome/control consumers accept
+    ``ReviewExchangeTurnResult`` directly.
+    """
     if result.kind is TurnResultKind.PROTOCOL_ERROR:
         return ReviewExchangeResponse(
             response_type="protocol_error",
