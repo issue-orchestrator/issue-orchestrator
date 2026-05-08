@@ -867,10 +867,12 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.control.label_manager import LabelManager
     from issue_orchestrator.control.infra_services import InfraServices
     from issue_orchestrator.control.publish_recovery import PublishRecoveryService
+    from issue_orchestrator.entrypoints.bootstrap import create_attempt_store
     from issue_orchestrator.execution.label_store import LabelStore
 
     label_manager = LabelManager(config)
     label_store = LabelStore(config.repo_root / ".issue-orchestrator" / "label_store.sqlite")
+    attempt_store = create_attempt_store(config)
 
     _action_applier.claim_gate = claim_gate
     # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
@@ -887,6 +889,7 @@ def build_test_orchestrator_deps(
         timeline_store=NullTimelineStore(),
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        attempt_store=attempt_store,
     )
 
     publish_recovery = PublishRecoveryService(

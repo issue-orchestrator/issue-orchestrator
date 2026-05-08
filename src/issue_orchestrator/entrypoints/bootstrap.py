@@ -354,6 +354,13 @@ def _create_io_adapters() -> tuple[
     )
 
 
+def create_attempt_store(config: Config):  # noqa: ANN201
+    """Create the attempt store for this repository."""
+    from ..adapters.sidecar_attempt_store import SidecarAttemptStore
+
+    return SidecarAttemptStore(config.repo_root)
+
+
 def _create_completion_components(
     config: Config,
     github: GitHubAdapter | None,
@@ -781,6 +788,7 @@ def build_orchestrator(
     from ..execution.label_store import LabelStore
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+    attempt_store = create_attempt_store(config)
 
     # Wire label_store into action_applier for write-through persistence
     if action_applier is not None:
@@ -795,6 +803,7 @@ def build_orchestrator(
         timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        attempt_store=attempt_store,
         pair_registry=pair_registry,
         background_job_supervisor=background_job_supervisor,
         instance_id=instance_id,
@@ -1082,6 +1091,7 @@ def build_orchestrator_for_testing(
     from ..execution.label_store import LabelStore
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+    attempt_store = create_attempt_store(config)
 
     # Wire label_store into action_applier for write-through persistence
     if action_applier is not None:
@@ -1096,6 +1106,7 @@ def build_orchestrator_for_testing(
         timeline_store=NullTimelineStore(),
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        attempt_store=attempt_store,
         pair_registry=pair_registry_for_testing,
     )
 

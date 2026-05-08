@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from ..ports.timeline_writer import TimelineWriter
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.goal_pilot_store import GoalPilotStore
+    from ..ports.attempt_store import AttemptStore
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
@@ -131,6 +132,10 @@ class OrchestratorDeps:
     @property
     def goal_pilot_store(self) -> "GoalPilotStore":
         return self.services.goal_pilot_store
+
+    @property
+    def attempt_store(self) -> "AttemptStore":
+        return self.services.attempt_store
 
     @property
     def provider_resilience(self) -> "ProviderResilienceManager":

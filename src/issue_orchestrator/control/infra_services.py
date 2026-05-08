@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.goal_pilot_store import GoalPilotStore
+    from ..ports.attempt_store import AttemptStore
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
     )
@@ -47,6 +48,7 @@ class InfraServices:
     timeline_store: "TimelineStore"
     timeline_writer: "TimelineWriter"
     goal_pilot_store: "GoalPilotStore"
+    attempt_store: "AttemptStore"
     pair_registry: "PersistentExchangePairRegistry | None" = None
     background_job_supervisor: "BackgroundJobSupervisor | None" = None
     instance_id: str = ""
