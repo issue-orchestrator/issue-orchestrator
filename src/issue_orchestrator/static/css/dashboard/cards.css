@@ -433,6 +433,12 @@ body.column-focus-mode .column-expanded {
     padding: 8px;
     background: var(--bg-panel-soft);
 }
+.e2e-run-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
 .e2e-run-note {
     font-size: 0.8em;
     color: var(--error, #e06c75);

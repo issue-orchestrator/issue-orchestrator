@@ -526,10 +526,11 @@ def _dom_click_hit_tested(locator: Locator, description: str) -> None:
 
 
 def _open_e2e_tab(page: Page) -> None:
-    """Switch to the E2E tab and wait for the new page bundle to load."""
+    """Switch to the E2E tab and wait until the tab is visibly booted."""
     page.locator("#tab-e2e").click()
     page.wait_for_url("**?tab=e2e**")
     page.wait_for_function("() => window.dashboardBundleLoaded === true")
+    page.wait_for_function("() => !document.documentElement.hasAttribute('data-booting')")
     expect(page.locator("#panel-e2e")).to_be_visible(timeout=5000)
 
 

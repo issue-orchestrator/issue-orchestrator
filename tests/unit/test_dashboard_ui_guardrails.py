@@ -1771,17 +1771,32 @@ def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:
 
 
 def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
-    """Issue rows still offer a direct Timeline control; run history rows route through title click."""
+    """Issue rows still offer Timeline controls; run history rows route through results."""
     dashboard = _read(DASHBOARD_TEMPLATE)
     issue_row = _read(ISSUE_ROW_TEMPLATE)
-    # Run history rows are now single-click-from-title; per-row Open run / Timeline buttons removed.
+    # Run history rows keep the title click and expose an explicit formatted results action.
     assert "openE2ERunTimeline({{ run.e2e_run_id }})" not in dashboard
     assert ">Open run<" not in dashboard
     assert 'showUnifiedRunView({{ run.e2e_run_id }})' in dashboard
+    assert "e2e-run-results-btn" in dashboard
+    assert 'data-action="show-e2e-run-results"' in dashboard
     # Issue rows continue to expose direct Timeline controls.
     assert "openE2ERunTimeline({{ issue.e2e_run_id }})" in issue_row
     assert "openIssueTimeline({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
     assert "openTimelineModal({{ issue.issue_number }})" not in issue_row
+
+
+def test_e2e_latest_results_affordance_uses_formatted_run_modal() -> None:
+    """Latest/passed E2E runs should open formatted results, not the diagnosis modal."""
+    dashboard = _read(DASHBOARD_TEMPLATE)
+    js = _read(DASHBOARD_JS)
+    latest_body = _function_body(js, "showLatestE2ERunResults")
+
+    assert "Last Run Diagnosis" not in dashboard
+    assert 'data-action="show-latest-e2e-run-results"' in dashboard
+    assert "showE2EDiagnosis()" not in dashboard
+    assert "showUnifiedRunView(runId)" in latest_body
+    assert "showE2EDiagnosis" not in latest_body
 
 
 def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:

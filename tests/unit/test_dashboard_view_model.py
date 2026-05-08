@@ -1487,6 +1487,32 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
     assert "note" not in items[0]
 
 
+def test_e2e_recent_run_item_exposes_formatted_results_action(tmp_path):
+    """Passed runs still need an explicit action into the formatted results modal."""
+    from issue_orchestrator.infra.e2e_db import E2EDB
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_recent_run_items
+
+    config = _make_config()
+    orch_id = config.orchestrator_id
+
+    db = E2EDB(tmp_path / "e2e.db")
+    run_id = db.start_run(
+        repo_root=str(tmp_path),
+        orchestrator_id=orch_id,
+        pytest_args=[],
+    )
+    db.finish_run(run_id, status="passed", exit_code=0)
+
+    items = build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
+
+    assert len(items) == 1
+    assert items[0]["results_action"] == {
+        "kind": "e2e_run_results",
+        "run_id": run_id,
+        "label": "View Results",
+    }
+
+
 def test_e2e_badge_state_maps_warning():
     """The E2E view model must map last_run status='warning' to badge_state='warning'."""
     from issue_orchestrator.view_models.dashboard_e2e import build_e2e_view_model
@@ -1505,6 +1531,30 @@ def test_e2e_badge_state_maps_warning():
     )
     assert vm["badge"]["state"] == "warning"
     assert vm["badge"]["icon"] == "⚠"
+
+
+def test_e2e_view_model_exposes_latest_formatted_results_action():
+    """The E2E summary owns the latest-run View Results action contract."""
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_view_model
+
+    vm = build_e2e_view_model(
+        e2e_status={
+            "running": False,
+            "needs_attention": False,
+            "last_run": {"id": 42, "status": "passed", "relative_time": "3m ago"},
+        },
+        e2e_items=[],
+        e2e_total=1,
+        e2e_page=1,
+        e2e_total_pages=1,
+        agents=[],
+    )
+
+    assert vm["summary"]["results_action"] == {
+        "kind": "e2e_run_results",
+        "run_id": 42,
+        "label": "View Results",
+    }
 
 
 def test_e2e_badge_state_failed_when_passed_run_has_failed_test_evidence():
