@@ -689,6 +689,22 @@ def test_timeline_session_recording_labels_keep_role_context() -> None:
     assert "Rework Recording" in body
 
 
+def test_timeline_unavailable_artifact_actions_keep_backend_label_and_can_be_primary() -> None:
+    js = _read(DASHBOARD_JS)
+    render_body = _function_body(js, "renderTimelineEventActions")
+    label_body = _function_body(js, "_timelineActionShortLabel")
+    assert "item.action.primary !== true" in render_body
+    assert "type === 'show_actions_error') return label || 'What is missing?'" in label_body
+
+
+def test_cycle_artifact_popover_does_not_invent_run_level_session_transcript() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "toggleArtifactPopover")
+    assert "Cycle Session Recording" not in body
+    assert "View session transcript" not in body
+    assert "openAgentLogAction" not in body
+
+
 def test_session_replay_terminal_wrap_allows_scroll_for_fixed_geometry() -> None:
     css = _read_dashboard_css_bundle()
     assert ".session-replay-terminal {" in css

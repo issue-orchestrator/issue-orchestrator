@@ -245,6 +245,12 @@ function renderTimelineEventActions(actions, eventDetail = null, detailIds = nul
         primary.push(item);
         used.add(item);
     }
+    for (const item of items) {
+        if (used.has(item)) continue;
+        if (!item.action || item.action.primary !== true) continue;
+        primary.push(item);
+        used.add(item);
+    }
     const secondary = items.filter(item => !used.has(item));
 
     const menuHasItems = Boolean(detailsAction) || secondary.length > 0;
@@ -313,7 +319,7 @@ function _timelineActionShortLabel(action) {
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_session_diagnostics') return label || 'Diagnostics';
-    if (type === 'show_actions_error') return 'What is missing?';
+    if (type === 'show_actions_error') return label || 'What is missing?';
     if (type === 'open_path') {
         const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
         if (/^completion$/i.test(normalized)) return 'Completion Record';

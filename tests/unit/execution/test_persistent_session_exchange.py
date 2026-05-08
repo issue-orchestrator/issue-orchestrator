@@ -1668,9 +1668,9 @@ class TestRecordingContractFailLoud:
         sink = _Sink()
         ctx = EventContext()
 
-        # write_recording=False: helper does NOT seed the recording file,
-        # so the first _record_chapter call hits a missing recording and
-        # raises FileNotFoundError up the stack.
+        # write_recording=False: helper does NOT seed the pair recording
+        # files. The recording contract now fails at pair acquisition before
+        # the round loop can reach chapter writing.
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
@@ -1681,7 +1681,7 @@ class TestRecordingContractFailLoud:
             write_recording=False,
         )
 
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(RuntimeError, match="missing_file"):
             pse.run_persistent_session_exchange(
                 session_output=session_output,
                 pair_registry=state["registry"],
@@ -2071,6 +2071,139 @@ class TestPerSessionRecordingMirror:
         # one with the other.
         assert manifest["coder_recording"] != manifest["coder_recording_pair"]
         assert manifest["reviewer_recording"] != manifest["reviewer_recording_pair"]
+
+    def test_cached_pair_with_missing_recording_paths_is_respawned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cached live pair whose recording files were removed cannot be
+        repaired by touching the paths; its writers still point at the deleted
+        file handles. The exchange must release it and spawn a fresh pair."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "ok",
+                              "getting_closer": True}],
+                "coder": [],
+            },
+        )
+
+        stale_pair_root = tmp_path / "stale-persistent-pairs" / "issue-42"
+        stale_pair = pse.PersistentExchangePair(
+            coder_session=_FakeSession("coder"),
+            reviewer_session=_FakeSession("reviewer"),
+            reviewer_worktree_path=reviewer_wt,
+            issue_key=42,
+            created_at=0.0,
+            coder_response_path=coder_wt / ".issue-orchestrator" / "review-response.json",
+            reviewer_response_path=reviewer_wt / ".issue-orchestrator" / "review-response.json",
+            coder_recording_path=stale_pair_root / "coder" / "terminal-recording.jsonl",
+            reviewer_recording_path=stale_pair_root / "reviewer" / "terminal-recording.jsonl",
+            coder_completion_path=stale_pair_root / "coder" / "completion-coder.json",
+            validation_record_path=stale_pair_root / "validation-record.json",
+        )
+
+        class _StaleThenFreshRegistry:
+            def __init__(self) -> None:
+                self.acquire_count = 0
+                self.released: list[tuple[int, str]] = []
+
+            def acquire(self, *, issue_key, spawn):  # noqa: ANN001, ANN201
+                self.acquire_count += 1
+                if self.acquire_count == 1:
+                    return stale_pair
+                return spawn()
+
+            def release(self, issue_key, *, reason):  # noqa: ANN001, ANN201
+                self.released.append((issue_key, reason))
+
+        registry = _StaleThenFreshRegistry()
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=registry,
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        assert registry.released == [
+            (42, "recording-contract-missing-on-acquire")
+        ]
+        assert state["opened"] == ["coder", "reviewer"]
+
+    def test_respawned_pair_recording_contract_is_rechecked(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """If fresh spawn violates the recording contract, fail fast.
+
+        A single release-and-respawn is a recovery path for stale cached pairs.
+        It must not become a fallback that admits a newly broken pair.
+        """
+        pair_root = tmp_path / "persistent-pairs" / "issue-42"
+
+        def broken_pair() -> pse.PersistentExchangePair:
+            return pse.PersistentExchangePair(
+                coder_session=_FakeSession("coder"),
+                reviewer_session=_FakeSession("reviewer"),
+                reviewer_worktree_path=tmp_path / "reviewer-wt",
+                issue_key=42,
+                created_at=0.0,
+                coder_response_path=tmp_path / "coder-response.json",
+                reviewer_response_path=tmp_path / "reviewer-response.json",
+                coder_recording_path=(
+                    pair_root / "coder" / "terminal-recording.jsonl"
+                ),
+                reviewer_recording_path=(
+                    pair_root / "reviewer" / "terminal-recording.jsonl"
+                ),
+                coder_completion_path=pair_root / "coder" / "completion-coder.json",
+                validation_record_path=pair_root / "validation-record.json",
+            )
+
+        class _AlwaysBrokenRegistry:
+            def __init__(self) -> None:
+                self.acquire_count = 0
+                self.released: list[tuple[int, str]] = []
+
+            def acquire(self, *, issue_key, spawn):  # noqa: ANN001, ANN201
+                self.acquire_count += 1
+                return spawn()
+
+            def release(self, issue_key, *, reason):  # noqa: ANN001, ANN201
+                self.released.append((issue_key, reason))
+
+        registry = _AlwaysBrokenRegistry()
+
+        with pytest.raises(RuntimeError, match="invalid after respawn") as exc_info:
+            pse._acquire_pair_with_recording_contract(  # noqa: SLF001
+                pair_registry=registry,
+                issue_number=42,
+                spawn=broken_pair,
+            )
+
+        assert registry.acquire_count == 2
+        assert registry.released == [
+            (42, "recording-contract-missing-on-acquire"),
+            (42, "recording-contract-invalid-after-respawn"),
+        ]
+        assert "no_writer" in str(exc_info.value)
+        assert "missing_file" in str(exc_info.value)
 
     def test_slice_base_freezes_at_construction_for_offset_translation(
         self, tmp_path: Path,
@@ -3351,15 +3484,14 @@ class TestContinuousSliceMirroring:
             "failure mode it never sees"
         )
 
-    def test_attach_failure_when_log_writer_missing_raises(
+    def test_missing_log_writer_fails_at_pair_recording_contract(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Production invariant: every PersistentSession opened with a
         recording_path carries a real writer. If a fixture (or a
         regression in open_persistent_session) hands the runner a
-        session with ``log_writer=None``, the runner must raise rather
-        than silently skip the slice — silently skipping recreates the
-        empty-timeline failure mode."""
+        session with ``log_writer=None``, pair acquisition must raise
+        before round execution rather than silently skip the slice."""
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
@@ -3377,7 +3509,7 @@ class TestContinuousSliceMirroring:
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
 
-        with pytest.raises(RuntimeError, match="no log_writer"):
+        with pytest.raises(RuntimeError, match="no_writer"):
             pse.run_persistent_session_exchange(
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),

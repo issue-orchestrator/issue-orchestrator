@@ -22,6 +22,7 @@ that surrounds it.
 
 from __future__ import annotations
 
+import enum
 import json
 import logging
 from collections.abc import Callable
@@ -77,6 +78,39 @@ logger = logging.getLogger(__name__)
 
 
 _CODER_PROTOCOL_RETRY_LIMIT = 2
+
+
+class _PairRecordingContractErrorKind(str, enum.Enum):
+    NO_WRITER = "no_writer"
+    PATH_MISMATCH = "path_mismatch"
+    MISSING_FILE = "missing_file"
+    NOT_A_FILE = "not_a_file"
+
+
+@dataclass(frozen=True)
+class _PairRecordingContractError:
+    role: Role
+    kind: _PairRecordingContractErrorKind
+    detail: str
+
+    def __str__(self) -> str:
+        return f"{self.role.value} {self.kind.value}: {self.detail}"
+
+
+class _PairRecordingContractViolation(RuntimeError):
+    def __init__(
+        self,
+        *,
+        issue_number: int,
+        errors: tuple[_PairRecordingContractError, ...],
+    ) -> None:
+        self.issue_number = issue_number
+        self.errors = errors
+        joined = "; ".join(str(error) for error in errors)
+        super().__init__(
+            f"persistent pair recording contract invalid after respawn "
+            f"issue={issue_number} errors={joined}"
+        )
 
 
 def review_exchange_supervisor_timeout_seconds(
@@ -256,6 +290,136 @@ def _prepare_session_slice(slice_path: Path) -> None:
     """
     slice_path.parent.mkdir(parents=True, exist_ok=True)
     slice_path.touch(exist_ok=True)
+
+
+def _pair_recording_contract_errors(
+    pair: PersistentExchangePair,
+) -> tuple[_PairRecordingContractError, ...]:
+    """Return recording-path contract violations for a cached pair.
+
+    A live persistent pair writes to file handles opened when the pair was
+    spawned. If a reset or cleanup removes the pair-scoped recording path while
+    the process survives, touching the path would create a different file that
+    the existing writer will never use. The only correct recovery is to release
+    that cached pair and spawn a fresh one.
+    """
+    errors: list[_PairRecordingContractError] = []
+    for role, session, recording_path in (
+        (Role.CODER, pair.coder_session, pair.coder_recording_path),
+        (Role.REVIEWER, pair.reviewer_session, pair.reviewer_recording_path),
+    ):
+        writer = session.log_writer
+        if writer is None:
+            errors.append(
+                _PairRecordingContractError(
+                    role=role,
+                    kind=_PairRecordingContractErrorKind.NO_WRITER,
+                    detail="session has no terminal recording writer",
+                )
+            )
+        elif Path(writer.recording_path) != recording_path:
+            errors.append(
+                _PairRecordingContractError(
+                    role=role,
+                    kind=_PairRecordingContractErrorKind.PATH_MISMATCH,
+                    detail=(
+                        f"writer path {writer.recording_path} does not match "
+                        f"pair path {recording_path}"
+                    ),
+                )
+            )
+        if not recording_path.exists():
+            errors.append(
+                _PairRecordingContractError(
+                    role=role,
+                    kind=_PairRecordingContractErrorKind.MISSING_FILE,
+                    detail=f"recording path missing: {recording_path}",
+                )
+            )
+        elif not recording_path.is_file():
+            errors.append(
+                _PairRecordingContractError(
+                    role=role,
+                    kind=_PairRecordingContractErrorKind.NOT_A_FILE,
+                    detail=f"recording path is not a file: {recording_path}",
+                )
+            )
+    return tuple(errors)
+
+
+def _acquire_pair_with_recording_contract(
+    *,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
+    issue_number: int,
+    spawn: Callable[[], PersistentExchangePair],
+) -> PersistentExchangePair:
+    """Acquire a pair, respawning once when cached recording paths vanished."""
+    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
+    recording_contract_errors = _pair_recording_contract_errors(pair)
+    if not recording_contract_errors:
+        return pair
+    logger.warning(
+        "[REVIEW_EXCHANGE] persistent pair has unusable recording "
+        "paths; releasing and respawning issue=%s errors=%s",
+        issue_number,
+        "; ".join(str(error) for error in recording_contract_errors),
+    )
+    pair_registry.release(
+        issue_number,
+        reason="recording-contract-missing-on-acquire",
+    )
+    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
+    respawn_errors = _pair_recording_contract_errors(pair)
+    if respawn_errors:
+        pair_registry.release(
+            issue_number,
+            reason="recording-contract-invalid-after-respawn",
+        )
+        raise _PairRecordingContractViolation(
+            issue_number=issue_number,
+            errors=respawn_errors,
+        )
+    return pair
+
+
+def _emit_review_exchange_failed(
+    *,
+    emit: Callable[[EventName, dict[str, Any]], None],
+    issue_number: int,
+    session_name: str,
+    exc: Exception,
+) -> None:
+    emit(EventName.REVIEW_EXCHANGE_FAILED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": 0,
+        "error": str(exc),
+        "exception_type": type(exc).__name__,
+    })
+
+
+def _acquire_pair_or_emit_failure(
+    *,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
+    issue_number: int,
+    session_name: str,
+    spawn: Callable[[], PersistentExchangePair],
+    emit: Callable[[EventName, dict[str, Any]], None],
+) -> PersistentExchangePair:
+    try:
+        return _acquire_pair_with_recording_contract(
+            pair_registry=pair_registry,
+            issue_number=issue_number,
+            spawn=spawn,
+        )
+    except Exception as exc:
+        _emit_review_exchange_failed(
+            emit=emit,
+            issue_number=issue_number,
+            session_name=session_name,
+            exc=exc,
+        )
+        raise
 
 
 def run_persistent_session_exchange(  # noqa: PLR0913
@@ -480,7 +644,13 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             validation_record_path=pair_validation_record,
         )
 
-    pair = pair_registry.acquire(issue_key=issue_number, spawn=_spawn_pair)
+    pair = _acquire_pair_or_emit_failure(
+        pair_registry=pair_registry,
+        issue_number=issue_number,
+        session_name=session_name,
+        spawn=_spawn_pair,
+        emit=_emit,
+    )
 
     # Always fast-forward the reviewer worktree at the start of every
     # reviewer round, including round 1. Round 1 of a *fresh* pair is a
@@ -584,13 +754,12 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             reviewer_mirror=reviewer_mirror,
         )
     except Exception as exc:
-        _emit(EventName.REVIEW_EXCHANGE_FAILED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": 0,
-            "error": str(exc),
-            "exception_type": type(exc).__name__,
-        })
+        _emit_review_exchange_failed(
+            emit=_emit,
+            issue_number=issue_number,
+            session_name=session_name,
+            exc=exc,
+        )
         raise
     finally:
         _detach_slice_mirror(pair.coder_session, coder_session_slice)
