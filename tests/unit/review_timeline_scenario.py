@@ -183,6 +183,23 @@ class ReviewTimelineScenario:
             round_index=round_index,
         )
 
+    def review_role_prompted(
+        self,
+        *,
+        round_index: int,
+        role: str,
+        attempt_index: int = 1,
+        artifact_refs: list[dict[str, str]] | None = None,
+    ) -> TimelineRecord:
+        return self._record(
+            "review_exchange.role_prompted",
+            timestamp="2026-03-22T13:34:33Z",
+            round_index=round_index,
+            role=role,
+            attempt_index=attempt_index,
+            artifact_refs=artifact_refs,
+        )
+
     def review_exchange_completed(self) -> TimelineRecord:
         return self._record("review_exchange.completed", timestamp="2026-03-22T13:50:03Z")
 
@@ -229,6 +246,9 @@ class ReviewTimelineScenario:
         timestamp: str,
         round_index: int | None = None,
         rounds: int | None = None,
+        role: str | None = None,
+        attempt_index: int | None = None,
+        artifact_refs: list[dict[str, str]] | None = None,
     ) -> TimelineRecord:
         data: dict[str, Any] = {
             "issue_number": self.issue_number,
@@ -245,6 +265,12 @@ class ReviewTimelineScenario:
             data["round_index"] = round_index
         if rounds is not None:
             data["rounds"] = rounds
+        if role is not None:
+            data["role"] = role
+        if attempt_index is not None:
+            data["attempt_index"] = attempt_index
+        if artifact_refs is not None:
+            data["artifact_refs"] = artifact_refs
         return TimelineRecord(
             event_id=f"{event_name}-{round_index or rounds or 'event'}",
             timestamp=timestamp,

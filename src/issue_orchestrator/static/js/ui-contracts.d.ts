@@ -275,6 +275,7 @@ export interface E2ETestOutputPayload {
 
 export interface E2ETimelineArtifactPayload {
   label: string;
+  render_mode?: string | null;
   type: string;
   value: string;
 }
@@ -293,6 +294,7 @@ export interface E2ETimelineEventPayload {
   added?: string[];
   agent?: string;
   artifacts: E2ETimelineArtifactPayload[];
+  attempt_index?: number;
   coder_response_text?: string;
   coder_response_type?: string;
   detail: string | null;
@@ -318,6 +320,7 @@ export interface E2ETimelineEventPayload {
   reviewer_response_text?: string;
   reviewer_response_type?: string;
   rework_cycle?: number;
+  role?: string;
   round_index?: number;
   rounds?: number;
   run_dir: string | null;

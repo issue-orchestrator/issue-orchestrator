@@ -116,6 +116,7 @@ class TimelineArtifactContract(ContractBase):
     type: str
     label: str
     value: str
+    render_mode: Optional[str] = None
 
 
 class TimelineEventContract(ContractBase):
@@ -131,6 +132,8 @@ class TimelineEventContract(ContractBase):
     parent_key: str
     artifacts: list[TimelineArtifactContract] = Field(default_factory=list)
     round_index: Optional[int] = None
+    attempt_index: Optional[int] = None
+    role: Optional[str] = None
     reviewer_response_type: Optional[str] = None
     reviewer_response_text: Optional[str] = None
     coder_response_type: Optional[str] = None

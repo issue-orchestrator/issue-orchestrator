@@ -31,13 +31,17 @@ class TimelineArtifact:
     artifact_type: str
     label: str
     value: str
+    render_mode: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        payload: dict[str, str] = {
             "type": self.artifact_type,
             "label": self.label,
             "value": self.value,
         }
+        if self.render_mode is not None:
+            payload["render_mode"] = self.render_mode
+        return payload
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,8 @@ class TimelineEvent:
     reviewer_response_text: str | None = None
     coder_response_type: str | None = None
     coder_response_text: str | None = None
+    role: str | None = None
+    attempt_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -120,6 +126,8 @@ class TimelineEvent:
             ("reviewer_response_text", self.reviewer_response_text),
             ("coder_response_type", self.coder_response_type),
             ("coder_response_text", self.coder_response_text),
+            ("role", self.role),
+            ("attempt_index", self.attempt_index),
         ]
         for key, val in _optional:
             if val is not None and val != "":
@@ -257,6 +265,12 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         if isinstance(data.get("coder_response_text"), str)
         else None
     )
+    role = data.get("role") if isinstance(data.get("role"), str) else None
+    attempt_index = (
+        data.get("attempt_index")
+        if isinstance(data.get("attempt_index"), int)
+        else None
+    )
     unsupported_schema = (
         timeline_schema_version is None
         or timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
@@ -318,6 +332,8 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         reviewer_response_text=reviewer_response_text,
         coder_response_type=coder_response_type,
         coder_response_text=coder_response_text,
+        role=role,
+        attempt_index=attempt_index,
     )
 
 
@@ -735,8 +751,10 @@ def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
     artifacts: list[TimelineArtifact] = []
     seen: set[tuple[str, str]] = set()
 
-    for artifact_type, label, value in _explicit_artifacts_from_data(data):
-        _append_artifact(artifacts, seen, artifact_type, label, value)
+    for artifact_type, label, value, render_mode in _explicit_artifacts_from_data(data):
+        _append_artifact(artifacts, seen, artifact_type, label, value, render_mode)
+    for artifact_type, label, value, render_mode in _artifact_refs_from_data(data):
+        _append_artifact(artifacts, seen, artifact_type, label, value, render_mode)
     pr_url = data.get("pr_url")
     if isinstance(pr_url, str) and pr_url:
         _append_artifact(artifacts, seen, "pull_request", "PR", pr_url)
@@ -762,7 +780,9 @@ def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
     return artifacts
 
 
-def _explicit_artifacts_from_data(data: dict[str, Any]) -> list[tuple[str, str, str]]:
+def _explicit_artifacts_from_data(
+    data: dict[str, Any],
+) -> list[tuple[str, str, str, str | None]]:
     raw = data.get("artifacts")
     if raw is None:
         return []
@@ -771,13 +791,36 @@ def _explicit_artifacts_from_data(data: dict[str, Any]) -> list[tuple[str, str, 
     return [_explicit_artifact_fields(artifact) for artifact in raw]
 
 
-def _explicit_artifact_fields(artifact: Any) -> tuple[str, str, str]:
+def _explicit_artifact_fields(artifact: Any) -> tuple[str, str, str, str | None]:
     if not isinstance(artifact, Mapping):
         raise ValueError("timeline event artifact entries must be objects")
     return (
         _required_artifact_text(artifact, "type"),
         _required_artifact_text(artifact, "label"),
         _required_artifact_text(artifact, "value"),
+        _optional_artifact_text(artifact, "render_mode"),
+    )
+
+
+def _artifact_refs_from_data(
+    data: dict[str, Any],
+) -> list[tuple[str, str, str, str | None]]:
+    raw = data.get("artifact_refs")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("timeline event artifact_refs must be a list")
+    return [_artifact_ref_fields(artifact) for artifact in raw]
+
+
+def _artifact_ref_fields(artifact: Any) -> tuple[str, str, str, str | None]:
+    if not isinstance(artifact, Mapping):
+        raise ValueError("timeline event artifact_refs entries must be objects")
+    return (
+        _required_artifact_ref_text(artifact, "kind"),
+        _required_artifact_ref_text(artifact, "label"),
+        _required_artifact_ref_text(artifact, "path"),
+        _optional_artifact_text(artifact, "render_mode"),
     )
 
 
@@ -790,18 +833,39 @@ def _required_artifact_text(artifact: Mapping[str, Any], field: str) -> str:
     return value
 
 
+def _required_artifact_ref_text(artifact: Mapping[str, Any], field: str) -> str:
+    value = artifact.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(
+            "timeline event artifact_refs require non-empty kind, label, and path"
+        )
+    return value
+
+
+def _optional_artifact_text(artifact: Mapping[str, Any], field: str) -> str | None:
+    value = artifact.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(
+            "timeline event artifacts require string render_mode when present"
+        )
+    return value
+
+
 def _append_artifact(
     artifacts: list[TimelineArtifact],
     seen: set[tuple[str, str]],
     artifact_type: str,
     label: str,
     value: str,
+    render_mode: str | None = None,
 ) -> None:
     key = (artifact_type, value)
     if key in seen:
         return
     seen.add(key)
-    artifacts.append(TimelineArtifact(artifact_type, label, value))
+    artifacts.append(TimelineArtifact(artifact_type, label, value, render_mode))
 
 
 def _run_id_from_data(data: dict[str, Any]) -> str | None:

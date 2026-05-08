@@ -154,6 +154,44 @@ def test_issue_timeline_preserves_explicit_event_artifacts() -> None:
     ]
 
 
+def test_issue_timeline_projects_typed_artifact_refs_and_role_context() -> None:
+    payload = build_issue_timeline(
+        4057,
+        [
+            TimelineRecord(
+                event_id="reviewer-prompted-1",
+                timestamp="2026-02-17T00:00:01Z",
+                event="review_exchange.role_prompted",
+                data={
+                    "issue_number": 4057,
+                    "run_dir": "/tmp/run",
+                    "round_index": 1,
+                    "attempt_index": 2,
+                    "role": "reviewer",
+                    "artifact_refs": [
+                        {
+                            "kind": "prompt",
+                            "label": "Prompt",
+                            "path": "/tmp/run/review-exchange/turns/round-1-reviewer-attempt-2.prompt.md",
+                            "render_mode": "text",
+                        },
+                    ],
+                },
+            ),
+        ],
+    )
+
+    event = payload["events"][0]
+    assert event["role"] == "reviewer"
+    assert event["attempt_index"] == 2
+    assert event["artifacts"][0] == {
+        "type": "prompt",
+        "label": "Prompt",
+        "value": "/tmp/run/review-exchange/turns/round-1-reviewer-attempt-2.prompt.md",
+        "render_mode": "text",
+    }
+
+
 def test_issue_timeline_rejects_malformed_explicit_event_artifacts() -> None:
     with pytest.raises(ValueError, match="artifacts require non-empty"):
         build_issue_timeline(
@@ -171,6 +209,30 @@ def test_issue_timeline_rejects_malformed_explicit_event_artifacts() -> None:
                                 "type": "validation",
                                 "label": "Validation Record",
                                 "value": "",
+                            }
+                        ],
+                    },
+                ),
+            ],
+        )
+
+
+def test_issue_timeline_rejects_malformed_artifact_refs() -> None:
+    with pytest.raises(ValueError, match="artifact_refs"):
+        build_issue_timeline(
+            4057,
+            [
+                TimelineRecord(
+                    event_id="reviewer-prompted-1",
+                    timestamp="2026-02-17T00:00:01Z",
+                    event="review_exchange.role_prompted",
+                    data={
+                        "issue_number": 4057,
+                        "artifact_refs": [
+                            {
+                                "kind": "prompt",
+                                "label": "Prompt",
+                                "path": "",
                             }
                         ],
                     },

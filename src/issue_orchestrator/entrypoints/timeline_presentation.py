@@ -35,7 +35,10 @@ logger = logging.getLogger(__name__)
 
 _NOISY_TIMELINE_EVENTS = frozenset({"issue.labels_changed"})
 _TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
+    "chapter_sidecar",
     "completion_record",
+    "prompt",
+    "review_response",
     "run_dir",
     "validation",
     "worktree",

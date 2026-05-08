@@ -7,6 +7,18 @@
           "title": "Label",
           "type": "string"
         },
+        "render_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Render Mode"
+        },
         "type": {
           "title": "Type",
           "type": "string"
@@ -33,6 +45,18 @@
           },
           "title": "Artifacts",
           "type": "array"
+        },
+        "attempt_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempt Index"
         },
         "coder_response_text": {
           "anyOf": [
@@ -105,6 +129,18 @@
           ],
           "default": null,
           "title": "Reviewer Response Type"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
         },
         "round_index": {
           "anyOf": [
