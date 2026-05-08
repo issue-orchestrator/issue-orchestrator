@@ -198,6 +198,11 @@ def build_issue_timeline(
     return TimelineStream.from_records(issue_number, records).to_dict()
 
 
+def validate_timeline_artifact_refs(data: Mapping[str, Any]) -> None:
+    """Fail fast if an event payload contains malformed typed artifact refs."""
+    _artifact_refs_from_data(data)
+
+
 def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent:
     data = record.data or {}
     event_name = record.event
@@ -749,7 +754,7 @@ def _truncate_summary(text: str) -> str:
 
 def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
     artifacts: list[TimelineArtifact] = []
-    seen: set[tuple[str, str]] = set()
+    seen: dict[tuple[str, str], TimelineArtifact] = {}
 
     for artifact_type, label, value, render_mode in _explicit_artifacts_from_data(data):
         _append_artifact(artifacts, seen, artifact_type, label, value, render_mode)
@@ -781,7 +786,7 @@ def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
 
 
 def _explicit_artifacts_from_data(
-    data: dict[str, Any],
+    data: Mapping[str, Any],
 ) -> list[tuple[str, str, str, str | None]]:
     raw = data.get("artifacts")
     if raw is None:
@@ -803,7 +808,7 @@ def _explicit_artifact_fields(artifact: Any) -> tuple[str, str, str, str | None]
 
 
 def _artifact_refs_from_data(
-    data: dict[str, Any],
+    data: Mapping[str, Any],
 ) -> list[tuple[str, str, str, str | None]]:
     raw = data.get("artifact_refs")
     if raw is None:
@@ -825,19 +830,34 @@ def _artifact_ref_fields(artifact: Any) -> tuple[str, str, str, str | None]:
 
 
 def _required_artifact_text(artifact: Mapping[str, Any], field: str) -> str:
-    value = artifact.get(field)
-    if not isinstance(value, str) or not value:
-        raise ValueError(
-            "timeline event artifacts require non-empty type, label, and value"
-        )
-    return value
+    return _required_timeline_artifact_text(
+        artifact,
+        field,
+        contract_name="artifacts",
+        required_fields="type, label, and value",
+    )
 
 
 def _required_artifact_ref_text(artifact: Mapping[str, Any], field: str) -> str:
+    return _required_timeline_artifact_text(
+        artifact,
+        field,
+        contract_name="artifact_refs",
+        required_fields="kind, label, and path",
+    )
+
+
+def _required_timeline_artifact_text(
+    artifact: Mapping[str, Any],
+    field: str,
+    *,
+    contract_name: str,
+    required_fields: str,
+) -> str:
     value = artifact.get(field)
     if not isinstance(value, str) or not value:
         raise ValueError(
-            "timeline event artifact_refs require non-empty kind, label, and path"
+            f"timeline event {contract_name} require non-empty {required_fields}"
         )
     return value
 
@@ -855,17 +875,22 @@ def _optional_artifact_text(artifact: Mapping[str, Any], field: str) -> str | No
 
 def _append_artifact(
     artifacts: list[TimelineArtifact],
-    seen: set[tuple[str, str]],
+    seen: dict[tuple[str, str], TimelineArtifact],
     artifact_type: str,
     label: str,
     value: str,
     render_mode: str | None = None,
 ) -> None:
     key = (artifact_type, value)
-    if key in seen:
-        return
-    seen.add(key)
-    artifacts.append(TimelineArtifact(artifact_type, label, value, render_mode))
+    existing = seen.get(key)
+    if existing is not None:
+        raise ValueError(
+            "timeline event artifacts contain duplicate artifact identity: "
+            f"type={artifact_type!r} value={value!r}"
+        )
+    artifact = TimelineArtifact(artifact_type, label, value, render_mode)
+    seen[key] = artifact
+    artifacts.append(artifact)
 
 
 def _run_id_from_data(data: dict[str, Any]) -> str | None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.unit.review_timeline_scenario import ReviewTimelineScenario
 
 
@@ -58,15 +60,40 @@ def test_review_round_completed_step_keeps_reviewer_phase_context_after_timeline
     )
 
 
-def test_role_prompted_step_keeps_role_and_typed_prompt_artifact_after_timeline_round_trip(
+@pytest.mark.parametrize(
+    ("artifact_kind", "artifact_label", "artifact_filename", "render_mode"),
+    [
+        (
+            "prompt",
+            "Prompt",
+            "round-1-reviewer-attempt-1.prompt.md",
+            "text",
+        ),
+        (
+            "review_response",
+            "Review Response",
+            "round-1-reviewer-attempt-1.result.json",
+            "json",
+        ),
+        (
+            "chapter_sidecar",
+            "Replay Chapters",
+            "round-1-reviewer-attempt-1.chapters.json",
+            "json",
+        ),
+    ],
+)
+def test_role_prompted_step_keeps_role_and_typed_artifact_after_timeline_round_trip(
     tmp_path: Path,
+    artifact_kind: str,
+    artifact_label: str,
+    artifact_filename: str,
+    render_mode: str,
 ) -> None:
     scenario = ReviewTimelineScenario.create(tmp_path).with_reviewer_round(round_index=1)
-    prompt_path = scenario.run_dir / "review-exchange" / "turns" / (
-        "round-1-reviewer-attempt-1.prompt.md"
-    )
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text("reviewer prompt", encoding="utf-8")
+    artifact_path = scenario.run_dir / "review-exchange" / "turns" / artifact_filename
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(f"{artifact_kind} artifact", encoding="utf-8")
 
     detail = scenario.render_issue_detail(
         scenario.review_role_prompted(
@@ -74,10 +101,10 @@ def test_role_prompted_step_keeps_role_and_typed_prompt_artifact_after_timeline_
             role="reviewer",
             artifact_refs=[
                 {
-                    "kind": "prompt",
-                    "label": "Prompt",
-                    "path": str(prompt_path),
-                    "render_mode": "text",
+                    "kind": artifact_kind,
+                    "label": artifact_label,
+                    "path": str(artifact_path),
+                    "render_mode": render_mode,
                 },
             ],
         ),
@@ -91,15 +118,15 @@ def test_role_prompted_step_keeps_role_and_typed_prompt_artifact_after_timeline_
         transcript_role="reviewer",
     )
     actions = detail.step("review_exchange.role_prompted").get("actions") or []
-    prompt_actions = [
+    artifact_actions = [
         action for action in actions
-        if action.get("type") == "open_path" and action.get("path") == str(prompt_path)
+        if action.get("type") == "open_path" and action.get("path") == str(artifact_path)
     ]
-    assert prompt_actions == [
+    assert artifact_actions == [
         {
             "type": "open_path",
-            "label": "Open Prompt",
-            "path": str(prompt_path),
+            "label": f"Open {artifact_label}",
+            "path": str(artifact_path),
         }
     ]
 

@@ -154,7 +154,23 @@ def test_issue_timeline_preserves_explicit_event_artifacts() -> None:
     ]
 
 
-def test_issue_timeline_projects_typed_artifact_refs_and_role_context() -> None:
+@pytest.mark.parametrize(
+    ("artifact_kind", "artifact_label", "render_mode"),
+    [
+        ("prompt", "Prompt", "text"),
+        ("review_response", "Review Response", "json"),
+        ("chapter_sidecar", "Replay Chapters", "json"),
+    ],
+)
+def test_issue_timeline_projects_typed_artifact_refs_and_role_context(
+    artifact_kind: str,
+    artifact_label: str,
+    render_mode: str,
+) -> None:
+    artifact_path = (
+        f"/tmp/run/review-exchange/turns/"
+        f"round-1-reviewer-attempt-2.{artifact_kind}"
+    )
     payload = build_issue_timeline(
         4057,
         [
@@ -170,10 +186,10 @@ def test_issue_timeline_projects_typed_artifact_refs_and_role_context() -> None:
                     "role": "reviewer",
                     "artifact_refs": [
                         {
-                            "kind": "prompt",
-                            "label": "Prompt",
-                            "path": "/tmp/run/review-exchange/turns/round-1-reviewer-attempt-2.prompt.md",
-                            "render_mode": "text",
+                            "kind": artifact_kind,
+                            "label": artifact_label,
+                            "path": artifact_path,
+                            "render_mode": render_mode,
                         },
                     ],
                 },
@@ -185,11 +201,45 @@ def test_issue_timeline_projects_typed_artifact_refs_and_role_context() -> None:
     assert event["role"] == "reviewer"
     assert event["attempt_index"] == 2
     assert event["artifacts"][0] == {
-        "type": "prompt",
-        "label": "Prompt",
-        "value": "/tmp/run/review-exchange/turns/round-1-reviewer-attempt-2.prompt.md",
-        "render_mode": "text",
+        "type": artifact_kind,
+        "label": artifact_label,
+        "value": artifact_path,
+        "render_mode": render_mode,
     }
+
+
+def test_issue_timeline_rejects_duplicate_artifact_identities() -> None:
+    duplicate_path = "/tmp/run/review-exchange/turns/round-1-reviewer-attempt-1.prompt.md"
+
+    with pytest.raises(ValueError, match="duplicate artifact identity"):
+        build_issue_timeline(
+            4057,
+            [
+                TimelineRecord(
+                    event_id="reviewer-prompted-1",
+                    timestamp="2026-02-17T00:00:01Z",
+                    event="review_exchange.role_prompted",
+                    data={
+                        "issue_number": 4057,
+                        "artifacts": [
+                            {
+                                "type": "prompt",
+                                "label": "Legacy Prompt",
+                                "value": duplicate_path,
+                            },
+                        ],
+                        "artifact_refs": [
+                            {
+                                "kind": "prompt",
+                                "label": "Prompt",
+                                "path": duplicate_path,
+                                "render_mode": "text",
+                            },
+                        ],
+                    },
+                ),
+            ],
+        )
 
 
 def test_issue_timeline_rejects_malformed_explicit_event_artifacts() -> None:
@@ -217,7 +267,18 @@ def test_issue_timeline_rejects_malformed_explicit_event_artifacts() -> None:
         )
 
 
-def test_issue_timeline_rejects_malformed_artifact_refs() -> None:
+@pytest.mark.parametrize(
+    "artifact_ref",
+    [
+        {"kind": "", "label": "Prompt", "path": "/tmp/prompt.md"},
+        {"kind": "prompt", "label": "", "path": "/tmp/prompt.md"},
+        {"kind": "prompt", "label": "Prompt"},
+        {"kind": 123, "label": "Prompt", "path": "/tmp/prompt.md"},
+    ],
+)
+def test_issue_timeline_rejects_malformed_artifact_refs(
+    artifact_ref: dict[str, object],
+) -> None:
     with pytest.raises(ValueError, match="artifact_refs"):
         build_issue_timeline(
             4057,
@@ -228,17 +289,39 @@ def test_issue_timeline_rejects_malformed_artifact_refs() -> None:
                     event="review_exchange.role_prompted",
                     data={
                         "issue_number": 4057,
-                        "artifact_refs": [
-                            {
-                                "kind": "prompt",
-                                "label": "Prompt",
-                                "path": "",
-                            }
-                        ],
+                        "artifact_refs": [artifact_ref],
                     },
                 ),
             ],
         )
+
+
+def test_timeline_writer_rejects_malformed_artifact_refs_before_store_append() -> None:
+    store = RecordingTimelineStore()
+    writer = DefaultTimelineWriter(store)
+
+    with pytest.raises(ValueError, match="artifact_refs"):
+        writer.record(
+            TraceEvent(
+                EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+                {
+                    "issue_number": 4057,
+                    "run_dir": "/tmp/run",
+                    "round_index": 1,
+                    "attempt_index": 1,
+                    "role": "reviewer",
+                    "artifact_refs": [
+                        {
+                            "kind": "prompt",
+                            "label": "Prompt",
+                            "path": "",
+                        },
+                    ],
+                },
+            )
+        )
+
+    assert store.records == []
 
 
 def test_sqlite_timeline_store_ignores_legacy_jsonl_files(tmp_path: Path) -> None:
