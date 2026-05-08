@@ -1095,7 +1095,7 @@ class TestTimelineActionWiring:
 
 
 class TestPerRoundLogActions:
-    """Test per-round reviewer/coder log actions for review exchange events."""
+    """Pin replacement of stale per-round path guessing with run-scoped sessions."""
 
     def _capture(self) -> tuple[list[dict], Callable]:
         captured: list[dict] = []
@@ -1105,7 +1105,58 @@ class TestPerRoundLogActions:
 
         return captured, _add
 
-    def test_round_started_produces_reviewer_and_coder_log_actions(self) -> None:
+    def test_review_exchange_rows_emit_run_scoped_replacement_actions(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-exchange-replacement-actions"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=1)
+        for role in ("reviewer", "coder"):
+            recording = (
+                run.run_dir
+                / "review-exchange"
+                / "round-001"
+                / role
+                / "terminal-recording.jsonl"
+            )
+            recording.parent.mkdir(parents=True, exist_ok=True)
+            recording.write_text(
+                '{"event_type":"output","offset_ms":0,"data_b64":"cmV2aWV3Cg==","schema_version":1}\n',
+                encoding="utf-8",
+            )
+
+        cases = (
+            ("review_exchange.round_started", {"round_index": 1}, "reviewer"),
+            ("review_exchange.round_completed", {"round_index": 1}, "reviewer"),
+            ("review.rework_completed", {"round_index": 1}, "coder"),
+            ("review_exchange.role_prompted", {"round_index": 1, "role": "reviewer"}, "reviewer"),
+        )
+        for event_name, fields, expected_role in cases:
+            actions = _timeline_event_actions(
+                {
+                    "event": event_name,
+                    "issue_number": 1,
+                    "run_dir": str(run.run_dir),
+                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                    **fields,
+                },
+                1,
+            )
+            assert [
+                action for action in actions
+                if action.get("type") == "open_path"
+                and str(action.get("path", "")).endswith("/agent-output.log")
+            ] == [], event_name
+            session_action = next(
+                action for action in actions if action.get("type") == "open_agent_log"
+            )
+            assert session_action["run_dir"] == str(run.run_dir)
+            assert session_action["round_index"] == 1
+            assert session_action["session_role"] == expected_role
+
+    def test_round_started_does_not_emit_legacy_agent_output_paths(self) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
 
         captured, add = self._capture()
@@ -1120,15 +1171,9 @@ class TestPerRoundLogActions:
             add_action=add,
         )
         open_path_actions = [a for a in captured if a["type"] == "open_path"]
-        assert len(open_path_actions) == 2
-        labels = {a["label"] for a in open_path_actions}
-        assert "View Round 2 Reviewer Log" in labels
-        assert "View Round 2 Coder Log" in labels
-        paths = {a["path"] for a in open_path_actions}
-        assert "/tmp/sessions/run-1/review-exchange/round-002/reviewer/agent-output.log" in paths
-        assert "/tmp/sessions/run-1/review-exchange/round-002/coder/agent-output.log" in paths
+        assert open_path_actions == []
 
-    def test_round_completed_produces_round_log_actions(self) -> None:
+    def test_round_completed_does_not_emit_legacy_agent_output_paths(self) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
 
         captured, add = self._capture()
@@ -1143,12 +1188,9 @@ class TestPerRoundLogActions:
             add_action=add,
         )
         open_path_actions = [a for a in captured if a["type"] == "open_path"]
-        assert len(open_path_actions) == 2
-        paths = {a["path"] for a in open_path_actions}
-        assert "/tmp/sessions/run-1/review-exchange/round-001/reviewer/agent-output.log" in paths
-        assert "/tmp/sessions/run-1/review-exchange/round-001/coder/agent-output.log" in paths
+        assert open_path_actions == []
 
-    def test_review_rework_completed_produces_round_log_actions(self) -> None:
+    def test_review_rework_completed_does_not_emit_legacy_agent_output_paths(self) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
 
         captured, add = self._capture()
@@ -1163,10 +1205,25 @@ class TestPerRoundLogActions:
             add_action=add,
         )
         open_path_actions = [a for a in captured if a["type"] == "open_path"]
-        assert len(open_path_actions) == 2
-        paths = {a["path"] for a in open_path_actions}
-        assert "/tmp/sessions/run-1/review-exchange/round-001/reviewer/agent-output.log" in paths
-        assert "/tmp/sessions/run-1/review-exchange/round-001/coder/agent-output.log" in paths
+        assert open_path_actions == []
+
+    def test_role_prompted_does_not_emit_legacy_agent_output_path(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review_exchange.role_prompted",
+                "round_index": 1,
+                "run_dir": "/tmp/sessions/run-1",
+                "role": "reviewer",
+            },
+            event_name="review_exchange.role_prompted",
+            issue_number=1,
+            add_action=add,
+        )
+        open_path_actions = [a for a in captured if a["type"] == "open_path"]
+        assert open_path_actions == []
 
     def test_round_actions_skipped_when_round_index_missing(self) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions

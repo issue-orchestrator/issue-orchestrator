@@ -220,6 +220,8 @@ def _enrich_role_prompted(data: dict[str, Any]) -> str | None:
     role = _role_label(data.get("role"))
     ri = data.get("round_index")
     if role and isinstance(ri, int):
+        if data.get("protocol_retry") is True:
+            return f"{role} protocol retry sent (round {ri})"
         return f"{role} prompt sent (round {ri})"
     return None
 

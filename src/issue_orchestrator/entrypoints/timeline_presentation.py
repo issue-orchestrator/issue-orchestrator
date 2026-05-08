@@ -366,39 +366,6 @@ def _timeline_event_recommended_actions(
             },
             f"orchestrator:{issue_number}",
         )
-    if event_name in (
-        "review_exchange.round_started",
-        "review_exchange.round_completed",
-        "review.rework_started",
-        "review.rework_completed",
-    ):
-        round_index = event.get("round_index")
-        run_dir = str(event.get("run_dir") or "")
-        if isinstance(round_index, int) and run_dir:
-            round_dir = f"{run_dir}/review-exchange/round-{round_index:03d}"
-            add_action(
-                {
-                    "type": "open_path",
-                    "label": f"View Round {round_index} Reviewer Log",
-                    "path": f"{round_dir}/reviewer/agent-output.log",
-                },
-                f"round-reviewer:{round_index}",
-            )
-            add_action(
-                {
-                    "type": "open_path",
-                    "label": f"View Round {round_index} Coder Log",
-                    "path": f"{round_dir}/coder/agent-output.log",
-                },
-                f"round-coder:{round_index}",
-            )
-
-    _add_role_event_log_action(
-        event=event,
-        event_name=event_name,
-        add_action=add_action,
-    )
-
     if event_name in _TIMELINE_FAILURE_EVENTS:
         add_action(
             {
@@ -408,38 +375,6 @@ def _timeline_event_recommended_actions(
             },
             f"diagnostics:{issue_number}",
         )
-
-
-_ROLE_EVENTS = frozenset({
-    "review_exchange.role_prompted",
-    "review_exchange.role_feedback",
-    "review_exchange.role_timeout",
-})
-
-
-def _add_role_event_log_action(
-    *,
-    event: dict[str, Any],
-    event_name: str,
-    add_action: Callable[[dict[str, Any], str], None],
-) -> None:
-    """Add a role-specific agent-output log action for ROLE_* review-exchange events."""
-    if event_name not in _ROLE_EVENTS:
-        return
-    round_index = event.get("round_index")
-    run_dir = str(event.get("run_dir") or "")
-    role = str(event.get("role") or "").strip()
-    if not (isinstance(round_index, int) and run_dir and role in {"coder", "reviewer"}):
-        return
-    round_dir = f"{run_dir}/review-exchange/round-{round_index:03d}"
-    add_action(
-        {
-            "type": "open_path",
-            "label": f"View Round {round_index} {role.capitalize()} Log",
-            "path": f"{round_dir}/{role}/agent-output.log",
-        },
-        f"round-{role}:{round_index}",
-    )
 
 
 def _review_feedback_action_for_event(
