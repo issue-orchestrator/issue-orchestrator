@@ -310,9 +310,6 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
 
     if (artifacts.log_url) {
         items += `<a href="${escapeHtml(artifacts.log_url)}" target="_blank" rel="noopener noreferrer">View log transcript</a>`;
-    } else if (issueNumber) {
-        const runDirArg = cycleRunDir ? `${JSON.stringify(String(cycleRunDir))}, ` : 'null, ';
-        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLogAction(${issueNumber}, ${runDirArg}'Cycle Session Recording')">View session transcript</a>`;
     }
 
     if (artifacts.pr_url) {

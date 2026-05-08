@@ -271,6 +271,8 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
                     "type": "show_actions_error",
                     "label": "What is missing?",
                     "issue_number": issue_number,
+                    # Keep the single-message field for legacy callers; the
+                    # dashboard uses the list form below.
                     "error_message": error_message,
                     "error_messages": [error_message],
                 }
@@ -667,6 +669,9 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
                 "type": "show_actions_error",
                 "label": "What is missing?",
                 "issue_number": issue_number,
+                # Keep the single-message field for legacy callers; the
+                # dashboard uses the list form so multi-error actions do not
+                # have to parse a joined display string.
                 "error_message": joined,
                 "error_messages": action_warnings,
             },
@@ -817,11 +822,26 @@ def _preferred_run_scoped_session_action(
             )
         except ArtifactNotFoundError as exc:
             if event_requires_run_dir(event_name):
-                raise RuntimeError(
-                    "timeline review phase recording missing: "
-                    f"issue={issue_number} event={event_name} run_dir={run_dir} "
-                    f"round_index={context['round_index']} role={context['session_role']}"
-                ) from exc
+                role = str(context["session_role"])
+                round_index = int(context["round_index"])
+                label = _missing_recording_label(role)
+                message = (
+                    f"{label}: issue={issue_number} event={event_name} "
+                    f"run_dir={run_dir} round_index={round_index} role={role}; {exc}"
+                )
+                return (
+                    {
+                        "type": "show_actions_error",
+                        "label": label,
+                        "issue_number": issue_number,
+                        # Legacy single-message field; new consumers use
+                        # ``error_messages`` even when there is only one.
+                        "error_message": message,
+                        "error_messages": [message],
+                        "primary": True,
+                    },
+                    f"missing-agent:{issue_number}:{event_name}:{round_index}:{role}",
+                )
             return None
         action.update(context)
     dedupe_parts = ["agent", str(issue_number)]
@@ -832,6 +852,14 @@ def _preferred_run_scoped_session_action(
     if isinstance(session_role, str) and session_role:
         dedupe_parts.append(session_role)
     return action, ":".join(dedupe_parts)
+
+
+def _missing_recording_label(role: str) -> str:
+    if role == "reviewer":
+        return "Reviewer Recording unavailable"
+    if role == "coder":
+        return "Coding Recording unavailable"
+    return "Session Recording unavailable"
 
 
 def _is_review_exchange_aggregate_event(event: dict[str, Any], event_name: str) -> bool:

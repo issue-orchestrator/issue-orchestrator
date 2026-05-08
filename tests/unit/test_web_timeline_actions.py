@@ -1043,7 +1043,7 @@ class TestTimelineActionWiring:
                 1,
             )
 
-    def test_review_phase_log_event_with_missing_round_recording_fails_fast(self, tmp_path: Path) -> None:
+    def test_review_phase_log_event_with_missing_round_recording_shows_unavailable_action(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -1053,20 +1053,56 @@ class TestTimelineActionWiring:
         run = session_output.start_run(worktree, "review-1", issue_number=1)
         (run.run_dir / "ui-session.log").write_text("review output\n", encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="timeline review phase recording missing"):
-            _timeline_event_actions(
-                {
-                    "event": "review_exchange.round_completed",
-                    "issue_number": 1,
-                    "run_dir": str(run.run_dir),
-                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
-                    "round_index": 2,
-                    "logical_run": 1,
-                    "logical_cycle": 1,
-                    "logical_phase": "review",
-                },
-                1,
-            )
+        actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.round_completed",
+                "issue_number": 1,
+                "run_dir": str(run.run_dir),
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                "round_index": 2,
+                "logical_run": 1,
+                "logical_cycle": 1,
+                "logical_phase": "review",
+            },
+            1,
+        )
+
+        assert [a for a in actions if a.get("type") == "open_agent_log"] == []
+        unavailable = next(
+            a for a in actions if a.get("type") == "show_actions_error"
+        )
+        assert unavailable["label"] == "Reviewer Recording unavailable"
+        assert unavailable["primary"] is True
+        assert "timeline review phase recording missing" not in str(unavailable)
+
+    def test_review_exchange_aggregate_row_does_not_open_run_level_recording(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-aggregate-row"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-exchange-1", issue_number=1)
+        (run.run_dir / "terminal-recording.jsonl").write_text(
+            '{"event_type":"output","offset_ms":0,"data_b64":"c3RhdHVzPW9rCg==","schema_version":1}\n',
+            encoding="utf-8",
+        )
+
+        actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.completed",
+                "issue_number": 1,
+                "run_dir": str(run.run_dir),
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                "status": "completed",
+                "logical_run": 1,
+                "logical_cycle": 1,
+                "logical_phase": "review",
+            },
+            1,
+        )
+
+        assert [a for a in actions if a.get("type") == "open_agent_log"] == []
 
     def test_decorate_timeline_events_preserves_fallback_actions_when_strict_actions_fail(self) -> None:
         from issue_orchestrator.entrypoints.web import _decorate_timeline_events
