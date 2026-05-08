@@ -353,6 +353,7 @@
     font-size: 11px;
 }
 .timeline-event-menu {
+    position: relative;
     margin-top: 6px;
 }
 .timeline-event-menu-trigger {
@@ -382,34 +383,17 @@
     background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-panel));
 }
 .timeline-event-menu-items {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 6px;
-}
-.timeline-more-menu {
-    position: relative;
-}
-.timeline-more-trigger {
-    list-style: none;
-    border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
-    border-radius: 6px;
-    color: var(--text-muted);
-    font-size: 11px;
-    padding: 3px 8px;
-    cursor: pointer;
-}
-.timeline-more-trigger::-webkit-details-marker {
-    display: none;
-}
-.timeline-more-items {
-    position: static;
+    /* position: fixed so the popover escapes ancestor overflow:auto
+       containers (e.g. the e2e diagnosis modal's scrolling body).
+       Top/left are set by positionTimelineEventMenu() on open. */
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 50;
     min-width: min(240px, calc(100vw - 48px));
     max-width: min(320px, calc(100vw - 24px));
     display: grid;
-    gap: 4px;
-    margin-top: 6px;
+    gap: 2px;
     max-height: min(40vh, 280px);
     overflow: auto;
     padding: 4px;
@@ -418,7 +402,7 @@
     background: var(--bg-panel);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
-.timeline-more-item {
+.timeline-menu-item {
     border: none;
     background: transparent;
     text-align: left;
@@ -428,7 +412,7 @@
     padding: 7px 9px;
     cursor: pointer;
 }
-.timeline-more-item:hover {
+.timeline-menu-item:hover {
     background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
 }
 .timeline-detail-action {

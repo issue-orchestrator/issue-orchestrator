@@ -753,12 +753,28 @@ def test_context_menu_orchestrator_log_avoids_legacy_agent_log_endpoint() -> Non
     assert "/api/log/" not in snippet
 
 
-def test_timeline_more_menu_renders_inline_list_not_absolute_popover() -> None:
+def test_timeline_overflow_menu_renders_as_floating_popover() -> None:
     css = _read_dashboard_css_bundle()
-    assert ".timeline-more-items {" in css
-    block = css.split(".timeline-more-items {", 1)[1].split("}", 1)[0]
-    assert "position: static;" in block
-    assert "overflow: auto;" in block
+    # The overflow menu must float over the row using position:fixed so it
+    # escapes ancestor overflow:auto containers (e.g. the e2e diagnosis modal
+    # body). JS sets the top/left from the trigger's getBoundingClientRect.
+    assert ".timeline-event-menu-items {" in css
+    items_block = css.split(".timeline-event-menu-items {", 1)[1].split("}", 1)[0]
+    assert "position: fixed;" in items_block
+    assert "overflow: auto;" in items_block
+
+    # The legacy nested "More ▾" disclosure rules must be gone.
+    assert ".timeline-more-items" not in css
+    assert ".timeline-more-trigger" not in css
+    assert ".timeline-more-menu" not in css
+
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "positionTimelineEventMenu")
+    # Must read the trigger's viewport rect and clamp to the viewport so
+    # the popover stays clickable even when triggers sit near a panel edge.
+    assert "getBoundingClientRect" in body
+    assert "window.innerWidth" in body
+    assert "window.innerHeight" in body
 
 
 def test_session_diagnostics_tracks_timeout_and_session_settings_action() -> None:
@@ -1226,15 +1242,19 @@ def test_diagnostics_action_errors_render_inline_in_modal() -> None:
     assert "'inline'" in js
 
 
-def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
+def test_timeline_event_actions_use_primary_plus_overflow_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimelineEventActions")
     assert "primaryTypes" in body
     assert "timeline-event-actions" in body
     assert "timeline-event-menu-trigger" in body
     assert "Event Details" in body
-    assert "timeline-more-menu" in body
-    assert "More ▾" in body
+    assert "timeline-event-menu-items" in body
+    assert 'role="menu"' in body
+    assert "timeline-menu-item" in body
+    # Nested "More" disclosure was removed in favor of a single popover.
+    assert "timeline-more-menu" not in body
+    assert "More ▾" not in body
     assert "_timelineActionShortLabel" in js
 
 
@@ -1255,17 +1275,17 @@ def test_timeline_events_pass_detail_context_to_action_menu() -> None:
     assert "timeline-event-detail-overlay" in _read_dashboard_css_bundle()
 
 
-def test_timeline_modal_delegate_handles_more_items() -> None:
+def test_timeline_modal_delegate_handles_menu_items() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
-    assert ".timeline-action-btn, .timeline-more-item" in body
+    assert ".timeline-action-btn, .timeline-menu-item" in body
     assert "timeline-event-menu-trigger" in body
 
 
-def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
+def test_journey_action_delegate_handles_menu_items_and_closes_menus() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")
-    assert ".timeline-action-btn, .timeline-more-item" in body
+    assert ".timeline-action-btn, .timeline-menu-item" in body
     assert "closeTimelineEventMenus(ownerMenu)" in body
     assert "closeTimelineEventMenus();" in body
 

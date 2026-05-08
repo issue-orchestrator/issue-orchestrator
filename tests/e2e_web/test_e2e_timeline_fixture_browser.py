@@ -2050,9 +2050,8 @@ def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(
     ).first
     expect(missing_event).to_be_visible(timeout=5000)
     missing_event.locator(".timeline-event-menu-trigger").click()
-    missing_event.locator(".timeline-more-trigger").click()
     missing_event.locator(
-        ".timeline-more-item",
+        ".timeline-menu-item",
         has_text="What is missing?",
     ).click()
     expect(page.locator("#modalOverlay.visible")).to_be_visible(timeout=5000)
