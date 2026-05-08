@@ -25,6 +25,7 @@ class ArtifactContractViolation(ValueError):
 
 
 def _require_positive_int(contract: str, field: str, value: object) -> None:
+    # Strict identity rejects bool, which is a subclass of int.
     if type(value) is not int:
         raise ArtifactContractViolation(contract, field, "must be a positive integer")
     if value <= 0:
@@ -54,7 +55,11 @@ class IssueNumber:
 
 @dataclass(frozen=True, slots=True)
 class ExchangeRunId:
-    """Stable review-exchange run identity, not a filesystem path."""
+    """Stable review-exchange run identity, not a filesystem path.
+
+    This primitive intentionally constrains identity safety here, while leaving
+    producer-specific run-id formats to the producer contracts that own them.
+    """
 
     value: str
 
@@ -287,6 +292,7 @@ class ChapterSidecarArtifact(_FileArtifact):
     artifact_type: ClassVar[ArtifactType] = ArtifactType.CHAPTER_SIDECAR
     label: ClassVar[str] = "Replay Chapters"
     render_mode: ClassVar[RenderMode] = RenderMode.JSON
+    scope: AgentTurnArtifactScope
 
 
 @dataclass(frozen=True, slots=True)
