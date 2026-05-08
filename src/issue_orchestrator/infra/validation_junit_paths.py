@@ -5,18 +5,22 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+_JUNIT_PATH_SECTIONS = ("validation", "e2e")
+
 
 def configured_validation_junit_xml_paths(config: Any) -> tuple[str, ...]:
     """Return validation report paths from validation and E2E config sections."""
     if config is None:
         return ()
-    paths: list[str] = []
-    for section_name in ("validation", "e2e"):
+    sections: dict[str, dict[str, object]] = {}
+    for section_name in _JUNIT_PATH_SECTIONS:
         section = getattr(config, section_name, None)
         if section is None:
             continue
-        paths.extend(_normalize_paths(getattr(section, "junit_xml_paths", ())))
-    return _dedupe_paths(paths)
+        sections[section_name] = {
+            "junit_xml_paths": getattr(section, "junit_xml_paths", ()),
+        }
+    return configured_validation_junit_xml_paths_from_mapping(sections)
 
 
 def configured_validation_junit_xml_paths_from_mapping(
@@ -24,7 +28,7 @@ def configured_validation_junit_xml_paths_from_mapping(
 ) -> tuple[str, ...]:
     """Return validation report paths from a parsed YAML config mapping."""
     paths: list[str] = []
-    for section_name in ("validation", "e2e"):
+    for section_name in _JUNIT_PATH_SECTIONS:
         section = config.get(section_name, {}) or {}
         if not isinstance(section, Mapping):
             continue

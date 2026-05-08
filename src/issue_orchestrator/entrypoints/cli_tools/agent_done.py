@@ -207,15 +207,15 @@ def record_validation_artifacts(
     session_output = FileSystemSessionOutput()
     run_dir = session_output.ensure_run_dir(worktree_root, session_id)
     run_record_path = run_dir / "validation-record.json"
-    effective_record_path = (
-        str(run_record_path) if run_record_path.exists() else record_path
+    resolved_record_path = (
+        run_record_path
+        if run_record_path.exists()
+        else Path(record_path) if record_path else None
     )
-    evidence_record_path: Path | None = None
-    if run_record_path.exists():
-        evidence_record_path = run_record_path
-    elif record_path:
-        evidence_record_path = Path(record_path)
-    updates = _validation_manifest_updates(validation_result, effective_record_path)
+    updates = _validation_manifest_updates(
+        validation_result,
+        str(resolved_record_path) if resolved_record_path else None,
+    )
     if updates:
         session_output.update_manifest(run_dir, updates)
 
@@ -242,7 +242,7 @@ def record_validation_artifacts(
         run_dir=run_dir,
         worktree=worktree_root,
         record=record,
-        record_path=evidence_record_path,
+        record_path=resolved_record_path,
         junit_xml_paths=_runtime_validation_junit_xml_paths(worktree_root),
     )
 

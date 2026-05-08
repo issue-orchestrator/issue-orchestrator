@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol, runtime_checkable
 
 from .session_output import ValidationRecord
 
 
+@runtime_checkable
 class ValidationEvidenceRecorder(Protocol):
     """Records validation evidence for a session run."""
 
@@ -19,7 +20,7 @@ class ValidationEvidenceRecorder(Protocol):
         record: ValidationRecord | None,
         record_path: Path | None = None,
         junit_xml_paths: tuple[str, ...] | list[str] = (),
-    ) -> Any:
+    ) -> None:
         """Record validation artifacts and structured test reports."""
         ...
 
@@ -36,4 +37,4 @@ class NullValidationEvidenceRecorder:
         record_path: Path | None = None,
         junit_xml_paths: tuple[str, ...] | list[str] = (),
     ) -> None:
-        del run_dir, worktree, record, record_path, junit_xml_paths
+        _ = (run_dir, worktree, record, record_path, junit_xml_paths)

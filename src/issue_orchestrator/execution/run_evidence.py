@@ -44,7 +44,7 @@ class RunEvidenceRecorder:
         record: ValidationRecord | None,
         record_path: Path | None = None,
         junit_xml_paths: tuple[str, ...] | list[str] = (),
-    ) -> RecordedRunEvidence:
+    ) -> None:
         """Record validation logs and structured test artifacts for a run."""
         evidence = _validation_evidence(
             worktree=worktree,
@@ -67,7 +67,6 @@ class RunEvidenceRecorder:
             updates["artifacts"] = artifacts
         if updates:
             self._session_output.update_manifest(run_dir, updates)
-        return evidence
 
 
 def recorded_junit_xml_paths(run_dir: Path) -> tuple[str, ...]:
