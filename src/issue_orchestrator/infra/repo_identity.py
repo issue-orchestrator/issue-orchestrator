@@ -81,22 +81,48 @@ def _resolve_git_dir(repo_path: Path) -> Optional[Path]:
     return None
 
 
-def get_repo_head_sha(repo_root: Path | str) -> Optional[str]:
-    """Return the current HEAD commit SHA for a repo without invoking git."""
-    repo_path = normalize_repo_root(repo_root)
+@dataclass(frozen=True)
+class _GitMetadataPaths:
+    git_dir: Path
+    common_dir: Path
+
+
+def _resolve_common_git_dir(git_dir: Path) -> Path:
+    common_dir_path = git_dir / "commondir"
+    if not common_dir_path.exists():
+        return git_dir
+    common_dir = common_dir_path.read_text().strip()
+    if not common_dir:
+        return git_dir
+    resolved = Path(common_dir)
+    if not resolved.is_absolute():
+        resolved = git_dir / resolved
+    return resolved.resolve()
+
+
+def _resolve_git_metadata_paths(repo_path: Path) -> Optional[_GitMetadataPaths]:
     git_dir = _resolve_git_dir(repo_path)
     if git_dir is None:
         return None
-    head_path = git_dir / "HEAD"
-    if not head_path.exists():
-        return None
-    head = head_path.read_text().strip()
-    if head.startswith("ref: "):
-        ref = head.split("ref: ", 1)[1].strip()
-        ref_path = git_dir / ref
+    return _GitMetadataPaths(
+        git_dir=git_dir,
+        common_dir=_resolve_common_git_dir(git_dir),
+    )
+
+
+def _git_ref_stores(paths: _GitMetadataPaths) -> tuple[Path, ...]:
+    if paths.git_dir == paths.common_dir:
+        return (paths.git_dir,)
+    return (paths.git_dir, paths.common_dir)
+
+
+def _read_git_ref(paths: _GitMetadataPaths, ref: str) -> str | None:
+    for ref_store in _git_ref_stores(paths):
+        ref_path = ref_store / ref
         if ref_path.exists():
             return ref_path.read_text().strip() or None
-        packed = git_dir / "packed-refs"
+    for ref_store in _git_ref_stores(paths):
+        packed = ref_store / "packed-refs"
         if packed.exists():
             for line in packed.read_text().splitlines():
                 if line.startswith("#") or line.startswith("^") or not line.strip():
@@ -104,7 +130,22 @@ def get_repo_head_sha(repo_root: Path | str) -> Optional[str]:
                 sha, name = line.split(" ", 1)
                 if name.strip() == ref:
                     return sha.strip() or None
+    return None
+
+
+def get_repo_head_sha(repo_root: Path | str) -> Optional[str]:
+    """Return the current HEAD commit SHA for a repo without invoking git."""
+    repo_path = normalize_repo_root(repo_root)
+    paths = _resolve_git_metadata_paths(repo_path)
+    if paths is None:
         return None
+    head_path = paths.git_dir / "HEAD"
+    if not head_path.exists():
+        return None
+    head = head_path.read_text().strip()
+    if head.startswith("ref: "):
+        ref = head.split("ref: ", 1)[1].strip()
+        return _read_git_ref(paths, ref)
     return head or None
 
 
@@ -133,10 +174,10 @@ class RepoIdentity:
 def _read_head_ref(repo_root: Path | str) -> str | None:
     """Read the HEAD ref name directly from git metadata when available."""
     repo_path = normalize_repo_root(repo_root)
-    git_dir = _resolve_git_dir(repo_path)
-    if git_dir is None:
+    paths = _resolve_git_metadata_paths(repo_path)
+    if paths is None:
         return None
-    head_path = git_dir / "HEAD"
+    head_path = paths.git_dir / "HEAD"
     if not head_path.exists():
         return None
     head = head_path.read_text().strip()

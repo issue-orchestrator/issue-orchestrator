@@ -41,6 +41,61 @@ def test_get_repo_head_sha_from_worktree_file(tmp_path):
     assert get_repo_head_sha(repo) == "def456"
 
 
+def test_get_repo_head_sha_from_linked_worktree_common_ref(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    common_git = tmp_path / "common_git"
+    worktree_git = common_git / "worktrees" / "repo"
+    worktree_git.mkdir(parents=True)
+
+    (worktree_git / "HEAD").write_text("ref: refs/heads/feature\n")
+    (worktree_git / "commondir").write_text("../..\n")
+    refs = common_git / "refs" / "heads"
+    refs.mkdir(parents=True)
+    (refs / "feature").write_text("fedcba\n")
+
+    (repo / ".git").write_text(f"gitdir: {worktree_git}\n")
+
+    assert get_repo_head_sha(repo) == "fedcba"
+
+
+def test_get_repo_head_sha_from_linked_worktree_absolute_common_ref(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    common_git = tmp_path / "common_git"
+    worktree_git = tmp_path / "worktrees" / "repo"
+    worktree_git.mkdir(parents=True)
+
+    (worktree_git / "HEAD").write_text("ref: refs/heads/feature\n")
+    (worktree_git / "commondir").write_text(f"{common_git}\n")
+    refs = common_git / "refs" / "heads"
+    refs.mkdir(parents=True)
+    (refs / "feature").write_text("654321\n")
+
+    (repo / ".git").write_text(f"gitdir: {worktree_git}\n")
+
+    assert get_repo_head_sha(repo) == "654321"
+
+
+def test_get_repo_head_sha_from_linked_worktree_common_packed_refs(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    common_git = tmp_path / "common_git"
+    worktree_git = common_git / "worktrees" / "repo"
+    worktree_git.mkdir(parents=True)
+
+    (worktree_git / "HEAD").write_text("ref: refs/heads/feature\n")
+    (worktree_git / "commondir").write_text("../..\n")
+    (common_git / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        "1234567890abcdef1234567890abcdef12345678 refs/heads/feature\n"
+    )
+
+    (repo / ".git").write_text(f"gitdir: {worktree_git}\n")
+
+    assert get_repo_head_sha(repo) == "1234567890abcdef1234567890abcdef12345678"
+
+
 def test_repo_identity_roundtrip_serialization():
     identity = RepoIdentity(
         repo_root="/tmp/repo",
