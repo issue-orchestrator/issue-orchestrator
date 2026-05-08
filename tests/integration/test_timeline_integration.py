@@ -123,6 +123,21 @@ def _step_by_event(cycle: dict[str, object], event_name: str) -> dict[str, objec
     return matches[0]
 
 
+def _single_action(actions: object, **criteria: object) -> dict[str, object]:
+    """Return exactly one action matching all criteria."""
+    assert isinstance(actions, list) and actions
+    matches = [
+        action
+        for action in actions
+        if isinstance(action, dict)
+        and all(action.get(key) == value for key, value in criteria.items())
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one action matching {criteria}, got {actions}"
+    )
+    return matches[0]
+
+
 def _latest_run(payload: dict[str, object]) -> dict[str, object]:
     """Return the latest run from issue-detail payload."""
     runs = payload.get("runs")
@@ -407,54 +422,48 @@ def test_issue_detail_uses_mocked_pipeline_artifact_refs_from_sqlite(
 
         prompted = _step_by_event(cycle, "review_exchange.role_prompted")
         prompted_actions = prompted.get("actions")
-        assert isinstance(prompted_actions, list) and prompted_actions
-        assert {
+        assert _single_action(prompted_actions, path=str(prompt_path)) == {
             "type": "open_path",
             "label": "Open Prompt",
             "path": str(prompt_path),
-        } in prompted_actions
-        assert {
+        }
+        assert _single_action(prompted_actions, path=str(chapters_path)) == {
             "type": "open_path",
             "label": "Open Replay Chapters",
             "path": str(chapters_path),
-        } in prompted_actions
-        prompted_session_actions = [
-            action for action in prompted_actions
-            if action.get("type") == "open_agent_log"
-        ]
-        assert prompted_session_actions
-        assert all(
-            action.get("run_dir") == run_dir
-            and action.get("round_index") == 1
-            and action.get("session_role") == "reviewer"
-            for action in prompted_session_actions
-        )
-        assert any(
-            action.get("type") == "open_review_transcript"
-            and action.get("run_dir") == run_dir
-            and action.get("round_index") == 1
-            and action.get("transcript_role") == "reviewer"
-            for action in prompted_actions
-        )
+        }
+        assert _single_action(prompted_actions, type="open_agent_log") == {
+            "type": "open_agent_log",
+            "label": "View Reviewer Session Recording",
+            "issue_number": issue_number,
+            "round_index": 1,
+            "session_role": "reviewer",
+            "run_dir": run_dir,
+        }
+        assert _single_action(prompted_actions, type="open_review_transcript") == {
+            "type": "open_review_transcript",
+            "label": "View Review Transcript",
+            "issue_number": issue_number,
+            "round_index": 1,
+            "transcript_role": "reviewer",
+            "run_dir": run_dir,
+        }
 
         feedback = _step_by_event(cycle, "review_exchange.role_feedback")
         feedback_actions = feedback.get("actions")
-        assert isinstance(feedback_actions, list) and feedback_actions
-        assert {
+        assert _single_action(feedback_actions, path=str(response_path)) == {
             "type": "open_path",
             "label": "Open Review Response",
             "path": str(response_path),
-        } in feedback_actions
-        feedback_session_actions = [
-            action for action in feedback_actions
-            if action.get("type") == "open_agent_log"
-        ]
-        assert feedback_session_actions
-        assert all(
-            action.get("round_index") == 1
-            and action.get("session_role") == "reviewer"
-            for action in feedback_session_actions
-        )
+        }
+        assert _single_action(feedback_actions, type="open_agent_log") == {
+            "type": "open_agent_log",
+            "label": "View Reviewer Session Recording",
+            "issue_number": issue_number,
+            "round_index": 1,
+            "session_role": "reviewer",
+            "run_dir": run_dir,
+        }
     finally:
         web.set_orchestrator(None)
 
