@@ -24,6 +24,30 @@ class TestRoleEventNarrativeEnrichment:
         )
         assert narrative == "Reviewer prompt sent (round 2)"
 
+    def test_protocol_retry_prompt_narrative_identifies_retry(self) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_prompted",
+            {
+                "role": "coder",
+                "round_index": 1,
+                "prompt_chars": 480,
+                "protocol_retry": True,
+            },
+        )
+        assert narrative == "Coder protocol retry sent (round 1)"
+
+    def test_protocol_retry_prompt_narrative_requires_boolean_true(self) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_prompted",
+            {
+                "role": "coder",
+                "round_index": 1,
+                "prompt_chars": 480,
+                "protocol_retry": "yes",
+            },
+        )
+        assert narrative == "Coder prompt sent (round 1)"
+
     def test_role_feedback_narrative_includes_verdict(self) -> None:
         narrative = enrich_narrative(
             "default", "review_exchange.role_feedback",
