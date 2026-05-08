@@ -1230,6 +1230,59 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         expected_cycle_count=detail_cycle_count,
     )
 
+    # The issue-detail drawer is transformed for its slide-in animation.
+    # That makes fixed-position descendants use the drawer as their
+    # coordinate container, so the journey overflow menu must compensate
+    # or the "..." click appears to do nothing.
+    coding_step = journey.locator(
+        ".journey-step",
+        has=page.locator(".timeline-action-btn", has_text="Coding Recording"),
+    ).first
+    expect(coding_step).to_be_visible(timeout=5000)
+    coding_menu_trigger = coding_step.locator(".timeline-event-menu-trigger").first
+    _dom_click_hit_tested(coding_menu_trigger, "coding journey overflow trigger")
+    coding_menu_item = coding_step.locator(
+        ".timeline-event-menu[open] .timeline-menu-item"
+    ).first
+    expect(coding_menu_item).to_be_visible(timeout=5000)
+    menu_hit_result = coding_menu_item.evaluate(
+        """
+        (element) => {
+            const rect = element.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const hit = document.elementFromPoint(cx, cy);
+            return {
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+                hitInside: !!hit && (hit === element || element.contains(hit)),
+                hitClass: hit && hit.className ? String(hit.className) : "",
+            };
+        }
+        """
+    )
+    assert (
+        0 <= menu_hit_result["left"]
+        < menu_hit_result["right"]
+        <= menu_hit_result["viewportWidth"]
+    ), f"coding journey overflow menu is horizontally unreachable: {menu_hit_result!r}"
+    assert (
+        0 <= menu_hit_result["top"]
+        < menu_hit_result["bottom"]
+        <= menu_hit_result["viewportHeight"]
+    ), f"coding journey overflow menu is vertically unreachable: {menu_hit_result!r}"
+    assert menu_hit_result["hitInside"], (
+        f"coding journey overflow menu item is not hit-testable: {menu_hit_result!r}"
+    )
+    coding_menu_trigger.evaluate("(element) => element.click()")
+    expect(coding_step.locator(".timeline-event-menu[open]")).to_have_count(
+        0, timeout=5000
+    )
+
     # And the status line must no longer show the loading / unavailable text.
     status_el = page.locator("#issueDetailStatus")
     status_text = status_el.text_content() or ""

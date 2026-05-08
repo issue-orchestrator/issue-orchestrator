@@ -392,7 +392,7 @@
     z-index: 50;
     min-width: min(240px, calc(100vw - 48px));
     max-width: min(320px, calc(100vw - 24px));
-    display: grid;
+    display: none;
     gap: 2px;
     max-height: min(40vh, 280px);
     overflow: auto;
@@ -401,6 +401,9 @@
     border-radius: 8px;
     background: var(--bg-panel);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.timeline-event-menu[open] .timeline-event-menu-items {
+    display: grid;
 }
 .timeline-menu-item {
     border: none;

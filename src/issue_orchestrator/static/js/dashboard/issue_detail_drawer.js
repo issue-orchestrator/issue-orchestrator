@@ -234,33 +234,7 @@ function _renderJourneyRuns(container, allRuns) {
 
     // Wire up delegated click handler for action buttons inside journey steps
     if (!container.dataset.journeyActionsBound) {
-        container.addEventListener('click', (event) => {
-            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-menu-item');
-            if (actionTarget && actionTarget.dataset.action) {
-                try {
-                    const action = JSON.parse(actionTarget.dataset.action);
-                    closeTimelineEventMenus();
-                    runTimelineEventAction(action);
-                } catch (err) {
-                    console.error('Failed to parse run action:', err);
-                    showToast('Unable to execute action', 'error');
-                }
-                return;
-            }
-            const menuTrigger = event.target.closest('.timeline-event-menu-trigger');
-            if (menuTrigger) {
-                const ownerMenu = menuTrigger.closest('.timeline-event-menu');
-                const wasOpen = ownerMenu && ownerMenu.hasAttribute('open');
-                closeTimelineEventMenus(ownerMenu);
-                if (ownerMenu && !wasOpen) {
-                    requestAnimationFrame(() => positionTimelineEventMenu(ownerMenu));
-                }
-                return;
-            }
-            if (!event.target.closest('.timeline-event-menu')) {
-                closeTimelineEventMenus();
-            }
-        });
+        container.addEventListener('click', handleTimelineEventActionsClick);
         container.dataset.journeyActionsBound = 'true';
     }
 }

@@ -111,38 +111,42 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
         container.dataset.timelineDetailIds = detailIds.join(' ');
     }
     if (!container.dataset.timelineBound) {
-        container.addEventListener('click', (event) => {
-            const target = event.target.closest('.timeline-artifact');
-            if (target && target.dataset.path) {
-                openPath(target.dataset.path);
-            }
-            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-menu-item');
-            if (actionTarget && actionTarget.dataset.action) {
-                try {
-                    const action = JSON.parse(actionTarget.dataset.action);
-                    closeTimelineEventMenus();
-                    runTimelineEventAction(action);
-                } catch (err) {
-                    console.error('Failed to parse timeline action:', err);
-                    showToast('Unable to execute timeline action', 'error');
-                }
-                return;
-            }
-            const menuTrigger = event.target.closest('.timeline-event-menu-trigger');
-            if (menuTrigger) {
-                const ownerMenu = menuTrigger.closest('.timeline-event-menu');
-                const wasOpen = ownerMenu && ownerMenu.hasAttribute('open');
-                closeTimelineEventMenus(ownerMenu);
-                if (ownerMenu && !wasOpen) {
-                    requestAnimationFrame(() => positionTimelineEventMenu(ownerMenu));
-                }
-                return;
-            }
-            if (!event.target.closest('.timeline-event-menu')) {
-                closeTimelineEventMenus();
-            }
-        });
+        container.addEventListener('click', handleTimelineEventActionsClick);
         container.dataset.timelineBound = 'true';
+    }
+}
+
+function handleTimelineEventActionsClick(event) {
+    const clickTarget = event.target instanceof Element
+        ? event.target
+        : event.target?.parentElement;
+    if (!clickTarget) return;
+    const target = clickTarget.closest('.timeline-artifact');
+    if (target && target.dataset.path) {
+        openPath(target.dataset.path);
+    }
+    const actionTarget = clickTarget.closest('.timeline-action-btn, .timeline-menu-item');
+    if (actionTarget && actionTarget.dataset.action) {
+        try {
+            const action = JSON.parse(actionTarget.dataset.action);
+            closeTimelineEventMenus();
+            runTimelineEventAction(action);
+        } catch (err) {
+            console.error('Failed to parse timeline action:', err);
+            showToast('Unable to execute timeline action', 'error');
+        }
+        return;
+    }
+    const menuTrigger = clickTarget.closest('.timeline-event-menu-trigger');
+    if (menuTrigger) {
+        const ownerMenu = menuTrigger.closest('.timeline-event-menu');
+        event.preventDefault();
+        event.stopPropagation();
+        toggleTimelineEventMenu(ownerMenu);
+        return;
+    }
+    if (!clickTarget.closest('.timeline-event-menu')) {
+        closeTimelineEventMenus();
     }
 }
 
@@ -331,6 +335,34 @@ function closeTimelineEventMenus(exceptMenu = null) {
     });
 }
 
+function toggleTimelineEventMenu(menu) {
+    if (!menu) return;
+    const wasOpen = menu.hasAttribute('open');
+    closeTimelineEventMenus(menu);
+    if (wasOpen) {
+        menu.removeAttribute('open');
+        return;
+    }
+    menu.setAttribute('open', '');
+    positionTimelineEventMenu(menu);
+}
+
+function _timelineEventMenuFixedOffset(items) {
+    const offsetParent = items.offsetParent;
+    if (
+        !offsetParent
+        || offsetParent === document.body
+        || offsetParent === document.documentElement
+    ) {
+        return { top: 0, left: 0 };
+    }
+    if (!(offsetParent instanceof Element)) {
+        return { top: 0, left: 0 };
+    }
+    const rect = offsetParent.getBoundingClientRect();
+    return { top: rect.top, left: rect.left };
+}
+
 // Place the overflow popover below-right of its trigger using viewport
 // coordinates. position: fixed lets the popover escape ancestor overflow
 // containers (e.g. the e2e diagnosis modal's scrolling body) so it isn't
@@ -353,8 +385,9 @@ function positionTimelineEventMenu(menu) {
     if (left + itemsRect.width > window.innerWidth - margin) {
         left = window.innerWidth - itemsRect.width - margin;
     }
-    items.style.top = `${Math.round(top)}px`;
-    items.style.left = `${Math.round(left)}px`;
+    const fixedOffset = _timelineEventMenuFixedOffset(items);
+    items.style.top = `${Math.round(top - fixedOffset.top)}px`;
+    items.style.left = `${Math.round(left - fixedOffset.left)}px`;
 }
 
 function runTimelineEventAction(action) {
