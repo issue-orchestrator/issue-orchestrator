@@ -361,6 +361,12 @@ def create_attempt_store(config: Config):  # noqa: ANN201
     return SidecarAttemptStore(config.repo_root)
 
 
+def _validation_junit_xml_paths(config: Config) -> tuple[str, ...]:
+    from ..infra.validation_junit_paths import configured_validation_junit_xml_paths
+
+    return configured_validation_junit_xml_paths(config)
+
+
 def _create_completion_components(
     config: Config,
     github: GitHubAdapter | None,
@@ -378,6 +384,7 @@ def _create_completion_components(
     from ..control.pre_publish_gate import PrePublishGate
     from ..control.session_controller import SessionController
     from ..control.label_manager import LabelManager as _LM
+    from ..execution.run_evidence import RunEvidenceRecorder
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
@@ -412,6 +419,8 @@ def _create_completion_components(
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        validation_junit_xml_paths=_validation_junit_xml_paths(config),
+        validation_evidence_recorder=RunEvidenceRecorder(session_output),
         max_validation_retries=config.retry.max_validation_retries,
         provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,

@@ -991,6 +991,60 @@ class TestSessionControllerValidationCaching:
         ]
         assert Path(artifacts[0]["value"]).exists()
 
+    def test_validation_records_junit_evidence_in_run_manifest(self, tmp_path: Path):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        session_output = FileSystemSessionOutput()
+        from issue_orchestrator.execution.run_evidence import RunEvidenceRecorder
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=RecordingEventSink(),
+            session_output=session_output,
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=MockCommandRunner(returncode=0),
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            validation_junit_xml_paths=("reports/*.xml",),
+            validation_evidence_recorder=RunEvidenceRecorder(session_output),
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        junit_path = worktree / "reports" / "junit.xml"
+        junit_path.parent.mkdir()
+        junit_path.write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="validation" tests="1">
+  <testcase classname="tests.unit.test_smoke" name="test_smoke" time="0.01" />
+</testsuite>
+""",
+            encoding="utf-8",
+        )
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.COMPLETED
+        run_dir = session_output.find_run_dir(worktree, session_name="issue-123")
+        assert run_dir is not None
+        manifest = session_output.read_manifest(run_dir)
+        assert manifest is not None
+        assert any(
+            artifact.get("kind") == "junit_xml"
+            and artifact.get("path") == str(junit_path.resolve())
+            for artifact in manifest["artifacts"].values()
+        )
+
     def test_cached_validation_pass_materializes_record_for_pass_event(self, tmp_path):
         """Cached validation passes still emit concrete run-scoped evidence."""
         processor = MockCompletionProcessor()

@@ -9,6 +9,7 @@ import yaml
 from .config_paths import DEFAULT_CONFIG_NAME, find_config_file
 from .config_models import ValidationConfig
 from .env import get_env
+from .validation_junit_paths import configured_validation_junit_xml_paths_from_mapping
 
 
 def default_validation_config() -> dict:
@@ -20,7 +21,7 @@ def extract_validation_config(config: dict) -> dict:
     """Extract the validation section from parsed YAML data."""
     defaults = default_validation_config()
     guardrail_defaults = defaults["coverage_guardrail"]
-    validation = config.get("validation", {})
+    validation = config.get("validation", {}) or {}
     guardrail = validation.get("coverage_guardrail", {}) or {}
     return {
         "cmd": validation.get("cmd"),
@@ -29,6 +30,7 @@ def extract_validation_config(config: dict) -> dict:
             "pre_push_dirty_check",
             defaults["pre_push_dirty_check"],
         ),
+        "junit_xml_paths": configured_validation_junit_xml_paths_from_mapping(config),
         "coverage_guardrail": {
             "enabled": guardrail.get("enabled", guardrail_defaults["enabled"]),
             "min_percent": guardrail.get("min_percent", guardrail_defaults["min_percent"]),

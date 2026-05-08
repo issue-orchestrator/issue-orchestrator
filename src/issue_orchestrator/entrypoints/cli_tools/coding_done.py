@@ -374,8 +374,10 @@ def main() -> None:  # noqa: C901, PLR0912
     elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
         print(f"Note: Skipping validation for '{status}' status (agent is reporting a problem)")
 
-    if validation_result and not validation_result.passed:
+    if validation_result:
         record_validation_artifacts(worktree_root, record.session_id, validation_result)
+
+    if validation_result and not validation_result.passed:
         print(f"\n{'='*60}")
         print("❌ VALIDATION FAILED — coding-done cannot complete")
         print(f"{'='*60}")

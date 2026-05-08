@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
-from issue_orchestrator.execution.validation_failure_summary import load_validation_failure_summary
+from issue_orchestrator.execution.validation_failure_summary import (
+    load_validation_failure_summary,
+    load_validation_failure_summary_with_config,
+)
 
 
 def test_load_validation_failure_summary_extracts_failed_tests_and_excerpts(tmp_path: Path) -> None:
@@ -187,6 +191,18 @@ def _seed_failed_validation(tmp_path: Path) -> tuple[Path, Path]:
     return worktree, run_dir
 
 
+def _write_junit_xml(path: Path, *, case_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="pytest" tests="1" failures="0" errors="0" skipped="0">
+  <testcase classname="tests.unit.test_recorded" name="{case_name}" time="0.01"/>
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+
+
 def test_load_validation_failure_summary_attaches_junit_cases_when_configured(
     tmp_path: Path,
 ) -> None:
@@ -234,6 +250,52 @@ def test_load_validation_failure_summary_returns_empty_junit_when_unconfigured(
     summary = load_validation_failure_summary(run_dir)
     assert summary is not None
     assert summary.junit_cases == ()
+
+
+def test_load_validation_failure_summary_prefers_recorded_junit_paths(
+    tmp_path: Path,
+) -> None:
+    """Recorded manifest evidence is authoritative over config discovery."""
+    worktree, run_dir = _seed_failed_validation(tmp_path)
+    recorded_path = worktree / "recorded" / "junit.xml"
+    configured_path = worktree / "configured" / "junit.xml"
+    _write_junit_xml(recorded_path, case_name="test_from_manifest")
+    _write_junit_xml(configured_path, case_name="test_from_config")
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["artifacts"] = {
+        "validation_junit_xml_recorded": {
+            "kind": "junit_xml",
+            "path": str(recorded_path),
+            "content_type": "application/xml",
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    summary = load_validation_failure_summary(
+        run_dir,
+        junit_xml_paths=("configured/*.xml",),
+    )
+
+    assert summary is not None
+    assert [case.display_name for case in summary.junit_cases] == [
+        "test_from_manifest"
+    ]
+
+
+def test_load_validation_failure_summary_with_config_reads_e2e_junit_paths(
+    tmp_path: Path,
+) -> None:
+    worktree, run_dir = _seed_failed_validation(tmp_path)
+    _write_junit_xml(worktree / "e2e-results" / "junit.xml", case_name="test_e2e")
+    config = SimpleNamespace(
+        validation=SimpleNamespace(junit_xml_paths=()),
+        e2e=SimpleNamespace(junit_xml_paths=("e2e-results/*.xml",)),
+    )
+
+    summary = load_validation_failure_summary_with_config(run_dir, config=config)
+
+    assert summary is not None
+    assert [case.display_name for case in summary.junit_cases] == ["test_e2e"]
 
 
 def test_load_validation_failure_summary_tolerates_missing_junit_file(
