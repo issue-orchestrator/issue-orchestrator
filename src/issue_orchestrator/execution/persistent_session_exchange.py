@@ -31,6 +31,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.artifact_contracts import (
+    AgentProvider,
+    AgentRole,
+    AgentTurnArtifactScope,
+    ArtifactContractViolation,
+    ArtifactRef,
+    ChapterSidecarArtifact,
+    CoderTurnCompleted,
+    CoderTurnStarted,
+    ExchangeRunId,
+    ExistingFile,
+    ExistingNonEmptyFile,
+    IssueNumber,
+    PositiveAttemptIndex,
+    PositiveRoundIndex,
+    PromptArtifact,
+    ReviewResponseArtifact,
+    ReviewerTurnCompleted,
+    ReviewerTurnStarted,
+    TerminalRecordingArtifact,
+)
 from ..domain.review_exchange_manifest import (
     ReviewExchangeManifestHeader,
     ReviewExchangeRecordingPaths,
@@ -748,6 +769,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
+            coder_provider=_agent_provider(coder_agent),
+            reviewer_provider=_agent_provider(reviewer_agent),
             before_reviewer_round=_ff_then_caller_hook,
             emit=_emit,
             coder_mirror=coder_mirror,
@@ -996,9 +1019,188 @@ def _build_role_env(
     return build_filtered_env(overrides=overrides)
 
 
+def _agent_provider(agent: AgentConfig) -> AgentProvider:
+    raw = agent.provider if agent.provider else agent.ai_system
+    if not raw:
+        raise ArtifactContractViolation(
+            "AgentProvider",
+            "value",
+            "agent provider or ai_system must be configured",
+        )
+    return AgentProvider(raw)
+
+
 # ---------------------------------------------------------------------------
 # Round loop
 # ---------------------------------------------------------------------------
+
+
+def _agent_turn_scope(
+    *,
+    issue_number: int,
+    exchange_run_id: str,
+    round_index: int,
+    attempt_index: int,
+    role: Role,
+    provider: AgentProvider,
+) -> AgentTurnArtifactScope:
+    return AgentTurnArtifactScope(
+        issue_number=IssueNumber(issue_number),
+        exchange_run_id=ExchangeRunId(exchange_run_id),
+        round_index=PositiveRoundIndex(round_index),
+        attempt_index=PositiveAttemptIndex(attempt_index),
+        role=_artifact_role(role),
+        provider=provider,
+    )
+
+
+def _artifact_role(role: Role) -> AgentRole:
+    if role is Role.REVIEWER:
+        return AgentRole.REVIEWER
+    if role is Role.CODER:
+        return AgentRole.CODER
+    raise ArtifactContractViolation("AgentRole", "value", f"unsupported role: {role}")
+
+
+def _turns_dir(exchange_dir: Path) -> Path:
+    turns_dir = exchange_dir / "turns"
+    turns_dir.mkdir(parents=True, exist_ok=True)
+    return turns_dir
+
+
+def _turn_artifact_stem(
+    *,
+    round_index: int,
+    role: Role,
+    attempt_index: int,
+) -> str:
+    return f"round-{round_index}-{role.value}-attempt-{attempt_index}"
+
+
+def _turn_prompt_path(
+    exchange_dir: Path,
+    *,
+    round_index: int,
+    role: Role,
+    attempt_index: int,
+) -> Path:
+    stem = _turn_artifact_stem(
+        round_index=round_index,
+        role=role,
+        attempt_index=attempt_index,
+    )
+    return _turns_dir(exchange_dir) / f"{stem}.prompt.md"
+
+
+def _persist_turn_prompt(
+    exchange_dir: Path,
+    *,
+    round_index: int,
+    role: Role,
+    attempt_index: int,
+    prompt_text: str,
+) -> Path:
+    path = _turn_prompt_path(
+        exchange_dir,
+        round_index=round_index,
+        role=role,
+        attempt_index=attempt_index,
+    )
+    path.write_text(prompt_text, encoding="utf-8")
+    return path
+
+
+def _chapters_path(run_dir: Path, role: Role) -> Path:
+    return run_dir / role.value / "chapters.json"
+
+
+def _build_reviewer_turn_started(
+    *,
+    scope: AgentTurnArtifactScope,
+    prompt_path: Path,
+    recording_path: Path,
+    chapters_path: Path,
+) -> ReviewerTurnStarted:
+    return ReviewerTurnStarted(
+        scope=scope,
+        prompt=PromptArtifact(scope=scope, file=ExistingNonEmptyFile(prompt_path)),
+        terminal_recording=TerminalRecordingArtifact(
+            scope=scope,
+            file=ExistingFile(recording_path),
+        ),
+        chapters=ChapterSidecarArtifact(
+            scope=scope,
+            file=ExistingFile(chapters_path),
+        ),
+    )
+
+
+def _build_coder_turn_started(
+    *,
+    scope: AgentTurnArtifactScope,
+    prompt_path: Path,
+    recording_path: Path,
+    chapters_path: Path,
+) -> CoderTurnStarted:
+    return CoderTurnStarted(
+        scope=scope,
+        prompt=PromptArtifact(scope=scope, file=ExistingNonEmptyFile(prompt_path)),
+        terminal_recording=TerminalRecordingArtifact(
+            scope=scope,
+            file=ExistingFile(recording_path),
+        ),
+        chapters=ChapterSidecarArtifact(
+            scope=scope,
+            file=ExistingFile(chapters_path),
+        ),
+    )
+
+
+def _event_artifact_refs(refs: tuple[ArtifactRef, ...]) -> list[dict[str, str]]:
+    return [ref.to_event_artifact() for ref in refs]
+
+
+def _turn_completed(
+    started: ReviewerTurnStarted | CoderTurnStarted,
+    result_path: Path,
+    response: ReviewExchangeResponse,
+) -> ReviewerTurnCompleted | CoderTurnCompleted:
+    response_artifact = ReviewResponseArtifact(
+        scope=started.scope,
+        file=ExistingNonEmptyFile(result_path),
+    )
+    if isinstance(started, ReviewerTurnStarted):
+        return ReviewerTurnCompleted(
+            started=started,
+            response=response_artifact,
+            response_type=response.response_type,
+            response_text=response.response_text,
+        )
+    return CoderTurnCompleted(
+        started=started,
+        response=response_artifact,
+        response_type=response.response_type,
+        response_text=response.response_text,
+    )
+
+
+def _persist_turn_contract(
+    exchange_dir: Path,
+    *,
+    round_index: int,
+    role: Role,
+    attempt_index: int,
+    suffix: str,
+    fields: dict[str, object],
+) -> Path:
+    stem = _turn_artifact_stem(
+        round_index=round_index,
+        role=role,
+        attempt_index=attempt_index,
+    )
+    path = _turns_dir(exchange_dir) / f"{stem}.{suffix}.json"
+    path.write_text(json.dumps(fields, indent=2, sort_keys=True), encoding="utf-8")
+    return path
 
 
 def _drive_rounds(  # noqa: PLR0913
@@ -1024,6 +1226,8 @@ def _drive_rounds(  # noqa: PLR0913
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    coder_provider: AgentProvider,
+    reviewer_provider: AgentProvider,
     before_reviewer_round: Callable[[int], None] | None,
     emit: Callable[[EventName, dict[str, Any]], None],
     coder_mirror: _RoleSliceMirror,
@@ -1050,6 +1254,21 @@ def _drive_rounds(  # noqa: PLR0913
         )
         _persist_turn_packet(exchange_dir, reviewer_packet)
         reviewer_prompt_text = build_reviewer_prompt(reviewer_packet)
+        reviewer_prompt_path = _persist_turn_prompt(
+            exchange_dir,
+            round_index=round_index,
+            role=Role.REVIEWER,
+            attempt_index=1,
+            prompt_text=reviewer_prompt_text,
+        )
+        reviewer_scope = _agent_turn_scope(
+            issue_number=issue_number,
+            exchange_run_id=exchange_run_id,
+            round_index=round_index,
+            attempt_index=1,
+            role=Role.REVIEWER,
+            provider=reviewer_provider,
+        )
         emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
             "issue_number": issue_number,
             "session_name": session_name,
@@ -1069,16 +1288,33 @@ def _drive_rounds(  # noqa: PLR0913
             emit=emit,
             mirror=reviewer_mirror,
         )
+        reviewer_started = _build_reviewer_turn_started(
+            scope=reviewer_scope,
+            prompt_path=reviewer_prompt_path,
+            recording_path=reviewer_mirror.session_slice,
+            chapters_path=_chapters_path(run_dir, Role.REVIEWER),
+        )
+        _persist_turn_contract(
+            exchange_dir,
+            round_index=round_index,
+            role=Role.REVIEWER,
+            attempt_index=1,
+            suffix="started",
+            fields=reviewer_started.to_manifest_fields(),
+        )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
             "session_name": session_name,
             "round_index": round_index,
+            "attempt_index": 1,
             "role": "reviewer",
             "prompt_chars": len(reviewer_prompt_text),
+            "artifact_refs": _event_artifact_refs(reviewer_started.artifact_refs()),
         })
         reviewer = _send_role_round(
             session=reviewer_session,
             role="reviewer",
+            turn_started=reviewer_started,
             response_file=reviewer_response,
             recording_path=reviewer_recording,
             prompt=reviewer_prompt_text,
@@ -1157,6 +1393,21 @@ def _drive_rounds(  # noqa: PLR0913
         )
         _persist_turn_packet(exchange_dir, coder_packet)
         coder_prompt_text = build_coder_prompt(coder_packet)
+        coder_prompt_path = _persist_turn_prompt(
+            exchange_dir,
+            round_index=round_index,
+            role=Role.CODER,
+            attempt_index=1,
+            prompt_text=coder_prompt_text,
+        )
+        coder_scope = _agent_turn_scope(
+            issue_number=issue_number,
+            exchange_run_id=exchange_run_id,
+            round_index=round_index,
+            attempt_index=1,
+            role=Role.CODER,
+            provider=coder_provider,
+        )
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
@@ -1171,12 +1422,28 @@ def _drive_rounds(  # noqa: PLR0913
             emit=emit,
             mirror=coder_mirror,
         )
+        coder_started = _build_coder_turn_started(
+            scope=coder_scope,
+            prompt_path=coder_prompt_path,
+            recording_path=coder_mirror.session_slice,
+            chapters_path=_chapters_path(run_dir, Role.CODER),
+        )
+        _persist_turn_contract(
+            exchange_dir,
+            round_index=round_index,
+            role=Role.CODER,
+            attempt_index=1,
+            suffix="started",
+            fields=coder_started.to_manifest_fields(),
+        )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
             "session_name": session_name,
             "round_index": round_index,
+            "attempt_index": 1,
             "role": "coder",
             "prompt_chars": len(coder_prompt_text),
+            "artifact_refs": _event_artifact_refs(coder_started.artifact_refs()),
         })
         # Clear the previous turn's completion artifact so a stale file
         # from round N-1 cannot satisfy round N's protocol guardrail —
@@ -1186,6 +1453,7 @@ def _drive_rounds(  # noqa: PLR0913
         coder = _send_role_round(
             session=coder_session,
             role="coder",
+            turn_started=coder_started,
             response_file=coder_response,
             recording_path=coder_recording,
             prompt=coder_prompt_text,
@@ -1217,6 +1485,7 @@ def _drive_rounds(  # noqa: PLR0913
             coder_session=coder_session,
             coder=coder,
             reviewer=reviewer,
+            coder_provider=coder_provider,
             run_dir=run_dir,
             exchange_dir=exchange_dir,
             coder_response=coder_response,
@@ -1276,6 +1545,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     coder_session: PersistentSession,
     coder: ReviewExchangeResponse,
     reviewer: ReviewExchangeResponse,
+    coder_provider: AgentProvider,
     run_dir: Path,
     exchange_dir: Path,
     coder_response: Path,
@@ -1309,12 +1579,28 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
     while protocol_error is not None and retries_remaining > 0:
         retries_remaining -= 1
+        attempt_index = _CODER_PROTOCOL_RETRY_LIMIT - retries_remaining + 1
         retry_prompt = (
             f"{protocol_error}\n"
             "Run `coding-done completed --implementation '...' --problems '...'` "
             "(or `coding-done blocked --reason '...' --attempted '...'` if you "
             "cannot continue), then write your one-line JSON response again to "
             "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
+        )
+        retry_prompt_path = _persist_turn_prompt(
+            exchange_dir,
+            round_index=cycle_index,
+            role=Role.CODER,
+            attempt_index=attempt_index,
+            prompt_text=retry_prompt,
+        )
+        retry_scope = _agent_turn_scope(
+            issue_number=issue_number,
+            exchange_run_id=exchange_run_id,
+            round_index=cycle_index,
+            attempt_index=attempt_index,
+            role=Role.CODER,
+            provider=coder_provider,
         )
         _record_chapter(
             session_output=session_output,
@@ -1330,13 +1616,29 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             emit=emit,
             mirror=coder_mirror,
         )
+        retry_started = _build_coder_turn_started(
+            scope=retry_scope,
+            prompt_path=retry_prompt_path,
+            recording_path=coder_mirror.session_slice,
+            chapters_path=_chapters_path(run_dir, Role.CODER),
+        )
+        _persist_turn_contract(
+            exchange_dir,
+            round_index=cycle_index,
+            role=Role.CODER,
+            attempt_index=attempt_index,
+            suffix="started",
+            fields=retry_started.to_manifest_fields(),
+        )
         emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
             "issue_number": issue_number,
             "session_name": session_name,
             "round_index": cycle_index,
+            "attempt_index": attempt_index,
             "role": "coder",
             "prompt_chars": len(retry_prompt),
             "protocol_retry": True,
+            "artifact_refs": _event_artifact_refs(retry_started.artifact_refs()),
         })
         # Same freshness invariant as the initial turn: drop any file
         # left over from the previous attempt before the retry runs.
@@ -1344,6 +1646,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         retry_response = _send_role_round(
             session=coder_session,
             role="coder",
+            turn_started=retry_started,
             response_file=coder_response,
             recording_path=coder_recording,
             prompt=retry_prompt,
@@ -1395,6 +1698,7 @@ def _send_role_round(  # noqa: PLR0913
     *,
     session: PersistentSession,
     role: str,
+    turn_started: ReviewerTurnStarted | CoderTurnStarted,
     response_file: Path,
     recording_path: Path,
     prompt: str,
@@ -1414,10 +1718,12 @@ def _send_role_round(  # noqa: PLR0913
     Returns ``None`` if the role timed out or died — the caller emits
     REVIEW_EXCHANGE_ROLE_TIMEOUT and bails out of the exchange.
 
-    Persists the per-turn parsed result as a session artifact under
-    ``<exchange_dir>/turns/round-<n>-<role>.result.json`` for replay
-    and diagnostics.
+    Persists the per-attempt parsed result as a session artifact under
+    ``<exchange_dir>/turns/round-<n>-<role>-attempt-<m>.result.json``
+    for replay and diagnostics.
     """
+    role_enum = Role(role)
+    attempt_index = turn_started.scope.attempt_index.value
     try:
         parsed = send_round(
             session,
@@ -1439,12 +1745,15 @@ def _send_role_round(  # noqa: PLR0913
         # an asymmetric "result.json only on the happy path" contract
         # would leave the on-disk trail incomplete for exactly the
         # rounds that need replay/forensics.
-        _persist_turn_result(
+        typed_result = ReviewExchangeTurnResult.for_no_completion(str(exc))
+        result_path = _persist_turn_result(
             exchange_dir,
             round_index=cycle_index,
-            role=Role(role),
-            result=ReviewExchangeTurnResult.for_no_completion(str(exc)),
+            role=role_enum,
+            attempt_index=attempt_index,
+            result=typed_result,
         )
+        response = _legacy_response_from_typed_result(typed_result)
         _record_chapter(
             session_output=session_output,
             run_dir=run_dir,
@@ -1459,23 +1768,35 @@ def _send_role_round(  # noqa: PLR0913
             emit=emit,
             mirror=mirror,
         )
+        completed = _turn_completed(turn_started, result_path, response)
+        _persist_turn_contract(
+            exchange_dir,
+            round_index=cycle_index,
+            role=role_enum,
+            attempt_index=attempt_index,
+            suffix="completed",
+            fields=completed.to_manifest_fields(),
+        )
         emit(EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT, {
             "issue_number": issue_number,
             "session_name": session_name,
             "round_index": cycle_index,
+            "attempt_index": attempt_index,
             "role": role,
             "reason": "no_completion",
             "detail": str(exc),
+            "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
         })
         return None
 
     typed_result = ReviewExchangeTurnResult.from_agent_dict(
         parsed, raw_output=None,
     )
-    _persist_turn_result(
+    result_path = _persist_turn_result(
         exchange_dir,
         round_index=cycle_index,
-        role=Role(role),
+        role=role_enum,
+        attempt_index=attempt_index,
         result=typed_result,
     )
     response = _legacy_response_from_typed_result(typed_result)
@@ -1493,13 +1814,24 @@ def _send_role_round(  # noqa: PLR0913
         emit=emit,
         mirror=mirror,
     )
+    completed = _turn_completed(turn_started, result_path, response)
+    _persist_turn_contract(
+        exchange_dir,
+        round_index=cycle_index,
+        role=role_enum,
+        attempt_index=attempt_index,
+        suffix="completed",
+        fields=completed.to_manifest_fields(),
+    )
     emit(EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK, {
         "issue_number": issue_number,
         "session_name": session_name,
         "round_index": cycle_index,
+        "attempt_index": attempt_index,
         "role": role,
         "response_type": response.response_type,
         "getting_closer": response.getting_closer,
+        "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
     })
     return response
 
@@ -1532,22 +1864,15 @@ def _persist_turn_packet(
     The artifact lives at
     ``<exchange_dir>/turns/round-<round>-<role>.packet.json`` so a
     failed exchange can be replayed/inspected from the on-disk state
-    without walking the recording stream. Best-effort: write failures
-    do not abort the round (the round itself is the system of record;
-    artifacts are diagnostic).
+    without walking the recording stream.
     """
-    try:
-        turns_dir = exchange_dir / "turns"
-        turns_dir.mkdir(parents=True, exist_ok=True)
-        path = turns_dir / f"round-{packet.round_index}-{packet.role.value}.packet.json"
-        path.write_text(
-            json.dumps(packet.to_manifest_fields(), indent=2, sort_keys=True),
-        )
-    except OSError as exc:
-        logger.warning(
-            "Failed to persist turn packet for round=%d role=%s: %s",
-            packet.round_index, packet.role.value, exc,
-        )
+    path = _turns_dir(exchange_dir) / (
+        f"round-{packet.round_index}-{packet.role.value}.packet.json"
+    )
+    path.write_text(
+        json.dumps(packet.to_manifest_fields(), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _persist_turn_result(
@@ -1555,26 +1880,26 @@ def _persist_turn_result(
     *,
     round_index: int,
     role: Role,
+    attempt_index: int,
     result: ReviewExchangeTurnResult,
-) -> None:
-    """Write the per-turn parsed result as a session artifact.
+) -> Path:
+    """Write the per-attempt parsed result as a session artifact.
 
     Sibling to ``_persist_turn_packet``: a failed exchange leaves both
     the packet (what the orchestrator gave the agent) and the result
     (what the orchestrator parsed from the agent's response) on disk.
     """
-    try:
-        turns_dir = exchange_dir / "turns"
-        turns_dir.mkdir(parents=True, exist_ok=True)
-        path = turns_dir / f"round-{round_index}-{role.value}.result.json"
-        path.write_text(
-            json.dumps(result.to_manifest_fields(), indent=2, sort_keys=True),
-        )
-    except OSError as exc:
-        logger.warning(
-            "Failed to persist turn result for round=%d role=%s: %s",
-            round_index, role.value, exc,
-        )
+    stem = _turn_artifact_stem(
+        round_index=round_index,
+        role=role,
+        attempt_index=attempt_index,
+    )
+    path = _turns_dir(exchange_dir) / f"{stem}.result.json"
+    path.write_text(
+        json.dumps(result.to_manifest_fields(), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return path
 
 
 # ---------------------------------------------------------------------------

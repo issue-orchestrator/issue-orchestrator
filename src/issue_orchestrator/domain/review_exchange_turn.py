@@ -209,7 +209,7 @@ class ReviewExchangeTurnResult:
 
         ``detail`` typically carries the underlying exception's
         ``str(exc)`` so an operator inspecting the persisted
-        ``round-<n>-<role>.result.json`` sees the same root cause the
+        ``round-<n>-<role>-attempt-<m>.result.json`` sees the same root cause the
         ``REVIEW_EXCHANGE_ROLE_TIMEOUT`` event reports — without
         having to cross-reference event logs and the recording stream.
         """
