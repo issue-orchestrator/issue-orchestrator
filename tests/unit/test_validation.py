@@ -532,6 +532,22 @@ class TestPublishGate:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
+    def _attempt_key(self, temp_worktree: Path, stable_id: str):
+        from issue_orchestrator.domain.attempt import AttemptKey
+        from issue_orchestrator.domain.issue_key import GitHubIssueKey
+
+        head_sha = GitWorkingCopy().get_head_sha(temp_worktree)
+        assert head_sha is not None
+        return AttemptKey(
+            GitHubIssueKey(repo="owner/repo", external_id=stable_id),
+            head_sha,
+        )
+
+    def _session_dir(self, temp_worktree: Path, run_id: str) -> Path:
+        output_dir = temp_worktree / ".issue-orchestrator" / "sessions" / run_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
     def test_gate_disabled_when_no_command(self, temp_worktree):
         """Test gate is disabled when no command is configured."""
         gate = PublishGate(
@@ -668,6 +684,107 @@ class TestPublishGate:
         result2 = gate.check(session_output_dir=session_output_dir)
         assert result2.allowed is True
         assert result2.cache_hit is True
+
+    def test_gate_uses_attempt_cache_for_same_issue(
+        self, temp_worktree, session_output_dir
+    ):
+        """Attempt-scoped validation reuses a pass for the same issue and SHA."""
+        from issue_orchestrator.adapters.sidecar_attempt_store import SidecarAttemptStore
+
+        class CountingRunner:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run(self, *args, **kwargs):
+                self.calls += 1
+                return CommandResult(
+                    returncode=0,
+                    stdout="ok",
+                    stderr="",
+                    timed_out=False,
+                )
+
+        attempt_store = SidecarAttemptStore(temp_worktree)
+        attempt_key = self._attempt_key(temp_worktree, "123")
+        runner = CountingRunner()
+
+        first_gate = PublishGate(
+            temp_worktree,
+            command_runner=runner,
+            working_copy=GitWorkingCopy(),
+            command="make test",
+            timeout_seconds=10,
+            attempt_store=attempt_store,
+            attempt_key=attempt_key,
+        )
+        first = first_gate.check(session_output_dir=session_output_dir)
+
+        second_gate = PublishGate(
+            temp_worktree,
+            command_runner=runner,
+            working_copy=GitWorkingCopy(),
+            command="make test",
+            timeout_seconds=10,
+            attempt_store=attempt_store,
+            attempt_key=attempt_key,
+        )
+        second = second_gate.check(
+            session_output_dir=self._session_dir(temp_worktree, "same-issue")
+        )
+
+        assert first.cache_hit is False
+        assert second.cache_hit is True
+        assert runner.calls == 1
+
+    def test_gate_does_not_fall_back_to_sha_cache_for_different_attempt(
+        self, temp_worktree, session_output_dir
+    ):
+        """Different issues at the same SHA must not share validation cache."""
+        from issue_orchestrator.adapters.sidecar_attempt_store import SidecarAttemptStore
+
+        class CountingRunner:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run(self, *args, **kwargs):
+                self.calls += 1
+                return CommandResult(
+                    returncode=0,
+                    stdout="ok",
+                    stderr="",
+                    timed_out=False,
+                )
+
+        attempt_store = SidecarAttemptStore(temp_worktree)
+        runner = CountingRunner()
+
+        first_gate = PublishGate(
+            temp_worktree,
+            command_runner=runner,
+            working_copy=GitWorkingCopy(),
+            command="make test",
+            timeout_seconds=10,
+            attempt_store=attempt_store,
+            attempt_key=self._attempt_key(temp_worktree, "123"),
+        )
+        first = first_gate.check(session_output_dir=session_output_dir)
+
+        second_gate = PublishGate(
+            temp_worktree,
+            command_runner=runner,
+            working_copy=GitWorkingCopy(),
+            command="make test",
+            timeout_seconds=10,
+            attempt_store=attempt_store,
+            attempt_key=self._attempt_key(temp_worktree, "124"),
+        )
+        second = second_gate.check(
+            session_output_dir=self._session_dir(temp_worktree, "different-issue")
+        )
+
+        assert first.cache_hit is False
+        assert second.cache_hit is False
+        assert runner.calls == 2
 
     def test_gate_appends_summary_on_cache_hit(self, temp_worktree, session_output_dir):
         """Publish gate summaries should distinguish cache hits from validation runs."""

@@ -1100,6 +1100,165 @@ class TestSessionControllerValidationCaching:
         ]
         assert cached_record_path.exists()
 
+    def test_attempt_cache_reuses_validation_for_same_issue(self, tmp_path: Path):
+        """Attempt-scoped cache reuses validation within the same issue and SHA."""
+        from issue_orchestrator.adapters.sidecar_attempt_store import SidecarAttemptStore
+        from issue_orchestrator.domain.attempt import AttemptKey
+        from issue_orchestrator.domain.issue_key import GitHubIssueKey
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        full_sha = "a" * 40
+        command_runner = MockCommandRunner(returncode=0)
+        attempt_store = SidecarAttemptStore(tmp_path / "attempt-store")
+
+        class AttemptKeyFactory:
+            def for_validation_attempt(
+                self,
+                *,
+                issue_key,
+                head_sha: str,
+            ):
+                return AttemptKey(issue_key, head_sha)
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=RecordingEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha=full_sha),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            attempt_store=attempt_store,
+            validation_attempt_key_factory=AttemptKeyFactory(),
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        for session_name in ("issue-123-a", "issue-123-b"):
+            decision = controller.decide_outcome(
+                observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+                worktree_path=worktree,
+                issue_number=123,
+                issue_title="Test Issue",
+                session_name=session_name,
+                issue_key=GitHubIssueKey(repo="owner/repo", external_id="123"),
+            )
+            assert decision.status == SessionStatus.COMPLETED
+            assert decision.validation_passed is True
+
+        assert len(command_runner.run_calls) == 1
+
+    def test_attempt_cache_does_not_share_validation_across_issues(
+        self, tmp_path: Path
+    ):
+        """Attempt-scoped cache blocks SHA-only reuse across different issues."""
+        from issue_orchestrator.adapters.sidecar_attempt_store import SidecarAttemptStore
+        from issue_orchestrator.domain.attempt import AttemptKey
+        from issue_orchestrator.domain.issue_key import GitHubIssueKey
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        full_sha = "b" * 40
+        command_runner = MockCommandRunner(returncode=0)
+        attempt_store = SidecarAttemptStore(tmp_path / "attempt-store")
+
+        class AttemptKeyFactory:
+            def for_validation_attempt(
+                self,
+                *,
+                issue_key,
+                head_sha: str,
+            ):
+                return AttemptKey(issue_key, head_sha)
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=RecordingEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha=full_sha),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            attempt_store=attempt_store,
+            validation_attempt_key_factory=AttemptKeyFactory(),
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        for issue_number in (123, 124):
+            decision = controller.decide_outcome(
+                observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+                worktree_path=worktree,
+                issue_number=issue_number,
+                issue_title="Test Issue",
+                session_name=f"issue-{issue_number}",
+                issue_key=GitHubIssueKey(
+                    repo="owner/repo", external_id=str(issue_number)
+                ),
+            )
+            assert decision.status == SessionStatus.COMPLETED
+            assert decision.validation_passed is True
+
+        assert len(command_runner.run_calls) == 2
+
+    def test_attempt_cache_requires_issue_key_when_store_is_wired(
+        self, tmp_path: Path
+    ):
+        """Attempt cache wiring must not silently fall back to SHA-only caching."""
+        from issue_orchestrator.adapters.sidecar_attempt_store import SidecarAttemptStore
+        from issue_orchestrator.domain.attempt import AttemptKey
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        class AttemptKeyFactory:
+            def for_validation_attempt(
+                self,
+                *,
+                issue_key,
+                head_sha: str,
+            ):
+                return AttemptKey(issue_key, head_sha)
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=RecordingEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="c" * 40),
+            command_runner=MockCommandRunner(returncode=0),
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            attempt_store=SidecarAttemptStore(tmp_path / "attempt-store"),
+            validation_attempt_key_factory=AttemptKeyFactory(),
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with pytest.raises(RuntimeError, match="stable IssueKey"):
+            controller.decide_outcome(
+                observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+                worktree_path=worktree,
+                issue_number=123,
+                issue_title="Test Issue",
+                session_name="issue-123",
+            )
+
     def test_validation_pass_event_requires_validation_record(
         self, tmp_path, monkeypatch
     ):

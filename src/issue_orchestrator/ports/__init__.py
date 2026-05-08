@@ -52,6 +52,9 @@ _EXPORTS = {
     "NullValidationEvidenceRecorder": (
         ".run_evidence", "NullValidationEvidenceRecorder",
     ),
+    "ValidationAttemptKeyFactory": (
+        ".validation_attempt_key_factory", "ValidationAttemptKeyFactory",
+    ),
     "ManifestDownloader": (".manifest_downloader", "ManifestDownloader"),
     "NullManifestDownloader": (".manifest_downloader", "NullManifestDownloader"),
     "GoalPilotStore": (".goal_pilot_store", "GoalPilotStore"),
@@ -121,6 +124,7 @@ __all__ = (
     "ValidationState",
     "ValidationEvidenceRecorder",
     "NullValidationEvidenceRecorder",
+    "ValidationAttemptKeyFactory",
     "ManifestDownloader",
     "NullManifestDownloader",
     "GoalPilotStore",
