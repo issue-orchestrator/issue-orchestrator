@@ -11,16 +11,22 @@ from issue_orchestrator.domain.artifact_contracts import (
     AgentTurnArtifactScope,
     ArtifactContractViolation,
     ArtifactType,
+    ChapterSidecarArtifact,
+    CoderTurnStarted,
     ExchangeRunId,
     ExistingDirectory,
     ExistingFile,
     ExistingNonEmptyFile,
     IssueNumber,
+    PositiveAttemptIndex,
     PositiveRoundIndex,
     PromptArtifact,
     RenderMode,
     ReviewExchangeArtifactScope,
     ReviewExchangeSummaryArtifact,
+    ReviewerTurnCompleted,
+    ReviewerTurnStarted,
+    ReviewResponseArtifact,
     TerminalRecordingArtifact,
     ValidationArtifactScope,
     ValidationResultArtifact,
@@ -39,6 +45,7 @@ def _turn_scope(tmp_path: Path) -> AgentTurnArtifactScope:
         issue_number=IssueNumber(360),
         exchange_run_id=ExchangeRunId("20260508-review-360"),
         round_index=PositiveRoundIndex(1),
+        attempt_index=PositiveAttemptIndex(1),
         role=AgentRole.REVIEWER,
         provider=AgentProvider("claude-code"),
     )
@@ -50,6 +57,9 @@ def test_identity_primitives_reject_invalid_values() -> None:
 
     with pytest.raises(ArtifactContractViolation, match="PositiveRoundIndex.value"):
         PositiveRoundIndex(False)
+
+    with pytest.raises(ArtifactContractViolation, match="PositiveAttemptIndex.value"):
+        PositiveAttemptIndex(0)
 
     with pytest.raises(ArtifactContractViolation, match="ExchangeRunId.value"):
         ExchangeRunId("")
@@ -171,3 +181,117 @@ def test_review_exchange_and_validation_artifact_scopes_are_explicit(
 
     assert summary.to_manifest_artifact()["kind"] == "review_exchange_summary"
     assert validation.to_manifest_artifact()["kind"] == "validation_result"
+
+
+def test_reviewer_turn_started_requires_reviewer_scope_and_artifacts(
+    tmp_path: Path,
+) -> None:
+    scope = _turn_scope(tmp_path)
+    chapters_path = _write(tmp_path / "reviewer" / "chapters.json", '{"chapters":[]}')
+    started = ReviewerTurnStarted(
+        scope=scope,
+        prompt=PromptArtifact(
+            scope=scope,
+            file=ExistingNonEmptyFile(_write(tmp_path / "prompt.md", "prompt")),
+        ),
+        terminal_recording=TerminalRecordingArtifact(
+            scope=scope,
+            file=ExistingFile(_write(tmp_path / "terminal-recording.jsonl", "")),
+        ),
+        chapters=ChapterSidecarArtifact(
+            scope=scope,
+            file=ExistingFile(chapters_path),
+        ),
+    )
+
+    assert [ref.artifact_type for ref in started.artifact_refs()] == [
+        ArtifactType.PROMPT,
+        ArtifactType.TERMINAL_RECORDING,
+        ArtifactType.CHAPTER_SIDECAR,
+    ]
+    assert started.to_manifest_fields()["role"] == "reviewer"
+
+
+def test_reviewer_turn_started_rejects_coder_scope(tmp_path: Path) -> None:
+    coder_scope = AgentTurnArtifactScope(
+        issue_number=IssueNumber(360),
+        exchange_run_id=ExchangeRunId("20260508-review-360"),
+        round_index=PositiveRoundIndex(1),
+        attempt_index=PositiveAttemptIndex(1),
+        role=AgentRole.CODER,
+        provider=AgentProvider("claude-code"),
+    )
+
+    with pytest.raises(ArtifactContractViolation, match="must be reviewer"):
+        ReviewerTurnStarted(
+            scope=coder_scope,
+            prompt=PromptArtifact(
+                scope=coder_scope,
+                file=ExistingNonEmptyFile(_write(tmp_path / "prompt.md", "prompt")),
+            ),
+            terminal_recording=TerminalRecordingArtifact(
+                scope=coder_scope,
+                file=ExistingFile(_write(tmp_path / "terminal-recording.jsonl", "")),
+            ),
+            chapters=ChapterSidecarArtifact(
+                scope=coder_scope,
+                file=ExistingFile(_write(tmp_path / "chapters.json", "{}")),
+            ),
+        )
+
+
+def test_turn_completed_includes_response_artifact(tmp_path: Path) -> None:
+    scope = _turn_scope(tmp_path)
+    started = ReviewerTurnStarted(
+        scope=scope,
+        prompt=PromptArtifact(
+            scope=scope,
+            file=ExistingNonEmptyFile(_write(tmp_path / "prompt.md", "prompt")),
+        ),
+        terminal_recording=TerminalRecordingArtifact(
+            scope=scope,
+            file=ExistingFile(_write(tmp_path / "terminal-recording.jsonl", "")),
+        ),
+        chapters=ChapterSidecarArtifact(
+            scope=scope,
+            file=ExistingFile(_write(tmp_path / "chapters.json", "{}")),
+        ),
+    )
+    completed = ReviewerTurnCompleted(
+        started=started,
+        response=ReviewResponseArtifact(
+            scope=scope,
+            file=ExistingFile(_write(tmp_path / "result.json", "{}")),
+        ),
+        response_type="ok",
+        response_text="Looks good",
+    )
+
+    assert completed.to_manifest_fields()["response_type"] == "ok"
+    assert [ref.artifact_type for ref in completed.artifact_refs()] == [
+        ArtifactType.PROMPT,
+        ArtifactType.TERMINAL_RECORDING,
+        ArtifactType.CHAPTER_SIDECAR,
+        ArtifactType.REVIEW_RESPONSE,
+    ]
+
+
+def test_coder_turn_started_requires_coder_scope(tmp_path: Path) -> None:
+    reviewer_scope = _turn_scope(tmp_path)
+
+    with pytest.raises(ArtifactContractViolation, match="must be coder"):
+        CoderTurnStarted(
+            scope=reviewer_scope,
+            prompt=PromptArtifact(
+                scope=reviewer_scope,
+                file=ExistingNonEmptyFile(_write(tmp_path / "prompt.md", "prompt")),
+            ),
+            terminal_recording=TerminalRecordingArtifact(
+                scope=reviewer_scope,
+                file=ExistingFile(_write(tmp_path / "terminal-recording.jsonl", "")),
+            ),
+            chapters=ChapterSidecarArtifact(
+                scope=reviewer_scope,
+                file=ExistingFile(_write(tmp_path / "chapters.json", "{}")),
+            ),
+        )

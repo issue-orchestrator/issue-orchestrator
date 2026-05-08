@@ -141,6 +141,7 @@ def _patch_persistent_runner(
     response_script: dict[str, list[dict[str, Any] | Exception]],
     write_recording: bool = True,
     write_coder_completion: bool = True,
+    coder_completion_script: list[bool] | None = None,
 ) -> dict[str, Any]:
     """Patch the runner functions in pse to consume a per-role response script.
 
@@ -153,6 +154,9 @@ def _patch_persistent_runner(
     coder send_round also writes a stub ``completion-coder.json`` so the
     coder protocol guardrail finds the artifact it expects. Tests that
     want to exercise the missing-completion path pass False.
+
+    ``coder_completion_script`` lets a test vary that invariant per
+    coder attempt without timing or background coordination.
     """
     registry = _FakePairRegistry()
     state: dict[str, Any] = {
@@ -160,6 +164,11 @@ def _patch_persistent_runner(
         "run_dir": None,
         "registry": registry,
     }
+    completion_script = (
+        list(coder_completion_script)
+        if coder_completion_script is not None
+        else None
+    )
 
     def _open(*, command, working_dir, env, recording_path=None,
               additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
@@ -218,7 +227,12 @@ def _patch_persistent_runner(
             raise head
         # Stub the coder's completion artifact write so the protocol
         # guardrail in pse._validate_coder_completion has the file it expects.
-        if role == "coder" and write_coder_completion:
+        should_write_completion = write_coder_completion
+        if role == "coder" and completion_script is not None:
+            if not completion_script:
+                raise AssertionError("test fixture: coder_completion_script exhausted")
+            should_write_completion = completion_script.pop(0)
+        if role == "coder" and should_write_completion:
             completion = session.completion_path
             assert completion is not None, (
                 "test fixture: coder fake session must have completion_path "
@@ -567,8 +581,8 @@ class TestTurnArtifactsPersisted:
     walking the recording stream.
 
     These tests pin:
-    1. The artifact path layout (``round-<n>-<role>.packet.json`` and
-       ``.result.json``).
+    1. The artifact path layout (``round-<n>-<role>.packet.json`` plus
+       attempt-scoped prompt/result/started/completed contracts).
     2. Round-trip parseability via ``ReviewExchangeTurnPacket.from_manifest``
        and ``ReviewExchangeTurnResult.from_manifest``.
     3. Field content matches the data the runner observed at that turn.
@@ -626,16 +640,46 @@ class TestTurnArtifactsPersisted:
         turns_dir = outcome.exchange_dir / "turns"
         assert turns_dir.is_dir(), f"Expected turns dir at {turns_dir}"
 
-        # Three turns happened (reviewer round 1 → coder round 1 →
-        # reviewer round 2), so six artifacts (packet + result each).
+        # Three attempts happened (reviewer round 1 → coder round 1 →
+        # reviewer round 2). Packets stay round/role scoped; prompts,
+        # results, and start/complete contracts are attempt scoped so
+        # retries cannot overwrite or borrow another prompt.
         artifact_names = sorted(p.name for p in turns_dir.iterdir())
-        assert artifact_names == [
+        assert artifact_names == sorted([
+            "round-1-coder-attempt-1.completed.json",
+            "round-1-coder-attempt-1.prompt.md",
+            "round-1-coder-attempt-1.result.json",
+            "round-1-coder-attempt-1.started.json",
             "round-1-coder.packet.json",
-            "round-1-coder.result.json",
+            "round-1-reviewer-attempt-1.completed.json",
+            "round-1-reviewer-attempt-1.prompt.md",
+            "round-1-reviewer-attempt-1.result.json",
+            "round-1-reviewer-attempt-1.started.json",
             "round-1-reviewer.packet.json",
-            "round-1-reviewer.result.json",
+            "round-2-reviewer-attempt-1.completed.json",
+            "round-2-reviewer-attempt-1.prompt.md",
+            "round-2-reviewer-attempt-1.result.json",
+            "round-2-reviewer-attempt-1.started.json",
             "round-2-reviewer.packet.json",
-            "round-2-reviewer.result.json",
+        ])
+
+        r1_started = json.loads(
+            (turns_dir / "round-1-reviewer-attempt-1.started.json").read_text()
+        )
+        assert r1_started["attempt_index"] == 1
+        assert [artifact["kind"] for artifact in r1_started["artifacts"]] == [
+            "prompt",
+            "terminal_recording",
+            "chapter_sidecar",
+        ]
+        r1_completed = json.loads(
+            (turns_dir / "round-1-reviewer-attempt-1.completed.json").read_text()
+        )
+        assert [artifact["kind"] for artifact in r1_completed["artifacts"]] == [
+            "prompt",
+            "terminal_recording",
+            "chapter_sidecar",
+            "review_response",
         ]
 
         # Round 1 reviewer packet: typed, role REVIEWER, no prior
@@ -653,7 +697,9 @@ class TestTurnArtifactsPersisted:
 
         # Round 1 reviewer result: changes_requested.
         r1_review_result = ReviewExchangeTurnResult.from_manifest(
-            json.loads((turns_dir / "round-1-reviewer.result.json").read_text())
+            json.loads(
+                (turns_dir / "round-1-reviewer-attempt-1.result.json").read_text()
+            )
         )
         assert r1_review_result is not None
         assert r1_review_result.kind is TurnResultKind.CHANGES_REQUESTED
@@ -672,7 +718,9 @@ class TestTurnArtifactsPersisted:
 
         # Round 1 coder result: ok.
         r1_coder_result = ReviewExchangeTurnResult.from_manifest(
-            json.loads((turns_dir / "round-1-coder.result.json").read_text())
+            json.loads(
+                (turns_dir / "round-1-coder-attempt-1.result.json").read_text()
+            )
         )
         assert r1_coder_result is not None
         assert r1_coder_result.kind is TurnResultKind.OK
@@ -689,7 +737,9 @@ class TestTurnArtifactsPersisted:
 
         # Round 2 reviewer result: ok (terminal — no coder round 2).
         r2_review_result = ReviewExchangeTurnResult.from_manifest(
-            json.loads((turns_dir / "round-2-reviewer.result.json").read_text())
+            json.loads(
+                (turns_dir / "round-2-reviewer-attempt-1.result.json").read_text()
+            )
         )
         assert r2_review_result is not None
         assert r2_review_result.kind is TurnResultKind.OK
@@ -748,7 +798,7 @@ class TestTurnArtifactsPersisted:
         assert turns_dir.is_dir()
 
         packet_path = turns_dir / "round-1-reviewer.packet.json"
-        result_path = turns_dir / "round-1-reviewer.result.json"
+        result_path = turns_dir / "round-1-reviewer-attempt-1.result.json"
         assert packet_path.exists(), (
             f"packet artifact missing at {packet_path}; turns_dir contains "
             f"{[p.name for p in turns_dir.iterdir()]}"
@@ -824,7 +874,7 @@ class TestTurnArtifactsPersisted:
 
         assert outcome.exchange_dir is not None
         coder_result_path = (
-            outcome.exchange_dir / "turns" / "round-1-coder.result.json"
+            outcome.exchange_dir / "turns" / "round-1-coder-attempt-1.result.json"
         )
         assert coder_result_path.exists(), (
             f"coder timeout result artifact missing at {coder_result_path}"
@@ -891,7 +941,11 @@ class TestTurnArtifactsPersisted:
         )
 
         assert outcome.exchange_dir is not None
-        result_path = outcome.exchange_dir / "turns" / "round-1-reviewer.result.json"
+        result_path = (
+            outcome.exchange_dir
+            / "turns"
+            / "round-1-reviewer-attempt-1.result.json"
+        )
         assert result_path.exists()
         result = ReviewExchangeTurnResult.from_manifest(
             json.loads(result_path.read_text())
@@ -1167,6 +1221,45 @@ class TestChapterSidecarAndEvents:
         ):
             assert expected in names, f"missing event {expected.value}"
 
+        prompted = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
+        ]
+        feedback = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK
+        ]
+        assert len(prompted) == 1
+        assert len(feedback) == 1
+
+        prompted_refs = prompted[0].data["artifact_refs"]
+        assert prompted[0].data["attempt_index"] == 1
+        assert [ref["kind"] for ref in prompted_refs] == [
+            "prompt",
+            "terminal_recording",
+            "chapter_sidecar",
+        ]
+        assert [Path(ref["path"]).exists() for ref in prompted_refs] == [
+            True,
+            True,
+            True,
+        ]
+
+        feedback_refs = feedback[0].data["artifact_refs"]
+        assert feedback[0].data["attempt_index"] == 1
+        assert [ref["kind"] for ref in feedback_refs] == [
+            "prompt",
+            "terminal_recording",
+            "chapter_sidecar",
+            "review_response",
+        ]
+        assert [Path(ref["path"]).exists() for ref in feedback_refs] == [
+            True,
+            True,
+            True,
+            True,
+        ]
+
     def test_chapter_recorded_event_emitted_per_chapter(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -1390,6 +1483,29 @@ class TestCoderProtocolGuardrail:
         # 3 coder send_rounds happened (1 initial + 2 retries).
         coder_rounds = [r for r in state["rounds_seen"] if r[0] == "coder"]
         assert len(coder_rounds) == 3
+        coder_prompts = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
+            and evt.data.get("role") == "coder"
+        ]
+        assert [evt.data["attempt_index"] for evt in coder_prompts] == [1, 2, 3]
+        prompt_paths = [
+            Path(evt.data["artifact_refs"][0]["path"]) for evt in coder_prompts
+        ]
+        assert len(set(prompt_paths)) == 3
+        assert "coding-done completed" in prompt_paths[1].read_text(encoding="utf-8")
+        assert "coding-done completed" in prompt_paths[2].read_text(encoding="utf-8")
+        assert outcome.exchange_dir is not None
+        completed_paths = sorted(
+            p.name for p in outcome.exchange_dir.joinpath("turns").glob(
+                "round-1-coder-attempt-*.completed.json"
+            )
+        )
+        assert completed_paths == [
+            "round-1-coder-attempt-1.completed.json",
+            "round-1-coder-attempt-2.completed.json",
+            "round-1-coder-attempt-3.completed.json",
+        ]
         # Terminal event fired with status=error so timeline consumers see
         # the exchange ended definitively.
         assert any(
@@ -1398,6 +1514,127 @@ class TestCoderProtocolGuardrail:
             and evt.data.get("reason") == "coder_protocol_error"
             for evt in sink.events
         )
+
+    def test_coder_protocol_retry_persists_distinct_attempt_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A retry that succeeds must leave both attempt artifacts intact.
+
+        The first coder attempt writes a malformed exchange response and
+        skips ``coding-done``. The second attempt fixes both. This pins
+        the attempt-scoped path layout for the non-terminal retry case:
+        future refactors must not reuse attempt-1 paths for attempt-2.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "fix",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "response_type": "protocol_error",
+                        "response_text": "I skipped coding-done",
+                        "getting_closer": False,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "fixed",
+                        "getting_closer": None,
+                    },
+                ],
+            },
+            coder_completion_script=[False, True],
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=5,
+            require_validation=False,
+            events=sink,
+            event_context=ctx,
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.reason == "reviewer_ok"
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        attempt_1_prompt = turns_dir / "round-1-coder-attempt-1.prompt.md"
+        attempt_2_prompt = turns_dir / "round-1-coder-attempt-2.prompt.md"
+        assert attempt_1_prompt.exists()
+        assert attempt_2_prompt.exists()
+        assert not (turns_dir / "round-1-coder-attempt-3.prompt.md").exists()
+
+        attempt_1_prompt_text = attempt_1_prompt.read_text(encoding="utf-8")
+        attempt_2_prompt_text = attempt_2_prompt.read_text(encoding="utf-8")
+        assert attempt_1_prompt_text != attempt_2_prompt_text
+        assert "missing completion artifact" in attempt_2_prompt_text
+        assert "coding-done completed" in attempt_2_prompt_text
+
+        attempt_1_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(
+                (turns_dir / "round-1-coder-attempt-1.result.json").read_text()
+            )
+        )
+        assert attempt_1_result is not None
+        assert attempt_1_result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert attempt_1_result.protocol_error_reason == "unknown_response_type"
+        assert "'protocol_error'" in attempt_1_result.response_text
+
+        attempt_2_result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(
+                (turns_dir / "round-1-coder-attempt-2.result.json").read_text()
+            )
+        )
+        assert attempt_2_result is not None
+        assert attempt_2_result.kind is TurnResultKind.OK
+        assert attempt_2_result.response_text == "fixed"
+
+        coder_prompts = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
+            and evt.data.get("role") == "coder"
+        ]
+        assert [evt.data["attempt_index"] for evt in coder_prompts] == [1, 2]
+        assert [
+            Path(evt.data["artifact_refs"][0]["path"]).name
+            for evt in coder_prompts
+        ] == [
+            "round-1-coder-attempt-1.prompt.md",
+            "round-1-coder-attempt-2.prompt.md",
+        ]
 
     def test_stale_round1_completion_does_not_satisfy_round2_guardrail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1609,6 +1846,20 @@ class TestTerminalEventsOnError:
         assert len(terminal) == 1
         assert terminal[0].data.get("status") == "error"
         assert terminal[0].data.get("reason") == "reviewer_no_completion"
+        timeouts = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+        ]
+        assert len(timeouts) == 1
+        assert timeouts[0].data["attempt_index"] == 1
+        timeout_refs = timeouts[0].data["artifact_refs"]
+        assert [ref["kind"] for ref in timeout_refs] == [
+            "prompt",
+            "terminal_recording",
+            "chapter_sidecar",
+            "review_response",
+        ]
+        assert all(Path(ref["path"]).exists() for ref in timeout_refs)
 
     def test_summary_status_matches_outcome_for_error_exits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

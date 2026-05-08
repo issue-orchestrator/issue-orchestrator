@@ -84,6 +84,16 @@ class PositiveRoundIndex:
 
 
 @dataclass(frozen=True, slots=True)
+class PositiveAttemptIndex:
+    """One-based role attempt index within a review-exchange round."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        _require_positive_int(type(self).__name__, "value", self.value)
+
+
+@dataclass(frozen=True, slots=True)
 class AgentProvider:
     """Configured provider identity, e.g. ``claude-code`` or ``codex``."""
 
@@ -180,6 +190,7 @@ class AgentTurnArtifactScope:
     issue_number: IssueNumber
     exchange_run_id: ExchangeRunId
     round_index: PositiveRoundIndex
+    attempt_index: PositiveAttemptIndex
     role: AgentRole
     provider: AgentProvider
 
@@ -242,6 +253,15 @@ class ArtifactRef:
             "value": str(self.path.path),
         }
 
+    def to_event_artifact(self) -> dict[str, str]:
+        """Render a producer event artifact reference."""
+        return {
+            "kind": self.artifact_type.value,
+            "label": self.label,
+            "path": str(self.path.path),
+            "render_mode": self.render_mode.value,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class _FileArtifact:
@@ -284,7 +304,9 @@ class TerminalRecordingArtifact(_FileArtifact):
     label: ClassVar[str] = "Terminal Recording"
     render_mode: ClassVar[RenderMode] = RenderMode.TERMINAL_RECORDING
     scope: AgentTurnArtifactScope
-    file: ExistingNonEmptyFile
+    # Live turns can start before the PTY has emitted bytes; completed-turn
+    # non-empty guarantees belong in a narrower completed-recording contract.
+    file: ExistingFile
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,19 +348,143 @@ class ReviewExchangeSummaryArtifact(_FileArtifact):
     scope: ReviewExchangeArtifactScope
 
 
+@dataclass(frozen=True, slots=True)
+class AgentTurnStarted:
+    """Required artifacts known when one agent turn starts."""
+
+    scope: AgentTurnArtifactScope
+    prompt: PromptArtifact
+    terminal_recording: TerminalRecordingArtifact
+    chapters: ChapterSidecarArtifact
+
+    def __post_init__(self) -> None:
+        _require_matching_scope(type(self).__name__, self.scope, self.prompt.scope)
+        _require_matching_scope(
+            type(self).__name__,
+            self.scope,
+            self.terminal_recording.scope,
+        )
+        _require_matching_scope(type(self).__name__, self.scope, self.chapters.scope)
+
+    def artifact_refs(self) -> tuple[ArtifactRef, ...]:
+        return artifact_refs(self.prompt, self.terminal_recording, self.chapters)
+
+    def to_manifest_fields(self) -> dict[str, object]:
+        return {
+            "issue_number": self.scope.issue_number.value,
+            "exchange_run_id": self.scope.exchange_run_id.value,
+            "round_index": self.scope.round_index.value,
+            "attempt_index": self.scope.attempt_index.value,
+            "role": self.scope.role.value,
+            "provider": self.scope.provider.value,
+            "artifacts": [ref.to_event_artifact() for ref in self.artifact_refs()],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerTurnStarted(AgentTurnStarted):
+    """Reviewer turn-start contract."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _require_role(type(self).__name__, self.scope, AgentRole.REVIEWER)
+
+
+@dataclass(frozen=True, slots=True)
+class CoderTurnStarted(AgentTurnStarted):
+    """Coder turn-start contract."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _require_role(type(self).__name__, self.scope, AgentRole.CODER)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTurnCompleted:
+    """Required artifacts known when one agent turn completes."""
+
+    started: AgentTurnStarted
+    response: ReviewResponseArtifact
+    response_type: str
+    response_text: str
+
+    def __post_init__(self) -> None:
+        _require_matching_scope(
+            type(self).__name__,
+            self.started.scope,
+            self.response.scope,
+        )
+        _require_non_empty_string(type(self).__name__, "response_type", self.response_type)
+        _require_non_empty_string(type(self).__name__, "response_text", self.response_text)
+
+    def artifact_refs(self) -> tuple[ArtifactRef, ...]:
+        return (*self.started.artifact_refs(), self.response.to_ref())
+
+    def to_manifest_fields(self) -> dict[str, object]:
+        fields = self.started.to_manifest_fields()
+        fields["response_type"] = self.response_type
+        fields["response_text"] = self.response_text
+        fields["artifacts"] = [ref.to_event_artifact() for ref in self.artifact_refs()]
+        return fields
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerTurnCompleted(AgentTurnCompleted):
+    """Reviewer turn-completion contract."""
+
+    started: ReviewerTurnStarted
+
+
+@dataclass(frozen=True, slots=True)
+class CoderTurnCompleted(AgentTurnCompleted):
+    """Coder turn-completion contract."""
+
+    started: CoderTurnStarted
+
+
 def artifact_refs(*artifacts: _FileArtifact) -> tuple[ArtifactRef, ...]:
     """Convert typed artifact wrappers to refs without filesystem discovery."""
     return tuple(artifact.to_ref() for artifact in artifacts)
 
 
+def _require_matching_scope(
+    contract: str,
+    expected: ArtifactScope,
+    actual: ArtifactScope,
+) -> None:
+    if actual != expected:
+        raise ArtifactContractViolation(
+            contract,
+            "scope",
+            f"artifact scope mismatch: expected {expected!r}, got {actual!r}",
+        )
+
+
+def _require_role(
+    contract: str,
+    scope: AgentTurnArtifactScope,
+    role: AgentRole,
+) -> None:
+    if scope.role is not role:
+        raise ArtifactContractViolation(
+            contract,
+            "scope.role",
+            f"must be {role.value}",
+        )
+
+
 __all__ = [
     "AgentProvider",
     "AgentRole",
+    "AgentTurnCompleted",
     "AgentTurnArtifactScope",
+    "AgentTurnStarted",
     "ArtifactContractViolation",
     "ArtifactRef",
     "ArtifactScope",
     "ArtifactType",
+    "CoderTurnCompleted",
+    "CoderTurnStarted",
     "ChapterSidecarArtifact",
     "CompletionRecordArtifact",
     "ExchangeRunId",
@@ -346,12 +492,15 @@ __all__ = [
     "ExistingFile",
     "ExistingNonEmptyFile",
     "IssueNumber",
+    "PositiveAttemptIndex",
     "PositiveRoundIndex",
     "PromptArtifact",
     "RenderMode",
+    "ReviewerTurnCompleted",
     "ReviewExchangeArtifactScope",
     "ReviewExchangeSummaryArtifact",
     "ReviewResponseArtifact",
+    "ReviewerTurnStarted",
     "RunArtifactScope",
     "TerminalRecordingArtifact",
     "ValidationArtifactScope",
