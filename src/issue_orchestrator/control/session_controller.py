@@ -20,8 +20,8 @@ Example flows:
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -30,6 +30,10 @@ if TYPE_CHECKING:
     from ..ports.command_runner import CommandRunner
     from ..ports.working_copy import WorkingCopy
     from ..domain.models import CompletionRecord
+    from ..domain.attempt import AttemptKey
+    from ..domain.issue_key import IssueKey
+    from ..ports.attempt_store import AttemptStore
+    from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
     from .provider_resilience import ProviderResilienceManager
 
 from ..events import EventName
@@ -139,6 +143,8 @@ class SessionController:
         validation_timeout_seconds: int = 300,
         validation_junit_xml_paths: tuple[str, ...] | list[str] = (),
         validation_evidence_recorder: ValidationEvidenceRecorder | None = None,
+        attempt_store: "AttemptStore | None" = None,
+        validation_attempt_key_factory: "ValidationAttemptKeyFactory | None" = None,
         max_validation_retries: int = 0,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         provider_blocked_label: Optional[str] = None,
@@ -155,6 +161,8 @@ class SessionController:
             validation_timeout_seconds: Timeout for validation command
             validation_junit_xml_paths: Report paths/globs emitted by validation
             validation_evidence_recorder: Owner for run-scoped validation evidence
+            attempt_store: Owner for cross-run attempt-scoped validation facts
+            validation_attempt_key_factory: Builds the issue-at-HEAD cache key
             max_validation_retries: Maximum number of validation retries (0 = no retries)
         """
         self.completion_processor = completion_processor
@@ -171,6 +179,8 @@ class SessionController:
             if validation_evidence_recorder is not None
             else NullValidationEvidenceRecorder()
         )
+        self._attempt_store = attempt_store
+        self._validation_attempt_key_factory = validation_attempt_key_factory
         self._provider_resilience = provider_resilience
         self._provider_blocked_label = provider_blocked_label
 
@@ -186,6 +196,7 @@ class SessionController:
         original_prompt: str | None = None,
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
+        issue_key: "IssueKey | None" = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -302,6 +313,7 @@ class SessionController:
             original_prompt=original_prompt,
             retry_prompt_template=retry_prompt_template,
             repo_root=repo_root,
+            issue_key=issue_key,
         )
         if validation_decision is not None:
             status = validation_decision.status
@@ -489,6 +501,7 @@ class SessionController:
         original_prompt: str | None,
         retry_prompt_template: str | None,
         repo_root: Path | None,
+        issue_key: "IssueKey | None",
     ) -> ValidationGateDecision | None:
         if not (
             status == SessionStatus.COMPLETED
@@ -507,6 +520,7 @@ class SessionController:
             original_prompt,
             retry_prompt_template,
             repo_root,
+            issue_key,
         )
 
     def _emit_pre_publish_validation_failure(
@@ -966,6 +980,7 @@ class SessionController:
         original_prompt: str | None,
         retry_prompt_template: str | None,
         repo_root: Path | None,
+        issue_key: "IssueKey | None",
     ) -> ValidationGateDecision:
         """Run validation gate and return updated status."""
         logger.info(
@@ -974,7 +989,14 @@ class SessionController:
             self._validation_timeout,
         )
         validation_passed, validation_error, validation_error_file = (
-            self._run_validation(worktree_path, session_name, issue_number, run_dir)
+            self._run_validation(
+                worktree_path,
+                session_name,
+                issue_number,
+                issue_title,
+                run_dir,
+                issue_key,
+            )
         )
 
         if validation_passed:
@@ -1357,19 +1379,23 @@ class SessionController:
         worktree_path: Path,
         session_name: str,
         issue_number: int,
+        issue_title: str,
         run_dir: Path | None = None,
+        issue_key: "IssueKey | None" = None,
     ) -> tuple[bool, Optional[str], Optional[Path]]:
-        """Run validation command (with SHA-based caching) and return result.
+        """Run validation command (with attempt-scoped caching) and return result.
 
-        Uses PublishGate for caching. If a previous validation passed for
-        the same SHA and command, the cached result is used. This prevents
-        running validation twice for the same commit (e.g., coding session
-        passes validation, then review session on same SHA).
+        Uses PublishGate for caching. When an attempt identity is available,
+        cached validation is scoped by issue identity and HEAD SHA. Older
+        SHA-only caching remains available for callers that have no issue
+        identity.
 
         Args:
             worktree_path: Path to the worktree
             session_name: Session name for output directory
             issue_number: Issue number for logging
+            issue_title: Issue title for logging and retry context
+            issue_key: Stable issue identity used for attempt-scoped caching
 
         Returns:
             Tuple of (passed, error_message, error_file_path)
@@ -1382,18 +1408,24 @@ class SessionController:
             worktree_path, session_name
         )
 
-        # Use PublishGate for SHA-based caching
+        # Get HEAD SHA for logging and attempt identity
+        head_sha = self._working_copy.get_head_sha(worktree_path)
+        sha_display = head_sha[:8] if head_sha else "unknown"
+        attempt_key = self._validation_attempt_key(
+            issue_key=issue_key,
+            head_sha=head_sha,
+        )
+
+        # Use PublishGate for validation caching
         gate = PublishGate(
             worktree=worktree_path,
             command_runner=self._command_runner,
             working_copy=self._working_copy,
             command=self._validation_cmd,
             timeout_seconds=self._validation_timeout,
+            attempt_store=self._attempt_store,
+            attempt_key=attempt_key,
         )
-
-        # Get HEAD SHA for logging
-        head_sha = self._working_copy.get_head_sha(worktree_path)
-        sha_display = head_sha[:8] if head_sha else "unknown"
 
         logger.info(
             issue_log(issue_number, "Running validation: cmd=%s worktree=%s sha=%s"),
@@ -1433,6 +1465,27 @@ class SessionController:
         error_file = self._resolve_error_file_path(worktree_path, result.record)
 
         return False, error_msg, error_file
+
+    def _validation_attempt_key(
+        self,
+        *,
+        issue_key: "IssueKey | None",
+        head_sha: str | None,
+    ) -> "AttemptKey | None":
+        if head_sha is None or self._attempt_store is None:
+            return None
+        if self._validation_attempt_key_factory is None:
+            raise RuntimeError(
+                "attempt_store requires validation_attempt_key_factory"
+            )
+        if issue_key is None:
+            raise RuntimeError(
+                "attempt-scoped validation requires a stable IssueKey"
+            )
+        return self._validation_attempt_key_factory.for_validation_attempt(
+            issue_key=issue_key,
+            head_sha=head_sha,
+        )
 
     def _record_validation_evidence(
         self,

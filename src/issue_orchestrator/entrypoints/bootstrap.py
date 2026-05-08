@@ -90,7 +90,11 @@ if TYPE_CHECKING:
     from ..control.publish_executor import PublishJobExecutor
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    from ..domain.attempt import AttemptKey
+    from ..domain.issue_key import IssueKey
     from ..ports.e2e_issue_tracker import E2EIssueTracker
+    from ..ports.attempt_store import AttemptStore
+    from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
@@ -367,6 +371,27 @@ def _validation_junit_xml_paths(config: Config) -> tuple[str, ...]:
     return configured_validation_junit_xml_paths(config)
 
 
+class _IssueKeyValidationAttemptKeyFactory:
+    """Derives validation attempt identity from a stable issue key."""
+
+    def for_validation_attempt(
+        self,
+        *,
+        issue_key: "IssueKey",
+        head_sha: str,
+    ) -> "AttemptKey":
+        from ..domain.attempt import AttemptKey
+
+        return AttemptKey(issue_key, head_sha)
+
+
+def _validation_attempt_key_factory(
+    config: Config,
+) -> "ValidationAttemptKeyFactory":
+    _ = config
+    return _IssueKeyValidationAttemptKeyFactory()
+
+
 def _create_completion_components(
     config: Config,
     github: GitHubAdapter | None,
@@ -378,6 +403,7 @@ def _create_completion_components(
     label_manager: "LabelManager | None" = None,
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
+    attempt_store: "AttemptStore | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -421,6 +447,8 @@ def _create_completion_components(
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
         validation_junit_xml_paths=_validation_junit_xml_paths(config),
         validation_evidence_recorder=RunEvidenceRecorder(session_output),
+        attempt_store=attempt_store,
+        validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
         provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
@@ -663,6 +691,7 @@ def build_orchestrator(
     # Create IO adapters
     worktree_manager, working_copy, command_runner, session_output = _create_io_adapters()
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
+    attempt_store = create_attempt_store(config)
 
     # Create manifest downloader for triage sessions
     manifest_downloader = TriageDownloader(
@@ -740,6 +769,7 @@ def build_orchestrator(
         label_manager=label_manager,
         background_job_supervisor=background_job_supervisor,
         pair_registry=pair_registry,
+        attempt_store=attempt_store,
     )
 
     # Create async completion components (observer + executor)
@@ -797,7 +827,6 @@ def build_orchestrator(
     from ..execution.label_store import LabelStore
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
-    attempt_store = create_attempt_store(config)
 
     # Wire label_store into action_applier for write-through persistence
     if action_applier is not None:
@@ -950,6 +979,7 @@ def build_orchestrator_for_testing(
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
+    attempt_store = create_attempt_store(config)
 
     from ..execution.triage_downloader import TriageDownloader
     from unittest.mock import MagicMock
@@ -1050,6 +1080,8 @@ def build_orchestrator_for_testing(
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        attempt_store=attempt_store,
+        validation_attempt_key_factory=_validation_attempt_key_factory(config),
         provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
     )
@@ -1100,7 +1132,6 @@ def build_orchestrator_for_testing(
     from ..execution.label_store import LabelStore
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
-    attempt_store = create_attempt_store(config)
 
     # Wire label_store into action_applier for write-through persistence
     if action_applier is not None:

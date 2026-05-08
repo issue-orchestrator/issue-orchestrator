@@ -12,7 +12,9 @@ from issue_orchestrator.entrypoints.bootstrap import (
     build_orchestrator_for_testing,
     _check_github_token_scopes,
     _create_planner,
+    _validation_attempt_key_factory,
 )
+from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.ports import NullEventSink, NullSessionRunner
@@ -144,6 +146,35 @@ class TestBootstrapRepoResolution:
 
         for snippet in expected_snippets:
             assert snippet in error_msg, f"Expected '{snippet}' in error message"
+
+    def test_validation_attempt_key_factory_uses_provided_issue_key(self) -> None:
+        config = Config()
+        config.repo = "owner/repo"
+
+        factory = _validation_attempt_key_factory(config)
+        key = factory.for_validation_attempt(
+            issue_key=GitHubIssueKey(repo="owner/repo", external_id="359"),
+            head_sha="a" * 40,
+        )
+
+        assert key.issue_scope == "owner/repo"
+        assert key.issue_stable_id == "359"
+        assert key.head_sha == "a" * 40
+
+    def test_validation_attempt_key_factory_does_not_parse_mutable_title(
+        self,
+    ) -> None:
+        config = Config()
+        config.repo = "owner/repo"
+
+        factory = _validation_attempt_key_factory(config)
+        key = factory.for_validation_attempt(
+            issue_key=GitHubIssueKey(repo="owner/repo", external_id="359"),
+            head_sha="b" * 40,
+        )
+
+        assert key.issue_scope == "owner/repo"
+        assert key.issue_stable_id == "359"
 
 
 class TestDependencies:

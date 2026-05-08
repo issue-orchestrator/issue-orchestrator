@@ -12,15 +12,17 @@ Storage location: .issue-orchestrator/validation/<suite>/<HEAD_SHA>.json
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from ..domain.attempt import Attempt, AttemptKey
 from ..infra.atomic_json import atomic_write_json
 from ..infra.emit import emit_event
 from ..infra.validation_timings import append_validation_timing, build_timing_envelope
 from ..ports import CommandRunner, CommandResult, WorkingCopy
+from ..ports.attempt_store import AttemptStore
 from ..ports.session_output import ValidationRecord
 from .isolation import build_runtime_tool_env
 
@@ -28,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 # Schema version for validation records
 VALIDATION_SCHEMA_VERSION = 1
+
+
+def _normalize_head_sha(head_sha: str | None) -> str | None:
+    if not head_sha:
+        return None
+    normalized = head_sha.strip().lower()
+    return normalized or None
 
 
 def _is_session_run_dir(path: Path, worktree: Path) -> bool:
@@ -418,6 +427,8 @@ class PublishGate:
         working_copy: WorkingCopy,
         command: Optional[str] = None,
         timeout_seconds: int = 1800,
+        attempt_store: AttemptStore | None = None,
+        attempt_key: AttemptKey | None = None,
     ):
         """Initialize publish gate for a worktree.
 
@@ -425,19 +436,27 @@ class PublishGate:
             worktree: Path to the git worktree
             command: Validation command to run (None = gate disabled)
             timeout_seconds: Timeout for validation command
+            attempt_store: Attempt-scoped cache store. When provided with
+                attempt_key, validation cache hits are scoped by issue identity
+                plus HEAD SHA rather than by SHA alone.
+            attempt_key: Stable issue-at-HEAD identity for cache lookup.
         """
+        if attempt_key is not None and attempt_store is None:
+            raise ValueError("attempt_key requires attempt_store")
         self.worktree = worktree
         self.command_runner = command_runner
         self.working_copy = working_copy
         self.command = command
         self.timeout_seconds = timeout_seconds
+        self.attempt_store = attempt_store
+        self.attempt_key = attempt_key
         self.store = ValidationRecordStore(worktree)
         self.cache = ValidationCache(self.store)
         self.runner = ValidationRunner(self.store, command_runner)
 
     def _get_head_sha(self) -> Optional[str]:
         """Get the current HEAD SHA."""
-        head_sha = self.working_copy.get_head_sha(self.worktree)
+        head_sha = _normalize_head_sha(self.working_copy.get_head_sha(self.worktree))
         if not head_sha:
             logger.warning("Failed to get HEAD SHA in %s", self.worktree)
         return head_sha
@@ -474,6 +493,135 @@ class PublishGate:
             )
         )
         append_validation_timing(self.worktree, payload)
+
+    def _validate_attempt_key_head(self, head_sha: str) -> None:
+        if self.attempt_key is None:
+            return
+        if self.attempt_key.head_sha != head_sha:
+            raise ValueError(
+                "attempt_key.head_sha must match the current validation HEAD"
+            )
+
+    def _read_record_file(self, path: Path) -> ValidationRecord | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                logger.warning("Validation cache record must be an object: %s", path)
+                return None
+            return ValidationRecord.from_dict(payload)
+        except (json.JSONDecodeError, KeyError, TypeError, OSError) as exc:
+            logger.warning("Failed to read validation cache record at %s: %s", path, exc)
+            return None
+
+    def _resolve_attempt_validation_record_path(self, raw_path: str) -> Path:
+        path = Path(raw_path)
+        if path.is_absolute():
+            return path
+        return self.worktree / path
+
+    def _record_matches_request(
+        self,
+        record: ValidationRecord,
+        *,
+        head_sha: str,
+        cache_source: str,
+    ) -> bool:
+        if record.schema_version != VALIDATION_SCHEMA_VERSION:
+            logger.debug(
+                "Publish gate %s cache miss for %s: schema version mismatch (%d != %d)",
+                cache_source,
+                head_sha[:8],
+                record.schema_version,
+                VALIDATION_SCHEMA_VERSION,
+            )
+            return False
+        if record.head_sha != head_sha:
+            logger.debug(
+                "Publish gate %s cache miss for %s: record SHA mismatch (%s)",
+                cache_source,
+                head_sha[:8],
+                record.head_sha[:8],
+            )
+            return False
+        if self.command and record.command != self.command:
+            logger.debug(
+                "Publish gate %s cache miss for %s: command mismatch",
+                cache_source,
+                head_sha[:8],
+            )
+            return False
+        return True
+
+    def _attempt_cached_record(self, head_sha: str) -> ValidationRecord | None:
+        if self.attempt_store is None or self.attempt_key is None:
+            return None
+        attempt = self.attempt_store.for_key(self.attempt_key)
+        if attempt is None or not attempt.validation_record_path:
+            logger.debug("Publish gate: attempt cache miss for %s", head_sha[:8])
+            return None
+        record_path = self._resolve_attempt_validation_record_path(
+            attempt.validation_record_path
+        )
+        if not record_path.exists():
+            logger.debug(
+                "Publish gate: attempt cache miss for %s; record missing at %s",
+                head_sha[:8],
+                record_path,
+            )
+            return None
+        record = self._read_record_file(record_path)
+        if record is None:
+            return None
+        if not self._record_matches_request(
+            record,
+            head_sha=head_sha,
+            cache_source="attempt",
+        ):
+            return None
+        logger.debug("Publish gate: attempt cache hit for %s", head_sha[:8])
+        return record
+
+    def _materialize_cached_record(
+        self,
+        record: ValidationRecord,
+        session_output_dir: Path | None,
+    ) -> None:
+        if session_output_dir is None or not _is_session_run_dir(
+            session_output_dir, self.store.worktree
+        ):
+            return
+        atomic_write_json(
+            session_output_dir / "validation-record.json",
+            record.to_dict(),
+        )
+
+    def _attempt_record_path_for(
+        self,
+        record: ValidationRecord,
+        session_output_dir: Path | None,
+    ) -> Path:
+        if session_output_dir is not None and _is_session_run_dir(
+            session_output_dir, self.store.worktree
+        ):
+            return session_output_dir / "validation-record.json"
+        return self.store.get_record_path(record.head_sha)
+
+    def _store_attempt_validation_record(
+        self,
+        record: ValidationRecord,
+        session_output_dir: Path | None,
+    ) -> None:
+        if self.attempt_store is None or self.attempt_key is None:
+            return
+        record_path = self._attempt_record_path_for(record, session_output_dir)
+        existing = self.attempt_store.for_key(self.attempt_key)
+        attempt = existing if existing is not None else Attempt(self.attempt_key)
+        self.attempt_store.upsert(
+            replace(
+                attempt,
+                validation_record_path=str(record_path.resolve()),
+            )
+        )
 
     def check(self, session_output_dir: Optional[Path] = None) -> PublishGateResult:
         """Check if publishing is allowed.
@@ -528,25 +676,26 @@ class PublishGate:
                     reason="Cannot determine HEAD SHA",
                 )
             )
+        self._validate_attempt_key_head(head_sha)
 
         # Check cache - only trust cached passes, not failures
         # Failures might be due to flaky tests or transient issues, so always re-run
-        cached = self.cache.lookup(head_sha, self.command)
+        if self.attempt_key is not None:
+            cached = self._attempt_cached_record(head_sha)
+            cache_hit_prefix = "attempt_"
+        else:
+            cached = self.cache.lookup(head_sha, self.command)
+            cache_hit_prefix = ""
         if cached is not None and cached.passed:
-            cache_lookup = "hit_passed"
+            cache_lookup = f"{cache_hit_prefix}hit_passed"
             logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
             # Materialize the cached record into the session run dir so
             # downstream consumers (manifest, review-exchange predicate, UI)
             # see the gate's authoritative result. Without this, a stale
             # ``validation-record.json`` from an earlier inline run remains
             # in place and silently contradicts the cache hit.
-            if session_output_dir is not None and _is_session_run_dir(
-                session_output_dir, self.store.worktree
-            ):
-                atomic_write_json(
-                    session_output_dir / "validation-record.json",
-                    cached.to_dict(),
-                )
+            self._materialize_cached_record(cached, session_output_dir)
+            self._store_attempt_validation_record(cached, session_output_dir)
             return finish(
                 PublishGateResult(
                     allowed=True,
@@ -556,14 +705,14 @@ class PublishGate:
                 )
             )
         elif cached is not None:
-            cache_lookup = "hit_failed_rerun"
+            cache_lookup = f"{cache_hit_prefix}hit_failed_rerun"
             # Cached failure - log it but re-run validation
             logger.info(
                 "Publish gate: cached failure for %s, re-running validation",
                 head_sha[:8],
             )
         else:
-            cache_lookup = "miss"
+            cache_lookup = f"{cache_hit_prefix}miss"
 
         # Run validation
         logger.info("Publish gate: running validation for %s", head_sha[:8])
@@ -574,6 +723,10 @@ class PublishGate:
             timeout_seconds=self.timeout_seconds,
             session_output_dir=session_output_dir,
         )
+        # ValidationRunner still populates the legacy SHA cache for callers
+        # without attempt identity. When attempt_key is present, the attempt
+        # sidecar below is the authoritative cross-run cache record.
+        self._store_attempt_validation_record(record, session_output_dir)
 
         if record.passed:
             return finish(
@@ -644,7 +797,7 @@ class AgentGate:
 
     def _get_head_sha(self) -> Optional[str]:
         """Get the current HEAD SHA."""
-        head_sha = self.working_copy.get_head_sha(self.worktree)
+        head_sha = _normalize_head_sha(self.working_copy.get_head_sha(self.worktree))
         if not head_sha:
             logger.warning("Failed to get HEAD SHA in %s", self.worktree)
         return head_sha

@@ -10,6 +10,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ..domain.issue_key import GitHubIssueKey, IssueKey
 from ..domain.models import Session, SessionStatus
 from ..events import EventName
 from ..infra.config import Config
@@ -30,6 +31,19 @@ if TYPE_CHECKING:
     from .session_controller import SessionController
 
 logger = logging.getLogger(__name__)
+
+
+def _validation_issue_key(session: Session, config: Config) -> IssueKey | None:
+    repo = session.issue.repo or config.repo
+    if repo:
+        return GitHubIssueKey(repo=repo, external_id=str(session.issue.number))
+    if config.is_validation_enabled():
+        logger.info(
+            "[COMPLETION] Validation attempt identity unavailable: repo is unset "
+            "for issue %s",
+            session.issue.number,
+        )
+    return None
 
 
 def _terminate_timed_out_session(
@@ -292,6 +306,7 @@ def process_active_sessions(
                 or config.retry.retry_prompt_template
             ),
             repo_root=config.repo_root,
+            issue_key=_validation_issue_key(session, config),
         )
         if decision.status == SessionStatus.RUNNING:
             logger.info(
