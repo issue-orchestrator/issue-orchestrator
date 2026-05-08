@@ -1,0 +1,40 @@
+"""Ports for recording run-scoped evidence."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from .session_output import ValidationRecord
+
+
+@runtime_checkable
+class ValidationEvidenceRecorder(Protocol):
+    """Records validation evidence for a session run."""
+
+    def record_validation_evidence(
+        self,
+        *,
+        run_dir: Path,
+        worktree: Path,
+        record: ValidationRecord | None,
+        record_path: Path | None = None,
+        junit_xml_paths: tuple[str, ...] | list[str] = (),
+    ) -> None:
+        """Record validation artifacts and structured test reports."""
+        ...
+
+
+class NullValidationEvidenceRecorder:
+    """No-op recorder used by tests that do not exercise evidence wiring."""
+
+    def record_validation_evidence(
+        self,
+        *,
+        run_dir: Path,
+        worktree: Path,
+        record: ValidationRecord | None,
+        record_path: Path | None = None,
+        junit_xml_paths: tuple[str, ...] | list[str] = (),
+    ) -> None:
+        _ = (run_dir, worktree, record, record_path, junit_xml_paths)

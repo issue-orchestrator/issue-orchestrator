@@ -35,7 +35,9 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     build_completion_record,
     write_completion_record,
     write_marker_file,
+    record_validation_artifacts,
 )
+from issue_orchestrator.control.validation import AgentGateResult
 from issue_orchestrator.entrypoints.cli_tools.coding_done import (
     main as coding_done_main,
     check_dirty_files,
@@ -48,6 +50,7 @@ from issue_orchestrator.domain.models import (
     ProposedFollowUpIssue,
     COMPLETION_RECORD_PATH,
 )
+from issue_orchestrator.ports.session_output import ValidationRecord
 
 
 class TestAgentStatus:
@@ -1132,6 +1135,78 @@ class TestLoadFollowUpIssues:
 
 class TestAgentGateIntegration:
     """Test agent gate validation integration in coding-done."""
+
+    def test_record_validation_artifacts_records_junit_from_e2e_config(
+        self, tmp_path: Path
+    ):
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            """
+validation:
+  cmd: "make validate"
+e2e:
+  junit_xml_paths:
+    - reports/*.xml
+""",
+            encoding="utf-8",
+        )
+        junit_path = tmp_path / "reports" / "junit.xml"
+        junit_path.parent.mkdir()
+        junit_path.write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="validation" tests="1">
+  <testcase classname="tests.e2e.test_smoke" name="test_smoke" time="0.01" />
+</testsuite>
+""",
+            encoding="utf-8",
+        )
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_path, "test-123")
+        stdout_path = run.run_dir / "validation-stdout.log"
+        stderr_path = run.run_dir / "validation-stderr.log"
+        stdout_path.write_text("ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        record = ValidationRecord(
+            schema_version=1,
+            suite="agent_gate",
+            head_sha="abc123",
+            passed=True,
+            exit_code=0,
+            command="make validate",
+            started_at="2026-05-07T00:00:00Z",
+            ended_at="2026-05-07T00:00:01Z",
+            stdout_path=str(stdout_path.relative_to(tmp_path)),
+            stderr_path=str(stderr_path.relative_to(tmp_path)),
+        )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(record.to_dict()),
+            encoding="utf-8",
+        )
+
+        record_validation_artifacts(
+            tmp_path,
+            "test-123",
+            AgentGateResult(
+                passed=True,
+                reason="Validation passed",
+                record=record,
+                record_path=str(run.run_dir / "validation-record.json"),
+            ),
+        )
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert manifest["validation_status"] == "passed"
+        assert any(
+            artifact.get("kind") == "junit_xml"
+            and artifact.get("path") == str(junit_path.resolve())
+            for artifact in manifest["artifacts"].values()
+        )
 
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
     def test_agent_gate_runs_when_configured(self, _mock_dirty, tmp_path, capsys):

@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from ..domain.run_manifest import RunManifest
-from ..infra.e2e_reports import JUnitCaseResult, discover_report_artifacts
+from ..infra.e2e_reports import (
+    JUnitCaseResult,
+    discover_report_artifacts,
+    parse_junit_report,
+)
+from ..infra.validation_junit_paths import configured_validation_junit_xml_paths
 from ..ports.session_output import ValidationRecord
 
 logger = logging.getLogger(__name__)
@@ -99,9 +104,10 @@ def load_validation_failure_summary(
     check JUnit / stdout for green runs), in which case the returned summary
     has ``status="passed"`` and likely empty ``failed_tests`` / ``stdout``.
 
-    When ``junit_xml_paths`` is non-empty, also parse JUnit XML rooted at
-    ``junit_search_root`` (defaults to the manifest's worktree, or run_dir as
-    a last resort) and attach the structured cases.
+    Recorded JUnit XML artifacts in the run manifest are authoritative. If a
+    run predates recorded evidence, ``junit_xml_paths`` is used as a legacy
+    discovery source rooted at ``junit_search_root`` (defaults to the manifest's
+    worktree, or run_dir as a last resort).
     """
     try:
         manifest = RunManifest.load(run_dir)
@@ -138,10 +144,16 @@ def load_validation_failure_summary(
     stderr_lines = _read_lines(stderr_path)
     failed_tests = _extract_failed_tests(stdout_lines)
 
-    junit_cases = _load_junit_cases(
-        junit_xml_paths,
-        junit_search_root or (Path(worktree) if worktree else run_dir),
+    recorded_junit_paths = manifest.junit_xml_paths(
+        key_prefix="validation_junit_xml_"
     )
+    if recorded_junit_paths:
+        junit_cases = _load_recorded_junit_cases(recorded_junit_paths)
+    else:
+        junit_cases = _load_junit_cases(
+            junit_xml_paths,
+            junit_search_root or (Path(worktree) if worktree else run_dir),
+        )
 
     default_reason = "Validation passed" if status == "passed" else "Validation failed"
     return ValidationFailureSummary(
@@ -168,25 +180,32 @@ def load_validation_failure_summary_with_config(
     config: Any,
     include_passed: bool = False,
 ) -> ValidationFailureSummary | None:
-    """Config-aware wrapper that threads ``validation.junit_xml_paths``.
+    """Config-aware wrapper that threads configured JUnit paths.
 
     Both the dashboard's ``/api/dialog/validation-failure/`` route and
     the issue-detail diagnostic path call this helper so they cannot
     disagree on whether structured JUnit cases reach the user. If
     ``config`` is None or has no ``validation`` block, JUnit parsing is
-    skipped (matches the bare ``load_validation_failure_summary``
-    behavior). Pass ``include_passed=True`` to also return passed runs.
+    skipped unless the run manifest already recorded validation JUnit
+    evidence. ``e2e.junit_xml_paths`` is included as a compatibility source
+    because many repos already configure E2E reports there while running
+    those same tests as the validation command. Pass ``include_passed=True``
+    to also return passed runs.
     """
-    junit_paths: tuple[str, ...] = ()
-    if config is not None:
-        validation_cfg = getattr(config, "validation", None)
-        if validation_cfg is not None:
-            junit_paths = tuple(getattr(validation_cfg, "junit_xml_paths", ()) or ())
     return load_validation_failure_summary(
         run_dir,
-        junit_xml_paths=junit_paths,
+        junit_xml_paths=configured_validation_junit_xml_paths(config),
         include_passed=include_passed,
     )
+
+
+def _load_recorded_junit_cases(
+    junit_xml_paths: tuple[str, ...],
+) -> tuple[JUnitCaseResult, ...]:
+    cases: list[JUnitCaseResult] = []
+    for path in junit_xml_paths:
+        cases.extend(parse_junit_report(Path(path)))
+    return tuple(cases)
 
 
 def _load_junit_cases(

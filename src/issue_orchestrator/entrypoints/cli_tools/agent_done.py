@@ -67,6 +67,7 @@ RUNTIME_COMPLETION_OUTCOME: Any = RuntimeCompletionOutcome
 RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
+from ...execution.run_evidence import RunEvidenceRecorder
 from ...execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -153,7 +154,9 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _validation_manifest_updates(validation_result: AgentGateResult, record_path: str | None) -> dict[str, str]:
+def _validation_manifest_updates(
+    validation_result: AgentGateResult, record_path: str | None
+) -> dict[str, str]:
     """Build manifest fields that summarize validation state."""
     updates: dict[str, str] = {
         "validation_status": "passed" if validation_result.passed else "failed",
@@ -204,8 +207,15 @@ def record_validation_artifacts(
     session_output = FileSystemSessionOutput()
     run_dir = session_output.ensure_run_dir(worktree_root, session_id)
     run_record_path = run_dir / "validation-record.json"
-    effective_record_path = str(run_record_path) if run_record_path.exists() else record_path
-    updates = _validation_manifest_updates(validation_result, effective_record_path)
+    resolved_record_path = (
+        run_record_path
+        if run_record_path.exists()
+        else Path(record_path) if record_path else None
+    )
+    updates = _validation_manifest_updates(
+        validation_result,
+        str(resolved_record_path) if resolved_record_path else None,
+    )
     if updates:
         session_output.update_manifest(run_dir, updates)
 
@@ -228,6 +238,20 @@ def record_validation_artifacts(
         manifest_key="validation_stderr",
         session_output=session_output,
     )
+    RunEvidenceRecorder(session_output).record_validation_evidence(
+        run_dir=run_dir,
+        worktree=worktree_root,
+        record=record,
+        record_path=resolved_record_path,
+        junit_xml_paths=_runtime_validation_junit_xml_paths(worktree_root),
+    )
+
+
+def _runtime_validation_junit_xml_paths(worktree: Path) -> tuple[str, ...]:
+    from ...infra.config import load_runtime_validation_config
+
+    validation_config = load_runtime_validation_config(worktree)
+    return tuple(validation_config.get("junit_xml_paths", ()) or ())
 
 
 def die(message: str) -> NoReturn:

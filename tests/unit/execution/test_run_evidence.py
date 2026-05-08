@@ -67,7 +67,7 @@ def test_run_evidence_records_validation_junit_artifacts(tmp_path: Path) -> None
     junit_path = worktree / "reports" / "junit.xml"
     _write_junit_xml(junit_path)
 
-    evidence = RunEvidenceRecorder(session_output).record_validation_evidence(
+    RunEvidenceRecorder(session_output).record_validation_evidence(
         run_dir=run.run_dir,
         worktree=worktree,
         record=record,
@@ -78,10 +78,9 @@ def test_run_evidence_records_validation_junit_artifacts(tmp_path: Path) -> None
     manifest = session_output.read_manifest(run.run_dir)
     assert manifest is not None
     artifacts = manifest["artifacts"]
-    assert evidence.validation_record_path == str(record_path)
-    assert evidence.validation_stdout_path == str(stdout_path)
-    assert evidence.validation_stderr_path == str(stderr_path)
-    assert evidence.junit_xml_paths == (str(junit_path.resolve()),)
+    assert manifest["validation_record_path"] == str(record_path)
+    assert manifest["validation_stdout"] == str(stdout_path)
+    assert manifest["validation_stderr"] == str(stderr_path)
     assert artifacts[_junit_artifact_key(junit_path)] == {
         "kind": "junit_xml",
         "path": str(junit_path.resolve()),
@@ -149,14 +148,13 @@ def test_run_evidence_tolerates_missing_configured_junit(tmp_path: Path) -> None
     session_output = FileSystemSessionOutput()
     run = session_output.start_run(worktree, "coding-1")
 
-    evidence = RunEvidenceRecorder(session_output).record_validation_evidence(
+    RunEvidenceRecorder(session_output).record_validation_evidence(
         run_dir=run.run_dir,
         worktree=worktree,
         record=None,
         junit_xml_paths=("reports/*.xml",),
     )
 
-    assert evidence.junit_xml_paths == ()
     assert recorded_validation_junit_xml_paths(run.run_dir) == ()
 
 
@@ -171,14 +169,16 @@ def test_run_evidence_resolves_relative_validation_record_path(
     record_path.write_text(json.dumps(_validation_record().to_dict()), encoding="utf-8")
     relative_record_path = record_path.relative_to(worktree)
 
-    evidence = RunEvidenceRecorder(session_output).record_validation_evidence(
+    RunEvidenceRecorder(session_output).record_validation_evidence(
         run_dir=run.run_dir,
         worktree=worktree,
         record=None,
         record_path=relative_record_path,
     )
 
-    assert evidence.validation_record_path == str(record_path)
+    manifest = session_output.read_manifest(run.run_dir)
+    assert manifest is not None
+    assert manifest["validation_record_path"] == str(record_path)
 
 
 def test_recorded_junit_paths_fail_fast_on_malformed_manifest(tmp_path: Path) -> None:

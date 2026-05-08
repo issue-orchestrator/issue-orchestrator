@@ -32,6 +32,7 @@ def test_extract_validation_config_merges_nested_defaults() -> None:
         "cmd": "make verify",
         "timeout_seconds": 300,
         "pre_push_dirty_check": "tracked",
+        "junit_xml_paths": (),
         "coverage_guardrail": {
             "enabled": True,
             "min_percent": None,
@@ -85,3 +86,18 @@ validation:
     assert result["pre_push_dirty_check"] == "all"
     assert result["coverage_guardrail"]["enabled"] is True
     assert result["coverage_guardrail"]["min_percent"] == 85
+
+
+def test_extract_validation_config_merges_validation_and_e2e_junit_paths() -> None:
+    result = extract_validation_config(
+        {
+            "validation": {
+                "junit_xml_paths": ["validation.xml", "shared.xml"],
+            },
+            "e2e": {
+                "junit_xml_paths": ["shared.xml", "e2e.xml"],
+            },
+        }
+    )
+
+    assert result["junit_xml_paths"] == ("validation.xml", "shared.xml", "e2e.xml")

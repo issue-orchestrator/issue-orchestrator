@@ -43,7 +43,11 @@ from ..infra.validation_state import (
 )
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, make_trace_event
-from ..ports.session_output import SessionOutput, ValidationState
+from ..ports.run_evidence import (
+    NullValidationEvidenceRecorder,
+    ValidationEvidenceRecorder,
+)
+from ..ports.session_output import SessionOutput, ValidationRecord, ValidationState
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
@@ -133,6 +137,8 @@ class SessionController:
         command_runner: Optional["CommandRunner"] = None,
         validation_cmd: Optional[str] = None,
         validation_timeout_seconds: int = 300,
+        validation_junit_xml_paths: tuple[str, ...] | list[str] = (),
+        validation_evidence_recorder: ValidationEvidenceRecorder | None = None,
         max_validation_retries: int = 0,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         provider_blocked_label: Optional[str] = None,
@@ -147,6 +153,8 @@ class SessionController:
             command_runner: For running validation commands (optional)
             validation_cmd: Validation command to run after completion (optional)
             validation_timeout_seconds: Timeout for validation command
+            validation_junit_xml_paths: Report paths/globs emitted by validation
+            validation_evidence_recorder: Owner for run-scoped validation evidence
             max_validation_retries: Maximum number of validation retries (0 = no retries)
         """
         self.completion_processor = completion_processor
@@ -157,6 +165,12 @@ class SessionController:
         self._max_validation_retries = max_validation_retries
         self._validation_cmd = validation_cmd
         self._validation_timeout = validation_timeout_seconds
+        self._validation_junit_xml_paths = tuple(validation_junit_xml_paths)
+        self._validation_evidence_recorder = (
+            validation_evidence_recorder
+            if validation_evidence_recorder is not None
+            else NullValidationEvidenceRecorder()
+        )
         self._provider_resilience = provider_resilience
         self._provider_blocked_label = provider_blocked_label
 
@@ -1393,6 +1407,11 @@ class SessionController:
             if result.record is None:
                 raise RuntimeError("validation cache hit did not include a record")
             self._materialize_cached_validation_record(target_run_dir, result.record)
+        self._record_validation_evidence(
+            worktree_path=worktree_path,
+            run_dir=target_run_dir,
+            record=result.record,
+        )
 
         if result.allowed:
             if result.cache_hit:
@@ -1414,6 +1433,21 @@ class SessionController:
         error_file = self._resolve_error_file_path(worktree_path, result.record)
 
         return False, error_msg, error_file
+
+    def _record_validation_evidence(
+        self,
+        *,
+        worktree_path: Path,
+        run_dir: Path,
+        record: ValidationRecord | None,
+    ) -> None:
+        self._validation_evidence_recorder.record_validation_evidence(
+            run_dir=run_dir,
+            worktree=worktree_path,
+            record=record,
+            record_path=run_dir / "validation-record.json",
+            junit_xml_paths=self._validation_junit_xml_paths,
+        )
 
     def _resolve_error_file_path(
         self,
