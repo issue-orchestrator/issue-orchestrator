@@ -467,7 +467,14 @@ function _testOutcomeCounts(tests) {
 function renderTestResultsHeadline(tests) {
     const counts = _testOutcomeCounts(tests);
     return `
-        <div class="test-results-headline" role="status" aria-label="Test summary">
+        <div class="test-results-headline" role="status" aria-label="Test summary"
+             data-total-count="${counts.total}"
+             data-failed-count="${counts.failed}"
+             data-passed-count="${counts.passed}"
+             data-passed-on-retry-count="${counts.passed_on_retry}"
+             data-skipped-count="${counts.skipped}"
+             data-quarantined-count="${counts.quarantined}"
+             data-action-needed-count="${counts.action_needed}">
             <span class="trh-stat trh-total">${counts.total} tests</span>
             <span class="trh-stat trh-failed ${counts.failed ? '' : 'trh-zero'}">✗ ${counts.failed} failed</span>
             <span class="trh-stat trh-passed ${counts.passed ? '' : 'trh-zero'}">✓ ${counts.passed} passed</span>

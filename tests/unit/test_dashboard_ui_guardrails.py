@@ -1521,6 +1521,8 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "action needed" in headline_body
     assert "trh-stat" in headline_body
     assert "_testOutcomeCounts(tests)" in headline_body
+    assert "data-passed-count" in headline_body
+    assert "data-failed-count" in headline_body
 
     # Filter chips are tablist with task-oriented groups.
     assert "trf-chip" in filters_body

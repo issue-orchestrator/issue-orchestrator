@@ -414,6 +414,7 @@ def fixture_web_server(tmp_path: Path) -> dict[str, object]:
     orchestrator.config.config_path = (
         repo_root / ".issue-orchestrator" / "config" / "default.yaml"
     )
+    orchestrator.config.e2e.enabled = True
 
     # Build a realistic deps object: real timeline_store + reader for
     # the endpoints that read them, and MagicMock for the optional
@@ -608,6 +609,95 @@ def _browser_fetch_json(page: Page, url: str) -> dict[str, Any]:
 
 def _url(base_url: str, path: str, **params: object) -> str:
     return f"{base_url}{path}?{urlencode(params)}"
+
+
+def _user_e2e_run_detail_url(base_url: str, run_id: int | object) -> str:
+    """Return the user-facing run-detail variant consumed by the dashboard modal."""
+    return _url(str(base_url), f"/api/e2e-run-detail/{run_id}", view="user")
+
+
+_PASSED_RUN_NODEID = "tixmeup.e2e.smoke::package.build_image"
+
+
+def _synthetic_passed_run_payload(
+    page: Page,
+    base_url: str,
+    run_id: int | object,
+) -> dict[str, Any]:
+    real_payload = _browser_fetch_json(
+        page,
+        _user_e2e_run_detail_url(base_url, run_id),
+    )
+    synthetic_payload = json.loads(json.dumps(real_payload))
+    synthetic_payload["run"]["status"] = "passed"
+    synthetic_payload["results_by_category"] = {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [
+            {
+                "nodeid": _PASSED_RUN_NODEID,
+                "case_id": _PASSED_RUN_NODEID,
+                "label": "package.build_image",
+                "display_name": "package.build_image",
+                "suite_name": "tixmeup.e2e.smoke",
+                "outcome": "passed",
+                "retry_outcome": None,
+                "duration_seconds": 450.0,
+                "longrepr": None,
+                "history": [],
+                "existing_issue": None,
+                "flip_rate_percent": 0,
+                "category": "healthy",
+                "result_category": "passed",
+                "result_source": "junit_xml",
+                "is_quarantined": False,
+            }
+        ],
+        "quarantined": [],
+        "skipped": [],
+    }
+    synthetic_payload["results_summary"] = {
+        "total": 1,
+        "passed": 1,
+        "untriaged": 0,
+        "has_issue": 0,
+        "flaky": 0,
+        "fixed": 0,
+        "quarantined": 0,
+        "skipped": 0,
+    }
+    return synthetic_payload
+
+
+def _route_synthetic_passed_run_detail(
+    page: Page,
+    base_url: str,
+    run_id: int | object,
+) -> None:
+    synthetic_payload = _synthetic_passed_run_payload(page, base_url, run_id)
+    page.route(
+        _user_e2e_run_detail_url(base_url, run_id),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(synthetic_payload),
+        ),
+    )
+
+
+def _expect_formatted_passed_run_modal(page: Page) -> None:
+    modal = page.locator("#e2eDiagnosisModal.visible")
+    expect(modal).to_be_visible(timeout=5000)
+    expect(modal.locator(".diagnosis-header")).to_have_count(0)
+    headline = modal.locator(".test-results-headline")
+    expect(headline).to_be_visible(timeout=5000)
+    expect(headline).to_have_attribute("data-passed-count", "1")
+    expect(headline).to_have_attribute("data-failed-count", "0")
+    expect(modal.locator(f".trr-row[data-nodeid='{_PASSED_RUN_NODEID}']")).to_contain_text(
+        "package.build_image"
+    )
 
 
 def _issue_affordance_numbers(timeline_payload: dict[str, Any]) -> list[int]:
@@ -1582,6 +1672,59 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
         adversarial_artifact_path,
         "/tmp/tixmeup-e2e-smoke.summary.txt",
     ]
+
+
+def test_run_history_view_results_opens_formatted_passed_run_modal(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """Run-history View Results opens formatted results, not diagnosis."""
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    _route_synthetic_passed_run_detail(page, str(base_url), run_id)
+    _open_e2e_tab(page)
+    run_item = page.locator(
+        ".e2e-run-item",
+        has=page.locator(".e2e-run-results-btn"),
+    ).first
+    expect(run_item).to_be_visible(timeout=5000)
+    results_button = run_item.locator(".e2e-run-results-btn").first
+    expect(results_button).to_be_visible(timeout=5000)
+    expect(results_button).to_be_enabled(timeout=5000)
+    expect(results_button).to_have_text("View Results")
+    results_button.click()
+
+    _expect_formatted_passed_run_modal(page)
+
+
+def test_latest_view_results_opens_formatted_passed_run_modal(
+    page: Page,
+    fixture_web_server: dict[str, object],
+) -> None:
+    """Latest-run View Results uses live E2E state and opens formatted results."""
+    base_url = fixture_web_server["url"]
+    run_id = fixture_web_server["run_id"]
+
+    page.goto(f"{base_url}/", wait_until="domcontentloaded")
+    _route_synthetic_passed_run_detail(page, str(base_url), run_id)
+    _open_e2e_tab(page)
+
+    page.evaluate(
+        """(runId) => {
+            e2eLastRun = { id: runId, status: 'passed' };
+            window.dashboardData.e2eLastRun = e2eLastRun;
+        }""",
+        run_id,
+    )
+    latest_results = page.locator(".e2e-last-results-btn")
+    expect(latest_results).to_be_visible(timeout=5000)
+    expect(latest_results).to_be_enabled(timeout=5000)
+    expect(latest_results).to_have_text("View Results")
+    latest_results.click()
+
+    _expect_formatted_passed_run_modal(page)
 
 
 def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
