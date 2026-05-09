@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from issue_orchestrator.control.queue_cache import (
     QUEUE_SHRINK_CONFIRM_DELAY_SECONDS,
     QueueCache,
@@ -84,10 +86,39 @@ def test_save_snapshot_persists_scope_watermark_and_repo():
     )
     store = Mock()
 
-    QueueCache(config, state).save_snapshot(store)
+    QueueCache(config, state, store).save_snapshot()
 
     store.save_snapshot.assert_called_once_with(
         state.cached_scope_issues,
+        "2026-05-09T14:00:00Z",
+        repo="owner/repo",
+    )
+
+
+def test_save_snapshot_fails_fast_without_store():
+    config = _make_config()
+    state = OrchestratorState()
+
+    with pytest.raises(RuntimeError, match="QueueCacheStore is required"):
+        QueueCache(config, state).save_snapshot()
+
+
+def test_remove_issue_and_save_persists_removed_snapshot():
+    config = _make_config()
+    issue = Issue(number=1, title="A", labels=["agent:web"])
+    state = OrchestratorState(
+        cached_scope_issues=[issue],
+        cached_queue_issues=[issue],
+        queue_delta_watermark="2026-05-09T14:00:00Z",
+    )
+    store = Mock()
+
+    QueueCache(config, state, store).remove_issue_and_save(1)
+
+    assert state.cached_scope_issues == []
+    assert state.cached_queue_issues == []
+    store.save_snapshot.assert_called_once_with(
+        [],
         "2026-05-09T14:00:00Z",
         repo="owner/repo",
     )

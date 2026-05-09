@@ -236,7 +236,11 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
         log_prefix="[cancel-queued]",
     )
 
-    QueueCache(orchestrator.config, state).remove_issue(issue_number)
+    QueueCache(
+        orchestrator.config,
+        state,
+        orchestrator.deps.queue_cache_store,
+    ).remove_issue_and_save(issue_number)
     _prune_issue_runtime_state(state=state, issue_number=issue_number)
     state.session_history.append(
         SessionHistoryEntry(

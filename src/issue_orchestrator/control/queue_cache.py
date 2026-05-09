@@ -48,9 +48,15 @@ QUEUE_SHRINK_CONFIRM_DELAY_SECONDS = 60.0
 class QueueCache:
     """Only writer for queue cache state."""
 
-    def __init__(self, config: "Config", state: "OrchestratorState"):
+    def __init__(
+        self,
+        config: "Config",
+        state: "OrchestratorState",
+        queue_cache_store: "QueueCacheStore | None" = None,
+    ):
         self._config = config
         self._state = state
+        self._store = queue_cache_store
 
     def replace_from_refresh(self, issues: list["Issue"]) -> list["Issue"]:
         """Replace queue from fetched issues using canonical eligibility policy."""
@@ -138,6 +144,11 @@ class QueueCache:
         clear_issue_refresh(self._state, issue_number)
         self.prune_refresh_timestamps()
 
+    def remove_issue_and_save(self, issue_number: int) -> None:
+        """Remove an issue and persist the resulting warm-restart snapshot."""
+        self.remove_issue(issue_number)
+        self.save_snapshot()
+
     def evaluate_issue(self, issue: "Issue") -> QueueMutationStatus:
         """Evaluate whether issue can be in queue cache."""
         if not _matches_scope(self._config, issue):
@@ -190,9 +201,16 @@ class QueueCache:
             return set()
         return set(self._state.ui_visible_issue_numbers)
 
-    def save_snapshot(self, store: "QueueCacheStore") -> None:
-        """Persist the current in-scope queue snapshot for warm restarts."""
-        store.save_snapshot(
+    def save_snapshot(self, store: "QueueCacheStore | None" = None) -> None:
+        """Persist the current in-scope queue snapshot for warm restarts.
+
+        The durable snapshot covers in-scope issues and the delta watermark;
+        runtime scheduling priority remains in memory.
+        """
+        target_store = store if store is not None else self._store
+        if target_store is None:
+            raise RuntimeError("QueueCacheStore is required to persist queue cache snapshot")
+        target_store.save_snapshot(
             self._state.cached_scope_issues,
             self._state.queue_delta_watermark,
             repo=self._config.repo or "",

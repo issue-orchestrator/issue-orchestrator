@@ -732,7 +732,7 @@ def _fetch_and_update_queue(
         old_numbers = {i.number for i in state.cached_queue_issues}
         old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
 
-        queue_cache = QueueCache(config, state)
+        queue_cache = QueueCache(config, state, queue_cache_store)
         new_queue = queue_cache.replace_from_refresh(all_issues)
         shrink_confirmation_pending = queue_shrink_confirmation_pending(state)
 
@@ -762,7 +762,7 @@ def _fetch_and_update_queue(
         )
 
         if queue_cache_store is not None:
-            queue_cache.save_snapshot(queue_cache_store)
+            queue_cache.save_snapshot()
 
         if state.failed_this_cycle:
             logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)

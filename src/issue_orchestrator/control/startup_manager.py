@@ -709,6 +709,7 @@ class StartupManager:
         state.startup_message = "Restoring queue cache..."
         cached_issues = store.load_issues(self.config.repo or "")
         cached_watermark = store.load_watermark()
+        queue_cache = QueueCache(self.config, state, store)
 
         if cached_watermark and not cached_issues:
             # Corrupt/partial persisted state: watermark exists but no issues were
@@ -741,7 +742,6 @@ class StartupManager:
                     issue_map.pop(issue.number, None)
 
             # Apply eligibility policy (scope + exclusion filters)
-            queue_cache = QueueCache(self.config, state)
             queue_cache.replace_from_refresh(list(issue_map.values()))
             state.queue_delta_watermark = next_watermark or cached_watermark
             logger.info(
@@ -756,7 +756,7 @@ class StartupManager:
 
         # Persist updated state to SQLite for next restart
         state.startup_message = "Persisting queue cache..."
-        QueueCache(self.config, state).save_snapshot(store)
+        queue_cache.save_snapshot()
 
     async def _resume_partial_work(
         self,

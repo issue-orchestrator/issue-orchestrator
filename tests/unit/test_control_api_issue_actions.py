@@ -536,6 +536,14 @@ class TestRetryIssueEndpoint:
     def test_retry_removes_blocked_labels(self, client_with_orchestrator):
         """Retry removes blocked-related labels from the issue."""
         client, mock_orch = client_with_orchestrator
+        cached_issue = Issue(
+            number=123,
+            title="Blocked issue",
+            labels=["agent:web", "blocked", "pr-pending"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = [cached_issue]
+        mock_orch.deps.queue_cache_store = MagicMock()
 
         # Mock the repository_host to track remove_label calls
         removed_labels = []
@@ -565,6 +573,14 @@ class TestRetryIssueEndpoint:
         assert len(removed_labels) == 2
         assert (123, "blocked") in removed_labels
         assert (123, "pr-pending") in removed_labels
+        assert [issue.labels for issue in mock_orch.state.cached_scope_issues] == [
+            ("agent:web",)
+        ]
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once_with(
+            mock_orch.state.cached_scope_issues,
+            mock_orch.state.queue_delta_watermark,
+            repo="test/repo",
+        )
 
     def test_retry_handles_label_removal_failure_gracefully(
         self, client_with_orchestrator
@@ -613,6 +629,7 @@ class TestCloseIssueEndpoint:
         )
         mock_orch.state.cached_scope_issues = [cached_issue]
         mock_orch.state.cached_queue_issues = [cached_issue]
+        mock_orch.deps.queue_cache_store = MagicMock()
         mock_orch.deps.action_applier.apply.return_value = PlanActionResult.ok(
             CloseIssueAction(issue_number=123),
             issue_number=123,
@@ -632,6 +649,11 @@ class TestCloseIssueEndpoint:
         assert action.expected.required_labels == frozenset({"blocked:pr-closed"})
         assert mock_orch.state.cached_scope_issues == []
         assert mock_orch.state.cached_queue_issues == []
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once_with(
+            [],
+            mock_orch.state.queue_delta_watermark,
+            repo="test/repo",
+        )
 
     def test_close_returns_500_when_action_fails(self, client_with_orchestrator):
         """Failed close actions are surfaced to the UI."""
@@ -679,6 +701,14 @@ class TestDismissIssueEndpoint:
             runtime_minutes=10,
         )
         mock_orch.state.session_history = [history_entry]
+        cached_issue = Issue(
+            number=123,
+            title="Test Issue",
+            labels=["agent:web", "blocked"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = [cached_issue]
+        mock_orch.deps.queue_cache_store = MagicMock()
 
         # Mock the repository_host
         removed_labels = []
@@ -705,6 +735,13 @@ class TestDismissIssueEndpoint:
 
         # Verify session history entry was removed
         assert len(mock_orch.state.session_history) == 0
+        assert mock_orch.state.cached_scope_issues == []
+        assert mock_orch.state.cached_queue_issues == []
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once_with(
+            [],
+            mock_orch.state.queue_delta_watermark,
+            repo="test/repo",
+        )
 
     def test_dismiss_handles_missing_session_history(self, client_with_orchestrator):
         """Dismiss succeeds even when issue not in session history."""

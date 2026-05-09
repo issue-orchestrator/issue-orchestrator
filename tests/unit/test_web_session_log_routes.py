@@ -175,7 +175,9 @@ class TestKillSessionEndpoint:
         mock_orch = create_mock_orchestrator()
         lm = LabelManager(mock_orch.config)
         mock_orch.deps.label_manager = lm
+        mock_orch.deps.queue_cache_store = MagicMock()
         issue = create_issue(4057, "Queued Issue", labels=["agent:web"])
+        mock_orch.state.cached_scope_issues = [issue]
         mock_orch.state.cached_queue_issues = [issue]
         mock_orch.state.pending_reviews = [
             PendingReview(
@@ -195,6 +197,7 @@ class TestKillSessionEndpoint:
             payload = response.json()
             assert payload["cancelled"] == [4057]
             assert payload["failed"] == []
+            assert mock_orch.state.cached_scope_issues == []
             assert mock_orch.state.cached_queue_issues == []
             assert mock_orch.state.pending_reviews == []
             assert 4057 in mock_orch.state.failed_this_cycle
@@ -203,6 +206,11 @@ class TestKillSessionEndpoint:
             assert history_entry.status == "blocked"
             assert history_entry.status_reason == "Cancelled from queue by operator"
             mock_orch.repository_host.add_label.assert_any_call(4057, lm.blocked_failed)
+            mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once_with(
+                [],
+                mock_orch.state.queue_delta_watermark,
+                repo="owner/repo",
+            )
             mock_orch.repository_host.add_label.assert_any_call(4124, lm.blocked_failed)
             mock_orch.repository_host.remove_label.assert_any_call(4124, lm.code_review)
             mock_orch.repository_host.remove_label.assert_any_call(4124, lm.needs_rework)

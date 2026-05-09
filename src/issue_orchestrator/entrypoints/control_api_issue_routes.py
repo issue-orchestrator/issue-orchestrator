@@ -339,7 +339,11 @@ async def dismiss_issue(
                 entry for entry in orchestrator.state.session_history
                 if entry.issue_number != issue_number
             ]
-            QueueCache(orchestrator.config, orchestrator.state).remove_issue(issue_number)
+            QueueCache(
+                orchestrator.config,
+                orchestrator.state,
+                orchestrator.deps.queue_cache_store,
+            ).remove_issue_and_save(issue_number)
 
         deps.with_state_lock(_prune_state)
 
@@ -391,7 +395,11 @@ async def close_issue(
             )
 
         def _prune_state() -> None:
-            QueueCache(orchestrator.config, orchestrator.state).remove_issue(issue_number)
+            QueueCache(
+                orchestrator.config,
+                orchestrator.state,
+                orchestrator.deps.queue_cache_store,
+            ).remove_issue_and_save(issue_number)
 
         deps.with_state_lock(_prune_state)
         logger.info("[close] Issue #%d closed from pr-closed blocked state", issue_number)
@@ -445,7 +453,13 @@ def _update_cached_issue_labels(
             )
             if is_dataclass(issue) and not isinstance(issue, type):
                 updated_issue = replace(issue, labels=new_labels)
-                QueueCache(orchestrator.config, state).upsert_refreshed_issue(updated_issue)
+                queue_cache = QueueCache(
+                    orchestrator.config,
+                    state,
+                    orchestrator.deps.queue_cache_store,
+                )
+                queue_cache.upsert_refreshed_issue(updated_issue)
+                queue_cache.save_snapshot()
                 logger.debug(
                     "[cache] Updated issue #%d labels: removed %s",
                     issue_number,
