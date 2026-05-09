@@ -29,6 +29,34 @@ top-level validation keys such as `validation.cmd`,
 `validation.timeout_seconds`, and `validation.pre_push_dirty_check` fail at load
 time with a migration message so validation is not silently disabled.
 
+### Migrating Existing Validation Configs
+
+Replace the old single-command shape:
+
+```yaml
+validation:
+  cmd: "make validate-pr"
+  timeout_seconds: 1800
+  pre_push_dirty_check: tracked
+```
+
+with explicit quick and publish gates:
+
+```yaml
+validation:
+  quick:
+    cmd: "make validate-pr"
+    timeout_seconds: 1800
+  publish:
+    cmd: "make validate-pr"
+    timeout_seconds: 1800
+    dirty_check: tracked
+```
+
+Use a faster command for `validation.quick.cmd` when the repo has one. If not,
+using the old command for both gates preserves the previous behavior while
+making both lifecycle hooks explicit.
+
 ---
 
 ## Environment Variable Substitution
