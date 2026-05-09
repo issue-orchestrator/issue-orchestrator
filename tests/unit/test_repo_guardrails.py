@@ -290,7 +290,7 @@ def test_checked_in_verify_pr_matches_portable_generated_output() -> None:
     verify_path = repo_root / "scripts" / "verify-pr.sh"
 
     assert verify_path.read_text() == _render_verify_pr_script(
-        "make validate-pr",
+        "make validate-pr-raw",
         selected_config_name="main.yaml",
     )
 

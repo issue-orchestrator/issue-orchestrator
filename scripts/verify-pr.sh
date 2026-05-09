@@ -6,7 +6,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-validation_cmd='make validate-pr'
+validation_cmd='make validate-pr-raw'
 export ISSUE_ORCHESTRATOR_CONFIG_NAME=main.yaml
 PYTHON_ENV_NAME=ISSUE_ORCHESTRATOR_PYTHON
 PYTHON_BIN=""

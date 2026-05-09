@@ -42,6 +42,17 @@ its authoritative pre-push / pre-publish gate.
 Keep quick and publish commands configured separately so active review loops can
 stay responsive while push/publish actions still run the deeper repository gate.
 
+If the user-facing gate command itself calls the cache-aware pre-push wrapper,
+configure `validation.publish.cmd` to the underlying raw command instead. For
+example, this repository exposes `make validate-pr` as the cache-aware entry
+point and configures `validation.publish.cmd: make validate-pr-raw` so the
+wrapper can seed and reuse the cache without re-entering itself.
+
+The old single-command shape (`validation.cmd`,
+`validation.timeout_seconds`, and `validation.pre_push_dirty_check`) is rejected
+at config load time. That keeps upgrades visible instead of silently disabling
+both lifecycle gates.
+
 When you install repo guardrails with `issue-orchestrator setup-guardrails`, the
 generated `scripts/verify-pr.sh` captures the selected config filename. If you
 switch the repo to a different `.issue-orchestrator/config/*.yaml`, rerun

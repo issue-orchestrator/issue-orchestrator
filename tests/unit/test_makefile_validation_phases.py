@@ -124,6 +124,14 @@ def test_validate_pr_raw_does_not_schedule_entire_graph_at_validate_jobs():
     _assert_no_job_count(lines[raw_pr_index])
 
 
+def test_validate_pr_uses_cache_aware_verify_script():
+    lines = _dry_run("validate-pr")
+
+    verify_index = _find_line(lines, "./scripts/verify-pr.sh")
+
+    assert all("validate_runner" not in line for line in lines[: verify_index + 1])
+
+
 def test_agent_validation_targets_emit_timing_markers():
     simulated_lines = _dry_run("test-simulated-agent", SIMULATED_PARALLEL="0")
     integration_lines = _dry_run("test-integration-agent", INTEGRATION_PARALLEL="0")
