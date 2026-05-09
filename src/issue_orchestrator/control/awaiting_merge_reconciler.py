@@ -12,8 +12,10 @@ from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
     DiscoveredAwaitingMergeDrift,
+    DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredRework,
+    PostPublishEscalationKind,
     RECONCILABLE_HISTORY_STATUSES,
     TERMINAL_AWAITING_MERGE_HISTORY_STATUSES,
 )
@@ -98,6 +100,7 @@ class AwaitingMergeEntryDiscovery:
     reconciliation: DiscoveredAwaitingMergeReconciliation | None = None
     drift: DiscoveredAwaitingMergeDrift | None = None
     rework: DiscoveredRework | None = None
+    escalation: DiscoveredAwaitingMergeEscalation | None = None
 
 
 @dataclass(frozen=True)
@@ -108,11 +111,16 @@ class AwaitingMergeReconciliationResult:
     discovered: int = 0
     drift_discovered: int = 0
     rework_discovered: int = 0
+    escalation_discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
     reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
     drifts: tuple[DiscoveredAwaitingMergeDrift, ...] = ()
     reworks: tuple[DiscoveredRework, ...] = ()
+    escalations: tuple[DiscoveredAwaitingMergeEscalation, ...] = ()
+
+
+DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS = 1800.0
 
 
 @dataclass
@@ -126,6 +134,12 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
+    # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
+    # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
+    # in production wire the configured value through.
+    post_publish_checks_pending_timeout_seconds: float = (
+        DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS
+    )
 
     def discover(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
         """Discover completed history entries that should become terminal."""
@@ -133,11 +147,13 @@ class AwaitingMergeReconciler:
         discovered = 0
         drift_discovered = 0
         rework_discovered = 0
+        escalation_discovered = 0
         still_pending = 0
         skipped = 0
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
         drifts: list[DiscoveredAwaitingMergeDrift] = []
         reworks: list[DiscoveredRework] = []
+        escalations: list[DiscoveredAwaitingMergeEscalation] = []
         pending_issue_numbers: set[int] = set()
 
         candidates = self._awaiting_merge_entries(state)
@@ -164,6 +180,9 @@ class AwaitingMergeReconciler:
             if discovery.rework is not None:
                 rework_discovered += 1
                 reworks.append(discovery.rework)
+            if discovery.escalation is not None:
+                escalation_discovered += 1
+                escalations.append(discovery.escalation)
 
         label_drifts = self._discover_label_drifts(
             state,
@@ -174,23 +193,23 @@ class AwaitingMergeReconciler:
         drifts.extend(label_drifts)
 
         logger.debug(
-            "Awaiting-merge scan complete: checked=%d terminal=%d drift=%d still_pending=%d skipped=%d",
-            checked,
-            discovered,
-            drift_discovered,
-            still_pending,
-            skipped,
+            "Awaiting-merge scan complete: checked=%d terminal=%d drift=%d "
+            "still_pending=%d skipped=%d escalations=%d",
+            checked, discovered, drift_discovered,
+            still_pending, skipped, escalation_discovered,
         )
         return AwaitingMergeReconciliationResult(
             checked=checked,
             discovered=discovered,
             drift_discovered=drift_discovered,
             rework_discovered=rework_discovered,
+            escalation_discovered=escalation_discovered,
             still_pending=still_pending,
             skipped=skipped,
             reconciliations=tuple(reconciliations),
             drifts=tuple(drifts),
             reworks=tuple(reworks),
+            escalations=tuple(escalations),
         )
 
     def _awaiting_merge_entries(
@@ -292,15 +311,17 @@ class AwaitingMergeReconciler:
 
         if pr is None:
             return AwaitingMergeEntryDiscovery("skipped")
+        rework, escalation = self._discover_post_publish_followup(
+            state=state,
+            entry=entry,
+            pr=pr,
+            issue=issue,
+            pr_number=pr_number,
+        )
         return AwaitingMergeEntryDiscovery(
             "still_pending",
-            rework=self._discover_post_publish_validation_rework(
-                state=state,
-                entry=entry,
-                pr=pr,
-                issue=issue,
-                pr_number=pr_number,
-            ),
+            rework=rework,
+            escalation=escalation,
         )
 
     def _discover_terminal_pr_issue_drift(
@@ -428,7 +449,7 @@ class AwaitingMergeReconciler:
             )
         return None
 
-    def _discover_post_publish_validation_rework(
+    def _discover_post_publish_followup(
         self,
         *,
         state: OrchestratorState,
@@ -436,39 +457,80 @@ class AwaitingMergeReconciler:
         pr: PRInfo,
         issue: Issue,
         pr_number: int,
-    ) -> DiscoveredRework | None:
-        if self.label_manager is None:
-            return None
-        if issue.agent_type is None:
-            return None
-        if self.label_manager.code_reviewed not in pr.labels:
-            return None
-        if self.label_manager.needs_rework in pr.labels:
-            return None
-        if any(session.issue.number == entry.issue_number for session in state.active_sessions):
-            return None
-        if any(
-            pending.resolve_issue_number() == entry.issue_number
-            for pending in state.pending_reworks
-        ):
-            return None
+    ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
+        """Decide what (if anything) to do with an approved-but-not-merged PR.
+
+        Returns ``(rework, escalation)`` — at most one is non-None on any
+        given tick. Reads as a table of contents: gate, classify, clear
+        bookkeeping if state moved on, then dispatch.
+        """
+        if not self._post_publish_eligible(state, entry, pr):
+            return None, None
+        assert self.label_manager is not None  # narrowed by eligibility gate
+        assert issue.agent_type is not None
 
         action = classify_post_approval_state(pr)
-        if action not in _REWORK_ACTIONS:
-            # READY / WAIT_FOR_CHECKS / BLOCKED_TERMINAL / UNKNOWN — no rework.
-            # WAIT_FOR_CHECKS gets a timeout-driven escalation in a later
-            # slice; for now we simply don't queue rework, which by itself
-            # eliminates the spurious rework-during-CI loop.
-            logger.debug(
-                "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s action=%s",
-                entry.issue_number,
-                pr_number,
-                _normalized_state(pr.mergeable_state),
-                pr.status_check_rollup,
-                action,
-            )
-            return None
+        logger.debug(
+            "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s action=%s",
+            entry.issue_number,
+            pr_number,
+            _normalized_state(pr.mergeable_state),
+            pr.status_check_rollup,
+            action,
+        )
+        if action != "WAIT_FOR_CHECKS":
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
 
+        if action in _REWORK_ACTIONS:
+            return self._build_rework_discovery(
+                pr=pr, action=action, entry=entry, issue=issue, pr_number=pr_number,
+            ), None
+        if action == "BLOCKED_TERMINAL":
+            return None, self._build_branch_protection_escalation(
+                pr=pr, issue_number=entry.issue_number, pr_number=pr_number,
+            )
+        if action == "WAIT_FOR_CHECKS":
+            return None, self._maybe_escalate_pending_checks(
+                state=state, pr=pr,
+                issue_number=entry.issue_number, pr_number=pr_number,
+            )
+        # READY / UNKNOWN — nothing to do.
+        return None, None
+
+    def _post_publish_eligible(
+        self,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+    ) -> bool:
+        """Pre-filter: only consider PRs that are reviewer-approved and not
+        already in flight via another rework path."""
+        if self.label_manager is None:
+            return False
+        if self.label_manager.code_reviewed not in pr.labels:
+            return False
+        if self.label_manager.needs_rework in pr.labels:
+            return False
+        if any(s.issue.number == entry.issue_number for s in state.active_sessions):
+            return False
+        if any(
+            p.resolve_issue_number() == entry.issue_number
+            for p in state.pending_reworks
+        ):
+            return False
+        return True
+
+    def _build_rework_discovery(
+        self,
+        *,
+        pr: PRInfo,
+        action: PostApprovalAction,
+        entry: SessionHistoryEntry,
+        issue: Issue,
+        pr_number: int,
+    ) -> DiscoveredRework:
+        assert self.label_manager is not None
+        assert issue.agent_type is not None
         return DiscoveredRework(
             issue_number=entry.issue_number,
             pr_number=pr_number,
@@ -477,6 +539,69 @@ class AwaitingMergeReconciler:
             rework_cycle=_next_rework_cycle(pr.labels, self.label_manager),
             source=POST_PUBLISH_VALIDATION_SOURCE,
             feedback=_build_rework_feedback(pr, action),
+        )
+
+    def _build_branch_protection_escalation(
+        self, *, pr: PRInfo, issue_number: int, pr_number: int,
+    ) -> DiscoveredAwaitingMergeEscalation:
+        # blocked + SUCCESS rollup: branch protection (CODEOWNERS,
+        # approvals, signatures) blocks merge. Code rework can't help —
+        # escalate immediately, no timeout.
+        assert self.label_manager is not None
+        return _build_escalation(
+            pr=pr,
+            issue_number=issue_number,
+            pr_number=pr_number,
+            label_manager=self.label_manager,
+            kind="branch_protection_blocked",
+            reason=(
+                "Branch protection blocks merge despite all required "
+                "checks passing — likely missing approvals, CODEOWNERS "
+                "sign-off, or required signatures. Code rework cannot "
+                "unstick this."
+            ),
+        )
+
+    def _maybe_escalate_pending_checks(
+        self,
+        *,
+        state: OrchestratorState,
+        pr: PRInfo,
+        issue_number: int,
+        pr_number: int,
+    ) -> DiscoveredAwaitingMergeEscalation | None:
+        """Run the WAIT_FOR_CHECKS timeout state machine for one PR.
+
+        Returns an escalation only when the budget has been exceeded;
+        otherwise returns None and (when first observed) records the
+        timestamp on state so subsequent ticks can compute elapsed.
+        """
+        assert self.label_manager is not None
+        now = self.clock()
+        first_seen = state.awaiting_merge_checks_pending_since.get(issue_number)
+        if first_seen is None:
+            state.awaiting_merge_checks_pending_since[issue_number] = now
+            return None
+        elapsed = now - first_seen
+        if elapsed < self.post_publish_checks_pending_timeout_seconds:
+            return None
+        minutes = max(1, int(elapsed // 60))
+        timeout_minutes = int(
+            self.post_publish_checks_pending_timeout_seconds // 60
+        )
+        return _build_escalation(
+            pr=pr,
+            issue_number=issue_number,
+            pr_number=pr_number,
+            label_manager=self.label_manager,
+            kind="checks_pending_timeout",
+            reason=(
+                f"Required GitHub checks have been pending for "
+                f"~{minutes} minute(s) since reviewer approval "
+                f"(timeout: {timeout_minutes} minutes). The orchestrator "
+                f"has stopped waiting and is handing the PR back for "
+                f"human attention."
+            ),
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
@@ -648,3 +773,45 @@ def _build_rework_feedback(pr: PRInfo, action: PostApprovalAction) -> str:
 
 def build_post_publish_validation_comment(feedback: str) -> str:
     return f"{POST_PUBLISH_VALIDATION_COMMENT_MARKER}\n{feedback}"
+
+
+def _build_escalation(
+    *,
+    pr: PRInfo,
+    issue_number: int,
+    pr_number: int,
+    label_manager: LabelManager,
+    kind: PostPublishEscalationKind,
+    reason: str,
+) -> DiscoveredAwaitingMergeEscalation:
+    return DiscoveredAwaitingMergeEscalation(
+        issue_number=issue_number,
+        pr_number=pr_number,
+        pr_url=pr.url,
+        rework_cycle=_next_rework_cycle(pr.labels, label_manager),
+        kind=kind,
+        reason=reason,
+    )
+
+
+# Markdown body posted to the PR when the post-publish gate escalates
+# (distinct from the rework-cycles-exceeded comment).
+def build_post_publish_escalation_comment(
+    *, kind: PostPublishEscalationKind, reason: str
+) -> str:
+    if kind == "checks_pending_timeout":
+        title = "⏱ Escalated to Human Review (CI checks timed out)"
+    else:  # branch_protection_blocked
+        title = "🛑 Escalated to Human Review (branch protection)"
+    return (
+        f"## {title}\n\n"
+        f"This PR was approved by the reviewer but cannot be merged "
+        f"automatically.\n\n"
+        f"**Diagnosis:** {reason}\n\n"
+        f"**A human is needed to:**\n"
+        f"- Investigate why merge is blocked.\n"
+        f"- Either complete the merge manually, adjust branch "
+        f"protection, or unblock CI; or\n"
+        f"- Provide additional guidance and remove the "
+        f"`blocked-needs-human` label so the orchestrator can resume."
+    )

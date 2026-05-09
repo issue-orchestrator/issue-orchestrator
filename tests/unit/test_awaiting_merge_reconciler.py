@@ -614,10 +614,10 @@ def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
     assert "POST-PUBLISH VALIDATION FAILURE" not in feedback
 
 
-def test_blocked_pr_with_all_checks_passing_does_not_trigger_rework() -> None:
+def test_blocked_pr_with_all_checks_passing_escalates_immediately() -> None:
     """blocked + SUCCESS rollup → branch protection (approvals/CODEOWNERS),
-    not a code problem. Slice 3 will escalate this to needs_human via timeout.
-    For now, assert we don't queue a useless rework cycle."""
+    not a code problem. Code rework can't unstick this so we escalate
+    immediately rather than waiting on the checks-pending timeout."""
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
@@ -636,7 +636,10 @@ def test_blocked_pr_with_all_checks_passing_does_not_trigger_rework() -> None:
     ).discover(state)
 
     assert result.rework_discovered == 0
-    assert result.still_pending == 1
+    assert result.escalation_discovered == 1
+    esc = result.escalations[0]
+    assert esc.kind == "branch_protection_blocked"
+    assert "Branch protection" in esc.reason
 
 
 def test_dirty_pr_feedback_uses_conflict_copy() -> None:
@@ -681,3 +684,134 @@ def test_behind_pr_feedback_uses_rebase_copy() -> None:
     feedback = (result.reworks[0].feedback or "")
     assert "Branch is behind base branch" in feedback
     assert "Rebase" in feedback
+
+
+# ---------------------------------------------------------------------------
+# WAIT_FOR_CHECKS timeout state machine
+# ---------------------------------------------------------------------------
+
+
+def _wait_for_checks_repo() -> MagicMock:
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=["code-reviewed"],
+        status_check_rollup="PENDING",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    return repository_host
+
+
+def test_wait_for_checks_first_seen_records_timestamp_and_does_not_escalate() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+
+    result = AwaitingMergeReconciler(
+        _wait_for_checks_repo(),
+        label_manager=_label_manager(),
+        clock=lambda: 1000.0,
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.escalation_discovered == 0
+    assert result.rework_discovered == 0
+    assert state.awaiting_merge_checks_pending_since[228] == 1000.0
+
+
+def test_wait_for_checks_within_timeout_holds_steady() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+
+    # 5 minutes after first-seen, well below the 30-minute default.
+    result = AwaitingMergeReconciler(
+        _wait_for_checks_repo(),
+        label_manager=_label_manager(),
+        clock=lambda: 1300.0,
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.escalation_discovered == 0
+    assert state.awaiting_merge_checks_pending_since[228] == 1000.0
+
+
+def test_wait_for_checks_past_timeout_escalates_with_explanation() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+
+    # 31 minutes after first-seen — past the 30-minute default.
+    result = AwaitingMergeReconciler(
+        _wait_for_checks_repo(),
+        label_manager=_label_manager(),
+        clock=lambda: 1000.0 + 31 * 60,
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.escalation_discovered == 1
+    esc = result.escalations[0]
+    assert esc.issue_number == 228
+    assert esc.pr_number == 318
+    assert esc.kind == "checks_pending_timeout"
+    assert "31 minute" in esc.reason
+    assert "30 minutes" in esc.reason  # configured timeout displayed
+
+
+def test_wait_for_checks_resolved_clears_pending_since() -> None:
+    """When the PR moves out of WAIT_FOR_CHECKS (e.g., checks finished),
+    the pending-since timestamp is cleared so a future stall starts a
+    fresh budget instead of inheriting an old one."""
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="clean",
+        labels=["code-reviewed"],
+        status_check_rollup="SUCCESS",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 2000.0,
+    ).discover(state)
+
+    assert 228 not in state.awaiting_merge_checks_pending_since
+
+
+def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> None:
+    """If checks finish and one fails, we clear pending_since AND emit
+    rework on the same tick — no extra ticks of latency."""
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=["code-reviewed"],
+        status_check_rollup="FAILURE",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1500.0,
+    ).discover(state)
+
+    assert 228 not in state.awaiting_merge_checks_pending_since
+    assert result.rework_discovered == 1
+    assert result.escalation_discovered == 0

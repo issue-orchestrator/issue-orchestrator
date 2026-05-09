@@ -255,6 +255,12 @@ class EscalateToHumanAction(Action):
     max_rework_cycles: int = 3  # For comment message
     latest_review_body: Optional[str] = None  # Latest review feedback to include
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    # When set, the applier posts this exact markdown body instead of the
+    # default rework-cycles-exceeded template. Used by the post-publish
+    # path to explain why an *approved* PR is being escalated (stuck on
+    # CI, blocked by branch protection, etc.) — distinct from coder
+    # rework exhaustion.
+    comment_override: Optional[str] = None
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
 

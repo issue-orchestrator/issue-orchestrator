@@ -161,6 +161,9 @@ class FactGatherer:
             ),
             discovered_reworks=tuple(state.discovered_reworks),
             discovered_escalations=tuple(state.discovered_escalations),
+            discovered_awaiting_merge_escalations=tuple(
+                state.discovered_awaiting_merge_escalations
+            ),
             discovered_failures=tuple(state.discovered_failures),
             triage_facts=self.gather_triage_facts(state),
             cleanup_facts=self.gather_cleanup_facts(state),

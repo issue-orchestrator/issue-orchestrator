@@ -927,12 +927,17 @@ class ActionApplier:
             issue_key=action.issue_key,
         )
 
-        # Post explanatory comment
+        # Post explanatory comment. If the action carries an explicit
+        # comment_override, use that verbatim (post-publish-stuck path
+        # provides its own copy that doesn't mention rework cycles).
         if self.repository_host:
-            latest_review_section = self._get_latest_review_section(
-                action.pr_number, action.latest_review_body
-            )
-            comment = f"""## ⚠️ Escalated to Human Review
+            if action.comment_override is not None:
+                comment = action.comment_override
+            else:
+                latest_review_section = self._get_latest_review_section(
+                    action.pr_number, action.latest_review_body
+                )
+                comment = f"""## ⚠️ Escalated to Human Review
 
 This PR has gone through {action.rework_cycles - 1} rework cycles without passing review.
 Maximum rework cycles ({action.max_rework_cycles}) exceeded.
