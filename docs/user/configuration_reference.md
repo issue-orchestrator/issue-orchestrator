@@ -51,7 +51,7 @@ _Auto-generated from settings schema._
 |-------|------|---------|-------------|----------|-------|
 | `validation.quick.cmd` | string (optional) | `None` | Fast command run by coding-done and review exchange loops | `./scripts/validate-fast.sh`, `make test-fast` | Keep this fast enough for agent/reviewer back-and-forth. Put repo-specific policy checks such as banned test skips here. |
 | `validation.quick.timeout_seconds` | integer | `300` | Timeout for quick validation | `120`, `300`, `600` | Lower values keep review loops responsive. |
-| `validation.publish.cmd` | string (optional) | `None` | Authoritative command run before push/publish | `./scripts/validate-pr.sh`, `make validate-pr` | This should match the repo's authoritative local PR/pre-push gate. |
+| `validation.publish.cmd` | string (optional) | `None` | Authoritative command run before push/publish | `./scripts/validate-pr.sh`, `make validate-pr-raw` | This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure the underlying raw command instead. |
 | `validation.publish.timeout_seconds` | integer | `1800` | Timeout for publish validation | `600`, `1800`, `3600` | Allow enough time for the deeper publish gate. |
 | `validation.publish.dirty_check` | string | `tracked` | Dirty-tree policy enforced before push actions | `tracked`, `unstaged`, `all`, `off` | Use tracked for normal agent worktrees. Use off only when another guard owns dirty-tree safety. |
 | `validation.junit_xml_paths` | string | `` | Relative JUnit XML files or globs emitted by validation commands | `test-results.xml`, `build/test-results/test/*.xml` | When set, failed validations render a structured test-results view in the dashboard. |

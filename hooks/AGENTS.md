@@ -7,7 +7,7 @@ This directory contains git hook templates for local development.
 | File | Purpose |
 |------|---------|
 | `pre-commit` | Runs import-linter + AST guardrails before commit |
-| `pre-push` | Runs `make validate-pr` (fast validate + agent-backed slices) before push |
+| `pre-push` | Runs `scripts/verify-pr.sh` to reuse or seed the cache-aware publish validation record |
 
 ## Installation
 

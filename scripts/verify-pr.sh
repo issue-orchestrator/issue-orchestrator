@@ -6,7 +6,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-validation_cmd='make validate-pr'
 export ISSUE_ORCHESTRATOR_CONFIG_NAME=main.yaml
 PYTHON_ENV_NAME=ISSUE_ORCHESTRATOR_PYTHON
 PYTHON_BIN=""
@@ -25,5 +24,5 @@ if [ -z "$PYTHON_BIN" ]; then
   exit 1
 fi
 
-echo "verify-pr: running cache-aware pre-push validation for $validation_cmd"
+echo "verify-pr: running cache-aware pre-push validation"
 "$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v

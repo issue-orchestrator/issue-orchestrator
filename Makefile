@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-pr validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -45,7 +45,8 @@ help:
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
 	@echo "  validate            Fast local validation: typecheck + lint + unit + simulated-core + integration-core + web-ui smoke"
-	@echo "  validate-pr         Required PR gate: validate + simulated-agent + integration-agent"
+	@echo "  validate-pr         Cache-aware required PR gate; seeds/reuses pre-push validation"
+	@echo "  validate-pr-raw     Force required PR suite without cache lookup"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
 	@echo "  validate-full       Full validation: validate-pr + e2e tests"
 	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
@@ -467,10 +468,10 @@ validate-quick: typecheck test-unit
 validate:
 	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-raw"
 
-# Required PR validation - fast gate plus the agent-backed simulated/integration slices.
-# This is the coverage pre-push enforces locally, and CI mirrors it across separate jobs.
+# Required PR validation - cache-aware wrapper around the publish gate.
+# This seeds the same HEAD+command record the pre-push hook reuses.
 validate-pr:
-	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-pr-raw"
+	@./scripts/verify-pr.sh
 
 # Raw validation - direct execution without output capture wrapper
 # Use this as a fallback if the Python wrapper fails
