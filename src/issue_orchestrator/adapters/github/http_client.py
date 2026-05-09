@@ -837,6 +837,51 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, dict) else None
 
+    def get_pr_status_check_rollup(self, pr_number: int) -> str | None:
+        """Fetch the aggregated status-check rollup for a PR's head commit.
+
+        Returns one of GitHub's `StatusState` values (`SUCCESS`, `FAILURE`,
+        `PENDING`, `EXPECTED`, `ERROR`) or `None` if the PR / commit has no
+        rollup (no checks configured). Used by the awaiting-merge reconciler
+        to disambiguate `mergeable_state=unstable|blocked` between
+        "checks running" and "check actually failed".
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    commits(last: 1) {
+                        nodes {
+                            commit {
+                                statusCheckRollup { state }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        result = self._graphql(
+            query,
+            {"owner": owner, "repo": repo, "number": pr_number},
+            caller="get_pr_status_check_rollup",
+        )
+        pr_data = (
+            result.get("data", {}).get("repository", {}).get("pullRequest")
+        )
+        if not pr_data:
+            return None
+        nodes = (pr_data.get("commits") or {}).get("nodes") or []
+        if not nodes:
+            return None
+        commit = nodes[0].get("commit") or {}
+        rollup = commit.get("statusCheckRollup")
+        if not rollup:
+            return None
+        state = rollup.get("state")
+        return state if isinstance(state, str) else None
+
     def list_prs(self, *, state: str = "open", limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request_json(
             "GET",

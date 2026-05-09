@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
-from ...ports.pull_request_tracker import PRInfo
+from ...ports.pull_request_tracker import PRInfo, StatusCheckRollupState
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
@@ -33,8 +33,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_VALID_ROLLUP_STATES: frozenset[str] = frozenset(
+    {"SUCCESS", "FAILURE", "PENDING", "EXPECTED", "ERROR"}
+)
+
+
 def _is_not_found_error(exc: GitHubHttpError) -> bool:
     return exc.status_code == 404
+
+
+def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
+    if not isinstance(raw, str):
+        return None
+    upper = raw.upper()
+    if upper in _VALID_ROLLUP_STATES:
+        return upper  # type: ignore[return-value]
+    logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
+    return None
 
 
 class GitHubAdapter:
@@ -741,22 +756,36 @@ class GitHubAdapter:
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.
 
-        Args:
-            pr_number: The PR number to retrieve.
-
-        Returns:
-            The PRInfo object if found, None otherwise.
+        Augments the REST PR payload with the head-commit status-check
+        rollup (one extra GraphQL call) so callers can distinguish
+        "merge state is unstable because checks are running" from
+        "merge state is unstable because a check failed". List/search
+        paths skip the rollup fetch to avoid per-item GraphQL traffic.
         """
         try:
             output = self._client.get_pr(pr_number)
-            if isinstance(output, dict):
-                return self._pr_info_from_api(output)
-            return None
+            if not isinstance(output, dict):
+                return None
+            pr_info = self._pr_info_from_api(output)
         except GitHubHttpError as e:
             if _is_not_found_error(e):
                 return None
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
+        try:
+            rollup = self._client.get_pr_status_check_rollup(pr_number)
+        except GitHubHttpError as e:
+            # Rollup fetch is best-effort: a transient GraphQL failure
+            # shouldn't lose the REST data we already have. The reconciler
+            # treats `None` as PENDING-equivalent, so we'll wait rather
+            # than rework on bad signal.
+            logger.warning(
+                "Failed to fetch status_check_rollup for PR %s: %s",
+                pr_number, e,
+            )
+            rollup = None
+        pr_info.status_check_rollup = _coerce_rollup_state(rollup)
+        return pr_info
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

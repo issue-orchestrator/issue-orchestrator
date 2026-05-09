@@ -9,7 +9,7 @@ This is an execution-layer interface.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 
 class ReviewState(Enum):
@@ -22,12 +22,18 @@ class ReviewState(Enum):
     PENDING = "PENDING"
 
 
+# GitHub `statusCheckRollup.state` values (uppercase, as returned by GraphQL).
+# Used to disambiguate `mergeable_state == "unstable" | "blocked"` between
+# "checks still running" (PENDING/EXPECTED) and "a check actually failed"
+# (FAILURE/ERROR). None means we did not fetch / repository has no checks.
+StatusCheckRollupState = Literal[
+    "SUCCESS", "FAILURE", "PENDING", "EXPECTED", "ERROR"
+]
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
-
-    This data class represents the essential information about a pull request
-    that the application needs to work with.
 
     Attributes:
         number: The PR number.
@@ -37,6 +43,12 @@ class PRInfo:
         body: The PR description/body text.
         state: The PR state - "open", "closed", or "merged".
         labels: List of label names on the PR.
+        draft: Whether the PR is in draft state.
+        mergeable_state: GitHub's `mergeable_state` (clean/dirty/behind/unstable/
+            blocked/...). Says merge readiness.
+        status_check_rollup: Aggregated state of required + non-required checks
+            on the PR head commit. Says check truth. `None` when not fetched
+            (only the single-PR `get_pr` path populates this).
     """
 
     number: int
@@ -48,6 +60,7 @@ class PRInfo:
     labels: list[str]
     draft: bool | None = None
     mergeable_state: str | None = None
+    status_check_rollup: StatusCheckRollupState | None = None
 
 
 class PullRequestTracker(Protocol):

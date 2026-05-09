@@ -570,6 +570,7 @@ class TestPROperations:
             "labels": [{"name": "bug"}],
             "mergeable_state": "UNSTABLE",
         }
+        mock_http_client.get_pr_status_check_rollup.return_value = "PENDING"
 
         pr = adapter.get_pr(10)
 
@@ -579,7 +580,49 @@ class TestPROperations:
         assert pr.branch == "feature-branch"
         assert pr.labels == ["bug"]
         assert pr.mergeable_state == "unstable"
+        assert pr.status_check_rollup == "PENDING"
         mock_http_client.get_pr.assert_called_once_with(10)
+        mock_http_client.get_pr_status_check_rollup.assert_called_once_with(10)
+
+    def test_get_pr_rollup_failure_yields_none_rollup(self, adapter, mock_http_client):
+        """A GraphQL failure on the rollup fetch must not lose the REST PRInfo."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "graphql boom", status_code=500
+        )
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.mergeable_state == "unstable"
+        assert pr.status_check_rollup is None
+
+    def test_get_pr_rollup_unknown_state_coerced_to_none(self, adapter, mock_http_client):
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "CLEAN",
+        }
+        mock_http_client.get_pr_status_check_rollup.return_value = "FUTURE_STATE"
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.status_check_rollup is None
 
     def test_get_pr_not_found(self, adapter, mock_http_client):
         """Test get_pr returns None when PR not found."""
