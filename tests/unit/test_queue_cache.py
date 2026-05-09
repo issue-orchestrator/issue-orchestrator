@@ -1,6 +1,7 @@
 """Unit tests for queue cache abstraction and invariant boundaries."""
 
 from pathlib import Path
+from unittest.mock import Mock
 
 from issue_orchestrator.control.queue_cache import (
     QUEUE_SHRINK_CONFIRM_DELAY_SECONDS,
@@ -73,6 +74,23 @@ def test_upsert_rejects_closed_issue_even_when_filters_match():
     assert outcome.in_queue is False
     assert state.cached_scope_issues == []
     assert state.cached_queue_issues == []
+
+
+def test_save_snapshot_persists_scope_watermark_and_repo():
+    config = _make_config()
+    state = OrchestratorState(
+        cached_scope_issues=[Issue(number=1, title="A", labels=["agent:web"])],
+        queue_delta_watermark="2026-05-09T14:00:00Z",
+    )
+    store = Mock()
+
+    QueueCache(config, state).save_snapshot(store)
+
+    store.save_snapshot.assert_called_once_with(
+        state.cached_scope_issues,
+        "2026-05-09T14:00:00Z",
+        repo="owner/repo",
+    )
 
 
 def test_replace_from_refresh_warns_on_non_empty_to_empty_drop(caplog):

@@ -26,6 +26,7 @@ from .web_session_context import WebOrchestratorDependency
 if TYPE_CHECKING:
     from ..control.maintenance import ResetResult
     from ..domain.models import OrchestratorState
+    from ..ports.queue_cache_store import QueueCacheStore
 
 logger = logging.getLogger(__name__)
 
@@ -480,7 +481,7 @@ def _enqueue_reset_retry_issue(
     issue_number: int,
     repository_host: Any,
     queue_cache: QueueCache,
-    queue_cache_store: Any,
+    queue_cache_store: "QueueCacheStore",
     state: Any,
     pending_labels_to_add: list[str],
     from_scratch: bool,
