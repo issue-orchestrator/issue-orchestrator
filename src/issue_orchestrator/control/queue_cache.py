@@ -201,16 +201,15 @@ class QueueCache:
             return set()
         return set(self._state.ui_visible_issue_numbers)
 
-    def save_snapshot(self, store: "QueueCacheStore | None" = None) -> None:
+    def save_snapshot(self) -> None:
         """Persist the current in-scope queue snapshot for warm restarts.
 
         The durable snapshot covers in-scope issues and the delta watermark;
         runtime scheduling priority remains in memory.
         """
-        target_store = store if store is not None else self._store
-        if target_store is None:
+        if self._store is None:
             raise RuntimeError("QueueCacheStore is required to persist queue cache snapshot")
-        target_store.save_snapshot(
+        self._store.save_snapshot(
             self._state.cached_scope_issues,
             self._state.queue_delta_watermark,
             repo=self._config.repo or "",

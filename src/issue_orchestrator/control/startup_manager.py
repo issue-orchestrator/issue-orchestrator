@@ -289,7 +289,7 @@ class StartupManager:
         if state.cached_queue_issues:
             # Warm path: filter in-progress from cache (0 GitHub calls)
             stale_in_progress = self._recover_stale_in_progress_from_label_store(state.cached_queue_issues)
-            queue_cache = QueueCache(self.config, state)
+            queue_cache = QueueCache(self.config, state, self._queue_cache_store)
             for issue in stale_in_progress:
                 outcome = queue_cache.upsert_refreshed_issue(issue)
                 if outcome.status != QueueMutationStatus.ACCEPTED:
@@ -298,6 +298,8 @@ class StartupManager:
                         issue.number,
                         outcome.status.value,
                     )
+            if stale_in_progress and self._queue_cache_store is not None:
+                queue_cache.save_snapshot()
             issues_by_number = {
                 issue.number: issue
                 for issue in state.cached_queue_issues
@@ -385,7 +387,7 @@ class StartupManager:
             return
 
         tracked_history = {entry.issue_number for entry in state.session_history}
-        queue_cache = QueueCache(self.config, state)
+        queue_cache = QueueCache(self.config, state, self._queue_cache_store)
         local_pr_pending = sorted(
             issue_number
             for issue_number, labels in self._label_store.load_all().items()

@@ -187,6 +187,35 @@ class TestUpdateAndEmit:
             assert result is None
             assert not sample_event_sink.has_event(str(EventName.QUEUE_CHANGED))
 
+    def test_update_persists_snapshot_when_store_is_configured(
+        self,
+        sample_config,
+        mock_repository_host,
+        sample_event_sink,
+    ):
+        """Queue projection persists the owner-managed snapshot when wired with a store."""
+        issue = Issue(number=1, title="Issue 1", labels=["agent:backend"], body="")
+        state = OrchestratorState(queue_delta_watermark="2026-05-09T15:00:00Z")
+        queue_cache_store = MagicMock()
+        projection = QueueProjection(
+            sample_config,
+            mock_repository_host,
+            sample_event_sink,
+            queue_cache_store,
+        )
+
+        with patch(
+            "issue_orchestrator.infra.audit.fetch_all_issues",
+            return_value=[issue],
+        ):
+            projection.update_and_emit(state)
+
+        queue_cache_store.save_snapshot.assert_called_once_with(
+            state.cached_scope_issues,
+            "2026-05-09T15:00:00Z",
+            repo="owner/repo",
+        )
+
     def test_added_issues_emits_event(self, queue_projection, sample_event_sink):
         """Adding new issues to queue emits event with added info."""
         old_issue = Issue(number=1, title="Old", labels=["agent:backend"], body="")

@@ -119,6 +119,7 @@ class OrchestratorSupport:
     cleanup_manager: "CleanupManager"
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
+    queue_cache_store: "QueueCacheStore | None" = None
 
     _last_ui_update: float = field(default=0.0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
@@ -429,7 +430,12 @@ class OrchestratorSupport:
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection
-        projection = QueueProjection(self.config, self.repository_host, self.events)
+        projection = QueueProjection(
+            self.config,
+            self.repository_host,
+            self.events,
+            self.queue_cache_store,
+        )
         projection.update_and_emit(self.state)
 
     def recover_orphaned_cleanups(self) -> None:

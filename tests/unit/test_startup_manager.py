@@ -284,6 +284,61 @@ class TestStartupManagerInProgressIssues:
         assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
 
     @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_check_in_progress_persists_recovered_label_store_issue(
+        self,
+        mock_analyze,
+        mock_config,
+        mock_events,
+        mock_runner,
+        sample_state,
+        mock_repository_host,
+        mock_action_applier,
+        mock_issue_branches_fn,
+        mock_label_store,
+    ):
+        cached_issue = Issue(number=1, title="Cached", labels=["agent:web"])
+        missing_issue = Issue(number=4057, title="Missing", labels=["agent:web", "in-progress"])
+        sample_state.cached_scope_issues = [cached_issue]
+        sample_state.cached_queue_issues = [cached_issue]
+        mock_label_store.load_all.return_value = {
+            4057: {"in-progress", "agent:web"},
+        }
+        mock_repository_host.get_issue.return_value = missing_issue
+        queue_cache_store = MagicMock()
+        queue_cache_store.load_issues.return_value = []
+        queue_cache_store.load_watermark.return_value = None
+        startup_manager = StartupManager(
+            config=mock_config,
+            events=mock_events,
+            runner=mock_runner,
+            repository_host=mock_repository_host,
+            action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            queue_cache_store=queue_cache_store,
+            label_store=mock_label_store,
+        )
+
+        mock_state = MagicMock()
+        mock_state.has_session = False
+        mock_state.has_open_pr = False
+        mock_state.has_partial_work = False
+        mock_state.is_orphaned_label = True
+        mock_analyze.return_value = mock_state
+
+        await startup_manager.run_startup(sample_state)
+
+        assert any(issue.number == 4057 for issue in sample_state.cached_scope_issues)
+        saved_issues, saved_watermark = queue_cache_store.save_snapshot.call_args.args[:2]
+        assert [issue.number for issue in saved_issues] == [1, 4057]
+        assert saved_watermark == sample_state.queue_delta_watermark
+        assert queue_cache_store.save_snapshot.call_args.kwargs == {"repo": "owner/repo"}
+
+    @pytest.mark.asyncio
     async def test_warm_start_logs_when_cached_queue_matches_local_in_progress(
         self,
         startup_manager,

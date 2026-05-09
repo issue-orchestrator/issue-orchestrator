@@ -18,6 +18,7 @@ from .queue_cache import QueueCache
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.repository_host import RepositoryHost
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,17 @@ class QueueProjection:
     concerns from core orchestration.
     """
 
-    def __init__(self, config: "Config", repository_host: "RepositoryHost", events: EventSink):
+    def __init__(
+        self,
+        config: "Config",
+        repository_host: "RepositoryHost",
+        events: EventSink,
+        queue_cache_store: "QueueCacheStore | None" = None,
+    ):
         self._config = config
         self._repository_host = repository_host
         self._events = events
+        self._queue_cache_store = queue_cache_store
 
     def compute_queue(self, state: OrchestratorState) -> list[Issue]:
         """Compute the current in-scope issue snapshot.
@@ -80,7 +88,10 @@ class QueueProjection:
             old_key_by_number = {i.number: i.key.stable_id() for i in prior_issues}
 
             # Update state through queue cache abstraction.
-            QueueCache(self._config, state).replace_from_refresh(scope_issues)
+            queue_cache = QueueCache(self._config, state, self._queue_cache_store)
+            queue_cache.replace_from_refresh(scope_issues)
+            if self._queue_cache_store is not None:
+                queue_cache.save_snapshot()
 
             # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
             if state.failed_this_cycle:
