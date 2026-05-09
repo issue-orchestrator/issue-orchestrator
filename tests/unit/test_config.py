@@ -2743,27 +2743,36 @@ triage:
 class TestValidationConfig:
     """Tests for validation.* configuration."""
 
-    @pytest.mark.parametrize("legacy_key", ["cmd", "timeout_seconds", "pre_push_dirty_check"])
-    def test_legacy_validation_keys_fail_with_migration_message(
-        self, tmp_path, legacy_key
+    @pytest.mark.parametrize(
+        "unsupported_key",
+        ["cmd", "timeout_seconds", "pre_push_dirty_check", "bogus"],
+    )
+    def test_unsupported_validation_keys_fail_fast(
+        self, tmp_path, unsupported_key
     ):
-        legacy_values = {
+        unsupported_values = {
             "cmd": '"make validate"',
             "timeout_seconds": "400",
             "pre_push_dirty_check": "tracked",
+            "bogus": "true",
         }
         config_content = f"""
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
 validation:
-  {legacy_key}: {legacy_values[legacy_key]}
+  {unsupported_key}: {unsupported_values[unsupported_key]}
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
 
-        with pytest.raises(ValueError, match=f"validation\\.{legacy_key}"):
+        with pytest.raises(ValueError) as exc_info:
             Config.load(config_file)
+        message = str(exc_info.value)
+        assert f"validation.{unsupported_key}" in message
+        assert "Supported keys:" in message
+        assert "Legacy" not in message
+        assert "Migrate" not in message
 
     def test_validation_warns_when_only_quick_command_configured(
         self, tmp_path, caplog

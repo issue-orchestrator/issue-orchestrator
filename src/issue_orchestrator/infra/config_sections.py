@@ -60,13 +60,14 @@ _TOP_LEVEL_SECTION_KEYS = (
 # "repo" and "default_agent" are parsed separately but are valid top-level keys.
 ALLOWED_TOP_LEVEL_FIELDS = frozenset(_TOP_LEVEL_SECTION_KEYS) | {"repo", "default_agent"}
 
-_LEGACY_VALIDATION_KEYS = {
-    "cmd": "validation.quick.cmd and validation.publish.cmd",
-    "timeout_seconds": (
-        "validation.quick.timeout_seconds and validation.publish.timeout_seconds"
-    ),
-    "pre_push_dirty_check": "validation.publish.dirty_check",
-}
+_SUPPORTED_VALIDATION_KEYS = frozenset(
+    {
+        "coverage_guardrail",
+        "junit_xml_paths",
+        "publish",
+        "quick",
+    }
+)
 
 
 def parse_default_agent_config(data: dict) -> DefaultAgentConfig | None:
@@ -655,7 +656,7 @@ def load_security_section(config: "Config", security_section: dict, repo_root: P
 def load_validation_section(config: "Config", validation_section: dict) -> None:
     """Load validation configuration."""
     if validation_section:
-        _reject_legacy_validation_keys(validation_section)
+        _reject_unsupported_validation_keys(validation_section)
         coverage_data = validation_section.get("coverage_guardrail", {}) or {}
         junit_paths_raw = validation_section.get("junit_xml_paths", []) or []
         quick_data = validation_section.get("quick", {}) or {}
@@ -683,21 +684,18 @@ def load_validation_section(config: "Config", validation_section: dict) -> None:
         _warn_partial_validation_commands(config.validation)
 
 
-def _reject_legacy_validation_keys(validation_section: dict) -> None:
-    """Reject pre quick/publish validation keys before they can be ignored."""
-    legacy_keys = [
-        key for key in _LEGACY_VALIDATION_KEYS
-        if key in validation_section
-    ]
-    if not legacy_keys:
+def _reject_unsupported_validation_keys(validation_section: dict) -> None:
+    """Reject unknown validation keys before they can be ignored."""
+    unsupported_keys = sorted(set(validation_section) - _SUPPORTED_VALIDATION_KEYS)
+    if not unsupported_keys:
         return
-    migrations = ", ".join(
-        f"validation.{key} -> {_LEGACY_VALIDATION_KEYS[key]}"
-        for key in legacy_keys
+    unsupported = ", ".join(f"validation.{key}" for key in unsupported_keys)
+    supported = ", ".join(
+        f"validation.{key}" for key in sorted(_SUPPORTED_VALIDATION_KEYS)
     )
     raise ValueError(
-        "Legacy validation configuration keys are no longer supported. "
-        f"Migrate: {migrations}."
+        f"Unsupported validation configuration key(s): {unsupported}. "
+        f"Supported keys: {supported}."
     )
 
 

@@ -24,10 +24,9 @@ validation:
 
 Label an issue with `agent:dev` and start the orchestrator.
 
-Use the nested `validation.quick` and `validation.publish` shape. Older
-top-level validation keys such as `validation.cmd`,
-`validation.timeout_seconds`, and `validation.pre_push_dirty_check` fail at load
-time with a migration message so validation is not silently disabled.
+Use `validation.quick` for fast coding/review feedback and
+`validation.publish` for the authoritative pre-push/pre-publish gate. The
+publish dirty-tree policy lives at `validation.publish.dirty_check`.
 
 ---
 
