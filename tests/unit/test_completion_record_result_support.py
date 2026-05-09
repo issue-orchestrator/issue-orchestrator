@@ -99,7 +99,7 @@ def test_validate_worktree_state_rejects_protected_push_branch(tmp_path: Path) -
 
 def test_validate_worktree_state_applies_dirty_policy(tmp_path: Path) -> None:
     config = Config()
-    config.validation.pre_push_dirty_check = "tracked"
+    config.validation.publish.dirty_check = "tracked"
     validator = CompletionRecordValidator(
         config=config,
         git_adapter=FakeGitAdapter(has_tracked_changes=True),

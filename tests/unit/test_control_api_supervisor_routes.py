@@ -409,7 +409,7 @@ class TestActionEndpointMapping:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text(
-            "repo:\n  name: owner/repo\nvalidation:\n  cmd: pytest\n",
+            "repo:\n  name: owner/repo\nvalidation:\n  publish:\n    cmd: pytest\n",
             encoding="utf-8",
         )
         repo_root = tmp_path.resolve()
@@ -493,11 +493,14 @@ class TestActionEndpointMapping:
     ) -> None:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
-        (config_dir / "default.yaml").write_text("validation:\n  cmd: pytest\n", encoding="utf-8")
+        (config_dir / "default.yaml").write_text(
+            "validation:\n  publish:\n    cmd: pytest\n",
+            encoding="utf-8",
+        )
 
         with patch(
             "issue_orchestrator.entrypoints.control_api_orchestrator_routes.setup_repo_guardrails",
-            side_effect=RepoGuardrailsError("validation.cmd is not configured"),
+            side_effect=RepoGuardrailsError("validation.publish.cmd is not configured"),
         ):
             response = supervisor_client.post(
                 "/control/orchestrator/guardrails/repair",
@@ -506,7 +509,7 @@ class TestActionEndpointMapping:
 
         assert response.status_code == 400
         assert response.json()["error"] == "repair_failed"
-        assert response.json()["detail"] == "validation.cmd is not configured"
+        assert response.json()["detail"] == "validation.publish.cmd is not configured"
 
     def test_audit_endpoint_delegates_to_command(
         self,

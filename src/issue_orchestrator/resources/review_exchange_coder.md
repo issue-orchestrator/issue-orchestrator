@@ -25,5 +25,6 @@ Read the task-specific prompt file for what to fix.
 
 - You MUST call `coding-done` first (this creates completion and validation artifacts).
 - You MUST also write JSON to `$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE` after coding-done succeeds.
+- Do NOT skip, disable, quarantine, or weaken failing tests. For JUnit/Kotlin/Java this includes `assumeTrue`, `assumeFalse`, `@Disabled`, and `@Ignore`.
 - **DO NOT** call `reviewer-done`. That command is for reviewers, not coders.
 - Both steps are required. Missing either one will cause a protocol error.

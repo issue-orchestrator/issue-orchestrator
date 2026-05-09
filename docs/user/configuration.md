@@ -13,11 +13,21 @@ agents:
     model: "sonnet"
 
 validation:
-  cmd: "make test"
-  timeout_seconds: 300
+  quick:
+    cmd: "make test"
+    timeout_seconds: 300
+  publish:
+    cmd: "make validate-pr"
+    timeout_seconds: 1800
+    dirty_check: tracked
 ```
 
 Label an issue with `agent:dev` and start the orchestrator.
+
+Use the nested `validation.quick` and `validation.publish` shape. Older
+top-level validation keys such as `validation.cmd`,
+`validation.timeout_seconds`, and `validation.pre_push_dirty_check` fail at load
+time with a migration message so validation is not silently disabled.
 
 ---
 

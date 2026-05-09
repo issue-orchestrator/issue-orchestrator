@@ -22,14 +22,28 @@ def extract_validation_config(config: dict) -> dict:
     defaults = default_validation_config()
     guardrail_defaults = defaults["coverage_guardrail"]
     validation = config.get("validation", {}) or {}
+    quick = validation.get("quick", {}) or {}
+    publish = validation.get("publish", {}) or {}
     guardrail = validation.get("coverage_guardrail", {}) or {}
     return {
-        "cmd": validation.get("cmd"),
-        "timeout_seconds": validation.get("timeout_seconds", defaults["timeout_seconds"]),
-        "pre_push_dirty_check": validation.get(
-            "pre_push_dirty_check",
-            defaults["pre_push_dirty_check"],
-        ),
+        "quick": {
+            "cmd": quick.get("cmd"),
+            "timeout_seconds": quick.get(
+                "timeout_seconds",
+                defaults["quick"]["timeout_seconds"],
+            ),
+        },
+        "publish": {
+            "cmd": publish.get("cmd"),
+            "timeout_seconds": publish.get(
+                "timeout_seconds",
+                defaults["publish"]["timeout_seconds"],
+            ),
+            "dirty_check": publish.get(
+                "dirty_check",
+                defaults["publish"]["dirty_check"],
+            ),
+        },
         "junit_xml_paths": configured_validation_junit_xml_paths_from_mapping(config),
         "coverage_guardrail": {
             "enabled": guardrail.get("enabled", guardrail_defaults["enabled"]),

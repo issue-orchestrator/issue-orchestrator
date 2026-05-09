@@ -1148,7 +1148,8 @@ class TestAgentGateIntegration:
         (config_dir / "default.yaml").write_text(
             """
 validation:
-  cmd: "make validate"
+  quick:
+    cmd: "make validate"
 e2e:
   junit_xml_paths:
     - reports/*.xml
@@ -1229,8 +1230,9 @@ e2e:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  timeout_seconds: 10
+  quick:
+    cmd: "echo 'ok'"
+    timeout_seconds: 10
 """)
 
         # Create session output directory (required for validation)
@@ -1276,8 +1278,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "exit 1"
-  timeout_seconds: 10
+  quick:
+    cmd: "exit 1"
+    timeout_seconds: 10
 """)
 
         # Create session output directory (required for validation)
@@ -1347,8 +1350,9 @@ validation:
         # This command outputs to stderr and exits with error
         config_path.write_text("""
 validation:
-  cmd: "echo 'FAILED test_something.py::test_case - AssertionError' >&2 && exit 1"
-  timeout_seconds: 10
+  quick:
+    cmd: "echo 'FAILED test_something.py::test_case - AssertionError' >&2 && exit 1"
+    timeout_seconds: 10
 """)
 
         # Create session output directory (required for validation)
@@ -1403,8 +1407,9 @@ validation:
         (config_dir / "main.yaml").write_text(
             """
 validation:
-  cmd: "exit 1"
-  timeout_seconds: 10
+  quick:
+    cmd: "exit 1"
+    timeout_seconds: 10
 """
         )
 
@@ -1471,8 +1476,9 @@ validation:
         (config_dir / "default.yaml").write_text(
             """
 validation:
-  cmd: "echo ok"
-  timeout_seconds: 10
+  quick:
+    cmd: "echo ok"
+    timeout_seconds: 10
 """
         )
 
@@ -1526,8 +1532,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "exit 1"
-  timeout_seconds: 10
+  quick:
+    cmd: "exit 1"
+    timeout_seconds: 10
 """)
 
         original_cwd = Path.cwd()
@@ -1666,7 +1673,7 @@ class TestOrchestratorModeSkips:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text(
-            "validation:\n  cmd: 'exit 1'\n  timeout_seconds: 10\n"
+            "validation:\n  quick:\n    cmd: 'exit 1'\n    timeout_seconds: 10\n"
         )
         session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
         session_dir.mkdir(parents=True)
@@ -1676,7 +1683,7 @@ class TestOrchestratorModeSkips:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text(
-            "validation:\n  cmd: 'exit 0'\n  timeout_seconds: 10\n"
+            "validation:\n  quick:\n    cmd: 'exit 0'\n    timeout_seconds: 10\n"
         )
         session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
         session_dir.mkdir(parents=True)
@@ -1854,7 +1861,7 @@ class TestPostValidationDirtyRecheck:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text(
-            "validation:\n  cmd: 'exit 0'\n  timeout_seconds: 10\n"
+            "validation:\n  quick:\n    cmd: 'exit 0'\n    timeout_seconds: 10\n"
         )
         session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
         session_dir.mkdir(parents=True)

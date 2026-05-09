@@ -225,13 +225,13 @@ Ensure tests are meaningful and isolated:
 
 ### Validation Orchestration
 
-Create a single validation command that:
+Create validation commands that:
 
 - Runs all guardrails
 - Uses parallelism for speed
-- Is what pre-push runs
-- Is what CI runs
-- Has tiers if needed (quick / standard / full)
+- Provide fast feedback for quick agent/reviewer loops
+- Match what pre-push runs for publish readiness
+- Mirror CI coverage where practical
 
 **Example pattern:**
 ```

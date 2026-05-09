@@ -490,7 +490,6 @@ def test_user_story_review_exchange_completed_closes_round_before_later_coding_c
 
     step_events = [step["event"] for step in payload["timeline_steps"]]
     assert step_events == [
-        "review_exchange.round_started",
         "review_exchange.completed",
         "agent.coding_completed",
     ]
@@ -554,14 +553,13 @@ def test_user_story_collapses_initial_review_start_cluster_to_single_step() -> N
 
     step_events = [step["event"] for step in payload["timeline_steps"]]
     assert step_events == [
-        "review_exchange.round_started",
         "review_exchange.round_completed",
     ]
-    assert payload["timeline_steps"][0]["narrative"] == "Code review started"
+    assert payload["timeline_steps"][0]["narrative"] == "Reviewed: round 1 ok"
 
     latest_cycle = payload["runs"][-1]["cycles"][0]
     assert [step["event"] for step in latest_cycle["steps"]] == step_events
-    assert latest_cycle["steps"][0]["narrative"] == "Code review started"
+    assert latest_cycle["steps"][0]["narrative"] == "Reviewed: round 1 ok"
 
 
 def test_user_story_collapses_review_success_end_cluster_to_terminal_step() -> None:
@@ -584,10 +582,9 @@ def test_user_story_collapses_review_success_end_cluster_to_terminal_step() -> N
 
     step_events = [step["event"] for step in payload["timeline_steps"]]
     assert step_events == [
-        "review_exchange.round_started",
         "review.approved",
     ]
-    assert "Looks good" in payload["timeline_steps"][1]["narrative"]
+    assert "Looks good" in payload["timeline_steps"][0]["narrative"]
 
 
 def test_user_story_collapses_review_changes_requested_end_cluster_to_terminal_step() -> None:
@@ -609,6 +606,73 @@ def test_user_story_collapses_review_changes_requested_end_cluster_to_terminal_s
 
     step_events = [step["event"] for step in payload["timeline_steps"]]
     assert step_events == [
-        "review_exchange.round_started",
         "review.changes_requested",
+    ]
+
+
+def test_user_story_shows_one_terminal_review_entry_for_completed_exchange() -> None:
+    events = [
+        {
+            **_evt("agent.coding_completed", timestamp="2026-04-29T00:57:30Z", logical_run=6, logical_cycle=2, task="code", status="completed"),
+            "event_intent": "coding",
+            "logical_phase": "coding",
+            "narrative": "Agent finished coding",
+        },
+        _evt("review.started", timestamp="2026-04-29T00:57:35Z", logical_run=6, logical_cycle=2, task="review"),
+        _evt("review_exchange.started", timestamp="2026-04-29T00:57:36Z", logical_run=6, logical_cycle=2, task="review"),
+        _evt("review_exchange.round_started", timestamp="2026-04-29T00:57:40Z", logical_run=6, logical_cycle=2, task="review"),
+        _evt("review_exchange.role_prompted", timestamp="2026-04-29T00:57:42Z", logical_run=6, logical_cycle=2, task="review"),
+        _evt("review_exchange.role_feedback", timestamp="2026-04-29T00:59:00Z", logical_run=6, logical_cycle=2, task="review", summary="ok"),
+        _evt("review_exchange.round_completed", timestamp="2026-04-29T00:59:11Z", logical_run=6, logical_cycle=2, task="review", status="completed", summary="ok"),
+        _evt("review_exchange.completed", timestamp="2026-04-29T00:59:12Z", logical_run=6, logical_cycle=2, task="review", status="completed", summary="1 round"),
+        _evt("review.approved", timestamp="2026-04-29T00:59:14Z", logical_run=6, logical_cycle=2, task="review", status="completed", summary="Looks good."),
+    ]
+
+    payload = build_issue_detail_view_model(
+        issue_number=361,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/361",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="user",
+    )
+
+    step_events = [step["event"] for step in payload["timeline_steps"]]
+    assert step_events == ["agent.coding_completed", "review.approved"]
+
+
+def test_user_story_shows_orphan_terminal_review_event_without_start() -> None:
+    events = [
+        _evt(
+            "review.approved",
+            timestamp="2026-04-29T00:59:14Z",
+            logical_run=6,
+            logical_cycle=2,
+            task="review",
+            status="completed",
+            summary="Looks good.",
+        ),
+    ]
+
+    payload = build_issue_detail_view_model(
+        issue_number=361,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/361",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="user",
+    )
+
+    assert [step["event"] for step in payload["timeline_steps"]] == [
+        "review.approved"
+    ]
+    step = payload["timeline_steps"][0]
+    assert "Looks good." in step["narrative"]
+    assert step.get("run_id") is None
+
+    latest_cycle = payload["runs"][-1]["cycles"][0]
+    assert [step["event"] for step in latest_cycle["steps"]] == [
+        "review.approved"
     ]

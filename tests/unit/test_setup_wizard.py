@@ -801,8 +801,10 @@ class TestWizardNewProject:
             "8080",                 # web port
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
         ])
@@ -855,8 +857,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",
             "io",
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
         ])
@@ -896,8 +900,10 @@ class TestWizardNewProject:
             True,                   # enable Claude startup interactions
             "tmux",                 # ui mode (tmux doesn't need port)
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
         ])
@@ -947,8 +953,10 @@ class TestWizardNewProject:
             "9000",                 # custom port
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
         ])
@@ -988,8 +996,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
         ])
@@ -1032,8 +1042,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             True,                   # enable code review
             "agent:reviewer",       # code review agent
@@ -1088,8 +1100,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
         ])
@@ -1138,8 +1152,10 @@ class TestWizardExistingProject:
             "8080",                 # port
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             False,                  # disable Stage 1 review
         ])
 
@@ -1151,8 +1167,10 @@ class TestWizardExistingProject:
         assert config["agents"]["agent:web"]["ai_system"] == "claude-code"
         assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
         assert config["execution"]["session_interactions"] == {"enabled": True}
-        assert config["validation"]["cmd"] == "make test"
-        assert config["validation"]["timeout_seconds"] == 300
+        assert config["validation"]["quick"]["cmd"] == "make test"
+        assert config["validation"]["quick"]["timeout_seconds"] == 300
+        assert config["validation"]["publish"]["cmd"] == "make test"
+        assert config["validation"]["publish"]["timeout_seconds"] == 1800
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
     def test_preserves_existing_config(self, mock_client_factory):
@@ -1203,8 +1221,10 @@ class TestWizardExistingProject:
             # UI mode already configured - won't ask
             # Label prefix not configured
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             # Review not configured
             False,                  # no review
         ])
@@ -1257,8 +1277,10 @@ class TestWizardExistingProject:
             "tmux",
             # Label prefix
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             # Review
             False,                  # disable Stage 1 review
         ])
@@ -1310,8 +1332,10 @@ class TestWizardExistingProject:
             "tmux",
             # Label prefix
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             # Review
             False,
         ])
@@ -1357,8 +1381,10 @@ class TestWizardExistingProject:
             "8080",                 # port (since web mode)
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             False,                  # disable Stage 1 review
         ])
 
@@ -1411,8 +1437,10 @@ class TestRunWizard:
             "8080",
             "tmux",
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
             # Post-wizard (new flow)
@@ -1472,8 +1500,10 @@ class TestRunWizard:
             "8080",
             "tmux",
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
             # Post-wizard (new flow)
@@ -1552,8 +1582,10 @@ class TestRunWizard:
             "8080",
             "tmux",
             "io",                   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,                  # disable review
             # Post-wizard (new flow)
@@ -1704,8 +1736,10 @@ class TestDryRunMode:
             "8080",
             "tmux",
             "io",  # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,  # disable review
         ])
@@ -1753,8 +1787,10 @@ class TestDryRunMode:
             "8080",
             "tmux",
             "io",   # label prefix
-            "make test",            # validation command
-            "300",                  # validation timeout
+            "make test",            # quick validation command
+            "make test",            # publish validation command
+            "300",                  # quick validation timeout
+            "1800",                 # publish validation timeout
             "",                     # filtering label
             False,  # disable review
         ])

@@ -45,11 +45,16 @@ agents:
     model: "sonnet"
 
 validation:
-  cmd: "python -m pytest -q"
-  timeout_seconds: 300
+  quick:
+    cmd: "python -m pytest -q"
+    timeout_seconds: 300
+  publish:
+    cmd: "python -m pytest -q"
+    timeout_seconds: 1800
+    dirty_check: tracked
 ```
 
-Use a validation command that actually exists in the target repo. Do not leave a placeholder command in place for the first run.
+Use validation commands that actually exist in the target repo. Do not leave placeholder commands in place for the first run. `quick` should be fast feedback for agents; `publish` should be the repo's authoritative local pre-push gate.
 
 ## 4. Set up repo guardrails
 

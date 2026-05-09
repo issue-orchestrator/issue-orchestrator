@@ -54,49 +54,5 @@ if ! "$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check --d
     exit 1
 fi
 
-# ============================================================================
-# GUARDRAIL: Block test-skipping patterns
-# ============================================================================
-# Agents must NOT use @Disabled, @Ignore, or assumeTrue to skip failing tests.
-# These patterns let bugs slip through by avoiding tests instead of fixing them.
-
-check_test_skipping() {
-    # Get diff of changes being pushed (comparing to remote or main)
-    local diff_output
-    diff_output=$(git diff origin/main...HEAD --unified=0 -- '*.kt' '*.java' 2>/dev/null || git diff main...HEAD --unified=0 -- '*.kt' '*.java' 2>/dev/null || echo "")
-
-    if [[ -z "$diff_output" ]]; then
-        return 0  # No diff available, skip check
-    fi
-
-    # Look for ADDED lines (start with +) containing forbidden patterns
-    local forbidden_patterns="@Disabled|@Ignore|assumeTrue|assumeFalse"
-    local violations
-    violations=$(echo "$diff_output" | grep -E "^\+.*($forbidden_patterns)" | grep -v "^+++" || true)
-
-    if [[ -n "$violations" ]]; then
-        echo ""
-        echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║  ❌ ERROR: Test-skipping patterns detected                     ║"
-        echo "╠════════════════════════════════════════════════════════════════╣"
-        echo "║  You added code that skips tests. This is NOT allowed.         ║"
-        echo "║                                                                ║"
-        echo "║  Forbidden patterns:                                           ║"
-        echo "║    - @Disabled / @Ignore (skips test entirely)                 ║"
-        echo "║    - assumeTrue / assumeFalse (skips at runtime)               ║"
-        echo "║                                                                ║"
-        echo "║  If tests fail, FIX THEM. Do not skip them.                    ║"
-        echo "╚════════════════════════════════════════════════════════════════╝"
-        echo ""
-        echo "Violations found:"
-        echo "$violations"
-        echo ""
-        exit 1
-    fi
-}
-
-# Run the test-skipping check
-check_test_skipping
-
 # All validations passed
 exit 0

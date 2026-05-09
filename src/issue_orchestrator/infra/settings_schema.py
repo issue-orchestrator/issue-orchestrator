@@ -446,6 +446,88 @@ class E2ESettings(BaseModel):
     )
 
 
+class ValidationSettings(BaseModel):
+    """Settings for local validation gates."""
+
+    quick_cmd: Optional[str] = Field(
+        None,
+        title="Quick Validation Command",
+        description="Fast command run by coding-done and review exchange loops",
+        json_schema_extra={
+            "doc_examples": ["./scripts/validate-fast.sh", "make test-fast"],
+            "doc_notes": "Keep this fast enough for agent/reviewer back-and-forth. Put repo-specific policy checks such as banned test skips here.",
+            "section": "Quick Gate",
+            "config_attr": "validation.quick.cmd",
+            "yaml_path": "validation.quick.cmd",
+        },
+    )
+    quick_timeout_seconds: int = Field(
+        300,
+        title="Quick Validation Timeout (seconds)",
+        description="Timeout for quick validation",
+        ge=1,
+        le=7200,
+        json_schema_extra={
+            "doc_examples": ["120", "300", "600"],
+            "doc_notes": "Lower values keep review loops responsive.",
+            "section": "Quick Gate",
+            "config_attr": "validation.quick.timeout_seconds",
+            "yaml_path": "validation.quick.timeout_seconds",
+        },
+    )
+    publish_cmd: Optional[str] = Field(
+        None,
+        title="Publish Validation Command",
+        description="Authoritative command run before push/publish",
+        json_schema_extra={
+            "doc_examples": ["./scripts/validate-pr.sh", "make validate-pr"],
+            "doc_notes": "This should match the repo's authoritative local PR/pre-push gate.",
+            "section": "Publish Gate",
+            "config_attr": "validation.publish.cmd",
+            "yaml_path": "validation.publish.cmd",
+        },
+    )
+    publish_timeout_seconds: int = Field(
+        1800,
+        title="Publish Validation Timeout (seconds)",
+        description="Timeout for publish validation",
+        ge=1,
+        le=14400,
+        json_schema_extra={
+            "doc_examples": ["600", "1800", "3600"],
+            "doc_notes": "Allow enough time for the deeper publish gate.",
+            "section": "Publish Gate",
+            "config_attr": "validation.publish.timeout_seconds",
+            "yaml_path": "validation.publish.timeout_seconds",
+        },
+    )
+    publish_dirty_check: Literal["tracked", "unstaged", "all", "off"] = Field(
+        "tracked",
+        title="Publish Dirty Check",
+        description="Dirty-tree policy enforced before push actions",
+        json_schema_extra={
+            "doc_examples": ["tracked", "unstaged", "all", "off"],
+            "doc_notes": "Use tracked for normal agent worktrees. Use off only when another guard owns dirty-tree safety.",
+            "section": "Publish Gate",
+            "config_attr": "validation.publish.dirty_check",
+            "yaml_path": "validation.publish.dirty_check",
+        },
+    )
+    junit_xml_paths: str = Field(
+        "",
+        title="JUnit XML Paths",
+        description="Relative JUnit XML files or globs emitted by validation commands",
+        json_schema_extra={
+            "doc_examples": ["test-results.xml", "build/test-results/test/*.xml"],
+            "doc_notes": "When set, failed validations render a structured test-results view in the dashboard.",
+            "section": "Evidence",
+            "config_attr": "validation.junit_xml_paths",
+            "yaml_path": "validation.junit_xml_paths",
+            "ui_transform": "newline_separated_list",
+        },
+    )
+
+
 class FilteringSettings(BaseModel):
     """Settings for the Filtering tab."""
 
@@ -1373,6 +1455,7 @@ class HooksSettings(BaseModel):
 TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "concurrency", "label": "Concurrency", "model": ConcurrencySettings},
     {"key": "e2e", "label": "E2E Runner", "model": E2ESettings},
+    {"key": "validation", "label": "Validation", "model": ValidationSettings},
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
     {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},

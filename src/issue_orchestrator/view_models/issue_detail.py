@@ -9,6 +9,7 @@ from typing import Any
 from ..domain.event_taxonomy import (
     REVIEW_ROUND_CLOSE_EVENT_NAMES,
     REVIEW_START_CLUSTER_EVENT_NAMES,
+    REVIEW_STORY_MECHANIC_EVENT_NAMES,
     REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
     EventIntent,
     infer_event_intent,
@@ -120,15 +121,22 @@ def _filter_events_by_view(events: list[dict[str, Any]], view: str) -> list[dict
 # of truth so tests and view-model collapsers stay in lockstep.
 _REVIEW_START_CLUSTER_EVENTS = REVIEW_START_CLUSTER_EVENT_NAMES
 _REVIEW_TERMINAL_CLUSTER_EVENTS = REVIEW_TERMINAL_CLUSTER_EVENT_NAMES
+_REVIEW_STORY_MECHANIC_EVENTS = REVIEW_STORY_MECHANIC_EVENT_NAMES
+_REVIEW_STORY_SEGMENT_TERMINAL_EVENTS = REVIEW_TERMINAL_CLUSTER_EVENT_NAMES | frozenset({
+    EventName.REVIEW_EXCHANGE_FAILED.value,
+    EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT.value,
+})
 
 
 def _story_projection_events(events: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
     """Apply user-story-specific event collapsing without affecting ops/debug views."""
     if view != "user":
         return events
-    return _collapse_review_terminal_clusters(
-        _drop_outer_coding_completion_during_review_rounds(
-            _collapse_review_start_clusters(events)
+    return _collapse_completed_review_segments(
+        _collapse_review_terminal_clusters(
+            _drop_outer_coding_completion_during_review_rounds(
+                _collapse_review_start_clusters(events)
+            )
         )
     )
 
@@ -232,6 +240,99 @@ def _preferred_review_terminal_story_event(cluster: list[dict[str, Any]]) -> dic
             if _canonical_event_name(event) == preferred_name:
                 return event
     return None
+
+
+def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Represent each Story review segment with either its start or terminal row."""
+    collapsed: list[dict[str, Any]] = []
+    pending_start_index: int | None = None
+
+    for event in events:
+        event_name = _canonical_event_name(event)
+        if event_name in _REVIEW_STORY_MECHANIC_EVENTS:
+            continue
+
+        if event_name in _REVIEW_START_CLUSTER_EVENTS:
+            collapsed.append(event)
+            pending_start_index = len(collapsed) - 1
+            continue
+
+        if event_name in _REVIEW_STORY_SEGMENT_TERMINAL_EVENTS:
+            if pending_start_index is not None:
+                start_event = collapsed[pending_start_index]
+                del collapsed[pending_start_index]
+                pending_start_index = None
+                collapsed.append(_project_review_terminal_story_event(event, start_event))
+            else:
+                collapsed.append(_project_review_terminal_story_event(event))
+            continue
+
+        if _event_starts_new_story_work_segment(event):
+            pending_start_index = None
+        collapsed.append(event)
+
+    return collapsed
+
+
+def _project_review_terminal_story_event(
+    event: dict[str, Any],
+    start_event: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Use a plain Story label for exchange-only terminal events."""
+    projected = dict(event)
+    if start_event is not None:
+        _fill_missing_review_session_context(projected, start_event)
+
+    event_name = _canonical_event_name(event)
+    if event_name not in {
+        EventName.REVIEW_EXCHANGE_ROUND_COMPLETED.value,
+        EventName.REVIEW_EXCHANGE_COMPLETED.value,
+    }:
+        return projected
+
+    summary = str(projected.get("summary") or "").strip().lower()
+    if "changes_requested" in summary:
+        projected["narrative"] = "Reviewer requested changes"
+    elif "ok" in summary or event_name == EventName.REVIEW_EXCHANGE_COMPLETED.value:
+        projected["narrative"] = "Reviewed"
+    return projected
+
+
+def _fill_missing_review_session_context(
+    terminal_event: dict[str, Any],
+    start_event: dict[str, Any],
+) -> None:
+    """Carry reviewer session identity when Story drops the review-start row."""
+    for key in (
+        "run_id",
+        "run_dir",
+        "task",
+        "agent",
+        "rework_cycle",
+        "round_index",
+        "logical_run",
+        "logical_cycle",
+        "logical_phase",
+    ):
+        if terminal_event.get(key) is None and start_event.get(key) is not None:
+            terminal_event[key] = start_event[key]
+
+
+def _event_starts_new_story_work_segment(event: dict[str, Any]) -> bool:
+    logical_phase = str(event.get("logical_phase") or "").strip().lower()
+    if logical_phase in {"coding", "rework"}:
+        return True
+
+    intent_raw = event.get("event_intent")
+    intent = (
+        intent_raw
+        if isinstance(intent_raw, str) and intent_raw
+        else infer_event_intent(
+            event_name=_canonical_event_name(event),
+            task=str(event.get("task") or ""),
+        ).value
+    )
+    return intent in {EventIntent.CODING.value, EventIntent.REWORK.value}
 
 
 def _drop_outer_coding_completion_during_review_rounds(
@@ -650,7 +751,11 @@ def _run_contains_review_events(run: dict[str, Any]) -> bool:
         steps = cycle.get("steps")
         if not isinstance(steps, list):
             continue
-        if any(str(step.get("event") or "").startswith("review.") for step in steps if isinstance(step, dict)):
+        if any(
+            str(step.get("event") or "").startswith(("review.", "review_exchange."))
+            for step in steps
+            if isinstance(step, dict)
+        ):
             return True
     return False
 

@@ -25,6 +25,7 @@ When done, write **exactly one line of JSON** to the file path in `$ISSUE_ORCHES
 
 ## CRITICAL rules
 
+- Treat newly added test skips or weakened assertions as blocking unless the task explicitly required them. Examples include `assumeTrue`, `assumeFalse`, `@Disabled`, and `@Ignore`.
 - **DO NOT** call `reviewer-done`. That command is for standalone reviews, not review exchanges.
 - **DO NOT** call `coding-done`. You are the reviewer, not the coder.
 - Write the JSON to the file at `$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE`, then exit.

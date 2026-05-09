@@ -153,8 +153,15 @@ class OrchestratorProcess:
                 for label, cfg in self.config.agents.items()
             },
             "validation": {
-                "cmd": self.config.validation.cmd,
-                "timeout_seconds": self.config.validation.timeout_seconds,
+                "quick": {
+                    "cmd": self.config.validation.quick.cmd,
+                    "timeout_seconds": self.config.validation.quick.timeout_seconds,
+                },
+                "publish": {
+                    "cmd": self.config.validation.publish.cmd,
+                    "timeout_seconds": self.config.validation.publish.timeout_seconds,
+                    "dirty_check": self.config.validation.publish.dirty_check,
+                },
             },
             "review": {
                 "default": self.config.code_review_agent,

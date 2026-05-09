@@ -19,6 +19,7 @@ from issue_orchestrator.infra.settings_schema import (
     MilestonesSettings,
     GoalPilotSettings,
     ReviewSettings,
+    ValidationSettings,
     apply_to,
     from_config,
     generate_config_reference,
@@ -61,6 +62,14 @@ class TestModelDefaults:
         assert m.pytest_args == "tests/e2e -v"
         assert m.allow_retry_once is True
         assert m.stop_on_first_failure is False
+
+    def test_validation_defaults(self):
+        m = ValidationSettings()
+        assert m.quick_cmd is None
+        assert m.quick_timeout_seconds == 300
+        assert m.publish_cmd is None
+        assert m.publish_timeout_seconds == 1800
+        assert m.publish_dirty_check == "tracked"
 
     def test_filtering_defaults(self):
         m = FilteringSettings()
@@ -124,6 +133,10 @@ class TestValidation:
     def test_e2e_auto_run_interval_max(self):
         with pytest.raises(ValidationError):
             E2ESettings(auto_run_interval_minutes=1441)
+
+    def test_validation_dirty_check_enum(self):
+        with pytest.raises(ValidationError):
+            ValidationSettings(publish_dirty_check="sometimes")
 
     def test_filtering_fetch_limit_min(self):
         with pytest.raises(ValidationError):
@@ -208,6 +221,12 @@ class TestFromConfig:
         cfg.max_rework_cycles = 3
         cfg.triage_review_agent = "agent:triage"
         cfg.triage_review_threshold = 5
+        cfg.validation.quick.cmd = "make validate-quick"
+        cfg.validation.quick.timeout_seconds = 90
+        cfg.validation.publish.cmd = "make validate-pr"
+        cfg.validation.publish.timeout_seconds = 1200
+        cfg.validation.publish.dirty_check = "all"
+        cfg.validation.junit_xml_paths = ("test-results.xml", "reports/*.xml")
         cfg.session_interactions.enabled = True
         cfg.session_no_output_seconds = 60
         cfg.stale_escalation_ticks = 3
@@ -249,6 +268,17 @@ class TestFromConfig:
         assert e2e.allow_retry_once is False
         assert e2e.stop_on_first_failure is True
         assert e2e.quarantine_file == "quarantine.txt"
+
+    def test_validation_tab(self):
+        tabs = from_config(self._make_config())
+        validation = tabs["validation"]
+        assert isinstance(validation, ValidationSettings)
+        assert validation.quick_cmd == "make validate-quick"
+        assert validation.quick_timeout_seconds == 90
+        assert validation.publish_cmd == "make validate-pr"
+        assert validation.publish_timeout_seconds == 1200
+        assert validation.publish_dirty_check == "all"
+        assert validation.junit_xml_paths == "test-results.xml\nreports/*.xml"
 
     def test_filtering_tab(self):
         tabs = from_config(self._make_config())
@@ -296,7 +326,8 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 8  # concurrency, e2e, filtering, milestones, review, goal_pilot, hooks, advanced
+        assert len(tabs) == 9
+        assert "validation" in tabs
         for key, model in tabs.items():
             assert model is not None
 

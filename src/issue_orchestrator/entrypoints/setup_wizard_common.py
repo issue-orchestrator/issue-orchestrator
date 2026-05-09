@@ -316,7 +316,7 @@ The orchestrator handles all GitHub operations after you complete your work.
 
 ## Completion (MANDATORY)
 
-You MUST use `coding-done` to complete. This runs validation, then the orchestrator pushes your code and creates the PR.
+You MUST use `coding-done` to complete. This runs quick validation, then the orchestrator pushes your code and creates the PR.
 
 ### When work is complete:
 ```bash
@@ -341,7 +341,7 @@ coding-done needs_human \\
 Run `coding-done --help or reviewer-done --help` for all options.
 
 **What happens after `coding-done`:**
-1. Validation runs (tests, linting) - if it fails, fix and retry
+1. Quick validation runs (tests, linting) - if it fails, fix and retry
 2. Orchestrator pushes your branch
 3. Orchestrator creates PR and posts comment
 4. Session completes

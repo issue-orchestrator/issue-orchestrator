@@ -1,5 +1,6 @@
 """Config section parsing and application helpers."""
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,12 +30,16 @@ from .config_models import (
     SqliteBackupConfig,
     TimelineConfig,
     TriageConfig,
+    PublishValidationConfig,
+    ValidationCommandConfig,
     ValidationConfig,
 )
 from .config_paths import get_section, resolve_relative_path
 
 if TYPE_CHECKING:
     from .config import Config
+
+logger = logging.getLogger(__name__)
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
 ALLOWED_AGENT_FIELDS = {
@@ -54,6 +59,14 @@ _TOP_LEVEL_SECTION_KEYS = (
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
 # "repo" and "default_agent" are parsed separately but are valid top-level keys.
 ALLOWED_TOP_LEVEL_FIELDS = frozenset(_TOP_LEVEL_SECTION_KEYS) | {"repo", "default_agent"}
+
+_LEGACY_VALIDATION_KEYS = {
+    "cmd": "validation.quick.cmd and validation.publish.cmd",
+    "timeout_seconds": (
+        "validation.quick.timeout_seconds and validation.publish.timeout_seconds"
+    ),
+    "pre_push_dirty_check": "validation.publish.dirty_check",
+}
 
 
 def parse_default_agent_config(data: dict) -> DefaultAgentConfig | None:
@@ -642,12 +655,21 @@ def load_security_section(config: "Config", security_section: dict, repo_root: P
 def load_validation_section(config: "Config", validation_section: dict) -> None:
     """Load validation configuration."""
     if validation_section:
+        _reject_legacy_validation_keys(validation_section)
         coverage_data = validation_section.get("coverage_guardrail", {}) or {}
         junit_paths_raw = validation_section.get("junit_xml_paths", []) or []
+        quick_data = validation_section.get("quick", {}) or {}
+        publish_data = validation_section.get("publish", {}) or {}
         config.validation = ValidationConfig(
-            cmd=validation_section.get("cmd"),
-            timeout_seconds=validation_section.get("timeout_seconds", 300),
-            pre_push_dirty_check=validation_section.get("pre_push_dirty_check", "tracked"),
+            quick=ValidationCommandConfig(
+                cmd=quick_data.get("cmd"),
+                timeout_seconds=quick_data.get("timeout_seconds", 300),
+            ),
+            publish=PublishValidationConfig(
+                cmd=publish_data.get("cmd"),
+                timeout_seconds=publish_data.get("timeout_seconds", 1800),
+                dirty_check=publish_data.get("dirty_check", "tracked"),
+            ),
             coverage_guardrail=CoverageGuardrailConfig(
                 enabled=coverage_data.get("enabled", False),
                 min_percent=coverage_data.get("min_percent"),
@@ -658,6 +680,49 @@ def load_validation_section(config: "Config", validation_section: dict) -> None:
             ),
             junit_xml_paths=tuple(str(p) for p in junit_paths_raw if p),
         )
+        _warn_partial_validation_commands(config.validation)
+
+
+def _reject_legacy_validation_keys(validation_section: dict) -> None:
+    """Reject pre quick/publish validation keys before they can be ignored."""
+    legacy_keys = [
+        key for key in _LEGACY_VALIDATION_KEYS
+        if key in validation_section
+    ]
+    if not legacy_keys:
+        return
+    migrations = ", ".join(
+        f"validation.{key} -> {_LEGACY_VALIDATION_KEYS[key]}"
+        for key in legacy_keys
+    )
+    raise ValueError(
+        "Legacy validation configuration keys are no longer supported. "
+        f"Migrate: {migrations}."
+    )
+
+
+def _warn_partial_validation_commands(validation: ValidationConfig) -> None:
+    """Surface validation sections that intentionally omit one lifecycle gate."""
+    has_quick = bool(validation.quick.cmd)
+    has_publish = bool(validation.publish.cmd)
+    if has_quick and has_publish:
+        return
+    if has_quick:
+        logger.warning(
+            "validation.quick.cmd is configured but validation.publish.cmd is not; "
+            "pre-push validation will not run."
+        )
+        return
+    if has_publish:
+        logger.warning(
+            "validation.publish.cmd is configured but validation.quick.cmd is not; "
+            "agent/reviewer quick validation will not run."
+        )
+        return
+    logger.warning(
+        "validation is configured without validation.quick.cmd or "
+        "validation.publish.cmd; command validation is disabled."
+    )
 
 
 def load_retry_section(config: "Config", retry_data: dict) -> None:

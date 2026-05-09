@@ -104,7 +104,7 @@ A: Set `review.enabled: true`, then `review.default` to the reviewer agent label
 A: Yes. Any string can use `${VAR}` substitution. If the variable is missing, config loading fails with a clear error pointing to the field.
 
 **Q13: Why does validation fail because the worktree is "dirty," and can I relax it?**
-A: The guard prevents a mismatch between what you validated and what you push. Adjust `validation.pre_push_dirty_check` to `unstaged` or `off` if you intentionally want to allow that risk.
+A: The guard prevents a mismatch between what you validated and what you push. Adjust `validation.publish.dirty_check` to `unstaged` or `off` if you intentionally want to allow that risk.
 
 ## Using the System
 

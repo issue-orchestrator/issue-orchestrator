@@ -571,7 +571,7 @@ def find_worktree_root() -> Path:
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
-    """Load validation configuration from the worktree's config file.
+    """Load quick validation configuration from the worktree's config file.
 
     Reads from .issue-orchestrator/config/ in the worktree.
     This ensures tests are deterministic - no env var leakage from parent processes.
@@ -589,9 +589,10 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     except FileNotFoundError as exc:
         die(str(exc))
 
-    cmd = validation_config.get("cmd")
+    quick_config = validation_config.get("quick", {}) or {}
+    cmd = quick_config.get("cmd")
     if cmd:
-        return cmd, validation_config.get("timeout_seconds", 300)
+        return cmd, quick_config.get("timeout_seconds", 300)
 
     return None, 0
 
@@ -616,7 +617,7 @@ def run_validation(
         return None
 
     if verbose:
-        print(f"Running validation: {cmd}")
+        print(f"Running quick validation: {cmd}")
 
     from ...execution import LocalCommandRunner, GitWorkingCopy
 

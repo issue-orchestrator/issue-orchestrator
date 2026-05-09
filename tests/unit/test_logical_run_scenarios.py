@@ -58,7 +58,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
     ),
     LogicalRunScenario(
         name="code_review_rework_chain_single_logical_run",
@@ -72,7 +72,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[2],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
     ),
     LogicalRunScenario(
         name="local_loop_two_review_rounds_split_into_two_cycles",
@@ -173,7 +173,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
         expected_latest_session_run_ids=["code-1", "review-1"],
     ),
     LogicalRunScenario(
@@ -241,7 +241,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
         expected_latest_session_run_ids=["code-1", "review-1", "code-2"],
     ),
     LogicalRunScenario(
@@ -261,7 +261,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
         expected_latest_session_run_ids=["code-1", "review-1", "code-2"],
     ),
     LogicalRunScenario(
@@ -281,7 +281,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
         expected_latest_session_run_ids=["code-1", "review-1", "code-2"],
     ),
     LogicalRunScenario(
@@ -294,7 +294,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
         expected_latest_session_run_ids=["code-1", "review-1"],
     ),
     LogicalRunScenario(
@@ -323,7 +323,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[1],
-        expected_review_events_in_latest_run=2,
+        expected_review_events_in_latest_run=1,
         expected_latest_session_run_ids=["run-1", "review-1"],
     ),
     LogicalRunScenario(

@@ -425,7 +425,7 @@ def test_validation_failure_updates_run_manifest(scenario_repo: Path):
 
 def test_validation_timeout_marks_failed(scenario_repo: Path):
     def _short_timeout(config) -> None:
-        config.validation.timeout_seconds = 1
+        config.validation.quick.timeout_seconds = 1
 
     scenario("validation_timeout", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -945,7 +945,7 @@ def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path
 
 def _enable_dirty_check(mode: str):
     def _configure(config) -> None:
-        config.validation.pre_push_dirty_check = mode
+        config.validation.publish.dirty_check = mode
     return _configure
 
 
@@ -974,7 +974,7 @@ def test_dirty_tree_tracked_blocks_publish(scenario_repo: Path):
 
 
 def test_dirty_tree_all_mode_blocks_untracked(scenario_repo: Path):
-    """``pre_push_dirty_check: all`` blocks publish even when only
+    """``validation.publish.dirty_check: all`` blocks publish even when only
     untracked files are dirty. The check uses
     ``has_uncommitted_changes`` (which covers untracked) instead of
     the tracked-only path, so a regression that confused the two

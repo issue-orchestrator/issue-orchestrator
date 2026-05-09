@@ -64,11 +64,16 @@ review:
   max_rework_cycles: 10
 
 validation:
-  cmd: make validate-pr
-  # This repo's local publish gate runs the full PR validation slice
-  # (unit/integration/web/vscode) and routinely exceeds 300s on busy machines,
-  # even without any live agent work in the loop.
-  timeout_seconds: 1800
+  quick:
+    cmd: make validate-quick
+    timeout_seconds: 600
+  publish:
+    cmd: make validate-pr
+    # This repo's local publish gate runs the full PR validation slice
+    # (unit/integration/web/vscode) and routinely exceeds 300s on busy machines,
+    # even without any live agent work in the loop.
+    timeout_seconds: 1800
+    dirty_check: tracked
   coverage_guardrail:
     enabled: true
     min_percent: 85

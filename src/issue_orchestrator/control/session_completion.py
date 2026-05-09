@@ -46,17 +46,54 @@ def _validation_issue_key(session: Session, config: Config) -> IssueKey | None:
     return None
 
 
-def _terminate_timed_out_session(
+_RUNTIME_TERMINAL_STATUSES = frozenset({
+    SessionStatus.COMPLETED,
+    SessionStatus.BLOCKED,
+    SessionStatus.NEEDS_HUMAN,
+    SessionStatus.FAILED,
+    SessionStatus.TIMED_OUT,
+    SessionStatus.VALIDATION_FAILED,
+})
+
+_SESSION_ALREADY_GONE_MARKERS = (
+    "not found",
+    "no such session",
+    "does not exist",
+    "already stopped",
+)
+
+
+def _is_session_already_gone_error(exc: Exception) -> bool:
+    """Return true when stop failed because the runtime session already ended."""
+    if isinstance(exc, (FileNotFoundError, LookupError)):
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in _SESSION_ALREADY_GONE_MARKERS)
+
+
+def _terminate_finished_session(
     session: Session,
+    status: SessionStatus,
     kill_session_fn: Callable[[str], None],
 ) -> None:
-    """Best-effort runtime terminalization for sessions already marked timed out."""
+    """Best-effort runtime terminalization for sessions with final outcomes."""
+    if status not in _RUNTIME_TERMINAL_STATUSES:
+        return
     try:
         kill_session_fn(session.terminal_id)
     except Exception as exc:
+        if _is_session_already_gone_error(exc):
+            logger.debug(
+                "[COMPLETION] Finished session %s was already stopped (status=%s): %s",
+                session.terminal_id,
+                status.value,
+                exc,
+            )
+            return
         logger.warning(
-            "[COMPLETION] Failed to kill timed-out session %s: %s",
+            "[COMPLETION] Failed to stop finished session %s (status=%s): %s",
             session.terminal_id,
+            status.value,
             exc,
         )
 
@@ -138,7 +175,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
             retry_count=next_retry_count,
-            validation_cmd=config.validation.cmd if config.validation else None,
+            validation_cmd=config.validation.quick.cmd,
         )
         state.pending_validation_retries = [
             retry for retry in state.pending_validation_retries
@@ -164,10 +201,10 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             completion_detail=completion_detail,
         )
     finally:
-        # Timeout is orchestrator-authoritative; the terminal may still be alive
-        # even though the session is terminal and must not be rediscovered.
-        if status == SessionStatus.TIMED_OUT:
-            _terminate_timed_out_session(session, kill_session_fn)
+        # Completion state is orchestrator-authoritative. Runtime session
+        # registry cleanup is separate from the optional UI tab/worktree cleanup
+        # action, otherwise a finished agent can be rediscovered as running.
+        _terminate_finished_session(session, status, kill_session_fn)
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
         if run_dir:

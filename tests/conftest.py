@@ -777,9 +777,9 @@ def build_test_orchestrator_deps(
         events=events,
         session_output=session_output,
         working_copy=working_copy,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        command_runner=command_runner if config.validation.quick.cmd else None,
+        validation_cmd=config.validation.quick.cmd,
+        validation_timeout_seconds=config.validation.quick.timeout_seconds,
         max_validation_retries=config.retry.max_validation_retries,
     )
     pr_scanner = PRScanner(

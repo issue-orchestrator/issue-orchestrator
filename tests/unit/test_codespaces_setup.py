@@ -15,8 +15,10 @@ def test_codespaces_config_loads_with_stable_web_ports() -> None:
     assert config.web_port == 8080
     assert config.control_api_port == 19081
     assert config.terminal_adapter == "subprocess"
-    assert config.validation.cmd == "make validate-pr"
-    assert config.validation.timeout_seconds == 1800
+    assert config.validation.quick.cmd == "make validate-quick"
+    assert config.validation.quick.timeout_seconds == 600
+    assert config.validation.publish.cmd == "make validate-pr"
+    assert config.validation.publish.timeout_seconds == 1800
 
 
 def test_main_config_uses_validate_pr_as_publish_gate() -> None:
@@ -25,8 +27,10 @@ def test_main_config_uses_validate_pr_as_publish_gate() -> None:
 
     config = Config.load(config_path)
 
-    assert config.validation.cmd == "make validate-pr"
-    assert config.validation.timeout_seconds == 1800
+    assert config.validation.quick.cmd == "make validate-quick"
+    assert config.validation.quick.timeout_seconds == 600
+    assert config.validation.publish.cmd == "make validate-pr"
+    assert config.validation.publish.timeout_seconds == 1800
 
 
 def test_devcontainer_forwards_codespaces_ports_and_bootstraps_repo() -> None:

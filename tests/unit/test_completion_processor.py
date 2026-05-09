@@ -1741,7 +1741,7 @@ class TestCompletionProcessorDirtyPolicy:
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
     ):
         config = Config()
-        config.validation.pre_push_dirty_check = "tracked"
+        config.validation.publish.dirty_check = "tracked"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1768,7 +1768,7 @@ class TestCompletionProcessorDirtyPolicy:
         assert "dirty files: src/feature.py, readme.md." in result.message.lower()
         assert result.errors == [
             "Validation: Working tree is dirty; commit/add/stash before pushing. "
-            "Override with validation.pre_push_dirty_check. "
+            "Override with validation.publish.dirty_check. "
             "Dirty files: src/feature.py, README.md."
         ]
         mock_git_adapter.push.assert_not_called()
@@ -1779,7 +1779,7 @@ class TestCompletionProcessorDirtyPolicy:
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
     ):
         config = Config()
-        config.validation.pre_push_dirty_check = "all"
+        config.validation.publish.dirty_check = "all"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1814,7 +1814,7 @@ class TestCompletionProcessorDirtyPolicy:
         # non-empty before short-circuiting to pass, so this case fell through
         # to a confusing "Working tree is dirty" with no files listed.
         config = Config()
-        config.validation.pre_push_dirty_check = "all"
+        config.validation.publish.dirty_check = "all"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1842,7 +1842,7 @@ class TestCompletionProcessorDirtyPolicy:
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
     ):
         config = Config()
-        config.validation.pre_push_dirty_check = "tracked"
+        config.validation.publish.dirty_check = "tracked"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1877,7 +1877,7 @@ class TestCompletionProcessorDirtyPolicy:
         collapse ``None`` to ``[] -> pass`` (#6159 review feedback).
         """
         config = Config()
-        config.validation.pre_push_dirty_check = "all"
+        config.validation.publish.dirty_check = "all"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -1907,7 +1907,7 @@ class TestCompletionProcessorDirtyPolicy:
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
     ):
         config = Config()
-        config.validation.pre_push_dirty_check = "off"
+        config.validation.publish.dirty_check = "off"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,

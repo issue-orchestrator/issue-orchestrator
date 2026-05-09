@@ -9,7 +9,7 @@ Issue-Orchestrator is designed to assist humans, not replace trust boundaries. A
 - **A passing review is required before code is published.** The orchestrator runs a reviewer agent against every completion and gates publishing on approval.
 - **Agents do not hold GitHub credentials.** The `gh` CLI is shadowed by a wrapper that rejects PR-creating and PR-merging commands unless the orchestrator injects an authorization token.
 - **Architecture boundaries are enforced.** Control, domain, and ports layers cannot perform side effects (subprocesses, HTTP calls). Violations fail fast.
-- **Validation is the single source of truth.** The agent gate, the repo's pre-publish hook gate, and CI all enforce the same branch-readiness policy at different points in the lifecycle.
+- **Validation is lifecycle-scoped.** The quick gate gives agents fast feedback while they still own the worktree; the publish gate is the authoritative local branch-readiness policy before push.
 
 ## The guardrail pipeline
 
@@ -21,7 +21,7 @@ flowchart TB
   H1 -->|blocks --no-verify,<br/>gh pr merge, etc.| X1["Blocked before execution"]
   H1 -->|allowed| D["coding-done / reviewer-done<br/><i>gh wrapper on PATH enforces<br/>orchestrator-only gh access</i>"]
 
-  D --> V{"2. Validation gate<br/>orchestrator runs validation.cmd"}
+  D --> V{"2. Quick validation gate<br/>orchestrator runs validation.quick.cmd"}
   V -->|no passing record| X2["Session blocked —<br/>cannot advance"]
   V -->|passing record on HEAD| R{"3. Review gate<br/>reviewer agent must approve"}
 
@@ -58,11 +58,11 @@ AI-level hooks (Claude Code `PreToolUse`, Cursor `beforeShellExecution`, Copilot
 
 Unsupported AI agents (no hook mechanism) are refused by `issue-orchestrator setup-guardrails` because without this layer the other guarantees weaken. See [Hook Enforcement Architecture](../architecture/hooks.md) for the support matrix and hook file templates.
 
-### 2. Orchestrator validation gate
+### 2. Orchestrator quick validation gate
 
-When an agent calls `coding-done`, the orchestrator runs the user-defined `validation.cmd` (tests, lint, type-check — whatever the project requires) and writes a validation record keyed by commit SHA to `.issue-orchestrator/validation/<suite>/<HEAD_SHA>.json`. A session cannot advance to review or publish without a passing record on the current SHA. Records are cached per `(worktree, sha)` so reruns are cheap and the same gate is reused by pre-push.
+When an agent calls `coding-done completed`, the orchestrator runs the user-defined `validation.quick.cmd` (fast tests, lint, type-check, lightweight policy scans) and writes a validation record keyed by commit SHA to `.issue-orchestrator/validation/<suite>/<HEAD_SHA>.json`. Local coder/reviewer exchange also uses this quick record so reviewers get fast confidence without running the full publish suite on every back-and-forth.
 
-This is the layer that catches test-suite regressions introduced by the agent — including tests the user provided for the specific task. See [Validation System](../architecture/validation.md) for the record format and cache model.
+This is the layer that catches obvious regressions while the coding agent can still fix them immediately. Repo-specific cheap policy checks, such as rejecting newly added test skips (`assumeTrue`, `assumeFalse`, `@Disabled`, `@Ignore`), should live inside the configured quick command. See [Validation System](../architecture/validation.md) for the record format and cache model.
 
 ### 3. Review-as-gate — required passing review before publish
 
@@ -72,9 +72,9 @@ The exchange can run via draft PR (`via-draft-pr`), an in-process local loop (`v
 
 ### 4. Pre-publish hook gate
 
-Before the orchestrator performs the authenticated push, it runs the worktree's effective `.git/hooks/pre-push` wrapper itself. That wrapper chains the project's pre-push hook (`make validate-pr`, `scripts/verify-pr.sh`, etc.) with the orchestrator's pre-push hook (Agent-Status trailer validation, test-skipping-pattern detection such as `@Disabled` / `assumeTrue`, dirty-tracked-file rejection). This moves hook failures earlier in the lifecycle while preserving the exact same policy the real push would enforce.
+Before the orchestrator performs the authenticated push, it runs the worktree's effective `.git/hooks/pre-push` wrapper itself. That wrapper chains the project's pre-push hook (`make validate-pr`, `scripts/verify-pr.sh`, etc.) with the orchestrator's pre-push hook (Agent-Status trailer validation and the configured dirty-tree policy). This moves hook failures earlier in the lifecycle while preserving the exact same policy the real push would enforce.
 
-The real push still keeps hooks enabled. The cache-bearing validation record is keyed by commit SHA plus the configured validation command, so the later hook pass can reuse the same passing token instead of rerunning the expensive validation command on the same commit. Agents still cannot use `--no-verify` themselves; Layer 1 blocks that.
+The real push still keeps hooks enabled. The publish validation command is `validation.publish.cmd`, and its cache-bearing record is keyed by commit SHA plus command, so the later hook pass can reuse the same passing token instead of rerunning the expensive validation command on the same commit. Agents still cannot use `--no-verify` themselves; Layer 1 blocks that.
 
 For managed target repos, `setup-guardrails` also records the selected config
 filename into `scripts/verify-pr.sh`. If the repo later switches to another
