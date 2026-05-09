@@ -9,6 +9,7 @@ from issue_orchestrator.control.actions import ReconcileHistoryEntryAction
 from issue_orchestrator.control.awaiting_merge_reconciler import (
     POST_PUBLISH_VALIDATION_SOURCE,
     AwaitingMergeReconciler,
+    classify_post_approval_state,
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.session_history import SessionHistoryOwner
@@ -46,6 +47,7 @@ def _pr(
     number: int = 318,
     mergeable_state: str | None = None,
     labels: list[str] | None = None,
+    status_check_rollup: str | None = None,
 ) -> PRInfo:
     return PRInfo(
         number=number,
@@ -56,6 +58,7 @@ def _pr(
         state=state,
         labels=labels or [],
         mergeable_state=mergeable_state,
+        status_check_rollup=status_check_rollup,  # type: ignore[arg-type]
     )
 
 
@@ -502,3 +505,179 @@ def test_post_publish_validation_rework_is_suppressed_when_rework_already_pendin
     assert result.rework_discovered == 0
     assert result.still_pending == 1
     assert state.issue_last_refreshed_at[228] == 1234.5
+
+
+# ---------------------------------------------------------------------------
+# classify_post_approval_state — pure dispatch table
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mergeable_state,rollup,expected",
+    [
+        # Happy path
+        ("clean", None, "READY"),
+        ("clean", "SUCCESS", "READY"),
+        # Code-action causes
+        ("dirty", None, "REWORK_CONFLICT"),
+        ("dirty", "PENDING", "REWORK_CONFLICT"),  # conflict trumps checks
+        ("behind", None, "REWORK_BEHIND"),
+        ("behind", "SUCCESS", "REWORK_BEHIND"),
+        # The big disambiguation: unstable + check status
+        ("unstable", "PENDING", "WAIT_FOR_CHECKS"),
+        ("unstable", "EXPECTED", "WAIT_FOR_CHECKS"),
+        ("unstable", None, "WAIT_FOR_CHECKS"),
+        ("unstable", "SUCCESS", "WAIT_FOR_CHECKS"),  # unusual; resolves to clean
+        ("unstable", "FAILURE", "REWORK_CHECK_FAILED"),
+        ("unstable", "ERROR", "REWORK_CHECK_FAILED"),
+        # blocked is similar but blocked+SUCCESS means branch protection
+        ("blocked", "PENDING", "WAIT_FOR_CHECKS"),
+        ("blocked", "FAILURE", "REWORK_CHECK_FAILED"),
+        ("blocked", "ERROR", "REWORK_CHECK_FAILED"),
+        ("blocked", "SUCCESS", "BLOCKED_TERMINAL"),
+        ("blocked", None, "WAIT_FOR_CHECKS"),
+        # Unknown / unhandled GitHub states fall through
+        ("has_hooks", None, "UNKNOWN"),
+        ("draft", None, "UNKNOWN"),
+        ("", None, "UNKNOWN"),
+        (None, None, "UNKNOWN"),
+    ],
+)
+def test_classify_post_approval_state(
+    mergeable_state: str | None, rollup: str | None, expected: str
+) -> None:
+    pr = _pr(
+        "open", mergeable_state=mergeable_state, status_check_rollup=rollup
+    )
+    assert classify_post_approval_state(pr) == expected
+
+
+# ---------------------------------------------------------------------------
+# Reconciler integration: classifier outputs gate rework
+# ---------------------------------------------------------------------------
+
+
+def test_unstable_pr_with_checks_pending_does_not_trigger_rework() -> None:
+    """Regression: this is the spurious-rework case the user observed.
+
+    Reviewer approved (code-reviewed label) and GitHub reports
+    `mergeable_state=unstable` because required CI checks are still
+    in progress. The orchestrator must wait, not start rework.
+    """
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=["code-reviewed"],
+        status_check_rollup="PENDING",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 0
+    assert result.still_pending == 1
+
+
+def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
+    """Inverse case: a required check actually failed → rework with check-failed copy."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=["code-reviewed"],
+        status_check_rollup="FAILURE",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    feedback = rework.feedback or ""
+    assert "Required check failed" in feedback
+    assert "Status checks: FAILURE" in feedback
+    # Legacy header is gone
+    assert "POST-PUBLISH VALIDATION FAILURE" not in feedback
+
+
+def test_blocked_pr_with_all_checks_passing_does_not_trigger_rework() -> None:
+    """blocked + SUCCESS rollup → branch protection (approvals/CODEOWNERS),
+    not a code problem. Slice 3 will escalate this to needs_human via timeout.
+    For now, assert we don't queue a useless rework cycle."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="blocked",
+        labels=["code-reviewed"],
+        status_check_rollup="SUCCESS",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 0
+    assert result.still_pending == 1
+
+
+def test_dirty_pr_feedback_uses_conflict_copy() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="dirty",
+        labels=["code-reviewed"],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    feedback = (result.reworks[0].feedback or "")
+    assert "Merge conflict against base branch" in feedback
+    assert "Mergeability: dirty" in feedback
+
+
+def test_behind_pr_feedback_uses_rebase_copy() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="behind",
+        labels=["code-reviewed"],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    feedback = (result.reworks[0].feedback or "")
+    assert "Branch is behind base branch" in feedback
+    assert "Rebase" in feedback

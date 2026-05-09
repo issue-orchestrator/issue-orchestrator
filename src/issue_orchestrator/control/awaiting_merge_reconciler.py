@@ -35,9 +35,59 @@ AWAITING_MERGE_HISTORY_LIMIT = 50
 AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
-POST_PUBLISH_VALIDATION_REWORK_STATES = frozenset({"dirty", "behind", "unstable"})
 POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
 POST_PUBLISH_VALIDATION_COMMENT_MARKER = "<!-- io:post-publish-validation -->"
+
+
+# Result of classifying GitHub merge readiness after reviewer approval.
+# `mergeable_state` says merge readiness; `status_check_rollup` says
+# check truth. Combining them disambiguates "checks still running"
+# (transient — wait) from "a check actually failed" (real — rework).
+PostApprovalAction = Literal[
+    "READY",                # clean — proceed to merge
+    "WAIT_FOR_CHECKS",      # unstable/blocked + checks PENDING/EXPECTED/unknown
+    "REWORK_CONFLICT",      # dirty — merge conflict against base
+    "REWORK_BEHIND",        # behind — branch out of date with base
+    "REWORK_CHECK_FAILED",  # unstable/blocked + checks FAILURE/ERROR
+    "BLOCKED_TERMINAL",     # blocked + checks SUCCESS — branch protection
+    "UNKNOWN",              # has_hooks / draft / "" / unrecognized state
+]
+
+
+def classify_post_approval_state(pr: PRInfo) -> PostApprovalAction:
+    """Decide what to do with a reviewer-approved PR based on GitHub state.
+
+    See PostApprovalAction docstring for the full table. Pure function — no
+    I/O, no clock — so callers can unit-test the dispatch matrix exhaustively.
+    """
+    state = _normalized_state(pr.mergeable_state)
+    rollup = pr.status_check_rollup
+    if state == "clean":
+        return "READY"
+    if state == "dirty":
+        return "REWORK_CONFLICT"
+    if state == "behind":
+        return "REWORK_BEHIND"
+    if state in ("unstable", "blocked"):
+        if rollup in ("FAILURE", "ERROR"):
+            return "REWORK_CHECK_FAILED"
+        if rollup == "SUCCESS":
+            # blocked + all-green → branch protection (CODEOWNERS, approvals,
+            # required signatures) — code rework won't unstick this.
+            if state == "blocked":
+                return "BLOCKED_TERMINAL"
+            # unstable + SUCCESS is unusual; GitHub usually resolves it to
+            # `clean` on the next poll. Treat as transient.
+            return "WAIT_FOR_CHECKS"
+        # rollup in {PENDING, EXPECTED, None} → checks not yet conclusive
+        return "WAIT_FOR_CHECKS"
+    return "UNKNOWN"
+
+
+# Actions that require sending the PR back to a coder agent.
+_REWORK_ACTIONS: frozenset[PostApprovalAction] = frozenset(
+    {"REWORK_CONFLICT", "REWORK_BEHIND", "REWORK_CHECK_FAILED"}
+)
 
 
 @dataclass(frozen=True)
@@ -403,8 +453,20 @@ class AwaitingMergeReconciler:
         ):
             return None
 
-        mergeable_state = _normalized_state(pr.mergeable_state)
-        if mergeable_state not in POST_PUBLISH_VALIDATION_REWORK_STATES:
+        action = classify_post_approval_state(pr)
+        if action not in _REWORK_ACTIONS:
+            # READY / WAIT_FOR_CHECKS / BLOCKED_TERMINAL / UNKNOWN — no rework.
+            # WAIT_FOR_CHECKS gets a timeout-driven escalation in a later
+            # slice; for now we simply don't queue rework, which by itself
+            # eliminates the spurious rework-during-CI loop.
+            logger.debug(
+                "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s action=%s",
+                entry.issue_number,
+                pr_number,
+                _normalized_state(pr.mergeable_state),
+                pr.status_check_rollup,
+                action,
+            )
             return None
 
         return DiscoveredRework(
@@ -414,7 +476,7 @@ class AwaitingMergeReconciler:
             agent_type=issue.agent_type,
             rework_cycle=_next_rework_cycle(pr.labels, self.label_manager),
             source=POST_PUBLISH_VALIDATION_SOURCE,
-            feedback=_build_post_publish_validation_feedback(pr, mergeable_state),
+            feedback=_build_rework_feedback(pr, action),
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
@@ -531,22 +593,55 @@ def _next_rework_cycle(labels: list[str], label_manager: LabelManager) -> int:
     return 1
 
 
-def _build_post_publish_validation_feedback(pr: PRInfo, mergeable_state: str) -> str:
-    detail_map = {
-        "dirty": "GitHub reports merge conflicts against the base branch.",
-        "behind": "GitHub reports the branch is behind the base branch and must be updated before merge.",
-        "unstable": "GitHub reports failing or unstable required validation on the merge result.",
-    }
+_REWORK_HEADERS: dict[PostApprovalAction, tuple[str, str, str]] = {
+    "REWORK_CONFLICT": (
+        "Merge conflict against base branch",
+        "GitHub reports merge conflicts against the base branch.",
+        "Rebase or merge the base branch and resolve the conflicts, "
+        "then push so the PR is mergeable again.",
+    ),
+    "REWORK_BEHIND": (
+        "Branch is behind base branch",
+        "GitHub reports the branch is behind the base branch and "
+        "branch protection requires it to be up-to-date before merge.",
+        "Rebase (or merge) the base branch into this branch and push, "
+        "so the PR is mergeable again.",
+    ),
+    "REWORK_CHECK_FAILED": (
+        "Required check failed on this PR",
+        "A required status check has FAILED or ERRORED on this PR's "
+        "head commit. The reviewer already approved, but a CI/check "
+        "regression is now blocking merge.",
+        "Open the PR's checks tab to identify the failing check, "
+        "reproduce locally, fix the underlying problem, and push "
+        "so the checks turn green.",
+    ),
+}
+
+
+def _build_rework_feedback(pr: PRInfo, action: PostApprovalAction) -> str:
+    if action not in _REWORK_HEADERS:
+        # Defensive: only the three rework actions should reach here.
+        # Fall back to a generic message rather than crashing the tick.
+        title = "Post-publish issue on this PR"
+        detail = "GitHub reports this PR is no longer ready to merge."
+        guidance = "Investigate the PR state and update the branch."
+    else:
+        title, detail, guidance = _REWORK_HEADERS[action]
+    state = _normalized_state(pr.mergeable_state) or "unknown"
+    rollup = pr.status_check_rollup or "n/a"
     lines = [
-        "POST-PUBLISH VALIDATION FAILURE (address these issues):",
+        f"{title} (cycle handled by post-publish gate, not the reviewer):",
         "",
-        f"PR #{pr.number} is no longer ready to merge after review approval.",
+        f"PR #{pr.number} was approved by the reviewer but is no longer "
+        "ready to merge.",
         f"- URL: {pr.url}",
         f"- Branch: {pr.branch}",
-        f"- Mergeability: {mergeable_state}",
-        f"- Detail: {detail_map.get(mergeable_state, 'GitHub reports the PR is no longer merge-ready.')}",
+        f"- Mergeability: {state}",
+        f"- Status checks: {rollup}",
+        f"- Diagnosis: {detail}",
         "",
-        "Update the branch, rerun the required validation, and leave the PR ready for merge again.",
+        guidance,
     ]
     return "\n".join(lines)
 
