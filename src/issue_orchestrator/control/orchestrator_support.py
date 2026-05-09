@@ -119,6 +119,7 @@ class OrchestratorSupport:
     cleanup_manager: "CleanupManager"
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
+    queue_cache_store: "QueueCacheStore | None" = None
 
     _last_ui_update: float = field(default=0.0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
@@ -429,7 +430,12 @@ class OrchestratorSupport:
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection
-        projection = QueueProjection(self.config, self.repository_host, self.events)
+        projection = QueueProjection(
+            self.config,
+            self.repository_host,
+            self.events,
+            self.queue_cache_store,
+        )
         projection.update_and_emit(self.state)
 
     def recover_orphaned_cleanups(self) -> None:
@@ -732,7 +738,7 @@ def _fetch_and_update_queue(
         old_numbers = {i.number for i in state.cached_queue_issues}
         old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
 
-        queue_cache = QueueCache(config, state)
+        queue_cache = QueueCache(config, state, queue_cache_store)
         new_queue = queue_cache.replace_from_refresh(all_issues)
         shrink_confirmation_pending = queue_shrink_confirmation_pending(state)
 
@@ -762,11 +768,7 @@ def _fetch_and_update_queue(
         )
 
         if queue_cache_store is not None:
-            queue_cache_store.save_snapshot(
-                state.cached_scope_issues,
-                state.queue_delta_watermark,
-                repo=config.repo or "",
-            )
+            queue_cache.save_snapshot()
 
         if state.failed_this_cycle:
             logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)

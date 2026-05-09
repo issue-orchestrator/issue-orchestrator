@@ -289,7 +289,7 @@ class StartupManager:
         if state.cached_queue_issues:
             # Warm path: filter in-progress from cache (0 GitHub calls)
             stale_in_progress = self._recover_stale_in_progress_from_label_store(state.cached_queue_issues)
-            queue_cache = QueueCache(self.config, state)
+            queue_cache = QueueCache(self.config, state, self._queue_cache_store)
             for issue in stale_in_progress:
                 outcome = queue_cache.upsert_refreshed_issue(issue)
                 if outcome.status != QueueMutationStatus.ACCEPTED:
@@ -298,6 +298,8 @@ class StartupManager:
                         issue.number,
                         outcome.status.value,
                     )
+            if stale_in_progress and self._queue_cache_store is not None:
+                queue_cache.save_snapshot()
             issues_by_number = {
                 issue.number: issue
                 for issue in state.cached_queue_issues
@@ -385,7 +387,7 @@ class StartupManager:
             return
 
         tracked_history = {entry.issue_number for entry in state.session_history}
-        queue_cache = QueueCache(self.config, state)
+        queue_cache = QueueCache(self.config, state, self._queue_cache_store)
         local_pr_pending = sorted(
             issue_number
             for issue_number, labels in self._label_store.load_all().items()
@@ -709,6 +711,7 @@ class StartupManager:
         state.startup_message = "Restoring queue cache..."
         cached_issues = store.load_issues(self.config.repo or "")
         cached_watermark = store.load_watermark()
+        queue_cache = QueueCache(self.config, state, store)
 
         if cached_watermark and not cached_issues:
             # Corrupt/partial persisted state: watermark exists but no issues were
@@ -741,8 +744,7 @@ class StartupManager:
                     issue_map.pop(issue.number, None)
 
             # Apply eligibility policy (scope + exclusion filters)
-            from .queue_cache import QueueCache
-            QueueCache(self.config, state).replace_from_refresh(list(issue_map.values()))
+            queue_cache.replace_from_refresh(list(issue_map.values()))
             state.queue_delta_watermark = next_watermark or cached_watermark
             logger.info(
                 "[STARTUP] Delta sync: %d delta issues, %d in queue after filter",
@@ -756,11 +758,7 @@ class StartupManager:
 
         # Persist updated state to SQLite for next restart
         state.startup_message = "Persisting queue cache..."
-        store.save_snapshot(
-            state.cached_scope_issues,
-            state.queue_delta_watermark,
-            repo=self.config.repo or "",
-        )
+        queue_cache.save_snapshot()
 
     async def _resume_partial_work(
         self,

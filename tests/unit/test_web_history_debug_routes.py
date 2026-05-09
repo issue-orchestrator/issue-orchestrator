@@ -150,6 +150,7 @@ class TestHistoryEndpoints:
         mock_orch.deps.action_applier = MagicMock()
         mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
         mock_orch.deps.events = MagicMock()
+        mock_orch.deps.queue_cache_store = MagicMock()
         mock_orch.repository_host.get_issue_labels.return_value = [
             "agent:web",
             lm.blocked_failed,
@@ -159,6 +160,10 @@ class TestHistoryEndpoints:
             4057,
             labels=["agent:web", lm.reset_retry_pending],
         )
+        mock_orch.state.cached_scope_issues = [
+            create_issue(4057, labels=["agent:web", lm.blocked_failed])
+        ]
+        mock_orch.state.cached_queue_issues = list(mock_orch.state.cached_scope_issues)
 
         set_orchestrator(mock_orch)
 
@@ -182,6 +187,10 @@ class TestHistoryEndpoints:
         assert payload["reset"][0]["pending_label"] == lm.reset_retry_pending
         assert mock_orch.state.priority_queue[0] == 4057
         mock_orch.request_refresh.assert_not_called()
+        saved_issues, saved_watermark = mock_orch.deps.queue_cache_store.save_snapshot.call_args.args[:2]
+        assert saved_watermark == mock_orch.state.queue_delta_watermark
+        assert [issue.number for issue in saved_issues] == [4057]
+        assert saved_issues[0].labels == ["agent:web", lm.reset_retry_pending]
 
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
         assert lm.reset_retry_pending in added_labels

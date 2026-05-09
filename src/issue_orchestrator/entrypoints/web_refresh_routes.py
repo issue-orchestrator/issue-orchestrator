@@ -149,7 +149,7 @@ async def refresh_issue(
 
     state = orchestrator.state
     config = orchestrator.config
-    queue_cache = QueueCache(config, state)
+    queue_cache = QueueCache(config, state, orchestrator.deps.queue_cache_store)
     outcome = queue_cache.upsert_refreshed_issue(issue)
     refreshed_at = time.time()
     if outcome.status == QueueMutationStatus.ACCEPTED:
@@ -180,6 +180,7 @@ async def refresh_issue(
             issue.state,
         )
     queue_cache.prune_refresh_timestamps()
+    queue_cache.save_snapshot()
 
     return JSONResponse({
         "status": "refreshed" if outcome.status == QueueMutationStatus.ACCEPTED else outcome.status.value,

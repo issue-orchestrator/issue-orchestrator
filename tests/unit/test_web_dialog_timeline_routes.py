@@ -60,6 +60,7 @@ class TestRefreshEndpoint:
         """Refreshing one issue updates local cache and freshness state."""
         mock_orch = create_mock_orchestrator()
         issue = create_issue(77, "Refresh me")
+        mock_orch.deps.queue_cache_store = MagicMock()
         mock_orch.repository_host.get_issue.return_value = issue
         set_orchestrator(mock_orch)
 
@@ -74,6 +75,7 @@ class TestRefreshEndpoint:
             assert payload["last_refreshed_label"] == "just now"
             assert 77 in mock_orch.state.issue_last_refreshed_at
             assert any(i.number == 77 for i in mock_orch.state.cached_queue_issues)
+            mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once()
         finally:
             set_orchestrator(None)
 

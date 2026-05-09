@@ -264,7 +264,7 @@ async def reset_and_retry(
     repository_host = orchestrator.repository_host
     deps = orchestrator.deps
     lm = deps.label_manager
-    queue_cache = QueueCache(config, state)
+    queue_cache = QueueCache(config, state, deps.queue_cache_store)
 
     reset_results: list[dict] = []
     failed: list[dict] = []
@@ -497,10 +497,13 @@ def _enqueue_reset_retry_issue(
     if outcome.status == QueueMutationStatus.ACCEPTED:
         record_issue_refreshes(state, {issue_number}, refreshed_at)
         queue_cache.prune_refresh_timestamps()
+        queue_cache.save_snapshot()
         RetryHistoryState(state).prioritize_issue_front(issue_number)
         return None
 
     clear_issue_refresh(state, issue_number)
+    queue_cache.prune_refresh_timestamps()
+    queue_cache.save_snapshot()
     return _make_reset_failure(
         issue_number,
         result,
