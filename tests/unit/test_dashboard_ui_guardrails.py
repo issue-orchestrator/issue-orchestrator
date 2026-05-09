@@ -777,7 +777,13 @@ def test_timeline_overflow_menu_renders_as_floating_popover() -> None:
     assert ".timeline-event-menu-items {" in css
     items_block = css.split(".timeline-event-menu-items {", 1)[1].split("}", 1)[0]
     assert "position: fixed;" in items_block
+    assert "display: none;" in items_block
     assert "overflow: auto;" in items_block
+    assert ".timeline-event-menu[open] .timeline-event-menu-items {" in css
+    open_items_block = css.split(
+        ".timeline-event-menu[open] .timeline-event-menu-items {", 1
+    )[1].split("}", 1)[0]
+    assert "display: grid;" in open_items_block
 
     # The legacy nested "More ▾" disclosure rules must be gone.
     assert ".timeline-more-items" not in css
@@ -791,6 +797,9 @@ def test_timeline_overflow_menu_renders_as_floating_popover() -> None:
     assert "getBoundingClientRect" in body
     assert "window.innerWidth" in body
     assert "window.innerHeight" in body
+    assert "_timelineEventMenuFixedOffset(items)" in body
+    assert "fixedOffset.left" in body
+    assert "fixedOffset.top" in body
 
 
 def test_session_diagnostics_tracks_timeout_and_session_settings_action() -> None:
@@ -1294,16 +1303,23 @@ def test_timeline_events_pass_detail_context_to_action_menu() -> None:
 def test_timeline_modal_delegate_handles_menu_items() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
-    assert ".timeline-action-btn, .timeline-menu-item" in body
-    assert "timeline-event-menu-trigger" in body
+    handler_body = _function_body(js, "handleTimelineEventActionsClick")
+    assert "handleTimelineEventActionsClick" in body
+    assert ".timeline-action-btn, .timeline-menu-item" in handler_body
+    assert "timeline-event-menu-trigger" in handler_body
+    assert "toggleTimelineEventMenu(ownerMenu)" in handler_body
+    assert "event.preventDefault()" in handler_body
 
 
 def test_journey_action_delegate_handles_menu_items_and_closes_menus() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")
-    assert ".timeline-action-btn, .timeline-menu-item" in body
-    assert "closeTimelineEventMenus(ownerMenu)" in body
-    assert "closeTimelineEventMenus();" in body
+    handler_body = _function_body(js, "handleTimelineEventActionsClick")
+    assert "handleTimelineEventActionsClick" in body
+    assert ".timeline-action-btn, .timeline-menu-item" in handler_body
+    assert "toggleTimelineEventMenu(ownerMenu)" in handler_body
+    assert "event.preventDefault()" in handler_body
+    assert "closeTimelineEventMenus();" in handler_body
 
 
 def test_timeline_renders_issue_affordances_for_navigation() -> None:
