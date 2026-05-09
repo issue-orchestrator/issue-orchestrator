@@ -19,6 +19,7 @@ from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_completion import (
+    _terminate_finished_session,
     handle_session_completion,
     process_active_sessions,
 )
@@ -2457,6 +2458,35 @@ class TestHandleSessionCompletion:
         assert calls == ["process_completion", "kill", "actions"]
         assert state.active_sessions == []
         assert state.completed_today == [123]
+
+    def test_finished_session_already_gone_does_not_warn(
+        self,
+        sample_agent_config,
+        tmp_path,
+        caplog,
+    ):
+        """Adapters may report already-gone sessions while completion cleanup runs."""
+        issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+
+        def already_gone(_name: str) -> None:
+            raise FileNotFoundError("Session not found")
+
+        with caplog.at_level("WARNING"):
+            _terminate_finished_session(
+                session,
+                SessionStatus.COMPLETED,
+                already_gone,
+            )
+
+        assert "Failed to stop finished session" not in caplog.text
 
     def test_timed_out_session_kills_terminal_when_completion_processing_fails(
         self,

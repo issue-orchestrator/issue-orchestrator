@@ -39,6 +39,11 @@ respond immediately.
 `validation.publish.cmd` should be the same command your repository treats as
 its authoritative pre-push / pre-publish gate.
 
+The old single-command shape (`validation.cmd`,
+`validation.timeout_seconds`, and `validation.pre_push_dirty_check`) is rejected
+at config load time. That keeps upgrades visible instead of silently disabling
+both lifecycle gates.
+
 When you install repo guardrails with `issue-orchestrator setup-guardrails`, the
 generated `scripts/verify-pr.sh` captures the selected config filename. If you
 switch the repo to a different `.issue-orchestrator/config/*.yaml`, rerun

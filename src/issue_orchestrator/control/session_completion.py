@@ -55,6 +55,21 @@ _RUNTIME_TERMINAL_STATUSES = frozenset({
     SessionStatus.VALIDATION_FAILED,
 })
 
+_SESSION_ALREADY_GONE_MARKERS = (
+    "not found",
+    "no such session",
+    "does not exist",
+    "already stopped",
+)
+
+
+def _is_session_already_gone_error(exc: Exception) -> bool:
+    """Return true when stop failed because the runtime session already ended."""
+    if isinstance(exc, (FileNotFoundError, LookupError)):
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in _SESSION_ALREADY_GONE_MARKERS)
+
 
 def _terminate_finished_session(
     session: Session,
@@ -67,6 +82,14 @@ def _terminate_finished_session(
     try:
         kill_session_fn(session.terminal_id)
     except Exception as exc:
+        if _is_session_already_gone_error(exc):
+            logger.debug(
+                "[COMPLETION] Finished session %s was already stopped (status=%s): %s",
+                session.terminal_id,
+                status.value,
+                exc,
+            )
+            return
         logger.warning(
             "[COMPLETION] Failed to stop finished session %s (status=%s): %s",
             session.terminal_id,

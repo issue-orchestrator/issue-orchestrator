@@ -1507,8 +1507,9 @@ agents:
     worktree_base: {tmp_path}
 
 validation:
-  cmd: "make validate"
-  timeout_seconds: 400
+  quick:
+    cmd: "make validate"
+    timeout_seconds: 400
   coverage_guardrail:
     enabled: true
     min_percent: 85
@@ -2741,6 +2742,64 @@ triage:
 
 class TestValidationConfig:
     """Tests for validation.* configuration."""
+
+    @pytest.mark.parametrize("legacy_key", ["cmd", "timeout_seconds", "pre_push_dirty_check"])
+    def test_legacy_validation_keys_fail_with_migration_message(
+        self, tmp_path, legacy_key
+    ):
+        legacy_values = {
+            "cmd": '"make validate"',
+            "timeout_seconds": "400",
+            "pre_push_dirty_check": "tracked",
+        }
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+validation:
+  {legacy_key}: {legacy_values[legacy_key]}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValueError, match=f"validation\\.{legacy_key}"):
+            Config.load(config_file)
+
+    def test_validation_warns_when_only_quick_command_configured(
+        self, tmp_path, caplog
+    ):
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+validation:
+  quick:
+    cmd: make test
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        Config.load(config_file)
+
+        assert "validation.publish.cmd is not" in caplog.text
+
+    def test_validation_warns_when_only_publish_command_configured(
+        self, tmp_path, caplog
+    ):
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+validation:
+  publish:
+    cmd: make validate-pr
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        Config.load(config_file)
+
+        assert "validation.quick.cmd is not" in caplog.text
 
     def test_publish_dirty_check_all_is_valid(self):
         config = Config()

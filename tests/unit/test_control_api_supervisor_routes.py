@@ -409,7 +409,7 @@ class TestActionEndpointMapping:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text(
-            "repo:\n  name: owner/repo\nvalidation:\n  cmd: pytest\n",
+            "repo:\n  name: owner/repo\nvalidation:\n  publish:\n    cmd: pytest\n",
             encoding="utf-8",
         )
         repo_root = tmp_path.resolve()
