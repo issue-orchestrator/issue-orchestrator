@@ -852,6 +852,15 @@ _DEV_NO_AUTH_BANNER_HTML = (
 )
 
 
+def _control_center_html_response(content: str, *, status_code: int = 200) -> HTMLResponse:
+    """Return Control Center shell HTML that browsers must revalidate on reopen."""
+    response = HTMLResponse(content=content, status_code=status_code)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 @control_app.get("/", response_class=HTMLResponse)
 async def control_center_ui(request: Request) -> HTMLResponse:
     """Serve the Control Center dashboard to an authenticated browser.
@@ -877,7 +886,7 @@ async def control_center_ui(request: Request) -> HTMLResponse:
 
     template_path = _TEMPLATES_DIR / "control_center.html"
     if not template_path.exists():
-        return HTMLResponse(
+        return _control_center_html_response(
             "<html><body><h1>Control Center</h1><p>Template not found</p></body></html>",
             status_code=500,
         )
@@ -926,7 +935,7 @@ async def control_center_ui(request: Request) -> HTMLResponse:
         else ""
     )
     content = content.replace("{{ flash_debug_script }}", flash_debug_script)
-    return HTMLResponse(content)
+    return _control_center_html_response(content)
 
 
 @control_app.post("/login")

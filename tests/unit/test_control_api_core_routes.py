@@ -13,6 +13,7 @@ globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
 )
 
+
 class TestRouteRegistration:
     """Route registration guardrails for the control API app."""
 
@@ -316,6 +317,17 @@ class TestControlCenterTemplate:
         assert 'id="sidebarRepoList"' not in body
         assert "nav-repo-list" not in body
         assert "nav-repo-item" not in body
+
+    def test_control_center_shell_is_not_cached(self, client_without_orchestrator):
+        response = client_without_orchestrator.get("/")
+
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-cache, no-store, must-revalidate"
+        assert response.headers["Pragma"] == "no-cache"
+        assert response.headers["Expires"] == "0"
+        assert '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">' in response.text
+        assert '<meta http-equiv="Pragma" content="no-cache">' in response.text
+        assert '<meta http-equiv="Expires" content="0">' in response.text
 
     def test_control_center_ui_renders_frozen_snapshot_launch_sha(
         self,
