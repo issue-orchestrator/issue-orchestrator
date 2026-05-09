@@ -22,7 +22,7 @@ validation:
     timeout_seconds: 300
   publish:
     # Authoritative local PR/pre-push gate.
-    cmd: "make validate-pr"
+    cmd: "make validate-pr-raw"
     timeout_seconds: 1800
     dirty_check: tracked
 

@@ -426,7 +426,9 @@ def _render_verify_pr_script(
     selected_config_name: str | None = None,
     baked_python: str | None = None,
 ) -> str:
-    quoted = shlex.quote(validation_cmd)
+    # setup_repo_guardrails validates that a publish command exists; the
+    # wrapper lets prepush_check print the command resolved from config.
+    _ = validation_cmd
     config_name_export = ""
     if selected_config_name:
         config_name_export = (
@@ -445,7 +447,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${{BASH_SOURCE[0]}}")/.." && pwd)"
 cd "$repo_root"
 
-validation_cmd={quoted}
 {config_name_export}PYTHON_ENV_NAME={shlex.quote(ORCHESTRATOR_PYTHON_ENV)}
 PYTHON_BIN=""
 
@@ -463,7 +464,7 @@ if [ -z "$PYTHON_BIN" ]; then
   exit 1
 fi
 
-echo "verify-pr: running cache-aware pre-push validation for $validation_cmd"
+echo "verify-pr: running cache-aware pre-push validation"
 "$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
 """
 

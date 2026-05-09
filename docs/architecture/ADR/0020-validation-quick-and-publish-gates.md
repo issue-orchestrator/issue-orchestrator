@@ -29,6 +29,10 @@ validation:
     dirty_check: tracked
 ```
 
+Errata: when the user-facing `make validate-pr` target wraps the cache-aware
+`scripts/verify-pr.sh` path, `validation.publish.cmd` should instead point to
+the underlying raw command, for example `make validate-pr-raw`.
+
 `validation.quick.cmd` runs on `coding-done completed` and inside local
 coder/reviewer exchange. Repos should put fast tests, lint/type checks, and
 cheap policy scans here, including project-specific bans on newly added test

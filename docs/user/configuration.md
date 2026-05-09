@@ -17,10 +17,14 @@ validation:
     cmd: "make test"
     timeout_seconds: 300
   publish:
-    cmd: "make validate-pr"
+    cmd: "make validate-pr-raw"
     timeout_seconds: 1800
     dirty_check: tracked
 ```
+
+Use the raw publish command when your user-facing `make validate-pr` target
+wraps the cache-aware `scripts/verify-pr.sh` path. That keeps pre-push
+validation from re-entering itself.
 
 Label an issue with `agent:dev` and start the orchestrator.
 

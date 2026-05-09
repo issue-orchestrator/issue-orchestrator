@@ -345,7 +345,8 @@ def test_render_verify_pr_script_uses_cache_aware_prepush_check() -> None:
     rendered = _render_verify_pr_script("make validate-pr")
 
     assert "prepush_check -v" in rendered
-    assert 'validation_cmd=\'make validate-pr\'' in rendered
+    assert "verify-pr: running cache-aware pre-push validation" in rendered
+    assert "validation_cmd=" not in rendered
     assert 'bash -lc "$validation_cmd"' not in rendered
 
 

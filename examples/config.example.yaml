@@ -177,9 +177,11 @@ validation:
     # test skips such as assumeTrue/assumeFalse/@Disabled in JVM projects).
     timeout_seconds: 300
   publish:
-    cmd: "make validate-pr"
+    cmd: "make validate-pr-raw"
     # Authoritative pre-push / pre-publish gate. issue-orchestrator caches
     # successful runs by HEAD SHA + command so git pre-push can reuse them.
+    # If `make validate-pr` calls scripts/verify-pr.sh, configure the raw
+    # underlying command here so pre-push validation does not re-enter itself.
     timeout_seconds: 1800
     # tracked = block on staged + unstaged changes (default)
     # all = block on tracked + untracked changes
