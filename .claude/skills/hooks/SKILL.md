@@ -88,7 +88,7 @@ Use `issue-orchestrator setup-hooks` only when intentionally installing AI hook 
 | `git commit --no-verify` | AI hook | Bypasses pre-commit |
 | `gh pr merge` | AI hook | Agents cannot merge PRs |
 | Push with failing tests | Git hook | Repo-local pre-push runs `scripts/verify-pr.sh` |
-| Push with dirty tracked files | Git hook | Dirty-tree guard reads `validation.pre_push_dirty_check` |
+| Push with dirty tracked files | Git hook | Dirty-tree guard reads `validation.publish.dirty_check` |
 | Push with import violations | Git hook | Pre-commit runs lint-imports |
 
 ## Modifying Hooks

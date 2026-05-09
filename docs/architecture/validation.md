@@ -39,10 +39,8 @@ respond immediately.
 `validation.publish.cmd` should be the same command your repository treats as
 its authoritative pre-push / pre-publish gate.
 
-The old single-command shape (`validation.cmd`,
-`validation.timeout_seconds`, and `validation.pre_push_dirty_check`) is rejected
-at config load time. That keeps upgrades visible instead of silently disabling
-both lifecycle gates.
+Keep quick and publish commands configured separately so active review loops can
+stay responsive while push/publish actions still run the deeper repository gate.
 
 When you install repo guardrails with `issue-orchestrator setup-guardrails`, the
 generated `scripts/verify-pr.sh` captures the selected config filename. If you
