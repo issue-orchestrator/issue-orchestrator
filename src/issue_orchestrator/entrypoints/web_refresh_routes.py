@@ -180,6 +180,7 @@ async def refresh_issue(
             issue.state,
         )
     queue_cache.prune_refresh_timestamps()
+    queue_cache.save_snapshot(orchestrator.deps.queue_cache_store)
 
     return JSONResponse({
         "status": "refreshed" if outcome.status == QueueMutationStatus.ACCEPTED else outcome.status.value,

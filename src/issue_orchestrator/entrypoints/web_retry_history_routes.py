@@ -375,6 +375,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             issue_number=issue_number,
             repository_host=repository_host,
             queue_cache=queue_cache,
+            queue_cache_store=deps.queue_cache_store,
             state=state,
             pending_labels_to_add=pending_labels_to_add,
             from_scratch=from_scratch,
@@ -479,6 +480,7 @@ def _enqueue_reset_retry_issue(
     issue_number: int,
     repository_host: Any,
     queue_cache: QueueCache,
+    queue_cache_store: Any,
     state: Any,
     pending_labels_to_add: list[str],
     from_scratch: bool,
@@ -497,10 +499,13 @@ def _enqueue_reset_retry_issue(
     if outcome.status == QueueMutationStatus.ACCEPTED:
         record_issue_refreshes(state, {issue_number}, refreshed_at)
         queue_cache.prune_refresh_timestamps()
+        queue_cache.save_snapshot(queue_cache_store)
         RetryHistoryState(state).prioritize_issue_front(issue_number)
         return None
 
     clear_issue_refresh(state, issue_number)
+    queue_cache.prune_refresh_timestamps()
+    queue_cache.save_snapshot(queue_cache_store)
     return _make_reset_failure(
         issue_number,
         result,

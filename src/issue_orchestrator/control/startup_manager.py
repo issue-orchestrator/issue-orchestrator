@@ -741,8 +741,8 @@ class StartupManager:
                     issue_map.pop(issue.number, None)
 
             # Apply eligibility policy (scope + exclusion filters)
-            from .queue_cache import QueueCache
-            QueueCache(self.config, state).replace_from_refresh(list(issue_map.values()))
+            queue_cache = QueueCache(self.config, state)
+            queue_cache.replace_from_refresh(list(issue_map.values()))
             state.queue_delta_watermark = next_watermark or cached_watermark
             logger.info(
                 "[STARTUP] Delta sync: %d delta issues, %d in queue after filter",
@@ -756,11 +756,7 @@ class StartupManager:
 
         # Persist updated state to SQLite for next restart
         state.startup_message = "Persisting queue cache..."
-        store.save_snapshot(
-            state.cached_scope_issues,
-            state.queue_delta_watermark,
-            repo=self.config.repo or "",
-        )
+        QueueCache(self.config, state).save_snapshot(store)
 
     async def _resume_partial_work(
         self,

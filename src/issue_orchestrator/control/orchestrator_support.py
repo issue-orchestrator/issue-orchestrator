@@ -762,11 +762,7 @@ def _fetch_and_update_queue(
         )
 
         if queue_cache_store is not None:
-            queue_cache_store.save_snapshot(
-                state.cached_scope_issues,
-                state.queue_delta_watermark,
-                repo=config.repo or "",
-            )
+            queue_cache.save_snapshot(queue_cache_store)
 
         if state.failed_this_cycle:
             logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)

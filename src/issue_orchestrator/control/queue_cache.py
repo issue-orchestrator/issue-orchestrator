@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..domain.models import OrchestratorState
     from ..ports.issue import Issue
+    from ..ports.queue_cache_store import QueueCacheStore
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,14 @@ class QueueCache:
         if (time.time() - self._state.ui_visible_updated_at) > _UI_VISIBILITY_STALENESS_SECONDS:
             return set()
         return set(self._state.ui_visible_issue_numbers)
+
+    def save_snapshot(self, store: "QueueCacheStore") -> None:
+        """Persist the current in-scope queue snapshot for warm restarts."""
+        store.save_snapshot(
+            self._state.cached_scope_issues,
+            self._state.queue_delta_watermark,
+            repo=self._config.repo or "",
+        )
 
 
 def record_issue_refreshes(
