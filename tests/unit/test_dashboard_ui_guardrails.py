@@ -1683,11 +1683,14 @@ def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
     assert "data-nodeid=" in expand_body
     # Source must be JUnit-derived — other runners have no captured output to fetch.
     assert "sourceKey.includes('junit')" in expand_body
-    # Captured-output expansion is gated to FAILED rows only — passed rows
-    # rendering an empty "Captured output" block would turn every passing row
-    # into expandable noise. (Users who want green-run logs can hit the JUnit
-    # XML link in Run details & artifacts.)
-    assert "outcomeState === 'failed' && runId" in expand_body
+    # Captured-output expansion is outcome-agnostic: a passed test can still
+    # carry meaningful stdout/stderr (debug prints, setup logs), and the prior
+    # failed-only gate left the user with no UI path to drill into a green run.
+    # The placeholder is now rendered for any JUnit-sourced row with a runId;
+    # tests with nothing captured fall through to the 404 → "No captured
+    # output recorded for this test." note.
+    assert "canFetchOutput = runId !== null && sourceKey.includes('junit')" in expand_body
+    assert "outcomeState === 'failed' && runId" not in expand_body
     # Toggle handler triggers fetch on first expand.
     assert "_maybeLoadCapturedOutput(expand)" in toggle_body
     assert "/api/e2e-run/" in fetch_body
