@@ -2025,10 +2025,17 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     failing_row.locator(".trr-row-main").click()
     expect(expand_block).to_be_hidden(timeout=2000)
 
-    # ── Passed row must NOT be expandable (no error, no lifecycle) ──
+    # ── Passed row IS expandable: any JUnit-sourced row carries a
+    # captured-output placeholder so the user can drill into stdout/stderr,
+    # not just failed rows. The placeholder is collapsed by default and only
+    # fetches on first expand; tests with nothing captured fall through to
+    # the 404 → "No captured output" empty note.
     passed_row = modal.locator(f".trr-row[data-nodeid='{passed_nodeid}']")
-    expect(passed_row).to_have_attribute("data-expandable", "0")
-    expect(passed_row.locator(".trr-expand")).to_have_count(0)
+    expect(passed_row).to_have_attribute("data-expandable", "1")
+    passed_expand = passed_row.locator(".trr-expand")
+    expect(passed_expand).to_have_count(1)
+    expect(passed_expand).to_have_attribute("hidden", "")
+    expect(passed_expand.locator('.trr-captured-output[data-needs-fetch="1"]')).to_have_count(1)
 
 
 def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(

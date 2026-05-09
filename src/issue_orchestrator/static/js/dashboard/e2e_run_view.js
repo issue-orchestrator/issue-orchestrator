@@ -567,14 +567,14 @@ function _renderTestRowExpand(test, lifecycle, opts) {
         : '';
     // Captured stdout/stderr is read on-demand from the run's JUnit XML — we
     // never persist it. Render a placeholder; toggleTestRowExpand fills it in
-    // on first expand. Scope: failed rows only. Passing tests usually have
-    // nothing to show, and rendering an empty "Captured output" block on
-    // every passing row turns them all into expandable noise. Users who want
-    // captured output from a green run can open the JUnit XML directly from
-    // Run details & artifacts.
+    // on first expand. Any JUnit-sourced row qualifies, regardless of outcome:
+    // a green run can still have meaningful captured output (debug prints,
+    // setup logs), and not exposing it leaves the user with no UI path at all.
+    // Tests with no captured output get a graceful "No captured output
+    // recorded for this test." note via the 404 path.
     const runId = Number.isFinite(opts.runId) ? Number(opts.runId) : null;
     const sourceKey = String(test && test.result_source || '').toLowerCase();
-    const canFetchOutput = outcomeState === 'failed' && runId !== null && sourceKey.includes('junit');
+    const canFetchOutput = runId !== null && sourceKey.includes('junit');
     const capturedBlock = canFetchOutput
         ? `<div class="trr-captured-output" data-needs-fetch="1" data-run-id="${runId}" data-nodeid="${escapeAttr(test.nodeid)}">
             <div class="trr-expand-heading">Captured output</div>
