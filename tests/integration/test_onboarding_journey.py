@@ -116,6 +116,8 @@ def _local_onboarding_prompter() -> _QueuePrompter:
             "subprocess",
             "io",
             "true",
+            "",
+            "300",
             "300",
             "",
             False,

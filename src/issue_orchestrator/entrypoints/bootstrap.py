@@ -442,9 +442,9 @@ def _create_completion_components(
         events=events,
         session_output=session_output,
         working_copy=working_copy,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        command_runner=command_runner if config.validation.quick.cmd else None,
+        validation_cmd=config.validation.quick.cmd,
+        validation_timeout_seconds=config.validation.quick.timeout_seconds,
         validation_junit_xml_paths=_validation_junit_xml_paths(config),
         validation_evidence_recorder=RunEvidenceRecorder(session_output),
         attempt_store=attempt_store,
@@ -492,9 +492,9 @@ def _create_async_completion_components(
     executor_config = ExecutorConfig(
         max_workers=2,  # Max concurrent publish jobs
         job_timeout_seconds=600,  # 10 minutes max per job
-        enable_validation=config.validation.cmd is not None if config.validation else False,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        enable_validation=config.validation.quick.cmd is not None,
+        validation_cmd=config.validation.quick.cmd,
+        validation_timeout_seconds=config.validation.quick.timeout_seconds,
     )
 
     # Create job store for persistence (crash recovery)
@@ -508,7 +508,7 @@ def _create_async_completion_components(
         completion_processor=completion_processor,
         events=events,
         config=executor_config,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        command_runner=command_runner if config.validation.quick.cmd else None,
         job_store=job_store,
     )
 
@@ -1077,9 +1077,9 @@ def build_orchestrator_for_testing(
         events=events,
         session_output=session_output,
         working_copy=working_copy,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        command_runner=command_runner if config.validation.quick.cmd else None,
+        validation_cmd=config.validation.quick.cmd,
+        validation_timeout_seconds=config.validation.quick.timeout_seconds,
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         provider_resilience=provider_resilience,

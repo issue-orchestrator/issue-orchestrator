@@ -75,6 +75,11 @@ REVIEW_TERMINAL_CLUSTER_EVENT_NAMES: frozenset[str] = frozenset({
     EventName.REVIEW_CHANGES_REQUESTED.value,
 })
 
+REVIEW_STORY_MECHANIC_EVENT_NAMES: frozenset[str] = frozenset({
+    EventName.REVIEW_EXCHANGE_ROLE_PROMPTED.value,
+    EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK.value,
+})
+
 REVIEW_ROUND_CLOSE_EVENT_NAMES: frozenset[str] = frozenset({
     EventName.REVIEW_EXCHANGE_ROUND_COMPLETED.value,
     EventName.REVIEW_EXCHANGE_COMPLETED.value,

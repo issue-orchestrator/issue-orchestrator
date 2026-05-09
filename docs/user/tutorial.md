@@ -106,8 +106,13 @@ execution:
     max_concurrent_sessions: 2
 
 validation:
-  cmd: "make test"
-  timeout_seconds: 300
+  quick:
+    cmd: "make test"
+    timeout_seconds: 300
+  publish:
+    cmd: "make test"
+    timeout_seconds: 1800
+    dirty_check: tracked
 ```
 
 ### Step 3: Set Your GitHub Token

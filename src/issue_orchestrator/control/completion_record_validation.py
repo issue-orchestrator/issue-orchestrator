@@ -197,9 +197,9 @@ class CompletionRecordValidator:
         return WorktreeValidationResult.pass_()
 
     def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
-        """Apply validation.pre_push_dirty_check policy before push actions."""
+        """Apply validation.publish.dirty_check policy before push actions."""
         mode = (
-            self._config.validation.pre_push_dirty_check
+            self._config.validation.publish.dirty_check
             if self._config is not None
             else "off"
         )
@@ -218,7 +218,7 @@ class CompletionRecordValidator:
             return WorktreeValidationResult.fail(
                 WorktreeValidationFailure.DIRTY_POLICY,
                 (
-                    "Invalid validation.pre_push_dirty_check value: "
+                    "Invalid validation.publish.dirty_check value: "
                     f"{mode!r} (expected tracked|unstaged|all|off)"
                 ),
             )
@@ -251,7 +251,7 @@ class CompletionRecordValidator:
                     WorktreeValidationFailure.DIRTY_POLICY,
                     (
                         "Could not enumerate dirty files "
-                        f"(validation.pre_push_dirty_check={mode!r}); "
+                        f"(validation.publish.dirty_check={mode!r}); "
                         "fail-closed because dirty state is unknown."
                     ),
                 )
@@ -288,7 +288,7 @@ class CompletionRecordValidator:
                 return WorktreeValidationResult.pass_()
             reason = (
                 "Working tree is dirty; commit/add/stash before pushing. "
-                "Override with validation.pre_push_dirty_check."
+                "Override with validation.publish.dirty_check."
             )
             if blocking_files:
                 preview = ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])

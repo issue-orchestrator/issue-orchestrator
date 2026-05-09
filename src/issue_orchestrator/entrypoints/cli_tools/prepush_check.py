@@ -56,7 +56,7 @@ class PrepushValidationOutcome:
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
-    """Load validation configuration from the worktree's config file.
+    """Load publish validation configuration from the worktree's config file.
 
     Reads from .issue-orchestrator/config/ in the worktree.
     This ensures tests are deterministic - no env var leakage from parent processes.
@@ -65,15 +65,16 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
         worktree: Path to the worktree root
 
     Returns:
-        Tuple of (command, timeout_seconds, pre_push_dirty_check)
+        Tuple of (command, timeout_seconds, dirty_check)
     """
     from ...infra.config import load_runtime_validation_config
 
     validation_config = load_runtime_validation_config(worktree)
 
-    cmd = validation_config.get("cmd")
-    timeout = validation_config.get("timeout_seconds", 300)
-    dirty_check = validation_config.get("pre_push_dirty_check", "tracked")
+    publish_config = validation_config.get("publish", {}) or {}
+    cmd = publish_config.get("cmd")
+    timeout = publish_config.get("timeout_seconds", 1800)
+    dirty_check = publish_config.get("dirty_check", "tracked")
     if cmd:
         return cmd, timeout, dirty_check
 
@@ -101,7 +102,7 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     if mode not in DIRTY_CHECK_MODES:
         if verbose:
             print(
-                "Invalid validation.pre_push_dirty_check value: "
+                "Invalid validation.publish.dirty_check value: "
                 f"{mode!r} (expected tracked|unstaged|all|off)"
             )
         return 1
@@ -115,7 +116,7 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
         if verbose:
             print(
                 "Could not enumerate dirty files; failing closed. "
-                f"(validation.pre_push_dirty_check={mode!r})"
+                f"(validation.publish.dirty_check={mode!r})"
             )
         return 1
     dirty_files = _filter_guard_excluded_files(raw_dirty_files, worktree)
@@ -125,13 +126,13 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
                 print(
                     "Working tree is dirty (tracked or untracked files); "
                     "commit, add, or stash before pushing. "
-                    "Override with validation.pre_push_dirty_check."
+                    "Override with validation.publish.dirty_check."
                 )
             else:
                 print(
                     "Tracked files are dirty; commit or stash before pushing. "
                     "Ignored files are allowed. "
-                    "Override with validation.pre_push_dirty_check."
+                    "Override with validation.publish.dirty_check."
                 )
             _print_dirty_files(dirty_files)
         return 1
@@ -346,7 +347,7 @@ def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:
 
         if not cmd:
             if verbose:
-                print("No validation configured - allowing push")
+                print("No publish validation configured - allowing push")
             phase = "validation_unconfigured"
             final_exit_code = 0
             return 0

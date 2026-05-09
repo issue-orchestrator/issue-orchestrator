@@ -398,8 +398,6 @@ def e2e_session_config(
     e2e_terminal_adapter: str | None,
 ) -> Config:
     """Session-scoped config for single orchestrator."""
-    from issue_orchestrator.infra.config import ValidationConfig
-
     config = Config()
     config.repo = repo_name
     config.repo_root = e2e_project_root
@@ -473,10 +471,10 @@ def e2e_session_config(
     from tests.e2e.flows import review_timeout_from_config
     os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
-    config.validation = ValidationConfig(
-        cmd="true",
-        timeout_seconds=30,
-    )
+    config.validation.quick.cmd = "true"
+    config.validation.quick.timeout_seconds = 30
+    config.validation.publish.cmd = "true"
+    config.validation.publish.timeout_seconds = 30
     if keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
         config.cleanup.with_triage.remove_worktrees = False
@@ -730,8 +728,6 @@ def e2e_flow(repo_name: str, orchestrator_watcher, filter_label: str):
 @pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mode: str) -> Config:
     """Create e2e test config with e2e-test agent."""
-    from issue_orchestrator.infra.config import ValidationConfig
-
     config = Config()
     config.repo = repo_name
     config.repo_root = e2e_project_root
@@ -757,10 +753,10 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     from tests.e2e.flows import review_timeout_from_config
     os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
-    config.validation = ValidationConfig(
-        cmd="true",
-        timeout_seconds=30,
-    )
+    config.validation.quick.cmd = "true"
+    config.validation.quick.timeout_seconds = 30
+    config.validation.publish.cmd = "true"
+    config.validation.publish.timeout_seconds = 30
     if keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
         config.cleanup.with_triage.remove_worktrees = False

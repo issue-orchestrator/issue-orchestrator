@@ -313,12 +313,12 @@ def check_hook_verification(config: Config) -> list[Check]:
 
 def check_repo_guardrails(config: Config) -> list[Check]:
     """Check repo-local pre-push guardrail state."""
-    if not config.validation.cmd:
+    if not config.validation.publish.cmd:
         return [
             Check(
                 name="Repo Guardrails",
                 status="info",
-                detail="Skipped - validation.cmd not configured",
+                detail="Skipped - validation.publish.cmd not configured",
             )
         ]
 

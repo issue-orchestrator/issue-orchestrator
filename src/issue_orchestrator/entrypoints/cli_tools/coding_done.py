@@ -350,10 +350,9 @@ def main() -> None:  # noqa: C901, PLR0912
     if under_orchestrator:
         reset_rejection_counter(worktree_root, get_session_id())
 
-    # 3. Run validation if configured
-    #    Always run validation so the agent gets immediate feedback on failures.
-    #    The orchestrator's validation gate serves as a safety net but is not
-    #    the primary feedback mechanism.
+    # 3. Run quick validation if configured. This is the immediate feedback
+    #    path for coding agents; deeper publish validation runs later through
+    #    the orchestrator-controlled pre-push/pre-publish gate.
     validation_result = None
     under_orchestrator = bool(get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID"))
     statuses_requiring_validation = {AgentStatus.COMPLETED}

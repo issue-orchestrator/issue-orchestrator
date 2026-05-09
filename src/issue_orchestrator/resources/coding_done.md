@@ -18,6 +18,14 @@ If you genuinely cannot commit certain files (e.g., they shouldn't be tracked), 
 
 ---
 
+## IMPORTANT: Do Not Skip Tests
+
+Do not disable, skip, quarantine, or weaken failing tests to make validation pass.
+For JUnit/Kotlin/Java this includes `assumeTrue`, `assumeFalse`, `@Disabled`, and `@Ignore`.
+Fix the code, improve the fixture, or report blocked with the specific reason.
+
+---
+
 ## Completion Protocol
 
 When your work is done (or you cannot proceed), call `coding-done` with the appropriate status:
@@ -72,11 +80,11 @@ Completed status also supports:
 ## What happens after coding-done
 
 1. **Dirty-file check** - coding-done verifies your working tree is clean
-2. **Validation runs** (if configured) - tests, linting, type checks
+2. **Quick validation runs** (if configured) - fast tests, linting, type checks
 3. **If validation fails**: coding-done exits non-zero. Fix the issues and run coding-done again.
 4. **Preflight push check** - verifies the push will succeed
 5. **If all checks pass**: Completion record is written
-6. **Orchestrator takes over**: pushes code, creates PR, posts comments, updates labels
+6. **Orchestrator takes over**: runs publish validation, pushes code, creates PR, posts comments, updates labels
 
 You do NOT push code or touch GitHub directly. The orchestrator handles all external operations.
 

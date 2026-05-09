@@ -363,7 +363,7 @@ def _register_hook_commands(subparsers, handlers: CLICommandHandlers) -> None:
         "--validation-cmd",
         type=str,
         default=None,
-        help="Override validation.cmd when generating scripts/verify-pr.sh",
+        help="Override validation.publish.cmd when generating scripts/verify-pr.sh",
     )
     setup_guardrails_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"

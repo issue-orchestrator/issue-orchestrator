@@ -82,7 +82,7 @@ def get_output_dir(worktree: Path) -> Path:
 
 
 def load_validation_cmd(worktree: Path) -> str | None:
-    """Load validation command from config.
+    """Load quick validation command from config.
 
     Args:
         worktree: Path to the worktree root
@@ -93,7 +93,8 @@ def load_validation_cmd(worktree: Path) -> str | None:
     from ...infra.config import load_runtime_validation_config
 
     validation_config = load_runtime_validation_config(worktree)
-    return validation_config.get("cmd")
+    quick_config = validation_config.get("quick", {}) or {}
+    return quick_config.get("cmd")
 
 
 def run_command_text(args: list[str], *, cwd: Path) -> str | None:
@@ -471,7 +472,7 @@ def main() -> None:
         print("Either:", file=sys.stderr)
         print("  1. Pass --command 'your command here'", file=sys.stderr)
         print(
-            "  2. Configure validation.cmd in .issue-orchestrator/config/*.yaml",
+            "  2. Configure validation.quick.cmd in .issue-orchestrator/config/*.yaml",
             file=sys.stderr,
         )
         sys.exit(2)

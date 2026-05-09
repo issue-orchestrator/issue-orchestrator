@@ -2742,19 +2742,19 @@ triage:
 class TestValidationConfig:
     """Tests for validation.* configuration."""
 
-    def test_pre_push_dirty_check_all_is_valid(self):
+    def test_publish_dirty_check_all_is_valid(self):
         config = Config()
-        config.validation.pre_push_dirty_check = "all"
+        config.validation.publish.dirty_check = "all"
 
         errors = config.validate()
-        assert not any("validation.pre_push_dirty_check" in err for err in errors)
+        assert not any("validation.publish.dirty_check" in err for err in errors)
 
-    def test_pre_push_dirty_check_invalid_fails_validation(self):
+    def test_publish_dirty_check_invalid_fails_validation(self):
         config = Config()
-        config.validation.pre_push_dirty_check = "invalid-mode"
+        config.validation.publish.dirty_check = "invalid-mode"
 
         errors = config.validate()
-        assert "validation.pre_push_dirty_check must be one of: tracked, unstaged, all, off" in errors
+        assert "validation.publish.dirty_check must be one of: tracked, unstaged, all, off" in errors
 
     def test_junit_xml_paths_load_from_yaml(self, tmp_path):
         """validation.junit_xml_paths must round-trip through YAML — without
@@ -2765,7 +2765,8 @@ agents:
   agent:test:
     prompt: /tmp/prompt.txt
 validation:
-  cmd: make test
+  quick:
+    cmd: make test
   junit_xml_paths:
     - "test-results.xml"
     - "build/test-results/test/*.xml"
@@ -2785,7 +2786,8 @@ agents:
   agent:test:
     prompt: /tmp/prompt.txt
 validation:
-  cmd: make test
+  quick:
+    cmd: make test
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -2799,7 +2801,8 @@ agents:
   agent:test:
     prompt: /tmp/prompt.txt
 validation:
-  cmd: make test
+  quick:
+    cmd: make test
   junit_xml_paths:
     - "test-results.xml"
 """

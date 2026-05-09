@@ -2,9 +2,7 @@
 # Orchestrator pre-push hook - validates agent code quality
 # Installed by issue-orchestrator alongside the wrapper
 #
-# This hook:
-# 1. Runs publish gate validation (with cache lookup)
-# 2. Blocks test-skipping patterns (@Disabled, @Ignore, etc.)
+# This hook runs publish gate validation with cache lookup.
 #
 # Exit codes:
 #   0 = ALLOW the push
@@ -38,32 +36,5 @@ elif command -v prepush-check >/dev/null 2>&1; then
         exit 1
     fi
 fi
-
-# Block test-skipping patterns in staged changes
-# These indicate tests were disabled rather than fixed
-SKIP_PATTERNS=(
-    "@Disabled"
-    "@Ignore"
-    "assumeTrue.*false"
-    "pytest.mark.skip"
-    "@pytest.mark.skipif"
-    "unittest.skip"
-    "xit\\("
-    "xdescribe\\("
-    "test\\.skip"
-    "it\\.skip"
-    "describe\\.skip"
-)
-
-# Get the diff being pushed
-DIFF=$(git diff --cached HEAD~1..HEAD 2>/dev/null || git diff HEAD 2>/dev/null || echo "")
-
-for pattern in "${SKIP_PATTERNS[@]}"; do
-    if echo "$DIFF" | grep -qE "^\+.*$pattern"; then
-        echo "ERROR: Test-skipping pattern detected: $pattern" >&2
-        echo "Fix the test instead of skipping it." >&2
-        exit 1
-    fi
-done
 
 exit 0

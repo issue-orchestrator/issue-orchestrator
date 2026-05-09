@@ -1440,7 +1440,7 @@ class TestSessionControllerValidationCaching:
         )
 
         config = Config()
-        config.validation.pre_push_dirty_check = "tracked"
+        config.validation.publish.dirty_check = "tracked"
         label_adapter = MagicMock()
         pr_adapter = MagicMock()
         git_adapter = MagicMock()

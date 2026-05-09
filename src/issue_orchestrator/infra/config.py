@@ -290,7 +290,7 @@ class Config:
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 
-    # Validation configuration - single command runs on coding-done/reviewer-done and pre-push
+    # Validation configuration - quick agent feedback plus deeper publish gate
     validation: ValidationConfig = field(default_factory=ValidationConfig)
 
     # Retry configuration - validation retry with error injection
@@ -383,8 +383,8 @@ class Config:
         return self.prefixed_label(self.label_validation_failed)
 
     def is_validation_enabled(self) -> bool:
-        """Check if validation is enabled (cmd is set)."""
-        return self.validation.cmd is not None
+        """Check if any validation command is configured."""
+        return bool(self.validation.quick.cmd or self.validation.publish.cmd)
 
     def get_filter_milestones(self) -> list[str]:
         """Return a list of milestone filters."""
@@ -595,9 +595,15 @@ class Config:
             },
             "validation": {
                 "enabled": self.is_validation_enabled(),
-                "cmd": self.validation.cmd,
-                "timeout_seconds": self.validation.timeout_seconds,
-                "pre_push_dirty_check": self.validation.pre_push_dirty_check,
+                "quick": {
+                    "cmd": self.validation.quick.cmd,
+                    "timeout_seconds": self.validation.quick.timeout_seconds,
+                },
+                "publish": {
+                    "cmd": self.validation.publish.cmd,
+                    "timeout_seconds": self.validation.publish.timeout_seconds,
+                    "dirty_check": self.validation.publish.dirty_check,
+                },
                 "coverage_guardrail": {
                     "enabled": self.validation.coverage_guardrail.enabled,
                     "min_percent": self.validation.coverage_guardrail.min_percent,
@@ -1046,12 +1052,22 @@ class Config:
 
         # Validation section
         validation_dict: dict = {}
-        if self.validation.cmd:
-            validation_dict["cmd"] = self.validation.cmd
-            if self.validation.timeout_seconds != 300:
-                validation_dict["timeout_seconds"] = self.validation.timeout_seconds
-        if self.validation.pre_push_dirty_check != "tracked":
-            validation_dict["pre_push_dirty_check"] = self.validation.pre_push_dirty_check
+        quick_dict: dict = {}
+        if self.validation.quick.cmd:
+            quick_dict["cmd"] = self.validation.quick.cmd
+            if self.validation.quick.timeout_seconds != 300:
+                quick_dict["timeout_seconds"] = self.validation.quick.timeout_seconds
+        if quick_dict:
+            validation_dict["quick"] = quick_dict
+        publish_dict: dict = {}
+        if self.validation.publish.cmd:
+            publish_dict["cmd"] = self.validation.publish.cmd
+            if self.validation.publish.timeout_seconds != 1800:
+                publish_dict["timeout_seconds"] = self.validation.publish.timeout_seconds
+        if self.validation.publish.dirty_check != "tracked":
+            publish_dict["dirty_check"] = self.validation.publish.dirty_check
+        if publish_dict:
+            validation_dict["publish"] = publish_dict
         if self.validation.coverage_guardrail != CoverageGuardrailConfig():
             validation_dict["coverage_guardrail"] = {
                 "enabled": self.validation.coverage_guardrail.enabled,
@@ -1275,9 +1291,17 @@ class Config:
 
         if self.triage.priority is not None and not re.fullmatch(r"P\d", self.triage.priority.strip()):
             errors.append("triage.priority must be a tier like 'P0'..'P9'")
-        if self.validation.pre_push_dirty_check not in {"tracked", "unstaged", "all", "off"}:
+        if self.validation.publish.dirty_check not in {"tracked", "unstaged", "all", "off"}:
             errors.append(
-                "validation.pre_push_dirty_check must be one of: tracked, unstaged, all, off"
+                "validation.publish.dirty_check must be one of: tracked, unstaged, all, off"
+            )
+        if (
+            self.review_enabled
+            and self.review_exchange_require_validation
+            and not self.validation.quick.cmd
+        ):
+            errors.append(
+                "validation.quick.cmd must be configured when review.exchange.loop.require_validation is true"
             )
 
         return errors

@@ -406,7 +406,7 @@ def test_issue_detail_uses_mocked_pipeline_artifact_refs_from_sqlite(
     web.set_orchestrator(orch)
     try:
         client = TestClient(web.app)
-        response = client.get(f"/api/issue-detail/{issue_number}")
+        response = client.get(f"/api/issue-detail/{issue_number}?view=ops")
         assert response.status_code == 200
         payload = response.json()
         raw_events = payload.get("events")
@@ -646,7 +646,6 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
             "agent.coding_started",
             "validation.passed",
             "agent.completed",
-            "review.started",
             "review.approved",
             "pr.created",
         ]
@@ -998,14 +997,14 @@ def test_issue_detail_local_loop_review_rounds_split_into_distinct_cycles(
         assert _step_events(user_first_cycle) == [
             "agent.coding_started",
             "agent.completed",
-            "review_exchange.round_started",
             "review_exchange.round_completed",
         ]
-        assert user_first_cycle["steps"][2]["narrative"] == "Code review started (reviewer)"
+        assert user_first_cycle["steps"][2]["narrative"] == (
+            "Reviewer requested changes: Round 1 changes_requested (reviewer)"
+        )
         assert _step_events(user_second_cycle) == [
             "review.rework_started",
             "review.rework_completed",
-            "review_exchange.round_started",
             "review.approved",
         ]
     finally:
@@ -1194,7 +1193,6 @@ def test_user_view_shows_validation_retry_transition_after_review_approval(
         assert [cycle["iteration"] for cycle in latest_run["cycles"]] == [1, 2]
         assert _step_events(latest_run["cycles"][0]) == [
             "agent.coding_started",
-            "review.started",
             "review.approved",
         ]
         assert _step_events(latest_run["cycles"][1]) == [

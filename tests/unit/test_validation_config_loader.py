@@ -22,16 +22,22 @@ def test_extract_validation_config_merges_nested_defaults() -> None:
     result = extract_validation_config(
         {
             "validation": {
-                "cmd": "make verify",
+                "quick": {"cmd": "make verify"},
                 "coverage_guardrail": {"enabled": True},
             }
         }
     )
 
     assert result == {
-        "cmd": "make verify",
-        "timeout_seconds": 300,
-        "pre_push_dirty_check": "tracked",
+        "quick": {
+            "cmd": "make verify",
+            "timeout_seconds": 300,
+        },
+        "publish": {
+            "cmd": None,
+            "timeout_seconds": 1800,
+            "dirty_check": "tracked",
+        },
         "junit_xml_paths": (),
         "coverage_guardrail": {
             "enabled": True,
@@ -70,9 +76,13 @@ def test_load_validation_config_from_file_reads_explicit_file(tmp_path: Path) ->
     config_path.write_text(
         """
 validation:
-  cmd: make validate
-  timeout_seconds: 120
-  pre_push_dirty_check: all
+  quick:
+    cmd: make validate
+    timeout_seconds: 120
+  publish:
+    cmd: make validate-pr
+    timeout_seconds: 1800
+    dirty_check: all
   coverage_guardrail:
     enabled: true
     min_percent: 85
@@ -81,9 +91,10 @@ validation:
 
     result = load_validation_config_from_file(config_path)
 
-    assert result["cmd"] == "make validate"
-    assert result["timeout_seconds"] == 120
-    assert result["pre_push_dirty_check"] == "all"
+    assert result["quick"]["cmd"] == "make validate"
+    assert result["quick"]["timeout_seconds"] == 120
+    assert result["publish"]["cmd"] == "make validate-pr"
+    assert result["publish"]["dirty_check"] == "all"
     assert result["coverage_guardrail"]["enabled"] is True
     assert result["coverage_guardrail"]["min_percent"] == 85
 

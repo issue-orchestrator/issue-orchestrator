@@ -1261,7 +1261,7 @@ class SessionLauncher:
         """Render the prompt used to send a validation failure back to a coder."""
         if retry.original_prompt and retry.original_prompt.lstrip().startswith("# Validation Retry"):
             return retry.original_prompt
-        validation_cmd = retry.validation_cmd or (self.config.validation.cmd if self.config.validation else None) or ""
+        validation_cmd = retry.validation_cmd or self.config.validation.quick.cmd or ""
         original_task = retry.original_prompt or f"Work on issue #{issue.number}: {issue.title}"
         template = DEFAULT_RETRY_TEMPLATE
         template_path = agent_config.retry_prompt_template or self.config.retry.retry_prompt_template

@@ -71,19 +71,32 @@ class CoverageGuardrailConfig:
 
 
 @dataclass
+class ValidationCommandConfig:
+    """A single configured validation command."""
+
+    cmd: Optional[str] = None
+    timeout_seconds: int = 300
+
+
+@dataclass
+class PublishValidationConfig(ValidationCommandConfig):
+    """Authoritative validation used before publishing code."""
+
+    timeout_seconds: int = 1800
+    dirty_check: str = "tracked"  # "tracked" | "unstaged" | "all" | "off"
+
+
+@dataclass
 class ValidationConfig:
-    """Validation configuration - single command runs everywhere.
+    """Validation configuration split by lifecycle cost.
 
-    The same validation command runs:
-    - On coding-done/reviewer-done: gives agent immediate feedback to fix issues
-    - On pre-push: cached by SHA, instant pass if already validated
-
-    This ensures agents can't "pass" a quick check only to fail later.
+    ``quick`` runs while the coding agent still owns the session and during
+    coder/reviewer exchanges. ``publish`` is the deeper pre-push/pre-publish
+    gate.
     """
 
-    cmd: Optional[str] = None  # Command to run (e.g., "make validate")
-    timeout_seconds: int = 300  # Default 5 minutes
-    pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "all" | "off"
+    quick: ValidationCommandConfig = field(default_factory=ValidationCommandConfig)
+    publish: PublishValidationConfig = field(default_factory=PublishValidationConfig)
     coverage_guardrail: CoverageGuardrailConfig = field(default_factory=CoverageGuardrailConfig)
     # JUnit XML output paths (relative to worktree, glob-supported) emitted by
     # the validation command. When set, the dashboard renders a structured

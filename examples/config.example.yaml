@@ -170,16 +170,22 @@ cleanup:
     remove_worktrees: false
 
 validation:
-  cmd: "make validate"
-  # This should be the same command your repo treats as its authoritative
-  # pre-push / pre-publish gate. issue-orchestrator caches successful runs by
-  # HEAD SHA + command so the later git pre-push hook can reuse the same token.
-  timeout_seconds: 300
-  # tracked = block on staged + unstaged changes (default)
-  # all = block on tracked + untracked changes
-  # unstaged = allow staged changes, block unstaged changes
-  # off = disable dirty-check guard
-  pre_push_dirty_check: "tracked"
+  quick:
+    cmd: "make validate-quick"
+    # Fast feedback for coding-done and local coder/reviewer exchanges.
+    # Put lightweight repo policy checks here too (for example: reject added
+    # test skips such as assumeTrue/assumeFalse/@Disabled in JVM projects).
+    timeout_seconds: 300
+  publish:
+    cmd: "make validate-pr"
+    # Authoritative pre-push / pre-publish gate. issue-orchestrator caches
+    # successful runs by HEAD SHA + command so git pre-push can reuse them.
+    timeout_seconds: 1800
+    # tracked = block on staged + unstaged changes (default)
+    # all = block on tracked + untracked changes
+    # unstaged = allow staged changes, block unstaged changes
+    # off = disable dirty-check guard
+    dirty_check: "tracked"
   # Optional per-file coverage guardrail (checks only changed files)
   # coverage_guardrail:
   #   enabled: true
@@ -190,7 +196,7 @@ validation:
   #   coverage_type: "branch"
   #   exclude:
   #     - "src/issue_orchestrator/generated/**"
-  # Optional JUnit XML paths emitted by `cmd` (relative to worktree, glob OK).
+  # Optional JUnit XML paths emitted by validation commands (relative to worktree, glob OK).
   # When set, failed validations render a structured test-centric view in the
   # dashboard issue drawer (same layout as the E2E run modal: pass/fail
   # headline, filter chips, per-row error expand). Pytest example: pass

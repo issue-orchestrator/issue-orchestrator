@@ -58,8 +58,9 @@ class TestLoadValidationCmd:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "pytest"
-  timeout_seconds: 300
+  publish:
+    cmd: "pytest"
+    timeout_seconds: 300
 """)
 
         cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
@@ -73,8 +74,9 @@ validation:
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "main.yaml").write_text("""
 validation:
-  cmd: "pytest -k selected"
-  timeout_seconds: 45
+  publish:
+    cmd: "pytest -k selected"
+    timeout_seconds: 45
 """)
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
 
@@ -90,7 +92,8 @@ validation:
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "default.yaml").write_text("""
 validation:
-  cmd: "pytest"
+  publish:
+    cmd: "pytest"
 """)
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
 
@@ -106,28 +109,30 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "make test"
+  publish:
+    cmd: "make test"
 """)
 
         cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
         assert cmd == "make test"
-        assert timeout == 300  # Default
+        assert timeout == 1800  # Publish default
         assert dirty_check == "tracked"
 
     def test_reads_dirty_check_mode(self, temp_worktree):
-        """Test reads pre_push_dirty_check from config."""
+        """Test reads dirty_check from config."""
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "make test"
-  pre_push_dirty_check: "unstaged"
+  publish:
+    cmd: "make test"
+    dirty_check: "unstaged"
 """)
 
         cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
         assert cmd == "make test"
-        assert timeout == 300
+        assert timeout == 1800
         assert dirty_check == "unstaged"
 
 
@@ -220,8 +225,9 @@ class TestRunPrepushCheck:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  timeout_seconds: 10
+  publish:
+    cmd: "echo 'ok'"
+    timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()
@@ -239,8 +245,9 @@ validation:
         marker_file = temp_worktree / "selected-validation-ran"
         (config_dir / "main.yaml").write_text(f"""
 validation:
-  cmd: "touch {marker_file}"
-  timeout_seconds: 10
+  publish:
+    cmd: "touch {marker_file}"
+    timeout_seconds: 10
 """)
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_NAME", "main.yaml")
 
@@ -262,8 +269,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "exit 1"
-  timeout_seconds: 10
+  publish:
+    cmd: "exit 1"
+    timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()
@@ -281,8 +289,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo boom >&2 && exit 1"
-  timeout_seconds: 10
+  publish:
+    cmd: "echo boom >&2 && exit 1"
+    timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()
@@ -352,8 +361,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text(f"""
 validation:
-  cmd: "touch {marker_file} && echo 'ok'"
-  timeout_seconds: 10
+  publish:
+    cmd: "touch {marker_file} && echo 'ok'"
+    timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()
@@ -404,8 +414,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "tracked"
 """)
 
         # Modify tracked file without committing
@@ -427,8 +438,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "off"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "off"
 """)
 
         (temp_worktree / "README.md").write_text("dirty")
@@ -449,8 +461,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "unstaged"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "unstaged"
 """)
 
         (temp_worktree / "README.md").write_text("dirty")
@@ -477,8 +490,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "all"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "all"
 """)
 
         (temp_worktree / "new_untracked.txt").write_text("new file")
@@ -499,8 +513,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "bogus"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "bogus"
 """)
 
         orig_cwd = os.getcwd()
@@ -509,7 +524,7 @@ validation:
             result = run_prepush_check(verbose=True)
             captured = capsys.readouterr()
             assert result == 1
-            assert "Invalid validation.pre_push_dirty_check value" in captured.out
+            assert "Invalid validation.publish.dirty_check value" in captured.out
         finally:
             os.chdir(orig_cwd)
 
@@ -522,8 +537,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text(f"""
 validation:
-  cmd: "touch {marker_file} && exit 1"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "touch {marker_file} && exit 1"
+    dirty_check: "tracked"
 """)
 
         orig_cwd = os.getcwd()
@@ -543,8 +559,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "tracked"
 """)
 
         (temp_worktree / "README.md").write_text("dirty")
@@ -565,8 +582,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "tracked"
 """)
 
         runtime_file = temp_worktree / ".issue-orchestrator" / "session-latest.json"
@@ -604,8 +622,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "tracked"
 """)
 
         runtime_file = temp_worktree / ".issue-orchestrator" / "session-latest.json"
@@ -643,8 +662,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "tracked"
 """)
 
         claude_file = temp_worktree / ".claude" / "settings.json"
@@ -686,8 +706,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text(f"""
 validation:
-  cmd: "touch {marker_file}"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "touch {marker_file}"
+    dirty_check: "tracked"
 """)
 
         monkeypatch.setattr(
@@ -715,8 +736,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "tracked"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "tracked"
 """)
 
         (temp_worktree / "README.md").write_text("dirty")
@@ -740,8 +762,9 @@ validation:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
-  pre_push_dirty_check: "all"
+  publish:
+    cmd: "echo 'ok'"
+    dirty_check: "all"
 """)
 
         for i in range(25):

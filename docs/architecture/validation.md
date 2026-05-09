@@ -1,30 +1,43 @@
 # Validation System
 
-Validation is a **publish gate**, not a CI system.
+Validation is a **local lifecycle gate**, not a CI system.
 
 ## Model
 
-- Run one user-defined local command per suite
+- Run one quick local command while the coding/review loop is active
+- Run one deeper publish command before push/publish
 - Cache passing results by worktree + commit SHA + command
-- Reuse the same passing record across pre-publish and pre-push hooks
+- Reuse passing publish records across pre-publish and pre-push hooks
 - Observe GitHub CI rather than reproducing it locally
 
 ## Configuration (YAML)
 
 ```yaml
 validation:
-  cmd: "make validate-pr"
-  # Allow enough time for the repo's authoritative local PR gate to finish.
-  # For issue-orchestrator this includes unit/integration/web/vscode slices.
-  timeout_seconds: 1800
+  quick:
+    # Fast feedback for coding-done and local coder/reviewer exchanges.
+    # Put cheap repo policy scans here too, for example rejecting new
+    # test skips such as assumeTrue/assumeFalse/@Disabled/@Ignore.
+    cmd: "make validate-quick"
+    timeout_seconds: 300
+  publish:
+    # Authoritative local PR/pre-push gate.
+    cmd: "make validate-pr"
+    timeout_seconds: 1800
+    dirty_check: tracked
 
 execution:
   isolation:
     mode: "standard"   # or "hardened"
 ```
 
-The configured command should be the same command your repository treats as its
-authoritative pre-push / pre-publish gate.
+`validation.quick.cmd` should be fast enough to run whenever an agent reports
+`coding-done completed` and between local coder/reviewer rounds. It should catch
+cheap correctness and policy failures early while the coding agent can still
+respond immediately.
+
+`validation.publish.cmd` should be the same command your repository treats as
+its authoritative pre-push / pre-publish gate.
 
 When you install repo guardrails with `issue-orchestrator setup-guardrails`, the
 generated `scripts/verify-pr.sh` captures the selected config filename. If you
@@ -35,13 +48,14 @@ same config.
 The canonical **pre-publish** gate is the worktree's effective `pre-push` hook:
 
 - project hook first (`make validate-pr`, `scripts/verify-pr.sh`, etc.)
-- orchestrator hook second (dirty-tree + banned test-skipping patterns)
+- orchestrator hook second (Agent-Status trailer + dirty-tree policy)
 
 The orchestrator runs that hook chain before the authenticated push so
 push-time policy failures are discovered before publish. The real push still
 keeps hooks enabled; when the commit and configured command match, the later
-hook pass reuses the cached validation record instead of rerunning the command.
-CI still mirrors the repo's required PR coverage in a clean environment.
+hook pass reuses the cached publish validation record instead of rerunning the
+command. CI still mirrors the repo's required PR coverage in a clean
+environment.
 
 ## Runtime Artifact Ignores
 
@@ -57,7 +71,7 @@ for the supported format and operator guidance.
 
 ## Record Format
 
-Location: `.issue-orchestrator/validation/<HEAD_SHA>.json`
+Location: `.issue-orchestrator/validation/<suite>/<HEAD_SHA>.json`
 
 Record fields:
 - `schema_version`

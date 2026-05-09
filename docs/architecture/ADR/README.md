@@ -28,7 +28,7 @@ These ADRs capture the *few* architectural decisions that materially affect corr
 - [0017 Orchestrator coordinates, Planner decides](0017-orchestrator-coordinates-planner-decides.md)
 - [0018 Git worktree isolation per agent session](0018-worktree-isolation.md)
 - [0019 Structured completion protocol (agent-done)](0019-agent-done-completion-protocol.md)
-- [0020 Single validation command (e2e excluded for speed)](0020-single-validation-command.md)
+- [0020 Quick and publish validation gates](0020-validation-quick-and-publish-gates.md)
 - [0021 Optional Docker-based agent isolation](0021-docker-isolation.md)
 - [0022 Issue-specific base branch (default main)](0022-ISSUE-BASE-BRANCH.md)
 - [0023 Deterministic orchestrator required (cannot replace with agentic-first solution)](0023-deterministic-orchestrator-required.md)

@@ -6,6 +6,12 @@ Read the task-specific prompt file for what to do. Return here for how to signal
 
 ---
 
+## IMPORTANT: Do Not Accept Test Skips
+
+Treat newly added test skips or weakened assertions as blocking unless the task explicitly required them. Examples include `assumeTrue`, `assumeFalse`, `@Disabled`, and `@Ignore`.
+
+---
+
 ## Completion Protocol
 
 When your review is done, call `reviewer-done` with the appropriate verdict:

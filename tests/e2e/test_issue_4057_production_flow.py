@@ -428,8 +428,10 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.code_review_agent = "agent:reviewer"
     config.code_review_label = review_label
     config.code_reviewed_label = reviewed_label
-    config.validation.cmd = ISSUE_4057_VALIDATION_CMD
-    config.validation.timeout_seconds = 20 * 60
+    config.validation.quick.cmd = ISSUE_4057_VALIDATION_CMD
+    config.validation.quick.timeout_seconds = 20 * 60
+    config.validation.publish.cmd = ISSUE_4057_VALIDATION_CMD
+    config.validation.publish.timeout_seconds = 20 * 60
     config.review_exchange_mode = "via-local-loop"
     config.review_exchange_require_validation = True
     config.agents = {

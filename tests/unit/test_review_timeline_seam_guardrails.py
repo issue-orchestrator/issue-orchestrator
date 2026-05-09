@@ -108,6 +108,7 @@ def test_role_prompted_step_keeps_role_and_typed_artifact_after_timeline_round_t
                 },
             ],
         ),
+        view="ops",
     )
 
     detail.assert_step_events("review_exchange.role_prompted")

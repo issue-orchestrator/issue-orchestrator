@@ -649,8 +649,10 @@ def build_config(
     config.web_port = 0
 
     if validation_cmd:
-        config.validation.cmd = validation_cmd
-        config.validation.timeout_seconds = 5
+        config.validation.quick.cmd = validation_cmd
+        config.validation.quick.timeout_seconds = 5
+        config.validation.publish.cmd = validation_cmd
+        config.validation.publish.timeout_seconds = 5
 
     prompt = repo_root / "prompt.md"
     prompt.write_text("Simulated scenario prompt")

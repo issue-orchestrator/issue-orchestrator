@@ -29,6 +29,8 @@ from .config_models import (
     SqliteBackupConfig,
     TimelineConfig,
     TriageConfig,
+    PublishValidationConfig,
+    ValidationCommandConfig,
     ValidationConfig,
 )
 from .config_paths import get_section, resolve_relative_path
@@ -644,10 +646,18 @@ def load_validation_section(config: "Config", validation_section: dict) -> None:
     if validation_section:
         coverage_data = validation_section.get("coverage_guardrail", {}) or {}
         junit_paths_raw = validation_section.get("junit_xml_paths", []) or []
+        quick_data = validation_section.get("quick", {}) or {}
+        publish_data = validation_section.get("publish", {}) or {}
         config.validation = ValidationConfig(
-            cmd=validation_section.get("cmd"),
-            timeout_seconds=validation_section.get("timeout_seconds", 300),
-            pre_push_dirty_check=validation_section.get("pre_push_dirty_check", "tracked"),
+            quick=ValidationCommandConfig(
+                cmd=quick_data.get("cmd"),
+                timeout_seconds=quick_data.get("timeout_seconds", 300),
+            ),
+            publish=PublishValidationConfig(
+                cmd=publish_data.get("cmd"),
+                timeout_seconds=publish_data.get("timeout_seconds", 1800),
+                dirty_check=publish_data.get("dirty_check", "tracked"),
+            ),
             coverage_guardrail=CoverageGuardrailConfig(
                 enabled=coverage_data.get("enabled", False),
                 min_percent=coverage_data.get("min_percent"),

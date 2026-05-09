@@ -2398,6 +2398,66 @@ class TestHandleSessionCompletion:
         assert state.active_sessions == []
         assert len(state.discovered_failures) == 1
 
+    def test_completed_session_stops_runtime_before_cleanup_actions(
+        self,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """A completed agent must not remain visible as a running terminal."""
+        issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
+        issue_key = FakeIssueKey("123")
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+        state = OrchestratorState(active_sessions=[session])
+        calls: list[str] = []
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.side_effect = lambda *args, **kwargs: (
+            calls.append("process_completion")
+            or MagicMock(
+                actions=[AddLabelAction(issue_number=123, label="code-reviewed")],
+                history_entry=SessionHistoryEntry(
+                    issue_number=123,
+                    title="Test Issue",
+                    agent_type="agent:web",
+                    status="completed",
+                    runtime_minutes=12,
+                ),
+                should_defer_cleanup=False,
+                pending_cleanup=None,
+                should_queue_review=False,
+                pr_url=None,
+                pr_number=None,
+            )
+        )
+        mock_action_applier = MagicMock()
+        mock_action_applier.apply_all.side_effect = lambda _actions: calls.append("actions")
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.COMPLETED,
+            state=state,
+            completion_handler=mock_completion_handler,
+            action_applier=mock_action_applier,
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _name: calls.append("kill"),
+            config=MagicMock(),
+            session_output=session_output,
+        )
+
+        assert calls == ["process_completion", "kill", "actions"]
+        assert state.active_sessions == []
+        assert state.completed_today == [123]
+
     def test_timed_out_session_kills_terminal_when_completion_processing_fails(
         self,
         sample_agent_config,

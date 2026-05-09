@@ -292,23 +292,40 @@ def _prompt_validation_settings(
     prompter: Prompter,
 ) -> None:
     """Prompt for validation settings when the config does not already define them."""
-    if "validation" in config and (config.get("validation") or {}).get("cmd"):
+    validation = config.get("validation") or {}
+    if validation.get("quick") or validation.get("publish"):
         return
 
     prompter.print("\n--- Validation ---")
-    prompter.print("Validation runs on coding-done and pre-push.")
-    validation_cmd = prompter.input("Validation command (optional)", "make test")
-    if validation_cmd.strip():
-        timeout = _prompt_int(
+    prompter.print("Quick validation runs on coding-done and review exchanges.")
+    quick_cmd = prompter.input("Quick validation command (optional)", "make test")
+    publish_cmd = prompter.input("Publish validation command (optional)", quick_cmd)
+    validation_config: dict[str, Any] = {}
+    if quick_cmd.strip():
+        quick_timeout = _prompt_int(
             prompter,
-            "Validation timeout (seconds)",
+            "Quick validation timeout (seconds)",
             300,
             min_value=1,
         )
-        config["validation"] = {
-            "cmd": validation_cmd.strip(),
-            "timeout_seconds": timeout,
+        validation_config["quick"] = {
+            "cmd": quick_cmd.strip(),
+            "timeout_seconds": quick_timeout,
         }
+    if publish_cmd.strip():
+        publish_timeout = _prompt_int(
+            prompter,
+            "Publish validation timeout (seconds)",
+            1800,
+            min_value=1,
+        )
+        validation_config["publish"] = {
+            "cmd": publish_cmd.strip(),
+            "timeout_seconds": publish_timeout,
+            "dirty_check": "tracked",
+        }
+    if validation_config:
+        config["validation"] = validation_config
 
 
 def _prompt_manual_existing_agent(
@@ -1488,7 +1505,12 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     install_hooks_now = False
     setup_repo_guardrails_now = False
 
-    if (config.get("validation") or {}).get("cmd"):
+    validation_config = config.get("validation") or {}
+    publish_validation_cmd = bool(
+        (validation_config.get("publish") or {}).get("cmd")
+    )
+
+    if publish_validation_cmd:
         setup_repo_guardrails_now = prompter.yes_no(
             "\nInstall repo-local guardrails and AI agent hooks now? (recommended)",
             default=True,
@@ -1540,10 +1562,11 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
                 prompter.print(
                     "  You can retry later with: issue-orchestrator setup-hooks"
                 )
-        prompter.print(
-            "\nRepo-local pre-push guardrails skipped: configure validation.cmd first, "
-            "then run 'issue-orchestrator setup-guardrails'."
-        )
+        if not publish_validation_cmd:
+            prompter.print(
+                "\nRepo-local pre-push guardrails skipped: configure validation.publish.cmd first, "
+                "then run 'issue-orchestrator setup-guardrails'."
+            )
 
     # AI provider key setup
     if prompter.yes_no("\nSet up AI provider API keys now?", default=True):
@@ -1577,7 +1600,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         prompter.print(f"     • {prompt_path}")
 
     step_number = 2
-    has_validation_cmd = bool((config.get("validation") or {}).get("cmd"))
+    has_validation_cmd = publish_validation_cmd
 
     if not setup_repo_guardrails_now and has_validation_cmd:
         prompter.print(
@@ -1590,7 +1613,7 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         )
         step_number += 1
         prompter.print(
-            f"  {step_number}. Configure validation.cmd, then set up repo guardrails (recommended): issue-orchestrator setup-guardrails"
+            f"  {step_number}. Configure validation.publish.cmd, then set up repo guardrails (recommended): issue-orchestrator setup-guardrails"
         )
         step_number += 1
 

@@ -156,10 +156,10 @@ def setup_repo_guardrails(
     repo_root = (target_root or config.repo_root).resolve()
     git = _new_git_cli()
     local_hooks_path = _get_local_hooks_path(repo_root, git)
-    resolved_validation_cmd = (validation_cmd or config.validation.cmd or "").strip()
+    resolved_validation_cmd = (validation_cmd or config.validation.publish.cmd or "").strip()
     if not resolved_validation_cmd:
         raise RepoGuardrailsError(
-            "validation.cmd is not configured. Set it in YAML or pass --validation-cmd."
+            "validation.publish.cmd is not configured. Set it in YAML or pass --validation-cmd."
         )
 
     hooks_path_value, hooks_dir = _resolve_repo_hooks_dir(

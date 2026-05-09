@@ -44,7 +44,7 @@ def _init_repo(repo: Path) -> None:
 
 def _make_config(repo: Path) -> Config:
     config = Config(repo_root=repo)
-    config.validation.cmd = "make validate-pr"
+    config.validation.publish.cmd = "make validate-pr"
     config.agents = {
         "agent:dev": AgentConfig(
             prompt_path=repo / "prompt.md",
@@ -61,7 +61,8 @@ def _make_loaded_config(repo: Path, *, config_name: str = "main.yaml") -> Config
     config_path.write_text(
         """
 validation:
-  cmd: "make validate-pr"
+  publish:
+    cmd: "make validate-pr"
 """.lstrip()
     )
     config = _make_config(repo)
@@ -266,7 +267,7 @@ def test_setup_repo_guardrails_rejects_non_repo_local_config_path(tmp_path: Path
 
     config = _make_config(repo)
     external_config = tmp_path / "external.yaml"
-    external_config.write_text("validation:\n  cmd: make validate-pr\n")
+    external_config.write_text("validation:\n  publish:\n    cmd: make validate-pr\n")
     config.config_path = external_config
 
     with pytest.raises(

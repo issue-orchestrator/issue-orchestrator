@@ -224,7 +224,12 @@ class ReviewTimelineScenario:
             rounds=rounds,
         )
 
-    def render_issue_detail(self, *records: TimelineRecord, title: str = "Review timeline seam") -> RenderedIssueDetail:
+    def render_issue_detail(
+        self,
+        *records: TimelineRecord,
+        title: str = "Review timeline seam",
+        view: str = "user",
+    ) -> RenderedIssueDetail:
         mock_orch = _create_mock_orchestrator(self.issue_number, title)
         mock_orch.deps.timeline_reader.read.return_value = TimelineStream.from_records(
             self.issue_number,
@@ -233,7 +238,7 @@ class ReviewTimelineScenario:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get(f"/api/issue-detail/{self.issue_number}")
+            response = client.get(f"/api/issue-detail/{self.issue_number}?view={view}")
             assert response.status_code == 200
             return RenderedIssueDetail(response.json())
         finally:

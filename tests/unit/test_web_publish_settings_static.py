@@ -251,6 +251,7 @@ class TestSettingsEndpoints:
                 "filtering",
                 "milestones",
                 "review",
+                "validation",
                 "hooks",
                 "advanced",
                 "goal_pilot",

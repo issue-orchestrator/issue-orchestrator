@@ -332,7 +332,7 @@ class TestCmdSetupGuardrails:
             ["git", "init"], cwd=subprocess_repo, check=True, capture_output=True
         )
         config = Config(repo_root=subprocess_repo)
-        config.validation.cmd = "make validate-pr"
+        config.validation.publish.cmd = "make validate-pr"
         config.agents = {
             "agent:dev": AgentConfig(
                 prompt_path=subprocess_repo / "prompt.md",

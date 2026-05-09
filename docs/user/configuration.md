@@ -13,8 +13,13 @@ agents:
     model: "sonnet"
 
 validation:
-  cmd: "make test"
-  timeout_seconds: 300
+  quick:
+    cmd: "make test"
+    timeout_seconds: 300
+  publish:
+    cmd: "make validate-pr"
+    timeout_seconds: 1800
+    dirty_check: tracked
 ```
 
 Label an issue with `agent:dev` and start the orchestrator.

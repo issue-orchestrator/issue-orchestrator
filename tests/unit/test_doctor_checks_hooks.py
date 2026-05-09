@@ -29,7 +29,7 @@ def test_check_hook_verification_no_agents_reports_ai_agent_check():
 def test_check_repo_guardrails_warns_when_not_installed(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
-    config.validation.cmd = "make validate-pr"
+    config.validation.publish.cmd = "make validate-pr"
 
     checks = hook_checks.check_repo_guardrails(config)
 
@@ -45,7 +45,7 @@ def test_check_repo_guardrails_warns_when_not_installed(tmp_path):
 def test_check_repo_guardrails_reports_ok_after_install(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
-    config.validation.cmd = "make validate-pr"
+    config.validation.publish.cmd = "make validate-pr"
     config.agents = {}
 
     setup_repo_guardrails(config)
@@ -61,7 +61,7 @@ def test_check_repo_guardrails_reports_ok_after_install(tmp_path):
 def test_check_repo_guardrails_reports_managed_ai_hooks_after_install(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
-    config.validation.cmd = "make validate-pr"
+    config.validation.publish.cmd = "make validate-pr"
     config.agents = {
         "agent:dev": AgentConfig(
             prompt_path=tmp_path / "prompt.md",
@@ -81,7 +81,7 @@ def test_check_repo_guardrails_reports_managed_ai_hooks_after_install(tmp_path):
 def test_check_repo_guardrails_reports_drifted_managed_ai_hook(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     config = Config(repo_root=tmp_path)
-    config.validation.cmd = "make validate-pr"
+    config.validation.publish.cmd = "make validate-pr"
     config.agents = {
         "agent:dev": AgentConfig(
             prompt_path=tmp_path / "prompt.md",

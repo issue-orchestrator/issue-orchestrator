@@ -51,7 +51,7 @@ instead of switching to a terminal.
 | Hook | Type | Location | Purpose |
 |------|------|----------|---------|
 | Pre-push | Git | `.githooks/pre-push` (or your configured `core.hooksPath`) | Runs the repo's canonical `scripts/verify-pr.sh` gate before push |
-| PR gate | Script | `scripts/verify-pr.sh` | Runs the repo's validation command from `validation.cmd` |
+| PR gate | Script | `scripts/verify-pr.sh` | Runs the repo's publish validation command from `validation.publish.cmd` |
 | Hook helper | Python | `scripts/agent-hooks/block_no_verify.py` | Repo-local fallback used by agent hook scripts |
 
 ### Orchestrator-Installed Hooks (per worktree)
@@ -61,7 +61,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 | Hook | Type | Location | Purpose |
 |------|------|----------|---------|
 | Pre-push wrapper | Git | `.git/hooks/pre-push` | Chains project + orchestrator hooks, writes audit trail |
-| Pre-push (orchestrator) | Git | `.git/hooks/pre-push.orchestrator` | Validates Agent-Status trailers, blocks test-skipping patterns, rejects dirty tracked files (configurable) |
+| Pre-push (orchestrator) | Git | `.git/hooks/pre-push.orchestrator` | Validates Agent-Status trailers and enforces the configured publish dirty-tree policy |
 | Stop hook | Claude Code | `.claude/settings.json` | Warns if session exits without `coding-done`/`reviewer-done` |
 | gh wrapper | PATH script | `scripts/gh` | Blocks `gh pr create` without auth token |
 
