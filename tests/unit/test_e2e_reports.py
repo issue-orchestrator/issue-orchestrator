@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.infra.e2e_reports import (
+    CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
     MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
     discover_report_artifacts,
@@ -205,7 +206,10 @@ def test_discover_report_artifacts_rejects_stale_configured_junit(
     stale_ns = 1_700_000_000_000_000_000
     os.utime(junit_report, ns=(stale_ns, stale_ns))
 
-    with pytest.raises(ValueError, match="fresh files"):
+    with pytest.raises(
+        ValueError,
+        match=CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
+    ):
         discover_report_artifacts(
             tmp_path,
             junit_xml_paths=["reports/results.xml"],

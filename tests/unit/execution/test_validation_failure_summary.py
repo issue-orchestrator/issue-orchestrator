@@ -296,6 +296,8 @@ def test_load_validation_failure_summary_with_config_ignores_e2e_junit_paths(
     summary = load_validation_failure_summary_with_config(run_dir, config=config)
 
     assert summary is not None
+    # Assert the deprecated compatibility path no longer leaks E2E reports into
+    # validation diagnostics.
     assert summary.junit_cases == ()
 
 

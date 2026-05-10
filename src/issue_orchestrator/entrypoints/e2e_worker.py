@@ -27,7 +27,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-_REPORT_FRESHNESS_GRACE_SECONDS = 1.0
 
 
 def _get_git_info(repo_root: Path) -> tuple[Optional[str], Optional[str]]:
@@ -407,6 +406,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     )
     from issue_orchestrator.infra.e2e_reports import (
         discover_report_artifacts,
+        junit_report_modified_after,
         normalize_pytest_junit_cases,
     )
 
@@ -533,7 +533,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                     repo_root,
                     junit_xml_paths=execution_spec.junit_xml_paths,
                     artifact_paths=execution_spec.artifact_paths,
-                    modified_after=start_time - _REPORT_FRESHNESS_GRACE_SECONDS,
+                    modified_after=junit_report_modified_after(start_time),
                 )
                 structured_cases = normalize_pytest_junit_cases(structured_cases)
                 if structured_cases:
@@ -550,7 +550,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 repo_root,
                 junit_xml_paths=execution_spec.junit_xml_paths,
                 artifact_paths=execution_spec.artifact_paths,
-                modified_after=start_time - _REPORT_FRESHNESS_GRACE_SECONDS,
+                modified_after=junit_report_modified_after(start_time),
             )
             db.replace_run_artifacts(run_id, artifact_records)
             if structured_cases:

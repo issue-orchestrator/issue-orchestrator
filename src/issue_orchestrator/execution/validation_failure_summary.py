@@ -6,7 +6,6 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,10 @@ from ..infra.e2e_reports import (
     discover_report_artifacts,
     parse_junit_report,
 )
-from ..infra.validation_junit_paths import configured_validation_junit_xml_paths
+from ..infra.validation_junit_paths import (
+    configured_validation_junit_xml_paths,
+    validation_record_junit_modified_after,
+)
 from ..ports.session_output import ValidationRecord
 
 logger = logging.getLogger(__name__)
@@ -154,7 +156,7 @@ def load_validation_failure_summary(
         junit_cases = _load_junit_cases(
             junit_xml_paths,
             junit_search_root or (Path(worktree) if worktree else run_dir),
-            modified_after=_validation_started_epoch(record),
+            modified_after=validation_record_junit_modified_after(record),
         )
 
     default_reason = "Validation passed" if status == "passed" else "Validation failed"
@@ -233,20 +235,6 @@ def _load_junit_cases(
         )
         return ()
     return tuple(cases)
-
-
-def _validation_started_epoch(record: ValidationRecord | None) -> float | None:
-    if record is None or not record.started_at:
-        return None
-    try:
-        timestamp = record.started_at.replace("Z", "+00:00")
-        started_at = datetime.fromisoformat(timestamp)
-    except ValueError:
-        logger.debug("Invalid validation started_at timestamp: %s", record.started_at)
-        return None
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    return started_at.timestamp()
 
 
 def _resolve_run_artifact(

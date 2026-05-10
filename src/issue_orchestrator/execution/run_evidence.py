@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from ..domain.run_manifest import RunManifest
 from ..infra.e2e_reports import discover_report_artifacts
+from ..infra.validation_junit_paths import validation_record_junit_modified_after
 from ..ports.session_output import SessionOutput, ValidationRecord
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ def _validation_evidence(
         junit_xml_paths=_discover_junit_paths(
             worktree,
             junit_xml_paths,
-            modified_after=_validation_started_epoch(record),
+            modified_after=validation_record_junit_modified_after(record),
         ),
     )
 
@@ -143,20 +143,6 @@ def _discover_junit_paths(
         logger.debug("No validation JUnit evidence recorded under %s: %s", worktree, exc)
         return ()
     return tuple(artifact.path for artifact in artifacts if artifact.kind == "junit_xml")
-
-
-def _validation_started_epoch(record: ValidationRecord | None) -> float | None:
-    if record is None or not record.started_at:
-        return None
-    try:
-        timestamp = record.started_at.replace("Z", "+00:00")
-        started_at = datetime.fromisoformat(timestamp)
-    except ValueError:
-        logger.debug("Invalid validation started_at timestamp: %s", record.started_at)
-        return None
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    return started_at.timestamp()
 
 
 def _merged_artifacts(

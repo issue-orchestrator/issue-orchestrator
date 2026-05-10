@@ -24,6 +24,10 @@ from unittest.mock import patch
 import pytest
 
 from issue_orchestrator.infra.e2e_db import E2EDB
+from issue_orchestrator.infra.e2e_reports import (
+    CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
+    CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR,
+)
 
 from .conftest import xdist_timeout
 
@@ -868,7 +872,7 @@ def test_worker_command_runner_requires_configured_junit_reports(
 
     assert run is not None
     assert run.status == "error"
-    assert run.note == "Configured JUnit XML paths did not resolve to any files"
+    assert run.note == CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR
 
 
 def test_worker_command_runner_rejects_stale_configured_junit_report(
@@ -906,7 +910,7 @@ def test_worker_command_runner_rejects_stale_configured_junit_report(
 
     assert run is not None
     assert run.status == "error"
-    assert run.note == "Configured JUnit XML paths did not resolve to any fresh files"
+    assert run.note == CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,25 @@ CaseOutcome = Literal["passed", "failed", "error", "skipped"]
 # /api/e2e-run/{id}/test-output endpoint) — never persisted to SQLite. Cap each
 # channel to keep parser memory bounded when a test produces megabytes of logs.
 MAX_CAPTURED_OUTPUT_CHARS = 100_000
+CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR = (
+    "Configured JUnit XML paths did not resolve to any files"
+)
+CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR = (
+    "Configured JUnit XML paths did not resolve to any fresh files"
+)
+
+# JUnit files may be written immediately after a run starts, while common
+# filesystems can report mtimes rounded down to whole or two-second boundaries.
+# Keep a small shared cushion so freshness checks do not drop current-run
+# reports while still rejecting older configured outputs.
+JUNIT_REPORT_FRESHNESS_GRACE_SECONDS = 2.0
+
+
+def junit_report_modified_after(started_epoch: float | None) -> float | None:
+    """Return the JUnit freshness cutoff for a run start epoch."""
+    if started_epoch is None:
+        return None
+    return started_epoch - JUNIT_REPORT_FRESHNESS_GRACE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -72,9 +91,9 @@ def discover_report_artifacts(
     junit_files = _filter_modified_after(resolved_junit_files, modified_after)
     if junit_xml_paths and not junit_files:
         message = (
-            "Configured JUnit XML paths did not resolve to any fresh files"
+            CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR
             if resolved_junit_files and modified_after is not None
-            else "Configured JUnit XML paths did not resolve to any files"
+            else CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR
         )
         raise ValueError(message)
     for path in junit_files:

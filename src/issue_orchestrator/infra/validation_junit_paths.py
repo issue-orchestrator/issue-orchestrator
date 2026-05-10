@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from typing import Any
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+from .e2e_reports import junit_report_modified_after
+
+if TYPE_CHECKING:
+    from ..ports.session_output import ValidationRecord
 
 _JUNIT_PATH_SECTIONS = ("validation",)
+logger = logging.getLogger(__name__)
 
 
 def configured_validation_junit_xml_paths(config: Any) -> tuple[str, ...]:
@@ -34,6 +42,34 @@ def configured_validation_junit_xml_paths_from_mapping(
             continue
         paths.extend(_normalize_paths(section.get("junit_xml_paths", ())))
     return _dedupe_paths(paths)
+
+
+def validation_record_started_epoch(record: ValidationRecord | None) -> float | None:
+    """Return the validation record start time as an epoch timestamp."""
+    if record is None:
+        return None
+    return validation_started_epoch(record.started_at)
+
+
+def validation_record_junit_modified_after(
+    record: ValidationRecord | None,
+) -> float | None:
+    """Return the JUnit freshness cutoff for a validation record."""
+    return junit_report_modified_after(validation_record_started_epoch(record))
+
+
+def validation_started_epoch(started_at: str | None) -> float | None:
+    """Parse a validation ``started_at`` string into an epoch timestamp."""
+    if not started_at:
+        return None
+    try:
+        timestamp = (
+            f"{started_at[:-1]}+00:00" if started_at.endswith("Z") else started_at
+        )
+        return datetime.fromisoformat(timestamp).timestamp()
+    except ValueError:
+        logger.debug("Invalid validation started_at timestamp: %s", started_at)
+        return None
 
 
 def _normalize_paths(value: object) -> tuple[str, ...]:

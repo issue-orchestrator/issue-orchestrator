@@ -1001,29 +1001,39 @@ class TestSessionControllerValidationCaching:
         session_output = FileSystemSessionOutput()
         from issue_orchestrator.execution.run_evidence import RunEvidenceRecorder
 
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        junit_path = worktree / "reports" / "junit.xml"
+
+        class JUnitWritingCommandRunner(MockCommandRunner):
+            def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False):
+                junit_path.parent.mkdir()
+                junit_path.write_text(
+                    """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="validation" tests="1">
+  <testcase classname="tests.unit.test_smoke" name="test_smoke" time="0.01" />
+</testsuite>
+""",
+                    encoding="utf-8",
+                )
+                return super().run(
+                    command,
+                    cwd=cwd,
+                    env=env,
+                    timeout_seconds=timeout_seconds,
+                    shell=shell,
+                )
+
         controller = SessionController(
             completion_processor=processor,
             events=RecordingEventSink(),
             session_output=session_output,
             working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
-            command_runner=MockCommandRunner(returncode=0),
+            command_runner=JUnitWritingCommandRunner(returncode=0),
             validation_cmd="make test",
             validation_timeout_seconds=60,
             validation_junit_xml_paths=("reports/*.xml",),
             validation_evidence_recorder=RunEvidenceRecorder(session_output),
-        )
-
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        junit_path = worktree / "reports" / "junit.xml"
-        junit_path.parent.mkdir()
-        junit_path.write_text(
-            """<?xml version="1.0" encoding="utf-8"?>
-<testsuite name="validation" tests="1">
-  <testcase classname="tests.unit.test_smoke" name="test_smoke" time="0.01" />
-</testsuite>
-""",
-            encoding="utf-8",
         )
 
         decision = controller.decide_outcome(

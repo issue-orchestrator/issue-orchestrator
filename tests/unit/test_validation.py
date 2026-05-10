@@ -3,7 +3,7 @@
 import json
 import pytest
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import subprocess
@@ -210,6 +210,22 @@ class TestValidationRunner:
         assert record.timed_out is False
         assert record.suite == "publish_gate"
         assert record.head_sha == "abc123"
+
+    def test_run_records_offset_aware_utc_timestamps(self, runner, session_output_dir):
+        record = runner.run(
+            suite="publish_gate",
+            head_sha="abc123",
+            command="echo 'hello'",
+            timeout_seconds=10,
+            session_output_dir=session_output_dir,
+        )
+
+        started_at = datetime.fromisoformat(record.started_at)
+        ended_at = datetime.fromisoformat(record.ended_at)
+        assert started_at.tzinfo is not None
+        assert ended_at.tzinfo is not None
+        assert started_at.utcoffset() == timezone.utc.utcoffset(started_at)
+        assert ended_at.utcoffset() == timezone.utc.utcoffset(ended_at)
 
     def test_run_failing_command(self, runner, session_output_dir):
         """Test running a failing command."""
