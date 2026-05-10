@@ -1136,7 +1136,7 @@ class TestLoadFollowUpIssues:
 class TestAgentGateIntegration:
     """Test agent gate validation integration in coding-done."""
 
-    def test_record_validation_artifacts_records_junit_from_e2e_config(
+    def test_record_validation_artifacts_records_junit_from_validation_config(
         self, tmp_path: Path
     ):
         from issue_orchestrator.execution.session_output_adapter import (
@@ -1150,7 +1150,6 @@ class TestAgentGateIntegration:
 validation:
   quick:
     cmd: "make validate"
-e2e:
   junit_xml_paths:
     - reports/*.xml
 """,

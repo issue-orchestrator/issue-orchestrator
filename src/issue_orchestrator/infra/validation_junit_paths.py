@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-_JUNIT_PATH_SECTIONS = ("validation", "e2e")
+_JUNIT_PATH_SECTIONS = ("validation",)
 
 
 def configured_validation_junit_xml_paths(config: Any) -> tuple[str, ...]:
-    """Return validation report paths from validation and E2E config sections."""
+    """Return validation report paths from validation config."""
     if config is None:
         return ()
     sections: dict[str, dict[str, object]] = {}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -107,7 +108,11 @@ def _validation_evidence(
         ),
         validation_stdout_path=str(stdout_path) if stdout_path and stdout_path.exists() else None,
         validation_stderr_path=str(stderr_path) if stderr_path and stderr_path.exists() else None,
-        junit_xml_paths=_discover_junit_paths(worktree, junit_xml_paths),
+        junit_xml_paths=_discover_junit_paths(
+            worktree,
+            junit_xml_paths,
+            modified_after=_validation_started_epoch(record),
+        ),
     )
 
 
@@ -121,6 +126,8 @@ def _resolve_record_path(worktree: Path, value: str | None) -> Path | None:
 def _discover_junit_paths(
     worktree: Path,
     junit_xml_paths: tuple[str, ...] | list[str],
+    *,
+    modified_after: float | None = None,
 ) -> tuple[str, ...]:
     paths = tuple(path for path in junit_xml_paths if path)
     if not paths:
@@ -130,11 +137,26 @@ def _discover_junit_paths(
             worktree,
             junit_xml_paths=paths,
             artifact_paths=(),
+            modified_after=modified_after,
         )
     except ValueError as exc:
         logger.debug("No validation JUnit evidence recorded under %s: %s", worktree, exc)
         return ()
     return tuple(artifact.path for artifact in artifacts if artifact.kind == "junit_xml")
+
+
+def _validation_started_epoch(record: ValidationRecord | None) -> float | None:
+    if record is None or not record.started_at:
+        return None
+    try:
+        timestamp = record.started_at.replace("Z", "+00:00")
+        started_at = datetime.fromisoformat(timestamp)
+    except ValueError:
+        logger.debug("Invalid validation started_at timestamp: %s", record.started_at)
+        return None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return started_at.timestamp()
 
 
 def _merged_artifacts(

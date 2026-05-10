@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from hashlib import sha256
 from pathlib import Path
 
@@ -93,6 +94,29 @@ def test_run_evidence_records_validation_junit_artifacts(tmp_path: Path) -> None
     assert RunManifest.load(run.run_dir).junit_xml_paths(
         key_prefix="validation_junit_xml_"
     ) == (str(junit_path.resolve()),)
+
+
+def test_run_evidence_ignores_junit_older_than_validation_record(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    session_output = FileSystemSessionOutput()
+    run = session_output.start_run(worktree, "coding-1")
+    record = _validation_record()
+    junit_path = worktree / "reports" / "stale.xml"
+    _write_junit_xml(junit_path)
+    stale_ns = 1_767_744_000_000_000_000  # 2026-01-07T00:00:00Z
+    os.utime(junit_path, ns=(stale_ns, stale_ns))
+
+    RunEvidenceRecorder(session_output).record_validation_evidence(
+        run_dir=run.run_dir,
+        worktree=worktree,
+        record=record,
+        junit_xml_paths=("reports/*.xml",),
+    )
+
+    assert recorded_validation_junit_xml_paths(run.run_dir) == ()
 
 
 def test_run_evidence_preserves_unrelated_artifacts(tmp_path: Path) -> None:

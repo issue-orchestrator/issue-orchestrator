@@ -56,19 +56,27 @@ def discover_report_artifacts(
     *,
     junit_xml_paths: list[str] | tuple[str, ...],
     artifact_paths: list[str] | tuple[str, ...],
+    modified_after: float | None = None,
 ) -> tuple[list[JUnitCaseResult], list[E2ERunArtifactRecord]]:
     """Resolve configured reports/artifacts and return typed results.
 
     Raises:
-        ValueError: if a configured path/glob resolves to nothing or a JUnit report
-        is malformed.
+        ValueError: if a configured path/glob resolves to nothing, resolves only
+        stale JUnit files when ``modified_after`` is set, or a JUnit report is
+        malformed.
     """
     cases: list[JUnitCaseResult] = []
     artifacts: list[E2ERunArtifactRecord] = []
 
-    junit_files = _resolve_paths(repo_root, junit_xml_paths)
+    resolved_junit_files = _resolve_paths(repo_root, junit_xml_paths)
+    junit_files = _filter_modified_after(resolved_junit_files, modified_after)
     if junit_xml_paths and not junit_files:
-        raise ValueError("Configured JUnit XML paths did not resolve to any files")
+        message = (
+            "Configured JUnit XML paths did not resolve to any fresh files"
+            if resolved_junit_files and modified_after is not None
+            else "Configured JUnit XML paths did not resolve to any files"
+        )
+        raise ValueError(message)
     for path in junit_files:
         cases.extend(parse_junit_report(path))
         artifacts.append(
@@ -300,6 +308,12 @@ def _resolve_paths(
 def _glob_matches(repo_root: Path, candidate: str) -> list[Path]:
     search_pattern = candidate if Path(candidate).is_absolute() else str(repo_root / candidate)
     return [Path(match) for match in sorted(glob.glob(search_pattern, recursive=True))]
+
+
+def _filter_modified_after(paths: list[Path], modified_after: float | None) -> list[Path]:
+    if modified_after is None:
+        return paths
+    return [path for path in paths if path.stat().st_mtime >= modified_after]
 
 
 def _parse_error_position(exc: XmlParseError) -> str:

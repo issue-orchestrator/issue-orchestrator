@@ -1,5 +1,6 @@
 """Unit tests for generic E2E result report parsing."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,32 @@ def test_discover_report_artifacts_rejects_missing_configured_artifact_path(
             tmp_path,
             junit_xml_paths=[],
             artifact_paths=["reports/missing.log"],
+        )
+
+
+def test_discover_report_artifacts_rejects_stale_configured_junit(
+    tmp_path: Path,
+) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    junit_report = reports_dir / "results.xml"
+    junit_report.write_text(
+        """\
+<testsuite name="suite">
+  <testcase classname="ui.smoke" name="test_homepage" time="1.0" />
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    stale_ns = 1_700_000_000_000_000_000
+    os.utime(junit_report, ns=(stale_ns, stale_ns))
+
+    with pytest.raises(ValueError, match="fresh files"):
+        discover_report_artifacts(
+            tmp_path,
+            junit_xml_paths=["reports/results.xml"],
+            artifact_paths=[],
+            modified_after=(stale_ns / 1_000_000_000) + 1,
         )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -282,7 +283,7 @@ def test_load_validation_failure_summary_prefers_recorded_junit_paths(
     ]
 
 
-def test_load_validation_failure_summary_with_config_reads_e2e_junit_paths(
+def test_load_validation_failure_summary_with_config_ignores_e2e_junit_paths(
     tmp_path: Path,
 ) -> None:
     worktree, run_dir = _seed_failed_validation(tmp_path)
@@ -295,7 +296,25 @@ def test_load_validation_failure_summary_with_config_reads_e2e_junit_paths(
     summary = load_validation_failure_summary_with_config(run_dir, config=config)
 
     assert summary is not None
-    assert [case.display_name for case in summary.junit_cases] == ["test_e2e"]
+    assert summary.junit_cases == ()
+
+
+def test_load_validation_failure_summary_ignores_stale_configured_junit(
+    tmp_path: Path,
+) -> None:
+    worktree, run_dir = _seed_failed_validation(tmp_path)
+    junit_path = worktree / "reports" / "stale.xml"
+    _write_junit_xml(junit_path, case_name="test_stale")
+    stale_ns = 1_767_744_000_000_000_000  # 2026-01-07T00:00:00Z
+    os.utime(junit_path, ns=(stale_ns, stale_ns))
+
+    summary = load_validation_failure_summary(
+        run_dir,
+        junit_xml_paths=("reports/*.xml",),
+    )
+
+    assert summary is not None
+    assert summary.junit_cases == ()
 
 
 def test_load_validation_failure_summary_tolerates_missing_junit_file(
