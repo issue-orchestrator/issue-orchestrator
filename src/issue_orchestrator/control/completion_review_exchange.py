@@ -17,6 +17,7 @@ from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
 from ..ports.session_output import ReviewExchangeSummary, SessionOutput
 from .background_job_supervisor import BackgroundJobSupervisor
+from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
 
@@ -126,7 +127,7 @@ class CompletionReviewExchange:
             try:
                 exchange_mode = self.resolve_review_exchange_mode(agent_label)
             except ValueError as exc:
-                errors.append(f"review_exchange: {exc}")
+                errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exc}")
                 pipeline = resolve_review_publish_pipeline(None)
                 return pipeline.plan(requested_actions), None, None, False, True, False
 
@@ -184,7 +185,7 @@ class CompletionReviewExchange:
         try:
             return self.resolve_review_exchange_mode(agent_label), False
         except ValueError as exc:
-            errors.append(f"review_exchange: {exc}")
+            errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exc}")
             return None, True
 
     def missing_review_exchange_outcome(
@@ -236,7 +237,7 @@ class CompletionReviewExchange:
         try:
             exchange_mode = self.resolve_review_exchange_mode(agent_label)
         except ValueError as exc:
-            errors.append(f"review_exchange: {exc}")
+            errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exc}")
             return None, None, True, False
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False, False
@@ -347,7 +348,7 @@ class CompletionReviewExchange:
         failure = self._job_supervisor.take_failure(job_id)
         if failure is None:
             return None
-        reason = f"review_exchange: background job raised: {failure.error}"
+        reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
         errors.append(reason)
         logger.error(
             "[REVIEW_EXCHANGE] background job failed; halting issue=%d job_id=%s",
@@ -522,7 +523,7 @@ class CompletionReviewExchange:
             issue_number, session_name, consecutive, max_failures,
         )
         errors.append(
-            f"review_exchange: {consecutive} consecutive "
+            f"{REVIEW_EXCHANGE_ERROR_PREFIX} {consecutive} consecutive "
             f"reviewer/coder no-completion failures (max {max_failures}) — "
             "escalating to needs-human"
         )
@@ -585,7 +586,10 @@ class CompletionReviewExchange:
             cached=True,
             **cache_metadata,
         )
-        errors.append(f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})")
+        errors.append(
+            f"{REVIEW_EXCHANGE_ERROR_PREFIX} {existing_outcome.status} "
+            f"({existing_outcome.reason})"
+        )
         return exchange_mode, existing_outcome, True
 
     def _run_fresh_review_exchange(
@@ -647,7 +651,10 @@ class CompletionReviewExchange:
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
             )
-            errors.append(f"review_exchange: {exchange_result.status} ({exchange_result.reason})")
+            errors.append(
+                f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exchange_result.status} "
+                f"({exchange_result.reason})"
+            )
             return exchange_mode, exchange_result, True
 
         actions_taken.append("Review exchange passed")

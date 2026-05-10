@@ -73,6 +73,7 @@ from .completion_types import (
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
     ProcessingResult,
+    REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from ..ports.pull_request_tracker import PRInfo
@@ -1982,7 +1983,9 @@ class CompletionProcessor:
         if exchange_resolution_failed:
             return self._ActionResult(halt=True)
         if self._review_exchange.missing_review_exchange_outcome(exchange_mode, exchange_result):
-            errors.append("review_exchange: missing exchange outcome before PR creation")
+            errors.append(
+                f"{REVIEW_EXCHANGE_ERROR_PREFIX} missing exchange outcome before PR creation"
+            )
             return self._ActionResult(halt=True)
         review_run_dir = self._review_exchange.resolve_review_exchange_run_dir(
             exchange_outcome=exchange_result,

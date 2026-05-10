@@ -20,7 +20,7 @@ Example flows:
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
@@ -53,6 +53,7 @@ from ..ports.run_evidence import (
 )
 from ..ports.session_output import SessionOutput, ValidationRecord, ValidationState
 from .validation import PublishGate
+from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
 _AGENT_DONE_MARKER = ".agent-done-marker"
@@ -453,13 +454,21 @@ class SessionController:
         if recovered:
             timeout_reason = "Session timed out while review exchange was still running"
             errors = list(result.errors or [])
-            errors.append(f"review_exchange: {timeout_reason}")
-            result.errors = errors
-            result.review_exchange_deferred = False
-            result.review_exchange_halted = True
+            errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {timeout_reason}")
+            # Timeout is an issue-lifetime boundary. We do not cancel the
+            # background exchange thread here because it may still write useful
+            # diagnostics to the run dir, but this terminal decision removes
+            # the session from active processing so the preserved completion
+            # record is not re-entered on the next tick.
+            halted_result = replace(
+                result,
+                errors=errors,
+                review_exchange_deferred=False,
+                review_exchange_halted=True,
+            )
             return SessionDecision(
                 status=SessionStatus.TIMED_OUT,
-                processing_result=result,
+                processing_result=halted_result,
                 completion_processed=True,
                 recovered_from_timeout=True,
                 reason=timeout_reason,

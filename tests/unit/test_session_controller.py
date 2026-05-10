@@ -18,6 +18,7 @@ from issue_orchestrator.control.session_controller import (
     SessionDecision,
 )
 from issue_orchestrator.control.completion_processor import CompletionProcessor
+from issue_orchestrator.control.completion_types import ProcessingResult
 from issue_orchestrator.control.completion_record_validation import (
     WorktreeValidationFailure,
     WorktreeValidationResult,
@@ -89,17 +90,11 @@ class MockCompletionProcessor:
         self.worktree_state_valid = True
         self.worktree_state_reason = ""
         self.dirty_policy_results: list[WorktreeValidationResult] = []
-        self.process_result = MagicMock()
-        self.process_result.success = True
-        self.process_result.pr_url = "https://github.com/test/repo/pull/1"
-        self.process_result.failure_kind = None
-        # MagicMock attributes are truthy by default; pin the async-related
-        # field so existing tests still exercise the synchronous completion
-        # path. Tests for the deferred branch override this explicitly.
-        self.process_result.review_exchange_deferred = False
-        self.process_result.review_exchange_halted = False
-        self.process_result.errors = None
-        self.process_result.validation_failed_rerouted = False
+        self.process_result = ProcessingResult(
+            success=True,
+            message="Processed completion",
+            pr_url="https://github.com/test/repo/pull/1",
+        )
 
     def read_completion_record(
         self, worktree_path: Path, completion_path: str | None = None
@@ -385,10 +380,13 @@ class TestSessionControllerTerminated:
         assert decision.status == SessionStatus.TIMED_OUT
         assert decision.completion_processed is True
         assert decision.recovered_from_timeout is True
-        assert decision.processing_result is processor.process_result
-        assert processor.process_result.review_exchange_deferred is False
-        assert processor.process_result.review_exchange_halted is True
-        assert processor.process_result.errors == [
+        assert decision.processing_result is not processor.process_result
+        assert processor.process_result.review_exchange_deferred is True
+        assert processor.process_result.review_exchange_halted is False
+        assert processor.process_result.errors is None
+        assert decision.processing_result.review_exchange_deferred is False
+        assert decision.processing_result.review_exchange_halted is True
+        assert decision.processing_result.errors == [
             "review_exchange: Session timed out while review exchange was still running"
         ]
 
