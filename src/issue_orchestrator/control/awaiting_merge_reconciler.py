@@ -256,6 +256,11 @@ class AwaitingMergeReconciler:
                     pr_number,
                     pr_state,
                 )
+                # PR is terminal — drop any pending-checks bookkeeping so
+                # the dict doesn't leak across PR lifecycles.
+                state.awaiting_merge_checks_pending_since.pop(
+                    entry.issue_number, None,
+                )
                 drift = None
                 if pr_state == "closed":
                     drift = self._discover_terminal_pr_issue_drift(
@@ -297,6 +302,10 @@ class AwaitingMergeReconciler:
                 "Awaiting-merge terminal via issue closure: issue=#%d pr=#%d",
                 entry.issue_number,
                 pr_number,
+            )
+            # Issue terminated — drop pending-checks bookkeeping.
+            state.awaiting_merge_checks_pending_since.pop(
+                entry.issue_number, None,
             )
             return AwaitingMergeEntryDiscovery(
                 "terminal",
@@ -461,13 +470,20 @@ class AwaitingMergeReconciler:
         """Decide what (if anything) to do with an approved-but-not-merged PR.
 
         Returns ``(rework, escalation)`` — at most one is non-None on any
-        given tick. Reads as a table of contents: gate, classify, clear
-        bookkeeping if state moved on, then dispatch.
+        given tick. Reads as a table of contents: clear stale bookkeeping
+        if the PR is no longer in the post-approval state, gate, classify,
+        clear bookkeeping if the classifier moved on, then dispatch.
         """
         if not self._post_publish_eligible(state, entry, pr):
+            # Eligibility lost (label dropped, needs_rework added, an
+            # active session/pending rework appeared) — clear any stale
+            # WAIT_FOR_CHECKS timestamp so a future re-approval starts
+            # a fresh wait budget instead of inheriting an old one. Without
+            # this, a long gap (commit → label drop → days later → re-
+            # approve) would compute `elapsed >> timeout` and escalate
+            # immediately, defeating the timeout entirely.
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
             return None, None
-        assert self.label_manager is not None  # narrowed by eligibility gate
-        assert issue.agent_type is not None
 
         action = classify_post_approval_state(pr)
         logger.debug(
@@ -605,8 +621,13 @@ class AwaitingMergeReconciler:
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
+        # The post-publish classifier needs `status_check_rollup` to
+        # distinguish "checks running" from "check failed", so this is
+        # the one call site that pays the extra GraphQL round-trip.
+        # Other lifecycle paths use `get_pr` (REST-only) and never
+        # touch the rollup.
         try:
-            return self.repository_host.get_pr(pr_number)
+            return self.repository_host.get_pr_with_status_check_rollup(pr_number)
         except RepositoryHostError as exc:
             logger.warning(
                 "Failed to refresh PR #%d for awaiting-merge issue #%d: %s",
@@ -745,14 +766,11 @@ _REWORK_HEADERS: dict[PostApprovalAction, tuple[str, str, str]] = {
 
 
 def _build_rework_feedback(pr: PRInfo, action: PostApprovalAction) -> str:
-    if action not in _REWORK_HEADERS:
-        # Defensive: only the three rework actions should reach here.
-        # Fall back to a generic message rather than crashing the tick.
-        title = "Post-publish issue on this PR"
-        detail = "GitHub reports this PR is no longer ready to merge."
-        guidance = "Investigate the PR state and update the branch."
-    else:
-        title, detail, guidance = _REWORK_HEADERS[action]
+    # Caller (`_discover_post_publish_followup`) only invokes this for
+    # actions in `_REWORK_ACTIONS`, and `_REWORK_HEADERS` covers exactly
+    # those. A KeyError here means the dispatch has drifted and we want
+    # to crash loudly, not paper over it with a generic fallback.
+    title, detail, guidance = _REWORK_HEADERS[action]
     state = _normalized_state(pr.mergeable_state) or "unknown"
     rollup = pr.status_check_rollup or "n/a"
     lines = [

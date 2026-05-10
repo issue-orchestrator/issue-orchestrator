@@ -132,6 +132,12 @@ class PullRequestTracker(Protocol):
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.
 
+        Note: ``status_check_rollup`` is not populated by this method.
+        Callers that need check-status visibility (the awaiting-merge
+        post-publish classifier) should use
+        ``get_pr_with_status_check_rollup`` instead — that variant
+        pays an extra GraphQL round-trip per call.
+
         Args:
             pr_number: The PR number to retrieve.
 
@@ -140,6 +146,22 @@ class PullRequestTracker(Protocol):
 
         Raises:
             RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
+    def get_pr_with_status_check_rollup(self, pr_number: int) -> PRInfo | None:
+        """Get a specific PR augmented with the head-commit check rollup.
+
+        Costs one extra GraphQL round-trip on top of ``get_pr``. Use only
+        when ``status_check_rollup`` is actually needed (currently: the
+        awaiting-merge reconciler's post-publish classifier, which uses
+        the rollup to disambiguate ``mergeable_state == unstable | blocked``
+        between "checks running" and "check actually failed"). Hot
+        lifecycle paths should keep using ``get_pr``.
+
+        Returns:
+            The PRInfo object with ``status_check_rollup`` populated when
+            available, or None if the PR is not found.
         """
         ...
 

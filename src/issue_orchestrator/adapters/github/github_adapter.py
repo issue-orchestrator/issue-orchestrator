@@ -756,29 +756,39 @@ class GitHubAdapter:
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.
 
-        Augments the REST PR payload with the head-commit status-check
-        rollup (one extra GraphQL call) so callers can distinguish
-        "merge state is unstable because checks are running" from
-        "merge state is unstable because a check failed". List/search
-        paths skip the rollup fetch to avoid per-item GraphQL traffic.
+        REST-only — does NOT populate ``status_check_rollup``. Callers
+        that need check-status visibility must use
+        ``get_pr_with_status_check_rollup`` (the awaiting-merge
+        post-publish classifier is the sole consumer today).
         """
         try:
             output = self._client.get_pr(pr_number)
             if not isinstance(output, dict):
                 return None
-            pr_info = self._pr_info_from_api(output)
+            return self._pr_info_from_api(output)
         except GitHubHttpError as e:
             if _is_not_found_error(e):
                 return None
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
+
+    def get_pr_with_status_check_rollup(self, pr_number: int) -> PRInfo | None:
+        """Get a PR augmented with the head-commit status-check rollup.
+
+        Pays one extra GraphQL round-trip on top of the REST PR fetch.
+        Used by the awaiting-merge reconciler to distinguish "merge
+        state is unstable because checks are running" (wait) from
+        "merge state is unstable because a check failed" (rework). A
+        failed rollup fetch leaves rollup=None — the reconciler treats
+        that as PENDING-equivalent, so we'll wait rather than rework
+        on bad signal.
+        """
+        pr_info = self.get_pr(pr_number)
+        if pr_info is None:
+            return None
         try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
         except GitHubHttpError as e:
-            # Rollup fetch is best-effort: a transient GraphQL failure
-            # shouldn't lose the REST data we already have. The reconciler
-            # treats `None` as PENDING-equivalent, so we'll wait rather
-            # than rework on bad signal.
             logger.warning(
                 "Failed to fetch status_check_rollup for PR %s: %s",
                 pr_number, e,

@@ -75,7 +75,7 @@ def test_recovered_awaiting_merge_entry_reconciles_when_pr_is_merged() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("merged")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("merged")
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -90,7 +90,7 @@ def test_recovered_awaiting_merge_entry_reconciles_when_pr_is_merged() -> None:
     assert result.reconciliations[0].status_reason == "PR merged; awaiting merge reconciled"
     assert result.reconciliations[0].source == "pull_request"
     assert entry.pr_url == "https://github.com/owner/repo/pull/318"
-    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.get_pr_with_status_check_rollup.assert_called_once_with(318)
     repository_host.get_issue.assert_not_called()
 
 
@@ -98,7 +98,7 @@ def test_recovered_entry_reconciles_when_linked_issue_is_closed() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("open")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("open")
     repository_host.get_issue.return_value = _issue("closed")
 
     result = AwaitingMergeReconciler(
@@ -122,7 +122,7 @@ def test_recovered_entry_reconciles_when_pr_is_closed() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("closed")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("closed")
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -144,7 +144,7 @@ def test_closed_pr_with_open_pr_pending_issue_discovers_label_drift() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("closed")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("closed")
     repository_host.get_issue.return_value = _issue("open")
 
     result = AwaitingMergeReconciler(
@@ -169,7 +169,7 @@ def test_closed_pr_with_closed_issue_does_not_discover_label_drift() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("closed")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("closed")
     repository_host.get_issue.return_value = _issue("closed")
 
     result = AwaitingMergeReconciler(
@@ -317,7 +317,7 @@ def test_open_pr_and_failed_issue_refresh_propagates_without_freshness() -> None
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("open")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("open")
     repository_host.get_issue.side_effect = RepositoryHostError("github unavailable")
 
     with pytest.raises(RepositoryHostError, match="github unavailable"):
@@ -335,7 +335,7 @@ def test_unexpected_issue_refresh_bug_propagates() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("open")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("open")
     repository_host.get_issue.side_effect = TypeError("programming bug")
 
     with pytest.raises(TypeError, match="programming bug"):
@@ -346,7 +346,7 @@ def test_pr_fetch_failure_propagates_without_issue_fallback() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.side_effect = RepositoryHostError("github unavailable")
+    repository_host.get_pr_with_status_check_rollup.side_effect = RepositoryHostError("github unavailable")
     repository_host.get_issue.return_value = _issue("closed")
 
     with pytest.raises(RepositoryHostError, match="github unavailable"):
@@ -373,7 +373,7 @@ def test_invalid_pr_url_is_skipped_without_repository_fetches() -> None:
     assert result.checked == 1
     assert result.skipped == 1
     assert entry.status == "completed"
-    repository_host.get_pr.assert_not_called()
+    repository_host.get_pr_with_status_check_rollup.assert_not_called()
     repository_host.get_issue.assert_not_called()
 
 
@@ -387,7 +387,7 @@ def test_non_completed_history_entry_is_ignored() -> None:
 
     assert result.checked == 0
     assert result.discovered == 0
-    repository_host.get_pr.assert_not_called()
+    repository_host.get_pr_with_status_check_rollup.assert_not_called()
     repository_host.get_issue.assert_not_called()
 
 
@@ -395,7 +395,7 @@ def test_second_reconcile_pass_on_terminal_entry_is_noop() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("merged")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("merged")
     reconciler = AwaitingMergeReconciler(repository_host)
 
     first_result = reconciler.discover(state)
@@ -421,7 +421,7 @@ def test_second_reconcile_pass_on_terminal_entry_is_noop() -> None:
     assert first_result.discovered == 1
     assert second_result.checked == 0
     assert second_result.discovered == 0
-    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.get_pr_with_status_check_rollup.assert_called_once_with(318)
     assert entry.status == "merged"
     assert events.last_event(EventName.HISTORY_RECONCILED.value) is not None
 
@@ -430,7 +430,7 @@ def test_open_pr_and_open_issue_remain_awaiting_merge_with_freshness_updated() -
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr("open")
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("open")
     repository_host.get_issue.return_value = _issue("open")
 
     result = AwaitingMergeReconciler(
@@ -452,7 +452,7 @@ def test_merge_conflict_after_review_discovers_post_publish_validation_rework() 
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="dirty",
         labels=["code-reviewed"],
@@ -488,7 +488,7 @@ def test_post_publish_validation_rework_is_suppressed_when_rework_already_pendin
         pending_reworks=[pending_rework],
     )
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="behind",
         labels=["code-reviewed"],
@@ -567,7 +567,7 @@ def test_unstable_pr_with_checks_pending_does_not_trigger_rework() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="unstable",
         labels=["code-reviewed"],
@@ -590,7 +590,7 @@ def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="unstable",
         labels=["code-reviewed"],
@@ -621,7 +621,7 @@ def test_blocked_pr_with_all_checks_passing_escalates_immediately() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="blocked",
         labels=["code-reviewed"],
@@ -646,7 +646,7 @@ def test_dirty_pr_feedback_uses_conflict_copy() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="dirty",
         labels=["code-reviewed"],
@@ -668,7 +668,7 @@ def test_behind_pr_feedback_uses_rebase_copy() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="behind",
         labels=["code-reviewed"],
@@ -693,7 +693,7 @@ def test_behind_pr_feedback_uses_rebase_copy() -> None:
 
 def _wait_for_checks_repo() -> MagicMock:
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="unstable",
         labels=["code-reviewed"],
@@ -772,7 +772,7 @@ def test_wait_for_checks_resolved_clears_pending_since() -> None:
         awaiting_merge_checks_pending_since={228: 1000.0},
     )
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="clean",
         labels=["code-reviewed"],
@@ -789,6 +789,83 @@ def test_wait_for_checks_resolved_clears_pending_since() -> None:
     assert 228 not in state.awaiting_merge_checks_pending_since
 
 
+def test_wait_for_checks_then_label_dropped_then_reapproval_does_not_immediately_escalate() -> None:
+    """Regression: when a PR loses its post-approval eligibility (e.g.
+    a new commit drops the `code-reviewed` label), the WAIT_FOR_CHECKS
+    bookkeeping must be cleared. Otherwise a much later re-approval
+    inherits the stale timestamp, computes elapsed >> timeout, and
+    escalates immediately — defeating the timeout entirely.
+    """
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        # Stale timestamp from a much earlier observation.
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+
+    # Tick 1: PR has lost the `code-reviewed` label (new commit landed,
+    # reviewer hasn't re-approved yet). Eligibility gate fails.
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=[],  # No code-reviewed label
+        status_check_rollup="PENDING",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1000.0 + 60 * 60,  # an hour later
+    ).discover(state)
+
+    # Stale timestamp must be cleared even though we never reached
+    # `_discover_post_publish_followup`'s WAIT_FOR_CHECKS branch.
+    assert 228 not in state.awaiting_merge_checks_pending_since
+
+    # Tick 2: reviewer re-approves; PR is back in WAIT_FOR_CHECKS.
+    # Because tick 1 cleared the dict, this run records `now` afresh
+    # and does not escalate (elapsed = 0).
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=["code-reviewed"],
+        status_check_rollup="PENDING",
+    )
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1000.0 + 60 * 60 + 60,  # one minute after tick 1
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.escalation_discovered == 0
+    # Fresh timestamp, not the stale 1000.0.
+    assert state.awaiting_merge_checks_pending_since[228] == 1000.0 + 60 * 60 + 60
+
+
+def test_terminal_pr_clears_pending_checks_bookkeeping() -> None:
+    """When the PR moves to a terminal state (merged/closed), drop any
+    WAIT_FOR_CHECKS bookkeeping for that issue so the dict doesn't
+    leak across PR lifecycles."""
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr("merged")
+
+    AwaitingMergeReconciler(
+        repository_host,
+        clock=lambda: 5000.0,
+    ).discover(state)
+
+    assert 228 not in state.awaiting_merge_checks_pending_since
+
+
 def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> None:
     """If checks finish and one fails, we clear pending_since AND emit
     rework on the same tick — no extra ticks of latency."""
@@ -798,7 +875,7 @@ def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> N
         awaiting_merge_checks_pending_since={228: 1000.0},
     )
     repository_host = MagicMock()
-    repository_host.get_pr.return_value = _pr(
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
         "open",
         mergeable_state="unstable",
         labels=["code-reviewed"],
