@@ -450,6 +450,21 @@ class SessionController:
         if not result.review_exchange_deferred:
             return None
 
+        if recovered:
+            timeout_reason = "Session timed out while review exchange was still running"
+            errors = list(result.errors or [])
+            errors.append(f"review_exchange: {timeout_reason}")
+            result.errors = errors
+            result.review_exchange_deferred = False
+            result.review_exchange_halted = True
+            return SessionDecision(
+                status=SessionStatus.TIMED_OUT,
+                processing_result=result,
+                completion_processed=True,
+                recovered_from_timeout=True,
+                reason=timeout_reason,
+            )
+
         # Exchange is running in a background thread. Keep the session active
         # so the next tick re-observes, re-enters the pipeline, and resumes
         # publish once the summary is visible. Do not emit processing_completed:

@@ -176,12 +176,17 @@ class SessionObserver:
         return process_alive, detection_authoritative, exit_info
 
     def _check_completion_json(
-        self, session: Session, exists: bool, runtime: Optional[float]
+        self,
+        session: Session,
+        exists: bool,
+        runtime: Optional[float],
+        timeout: Optional[int],
+        timeout_exceeded: bool,
     ) -> SessionObservationResult | None:
         """Check for valid completion.json and return result if found.
 
         Returns:
-            SessionObservationResult.terminated() if valid completion found, None otherwise
+            SessionObservationResult for a valid completion, None otherwise.
         """
         import json
 
@@ -218,6 +223,12 @@ class SessionObserver:
                         )
                     )
                     session.completion_detected_at = datetime.now()
+                if timeout_exceeded:
+                    return SessionObservationResult.timed_out(
+                        runtime_minutes=runtime,
+                        timeout_minutes=timeout,
+                        session_exists=exists,
+                    )
                 return SessionObservationResult.terminated(runtime_minutes=runtime)
             else:
                 logger.debug(
@@ -399,7 +410,9 @@ class SessionObserver:
             process_alive = exists
 
         # Check for completion.json
-        completion_result = self._check_completion_json(session, exists, runtime)
+        completion_result = self._check_completion_json(
+            session, exists, runtime, timeout, timeout_exceeded
+        )
         if completion_result:
             return completion_result
 
