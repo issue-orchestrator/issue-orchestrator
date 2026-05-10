@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
+from ..domain.artifact_contracts import ValidationFailed
 from ..domain.models import (
     CompletionRecord,
     RequestedAction,
@@ -1178,13 +1179,16 @@ class CompletionProcessor:
             )
         if session_name:
             run_dir = self.session_output.ensure_run_dir(worktree, session_name)
-            self.session_output.update_manifest(
+            # Was previously a free-form dict update with the legacy
+            # `validation_failure_reason` (note the inconsistent name vs
+            # `validation_reason` used elsewhere) and a bare
+            # `validation_passed: False`. Route through the typed
+            # outcome so the three legacy fields stay consistent and
+            # the `_failure_reason` typo doesn't drift back in.
+            self.session_output.update_validation_outcome(
                 run_dir,
-                {
-                    "validation_passed": False,
-                    "validation_failure_reason": gate_reason,
-                    "ended_at": datetime.now(timezone.utc).isoformat(),
-                },
+                ValidationFailed(reason=gate_reason or "publish gate failed"),
+                ended_at=datetime.now(timezone.utc).isoformat(),
             )
         # Add validation-failed label so user knows why issue is stuck
         validation_failed_label = self._get_label("validation_failed")

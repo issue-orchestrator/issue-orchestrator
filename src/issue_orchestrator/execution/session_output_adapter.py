@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts.run_manifest import validate_run_manifest_payload
+from ..domain.artifact_contracts import (
+    RESERVED_VALIDATION_OUTCOME_FIELDS,
+    ValidationOutcome,
+    validation_outcome_to_manifest_fields,
+)
 from ..infra.terminal_cleaning import (
     clean_terminal_line,
     dedupe_consecutive_lines,
@@ -365,7 +370,35 @@ class FileSystemSessionOutput:
         run_dir: Path,
         updates: dict[str, Any],
     ) -> None:
-        """Update the manifest with additional data."""
+        """Update the manifest with additional data.
+
+        Rejects ad-hoc writes of the validation-outcome triple
+        (``validation_passed`` / ``validation_status`` /
+        ``validation_reason``) — those must go through
+        ``update_validation_outcome`` so all three are written
+        atomically and the previous outcome's reason cannot survive
+        into a fresh ``passed`` outcome (PR #6299 follow-up bug).
+        """
+        reserved = RESERVED_VALIDATION_OUTCOME_FIELDS & updates.keys()
+        if reserved:
+            raise ValueError(
+                "update_manifest() must not write validation outcome fields "
+                f"directly: {sorted(reserved)}. Use update_validation_outcome("
+                "ValidationPassed() | ValidationFailed(reason=...) | "
+                "ValidationRetry(reason=...)) instead — that path writes all "
+                "three legacy fields atomically and clears stale reasons."
+            )
+        self._update_manifest_unchecked(run_dir, updates)
+
+    def _update_manifest_unchecked(
+        self,
+        run_dir: Path,
+        updates: dict[str, Any],
+    ) -> None:
+        """Internal manifest writer that bypasses the validation-outcome
+        guard. Only ``update_validation_outcome`` should call this with
+        validation_* keys — every other caller must go through the
+        public ``update_manifest`` so the guard is enforced."""
         with self._io_lock:
             manifest_path = run_dir / MANIFEST_NAME
             manifest = self._read_json(manifest_path) or {}
@@ -379,6 +412,31 @@ class FileSystemSessionOutput:
                     strict_required_artifacts=True,
                 ),
             )
+
+    def update_validation_outcome(
+        self,
+        run_dir: Path,
+        outcome: ValidationOutcome,
+        *,
+        ended_at: str | None = None,
+        session_outcome_value: str | None = None,
+    ) -> None:
+        """Atomically write a typed validation outcome to the manifest.
+
+        See SessionOutput.update_validation_outcome docstring on the
+        port for the rationale. The implementation projects the typed
+        outcome through ``validation_outcome_to_manifest_fields`` —
+        which always emits all three legacy fields together — and
+        writes them via the unchecked merge.
+        """
+        updates: dict[str, Any] = dict(
+            validation_outcome_to_manifest_fields(outcome)
+        )
+        if ended_at is not None:
+            updates["ended_at"] = ended_at
+        if session_outcome_value is not None:
+            updates["outcome"] = session_outcome_value
+        self._update_manifest_unchecked(run_dir, updates)
 
     def read_manifest(
         self,

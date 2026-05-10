@@ -37,6 +37,12 @@ if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
 
 from ..events import EventName
+from ..domain.artifact_contracts import (
+    ValidationFailed,
+    ValidationOutcome,
+    ValidationPassed,
+    ValidationRetry,
+)
 from ..domain.models import SessionStatus, CompletionOutcome, RequestedAction
 from ..ports.provider_resilience import ProviderErrorType
 from ..infra.provider_resilience import ProviderStatus, read_provider_status
@@ -1041,14 +1047,15 @@ class SessionController:
 
             logger.info(issue_log(issue_number, "Validation gate PASSED"))
             self.session_output.clear_retry_state(run_dir)
-            self.session_output.update_manifest(
+            # Typed write replaces the legacy partial-merge that omitted
+            # `validation_reason` and let stale failure messages survive
+            # into a fresh passed outcome (see ValidationOutcome
+            # docstring in domain/artifact_contracts.py).
+            self.session_output.update_validation_outcome(
                 run_dir,
-                {
-                    "ended_at": datetime.now(timezone.utc).isoformat(),
-                    "outcome": outcome.value,
-                    "validation_passed": True,
-                    "validation_status": "passed",
-                },
+                ValidationPassed(),
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                session_outcome_value=outcome.value,
             )
             self._emit_event(
                 EventName.SESSION_VALIDATION_PASSED,
@@ -1171,17 +1178,17 @@ class SessionController:
         retry_count: int,
         validation_error: str | None,
     ) -> None:
-        self.session_output.update_manifest(
+        reason = validation_error or "validation failed"
+        validation_outcome: "ValidationOutcome"
+        if retry_count < self._max_validation_retries:
+            validation_outcome = ValidationRetry(reason=reason)
+        else:
+            validation_outcome = ValidationFailed(reason=reason)
+        self.session_output.update_validation_outcome(
             run_dir,
-            {
-                "ended_at": datetime.now(timezone.utc).isoformat(),
-                "outcome": outcome.value,
-                "validation_passed": False,
-                "validation_status": "retry"
-                if retry_count < self._max_validation_retries
-                else "failed",
-                "validation_reason": validation_error,
-            },
+            validation_outcome,
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            session_outcome_value=outcome.value,
         )
 
     def _route_validation_failure(

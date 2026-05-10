@@ -483,6 +483,129 @@ class TestHostOpenPathEndpoint:
         assert data["action"] == "copy_path"
         assert data["path"] == "/tmp/ui-session.log"
 
+    def test_open_host_path_falls_back_to_host_repo_session_mirror(
+        self, tmp_path: Path
+    ):
+        """Bug 1 regression: agent worktrees are deleted after PR merge,
+        but the SESSION_COMPLETED event payloads still carry absolute
+        paths rooted at the now-deleted worktree. The same files survive
+        in the host repo's session mirror under the same suffix
+        (``.issue-orchestrator/sessions/<session>/<file>``).
+
+        When the menu's ``open_path`` action sends one of these stale
+        absolute paths, the endpoint must re-anchor it against the
+        host repo and open the surviving copy instead of returning 404.
+        """
+        from issue_orchestrator.entrypoints import web
+
+        # Create a host repo with a session-mirror file.
+        host_repo = tmp_path / "tixmeup-362"
+        session_dir = host_repo / ".issue-orchestrator" / "sessions" / "coding-1"
+        session_dir.mkdir(parents=True)
+        completion_record = session_dir / "completion-record.json"
+        completion_record.write_text('{"outcome": "completed"}')
+
+        # The menu sends an absolute path rooted at the agent worktree
+        # — which never existed (or was cleaned up). Same suffix.
+        stale_agent_worktree_path = (
+            f"{tmp_path}/tixmeup-362-coding-1"
+            f"/.issue-orchestrator/sessions/coding-1/completion-record.json"
+        )
+        assert not Path(stale_agent_worktree_path).exists()
+
+        set_client_host(_StubClientHost())
+        # Inject the orchestrator's host repo root via the operator deps.
+        from issue_orchestrator.entrypoints.web_operator_routes import (
+            install_web_operator_dependencies,
+        )
+        install_web_operator_dependencies(
+            app,
+            get_client_host=lambda: web._client_host,
+            broadcast_event=web.broadcast_event,
+            trigger_server_shutdown=web.trigger_server_shutdown,
+            get_host_repo_root=lambda: host_repo,
+        )
+
+        client = TestClient(app)
+        response = client.post(
+            "/api/host/open-path",
+            json={"path": stale_agent_worktree_path},
+        )
+
+        assert response.status_code == 200, response.json()
+        # The endpoint resolved against the host mirror — the file that
+        # actually got opened is the one in the host repo, not the
+        # stale agent-worktree path.
+        assert response.json()["path"] == str(completion_record)
+
+    def test_open_host_path_rejects_path_traversal_via_dotdot_in_suffix(
+        self, tmp_path: Path
+    ):
+        """Security regression: a request with ``..`` segments after
+        ``.issue-orchestrator/sessions/`` could otherwise escape
+        ``host_repo_root`` via the OS resolver. Containment check
+        must reject the resolved path when it falls outside the
+        host repo root, even if a file would exist at the
+        traversed location.
+        """
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web_operator_routes import (
+            install_web_operator_dependencies,
+        )
+
+        host_repo = tmp_path / "tixmeup-362"
+        host_repo.mkdir(parents=True)
+        # Create an attractive target *outside* the host repo. If the
+        # resolver were broken, the OS path resolution would happily
+        # land on this file via ``..`` segments.
+        outside_target = tmp_path / "secret.txt"
+        outside_target.write_text("not for the dashboard")
+
+        set_client_host(_StubClientHost())
+        install_web_operator_dependencies(
+            app,
+            get_client_host=lambda: web._client_host,
+            broadcast_event=web.broadcast_event,
+            trigger_server_shutdown=web.trigger_server_shutdown,
+            get_host_repo_root=lambda: host_repo,
+        )
+
+        traversal = (
+            f"{tmp_path}/missing-worktree"
+            "/.issue-orchestrator/sessions/x/../../../../secret.txt"
+        )
+        client = TestClient(app)
+        response = client.post("/api/host/open-path", json={"path": traversal})
+        assert response.status_code == 404, response.json()
+
+    def test_open_host_path_no_fallback_when_host_repo_unknown(
+        self, tmp_path: Path
+    ):
+        """If the orchestrator hasn't been initialized (no host repo
+        root), the endpoint must still return 404 rather than guessing.
+        Quiet failure beats silent open of a wrong file."""
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web_operator_routes import (
+            install_web_operator_dependencies,
+        )
+
+        set_client_host(_StubClientHost())
+        install_web_operator_dependencies(
+            app,
+            get_client_host=lambda: web._client_host,
+            broadcast_event=web.broadcast_event,
+            trigger_server_shutdown=web.trigger_server_shutdown,
+            get_host_repo_root=lambda: None,
+        )
+
+        stale = (
+            f"{tmp_path}/missing-worktree"
+            f"/.issue-orchestrator/sessions/coding-1/completion-record.json"
+        )
+        client = TestClient(app)
+        response = client.post("/api/host/open-path", json={"path": stale})
+        assert response.status_code == 404
+
 
 class TestPromptEndpoint:
     """Test the POST /api/prompt/{agent_type} endpoint."""

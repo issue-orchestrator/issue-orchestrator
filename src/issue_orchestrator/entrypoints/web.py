@@ -265,12 +265,25 @@ def trigger_server_shutdown():
         _server.force_exit = True  # Don't wait for graceful shutdown
 
 
+def _orchestrator_host_repo_root() -> Path | None:
+    """Return the orchestrator's host repo root for archived-session
+    path resolution in the open-file endpoint, or None when the
+    orchestrator isn't initialized yet (e.g. early startup, tests
+    that bypass bootstrap)."""
+    orch = get_orchestrator()
+    if orch is None:
+        return None
+    repo_root = getattr(getattr(orch, "config", None), "repo_root", None)
+    return repo_root if isinstance(repo_root, Path) else None
+
+
 install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 install_web_operator_dependencies(
     app,
     get_client_host=lambda: _client_host,
     broadcast_event=broadcast_event,
     trigger_server_shutdown=trigger_server_shutdown,
+    get_host_repo_root=_orchestrator_host_repo_root,
 )
 install_web_diagnostics_dependencies(app, get_client_host=lambda: _client_host)
 app.include_router(web_read_model_router)

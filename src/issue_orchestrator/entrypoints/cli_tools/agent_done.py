@@ -67,6 +67,7 @@ RUNTIME_COMPLETION_OUTCOME: Any = RuntimeCompletionOutcome
 RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
+from ...domain.artifact_contracts import ValidationFailed, ValidationPassed
 from ...execution.run_evidence import RunEvidenceRecorder
 from ...execution.session_output_adapter import FileSystemSessionOutput
 
@@ -154,20 +155,6 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _validation_manifest_updates(
-    validation_result: AgentGateResult, record_path: str | None
-) -> dict[str, str]:
-    """Build manifest fields that summarize validation state."""
-    updates: dict[str, str] = {
-        "validation_status": "passed" if validation_result.passed else "failed",
-    }
-    if record_path:
-        updates["validation_record_path"] = record_path
-    if not validation_result.passed:
-        updates["validation_reason"] = validation_result.reason
-    return updates
-
-
 def _copy_validation_log(
     *,
     worktree_root: Path,
@@ -212,12 +199,23 @@ def record_validation_artifacts(
         if run_record_path.exists()
         else Path(record_path) if record_path else None
     )
-    updates = _validation_manifest_updates(
-        validation_result,
-        str(resolved_record_path) if resolved_record_path else None,
-    )
-    if updates:
-        session_output.update_manifest(run_dir, updates)
+    # Outcome (status + reason) is written via the typed API so the
+    # three legacy fields stay consistent. The record path is a
+    # separate concern and goes through the unchecked merge.
+    if validation_result.passed:
+        outcome = ValidationPassed()
+    else:
+        outcome = ValidationFailed(
+            reason=validation_result.reason or "validation failed"
+        )
+    session_output.update_validation_outcome(run_dir, outcome)
+    if resolved_record_path is not None:
+        # Path-pointer field is independent of the validation outcome
+        # itself; it goes through the unchecked merge.
+        session_output.update_manifest(
+            run_dir,
+            {"validation_record_path": str(resolved_record_path)},
+        )
 
     if not record:
         return

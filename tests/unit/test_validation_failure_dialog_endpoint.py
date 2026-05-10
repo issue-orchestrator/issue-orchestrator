@@ -33,6 +33,10 @@ from tests.unit.test_web import *  # noqa: F401, F403  -- TestClient, app, etc.
 
 from fastapi.testclient import TestClient
 
+from issue_orchestrator.domain.artifact_contracts import (
+    ValidationFailed,
+    ValidationPassed,
+)
 from issue_orchestrator.domain.models import SessionHistoryEntry
 from issue_orchestrator.entrypoints import web
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -116,11 +120,12 @@ class TestValidationFailureDialogEndpointJUnit:
         worktree.mkdir(parents=True)
 
         run = session_output.start_run(worktree, "coding-1", issue_number=4242)
+        session_output.update_validation_outcome(
+            run.run_dir, ValidationFailed(reason="2 unit tests failed"),
+        )
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "failed",
-                "validation_reason": "2 unit tests failed",
                 "validation_record_path": str(
                     run.run_dir.relative_to(worktree) / "validation-record.json"
                 ),
@@ -197,10 +202,10 @@ class TestValidationFailureDialogEndpointJUnit:
         worktree.mkdir(parents=True)
 
         run = session_output.start_run(worktree, "coding-1", issue_number=4244)
+        session_output.update_validation_outcome(run.run_dir, ValidationPassed())
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "passed",
                 "validation_record_path": str(
                     run.run_dir.relative_to(worktree) / "validation-record.json"
                 ),
@@ -281,11 +286,12 @@ class TestValidationFailureDialogEndpointJUnit:
         worktree.mkdir(parents=True)
 
         run = session_output.start_run(worktree, "coding-1", issue_number=4243)
+        session_output.update_validation_outcome(
+            run.run_dir, ValidationFailed(reason="Validation failed"),
+        )
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "failed",
-                "validation_reason": "Validation failed",
                 "validation_record_path": str(
                     run.run_dir.relative_to(worktree) / "validation-record.json"
                 ),

@@ -5,7 +5,9 @@ knowing about a session is captured here.  It is written progressively:
 
 1. **Launch** — identity + paths (session_name, run_id, log_path, …)
 2. **Completion** — agent detail from CompletionRecord + runtime stats + log tail
-3. **Validation** — validation_passed / validation_reason
+3. **Validation** — validation_passed / validation_status / validation_reason
+   (the three legacy flat fields are still the on-disk format; readers
+   reconstruct a typed ``ValidationOutcome`` via ``validation_outcome``.)
 
 Downstream consumers (SessionAnalyzer, failure diagnosis, UI) read this
 one file instead of rummaging across completion.json, terminal-recording.jsonl,
@@ -21,6 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts.run_manifest import validate_run_manifest_payload
+from .artifact_contracts import (
+    ValidationOutcome,
+    validation_outcome_from_manifest_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,14 @@ class RunManifest:
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
+    # Validation outcome — three flat fields preserved as the on-disk
+    # format. Readers should NOT use these directly; consume the
+    # ``validation_outcome`` property below to get a typed
+    # ``ValidationOutcome`` that enforces consistency. Writers must go
+    # through ``SessionOutput.update_validation_outcome`` (which routes
+    # through ``validation_outcome_to_manifest_fields``) so all three
+    # fields are written atomically and a stale ``validation_reason``
+    # cannot survive into a fresh ``passed`` outcome.
     validation_passed: bool | None = None
     validation_status: str | None = None  # passed, retry, failed
     validation_reason: str | None = None
@@ -211,6 +225,29 @@ class RunManifest:
                 raise TypeError(f"RunManifest has no field {key!r}")
             setattr(self, key, value)
         self.save()
+
+    @property
+    def validation_outcome(self) -> ValidationOutcome | None:
+        """Typed view of the validation outcome.
+
+        Reconstructs the discriminated union from the three legacy flat
+        fields (``validation_passed`` / ``validation_status`` /
+        ``validation_reason``) that remain the on-disk format. Returns
+        ``None`` when no outcome has been recorded yet.
+
+        On encountering an inconsistent triple from old manifests
+        (e.g. ``status="passed"`` paired with a stale failure
+        ``reason``), the typed status is the source of truth — the
+        property surfaces ``ValidationPassed`` and the stale reason is
+        dropped. New writes go through
+        ``SessionOutput.update_validation_outcome`` so this
+        inconsistency is unrepresentable going forward.
+        """
+        return validation_outcome_from_manifest_fields(
+            validation_passed=self.validation_passed,
+            validation_status=self.validation_status,
+            validation_reason=self.validation_reason,
+        )
 
     def artifact_paths(
         self,

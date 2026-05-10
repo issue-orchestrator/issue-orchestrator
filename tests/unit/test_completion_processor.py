@@ -2238,9 +2238,15 @@ class TestCompletionProcessorPublishGate:
         assert (run_dir / "validation-record.json").exists()
         manifest = json.loads((run_dir / "manifest.json").read_text())
         assert manifest.get("validation_record_path") == str(run_dir / "validation-record.json")
-        # Verify manifest is updated with validation_passed=False for UI status derivation
+        # Manifest carries the typed validation outcome via the three
+        # legacy flat fields. The publish-gate-failed path used to write
+        # `validation_failure_reason` (an inconsistent typo'd field) —
+        # the typed ValidationFailed outcome routes through the canonical
+        # `validation_reason` field instead.
         assert manifest.get("validation_passed") is False
-        assert manifest.get("validation_failure_reason") == "Validation failed"
+        assert manifest.get("validation_status") == "failed"
+        assert manifest.get("validation_reason") == "Validation failed"
+        assert "validation_failure_reason" not in manifest
         assert "ended_at" in manifest  # Must be set so UI shows correct status
 
     def test_pre_publish_gate_runs_before_push_and_keeps_hooks_enabled(
