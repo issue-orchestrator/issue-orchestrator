@@ -105,7 +105,17 @@
     padding: 12px;
     border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--bg-panel-soft) 74%, transparent);
+    /* Default to a danger-toned left rule; the JS toggles
+       `.is-passed` / `.is-failed` to flip the colour to success
+       when the run passed. The default keeps backward compat for
+       payloads that don't carry a `state` field. */
     border-left: 3px solid var(--danger, #e55);
+}
+.issue-detail-validation.is-passed {
+    border-left-color: var(--success, #5a5);
+}
+.issue-detail-validation.is-failed {
+    border-left-color: var(--danger, #e55);
 }
 .issue-detail-validation-header {
     display: flex;

@@ -614,11 +614,24 @@ function resetIssueDetailValidation() {
     const reasonEl = document.getElementById('issueDetailValidationReason');
     const testsEl = document.getElementById('issueDetailValidationTests');
     const structuredEl = document.getElementById('issueDetailValidationStructured');
-    if (validationEl) validationEl.style.display = 'none';
+    const titleEl = document.getElementById('issueDetailValidationTitle');
+    if (validationEl) {
+        validationEl.style.display = 'none';
+        // Symmetry with renderIssueDetailValidation: clear the
+        // outcome-tone classes so a stale `is-passed` / `is-failed`
+        // can't bleed through if the section is re-shown before
+        // the next render runs.
+        validationEl.classList.remove('is-passed', 'is-failed');
+    }
     if (validationBtn) {
         validationBtn.style.display = 'none';
         validationBtn.disabled = false;
         validationBtn.onclick = null;
+    }
+    if (titleEl) {
+        // Match the template default — the failure header is the
+        // baseline; passed runs flip the title text in the renderer.
+        titleEl.textContent = 'Validation failed';
     }
     if (reasonEl) reasonEl.textContent = '';
     if (testsEl) {
@@ -665,7 +678,10 @@ function renderIssueDetailValidation(detail) {
     const reasonEl = document.getElementById('issueDetailValidationReason');
     const testsEl = document.getElementById('issueDetailValidationTests');
     const structuredEl = document.getElementById('issueDetailValidationStructured');
-    const titleEl = document.querySelector('.issue-detail-validation-title');
+    // Use the stable id (matches the pattern of every other element
+    // in this function); avoids a global class-selector that would
+    // accidentally pick up duplicates if the markup ever evolved.
+    const titleEl = document.getElementById('issueDetailValidationTitle');
     const summary = detail && typeof detail.summary === 'object' ? detail.summary : {};
     const diagnostic = summary && typeof summary.run_diagnostic === 'object' ? summary.run_diagnostic : null;
     const actions = Array.isArray(detail.actions) ? detail.actions : [];
