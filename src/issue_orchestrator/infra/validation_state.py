@@ -18,6 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from ..domain.artifact_contracts import (
+    ValidationFailed,
+    ValidationPassed,
+    ValidationRetry,
+)
+from ..domain.run_manifest import RunManifest
+
 logger = logging.getLogger(__name__)
 _NO_CURRENT_RETRY = object()
 
@@ -214,18 +221,32 @@ def _run_dirs_newest_first(worktree_path: Path) -> list[Path]:
 
 
 def _run_validation_status(run_dir: Path) -> str | None:
+    """Return ``"passed" | "failed" | "retry"`` from the typed outcome.
+
+    Routes through ``RunManifest.validation_outcome`` rather than reading
+    the raw ``validation_status`` field — same on-disk format, but the
+    typed property's read-time inconsistency tolerance (legacy triple
+    with status="passed" + stale reason → ``ValidationPassed``) means
+    this caller can never observe an inconsistent state.
+    """
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.exists():
         return None
 
     try:
-        data = json.loads(manifest_path.read_text())
+        manifest = RunManifest.load(run_dir)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read run manifest from %s: %s", manifest_path, e)
         return None
 
-    status = data.get("validation_status")
-    return status if isinstance(status, str) else None
+    outcome = manifest.validation_outcome
+    if isinstance(outcome, ValidationPassed):
+        return "passed"
+    if isinstance(outcome, ValidationFailed):
+        return "failed"
+    if isinstance(outcome, ValidationRetry):
+        return "retry"
+    return None
 
 
 def _run_session_name(run_dir: Path) -> str:

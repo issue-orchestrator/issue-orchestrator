@@ -236,6 +236,63 @@ def test_build_session_diagnostics_dialog_actions():
     assert "/wt/validation-stderr.log" in paths
 
 
+def test_build_session_diagnostics_dialog_passed_outcome_has_no_reason_row():
+    """Closes the bug-1 narrative on the read side: a passed validation
+    must produce a "Validation Status: passed" row but NO "Validation
+    Reason" row, even if the on-disk manifest carries a stale failure
+    reason from a pre-#6302 writer.
+
+    The reader migration in #6306 routes the dialog through
+    ``RunManifest.validation_outcome``, which surfaces ``ValidationPassed``
+    for the inconsistent triple — and ``ValidationPassed`` has no
+    ``reason`` field, so a Reason row is unrepresentable on the success
+    path."""
+    dialog = build_session_diagnostics_dialog(
+        99,
+        {
+            "manifest": {
+                "session_name": "sess-passed",
+                "worktree": "/wt",
+                # Inconsistent triple from a pre-#6302 writer:
+                # status says passed but a stale reason is still on disk.
+                "validation_passed": True,
+                "validation_status": "passed",
+                "validation_reason": "Validation failed for a949871f (exit_code=1)",
+            },
+            "run_dir": "/run/dir",
+            "session_name": "fallback",
+        },
+    )
+
+    rows = _rows_to_map(dialog["rows"])
+    assert rows["Validation Status"] == "passed"
+    # The stale reason MUST NOT surface on a passed outcome — that's
+    # the exact contradiction the user screenshot captured before the
+    # fix landed.
+    assert "Validation Reason" not in rows
+
+
+def test_build_session_diagnostics_dialog_no_validation_rows_when_outcome_unset():
+    """Backwards-compat: a manifest with no validation fields produces
+    neither a Validation Status nor a Validation Reason row. Old
+    behavior preserved."""
+    dialog = build_session_diagnostics_dialog(
+        100,
+        {
+            "manifest": {
+                "session_name": "sess-fresh",
+                "worktree": "/wt",
+            },
+            "run_dir": "/run/dir",
+            "session_name": "fallback",
+        },
+    )
+
+    rows = _rows_to_map(dialog["rows"])
+    assert "Validation Status" not in rows
+    assert "Validation Reason" not in rows
+
+
 def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
     dialog = build_session_diagnostics_dialog(
         7,
