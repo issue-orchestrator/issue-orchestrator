@@ -15,7 +15,10 @@ from ..infra.e2e_reports import (
     discover_report_artifacts,
     parse_junit_report,
 )
-from ..infra.validation_junit_paths import configured_validation_junit_xml_paths
+from ..infra.validation_junit_paths import (
+    configured_validation_junit_xml_paths,
+    validation_record_junit_modified_after,
+)
 from ..ports.session_output import ValidationRecord
 
 logger = logging.getLogger(__name__)
@@ -153,6 +156,7 @@ def load_validation_failure_summary(
         junit_cases = _load_junit_cases(
             junit_xml_paths,
             junit_search_root or (Path(worktree) if worktree else run_dir),
+            modified_after=validation_record_junit_modified_after(record),
         )
 
     default_reason = "Validation passed" if status == "passed" else "Validation failed"
@@ -187,10 +191,7 @@ def load_validation_failure_summary_with_config(
     disagree on whether structured JUnit cases reach the user. If
     ``config`` is None or has no ``validation`` block, JUnit parsing is
     skipped unless the run manifest already recorded validation JUnit
-    evidence. ``e2e.junit_xml_paths`` is included as a compatibility source
-    because many repos already configure E2E reports there while running
-    those same tests as the validation command. Pass ``include_passed=True``
-    to also return passed runs.
+    evidence. Pass ``include_passed=True`` to also return passed runs.
     """
     return load_validation_failure_summary(
         run_dir,
@@ -211,6 +212,8 @@ def _load_recorded_junit_cases(
 def _load_junit_cases(
     junit_xml_paths: tuple[str, ...] | list[str],
     search_root: Path,
+    *,
+    modified_after: float | None = None,
 ) -> tuple[JUnitCaseResult, ...]:
     paths = tuple(p for p in junit_xml_paths if p)
     if not paths or not search_root.exists():
@@ -220,6 +223,7 @@ def _load_junit_cases(
             search_root,
             junit_xml_paths=paths,
             artifact_paths=(),
+            modified_after=modified_after,
         )
     except ValueError as exc:
         # Validation may legitimately fail before producing JUnit XML

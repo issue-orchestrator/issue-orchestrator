@@ -194,7 +194,7 @@ class ValidationRunner:
         if session_output_dir is None:
             raise ValueError("session_output_dir is required")
         cwd = cwd or self.store.worktree
-        started_at = datetime.now()
+        started_at = datetime.now(timezone.utc)
 
         logger.info("Running validation suite '%s': %s", suite, command)
 
@@ -233,7 +233,7 @@ class ValidationRunner:
             stderr += f"\n\n[TIMEOUT after {timeout_seconds}s]"
             logger.warning("Validation command timed out after %ds", timeout_seconds)
 
-        ended_at = datetime.now()
+        ended_at = datetime.now(timezone.utc)
         passed = exit_code == 0
 
         # Write stdout/stderr files to session output dir

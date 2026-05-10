@@ -99,7 +99,7 @@ validation:
     assert result["coverage_guardrail"]["min_percent"] == 85
 
 
-def test_extract_validation_config_merges_validation_and_e2e_junit_paths() -> None:
+def test_extract_validation_config_uses_only_validation_junit_paths() -> None:
     result = extract_validation_config(
         {
             "validation": {
@@ -111,4 +111,4 @@ def test_extract_validation_config_merges_validation_and_e2e_junit_paths() -> No
         }
     )
 
-    assert result["junit_xml_paths"] == ("validation.xml", "shared.xml", "e2e.xml")
+    assert result["junit_xml_paths"] == ("validation.xml", "shared.xml")

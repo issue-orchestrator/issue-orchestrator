@@ -24,6 +24,10 @@ from unittest.mock import patch
 import pytest
 
 from issue_orchestrator.infra.e2e_db import E2EDB
+from issue_orchestrator.infra.e2e_reports import (
+    CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
+    CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR,
+)
 
 from .conftest import xdist_timeout
 
@@ -868,7 +872,45 @@ def test_worker_command_runner_requires_configured_junit_reports(
 
     assert run is not None
     assert run.status == "error"
-    assert run.note == "Configured JUnit XML paths did not resolve to any files"
+    assert run.note == CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR
+
+
+def test_worker_command_runner_rejects_stale_configured_junit_report(
+    test_repo_with_missing_command_junit: Path,
+):
+    """A stale report from a prior run must not satisfy the current run."""
+    stale_report = test_repo_with_missing_command_junit / "artifacts" / "results.xml"
+    stale_report.parent.mkdir(parents=True)
+    stale_report.write_text(
+        """<testsuite tests="1">
+        <testcase classname="ui.smoke" name="test_stale" time="0.01" />
+        </testsuite>""",
+        encoding="utf-8",
+    )
+    stale_ns = 1_700_000_000_000_000_000
+    os.utime(stale_report, ns=(stale_ns, stale_ns))
+
+    result = run_worker_with_execution_spec(
+        test_repo_with_missing_command_junit,
+        execution_spec={
+            "runner_kind": "command",
+            "pytest_args": [],
+            "command": [sys.executable, "scripts/run_without_reports.py"],
+            "junit_xml_paths": ["artifacts/results.xml"],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 1, result.stderr
+
+    db = E2EDB(test_repo_with_missing_command_junit / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+
+    assert run is not None
+    assert run.status == "error"
+    assert run.note == CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR
 
 
 # ---------------------------------------------------------------------------

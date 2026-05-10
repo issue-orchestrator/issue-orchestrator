@@ -19,6 +19,25 @@ CaseOutcome = Literal["passed", "failed", "error", "skipped"]
 # /api/e2e-run/{id}/test-output endpoint) — never persisted to SQLite. Cap each
 # channel to keep parser memory bounded when a test produces megabytes of logs.
 MAX_CAPTURED_OUTPUT_CHARS = 100_000
+CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR = (
+    "Configured JUnit XML paths did not resolve to any files"
+)
+CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR = (
+    "Configured JUnit XML paths did not resolve to any fresh files"
+)
+
+# JUnit files may be written immediately after a run starts, while common
+# filesystems can report mtimes rounded down to whole or two-second boundaries.
+# Keep a small shared cushion so freshness checks do not drop current-run
+# reports while still rejecting older configured outputs.
+JUNIT_REPORT_FRESHNESS_GRACE_SECONDS = 2.0
+
+
+def junit_report_modified_after(started_epoch: float | None) -> float | None:
+    """Return the JUnit freshness cutoff for a run start epoch."""
+    if started_epoch is None:
+        return None
+    return started_epoch - JUNIT_REPORT_FRESHNESS_GRACE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -56,19 +75,27 @@ def discover_report_artifacts(
     *,
     junit_xml_paths: list[str] | tuple[str, ...],
     artifact_paths: list[str] | tuple[str, ...],
+    modified_after: float | None = None,
 ) -> tuple[list[JUnitCaseResult], list[E2ERunArtifactRecord]]:
     """Resolve configured reports/artifacts and return typed results.
 
     Raises:
-        ValueError: if a configured path/glob resolves to nothing or a JUnit report
-        is malformed.
+        ValueError: if a configured path/glob resolves to nothing, resolves only
+        stale JUnit files when ``modified_after`` is set, or a JUnit report is
+        malformed.
     """
     cases: list[JUnitCaseResult] = []
     artifacts: list[E2ERunArtifactRecord] = []
 
-    junit_files = _resolve_paths(repo_root, junit_xml_paths)
+    resolved_junit_files = _resolve_paths(repo_root, junit_xml_paths)
+    junit_files = _filter_modified_after(resolved_junit_files, modified_after)
     if junit_xml_paths and not junit_files:
-        raise ValueError("Configured JUnit XML paths did not resolve to any files")
+        message = (
+            CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR
+            if resolved_junit_files and modified_after is not None
+            else CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR
+        )
+        raise ValueError(message)
     for path in junit_files:
         cases.extend(parse_junit_report(path))
         artifacts.append(
@@ -300,6 +327,12 @@ def _resolve_paths(
 def _glob_matches(repo_root: Path, candidate: str) -> list[Path]:
     search_pattern = candidate if Path(candidate).is_absolute() else str(repo_root / candidate)
     return [Path(match) for match in sorted(glob.glob(search_pattern, recursive=True))]
+
+
+def _filter_modified_after(paths: list[Path], modified_after: float | None) -> list[Path]:
+    if modified_after is None:
+        return paths
+    return [path for path in paths if path.stat().st_mtime >= modified_after]
 
 
 def _parse_error_position(exc: XmlParseError) -> str:

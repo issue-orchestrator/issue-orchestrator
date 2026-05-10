@@ -15,6 +15,7 @@ from typing import Any
 
 from ..domain.run_manifest import RunManifest
 from ..infra.e2e_reports import discover_report_artifacts
+from ..infra.validation_junit_paths import validation_record_junit_modified_after
 from ..ports.session_output import SessionOutput, ValidationRecord
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,11 @@ def _validation_evidence(
         ),
         validation_stdout_path=str(stdout_path) if stdout_path and stdout_path.exists() else None,
         validation_stderr_path=str(stderr_path) if stderr_path and stderr_path.exists() else None,
-        junit_xml_paths=_discover_junit_paths(worktree, junit_xml_paths),
+        junit_xml_paths=_discover_junit_paths(
+            worktree,
+            junit_xml_paths,
+            modified_after=validation_record_junit_modified_after(record),
+        ),
     )
 
 
@@ -121,6 +126,8 @@ def _resolve_record_path(worktree: Path, value: str | None) -> Path | None:
 def _discover_junit_paths(
     worktree: Path,
     junit_xml_paths: tuple[str, ...] | list[str],
+    *,
+    modified_after: float | None = None,
 ) -> tuple[str, ...]:
     paths = tuple(path for path in junit_xml_paths if path)
     if not paths:
@@ -130,6 +137,7 @@ def _discover_junit_paths(
             worktree,
             junit_xml_paths=paths,
             artifact_paths=(),
+            modified_after=modified_after,
         )
     except ValueError as exc:
         logger.debug("No validation JUnit evidence recorded under %s: %s", worktree, exc)
