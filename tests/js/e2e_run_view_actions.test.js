@@ -563,15 +563,44 @@ test('render: failed row is marked expandable, defaults open, has a failure-deta
     assert.match(html, /trr-captured-output/);  // captured-output placeholder present
 });
 
-test('render: passed row with no lifecycle is not expandable and has no expand block', () => {
+test('render: passed JUnit row is expandable and renders a captured-output placeholder', () => {
+    // A passing test can still emit useful debug output (setup logs, prints).
+    // The UI exposes that via the same lazy-fetch placeholder used for failed
+    // rows, so users have a path to drill in regardless of outcome.
     const ctx = loadE2ERunView();
     const html = ctx._renderTestRow(_testFixture(), null, 'all', { runId: 99 });
-    assert.match(html, /data-expandable="0"/);
-    assert.doesNotMatch(html, /trr-captured-output/);
-    assert.doesNotMatch(html, /class="trr-expand"/);
+    assert.match(html, /data-expandable="1"/);
+    assert.match(html, /class="trr-caret" aria-hidden="true">▸</);  // collapsed by default
+    assert.match(html, /aria-expanded="false"/);
+    assert.match(html, /<div class="trr-expand" hidden>/);
+    assert.match(html, /trr-captured-output/);
+    assert.match(html, /data-needs-fetch="1"/);
 });
 
-test('render: passed row with history shows the recent-runs cluster but no captured-output placeholder', () => {
+test('render: passed row without a runId is not expandable (nothing to fetch)', () => {
+    // Without runId we can't construct the test-output URL, so the placeholder
+    // and caret are suppressed — clicking would dead-end.
+    const ctx = loadE2ERunView();
+    const html = ctx._renderTestRow(_testFixture(), null, 'all', {});
+    assert.match(html, /data-expandable="0"/);
+    assert.doesNotMatch(html, /trr-captured-output/);
+});
+
+test('render: passed row with non-junit source is not expandable', () => {
+    // Captured output is parsed from JUnit XML on disk. A row sourced from
+    // anything else has nothing for the endpoint to look up.
+    const ctx = loadE2ERunView();
+    const html = ctx._renderTestRow(
+        _testFixture({ result_source: 'external_report' }),
+        null,
+        'all',
+        { runId: 99 },
+    );
+    assert.match(html, /data-expandable="0"/);
+    assert.doesNotMatch(html, /trr-captured-output/);
+});
+
+test('render: passed row with history shows the recent-runs cluster alongside the captured-output placeholder', () => {
     const ctx = loadE2ERunView();
     const html = ctx._renderTestRow(
         _testFixture({
@@ -586,7 +615,7 @@ test('render: passed row with history shows the recent-runs cluster but no captu
     );
     assert.match(html, /class="test-history-label">Recent</);
     assert.match(html, /50% flake/);
-    assert.doesNotMatch(html, /trr-captured-output/, 'captured-output is failed-only');
+    assert.match(html, /trr-captured-output/);
 });
 
 test('render: result_source=junit_xml suppresses the per-row provenance tag', () => {
@@ -697,14 +726,25 @@ test('render expand: failed row WITHOUT runId omits the captured-output placehol
     assert.doesNotMatch(html, /trr-captured-output/);
 });
 
-test('render expand: passed row never gets a captured-output placeholder', () => {
+test('render expand: passed row with junit source AND runId returns a captured-output placeholder', () => {
     const ctx = loadE2ERunView();
     const html = ctx._renderTestRowExpand(
         _testFixture({ outcome: 'passed', result_source: 'junit_xml' }),
         null,
         { runId: 99 },
     );
-    // Passed rows are not expandable — function returns ''.
+    assert.match(html, /trr-captured-output/);
+    assert.match(html, /data-needs-fetch="1"/);
+    assert.match(html, /Captured output/);
+});
+
+test('render expand: passed row without runId returns empty (no fetch target)', () => {
+    const ctx = loadE2ERunView();
+    const html = ctx._renderTestRowExpand(
+        _testFixture({ outcome: 'passed', result_source: 'junit_xml' }),
+        null,
+        {},
+    );
     assert.equal(html, '');
 });
 

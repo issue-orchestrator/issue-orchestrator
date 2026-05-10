@@ -333,6 +333,13 @@ class MockGitHubAdapter:
                     return pr
         return None
 
+    def get_pr_with_status_check_rollup(self, pr_number: int) -> Optional[PRInfo]:
+        """Get a specific PR augmented with rollup. The mock has no
+        check-status concept, so return whatever ``status_check_rollup``
+        the test fixture set on the PRInfo (defaults to None). Real
+        adapter pays an extra GraphQL round-trip; the mock is free."""
+        return self.get_pr(pr_number)
+
     def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""
         pr = PRInfo(

@@ -974,6 +974,205 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_validation_diagnostic_surfaces_passed_runs_with_junit_cases(
+        self, tmp_path: Path
+    ):
+        """The drawer's run-validation panel must surface for passed runs,
+        not just failures. Users have asked repeatedly to see per-test
+        results after a green validation; this is the contract gate that
+        the success path returns junit_cases instead of None.
+
+        Verifies:
+        - run_diagnostic.state == "validation_passed" (not "validation_failed")
+        - junit_cases populated from configured XML
+        - status_explanation reflects the passed outcome
+        - the "Validation Details" action is still available so the user
+          can drill into the dialog from the drawer
+        """
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.validation.junit_xml_paths = ("test-results.xml",)
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-passed-junit"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=125)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "passed",
+                "validation_reason": "Validation passed",
+                "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
+                "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
+                "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
+            },
+        )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "publish_gate",
+                    "head_sha": "deadbeef",
+                    "passed": True,
+                    "exit_code": 0,
+                    "command": "make test",
+                    "started_at": "2026-04-28T10:00:00Z",
+                    "ended_at": "2026-04-28T10:01:30Z",
+                    "timed_out": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stdout.log").write_text("", encoding="utf-8")
+        (run.run_dir / "validation-stderr.log").write_text("", encoding="utf-8")
+
+        # Two cases, both green — the typical "show me the green tests" view.
+        (worktree / "test-results.xml").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="pytest" tests="2" failures="0" errors="0" skipped="0">
+  <testcase classname="tests.unit.test_circuits" name="test_passes" time="0.18"/>
+  <testcase classname="tests.unit.test_circuits" name="test_also_passes" time="0.05"/>
+</testsuite>
+""",
+            encoding="utf-8",
+        )
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=125,
+                title="Issue 125",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=125,
+            events=[
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-04-28T10:00:00Z",
+                    status="started",
+                    phase="in_progress",
+                    run_dir=str(run.run_dir),
+                ),
+            ],
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/125")
+            assert response.status_code == 200
+            payload = response.json()
+
+            diagnostic = payload["summary"]["run_diagnostic"]
+            assert diagnostic is not None
+            assert diagnostic["state"] == "validation_passed"
+            cases = diagnostic["junit_cases"]
+            assert len(cases) == 2
+            assert {c["display_name"] for c in cases} == {
+                "test_passes", "test_also_passes",
+            }
+            assert all(c["outcome"] == "passed" for c in cases)
+
+            # The "Validation Details" action should still surface so the
+            # user can click through to the dialog.
+            assert any(
+                action.get("id") == "open_validation_failure"
+                for action in payload["actions"]
+            )
+
+            # Status explanation must NOT pretend a passed run is a failure.
+            assert "passed validation" in payload["status_explanation"]
+            assert "failed validation" not in payload["status_explanation"]
+        finally:
+            set_orchestrator(None)
+
+    def test_issue_detail_validation_diagnostic_passed_run_without_junit_still_surfaces(
+        self, tmp_path: Path
+    ):
+        """Even without `validation.junit_xml_paths` configured, a passed
+        validation must still produce a run_diagnostic so the drawer can
+        render its "Validation passed" header. Empty `junit_cases` is OK
+        — the JS skips the failure-list fallback in that case (no tests
+        were extracted, but that doesn't mean anything failed)."""
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        # Default ValidationConfig.junit_xml_paths is ().
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-passed-no-junit"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=126)
+        session_output.update_manifest(
+            run.run_dir,
+            {"validation_status": "passed", "validation_reason": "Validation passed"},
+        )
+        (run.run_dir / "validation-record.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "publish_gate",
+                    "head_sha": "deadbeef",
+                    "passed": True,
+                    "exit_code": 0,
+                    "command": "make test",
+                    "started_at": "2026-04-28T10:00:00Z",
+                    "ended_at": "2026-04-28T10:01:30Z",
+                    "timed_out": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run.run_dir / "validation-stdout.log").write_text("", encoding="utf-8")
+        (run.run_dir / "validation-stderr.log").write_text("", encoding="utf-8")
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=126,
+                title="Issue 126",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=126,
+            events=[
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-04-28T10:00:00Z",
+                    status="started",
+                    phase="in_progress",
+                    run_dir=str(run.run_dir),
+                ),
+            ],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/126")
+            assert response.status_code == 200
+            payload = response.json()
+            diagnostic = payload["summary"]["run_diagnostic"]
+            assert diagnostic is not None
+            assert diagnostic["state"] == "validation_passed"
+            assert diagnostic["junit_cases"] == []
+            assert "passed validation" in payload["status_explanation"]
+        finally:
+            set_orchestrator(None)
+
     def test_issue_detail_validation_diagnostic_returns_empty_junit_cases_when_unconfigured(
         self, tmp_path: Path
     ):

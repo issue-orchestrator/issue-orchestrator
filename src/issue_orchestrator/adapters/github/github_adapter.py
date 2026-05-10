@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
-from ...ports.pull_request_tracker import PRInfo
+from ...ports.pull_request_tracker import PRInfo, StatusCheckRollupState
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
@@ -33,8 +33,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_VALID_ROLLUP_STATES: frozenset[str] = frozenset(
+    {"SUCCESS", "FAILURE", "PENDING", "EXPECTED", "ERROR"}
+)
+
+
 def _is_not_found_error(exc: GitHubHttpError) -> bool:
     return exc.status_code == 404
+
+
+def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
+    if not isinstance(raw, str):
+        return None
+    upper = raw.upper()
+    if upper in _VALID_ROLLUP_STATES:
+        return upper  # type: ignore[return-value]
+    logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
+    return None
 
 
 class GitHubAdapter:
@@ -741,22 +756,46 @@ class GitHubAdapter:
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.
 
-        Args:
-            pr_number: The PR number to retrieve.
-
-        Returns:
-            The PRInfo object if found, None otherwise.
+        REST-only — does NOT populate ``status_check_rollup``. Callers
+        that need check-status visibility must use
+        ``get_pr_with_status_check_rollup`` (the awaiting-merge
+        post-publish classifier is the sole consumer today).
         """
         try:
             output = self._client.get_pr(pr_number)
-            if isinstance(output, dict):
-                return self._pr_info_from_api(output)
-            return None
+            if not isinstance(output, dict):
+                return None
+            return self._pr_info_from_api(output)
         except GitHubHttpError as e:
             if _is_not_found_error(e):
                 return None
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
+
+    def get_pr_with_status_check_rollup(self, pr_number: int) -> PRInfo | None:
+        """Get a PR augmented with the head-commit status-check rollup.
+
+        Pays one extra GraphQL round-trip on top of the REST PR fetch.
+        Used by the awaiting-merge reconciler to distinguish "merge
+        state is unstable because checks are running" (wait) from
+        "merge state is unstable because a check failed" (rework). A
+        failed rollup fetch leaves rollup=None — the reconciler treats
+        that as PENDING-equivalent, so we'll wait rather than rework
+        on bad signal.
+        """
+        pr_info = self.get_pr(pr_number)
+        if pr_info is None:
+            return None
+        try:
+            rollup = self._client.get_pr_status_check_rollup(pr_number)
+        except GitHubHttpError as e:
+            logger.warning(
+                "Failed to fetch status_check_rollup for PR %s: %s",
+                pr_number, e,
+            )
+            rollup = None
+        pr_info.status_check_rollup = _coerce_rollup_state(rollup)
+        return pr_info
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

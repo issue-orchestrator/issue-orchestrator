@@ -67,6 +67,7 @@ from .actions import (
 )
 from .awaiting_merge_reconciler import (
     POST_PUBLISH_VALIDATION_SOURCE,
+    build_post_publish_escalation_comment,
     build_post_publish_validation_comment,
 )
 from .reconciliation import build_expected_for_mutation
@@ -197,6 +198,13 @@ class Planner:
         # 1d. Handle escalations (PRs exceeding max rework cycles)
         escalation_actions = self._plan_discovered_escalations(snapshot)
         actions.extend(escalation_actions)
+
+        # 1d2. Handle post-publish escalations (CI checks stuck > timeout,
+        # or branch protection blocking merge despite checks passing).
+        # Distinct from rework-cycle exhaustion: an *approved* PR being
+        # handed to a human because no further automated retries help.
+        post_publish_escalation_actions = self._plan_awaiting_merge_escalations(snapshot)
+        actions.extend(post_publish_escalation_actions)
 
         # 1e. Queue triage reviews for session failures
         failure_triage_actions = self._plan_discovered_failures(snapshot)
@@ -756,6 +764,55 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             ))
             logger.info("Planner: escalating PR #%d after %d rework cycles",
                        escalation.pr_number, escalation.rework_cycle - 1)
+
+        return actions
+
+    def _plan_awaiting_merge_escalations(
+        self, snapshot: OrchestratorSnapshot
+    ) -> list[Action]:
+        """Plan escalations for approved PRs stuck post-publish.
+
+        Distinct from `_plan_discovered_escalations` (rework-cycle
+        exhaustion): an approved PR is being handed to a human because
+        either CI checks stalled past the configured timeout, or branch
+        protection blocks merge in a way code rework can't unstick.
+
+        Returns:
+            List of EscalateToHumanAction with comment_override set to
+            a cause-specific markdown body.
+        """
+        actions: list[Action] = []
+        if not snapshot.discovered_awaiting_merge_escalations:
+            return actions
+
+        issues_by_number = {i.number: i for i in snapshot.issues}
+
+        for escalation in snapshot.discovered_awaiting_merge_escalations:
+            issue = issues_by_number.get(escalation.issue_number)
+            issue_key = issue.key.stable_id() if issue else str(escalation.issue_number)
+            comment = build_post_publish_escalation_comment(
+                kind=escalation.kind, reason=escalation.reason,
+            )
+            actions.append(EscalateToHumanAction(
+                issue_number=escalation.issue_number,
+                pr_number=escalation.pr_number,
+                escalation_reason=f"post-publish: {escalation.kind}",
+                rework_cycles=escalation.rework_cycle,
+                needs_human_label=self._lm.needs_human,
+                needs_rework_label=self._lm.needs_rework,
+                max_rework_cycles=self.config.max_rework_cycles,
+                issue_key=issue_key,
+                reason=(
+                    f"PR #{escalation.pr_number} escalated post-publish "
+                    f"({escalation.kind})"
+                ),
+                comment_override=comment,
+                expected=build_expected_for_mutation(),
+            ))
+            logger.info(
+                "Planner: escalating PR #%d post-publish: kind=%s",
+                escalation.pr_number, escalation.kind,
+            )
 
         return actions
 

@@ -12,8 +12,10 @@ from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
     DiscoveredAwaitingMergeDrift,
+    DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredRework,
+    PostPublishEscalationKind,
     RECONCILABLE_HISTORY_STATUSES,
     TERMINAL_AWAITING_MERGE_HISTORY_STATUSES,
 )
@@ -35,9 +37,59 @@ AWAITING_MERGE_HISTORY_LIMIT = 50
 AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
-POST_PUBLISH_VALIDATION_REWORK_STATES = frozenset({"dirty", "behind", "unstable"})
 POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
 POST_PUBLISH_VALIDATION_COMMENT_MARKER = "<!-- io:post-publish-validation -->"
+
+
+# Result of classifying GitHub merge readiness after reviewer approval.
+# `mergeable_state` says merge readiness; `status_check_rollup` says
+# check truth. Combining them disambiguates "checks still running"
+# (transient — wait) from "a check actually failed" (real — rework).
+PostApprovalAction = Literal[
+    "READY",                # clean — proceed to merge
+    "WAIT_FOR_CHECKS",      # unstable/blocked + checks PENDING/EXPECTED/unknown
+    "REWORK_CONFLICT",      # dirty — merge conflict against base
+    "REWORK_BEHIND",        # behind — branch out of date with base
+    "REWORK_CHECK_FAILED",  # unstable/blocked + checks FAILURE/ERROR
+    "BLOCKED_TERMINAL",     # blocked + checks SUCCESS — branch protection
+    "UNKNOWN",              # has_hooks / draft / "" / unrecognized state
+]
+
+
+def classify_post_approval_state(pr: PRInfo) -> PostApprovalAction:
+    """Decide what to do with a reviewer-approved PR based on GitHub state.
+
+    See PostApprovalAction docstring for the full table. Pure function — no
+    I/O, no clock — so callers can unit-test the dispatch matrix exhaustively.
+    """
+    state = _normalized_state(pr.mergeable_state)
+    rollup = pr.status_check_rollup
+    if state == "clean":
+        return "READY"
+    if state == "dirty":
+        return "REWORK_CONFLICT"
+    if state == "behind":
+        return "REWORK_BEHIND"
+    if state in ("unstable", "blocked"):
+        if rollup in ("FAILURE", "ERROR"):
+            return "REWORK_CHECK_FAILED"
+        if rollup == "SUCCESS":
+            # blocked + all-green → branch protection (CODEOWNERS, approvals,
+            # required signatures) — code rework won't unstick this.
+            if state == "blocked":
+                return "BLOCKED_TERMINAL"
+            # unstable + SUCCESS is unusual; GitHub usually resolves it to
+            # `clean` on the next poll. Treat as transient.
+            return "WAIT_FOR_CHECKS"
+        # rollup in {PENDING, EXPECTED, None} → checks not yet conclusive
+        return "WAIT_FOR_CHECKS"
+    return "UNKNOWN"
+
+
+# Actions that require sending the PR back to a coder agent.
+_REWORK_ACTIONS: frozenset[PostApprovalAction] = frozenset(
+    {"REWORK_CONFLICT", "REWORK_BEHIND", "REWORK_CHECK_FAILED"}
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +100,7 @@ class AwaitingMergeEntryDiscovery:
     reconciliation: DiscoveredAwaitingMergeReconciliation | None = None
     drift: DiscoveredAwaitingMergeDrift | None = None
     rework: DiscoveredRework | None = None
+    escalation: DiscoveredAwaitingMergeEscalation | None = None
 
 
 @dataclass(frozen=True)
@@ -58,11 +111,16 @@ class AwaitingMergeReconciliationResult:
     discovered: int = 0
     drift_discovered: int = 0
     rework_discovered: int = 0
+    escalation_discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
     reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
     drifts: tuple[DiscoveredAwaitingMergeDrift, ...] = ()
     reworks: tuple[DiscoveredRework, ...] = ()
+    escalations: tuple[DiscoveredAwaitingMergeEscalation, ...] = ()
+
+
+DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS = 1800.0
 
 
 @dataclass
@@ -76,6 +134,12 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
+    # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
+    # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
+    # in production wire the configured value through.
+    post_publish_checks_pending_timeout_seconds: float = (
+        DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS
+    )
 
     def discover(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
         """Discover completed history entries that should become terminal."""
@@ -83,11 +147,13 @@ class AwaitingMergeReconciler:
         discovered = 0
         drift_discovered = 0
         rework_discovered = 0
+        escalation_discovered = 0
         still_pending = 0
         skipped = 0
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
         drifts: list[DiscoveredAwaitingMergeDrift] = []
         reworks: list[DiscoveredRework] = []
+        escalations: list[DiscoveredAwaitingMergeEscalation] = []
         pending_issue_numbers: set[int] = set()
 
         candidates = self._awaiting_merge_entries(state)
@@ -114,6 +180,9 @@ class AwaitingMergeReconciler:
             if discovery.rework is not None:
                 rework_discovered += 1
                 reworks.append(discovery.rework)
+            if discovery.escalation is not None:
+                escalation_discovered += 1
+                escalations.append(discovery.escalation)
 
         label_drifts = self._discover_label_drifts(
             state,
@@ -124,23 +193,23 @@ class AwaitingMergeReconciler:
         drifts.extend(label_drifts)
 
         logger.debug(
-            "Awaiting-merge scan complete: checked=%d terminal=%d drift=%d still_pending=%d skipped=%d",
-            checked,
-            discovered,
-            drift_discovered,
-            still_pending,
-            skipped,
+            "Awaiting-merge scan complete: checked=%d terminal=%d drift=%d "
+            "still_pending=%d skipped=%d escalations=%d",
+            checked, discovered, drift_discovered,
+            still_pending, skipped, escalation_discovered,
         )
         return AwaitingMergeReconciliationResult(
             checked=checked,
             discovered=discovered,
             drift_discovered=drift_discovered,
             rework_discovered=rework_discovered,
+            escalation_discovered=escalation_discovered,
             still_pending=still_pending,
             skipped=skipped,
             reconciliations=tuple(reconciliations),
             drifts=tuple(drifts),
             reworks=tuple(reworks),
+            escalations=tuple(escalations),
         )
 
     def _awaiting_merge_entries(
@@ -187,6 +256,11 @@ class AwaitingMergeReconciler:
                     pr_number,
                     pr_state,
                 )
+                # PR is terminal — drop any pending-checks bookkeeping so
+                # the dict doesn't leak across PR lifecycles.
+                state.awaiting_merge_checks_pending_since.pop(
+                    entry.issue_number, None,
+                )
                 drift = None
                 if pr_state == "closed":
                     drift = self._discover_terminal_pr_issue_drift(
@@ -229,6 +303,10 @@ class AwaitingMergeReconciler:
                 entry.issue_number,
                 pr_number,
             )
+            # Issue terminated — drop pending-checks bookkeeping.
+            state.awaiting_merge_checks_pending_since.pop(
+                entry.issue_number, None,
+            )
             return AwaitingMergeEntryDiscovery(
                 "terminal",
                 reconciliation=_reconciliation_fact(
@@ -242,15 +320,17 @@ class AwaitingMergeReconciler:
 
         if pr is None:
             return AwaitingMergeEntryDiscovery("skipped")
+        rework, escalation = self._discover_post_publish_followup(
+            state=state,
+            entry=entry,
+            pr=pr,
+            issue=issue,
+            pr_number=pr_number,
+        )
         return AwaitingMergeEntryDiscovery(
             "still_pending",
-            rework=self._discover_post_publish_validation_rework(
-                state=state,
-                entry=entry,
-                pr=pr,
-                issue=issue,
-                pr_number=pr_number,
-            ),
+            rework=rework,
+            escalation=escalation,
         )
 
     def _discover_terminal_pr_issue_drift(
@@ -378,7 +458,7 @@ class AwaitingMergeReconciler:
             )
         return None
 
-    def _discover_post_publish_validation_rework(
+    def _discover_post_publish_followup(
         self,
         *,
         state: OrchestratorState,
@@ -386,27 +466,87 @@ class AwaitingMergeReconciler:
         pr: PRInfo,
         issue: Issue,
         pr_number: int,
-    ) -> DiscoveredRework | None:
+    ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
+        """Decide what (if anything) to do with an approved-but-not-merged PR.
+
+        Returns ``(rework, escalation)`` — at most one is non-None on any
+        given tick. Reads as a table of contents: clear stale bookkeeping
+        if the PR is no longer in the post-approval state, gate, classify,
+        clear bookkeeping if the classifier moved on, then dispatch.
+        """
+        if not self._post_publish_eligible(state, entry, pr):
+            # Eligibility lost (label dropped, needs_rework added, an
+            # active session/pending rework appeared) — clear any stale
+            # WAIT_FOR_CHECKS timestamp so a future re-approval starts
+            # a fresh wait budget instead of inheriting an old one. Without
+            # this, a long gap (commit → label drop → days later → re-
+            # approve) would compute `elapsed >> timeout` and escalate
+            # immediately, defeating the timeout entirely.
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return None, None
+
+        action = classify_post_approval_state(pr)
+        logger.debug(
+            "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s action=%s",
+            entry.issue_number,
+            pr_number,
+            _normalized_state(pr.mergeable_state),
+            pr.status_check_rollup,
+            action,
+        )
+        if action != "WAIT_FOR_CHECKS":
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+
+        if action in _REWORK_ACTIONS:
+            return self._build_rework_discovery(
+                pr=pr, action=action, entry=entry, issue=issue, pr_number=pr_number,
+            ), None
+        if action == "BLOCKED_TERMINAL":
+            return None, self._build_branch_protection_escalation(
+                pr=pr, issue_number=entry.issue_number, pr_number=pr_number,
+            )
+        if action == "WAIT_FOR_CHECKS":
+            return None, self._maybe_escalate_pending_checks(
+                state=state, pr=pr,
+                issue_number=entry.issue_number, pr_number=pr_number,
+            )
+        # READY / UNKNOWN — nothing to do.
+        return None, None
+
+    def _post_publish_eligible(
+        self,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+    ) -> bool:
+        """Pre-filter: only consider PRs that are reviewer-approved and not
+        already in flight via another rework path."""
         if self.label_manager is None:
-            return None
-        if issue.agent_type is None:
-            return None
+            return False
         if self.label_manager.code_reviewed not in pr.labels:
-            return None
+            return False
         if self.label_manager.needs_rework in pr.labels:
-            return None
-        if any(session.issue.number == entry.issue_number for session in state.active_sessions):
-            return None
+            return False
+        if any(s.issue.number == entry.issue_number for s in state.active_sessions):
+            return False
         if any(
-            pending.resolve_issue_number() == entry.issue_number
-            for pending in state.pending_reworks
+            p.resolve_issue_number() == entry.issue_number
+            for p in state.pending_reworks
         ):
-            return None
+            return False
+        return True
 
-        mergeable_state = _normalized_state(pr.mergeable_state)
-        if mergeable_state not in POST_PUBLISH_VALIDATION_REWORK_STATES:
-            return None
-
+    def _build_rework_discovery(
+        self,
+        *,
+        pr: PRInfo,
+        action: PostApprovalAction,
+        entry: SessionHistoryEntry,
+        issue: Issue,
+        pr_number: int,
+    ) -> DiscoveredRework:
+        assert self.label_manager is not None
+        assert issue.agent_type is not None
         return DiscoveredRework(
             issue_number=entry.issue_number,
             pr_number=pr_number,
@@ -414,12 +554,80 @@ class AwaitingMergeReconciler:
             agent_type=issue.agent_type,
             rework_cycle=_next_rework_cycle(pr.labels, self.label_manager),
             source=POST_PUBLISH_VALIDATION_SOURCE,
-            feedback=_build_post_publish_validation_feedback(pr, mergeable_state),
+            feedback=_build_rework_feedback(pr, action),
+        )
+
+    def _build_branch_protection_escalation(
+        self, *, pr: PRInfo, issue_number: int, pr_number: int,
+    ) -> DiscoveredAwaitingMergeEscalation:
+        # blocked + SUCCESS rollup: branch protection (CODEOWNERS,
+        # approvals, signatures) blocks merge. Code rework can't help —
+        # escalate immediately, no timeout.
+        assert self.label_manager is not None
+        return _build_escalation(
+            pr=pr,
+            issue_number=issue_number,
+            pr_number=pr_number,
+            label_manager=self.label_manager,
+            kind="branch_protection_blocked",
+            reason=(
+                "Branch protection blocks merge despite all required "
+                "checks passing — likely missing approvals, CODEOWNERS "
+                "sign-off, or required signatures. Code rework cannot "
+                "unstick this."
+            ),
+        )
+
+    def _maybe_escalate_pending_checks(
+        self,
+        *,
+        state: OrchestratorState,
+        pr: PRInfo,
+        issue_number: int,
+        pr_number: int,
+    ) -> DiscoveredAwaitingMergeEscalation | None:
+        """Run the WAIT_FOR_CHECKS timeout state machine for one PR.
+
+        Returns an escalation only when the budget has been exceeded;
+        otherwise returns None and (when first observed) records the
+        timestamp on state so subsequent ticks can compute elapsed.
+        """
+        assert self.label_manager is not None
+        now = self.clock()
+        first_seen = state.awaiting_merge_checks_pending_since.get(issue_number)
+        if first_seen is None:
+            state.awaiting_merge_checks_pending_since[issue_number] = now
+            return None
+        elapsed = now - first_seen
+        if elapsed < self.post_publish_checks_pending_timeout_seconds:
+            return None
+        minutes = max(1, int(elapsed // 60))
+        timeout_minutes = int(
+            self.post_publish_checks_pending_timeout_seconds // 60
+        )
+        return _build_escalation(
+            pr=pr,
+            issue_number=issue_number,
+            pr_number=pr_number,
+            label_manager=self.label_manager,
+            kind="checks_pending_timeout",
+            reason=(
+                f"Required GitHub checks have been pending for "
+                f"~{minutes} minute(s) since reviewer approval "
+                f"(timeout: {timeout_minutes} minutes). The orchestrator "
+                f"has stopped waiting and is handing the PR back for "
+                f"human attention."
+            ),
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
+        # The post-publish classifier needs `status_check_rollup` to
+        # distinguish "checks running" from "check failed", so this is
+        # the one call site that pays the extra GraphQL round-trip.
+        # Other lifecycle paths use `get_pr` (REST-only) and never
+        # touch the rollup.
         try:
-            return self.repository_host.get_pr(pr_number)
+            return self.repository_host.get_pr_with_status_check_rollup(pr_number)
         except RepositoryHostError as exc:
             logger.warning(
                 "Failed to refresh PR #%d for awaiting-merge issue #%d: %s",
@@ -531,25 +739,97 @@ def _next_rework_cycle(labels: list[str], label_manager: LabelManager) -> int:
     return 1
 
 
-def _build_post_publish_validation_feedback(pr: PRInfo, mergeable_state: str) -> str:
-    detail_map = {
-        "dirty": "GitHub reports merge conflicts against the base branch.",
-        "behind": "GitHub reports the branch is behind the base branch and must be updated before merge.",
-        "unstable": "GitHub reports failing or unstable required validation on the merge result.",
-    }
+_REWORK_HEADERS: dict[PostApprovalAction, tuple[str, str, str]] = {
+    "REWORK_CONFLICT": (
+        "Merge conflict against base branch",
+        "GitHub reports merge conflicts against the base branch.",
+        "Rebase or merge the base branch and resolve the conflicts, "
+        "then push so the PR is mergeable again.",
+    ),
+    "REWORK_BEHIND": (
+        "Branch is behind base branch",
+        "GitHub reports the branch is behind the base branch and "
+        "branch protection requires it to be up-to-date before merge.",
+        "Rebase (or merge) the base branch into this branch and push, "
+        "so the PR is mergeable again.",
+    ),
+    "REWORK_CHECK_FAILED": (
+        "Required check failed on this PR",
+        "A required status check has FAILED or ERRORED on this PR's "
+        "head commit. The reviewer already approved, but a CI/check "
+        "regression is now blocking merge.",
+        "Open the PR's checks tab to identify the failing check, "
+        "reproduce locally, fix the underlying problem, and push "
+        "so the checks turn green.",
+    ),
+}
+
+
+def _build_rework_feedback(pr: PRInfo, action: PostApprovalAction) -> str:
+    # Caller (`_discover_post_publish_followup`) only invokes this for
+    # actions in `_REWORK_ACTIONS`, and `_REWORK_HEADERS` covers exactly
+    # those. A KeyError here means the dispatch has drifted and we want
+    # to crash loudly, not paper over it with a generic fallback.
+    title, detail, guidance = _REWORK_HEADERS[action]
+    state = _normalized_state(pr.mergeable_state) or "unknown"
+    rollup = pr.status_check_rollup or "n/a"
     lines = [
-        "POST-PUBLISH VALIDATION FAILURE (address these issues):",
+        f"{title} (cycle handled by post-publish gate, not the reviewer):",
         "",
-        f"PR #{pr.number} is no longer ready to merge after review approval.",
+        f"PR #{pr.number} was approved by the reviewer but is no longer "
+        "ready to merge.",
         f"- URL: {pr.url}",
         f"- Branch: {pr.branch}",
-        f"- Mergeability: {mergeable_state}",
-        f"- Detail: {detail_map.get(mergeable_state, 'GitHub reports the PR is no longer merge-ready.')}",
+        f"- Mergeability: {state}",
+        f"- Status checks: {rollup}",
+        f"- Diagnosis: {detail}",
         "",
-        "Update the branch, rerun the required validation, and leave the PR ready for merge again.",
+        guidance,
     ]
     return "\n".join(lines)
 
 
 def build_post_publish_validation_comment(feedback: str) -> str:
     return f"{POST_PUBLISH_VALIDATION_COMMENT_MARKER}\n{feedback}"
+
+
+def _build_escalation(
+    *,
+    pr: PRInfo,
+    issue_number: int,
+    pr_number: int,
+    label_manager: LabelManager,
+    kind: PostPublishEscalationKind,
+    reason: str,
+) -> DiscoveredAwaitingMergeEscalation:
+    return DiscoveredAwaitingMergeEscalation(
+        issue_number=issue_number,
+        pr_number=pr_number,
+        pr_url=pr.url,
+        rework_cycle=_next_rework_cycle(pr.labels, label_manager),
+        kind=kind,
+        reason=reason,
+    )
+
+
+# Markdown body posted to the PR when the post-publish gate escalates
+# (distinct from the rework-cycles-exceeded comment).
+def build_post_publish_escalation_comment(
+    *, kind: PostPublishEscalationKind, reason: str
+) -> str:
+    if kind == "checks_pending_timeout":
+        title = "⏱ Escalated to Human Review (CI checks timed out)"
+    else:  # branch_protection_blocked
+        title = "🛑 Escalated to Human Review (branch protection)"
+    return (
+        f"## {title}\n\n"
+        f"This PR was approved by the reviewer but cannot be merged "
+        f"automatically.\n\n"
+        f"**Diagnosis:** {reason}\n\n"
+        f"**A human is needed to:**\n"
+        f"- Investigate why merge is blocked.\n"
+        f"- Either complete the merge manually, adjust branch "
+        f"protection, or unblock CI; or\n"
+        f"- Provide additional guidance and remove the "
+        f"`blocked-needs-human` label so the orchestrator can resume."
+    )

@@ -394,6 +394,11 @@ def load_review_section(config: "Config", review_section: dict) -> None:
     config.max_consecutive_review_exchange_failures = review_section.get(
         "max_consecutive_review_exchange_failures", 3
     )
+    post_publish_section = review_section.get("post_publish", {})
+    if isinstance(post_publish_section, dict):
+        config.post_publish_checks_pending_timeout_seconds = float(
+            post_publish_section.get("checks_pending_timeout_seconds", 1800.0)
+        )
     config.reviewer_feedback_cache_minutes = review_section.get(
         "reviewer_feedback_cache_minutes", 5
     )

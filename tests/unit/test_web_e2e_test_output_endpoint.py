@@ -37,10 +37,51 @@ def _write_junit_with_output(path: Path) -> None:
     <system-err>captured stderr content</system-err>
   </testcase>
   <testcase classname="tests.e2e.test_smoke" name="test_quiet" time="0.05" />
+  <testcase classname="tests.e2e.test_smoke" name="test_passed_with_logs" time="0.20">
+    <system-out>setup log: connecting to fixture</system-out>
+  </testcase>
 </testsuite>
 """,
         encoding="utf-8",
     )
+
+
+def test_returns_captured_output_for_passing_test() -> None:
+    """The UI surfaces captured output for any JUnit-sourced row, not just
+    failed ones. The endpoint must mirror that policy: a testcase with no
+    <failure>/<error>/<skipped> child (a passing test) whose JUnit XML carries
+    <system-out> must be returned 200, not gated to failures."""
+    with tempfile.TemporaryDirectory(prefix="e2e-test-output-") as tmp:
+        repo_root = Path(tmp)
+        (repo_root / ".issue-orchestrator").mkdir()
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = _start_run(db, repo_root)
+        junit_path = repo_root / "junit.xml"
+        _write_junit_with_output(junit_path)
+        db.replace_run_artifacts(
+            run_id,
+            [
+                E2ERunArtifactRecord(
+                    kind="junit_xml",
+                    label="JUnit XML: junit.xml",
+                    path=str(junit_path),
+                )
+            ],
+        )
+
+        set_orchestrator(_orchestrator_for(repo_root))
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                f"/api/e2e-run/{run_id}/test-output",
+                params={"nodeid": "tests/e2e/test_smoke.py::test_passed_with_logs"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["system_out"] == "setup log: connecting to fixture"
+            assert body["system_err"] is None
+        finally:
+            set_orchestrator(None)
 
 
 def test_returns_captured_output_for_known_nodeid() -> None:

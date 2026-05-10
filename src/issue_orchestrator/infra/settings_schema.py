@@ -835,6 +835,34 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.max_consecutive_review_exchange_failures",
         },
     )
+    post_publish_checks_pending_timeout_seconds: float = Field(
+        1800.0,
+        title="Post-Publish Checks-Pending Timeout (seconds)",
+        description=(
+            "How long the orchestrator waits for required GitHub checks to "
+            "finalize after reviewer approval before escalating to "
+            "needs-human."
+        ),
+        ge=60.0,
+        le=86400.0,
+        json_schema_extra={
+            "doc_examples": ["1800", "3600", "5400"],
+            "doc_notes": (
+                "When GitHub reports mergeable_state in {unstable, blocked} "
+                "with the status-check rollup PENDING/EXPECTED/unknown, the "
+                "PR is treated as 'CI still running' and the orchestrator "
+                "waits rather than triggering rework. After this timeout "
+                "the issue is escalated to needs-human with a comment "
+                "explaining that required checks have been pending too "
+                "long. Branch-protection blocks (rollup=SUCCESS but "
+                "mergeable_state=blocked) escalate immediately; this "
+                "timeout only governs the 'waiting on CI' state."
+            ),
+            "section": "Code Review Workflow",
+            "config_attr": "post_publish_checks_pending_timeout_seconds",
+            "yaml_path": "review.post_publish.checks_pending_timeout_seconds",
+        },
+    )
     triage_agent: Optional[str] = Field(
         None,
         title="Triage Review Agent",

@@ -518,6 +518,54 @@ def test_issue_detail_validation_renders_structured_view_when_junit_cases_presen
     assert ".issue-detail-validation-structured" in css
 
 
+def test_render_issue_detail_validation_handles_passed_runs() -> None:
+    """The drawer's validation panel must surface for passed runs as
+    well as failures (PR #6300 follow-up). Pin the JS branches the
+    review called out so a future cleanup can't quietly delete them.
+
+    Asserts on `renderIssueDetailValidation`:
+    - Title flips to "Validation passed" / "Validation failed" via a
+      stable id, not a global class selector.
+    - `is-passed` / `is-failed` classes are toggled on the section so
+      CSS can flip the left-rule colour.
+    - Passed-with-no-JUnit takes the new "skip the failure-list
+      fallback" branch (the failure-list message would be wrong on
+      green).
+
+    Asserts on `resetIssueDetailValidation`:
+    - The new outcome classes are cleared symmetrically with the
+      render path so a stale class can't leak into a re-shown section.
+    - The title element is reset to the template default.
+    """
+    js = _read(DASHBOARD_JS)
+    render_body = _function_body(js, "renderIssueDetailValidation")
+    reset_body = _function_body(js, "resetIssueDetailValidation")
+
+    # Title element is queried via the stable id (not a global class
+    # selector that would silently start matching duplicates).
+    assert "getElementById('issueDetailValidationTitle')" in render_body
+    assert "getElementById('issueDetailValidationTitle')" in reset_body
+
+    # Title text flips per outcome.
+    assert "'Validation passed'" in render_body
+    assert "'Validation failed'" in render_body
+
+    # Outcome class is toggled on the section.
+    assert "classList.toggle('is-passed'" in render_body
+    assert "classList.toggle('is-failed'" in render_body
+
+    # Reset clears the toggle classes so they can't leak.
+    assert "classList.remove('is-passed', 'is-failed')" in reset_body
+
+    # Passed branches off `diagnostic.state === 'validation_passed'`.
+    assert "validation_passed" in render_body
+
+    # CSS rules carry the outcome-specific border colours.
+    css = _read_dashboard_css_bundle()
+    assert ".issue-detail-validation.is-passed" in css
+    assert ".issue-detail-validation.is-failed" in css
+
+
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     js = _read(DASHBOARD_JS)
     fetch_body = _function_body(js, "openValidationFailure")
@@ -1683,11 +1731,14 @@ def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
     assert "data-nodeid=" in expand_body
     # Source must be JUnit-derived — other runners have no captured output to fetch.
     assert "sourceKey.includes('junit')" in expand_body
-    # Captured-output expansion is gated to FAILED rows only — passed rows
-    # rendering an empty "Captured output" block would turn every passing row
-    # into expandable noise. (Users who want green-run logs can hit the JUnit
-    # XML link in Run details & artifacts.)
-    assert "outcomeState === 'failed' && runId" in expand_body
+    # Captured-output expansion is outcome-agnostic: a passed test can still
+    # carry meaningful stdout/stderr (debug prints, setup logs), and the prior
+    # failed-only gate left the user with no UI path to drill into a green run.
+    # The placeholder is now rendered for any JUnit-sourced row with a runId;
+    # tests with nothing captured fall through to the 404 → "No captured
+    # output recorded for this test." note.
+    assert "canFetchOutput = runId !== null && sourceKey.includes('junit')" in expand_body
+    assert "outcomeState === 'failed' && runId" not in expand_body
     # Toggle handler triggers fetch on first expand.
     assert "_maybeLoadCapturedOutput(expand)" in toggle_body
     assert "/api/e2e-run/" in fetch_body
