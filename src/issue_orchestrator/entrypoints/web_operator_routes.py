@@ -612,7 +612,18 @@ def _resolve_archived_session_path(
     if idx + 1 >= len(parts) or parts[idx + 1] != "sessions":
         return None
     suffix = Path(*parts[idx:])
-    candidate = host_repo_root / suffix
+    # Containment check: resolve any `..` segments and verify the
+    # final path is still inside ``host_repo_root``. Without this,
+    # a request like ``.issue-orchestrator/sessions/x/../../../etc/
+    # passwd`` would escape the repo root via the OS path resolver.
+    # The endpoint is local-network-only but the resolver is framed
+    # as a path policy and the policy must be airtight.
+    candidate = (host_repo_root / suffix).resolve()
+    host_root_resolved = host_repo_root.resolve()
+    try:
+        candidate.relative_to(host_root_resolved)
+    except ValueError:
+        return None
     return candidate if candidate.exists() else None
 
 

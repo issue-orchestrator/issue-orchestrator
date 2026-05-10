@@ -538,6 +538,46 @@ class TestHostOpenPathEndpoint:
         # stale agent-worktree path.
         assert response.json()["path"] == str(completion_record)
 
+    def test_open_host_path_rejects_path_traversal_via_dotdot_in_suffix(
+        self, tmp_path: Path
+    ):
+        """Security regression: a request with ``..`` segments after
+        ``.issue-orchestrator/sessions/`` could otherwise escape
+        ``host_repo_root`` via the OS resolver. Containment check
+        must reject the resolved path when it falls outside the
+        host repo root, even if a file would exist at the
+        traversed location.
+        """
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web_operator_routes import (
+            install_web_operator_dependencies,
+        )
+
+        host_repo = tmp_path / "tixmeup-362"
+        host_repo.mkdir(parents=True)
+        # Create an attractive target *outside* the host repo. If the
+        # resolver were broken, the OS path resolution would happily
+        # land on this file via ``..`` segments.
+        outside_target = tmp_path / "secret.txt"
+        outside_target.write_text("not for the dashboard")
+
+        set_client_host(_StubClientHost())
+        install_web_operator_dependencies(
+            app,
+            get_client_host=lambda: web._client_host,
+            broadcast_event=web.broadcast_event,
+            trigger_server_shutdown=web.trigger_server_shutdown,
+            get_host_repo_root=lambda: host_repo,
+        )
+
+        traversal = (
+            f"{tmp_path}/missing-worktree"
+            "/.issue-orchestrator/sessions/x/../../../../secret.txt"
+        )
+        client = TestClient(app)
+        response = client.post("/api/host/open-path", json={"path": traversal})
+        assert response.status_code == 404, response.json()
+
     def test_open_host_path_no_fallback_when_host_repo_unknown(
         self, tmp_path: Path
     ):

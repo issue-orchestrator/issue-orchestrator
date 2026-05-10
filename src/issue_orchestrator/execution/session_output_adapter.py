@@ -419,7 +419,7 @@ class FileSystemSessionOutput:
         outcome: ValidationOutcome,
         *,
         ended_at: str | None = None,
-        outcome_field: str | None = None,
+        session_outcome_value: str | None = None,
     ) -> None:
         """Atomically write a typed validation outcome to the manifest.
 
@@ -434,8 +434,8 @@ class FileSystemSessionOutput:
         )
         if ended_at is not None:
             updates["ended_at"] = ended_at
-        if outcome_field is not None:
-            updates["outcome"] = outcome_field
+        if session_outcome_value is not None:
+            updates["outcome"] = session_outcome_value
         self._update_manifest_unchecked(run_dir, updates)
 
     def read_manifest(

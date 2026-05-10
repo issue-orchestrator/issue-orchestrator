@@ -264,7 +264,7 @@ class SessionOutput(Protocol):
         outcome: "ValidationOutcome",
         *,
         ended_at: str | None = None,
-        outcome_field: str | None = None,
+        session_outcome_value: str | None = None,
     ) -> None:
         """Atomically write a typed validation outcome to the manifest.
 
@@ -278,7 +278,7 @@ class SessionOutput(Protocol):
             run_dir: Path to the run directory.
             outcome: The typed validation outcome.
             ended_at: Optional ISO-8601 timestamp to record alongside.
-            outcome_field: Optional ``outcome`` enum value to record
+            session_outcome_value: Optional ``outcome`` enum value to record
                 (the higher-level session outcome — completed, blocked,
                 etc.). Kept here to consolidate the common
                 "validation finished, set everything together" write.

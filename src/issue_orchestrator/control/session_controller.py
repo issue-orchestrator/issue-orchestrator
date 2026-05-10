@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 from ..events import EventName
 from ..domain.artifact_contracts import (
     ValidationFailed,
+    ValidationOutcome,
     ValidationPassed,
     ValidationRetry,
 )
@@ -1030,7 +1031,7 @@ class SessionController:
                 run_dir,
                 ValidationPassed(),
                 ended_at=datetime.now(timezone.utc).isoformat(),
-                outcome_field=outcome.value,
+                session_outcome_value=outcome.value,
             )
             self._emit_event(
                 EventName.SESSION_VALIDATION_PASSED,
@@ -1154,6 +1155,7 @@ class SessionController:
         validation_error: str | None,
     ) -> None:
         reason = validation_error or "validation failed"
+        validation_outcome: "ValidationOutcome"
         if retry_count < self._max_validation_retries:
             validation_outcome = ValidationRetry(reason=reason)
         else:
@@ -1162,7 +1164,7 @@ class SessionController:
             run_dir,
             validation_outcome,
             ended_at=datetime.now(timezone.utc).isoformat(),
-            outcome_field=outcome.value,
+            session_outcome_value=outcome.value,
         )
 
     def _route_validation_failure(

@@ -155,21 +155,6 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _validation_record_path_update(
-    record_path: str | None,
-) -> dict[str, str]:
-    """Manifest fields that record where the validation record lives.
-
-    The validation outcome itself goes through
-    ``SessionOutput.update_validation_outcome`` (typed) so the three
-    legacy validation_* fields stay in sync. This helper carries only
-    the path-pointer field, which is unrelated to the outcome.
-    """
-    if record_path:
-        return {"validation_record_path": record_path}
-    return {}
-
-
 def _copy_validation_log(
     *,
     worktree_root: Path,
@@ -224,11 +209,13 @@ def record_validation_artifacts(
             reason=validation_result.reason or "validation failed"
         )
     session_output.update_validation_outcome(run_dir, outcome)
-    record_updates = _validation_record_path_update(
-        str(resolved_record_path) if resolved_record_path else None,
-    )
-    if record_updates:
-        session_output.update_manifest(run_dir, record_updates)
+    if resolved_record_path is not None:
+        # Path-pointer field is independent of the validation outcome
+        # itself; it goes through the unchecked merge.
+        session_output.update_manifest(
+            run_dir,
+            {"validation_record_path": str(resolved_record_path)},
+        )
 
     if not record:
         return
