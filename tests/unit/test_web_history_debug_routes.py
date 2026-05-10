@@ -440,6 +440,7 @@ class TestHistoryEndpoints:
             set_orchestrator(None)
 
     def test_validation_failure_dialog_endpoint_returns_failed_tests(self, tmp_path: Path):
+        from issue_orchestrator.domain.artifact_contracts import ValidationFailed
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         mock_orch = create_mock_orchestrator()
@@ -447,11 +448,13 @@ class TestHistoryEndpoints:
         worktree = tmp_path / "wt-validation-dialog"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "coding-1", issue_number=4057)
+        session_output.update_validation_outcome(
+            run.run_dir,
+            ValidationFailed(reason="Validation failed for deadbeef (exit_code=2)"),
+        )
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "failed",
-                "validation_reason": "Validation failed for deadbeef (exit_code=2)",
                 "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
                 "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
                 "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",

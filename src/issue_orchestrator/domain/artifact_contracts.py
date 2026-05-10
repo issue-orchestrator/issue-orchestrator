@@ -204,6 +204,134 @@ class ValidationArtifactScope:
     run_dir: ExistingDirectory
 
 
+# ---------------------------------------------------------------------------
+# Validation outcome — discriminated union
+# ---------------------------------------------------------------------------
+#
+# Historically the run manifest carried three independent Optionals
+# (``validation_passed``, ``validation_status``, ``validation_reason``)
+# updated via partial-merge ``update_manifest`` calls. The combination
+# made it possible — and at one point real, see PR #6299 follow-up — to
+# write ``{validation_status: "passed", validation_reason: "Validation
+# failed for a949871f"}``: the passed-path writer omitted the reason
+# field and a stale failure message survived the merge.
+#
+# These value types replace the loose triple. Constructors enforce the
+# invariant ("passed" cannot carry a reason; "failed"/"retry" require a
+# non-empty reason) so a stale-reason-on-success state is unrepresentable.
+# Writers always set the whole outcome atomically.
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationPassed:
+    """Validation passed — no failure reason exists by construction."""
+
+    kind: ClassVar[str] = "passed"
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationFailed:
+    """Validation failed terminally (retries exhausted or non-retryable)."""
+
+    reason: str
+    kind: ClassVar[str] = "failed"
+
+    def __post_init__(self) -> None:
+        _require_non_empty_string(type(self).__name__, "reason", self.reason)
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationRetry:
+    """Validation failed but the session has retries remaining."""
+
+    reason: str
+    kind: ClassVar[str] = "retry"
+
+    def __post_init__(self) -> None:
+        _require_non_empty_string(type(self).__name__, "reason", self.reason)
+
+
+ValidationOutcome = ValidationPassed | ValidationFailed | ValidationRetry
+
+
+def validation_outcome_from_manifest_fields(
+    *,
+    validation_passed: bool | None,
+    validation_status: str | None,
+    validation_reason: str | None,
+) -> ValidationOutcome | None:
+    """Reconstruct a typed outcome from the legacy flat manifest fields.
+
+    Used by ``RunManifest.validation_outcome`` to derive the union from
+    on-disk manifests written before this refactor. New writers go
+    through ``validation_outcome_to_manifest_fields`` so the round-trip
+    is lossless and consistent.
+
+    Returns ``None`` when no outcome has been recorded yet (all three
+    fields are None / absent).
+
+    On encountering a logically inconsistent triple (e.g. status="passed"
+    paired with a stale reason left behind by an earlier failure), the
+    typed status field is the source of truth — we surface a
+    ``ValidationPassed`` and the stale reason is dropped. This is the
+    correct read-time behavior given the mismatch *is* the bug we're
+    fixing; new writes won't produce it.
+    """
+    status = (validation_status or "").strip().lower()
+    if status == "passed":
+        return ValidationPassed()
+    if status == "failed":
+        return ValidationFailed(reason=validation_reason or "validation failed")
+    if status == "retry":
+        return ValidationRetry(reason=validation_reason or "validation failed")
+    # Legacy fallback: status not set, but the boolean is.
+    if validation_passed is True:
+        return ValidationPassed()
+    if validation_passed is False:
+        return ValidationFailed(reason=validation_reason or "validation failed")
+    return None
+
+
+def validation_outcome_to_manifest_fields(
+    outcome: ValidationOutcome,
+) -> dict[str, object]:
+    """Project a typed outcome into the three legacy flat fields.
+
+    Always writes all three fields together so partial-merge
+    ``update_manifest`` calls cannot leave a previous outcome's reason
+    dangling on a fresh outcome's status. ``ValidationPassed``
+    explicitly sets ``validation_reason`` to ``None`` to clear any
+    prior stale value.
+    """
+    if isinstance(outcome, ValidationPassed):
+        return {
+            "validation_passed": True,
+            "validation_status": "passed",
+            "validation_reason": None,
+        }
+    if isinstance(outcome, ValidationFailed):
+        return {
+            "validation_passed": False,
+            "validation_status": "failed",
+            "validation_reason": outcome.reason,
+        }
+    # Exhaustive: only ValidationRetry remains.
+    return {
+        "validation_passed": False,
+        "validation_status": "retry",
+        "validation_reason": outcome.reason,
+    }
+
+
+# Manifest fields that ``update_manifest`` callers must NOT write
+# directly — they are owned by the typed validation-outcome update API.
+# Listed here so the runtime guard in ``FileSystemSessionOutput.update_manifest``
+# can reject ad-hoc writes loudly.
+RESERVED_VALIDATION_OUTCOME_FIELDS: frozenset[str] = frozenset(
+    {"validation_passed", "validation_status", "validation_reason"}
+)
+
+
 ArtifactScope = (
     RunArtifactScope
     | ReviewExchangeArtifactScope
@@ -502,8 +630,15 @@ __all__ = [
     "ReviewResponseArtifact",
     "ReviewerTurnStarted",
     "RunArtifactScope",
+    "RESERVED_VALIDATION_OUTCOME_FIELDS",
     "TerminalRecordingArtifact",
     "ValidationArtifactScope",
+    "ValidationFailed",
+    "ValidationOutcome",
+    "ValidationPassed",
     "ValidationResultArtifact",
+    "ValidationRetry",
     "artifact_refs",
+    "validation_outcome_from_manifest_fields",
+    "validation_outcome_to_manifest_fields",
 ]

@@ -726,12 +726,14 @@ class TestApiTimelineEndpoint:
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-run-diagnostic"
         worktree.mkdir(parents=True)
+        from issue_orchestrator.domain.artifact_contracts import ValidationFailed
         run = session_output.start_run(worktree, "coding-1", issue_number=123)
+        session_output.update_validation_outcome(
+            run.run_dir, ValidationFailed(reason=".venv/bin/python missing"),
+        )
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "failed",
-                "validation_reason": ".venv/bin/python missing",
                 "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
                 "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
                 "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
@@ -830,12 +832,14 @@ class TestApiTimelineEndpoint:
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-junit-cases"
         worktree.mkdir(parents=True)
+        from issue_orchestrator.domain.artifact_contracts import ValidationFailed
         run = session_output.start_run(worktree, "coding-1", issue_number=123)
+        session_output.update_validation_outcome(
+            run.run_dir, ValidationFailed(reason="tests failed"),
+        )
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "failed",
-                "validation_reason": "tests failed",
                 "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
                 "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
                 "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
@@ -986,13 +990,10 @@ class TestApiTimelineEndpoint:
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-no-junit"
         worktree.mkdir(parents=True)
+        from issue_orchestrator.domain.artifact_contracts import ValidationFailed
         run = session_output.start_run(worktree, "coding-1", issue_number=124)
-        session_output.update_manifest(
-            run.run_dir,
-            {
-                "validation_status": "failed",
-                "validation_reason": "tests failed",
-            },
+        session_output.update_validation_outcome(
+            run.run_dir, ValidationFailed(reason="tests failed"),
         )
         (run.run_dir / "validation-record.json").write_text(
             json.dumps(
@@ -1057,13 +1058,10 @@ class TestApiTimelineEndpoint:
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-run-diagnostic-priority"
         worktree.mkdir(parents=True)
+        from issue_orchestrator.domain.artifact_contracts import ValidationFailed
         run = session_output.start_run(worktree, "coding-1", issue_number=123)
-        session_output.update_manifest(
-            run.run_dir,
-            {
-                "validation_status": "failed",
-                "validation_reason": ".venv/bin/python missing",
-            },
+        session_output.update_validation_outcome(
+            run.run_dir, ValidationFailed(reason=".venv/bin/python missing"),
         )
         mock_orch.state.session_history = [
             SessionHistoryEntry(

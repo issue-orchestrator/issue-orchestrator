@@ -67,6 +67,7 @@ RUNTIME_COMPLETION_OUTCOME: Any = RuntimeCompletionOutcome
 RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
+from ...domain.artifact_contracts import ValidationFailed, ValidationPassed
 from ...execution.run_evidence import RunEvidenceRecorder
 from ...execution.session_output_adapter import FileSystemSessionOutput
 
@@ -154,18 +155,19 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _validation_manifest_updates(
-    validation_result: AgentGateResult, record_path: str | None
+def _validation_record_path_update(
+    record_path: str | None,
 ) -> dict[str, str]:
-    """Build manifest fields that summarize validation state."""
-    updates: dict[str, str] = {
-        "validation_status": "passed" if validation_result.passed else "failed",
-    }
+    """Manifest fields that record where the validation record lives.
+
+    The validation outcome itself goes through
+    ``SessionOutput.update_validation_outcome`` (typed) so the three
+    legacy validation_* fields stay in sync. This helper carries only
+    the path-pointer field, which is unrelated to the outcome.
+    """
     if record_path:
-        updates["validation_record_path"] = record_path
-    if not validation_result.passed:
-        updates["validation_reason"] = validation_result.reason
-    return updates
+        return {"validation_record_path": record_path}
+    return {}
 
 
 def _copy_validation_log(
@@ -212,12 +214,21 @@ def record_validation_artifacts(
         if run_record_path.exists()
         else Path(record_path) if record_path else None
     )
-    updates = _validation_manifest_updates(
-        validation_result,
+    # Outcome (status + reason) is written via the typed API so the
+    # three legacy fields stay consistent. The record path is a
+    # separate concern and goes through the unchecked merge.
+    if validation_result.passed:
+        outcome = ValidationPassed()
+    else:
+        outcome = ValidationFailed(
+            reason=validation_result.reason or "validation failed"
+        )
+    session_output.update_validation_outcome(run_dir, outcome)
+    record_updates = _validation_record_path_update(
         str(resolved_record_path) if resolved_record_path else None,
     )
-    if updates:
-        session_output.update_manifest(run_dir, updates)
+    if record_updates:
+        session_output.update_manifest(run_dir, record_updates)
 
     if not record:
         return

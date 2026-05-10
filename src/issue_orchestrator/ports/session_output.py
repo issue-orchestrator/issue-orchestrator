@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from ..domain.artifact_contracts import ValidationOutcome
     from ..domain.exchange_chapter import ExchangeChapterSidecar
 
 
@@ -247,6 +248,40 @@ class SessionOutput(Protocol):
         Args:
             run_dir: Path to the run directory
             updates: Dictionary of fields to update
+
+        Implementations must reject any ``updates`` containing keys in
+        ``RESERVED_VALIDATION_OUTCOME_FIELDS`` — those three fields are
+        owned by ``update_validation_outcome``. Direct dict-merge writes
+        of ``validation_passed`` / ``validation_status`` /
+        ``validation_reason`` are how the stale-reason-on-success bug
+        slipped in originally; the runtime guard prevents recurrence.
+        """
+        ...
+
+    def update_validation_outcome(
+        self,
+        run_dir: Path,
+        outcome: "ValidationOutcome",
+        *,
+        ended_at: str | None = None,
+        outcome_field: str | None = None,
+    ) -> None:
+        """Atomically write a typed validation outcome to the manifest.
+
+        Replaces ad-hoc ``update_manifest({"validation_status": ...,
+        "validation_reason": ...})`` calls. Always writes all three
+        legacy fields together so the previous outcome's reason cannot
+        survive into the new outcome. ``ValidationPassed`` explicitly
+        clears any prior ``validation_reason`` to ``None``.
+
+        Args:
+            run_dir: Path to the run directory.
+            outcome: The typed validation outcome.
+            ended_at: Optional ISO-8601 timestamp to record alongside.
+            outcome_field: Optional ``outcome`` enum value to record
+                (the higher-level session outcome — completed, blocked,
+                etc.). Kept here to consolidate the common
+                "validation finished, set everything together" write.
         """
         ...
 
