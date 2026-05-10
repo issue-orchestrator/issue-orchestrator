@@ -1514,6 +1514,85 @@ class TestPlanDiscoveredEscalations:
         assert len(escalate_actions) == 0
 
 
+class TestPlanAwaitingMergeEscalations:
+    """Tests for Planner._plan_awaiting_merge_escalations.
+
+    Distinct from rework-cycle exhaustion: the PR was *approved* and
+    is being escalated because either CI checks stalled or branch
+    protection blocks merge in a way code rework can't unstick.
+    """
+
+    def test_checks_pending_timeout_emits_escalate_with_override_comment(self):
+        from issue_orchestrator.domain.models import (
+            DiscoveredAwaitingMergeEscalation,
+        )
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredAwaitingMergeEscalation(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/o/r/pull/100",
+            rework_cycle=1,
+            kind="checks_pending_timeout",
+            reason="Required GitHub checks have been pending for ~31 minute(s) ...",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_escalations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [
+            a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN
+        ]
+        assert len(escalate_actions) == 1
+        action = escalate_actions[0]
+        assert action.issue_number == 42
+        assert action.pr_number == 100
+        assert action.escalation_reason == "post-publish: checks_pending_timeout"
+        assert action.comment_override is not None
+        assert "CI checks timed out" in action.comment_override
+        # The legacy rework-cycles narrative must NOT appear in the override
+        assert "rework cycles" not in action.comment_override.lower()
+
+    def test_branch_protection_blocked_emits_escalate_with_protection_copy(self):
+        from issue_orchestrator.domain.models import (
+            DiscoveredAwaitingMergeEscalation,
+        )
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredAwaitingMergeEscalation(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/o/r/pull/100",
+            rework_cycle=1,
+            kind="branch_protection_blocked",
+            reason="Branch protection blocks merge despite all required checks passing.",
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_escalations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [
+            a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN
+        ]
+        assert len(escalate_actions) == 1
+        assert escalate_actions[0].comment_override is not None
+        assert "branch protection" in escalate_actions[0].comment_override.lower()
+
+
 class TestPlanDiscoveredFailures:
     """Tests for Planner's _plan_discovered_failures method.
 

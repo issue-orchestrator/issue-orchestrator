@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 from ..domain.models import (
     CleanupFacts,
     DiscoveredAwaitingMergeDrift,
+    DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
@@ -56,6 +57,9 @@ class OrchestratorSnapshot:
     ] = field(default_factory=tuple)
     discovered_reworks: tuple[DiscoveredRework, ...] = field(default_factory=tuple)
     discovered_escalations: tuple[DiscoveredEscalation, ...] = field(default_factory=tuple)
+    discovered_awaiting_merge_escalations: tuple[
+        DiscoveredAwaitingMergeEscalation, ...
+    ] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     triage_facts: Optional[TriageFacts] = None
     cleanup_facts: Optional[CleanupFacts] = None
@@ -95,6 +99,9 @@ class OrchestratorSnapshot:
         ] = (),
         discovered_reworks: Sequence[DiscoveredRework] = (),
         discovered_escalations: Sequence[DiscoveredEscalation] = (),
+        discovered_awaiting_merge_escalations: Sequence[
+            DiscoveredAwaitingMergeEscalation
+        ] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
         triage_facts: Optional[TriageFacts] = None,
         cleanup_facts: Optional[CleanupFacts] = None,
@@ -142,6 +149,9 @@ class OrchestratorSnapshot:
             ),
             discovered_reworks=tuple(discovered_reworks),
             discovered_escalations=tuple(discovered_escalations),
+            discovered_awaiting_merge_escalations=tuple(
+                discovered_awaiting_merge_escalations
+            ),
             discovered_failures=tuple(discovered_failures),
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,

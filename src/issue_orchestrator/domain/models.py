@@ -1217,6 +1217,36 @@ class DiscoveredEscalation:
     rework_cycle: int
 
 
+# Reasons a post-publish escalation can fire — distinct from rework-cycle
+# exhaustion so the planner / applier can pick the right comment copy.
+PostPublishEscalationKind = Literal[
+    "checks_pending_timeout",   # required checks pending > timeout after approval
+    "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
+]
+
+
+@dataclass(frozen=True)
+class DiscoveredAwaitingMergeEscalation:
+    """A reviewer-approved PR is stuck in a state code rework can't fix.
+
+    Emitted when:
+      - WAIT_FOR_CHECKS has been observed for longer than the configured
+        `post_publish_checks_pending_timeout_seconds`, OR
+      - mergeable_state=blocked with status checks all SUCCESS (branch
+        protection — approvals/CODEOWNERS/signatures, not a code issue).
+
+    The planner converts this into an EscalateToHumanAction with a
+    cause-specific comment so the reader knows why the orchestrator gave
+    up the automated path.
+    """
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    rework_cycle: int  # carried for label/comment continuity
+    kind: PostPublishEscalationKind
+    reason: str  # short human-readable summary, used in the PR comment
+
+
 @dataclass(frozen=True)
 class DiscoveredFailure:
     """A session failure discovered, pending Planner decision on triage.
@@ -1652,6 +1682,7 @@ class OrchestratorState:
     discovered_awaiting_merge_drifts: list[DiscoveredAwaitingMergeDrift] = field(default_factory=list)  # Open issues whose pr-pending label drifted from PR state
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
+    discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
@@ -1674,6 +1705,12 @@ class OrchestratorState:
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
     awaiting_merge_drift_scan_timestamps: dict[int, float] = field(default_factory=dict)  # issue_number -> last PR-list drift scan
+    # Per-issue first time we observed `WAIT_FOR_CHECKS` (mergeable_state in
+    # {unstable, blocked} with the status-check rollup not yet conclusive).
+    # Used to bound how long the orchestrator is willing to wait for required
+    # checks before escalating the issue to needs_human. Cleared whenever the
+    # PR leaves the WAIT_FOR_CHECKS state.
+    awaiting_merge_checks_pending_since: dict[int, float] = field(default_factory=dict)
     # Candidate queue removals waiting for a targeted confirmation refresh.
     queue_pending_shrink_missing_issue_numbers: list[int] = field(default_factory=list)
     queue_pending_shrink_confirm_at: float = 0.0

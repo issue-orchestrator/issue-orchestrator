@@ -166,10 +166,14 @@ class GitHubWorkflow:
         result = AwaitingMergeReconciler(
             self.repository_host,
             label_manager=self.label_manager,
+            post_publish_checks_pending_timeout_seconds=(
+                self.config.post_publish_checks_pending_timeout_seconds
+            ),
         ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
         state.discovered_awaiting_merge_drifts.extend(result.drifts)
         state.discovered_reworks.extend(result.reworks)
+        state.discovered_awaiting_merge_escalations.extend(result.escalations)
         if result.discovered:
             logger.info(
                 "Discovered %d awaiting-merge history reconciliations",
@@ -184,6 +188,11 @@ class GitHubWorkflow:
             logger.info(
                 "Discovered %d post-publish validation rework(s)",
                 result.rework_discovered,
+            )
+        if result.escalation_discovered:
+            logger.info(
+                "Discovered %d post-publish escalation(s)",
+                result.escalation_discovered,
             )
 
     def update_dependency_problems(

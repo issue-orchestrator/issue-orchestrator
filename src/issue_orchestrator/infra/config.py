@@ -287,6 +287,14 @@ class Config:
     # ``max_consecutive_publish_failures`` for publish loops.
     max_consecutive_review_exchange_failures: int = 3
 
+    # Post-publish: when a reviewer-approved PR sits in
+    # mergeable_state ∈ {unstable, blocked} with the status-check
+    # rollup not yet conclusive (PENDING/EXPECTED/unknown), the
+    # orchestrator waits up to this long for required checks to
+    # finalize before escalating to needs-human. 30 minutes by
+    # default — tune higher for repos with long CI.
+    post_publish_checks_pending_timeout_seconds: float = 1800.0
+
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 

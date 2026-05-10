@@ -249,12 +249,22 @@ class EscalateToHumanAction(Action):
     issue_number: int = 0
     pr_number: int = 0
     escalation_reason: str = ""
+    # The next three fields drive the rework-cycles-exceeded comment
+    # template and are IGNORED when ``comment_override`` is set (the
+    # post-publish path provides its own self-contained body that does
+    # not mention rework cycles).
     rework_cycles: int = 0
+    max_rework_cycles: int = 3
+    latest_review_body: Optional[str] = None
     needs_human_label: str = "blocked-needs-human"
     needs_rework_label: str = "needs-rework"
-    max_rework_cycles: int = 3  # For comment message
-    latest_review_body: Optional[str] = None  # Latest review feedback to include
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    # When set, the applier posts this exact markdown body instead of the
+    # default rework-cycles-exceeded template. Used by the post-publish
+    # path to explain why an *approved* PR is being escalated (stuck on
+    # CI, blocked by branch protection, etc.). Mutually exclusive with
+    # the rework-cycles message in practice — see field comments above.
+    comment_override: Optional[str] = None
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
 
