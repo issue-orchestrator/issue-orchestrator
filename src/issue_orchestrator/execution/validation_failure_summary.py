@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..domain.artifact_contracts import ValidationFailed, ValidationPassed
 from ..domain.run_manifest import RunManifest
 from ..infra.e2e_reports import (
     JUnitCaseResult,
@@ -117,10 +118,21 @@ def load_validation_failure_summary(
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
 
-    accepted_statuses = {"failed", "passed"} if include_passed else {"failed"}
-    if manifest.validation_status not in accepted_statuses:
+    # Read the typed outcome via the manifest property — that protects
+    # us from inconsistent legacy triples (e.g. status="passed" with a
+    # stale failure reason) by trusting the typed status. ``ValidationRetry``
+    # is intentionally NOT a summary surface: this dialog renders
+    # terminal outcomes only. A retry-state run gets None so the
+    # caller can decide what to do (e.g. wait for the retry to land).
+    outcome = manifest.validation_outcome
+    if isinstance(outcome, ValidationPassed):
+        if not include_passed:
+            return None
+        status = "passed"
+    elif isinstance(outcome, ValidationFailed):
+        status = "failed"
+    else:
         return None
-    status = manifest.validation_status or "failed"
 
     worktree = manifest.worktree if manifest.worktree else None
     record_path = _resolve_run_artifact(
@@ -159,10 +171,17 @@ def load_validation_failure_summary(
             modified_after=validation_record_junit_modified_after(record),
         )
 
-    default_reason = "Validation passed" if status == "passed" else "Validation failed"
+    # ValidationFailed always carries a non-empty reason by construction;
+    # ValidationPassed has no reason. Project the union to the legacy
+    # string field this dataclass exposes — preserving the rendering
+    # contract while reading from the typed source of truth.
+    if isinstance(outcome, ValidationFailed):
+        reason = outcome.reason
+    else:
+        reason = "Validation passed"
     return ValidationFailureSummary(
         status=status,
-        reason=manifest.validation_reason or default_reason,
+        reason=reason,
         suite=record.suite if record else "",
         command=record.command if record else "",
         exit_code=record.exit_code if record else 0,

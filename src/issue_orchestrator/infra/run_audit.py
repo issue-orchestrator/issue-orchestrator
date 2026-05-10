@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..domain.artifact_contracts import (
+    ValidationFailed,
+    ValidationPassed,
+    ValidationRetry,
+)
 from ..domain.run_manifest import RunManifest
 
 RUN_AUDIT_FILENAME = "run-audit.json"
@@ -55,14 +60,7 @@ def write_run_audit(
         "completion_label": completion_label,
         "trigger_threshold_minutes": trigger_threshold_minutes,
         "processing_errors": list(processing_errors or ()),
-        "validation": {
-            "passed": manifest.validation_passed,
-            "status": manifest.validation_status,
-            "reason": manifest.validation_reason,
-            "record_path": manifest.validation_record_path,
-            "stdout_path": manifest.validation_stdout,
-            "stderr_path": manifest.validation_stderr,
-        },
+        "validation": _validation_audit_payload(manifest),
         "review_exchange": review_exchange,
         "evidence_paths": {
             "manifest": str(run_dir / "manifest.json"),
@@ -154,13 +152,53 @@ def _apply_validation_findings(
     findings: list[str],
     dominant_bucket: str,
 ) -> str:
-    if manifest.validation_passed is not False:
+    # Branch off the typed outcome so the typed status (not a stale
+    # legacy reason) drives the finding text. ``ValidationPassed`` /
+    # ``None`` / ``ValidationRetry`` don't need a finding here — only
+    # terminal failures.
+    outcome = manifest.validation_outcome
+    if not isinstance(outcome, ValidationFailed):
         return dominant_bucket
-    reason = manifest.validation_reason or "unknown reason"
-    findings.append(f"Validation failed after the run completed: {reason}.")
+    findings.append(
+        f"Validation failed after the run completed: {outcome.reason}."
+    )
     if dominant_bucket == "unknown":
         return "validation_retry"
     return dominant_bucket
+
+
+def _validation_audit_payload(manifest: RunManifest) -> dict[str, Any]:
+    """Project the validation outcome + artifact paths into the audit payload.
+
+    Routes the (passed, status, reason) triple through the typed outcome
+    so the audit JSON cannot ship an inconsistent triple even if the
+    on-disk manifest had one (legacy pre-#6302 manifests).
+    """
+    outcome = manifest.validation_outcome
+    if isinstance(outcome, ValidationPassed):
+        passed: bool | None = True
+        status: str | None = "passed"
+        reason: str | None = None
+    elif isinstance(outcome, ValidationFailed):
+        passed = False
+        status = "failed"
+        reason = outcome.reason
+    elif isinstance(outcome, ValidationRetry):
+        passed = False
+        status = "retry"
+        reason = outcome.reason
+    else:
+        passed = None
+        status = None
+        reason = None
+    return {
+        "passed": passed,
+        "status": status,
+        "reason": reason,
+        "record_path": manifest.validation_record_path,
+        "stdout_path": manifest.validation_stdout,
+        "stderr_path": manifest.validation_stderr,
+    }
 
 
 def _append_runtime_findings(manifest: RunManifest, findings: list[str]) -> None:

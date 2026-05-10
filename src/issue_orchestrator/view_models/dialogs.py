@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+from ..domain.artifact_contracts import (
+    ValidationFailed,
+    ValidationOutcome,
+    ValidationPassed,
+    ValidationRetry,
+    validation_outcome_from_manifest_fields,
+)
+
 
 @dataclass(frozen=True)
 class DialogRow:
@@ -50,8 +58,13 @@ class SessionDiagnosticsContext:
     validation_output_path: str
     validation_stderr_path: str
     run_audit_path: str
-    validation_status: str
-    validation_reason: str
+    # Typed validation outcome (None when no outcome recorded yet).
+    # Replaces the previous loose ``validation_status`` /
+    # ``validation_reason`` string pair, which could carry a stale
+    # failure reason alongside a passed status when manifests were
+    # written by pre-#6302 writers (or hand-edited). The discriminated
+    # union forbids that combination at the type level.
+    validation_outcome: "ValidationOutcome | None"
     branch: str
     task: str
     claude_args: str
@@ -105,8 +118,11 @@ class SessionDiagnosticsContext:
             validation_output_path=validation_output_path,
             validation_stderr_path=validation_stderr_path,
             run_audit_path=run_audit_path,
-            validation_status=str(manifest.get("validation_status") or ""),
-            validation_reason=str(manifest.get("validation_reason") or ""),
+            validation_outcome=validation_outcome_from_manifest_fields(
+                validation_passed=manifest.get("validation_passed"),
+                validation_status=manifest.get("validation_status"),
+                validation_reason=manifest.get("validation_reason"),
+            ),
             branch=str(session_identity.get("branch") or ""),
             task=str(session_identity.get("task") or ""),
             claude_args=str(session_identity.get("claude_args") or ""),
@@ -203,6 +219,19 @@ class SessionDiagnosticFollowUpIssue:
         return payload
 
 
+def _outcome_reason(outcome: ValidationOutcome | None) -> str | None:
+    """Project a typed outcome down to a reason string for fallback chains.
+
+    ``ValidationPassed`` has no reason field at all — returns ``None`` so
+    the stale-reason-on-success class of bug is unrepresentable on this
+    code path. ``ValidationFailed`` / ``ValidationRetry`` always carry a
+    non-empty reason by construction.
+    """
+    if isinstance(outcome, (ValidationFailed, ValidationRetry)):
+        return outcome.reason
+    return None
+
+
 def _join_worktree_path(worktree: str, rel_path: Any) -> str:
     """Resolve manifest path to an openable filesystem path.
 
@@ -243,10 +272,20 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         DialogRow("Retention Pinned", ctx.retention_pinned or "-"),
         DialogRow("Worktree", ctx.worktree or "-"),
     ]
-    if ctx.validation_status:
-        rows.append(DialogRow("Validation Status", ctx.validation_status))
-    if ctx.validation_reason:
-        rows.append(DialogRow("Validation Reason", ctx.validation_reason))
+    # Project the typed outcome into Status + Reason rows. The union
+    # guarantees: passed has no reason field at all (so the stale-
+    # reason-on-success bug surfaces here as an absent Reason row,
+    # not a contradiction); failed/retry carry a non-empty reason
+    # by construction.
+    outcome = ctx.validation_outcome
+    if isinstance(outcome, ValidationPassed):
+        rows.append(DialogRow("Validation Status", "passed"))
+    elif isinstance(outcome, ValidationFailed):
+        rows.append(DialogRow("Validation Status", "failed"))
+        rows.append(DialogRow("Validation Reason", outcome.reason))
+    elif isinstance(outcome, ValidationRetry):
+        rows.append(DialogRow("Validation Status", "retry"))
+        rows.append(DialogRow("Validation Reason", outcome.reason))
     return rows
 
 
@@ -518,7 +557,11 @@ def build_validation_failure_dialog(
     return {
         "title": f"Validation {title_outcome} #{issue_number}",
         "status": status,
-        "reason": str(validation.get("reason") or ctx.validation_reason or default_reason),
+        "reason": str(
+            validation.get("reason")
+            or _outcome_reason(ctx.validation_outcome)
+            or default_reason
+        ),
         "suite": str(validation.get("suite") or ""),
         "command": str(validation.get("command") or ""),
         "exit_code": _optional_int(validation.get("exit_code")),

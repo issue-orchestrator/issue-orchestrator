@@ -12,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 
+from issue_orchestrator.domain.artifact_contracts import ValidationFailed
 from issue_orchestrator.domain.run_manifest import RunManifest
 from issue_orchestrator.domain.session_analysis import SessionAnalysis
 
@@ -155,11 +156,14 @@ def _analyze_needs_human(m: RunManifest) -> SessionAnalysis:
 
 
 def _analyze_completed(m: RunManifest) -> SessionAnalysis:
-    # Validation failure
-    if m.validation_passed is False:
-        reason = m.validation_reason or "unknown reason"
+    # Validation failure — branch off the typed outcome so the failure
+    # reason cannot be a stale string left over from a previous attempt.
+    outcome = m.validation_outcome
+    if isinstance(outcome, ValidationFailed):
         return SessionAnalysis(
-            headline=_trunc(f"Validation failed: {reason}", _MAX_HEADLINE),
+            headline=_trunc(
+                f"Validation failed: {outcome.reason}", _MAX_HEADLINE
+            ),
             detail=_trunc(m.problems, _MAX_DETAIL) if m.problems else None,
             log_excerpt=_tail(m.log_tail, 5),
             suggestions=["Check validation stderr"],
