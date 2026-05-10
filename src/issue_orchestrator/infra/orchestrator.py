@@ -1088,7 +1088,12 @@ class Orchestrator:
         ))
 
     def set_start_paused(self) -> None:
-        """Set initial paused state; run_loop emits lifecycle events in order."""
+        """Set initial paused state and request dashboard read-model hydration.
+
+        Runtime ``pause()`` only stops future execution. Startup-pause also
+        needs one read-only refresh because warm cache state may be stale before
+        the dashboard first renders.
+        """
         with self._state_lock:
             self.state.paused = True
             self.state.queue_refresh_requested = True
