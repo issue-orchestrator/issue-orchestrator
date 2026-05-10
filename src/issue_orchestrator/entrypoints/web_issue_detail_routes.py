@@ -73,14 +73,26 @@ def _current_run_validation_diagnostic(
     from ..execution.validation_failure_summary import (
         load_validation_failure_summary_with_config,
     )
+    # `include_passed=True` so the diagnostic surfaces for passed runs as
+    # well — users want to inspect the per-test JUnit results regardless
+    # of outcome, not just to triage failures. The dialog endpoint
+    # already passes the same flag (web_diagnostics_routes.py); both
+    # surfaces share `load_validation_failure_summary_with_config` and
+    # so cannot disagree on whether structured cases are surfaced.
     summary = load_validation_failure_summary_with_config(
         run_dir,
         config=orchestrator.config if orchestrator else None,
+        include_passed=True,
     )
     if summary is None:
         return None
+    state = (
+        "validation_passed"
+        if summary.status == "passed"
+        else "validation_failed"
+    )
     return {
-        "state": "validation_failed",
+        "state": state,
         "run_dir": str(run_dir),
         "session_name": context.session_name,
         "reason": summary.reason,
@@ -171,6 +183,21 @@ def _apply_issue_detail_run_diagnostic(
     summary = payload.get("summary")
     if isinstance(summary, dict):
         summary["run_diagnostic"] = run_diagnostic
+
+    # Status explanation differs by outcome: a failed run is a problem
+    # the user wants to drill into; a passed run is informational and
+    # shouldn't pretend to be a failure.
+    if run_diagnostic.get("state") == "validation_passed":
+        case_count = len(run_diagnostic.get("junit_cases") or [])
+        if case_count > 0:
+            payload["status_explanation"] = (
+                f"Current run passed validation: {case_count} test case(s) "
+                f"available."
+            )
+        else:
+            payload["status_explanation"] = "Current run passed validation."
+        return
+
     failed_tests = run_diagnostic.get("failed_tests")
     if isinstance(failed_tests, list) and failed_tests:
         payload["status_explanation"] = (

@@ -665,6 +665,7 @@ function renderIssueDetailValidation(detail) {
     const reasonEl = document.getElementById('issueDetailValidationReason');
     const testsEl = document.getElementById('issueDetailValidationTests');
     const structuredEl = document.getElementById('issueDetailValidationStructured');
+    const titleEl = document.querySelector('.issue-detail-validation-title');
     const summary = detail && typeof detail.summary === 'object' ? detail.summary : {};
     const diagnostic = summary && typeof summary.run_diagnostic === 'object' ? summary.run_diagnostic : null;
     const actions = Array.isArray(detail.actions) ? detail.actions : [];
@@ -676,7 +677,17 @@ function renderIssueDetailValidation(detail) {
     }
 
     validationEl.style.display = '';
-    const reason = diagnostic.reason || 'Validation failed';
+    // The diagnostic is now surfaced for both passed and failed runs.
+    // Reflect the outcome in the section title and a status class so CSS
+    // (and accessibility tooling) can distinguish them.
+    const passed = diagnostic.state === 'validation_passed';
+    validationEl.classList.toggle('is-passed', passed);
+    validationEl.classList.toggle('is-failed', !passed);
+    if (titleEl) {
+        titleEl.textContent = passed ? 'Validation passed' : 'Validation failed';
+    }
+    const fallbackReason = passed ? 'Validation passed' : 'Validation failed';
+    const reason = diagnostic.reason || fallbackReason;
     const command = diagnostic.command ? `Command: ${diagnostic.command}` : '';
     reasonEl.textContent = command ? `${reason} • ${command}` : reason;
 
@@ -687,8 +698,20 @@ function renderIssueDetailValidation(detail) {
         testsEl.innerHTML = '';
         testsEl.style.display = 'none';
         _renderIssueValidationStructured(structuredEl, junitCases);
+    } else if (passed) {
+        // Passed with no JUnit cases — most likely the repo hasn't
+        // configured `validation.junit_xml_paths`. Don't render the
+        // failure-list fallback (it would say "no failed test names",
+        // which is true but pointless on a green run).
+        if (structuredEl) {
+            structuredEl.innerHTML = '';
+            structuredEl.style.display = 'none';
+        }
+        testsEl.innerHTML = '';
+        testsEl.style.display = 'none';
     } else {
-        // Fall back to the simple failed-test-name preview list.
+        // Failed and no structured cases — fall back to the simple
+        // failed-test-name preview list.
         if (structuredEl) {
             structuredEl.innerHTML = '';
             structuredEl.style.display = 'none';
