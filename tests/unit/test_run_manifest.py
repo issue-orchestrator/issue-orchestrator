@@ -244,3 +244,125 @@ class TestToDict:
         m._extra["session_name"] = "stale"
         d = m.to_dict()
         assert d["session_name"] == "s"
+
+
+class TestValidationOutcome:
+    """The validation outcome is a discriminated union derived from three
+    flat manifest fields. Writers must produce a consistent triple; readers
+    surface the typed view via ``RunManifest.validation_outcome``.
+
+    These tests pin the bug-2 scenario (Session Diagnostics dialog showed
+    Status: passed alongside Reason: ``Validation failed for a949871f``).
+    """
+
+    def test_validation_outcome_none_when_unset(self, run_dir: Path) -> None:
+        _write_manifest(run_dir, {"session_name": "s", "run_id": "r"})
+        assert RunManifest.load(run_dir).validation_outcome is None
+
+    def test_validation_outcome_passed(self, run_dir: Path) -> None:
+        from issue_orchestrator.domain.artifact_contracts import ValidationPassed
+        _write_manifest(run_dir, {
+            "session_name": "s",
+            "run_id": "r",
+            "validation_passed": True,
+            "validation_status": "passed",
+        })
+        outcome = RunManifest.load(run_dir).validation_outcome
+        assert isinstance(outcome, ValidationPassed)
+
+    def test_validation_outcome_failed(self, run_dir: Path) -> None:
+        from issue_orchestrator.domain.artifact_contracts import ValidationFailed
+        _write_manifest(run_dir, {
+            "session_name": "s",
+            "run_id": "r",
+            "validation_passed": False,
+            "validation_status": "failed",
+            "validation_reason": "tests broke",
+        })
+        outcome = RunManifest.load(run_dir).validation_outcome
+        assert isinstance(outcome, ValidationFailed)
+        assert outcome.reason == "tests broke"
+
+    def test_validation_outcome_retry(self, run_dir: Path) -> None:
+        from issue_orchestrator.domain.artifact_contracts import ValidationRetry
+        _write_manifest(run_dir, {
+            "session_name": "s",
+            "run_id": "r",
+            "validation_passed": False,
+            "validation_status": "retry",
+            "validation_reason": "flaky test",
+        })
+        outcome = RunManifest.load(run_dir).validation_outcome
+        assert isinstance(outcome, ValidationRetry)
+        assert outcome.reason == "flaky test"
+
+    def test_validation_outcome_inconsistent_legacy_triple_drops_stale_reason(
+        self, run_dir: Path
+    ) -> None:
+        """Bug 2 regression: an old on-disk manifest written before this
+        refactor may still contain the inconsistent triple
+        ``{validation_status: passed, validation_reason: "Validation
+        failed for a949871f"}`` — the stale reason left behind by an
+        earlier failure when the passed-path writer omitted the reason
+        field. The typed property must surface ``ValidationPassed`` and
+        drop the stale reason so the dialog never displays the
+        contradiction again."""
+        from issue_orchestrator.domain.artifact_contracts import ValidationPassed
+        _write_manifest(run_dir, {
+            "session_name": "s",
+            "run_id": "r",
+            "validation_passed": True,
+            "validation_status": "passed",
+            # Stale reason from a prior failure — this is the on-disk
+            # state the user's screenshot captured.
+            "validation_reason": "Validation failed for a949871f (exit_code=1)",
+        })
+        outcome = RunManifest.load(run_dir).validation_outcome
+        assert isinstance(outcome, ValidationPassed)
+        # ValidationPassed has no reason field — the stale string is
+        # unrepresentable on the typed view.
+        assert not hasattr(outcome, "reason")
+
+
+class TestUpdateValidationOutcomeWritesConsistentTriple:
+    """The typed write API (``SessionOutput.update_validation_outcome``)
+    must always produce all three legacy fields together so a previous
+    outcome's reason cannot survive into a fresh outcome."""
+
+    def test_passed_after_failed_clears_reason(self, run_dir: Path) -> None:
+        """The exact bug-2 mechanism, end-to-end through the adapter:
+        first write a failed outcome (reason=X), then write passed.
+        On disk the manifest must have ``validation_status: passed``
+        AND ``validation_reason: None`` — not the stale X."""
+        import json
+        from issue_orchestrator.domain.artifact_contracts import (
+            ValidationFailed,
+            ValidationPassed,
+        )
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
+        session_output = FileSystemSessionOutput()
+        # FileSystemSessionOutput needs a worktree-shaped run_dir for
+        # bootstrap_manifest_identity. Use the fixture run_dir directly.
+        _write_manifest(run_dir, {
+            "session_name": "s",
+            "run_id": "r",
+        })
+
+        session_output.update_validation_outcome(
+            run_dir,
+            ValidationFailed(reason="Validation failed for a949871f (exit_code=1)"),
+        )
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert manifest["validation_status"] == "failed"
+        assert manifest["validation_reason"].startswith("Validation failed")
+
+        session_output.update_validation_outcome(run_dir, ValidationPassed())
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert manifest["validation_status"] == "passed"
+        assert manifest["validation_passed"] is True
+        # The bug fix: stale reason must be cleared, not preserved by
+        # the partial-merge update.
+        assert manifest.get("validation_reason") is None or "validation_reason" not in manifest
