@@ -872,10 +872,10 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
     assert "const isPrClosedBlock = hasPrClosedBlock" in body
     assert "const resetRetryStatuses = new Set(['blocked', 'awaiting-merge']);" in body
     assert "const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out']);" in body
-    assert "if (isPrClosedBlock)" in body
-    assert "menuCloseIssue.style.display = '';" in body
+    assert "if (isPrClosedBlock)" not in body
+    assert "menuUnblock.style.display = isBlockedHistory && !isPrClosedBlock ? '' : 'none';" in body
+    assert "menuCloseIssue.style.display = isPrClosedBlock ? '' : 'none';" in body
     assert "menuResetRetry.style.display = 'none';" in body
-    assert "menuUnblock.style.display = isBlockedHistory ? '' : 'none';" in body
     assert "menuResetRetry.style.display = '';" in body
     assert "menuResetRetryScratch.style.display = '';" in body
     assert "menuRetry.style.display = '';" in body

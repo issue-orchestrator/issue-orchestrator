@@ -16,6 +16,7 @@ from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
+    REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
@@ -129,7 +130,9 @@ def has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
     """Check if processing_errors contains review exchange halt/failure markers."""
     if not processing_errors:
         return False
-    return any(error.startswith("review_exchange:") for error in processing_errors)
+    return any(
+        error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX) for error in processing_errors
+    )
 
 
 class CompletionActionPlanner:

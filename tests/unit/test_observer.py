@@ -687,6 +687,55 @@ class TestObserveSession:
         assert result.observation == SessionObservation.TIMED_OUT
         assert result.timeout_exceeded is True
 
+    def test_completion_record_does_not_mask_timeout(
+        self, mock_config, mock_session_runner, mock_repository_host, sample_session, tmp_path
+    ):
+        """Completion detection should not downgrade an over-time session to terminated."""
+        import json
+
+        from issue_orchestrator.events import EventName
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        mock_events = MagicMock()
+        monitor = SessionObserver(
+            mock_config,
+            FileSystemSessionOutput(),
+            events=mock_events,
+            session_runner=mock_session_runner,
+            repository_host=mock_repository_host,
+        )
+        worktree = tmp_path / "worktree"
+        worktree.mkdir(parents=True)
+        sample_session.worktree_path = worktree
+        sample_session.started_at = datetime.now() - timedelta(
+            minutes=sample_session.agent_config.timeout_minutes + 2
+        )
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir(parents=True)
+        completion_file = completion_dir / "completion.json"
+        completion_file.write_text(
+            json.dumps({
+                "session_id": "any-session-id",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "outcome": "completed",
+                "summary": "Work done",
+            }),
+            encoding="utf-8",
+        )
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        result = monitor.observe_session(sample_session)
+
+        assert result.observation == SessionObservation.TIMED_OUT
+        assert result.timeout_exceeded is True
+        assert result.session_exists is True
+        completion_events = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.OBSERVATION_COMPLETION_DETECTED
+        ]
+        assert len(completion_events) == 1
+
     def test_observe_session_emits_event_on_completion_detected(
         self, mock_config, mock_session_runner, mock_repository_host, sample_session, tmp_path
     ):

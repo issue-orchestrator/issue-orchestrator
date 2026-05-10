@@ -5,6 +5,7 @@ from dataclasses import dataclass
 ERROR_PREFIX_PUSH = "push_branch"
 ERROR_PREFIX_CREATE_PR = "create_pr"
 ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
+REVIEW_EXCHANGE_ERROR_PREFIX = "review_exchange:"
 
 
 @dataclass

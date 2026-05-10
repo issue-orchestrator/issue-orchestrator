@@ -135,24 +135,17 @@ function showContextMenu(e, row) {
 
     // History actions by status:
     // blocked/awaiting-merge => Retry + Reset & Retry + Reset & Retry From Scratch
-    // blocked also gets Unblock; others => Retry only
+    // blocked also gets Unblock; PR-closed blocks keep Close Issue; others => Retry only
     const resetRetryStatuses = new Set(['blocked', 'awaiting-merge']);
     const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out']);
     if (menuHistoryDivider && menuRetry && menuUnblock && menuResetRetry && menuResetRetryScratch) {
-        if (isPrClosedBlock) {
+        if (resetRetryStatuses.has(effectiveHistoryStatus) || isBlockedHistory) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
-            menuUnblock.style.display = 'none';
-            menuResetRetry.style.display = 'none';
-            menuResetRetryScratch.style.display = 'none';
-            menuRetry.style.display = '';
-            if (menuCloseIssue) menuCloseIssue.style.display = '';
-        } else if (resetRetryStatuses.has(effectiveHistoryStatus) || isBlockedHistory) {
-            menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
-            menuUnblock.style.display = isBlockedHistory ? '' : 'none';
+            menuUnblock.style.display = isBlockedHistory && !isPrClosedBlock ? '' : 'none';
             menuResetRetry.style.display = '';
             menuResetRetryScratch.style.display = '';
             menuRetry.style.display = '';
-            if (menuCloseIssue) menuCloseIssue.style.display = 'none';
+            if (menuCloseIssue) menuCloseIssue.style.display = isPrClosedBlock ? '' : 'none';
         } else if (otherRetryStatuses.has(effectiveHistoryStatus)) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
             menuUnblock.style.display = 'none';

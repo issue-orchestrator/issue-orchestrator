@@ -16,7 +16,7 @@ from .completion_failure_reporting import (
     build_processing_failure_comment,
     write_failure_diagnostic,
 )
-from .completion_types import ProcessingResult
+from .completion_types import ProcessingResult, REVIEW_EXCHANGE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def build_processing_result(
         RequestedAction.PUSH_BRANCH in record.requested_actions
         and "Pushed branch to remote" in actions_taken
     )
-    if any(error.startswith("review_exchange:") for error in errors):
+    if any(error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX) for error in errors):
         success = False
     logger.info(
         "Completion result: issue=%s success=%s actions=%s errors=%s pr_url=%s",
@@ -116,7 +116,9 @@ def build_processing_result(
 
     cleanup_completion_record_fn(worktree, completion_path, issue_number)
 
-    review_exchange_halted = any(error.startswith("review_exchange:") for error in errors)
+    review_exchange_halted = any(
+        error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX) for error in errors
+    )
 
     return ProcessingResult(
         success=success,
