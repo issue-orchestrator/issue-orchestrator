@@ -999,12 +999,12 @@ class TestApiTimelineEndpoint:
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-passed-junit"
         worktree.mkdir(parents=True)
+        from issue_orchestrator.domain.artifact_contracts import ValidationPassed
         run = session_output.start_run(worktree, "coding-1", issue_number=125)
+        session_output.update_validation_outcome(run.run_dir, ValidationPassed())
         session_output.update_manifest(
             run.run_dir,
             {
-                "validation_status": "passed",
-                "validation_reason": "Validation passed",
                 "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
                 "validation_stdout": ".issue-orchestrator/sessions/r1/validation-stdout.log",
                 "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
@@ -1112,11 +1112,9 @@ class TestApiTimelineEndpoint:
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-passed-no-junit"
         worktree.mkdir(parents=True)
+        from issue_orchestrator.domain.artifact_contracts import ValidationPassed
         run = session_output.start_run(worktree, "coding-1", issue_number=126)
-        session_output.update_manifest(
-            run.run_dir,
-            {"validation_status": "passed", "validation_reason": "Validation passed"},
-        )
+        session_output.update_validation_outcome(run.run_dir, ValidationPassed())
         (run.run_dir / "validation-record.json").write_text(
             json.dumps(
                 {
