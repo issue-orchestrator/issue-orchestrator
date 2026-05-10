@@ -102,6 +102,15 @@ def test_resume_emits_event(sample_config):
     OrchestratorResumedPayload.model_validate(events[0].data)
 
 
+def test_start_paused_requests_initial_queue_refresh(sample_config):
+    orchestrator = create_test_orchestrator(sample_config)
+
+    orchestrator.set_start_paused()
+
+    assert orchestrator.state.paused is True
+    assert orchestrator.state.queue_refresh_requested is True
+
+
 def create_test_orchestrator(
     config,
     repository_host=None,
@@ -1032,6 +1041,32 @@ class TestRunLoop:
 
         # Should not fetch issues when paused
         assert len(mock_repository_host.list_issues_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_run_loop_start_paused_refreshes_queue_without_launching(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Start-paused hydrates the read model without starting sessions."""
+        mock_repository_host.issues = [
+            create_issue(360, title="Blocked issue", labels=["agent:web", "blocked"])
+        ]
+
+        worktree_manager = MockWorktreeManager()
+        orchestrator = create_test_orchestrator(
+            sample_config,
+            mock_repository_host,
+            worktree_manager=worktree_manager,
+        )
+        orchestrator.set_start_paused()
+
+        await run_loop_one_tick(orchestrator)
+
+        assert len(mock_repository_host.list_issues_calls) > 0
+        assert any(issue.number == 360 for issue in orchestrator.state.cached_queue_issues)
+        assert orchestrator.state.active_sessions == []
+        assert worktree_manager.create_calls == []
 
     @pytest.mark.asyncio
     async def test_run_loop_emits_started_before_initial_paused(

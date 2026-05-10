@@ -1091,6 +1091,7 @@ class Orchestrator:
         """Set initial paused state; run_loop emits lifecycle events in order."""
         with self._state_lock:
             self.state.paused = True
+            self.state.queue_refresh_requested = True
         logger.info("Orchestrator marked paused for startup")
 
     def resume(self) -> None:
