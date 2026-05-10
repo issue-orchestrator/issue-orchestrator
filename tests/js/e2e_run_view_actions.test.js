@@ -61,6 +61,11 @@ function loadE2ERunView(overrides = {}) {
     };
     const context = { ...preLoadStubs, ...overrides };
     vm.createContext(context);
+    const sharedSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/test_results_panel.js'),
+        'utf8',
+    );
+    vm.runInContext(sharedSource, context, { filename: 'test_results_panel.js' });
     const source = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/e2e_run_view.js'),
         'utf8',
