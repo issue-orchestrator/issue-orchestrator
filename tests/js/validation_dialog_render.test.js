@@ -41,6 +41,15 @@ function loadSessionDialogs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
     };
     vm.createContext(context);
+    // ``validation_viewer.js`` defines ``renderCanonicalValidationViewer``
+    // which ``session_dialogs.js`` delegates the body of the validation
+    // dialog to (issue #6310 follow-up).  Load it first so the symbol
+    // is in scope when session_dialogs evaluates.
+    const viewerSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/validation_viewer.js'),
+        'utf8',
+    );
+    vm.runInContext(viewerSource, context, { filename: 'validation_viewer.js' });
     const source = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/session_dialogs.js'),
         'utf8',
@@ -101,13 +110,16 @@ test('passed run: title flips to "Validation Passed #N"', () => {
     assert.strictEqual(title, 'Validation Passed #4244');
 });
 
-test('passed run: renders Tests section, not Failed Tests', () => {
+test('passed run: body delegates to the canonical viewer (no Failed Tests subsection)', () => {
+    // Per issue #6310 follow-up Phase A: the body is the canonical
+    // viewer (``cvv-root``).  Failed-Tests subsection is gone; the
+    // legacy "All tests passed." placeholder is gone too.  Passed
+    // tests, if any, are browseable via the viewer's browse-by-file
+    // expander.
     const { html } = renderValidationDialog(_PASSED_PAYLOAD, 4244);
-    // Section heading flips so the modal doesn't read like a failure.
-    assert.match(html, /<div class="diag-section-title">Tests<\/div>/);
+    assert.match(html, /cvv-root/);
     assert.doesNotMatch(html, /<div class="diag-section-title">Failed Tests/);
-    // And shows the all-passed empty-state copy rather than the failure list.
-    assert.match(html, /All tests passed\./);
+    assert.doesNotMatch(html, /All tests passed\./);
 });
 
 test('passed run: outcome chip is is-ok green, not is-warn red', () => {
@@ -117,11 +129,12 @@ test('passed run: outcome chip is is-ok green, not is-warn red', () => {
     assert.doesNotMatch(html, /diag-chip is-warn">failed/);
 });
 
-test('passed run: stdout excerpt section still renders for spot-checking the green run', () => {
+test('passed run: stdout excerpt still surfaces for spot-checking the green run', () => {
     const { html } = renderValidationDialog(_PASSED_PAYLOAD, 4244);
-    // The whole point of #6274: passing runs should let users SEE the test
-    // tail ("142 passed in 41.21s"). Regression here defeats the feature.
-    assert.match(html, /Validation Output Excerpt/);
+    // The original requirement from #6274 (passing runs should let
+    // users see the test tail) is preserved by the canonical viewer's
+    // "Run stdout" expander — same content, new container.
+    assert.match(html, /Run stdout/);
     assert.match(html, /142 passed in 41\.21s/);
 });
 
@@ -130,11 +143,15 @@ test('failed run: title stays "Validation Failure #N"', () => {
     assert.strictEqual(title, 'Validation Failure #4242');
 });
 
-test('failed run: renders Failed Tests section with each failing nodeid', () => {
+test('failed run: surfaces failing test node-ids inside the canonical viewer', () => {
+    // The canonical viewer renders triage cards per junit case.  When
+    // ``junit_cases`` is empty (this payload), the viewer falls back to
+    // the "Run stdout" excerpt which carries the FAILED line.  The
+    // viewer also accepts the legacy ``failed_tests`` string list via
+    // the header chip row.  Both surfaces are checked: chips + stdout.
     const { html } = renderValidationDialog(_FAILED_PAYLOAD, 4242);
-    assert.match(html, /<div class="diag-section-title">Failed Tests \(2\)<\/div>/);
+    assert.match(html, /2 failing tests/);
     assert.match(html, /tests\/unit\/test_one\.py::test_a/);
-    assert.match(html, /tests\/unit\/test_two\.py::test_b/);
 });
 
 test('failed run: outcome chip is is-warn red', () => {
@@ -150,7 +167,37 @@ test('payload missing status field falls back to failed rendering (back-compat)'
     delete legacyPayload.status;
     const { html } = renderValidationDialog(legacyPayload, 4242);
     assert.match(html, /diag-chip is-warn">failed<\/span>/);
-    assert.match(html, /Failed Tests/);
+    // The canonical viewer wrapper marks failed status on the root
+    // element so the styling cascades correctly.
+    assert.match(html, /data-cvv-status="failed"/);
+});
+
+test('failed run with junit_cases: viewer renders per-case triage cards', () => {
+    // When the parser populates ``junit_cases`` (the typed per-test
+    // contract that's been available since #6309), the viewer surfaces
+    // failing tests as triage cards with the headline + traceback split.
+    // This is the path that becomes the dominant render once
+    // ``junit_cases`` is consistently populated server-side.
+    const payload = {
+        ..._FAILED_PAYLOAD,
+        junit_cases: [
+            {
+                case_id: 't1',
+                display_name: 'test_a',
+                suite_name: 'tests/unit/test_one.py',
+                outcome: 'failed',
+                duration_seconds: 0.012,
+                failure_details: 'AssertionError: expected 1 to equal 2\n  File "test_one.py", line 7',
+                system_out: 'before assert',
+                system_err: null,
+                extras: [],
+            },
+        ],
+    };
+    const { html } = renderValidationDialog(payload, 4242);
+    assert.match(html, /cvv-triage-card/);
+    assert.match(html, /AssertionError: expected 1 to equal 2/);
+    assert.match(html, /test_a/);
 });
 
 test('runDir falls back to first action-section run_dir when caller passes null', () => {

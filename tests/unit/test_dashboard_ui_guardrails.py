@@ -68,6 +68,11 @@ def test_dashboard_css_uses_direct_split_stylesheets_without_compat_entrypoint()
         "cards.css",
         "issue_detail.css",
         "overlays.css",
+        # ``validation_viewer.css`` carries the ``cvv-*`` rules for the
+        # canonical validation viewer (issue #6310 follow-up).  Loaded
+        # after ``overlays.css`` so any class-name overlaps with the
+        # legacy ``diag-*`` rules resolve in the viewer's favour.
+        "validation_viewer.css",
         "e2e_run_detail.css",
     )
     assert ".issue-detail-drawer" in _read_dashboard_css_bundle()
@@ -701,13 +706,14 @@ def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     assert "data.actions" not in fetch_body
 
     render_body = _function_body(js, "renderValidationDialog")
-    # Render shape — these markers prove the modal scaffolding is intact and
-    # uses the structured action_sections payload, not the legacy
-    # data.actions field.
+    # Render shape — these markers prove the modal scaffolding is intact
+    # and that the body delegates to the canonical viewer (issue #6310
+    # follow-up, Phase A).  The legacy ``diag-validation-grid`` two-pane
+    # body is replaced by ``renderCanonicalValidationViewer`` which
+    # produces the ``cvv-root`` wrapper.
     assert "Validation Results" in render_body
-    assert "action_sections" in render_body
-    assert "diag-validation-grid" in render_body
-    assert "renderValidationFailureActionSections" in js
+    assert "renderCanonicalValidationViewer(data)" in render_body
+    assert "renderValidationFailureActionSections" in js  # used inside the viewer
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:

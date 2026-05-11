@@ -536,7 +536,7 @@ def build_validation_failure_dialog(
         if isinstance(item, str)
     ]
     junit_cases = [
-        item
+        _normalize_junit_case_for_dialog(item)
         for item in validation.get("junit_cases", [])
         if isinstance(item, dict) and item.get("case_id")
     ]
@@ -574,6 +574,32 @@ def build_validation_failure_dialog(
         "summary_rows": [row.to_dict() for row in summary_rows],
         "action_sections": action_sections,
     }
+
+
+def _normalize_junit_case_for_dialog(case: dict[str, Any]) -> dict[str, Any]:
+    """Carry ``extras`` through to the dialog payload.
+
+    ``case.extras`` is the Phase-0 plugin slot (issue #6310 follow-up).
+    Each extra is ``{namespace, payload}``.  The dialog renderer iterates
+    these and delegates to plugin renderers registered for the
+    namespace; unknown namespaces are silently skipped.  Cases produced
+    by generic JUnit parsers carry an empty list — the slot exists for
+    type stability, not because there's anything to render.
+    """
+    extras_raw = case.get("extras")
+    extras: list[dict[str, Any]] = []
+    if isinstance(extras_raw, list):
+        for entry in extras_raw:
+            if not isinstance(entry, dict):
+                continue
+            namespace = entry.get("namespace")
+            payload = entry.get("payload")
+            if not isinstance(namespace, str) or not namespace:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            extras.append({"namespace": namespace, "payload": payload})
+    return {**case, "extras": extras}
 
 
 def _build_validation_failure_summary_rows(

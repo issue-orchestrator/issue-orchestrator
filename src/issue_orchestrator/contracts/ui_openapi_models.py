@@ -518,6 +518,7 @@ class JUnitCasePayload(BaseModel):
     case_id: str
     display_name: str
     duration_seconds: float | None = None
+    extras: list[ValidationExtraPayload]
     failure_details: str | None = None
     outcome: Literal['passed', 'failed', 'error', 'skipped']
     suite_name: str | None = None
@@ -851,6 +852,11 @@ class ValidationEvidenceMissingPayload(BaseModel):
     diagnostics: list[TimelineDiagnosticPayload]
     expected_record_path: str | None = None
     kind: Literal['missing_evidence']
+
+class ValidationExtraPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    namespace: str
+    payload: dict[str, Any]
 
 class ValidationFailedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
