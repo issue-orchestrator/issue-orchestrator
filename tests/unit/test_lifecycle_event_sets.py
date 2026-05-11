@@ -30,6 +30,10 @@ from issue_orchestrator.view_models import (
 def test_canonical_classifier_sets_are_published_by_lifecycle_event_sets() -> None:
     """The canonical event classifiers live on ``lifecycle_event_sets``."""
     for name in (
+        "CODING_COMPLETED_EVENTS",
+        "CODING_BLOCKED_EVENTS",
+        "CODING_FAILED_EVENTS",
+        "CODING_PUBLISH_FAILED_EVENTS",
         "CODING_TERMINAL_EVENTS",
         "VALIDATION_PASSED_EVENTS",
         "VALIDATION_FAILED_EVENTS",
@@ -42,12 +46,83 @@ def test_canonical_classifier_sets_are_published_by_lifecycle_event_sets() -> No
 
 
 def test_lifecycle_projection_re_exports_canonical_sets_by_identity() -> None:
-    """``lifecycle_projection`` re-publishes the canonical sets by identity."""
+    """``lifecycle_projection`` re-publishes the canonical sets by identity.
+
+    The internal ``_CODING_*`` aliases the lifecycle owner uses for typed
+    coder-attempt dispatch are the **same** frozenset objects as the
+    public canonical sets in ``lifecycle_event_sets``.  Drift between the
+    four coding-terminal buckets (completed / blocked / failed /
+    publish-failed) is impossible because there is only one set per
+    bucket; the alias is a name, not a copy.
+    """
     assert lc.CODING_TERMINAL_EVENTS is classifiers.CODING_TERMINAL_EVENTS
     assert lc.VALIDATION_PASSED_EVENTS is classifiers.VALIDATION_PASSED_EVENTS
     assert lc.VALIDATION_FAILED_EVENTS is classifiers.VALIDATION_FAILED_EVENTS
     assert lc.OUTCOME_EVENTS is classifiers.OUTCOME_EVENTS
     assert lc.BLOCKED_EVENT_NAMES is classifiers.BLOCKED_EVENT_NAMES
+    # Component coding-terminal sets are NOT duplicated in
+    # ``lifecycle_projection``.  The private ``_CODING_*`` aliases used
+    # internally for coder-attempt dispatch are the same objects as the
+    # public canonical sets.
+    assert lc._CODING_COMPLETED_EVENTS is classifiers.CODING_COMPLETED_EVENTS  # noqa: SLF001
+    assert lc._CODING_BLOCKED_EVENTS is classifiers.CODING_BLOCKED_EVENTS  # noqa: SLF001
+    assert lc._CODING_FAILED_EVENTS is classifiers.CODING_FAILED_EVENTS  # noqa: SLF001
+    assert lc._CODING_PUBLISH_FAILED_EVENTS is classifiers.CODING_PUBLISH_FAILED_EVENTS  # noqa: SLF001
+
+
+def test_classify_coding_terminal_event_dispatches_to_correct_bucket() -> None:
+    """``classify_coding_terminal_event`` is the single owner for the
+    "which coding-terminal bucket does this event belong to" decision.
+
+    Both ``lifecycle_projection`` (typed coder-attempt dispatch) and the
+    journey badge derivation route through this classifier — adding a
+    new event in one bucket propagates everywhere.
+    """
+    # completed bucket
+    for name in ("agent.coding_completed", "observation.completion_detected", "session.completed"):
+        assert classifiers.classify_coding_terminal_event(name) == "completed", name
+    # blocked bucket
+    for name in ("agent.blocked", "session.blocked", "issue.blocked"):
+        assert classifiers.classify_coding_terminal_event(name) == "blocked", name
+    # failed bucket
+    for name in ("agent.failed", "agent.timed_out", "session.failed", "session.timeout"):
+        assert classifiers.classify_coding_terminal_event(name) == "failed", name
+    # publish_failed bucket
+    assert classifiers.classify_coding_terminal_event("publish.failed") == "publish_failed"
+    # non-terminal events return None
+    for name in ("session.started", "review.approved", "validation.passed", "unknown.event"):
+        assert classifiers.classify_coding_terminal_event(name) is None, name
+
+
+def test_coding_terminal_component_sets_are_pairwise_disjoint() -> None:
+    """The four coding-terminal buckets cannot overlap.
+
+    If a new event accidentally appears in two buckets, the classifier
+    becomes non-deterministic.  This test fails fast at unit-test time.
+    """
+    buckets = {
+        "completed": classifiers.CODING_COMPLETED_EVENTS,
+        "blocked": classifiers.CODING_BLOCKED_EVENTS,
+        "failed": classifiers.CODING_FAILED_EVENTS,
+        "publish_failed": classifiers.CODING_PUBLISH_FAILED_EVENTS,
+    }
+    names = list(buckets.keys())
+    for i, name_a in enumerate(names):
+        for name_b in names[i + 1 :]:
+            overlap = buckets[name_a] & buckets[name_b]
+            assert not overlap, (
+                f"coding-terminal buckets {name_a!r} and {name_b!r} overlap on "
+                f"{sorted(overlap)} — classify_coding_terminal_event would be "
+                f"non-deterministic"
+            )
+    # Union check: the four buckets compose into ``CODING_TERMINAL_EVENTS``
+    # by definition.
+    assert (
+        classifiers.CODING_COMPLETED_EVENTS
+        | classifiers.CODING_BLOCKED_EVENTS
+        | classifiers.CODING_FAILED_EVENTS
+        | classifiers.CODING_PUBLISH_FAILED_EVENTS
+    ) == classifiers.CODING_TERMINAL_EVENTS
 
 
 def test_issue_detail_aliases_reference_canonical_sets() -> None:

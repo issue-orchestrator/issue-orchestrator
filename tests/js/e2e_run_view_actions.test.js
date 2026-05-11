@@ -61,6 +61,15 @@ function loadE2ERunView(overrides = {}) {
     };
     const context = { ...preLoadStubs, ...overrides };
     vm.createContext(context);
+    // ``lifecycle_commands.js`` owns the typed-Command renderer/dispatcher
+    // (``_renderLifecycleCommandButton`` / ``runE2ELifecycleCommand``) used
+    // by both the E2E run view and the issue-detail drawer.  Load it first
+    // so both consumers see the same function references at click time.
+    const commandsSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
+        'utf8',
+    );
+    vm.runInContext(commandsSource, context, { filename: 'lifecycle_commands.js' });
     const sharedSource = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/test_results_panel.js'),
         'utf8',

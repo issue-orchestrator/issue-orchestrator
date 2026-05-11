@@ -11,6 +11,15 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "issue_metadata.js",
     "issue_menus.js",
     "issue_detail_modals.js",
+    # ``lifecycle_commands.js`` owns the shared typed-Command renderer
+    # and dispatcher (``_renderLifecycleCommandButton`` /
+    # ``runE2ELifecycleCommand`` /
+    # ``runE2ELifecycleCommandFromButton``).  Loaded before both
+    # ``issue_detail_drawer.js`` (drawer's per-cycle validation badge
+    # dispatches through it) and ``e2e_run_view.js`` (E2E modal's action
+    # buttons dispatch through it) so the dependency is declared rather
+    # than implicit.
+    "lifecycle_commands.js",
     "issue_detail_drawer.js",
     "timeline.js",
     "diagnostics_actions.js",

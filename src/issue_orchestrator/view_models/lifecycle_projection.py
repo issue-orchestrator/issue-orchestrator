@@ -15,10 +15,15 @@ from typing import Any, Literal
 from ..domain.logical_run_projection import group_events_by_logical_cycle
 from .lifecycle_event_sets import (
     BLOCKED_EVENT_NAMES,
+    CODING_BLOCKED_EVENTS,
+    CODING_COMPLETED_EVENTS,
+    CODING_FAILED_EVENTS,
+    CODING_PUBLISH_FAILED_EVENTS,
     CODING_TERMINAL_EVENTS,
     OUTCOME_EVENTS,
     VALIDATION_FAILED_EVENTS,
     VALIDATION_PASSED_EVENTS,
+    classify_coding_terminal_event,
 )
 from .lifecycle_semantics import (
     AgentIdentity,
@@ -99,29 +104,14 @@ _CODING_START_EVENTS = frozenset(
         "rework.started",
     }
 )
-_CODING_COMPLETED_EVENTS = frozenset(
-    {
-        "agent.coding_completed",
-        "observation.completion_detected",
-        "session.completed",
-    }
-)
-_CODING_BLOCKED_EVENTS = frozenset(
-    {"agent.blocked", "session.blocked", "issue.blocked"}
-)
-_CODING_FAILED_EVENTS = frozenset(
-    {
-        "agent.failed",
-        "agent.timed_out",
-        "session.failed",
-        "session.timeout",
-    }
-)
-_CODING_PUBLISH_FAILED_EVENTS = frozenset({"publish.failed"})
-
-# Back-compat private aliases — same identity as the canonical sets
-# imported from ``lifecycle_event_sets`` (consumed by the AC-4 drift-guard
-# test).
+# Back-compat private aliases — same identity as the canonical component
+# sets imported from ``lifecycle_event_sets`` (consumed by the AC-4
+# drift-guard test).  The lifecycle owner consumes the public canonical
+# sets directly; these aliases keep the internal call sites stable.
+_CODING_COMPLETED_EVENTS = CODING_COMPLETED_EVENTS
+_CODING_BLOCKED_EVENTS = CODING_BLOCKED_EVENTS
+_CODING_FAILED_EVENTS = CODING_FAILED_EVENTS
+_CODING_PUBLISH_FAILED_EVENTS = CODING_PUBLISH_FAILED_EVENTS
 _VALIDATION_PASSED_EVENTS = VALIDATION_PASSED_EVENTS
 _VALIDATION_FAILED_EVENTS = VALIDATION_FAILED_EVENTS
 
@@ -190,16 +180,10 @@ def project_issue_lifecycle(
     for index, cycle in enumerate(_semantic_cycle_inputs(events, cycles), start=1):
         cycle_events = _cycle_events(cycle, events)
         cycle_number = _positive_int(cycle.get("cycle"), default=index)
-        coder = _project_coder(
+        coder, review = project_cycle_stages(
             issue_number=issue_number,
             cycle_number=cycle_number,
             events=cycle_events,
-        )
-        review = _project_review(
-            issue_number=issue_number,
-            cycle_number=cycle_number,
-            events=cycle_events,
-            coder=coder,
             review_required=review_required,
         )
         projected_cycles.append(
@@ -215,6 +199,36 @@ def project_issue_lifecycle(
         title=title,
         cycles=tuple(projected_cycles),
     )
+
+
+def project_cycle_stages(
+    *,
+    issue_number: int,
+    cycle_number: int,
+    events: Sequence[EventDict],
+    review_required: bool = False,
+) -> tuple[CodingAttempt, ReviewStage]:
+    """Public cycle-stage projection: events → (typed coder, typed review).
+
+    The lifecycle owner exports a behavior-level API for projecting a
+    single cycle's typed coder/review pair so other view models (e.g. the
+    drawer journey overlay in ``view_models.journey_projection``) can
+    build typed cycles without reaching into private internals.  This is
+    the canonical entry for "events of one cycle → typed states".
+    """
+    coder = _project_coder(
+        issue_number=issue_number,
+        cycle_number=cycle_number,
+        events=events,
+    )
+    review = _project_review(
+        issue_number=issue_number,
+        cycle_number=cycle_number,
+        events=events,
+        coder=coder,
+        review_required=review_required,
+    )
+    return coder, review
 
 
 def project_issue_lifecycles_from_events(
@@ -456,7 +470,17 @@ def _project_coder(
     terminal = _last_coding_terminal_event(events)
     observed = _event_timestamp(terminal or start)
 
-    if terminal is not None and _event_name(terminal) in _CODING_COMPLETED_EVENTS:
+    # Single classifier owner for "which bucket does this terminal event
+    # belong to" — drift between the four sub-categories is impossible
+    # because the classification lives in ``lifecycle_event_sets``.
+    terminal_kind = (
+        classify_coding_terminal_event(_event_name(terminal))
+        if terminal is not None
+        else None
+    )
+
+    if terminal_kind == "completed":
+        assert terminal is not None
         return _completed_coder_attempt(
             issue_number=issue_number,
             events=events,
@@ -465,7 +489,8 @@ def _project_coder(
             observed_at=observed,
         )
 
-    if terminal is not None and _event_name(terminal) in _CODING_BLOCKED_EVENTS:
+    if terminal_kind == "blocked":
+        assert terminal is not None
         return _blocked_coder_attempt(
             issue_number=issue_number,
             start=start,
@@ -473,7 +498,8 @@ def _project_coder(
             observed_at=observed,
         )
 
-    if terminal is not None and _event_name(terminal) in _CODING_PUBLISH_FAILED_EVENTS:
+    if terminal_kind == "publish_failed":
+        assert terminal is not None
         return _publish_failed_coder_attempt(
             issue_number=issue_number,
             events=events,
@@ -482,7 +508,8 @@ def _project_coder(
             observed_at=observed,
         )
 
-    if terminal is not None and _event_name(terminal) in _CODING_FAILED_EVENTS:
+    if terminal_kind == "failed":
+        assert terminal is not None
         return _failed_coder_attempt(
             issue_number=issue_number,
             start=start,

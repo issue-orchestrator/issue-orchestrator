@@ -39,7 +39,7 @@ from .lifecycle_event_sets import (
     VALIDATION_FAILED_EVENTS,
     VALIDATION_PASSED_EVENTS,
 )
-from .lifecycle_projection import _project_coder, _project_review
+from .lifecycle_projection import project_cycle_stages
 from .lifecycle_semantics import (
     CycleArtifacts,
     CycleValidationBadge,
@@ -680,16 +680,12 @@ def build_journey_cycles_from_events(  # noqa: C901 — orchestration entry poin
     group_list = list(groups)
     for idx, group in enumerate(group_list, start=1):
         raw_events = list(group.events)
-        coder = _project_coder(
+        # Public cycle-stage projection API — no reach into private
+        # lifecycle internals (issue #6310 review feedback).
+        coder, review = project_cycle_stages(
             issue_number=issue_number,
             cycle_number=idx,
             events=raw_events,
-        )
-        review = _project_review(
-            issue_number=issue_number,
-            cycle_number=idx,
-            events=raw_events,
-            coder=coder,
             review_required=review_required,
         )
 
