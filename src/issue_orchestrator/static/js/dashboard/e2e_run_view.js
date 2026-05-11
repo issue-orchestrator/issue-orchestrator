@@ -367,6 +367,81 @@ function _lifecyclesByIssueNumber(data) {
     return map;
 }
 
+function _e2eCapturedOutputUrl(test, runId) {
+    // Only JUnit-sourced rows have captured output to serve, and only when
+    // we have a positive run id. Returning '' means "no captured-output
+    // placeholder for this row" — the shared renderer respects that.
+    if (!Number.isFinite(runId) || runId === null) return '';
+    const sourceKey = String(test && test.result_source || '').toLowerCase();
+    if (!sourceKey.includes('junit')) return '';
+    const nodeid = String(test && test.nodeid || '');
+    if (!nodeid) return '';
+    return `/api/e2e-run/${runId}/test-output?nodeid=${encodeURIComponent(nodeid)}`;
+}
+
+function _renderE2ETestRowActions(test) {
+    const category = _testResultCategory(test);
+    const outcomeState = _testOutcomeState(test);
+    const hasErrorText = Boolean(_testErrorText(test));
+    const copyErrorButton = _e2eRowActionButton(hasErrorText ? 'Copy Error' : 'No Error Text', {
+        action: 'copy_test_error',
+        cssClass: 'action-btn',
+        nodeid: test.nodeid,
+        disabled: !hasErrorText,
+        title: hasErrorText ? 'Copy the failure text for this test' : 'No failure text was recorded for this test',
+    });
+    if (test.existing_issue) {
+        const issueNum = test.existing_issue.number;
+        const issueStatus = test.existing_issue.status;
+        const ghLink = `<a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}" target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">#${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span></a>`;
+        if (category === 'fixed' && issueStatus === 'open') {
+            return `${ghLink}${_e2eRowActionButton(`Close #${issueNum}`, { action: 'close_issue', cssClass: 'action-btn success', issueNumber: issueNum, nodeid: test.nodeid })}`;
+        }
+        return outcomeState === 'failed' ? `${ghLink}${copyErrorButton}` : ghLink;
+    }
+    if (_testNeedsAction(test) && outcomeState === 'failed') {
+        return [
+            _e2eRowActionButton('Create Issue ▼', { action: 'create_issue_dropdown', cssClass: 'action-btn primary', nodeid: test.nodeid }),
+            _e2eRowActionButton('Quarantine', { action: 'quarantine_test', cssClass: 'action-btn warning', nodeid: test.nodeid }),
+            copyErrorButton,
+        ].join('');
+    }
+    if (outcomeState === 'failed') return copyErrorButton;
+    return '';
+}
+
+function _renderE2EIssueLifecycleBlock(test, lifecycle, runId) {
+    if (!test || !test.existing_issue || !lifecycle) return '';
+    const issueNumber = Number(lifecycle.issue_number);
+    const cycles = Array.isArray(lifecycle.cycles) ? lifecycle.cycles : [];
+    const latestCycle = cycles.length ? cycles[cycles.length - 1] : null;
+    const timelineCommand = {
+        kind: 'open_issue_timeline',
+        issue_number: issueNumber,
+        scope_kind: 'e2e_run',
+        e2e_run_id: Number.isFinite(runId) ? Number(runId) : 0,
+        label: `Issue #${issueNumber}`,
+    };
+    const coderCmd = latestCycle ? _lifecycleSessionCommand(latestCycle.coder && latestCycle.coder.session_recording) : null;
+    const reviewCmd = latestCycle ? _lifecycleSessionCommand(latestCycle.review && latestCycle.review.session_recording) : null;
+    const transcriptCmd = latestCycle ? _lifecycleReviewTranscriptCommand(issueNumber, latestCycle) : null;
+    const validationCmd = latestCycle ? _lifecycleValidationCommand(issueNumber, latestCycle) : null;
+    const cycleChips = cycles.map(c => `<span class="e2e-lifecycle-chip">Cycle ${escapeHtml(c.cycle_number)} · ${escapeHtml(_humanizeSnakeCase(c.outcome || 'unknown'))}</span>`).join('');
+    return `
+        <div class="trr-lifecycle">
+            <div class="trr-lifecycle-heading">Related issue activity · Issue #${issueNumber}${lifecycle.title ? ` — ${escapeHtml(lifecycle.title)}` : ''}</div>
+            <div class="trr-lifecycle-cycles">${cycleChips || '<span class="e2e-empty-note">No cycles projected.</span>'}</div>
+            <div class="trr-lifecycle-actions">
+                ${_renderLifecycleCommandButton(timelineCommand, 'Timeline', 'action-btn primary')}
+                ${_renderLifecycleCommandButton(coderCmd, 'Coder Session', 'action-btn subtle')}
+                ${_renderLifecycleCommandButton(reviewCmd, 'Review Session', 'action-btn subtle')}
+                ${_renderLifecycleCommandButton(transcriptCmd, 'Review Transcript', 'action-btn subtle')}
+                ${_renderLifecycleCommandButton(validationCmd, 'Validation', 'action-btn subtle')}
+            </div>
+        </div>
+    `;
+}
+
 function renderE2EResultsPanel(data) {
     const tests = _flattenTestsByCategory(data);
     const lifecycleMap = _lifecyclesByIssueNumber(data);
@@ -382,10 +457,27 @@ function renderE2EResultsPanel(data) {
     const activeFilter = counts.action_needed ? 'action_needed' : 'all';
 
     const runId = data && data.run && Number.isFinite(Number(data.run.id)) ? Number(data.run.id) : null;
+    // E2E-specific opts injected into the shared renderer:
+    //   - capturedOutputUrl    → the e2e-run endpoint (only when a JUnit row
+    //                            has a valid runId; other rows opt out)
+    //   - renderRowActions     → Create Issue / Quarantine / Close / Copy
+    //                            buttons that only make sense for E2E test
+    //                            triage
+    //   - renderLifecycleBlock → "Related issue activity" cluster keyed on
+    //                            test.existing_issue and the lifecycle map
+    // Keeping these here means test_results_panel.js stays framework-agnostic
+    // and a validation-modal consumer can use the same renderer with its
+    // own opts (or no opts at all).
+    const opts = {
+        runId,
+        capturedOutputUrl: (test) => _e2eCapturedOutputUrl(test, runId),
+        renderRowActions: _renderE2ETestRowActions,
+        renderLifecycleBlock: (test, lifecycle) => _renderE2EIssueLifecycleBlock(test, lifecycle, runId),
+    };
     const rowsHtml = tests.length
         ? tests.map(test => {
             const lifecycle = test.existing_issue ? lifecycleMap.get(Number(test.existing_issue.number)) : null;
-            return _renderTestRow(test, lifecycle, activeFilter, { runId });
+            return _renderTestRow(test, lifecycle, activeFilter, opts);
         }).join('')
         : '<div class="empty-state">No test cases recorded for this run.</div>';
 

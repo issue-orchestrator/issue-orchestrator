@@ -1624,7 +1624,15 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "renderTestResultsHeadline(tests)" in results_body
     assert "renderTestResultsFilters(counts" in results_body
     assert 'class="test-results-list"' in results_body
-    assert "_renderTestRow(test, lifecycle, activeFilter, { runId })" in results_body
+    # The E2E modal injects its behaviors via `opts`, then passes the opts
+    # object into the shared renderer. The shared renderer no longer knows
+    # about runIds or e2e endpoints on its own — that decoupling is what
+    # makes the validation-modal consumer possible. The exact opts shape is
+    # asserted below.
+    assert "_renderTestRow(test, lifecycle, activeFilter, opts)" in results_body
+    assert "renderRowActions: _renderE2ETestRowActions" in results_body
+    assert "renderLifecycleBlock:" in results_body
+    assert "capturedOutputUrl:" in results_body
     # The test-results-list MUST NOT carry a fixed id — both the E2E run
     # modal and the issue-detail drawer render this layout, so a fixed id
     # would create duplicates and break panel-scoped filter dispatch.
@@ -1655,18 +1663,30 @@ def test_e2e_run_modal_uses_test_centric_layout() -> None:
     assert "_renderTestFailureSummary(test)" in row_body
     assert "toggleTestRowExpand(this)" in row_body
 
-    # Per-row expand contains error pre + linked-lifecycle inline (no separate top-level section).
+    # Per-row expand owns failure-details only. Lifecycle ("Related issue
+    # activity") moved to `_renderE2EIssueLifecycleBlock` in e2e_run_view.js,
+    # wired via `opts.renderLifecycleBlock`, so the shared module stays
+    # framework-agnostic. Row actions follow the same opt-in pattern via
+    # `_renderE2ETestRowActions`.
     assert "trr-error-text" in expand_body
     assert "Failure details" in expand_body
-    assert "Related issue activity" in expand_body
-    assert "Coder Session" in expand_body
-    assert "Review Session" in expand_body
-    assert "Validation" in expand_body
+    assert "opts.renderLifecycleBlock" in expand_body
+    # The actual lifecycle markup + buttons live in the E2E helper.
+    e2e_lifecycle_body = _function_body(js, "_renderE2EIssueLifecycleBlock")
+    assert "Related issue activity" in e2e_lifecycle_body
+    assert "Coder Session" in e2e_lifecycle_body
+    assert "Review Session" in e2e_lifecycle_body
+    assert "Validation" in e2e_lifecycle_body
 
-    # Row actions still expose Create Issue / Quarantine / Copy Error for failing untriaged.
-    assert "create_issue_dropdown" in actions_body
-    assert "quarantine_test" in actions_body
-    assert "copy_test_error" in actions_body
+    # Shared row actions delegate to opts.renderRowActions — the shared
+    # module never emits Create Issue / Quarantine / Copy Error itself.
+    assert "opts.renderRowActions" in actions_body
+    assert "create_issue_dropdown" not in actions_body
+    # Those E2E-specific actions live in the E2E helper.
+    e2e_actions_body = _function_body(js, "_renderE2ETestRowActions")
+    assert "create_issue_dropdown" in e2e_actions_body
+    assert "quarantine_test" in e2e_actions_body
+    assert "copy_test_error" in e2e_actions_body
 
     # Toggle and filter behavior helpers exist.
     assert ".trr-row" in toggle_body
@@ -1759,31 +1779,38 @@ def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
     panel_body = _function_body(js, "renderE2EResultsPanel")
     mount_body = _function_body(js, "renderUnifiedRunView")
     filter_body = _function_body(js, "filterTestResults")
-    # Placeholder + run/nodeid handles travel on the DOM, not in JS state.
+    # Placeholder + URL handle travel on the DOM, not in JS state. The URL
+    # is baked in via the consumer's `opts.capturedOutputUrl` callback — the
+    # shared renderer doesn't assume any specific endpoint shape, so a
+    # validation-modal consumer can point at its own URL builder.
     assert 'class="trr-captured-output"' in expand_body
     assert 'data-needs-fetch="1"' in expand_body
-    assert "data-run-id=" in expand_body
+    assert 'data-url=' in expand_body
     assert "data-nodeid=" in expand_body
-    # Source must be JUnit-derived — other runners have no captured output to fetch.
-    assert "sourceKey.includes('junit')" in expand_body
-    # Captured-output expansion is outcome-agnostic: a passed test can still
-    # carry meaningful stdout/stderr (debug prints, setup logs), and the prior
-    # failed-only gate left the user with no UI path to drill into a green run.
-    # The placeholder is now rendered for any JUnit-sourced row with a runId;
-    # tests with nothing captured fall through to the 404 → "No captured
-    # output recorded for this test." note.
-    assert "canFetchOutput = runId !== null && sourceKey.includes('junit')" in expand_body
-    assert "outcomeState === 'failed' && runId" not in expand_body
+    # No JUnit-source check in the shared renderer — that's the consumer's
+    # call. (E2E modal does the check inside its capturedOutputUrl callback;
+    # see `_e2eCapturedOutputUrl` in e2e_run_view.js.)
+    assert "sourceKey.includes('junit')" not in expand_body
+    # The captured-output slot is opt-in via opts.capturedOutputUrl. When the
+    # consumer returns '' (no URL available), no placeholder renders, which
+    # is also the standalone-default for consumers that omit the opt entirely.
+    assert "opts.capturedOutputUrl" in expand_body
     # Toggle handler triggers fetch on first expand.
     assert "_maybeLoadCapturedOutput(expand)" in toggle_body
-    assert "/api/e2e-run/" in fetch_body
-    assert "/test-output" in fetch_body
-    assert "encodeURIComponent(nodeid)" in fetch_body
+    # The fetcher reads data-url back off the DOM — endpoint-agnostic.
+    assert "placeholder.dataset.url" in fetch_body
+    assert "/api/e2e-run/" not in fetch_body  # MUST NOT be hardcoded in shared module
     # 404 must render an empty note rather than an error.
     assert "_renderCapturedOutputEmpty" in fetch_body
-    # Panel passes runId so the placeholder can address the right run.
+    # E2E modal still uses /api/e2e-run/{id}/test-output as ITS URL, but
+    # via its _e2eCapturedOutputUrl helper — not in the shared renderer.
+    e2e_url_body = _function_body(js, "_e2eCapturedOutputUrl")
+    assert "/api/e2e-run/" in e2e_url_body
+    assert "/test-output" in e2e_url_body
+    assert "encodeURIComponent(nodeid)" in e2e_url_body
+    # Panel constructs runId, wraps it into opts.capturedOutputUrl, passes opts.
     assert "data.run.id" in panel_body
-    assert "{ runId }" in panel_body
+    assert "capturedOutputUrl:" in panel_body
     # Auto-expanded failed rows kick off the fetch on initial mount, but only
     # for rows the user can see — a failure-heavy run with most rows hidden by
     # the default "Action needed" filter would otherwise spam dozens of fetches.
