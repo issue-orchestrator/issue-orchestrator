@@ -12,17 +12,21 @@ You're assessing Issue Orchestrator's design — whether the architecture is sou
 
 **[Portfolio Benchmarking](benchmarking.md)** — Deterministic scenario-based benchmark path that emits a shareable markdown and JSON artifact bundle.
 
-**[README](../../README.md)** — The pitch, concrete lifecycle, and architecture/quality contract. Takes 2 minutes. Notice that agent output is treated as untrusted input; validation, review, and publish gates decide whether it moves forward.
+**[README](../../README.md)** — The pitch, concrete lifecycle, and project quality contract. Takes 2 minutes. Notice that agent output is treated as untrusted input; validation, review, and publish gates decide whether it moves forward.
 
 **[Project Status](../../README.md#project-status)** — Current maturity statement. What is stable versus still evolving.
 
 ## Architecture
 
-**[Architecture diagram](../architecture/README.md)** — The hexagonal (ports and adapters) system diagram. Everything flows through Protocol interfaces — the core has no knowledge of GitHub, terminals, or storage implementations.
+This section is about how the Issue-Orchestrator repo itself is built. It is implementation proof, not a claim that every target repo must use the same architecture.
+
+**[Issue-Orchestrator Internal Architecture](../architecture/internal-architecture.md)** — The clearest separation of product thesis from implementation architecture.
+
+**[Architecture diagram](../architecture/README.md)** — The hexagonal (ports and adapters) system diagram. Everything flows through Protocol interfaces, so orchestrator policy can be tested without GitHub, terminals, storage implementations, or UI clients.
 
 **[AGENTS.md](../../AGENTS.md)** — This is the maintained contributor guide. It captures the engineering rules that shape the codebase: fail-fast design, event vs log boundaries, DI, and abstraction heuristics.
 
-The artifact to evaluate is not only the diagram. Look for the architecture-centric contract around it:
+The artifact to evaluate is not only the diagram. Look for the implementation contract around it:
 
 - Protocol ports and adapter boundaries
 - import-linter and custom AST guardrails
@@ -41,7 +45,7 @@ This is the part worth scrutinizing. The thesis is: AI agents optimize for compl
 
 ## Architectural decisions
 
-There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core thinking:
+The [ADR index](../architecture/ADR/README.md) captures decisions that materially affect correctness, security, boundaries, and extensibility. These five capture the core thinking:
 
 | ADR | Why it matters |
 |-----|----------------|
@@ -57,7 +61,7 @@ There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core 
 |------|-------------|------------------|
 | Orchestrator core | `src/issue_orchestrator/infra/orchestrator.py` | Main facade, delegates to control/services |
 | Decision logic | `src/issue_orchestrator/control/` | Scheduler, planner, action applier — all pure logic, no I/O |
-| Port interfaces | `src/issue_orchestrator/ports/` | ~31 Protocol definitions — the abstraction layer |
+| Port interfaces | `src/issue_orchestrator/ports/` | Protocol definitions — the abstraction layer |
 | State machines | `src/issue_orchestrator/domain/state_machines/` | Issue and review lifecycle |
 | Composition root | `src/issue_orchestrator/entrypoints/bootstrap.py` | Where dependencies are wired |
 

@@ -1,14 +1,14 @@
 # Issue-Orchestrator
 
-Issue-Orchestrator is a control plane for AI-assisted software work. It takes GitHub issues, runs coding and review agents in isolated worktrees, and advances code only through the architecture, validation, review, recovery, and human-merge gates you define.
+Issue-Orchestrator is a control plane for AI-assisted software work. It takes GitHub issues, runs coding and review agents in isolated worktrees, and advances code only through the validation, review, recovery, and human-merge gates you define.
 
-The issue runner is not the main point. The main point is the executable engineering contract around the work: a named architecture, module boundaries, guardrails, validation records, tests, review criteria, crash-safe state, and observable artifacts. Agents produce work; the orchestrator decides whether that work moves forward, goes back to rework, or needs a human.
+The goal is not to make agents trusted maintainers. The goal is to let agents contribute bounded work while the project keeps authority over quality. Agents produce changes; the orchestrator decides whether those changes move forward, go back to rework, or need a human.
 
-> **Evaluator quick-start:** see **[EVALUATION.md](EVALUATION.md)** for a one-screen proof bundle (test count, ADRs, architecture enforcement, benchmark artifact path, authorship, and limitations).
+> **Evaluator quick-start:** see **[EVALUATION.md](EVALUATION.md)** for a one-screen proof bundle (test suite, ADRs, guardrail enforcement, benchmark artifact path, authorship, and limitations).
 >
 > **Core thesis:** read [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md), then [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
 >
-> **Evaluating the engineering?** Read [Evaluating the System](docs/journeys/evaluating.md) for architecture decisions, quality signals, and where to read code.
+> **Evaluating the engineering?** Read [Evaluating the System](docs/journeys/evaluating.md) for product guarantees, implementation architecture, quality signals, and where to read code.
 >
 > **Evaluating it as applied AI?** Start with [Applied AI Evaluation](docs/journeys/applied-ai.md), then run the [Portfolio Benchmark](docs/journeys/benchmarking.md) for a shareable proof bundle.
 
@@ -42,19 +42,17 @@ flowchart LR
 
 The default review exchange runs locally before PR creation. Draft-PR mode can create a draft PR earlier for GitHub-based review, but the authority is the same: no passing validation, no approved review, no publish-ready PR.
 
-## Architecture and quality contract
+## Project quality contract
 
-Issue-Orchestrator does not magically know what "good" means for your codebase. You bring the architecture-centric artifacts; the orchestrator makes them hard to ignore.
+Issue-Orchestrator does not know what "good" means for your codebase. Your project brings the engineering standard; the orchestrator makes that standard hard for agents to ignore.
 
-- **Architecture:** This repo uses hexagonal architecture with ~31 Protocol ports in `src/issue_orchestrator/ports/`, adapters in `adapters/`, and dependency wiring in `entrypoints/bootstrap.py`.
-- **Deep module boundaries:** Control, observation, domain, ports, adapters, execution, and UI contracts have distinct ownership. Decision logic is kept testable without GitHub, terminals, or storage implementations.
-- **Guardrails:** AI hooks, git hooks, a `gh` wrapper, orchestrator validation gates, and CI all enforce different parts of the contract. Agents cannot rely on prompt compliance to bypass validation.
-- **Tests and validation:** Validation commands can include unit, integration, and end-to-end tests, linting, typing, coverage gates, architecture checks, complexity checks, and repo-specific policy scans.
-- **Ongoing test creation:** Agents can help draft tests, guardrails, coverage gates, ADRs, and failure triage summaries. Humans decide which standards deserve authority; once encoded, the workflow enforces them.
-- **Documented decisions:** ADRs capture architectural choices that affect correctness, security, boundaries, and extensibility.
-- **Observable proof:** Structured events drive the UI and tests; run artifacts, benchmark output, timelines, and session replay make agent work inspectable after the fact.
+- **Work shape:** milestones, right-sized GitHub issues, dependencies, labels, and reviewable pull requests.
+- **Quality standard:** tests, linting, type checks, coverage gates, architecture checks, complexity checks, review criteria, CI, and branch protection.
+- **Guardrails:** AI hooks, git hooks, credential scoping, validation records, publish gates, and human merge authority.
+- **Operational control:** isolated worktrees, bounded review/rework, crash recovery, reconciliation before mutation, transcripts, diagnostics, and artifacts.
+- **Ongoing improvement:** agents can help draft tests, guardrails, coverage gates, ADRs, issue breakdowns, and failure triage summaries. Humans decide what is good enough to enforce.
 
-For the design rationale, see [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md), [Guardrails & Safety Model](docs/design/guardrails.md), and the [architecture overview](docs/architecture/README.md).
+For the product thesis, see [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md) and [Guardrails & Safety Model](docs/design/guardrails.md).
 
 ## Design principles
 
@@ -65,6 +63,14 @@ AI agents are untrusted workers. They can be useful contributors, but they optim
 - **Observe-Plan-Apply loop** - Each tick gathers facts, decides actions, then applies changes through ports. Decision logic stays testable without I/O.
 - **Labels as crash-safe truth** - GitHub labels persist outside the process, so restart recovery can reconstruct issue state after crashes or human edits.
 - **Fail-fast by default** - Unexpected state should fail loudly instead of hiding bugs behind silent fallback behavior.
+
+## How this repo is built
+
+The product contract above is what Issue-Orchestrator enforces for target repos. Separately, this repository has its own internal architecture and quality proof.
+
+Issue-Orchestrator itself is built around hexagonal architecture: Protocol ports in `src/issue_orchestrator/ports/`, adapters for external systems, a single composition root in `entrypoints/bootstrap.py`, import-linter and AST guardrails, ADRs, and tests that mock at port boundaries. That internal structure keeps orchestrator policy testable without GitHub, terminals, storage, or UI dependencies.
+
+See [Issue-Orchestrator Internal Architecture](docs/architecture/internal-architecture.md) for the implementation architecture, and [Evaluating the System](docs/journeys/evaluating.md) for the proof path.
 
 ## Issue lifecycle
 
@@ -112,7 +118,7 @@ Agents cannot merge PRs. Humans merge. Validation runs automatically before code
 
 If you're evaluating this as serious applied-AI engineering, start with the proof path rather than the feature list:
 
-- **[EVALUATION.md](EVALUATION.md)** - One-screen evidence bundle: test count, ADRs, architecture enforcement, benchmark artifact path, authorship, and limitations.
+- **[EVALUATION.md](EVALUATION.md)** - One-screen evidence bundle: test suite, ADRs, guardrail enforcement, benchmark artifact path, authorship, and limitations.
 - **[No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md)** - The operating model: agents contribute inside constraints, humans decide which constraints deserve authority.
 - **[Applied AI Evaluation](docs/journeys/applied-ai.md)** - How to frame the project without overselling autonomy.
 - **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** - Deterministic simulated scenarios with markdown, JSON, JUnit, and pytest-output artifacts.
@@ -153,7 +159,7 @@ If you want your AI assistant to drive the setup for you, use the [Agent-Guided 
 
 **Beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner is newer and still maturing. Goal Pilot is a planned feature, not yet implemented. APIs may change.
 
-~100K lines of Python, 5,600+ automated tests including 5,200+ unit tests, and 24 architecture decision records. For a one-screen evaluator summary, see [EVALUATION.md](EVALUATION.md).
+~100K lines of Python, a large automated test suite, and architecture decision records. For a one-screen evaluator summary, see [EVALUATION.md](EVALUATION.md).
 
 For guidance on what is stable and where to read code, see [Evaluating the System](docs/journeys/evaluating.md).
 
@@ -166,12 +172,12 @@ Pick the path that fits:
 - **[No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md)** - Why the engineering contract matters more than the issue runner
 - **[Applied AI Evaluation](docs/journeys/applied-ai.md)** - How to present and evaluate the system as serious applied-AI engineering
 - **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** - Generate a benchmark artifact bundle from deterministic scenario coverage
-- **[Evaluating the System](docs/journeys/evaluating.md)** - Architecture, guardrails, quality signals, where to read code
+- **[Evaluating the System](docs/journeys/evaluating.md)** - Product guarantees, internal architecture, guardrails, quality signals, where to read code
 - **[Developing](docs/journeys/developing.md)** - Dev setup, conventions, testing, how to make changes
 
 Reference docs:
 
 - **User:** [Installation](docs/user/installation.md) · [Tutorial](docs/user/tutorial.md) · [Configuration](docs/user/configuration.md) · [Configuration Reference](docs/user/configuration_reference.md) · [FAQ](docs/user/faq.md)
-- **Architecture:** [Overview](docs/architecture/README.md) · [ADRs](docs/architecture/ADR/README.md) · [Guardrails](docs/design/guardrails.md) · [Hooks](docs/architecture/hooks.md)
+- **Architecture:** [Overview](docs/architecture/README.md) · [Internal Architecture](docs/architecture/internal-architecture.md) · [ADRs](docs/architecture/ADR/README.md) · [Guardrails](docs/design/guardrails.md) · [Hooks](docs/architecture/hooks.md)
 - **Development:** [Testing](docs/development/TESTING.md) · [Creating Guardrails](docs/development/CREATE_GUARDRAILS.md) · [Troubleshooting](docs/development/TROUBLESHOOTING.md) · [Review Workflow](docs/development/REVIEW_WORKFLOW.md)
 - **Features:** [E2E Runner](docs/user/e2e.md) · [Goal Pilot](docs/user/goal_pilot.md) · [VS Code](docs/user/vscode.md)

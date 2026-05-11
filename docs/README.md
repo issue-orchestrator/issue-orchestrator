@@ -50,6 +50,7 @@ If you're an AI agent working on this codebase:
 System design and decision records:
 
 - [Architecture Overview](architecture/README.md) - Core architecture and boundaries
+- [Issue-Orchestrator Internal Architecture](architecture/internal-architecture.md) - How this repo is built and enforced
 - [Architecture Decision Records](architecture/ADR/README.md) - Why decisions were made
 - [Guardrails & Safety Model](design/guardrails.md) - Enforcement layers and trust boundaries
 - [Hooks](architecture/hooks.md) - Multi-layer hook enforcement

@@ -7,7 +7,7 @@ The right framing is not "it uses multiple agents." The stronger framing is:
 - a control plane for long-running AI-assisted software work
 - an executable engineering contract around agent output
 - deterministic workflow enforcement around untrusted model output
-- architecture-centric artifacts: named boundaries, guardrails, tests, validation records, and ADRs
+- project-quality artifacts: named boundaries, guardrails, tests, validation records, and ADRs
 - durable state recovery when processes, labels, or providers drift
 - human escalation instead of pretend autonomy
 - replayable evidence for debugging and evaluation
@@ -53,7 +53,7 @@ The dashboard timeline, run manifests, event contracts, diagnostics artifacts, a
 
 Show the system in this order:
 
-1. README thesis and architecture/quality contract.
+1. README thesis and project quality contract.
 2. The benchmark output at `.issue-orchestrator/portfolio-benchmark/latest/summary.md`.
 3. The dashboard timeline for one issue.
 4. Session replay for a run artifact.
@@ -69,7 +69,7 @@ Use claims that are concrete and falsifiable.
 
 - Built a control plane for AI-assisted GitHub issue execution with isolated worktrees, structured completion contracts, review/rework loops, and replayable run artifacts.
 - Designed the system around model fallibility: validation gates, human escalation, crash-safe recovery from GitHub labels, and deterministic reconciliation before state mutation.
-- Encoded architecture-centric engineering standards through ports/adapters boundaries, guardrails, validation records, ADRs, and test suites that make agent output reviewable.
+- Encoded engineering standards through guardrails, validation records, ADRs, and test suites that make agent output reviewable.
 - Added an applied-AI benchmark path using deterministic scenario tests and shareable artifact bundles to demonstrate workflow reliability beyond the happy path.
 
 ### Project page summary

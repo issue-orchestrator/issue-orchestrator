@@ -10,10 +10,10 @@ I designed and built Issue-Orchestrator as a solo project. I used coding agents 
 
 | Claim | Evidence |
 |-------|----------|
-| Large automated test suite | **5,200+ unit tests** (5,611 total across unit / integration / e2e / simulated-scenarios) — `pytest tests/unit/ -q --timeout=60` |
-| Architectural decisions documented | **24 ADRs** in [`docs/architecture/ADR/`](docs/architecture/ADR/) |
-| Hexagonal architecture, fully wired | [ADR-0011](docs/architecture/ADR/0011-hexagonal-architecture.md); ~31 Protocol interfaces in [`src/issue_orchestrator/ports/`](src/issue_orchestrator/ports/) |
-| Architecture boundaries enforced, not just documented | `import-linter` contracts in [`pyproject.toml`](pyproject.toml) + pre-push hooks |
+| Large automated test suite | `pytest tests/unit/ -q --timeout=60` reports the current unit-suite count; broader integration, e2e, and simulated-scenario suites live under [`tests/`](tests/) |
+| Architectural decisions documented | ADRs in [`docs/architecture/ADR/`](docs/architecture/ADR/) |
+| Internal hexagonal architecture, fully wired | [Internal Architecture](docs/architecture/internal-architecture.md); [ADR-0011](docs/architecture/ADR/0011-hexagonal-architecture.md); Protocol interfaces in [`src/issue_orchestrator/ports/`](src/issue_orchestrator/ports/) |
+| Internal architecture boundaries enforced, not just documented | `import-linter` contracts in [`pyproject.toml`](pyproject.toml) + pre-push hooks |
 | Engineering contract articulated | [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md) explains the architecture, guardrail, validation, test, and human-authority contract around agent work |
 | Mechanical guardrails, not prompt-based rules | [ADR-0012](docs/architecture/ADR/0012-mechanical-guardrails.md); multi-layer hook enforcement in [`docs/architecture/hooks.md`](docs/architecture/hooks.md) |
 | Crash-safe state via GitHub labels | [ADR-0013](docs/architecture/ADR/0013-labels-as-crash-safe-truth.md); restart-recovery scenarios in [`tests/simulated_scenarios/`](tests/simulated_scenarios/) |
@@ -48,7 +48,7 @@ Runs 10 deterministic simulated scenarios covering coder-reviewer completion, re
 
 ```bash
 pytest tests/unit/ -q --timeout=60
-# expected: 5,200+ unit tests pass
+# expected: the unit suite passes
 ```
 
 ## Deeper
