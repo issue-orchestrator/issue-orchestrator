@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>E2E run view — same single idiom as per-issue</title>
+<style>
+  /* Identical primitives to the per-issue inline mockup so both views
+     read as the same UI.  If a casual user moved from one to the other
+     they wouldn't perceive a context switch — only the top of the tree
+     differs. */
+  :root {
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #fafbfc;
+    --surface-3: #f6f8fa;
+    --border: #d8dde4;
+    --border-strong: #b6bdc8;
+    --text: #1f2329;
+    --text-muted: #5a6472;
+    --text-faint: #8a93a3;
+    --accent: #3870e0;
+    --accent-bg: #e8eefb;
+    --accent-strong: #1c4cab;
+    --ok: #1f8f3a;
+    --ok-bg: #e6f4ea;
+    --fail: #c0392f;
+    --fail-bg: #fbeae7;
+    --fail-strong: #8c1f17;
+    --warn: #b07a00;
+    --warn-bg: #fbf3dc;
+    --skip: #8a93a3;
+    --code-bg: #f3f5f8;
+    --code-fail-bg: #fbeae7;
+    --spine: #e0e4e9;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* dashboard backdrop */
+  .dashboard-backdrop { position: fixed; inset: 0; background: var(--bg); padding: 16px 24px; overflow: hidden; }
+  .dashboard-backdrop::after { content: ''; position: absolute; inset: 0; background: rgba(245, 247, 250, 0.55); pointer-events: none; }
+  .dashboard-cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; height: 100%; }
+  .dashboard-col h3 { font-size: 11px; margin: 0 0 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .dashboard-card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; margin-bottom: 6px; font-size: 11px; color: var(--text-muted); }
+  .dashboard-card .num { font-weight: 600; color: var(--text); margin-right: 6px; }
+
+  /* note */
+  .note { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); max-width: 920px; padding: 8px 14px; background: var(--accent-bg); border: 1px solid var(--accent); border-radius: 6px; color: #1c3779; font-size: 12px; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .note code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; }
+
+  /* drawer */
+  .drawer-wrap { position: fixed; inset: 60px 60px 24px auto; width: 880px; max-width: calc(100vw - 80px); z-index: 5; display: flex; flex-direction: column; }
+  .drawer { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 24px 60px rgba(0,0,0,0.18); overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 90px); }
+  .drawer-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; background: var(--surface); }
+  .drawer-title { font-size: 15px; font-weight: 600; }
+  .drawer-sub { margin-top: 4px; color: var(--text-muted); font-size: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .drawer-close { border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); width: 28px; height: 28px; border-radius: 6px; cursor: pointer; flex-shrink: 0; }
+  .drawer-body { overflow-y: auto; padding: 4px 0; }
+
+  /* the one row idiom */
+  .row { display: flex; align-items: center; gap: 8px; padding: 8px 12px 8px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 6px; }
+  .row:hover { background: var(--surface-3); }
+  .row .caret { width: 14px; flex-shrink: 0; color: var(--text-faint); transition: transform 0.12s ease; text-align: center; font-size: 11px; }
+  .row.expanded > .caret { transform: rotate(90deg); }
+  .row .row-label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  .row .row-label .title { font-weight: 500; flex-shrink: 0; }
+  .row .row-label .summary { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .row-meta { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+  .children { margin: 0 6px 6px 22px; padding: 4px 0 4px 14px; border-left: 2px solid var(--spine); }
+  .children.collapsed { display: none; }
+  .leaf { display: flex; align-items: center; gap: 8px; padding: 4px 12px 4px 8px; border-radius: 4px; color: var(--text); font-size: 12px; }
+  .leaf .caret { width: 14px; flex-shrink: 0; color: var(--text-faint); text-align: center; font-size: 9px; }
+  .leaf .leaf-label { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; }
+  .leaf .leaf-meta { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+
+  .ico { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; border-radius: 50%; color: white; flex-shrink: 0; }
+  .ico.passed { background: var(--ok); }
+  .ico.failed { background: var(--fail); }
+  .ico.error { background: var(--warn); }
+  .ico.skipped { background: var(--skip); }
+  .ico.pending { background: var(--surface); color: var(--text-faint); border: 1px solid var(--border); }
+
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); }
+  .chip.ok, .chip.outcome.passed { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .chip.fail, .chip.outcome.failed { background: var(--fail-bg); border-color: var(--fail); color: var(--fail-strong); }
+  .chip.warn, .chip.outcome.error { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+  .chip.tracked { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-strong); }
+  .chip.linked { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-strong); }
+  .chip.flaky { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+
+  .sparkline { display: inline-flex; gap: 2px; align-items: center; }
+  .sparkline .dot { width: 5px; height: 10px; border-radius: 1px; }
+  .sparkline .dot.pass { background: var(--ok); }
+  .sparkline .dot.fail { background: var(--fail); }
+  .sparkline .dot.skip { background: var(--skip); opacity: 0.5; }
+
+  .body-block-section { margin: 6px 12px 8px 8px; }
+  .body-block-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin: 0 0 4px 6px; }
+
+  .headline { margin: 6px 8px; padding: 8px 10px; background: var(--code-fail-bg); border: 1px solid #f1c4bd; border-radius: 5px; font-family: SFMono-Regular, Menlo, Monaco, monospace; font-size: 12px; color: var(--fail-strong); display: flex; align-items: flex-start; gap: 8px; }
+  .headline.is-error { background: var(--warn-bg); border-color: #e7d293; color: #6f4d00; }
+  .headline-text { flex: 1; word-break: break-word; }
+
+  .snippet { margin: 6px 8px; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; font-family: SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px; line-height: 1.5; background: var(--surface); }
+  .snippet-head { padding: 4px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; display: flex; justify-content: space-between; }
+  .src-line { display: flex; padding: 1px 0; white-space: pre; }
+  .src-line.is-failure { background: var(--code-fail-bg); }
+  .src-line .lineno { flex: 0 0 38px; text-align: right; padding: 0 8px; color: var(--text-faint); user-select: none; }
+  .src-line.is-failure .lineno { color: var(--fail); font-weight: 600; }
+  .src-line .marker { flex: 0 0 14px; color: var(--fail); font-weight: 600; text-align: center; }
+  .src-line .code { flex: 1; color: var(--text); padding-right: 10px; }
+
+  pre.code-block { margin: 0 8px 6px; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; font-family: SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px; color: #2a2f37; white-space: pre-wrap; overflow-x: auto; }
+
+  .actions { margin: 8px 6px 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn.subtle { color: var(--text-muted); }
+  .btn.copied { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+
+  .status-banner { margin: 8px 12px 10px; padding: 8px 10px; background: var(--ok-bg); border: 1px solid var(--ok); border-radius: 6px; font-size: 12px; color: var(--ok); }
+  .status-banner.fail { background: var(--fail-bg); border-color: var(--fail); color: var(--fail-strong); }
+
+  /* Linked-issue expander deserves a slight visual distinction so users
+     know they're crossing from "an E2E test result" to "the orchestrator
+     work that test drove."  Same idiom, just a styled left border. */
+  .linked-issue-frame {
+    margin: 6px 8px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--accent-bg);
+    padding: 0;
+  }
+  .linked-issue-frame .row { background: transparent; }
+  .linked-issue-header {
+    padding: 6px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent-strong);
+    background: rgba(255,255,255,0.5);
+    border-bottom: 1px solid var(--accent);
+  }
+</style>
+</head>
+<body>
+
+<div class="dashboard-backdrop">
+  <div class="dashboard-cols">
+    <div class="dashboard-col">
+      <h3>E2E Runs</h3>
+      <div class="dashboard-card"><span class="num">#88</span> latest · ✕ failed</div>
+      <div class="dashboard-card"><span class="num">#87</span> ✓ passed</div>
+      <div class="dashboard-card"><span class="num">#86</span> ✓ passed</div>
+    </div>
+    <div class="dashboard-col">
+      <h3>Issues (driven by E2E)</h3>
+      <div class="dashboard-card"><span class="num">#4501</span> fixture: simple issue</div>
+      <div class="dashboard-card"><span class="num">#4502</span> fixture: rework</div>
+      <div class="dashboard-card"><span class="num">#4503</span> fixture: cohort split</div>
+    </div>
+    <div class="dashboard-col">
+      <h3>Active</h3>
+      <div class="dashboard-card"><span class="num">#361</span> Card timeline affordance</div>
+      <div class="dashboard-card"><span class="num">#409</span> Running flow item</div>
+    </div>
+    <div class="dashboard-col">
+      <h3>Done</h3>
+      <div class="dashboard-card"><span class="num">#406</span> Migrate validation-outcome</div>
+      <div class="dashboard-card"><span class="num">#404</span> Diagnostic papercuts</div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Canonical JUnit viewer + one optional field.</strong> The body of this
+  dialog is the same JUnit viewer that ships everywhere: failures triaged on top,
+  <code>+ N passed</code> browse-by-file underneath, per-test stdout / stderr /
+  traceback / actions. Generic JUnit consumers (e.g. tixmeup) see exactly that —
+  nothing else. The blue-bordered <strong>Linked issue</strong> panel under the
+  failed test is the one orchestrator-specific extension: it renders only when
+  the test case carries a <code>linked_issue</code> field, which <em>our</em>
+  parser sets when an E2E test drove the orchestrator on an issue. Generic
+  parsers don't set it → tixmeup never sees the panel. No plugin registry yet,
+  no marker protocol — just one optional case field. When we want a second
+  extension, that's when we extract a renderer hook.
+</div>
+
+<div class="drawer-wrap">
+  <div class="drawer" role="dialog" aria-label="E2E Run #88">
+
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title">E2E Run #88 — smoke suite</div>
+        <div class="drawer-sub">
+          <span class="chip fail">⚠ 1 failed</span>
+          <span>pytest_e2e · 14m 22s · ended 2026-05-11 14:14</span>
+        </div>
+      </div>
+      <button class="drawer-close" title="Close">✕</button>
+    </div>
+
+    <div class="status-banner fail">
+      ✕ One test failed and one errored. Failure is auto-expanded below.
+    </div>
+
+    <div class="drawer-body" id="body"></div>
+
+  </div>
+</div>
+
+<script>
+  // ──────────────────────────────────────────────────────────────────
+  // Shared primitives (identical to the per-issue mockup so the visual
+  // language is the same)
+  // ──────────────────────────────────────────────────────────────────
+  function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  function row(opts) {
+    const childHidden = opts.expanded ? '' : 'collapsed';
+    return `
+      <div class="row ${opts.expanded ? 'expanded' : ''}" data-toggle="${opts.id}">
+        <span class="caret">▸</span>
+        <span class="row-label">${opts.label_html}</span>
+        <span class="row-meta">${opts.meta_html || ''}</span>
+      </div>
+      <div class="children ${childHidden}" id="children-${opts.id}">
+        ${opts.child_html || ''}
+      </div>
+    `;
+  }
+  function leaf(opts) {
+    return `<div class="leaf"><span class="caret">●</span><span class="leaf-label">${opts.label_html}</span><span class="leaf-meta">${opts.meta_html || ''}</span></div>`;
+  }
+  function iconHtml(state) {
+    const char = state === 'passed' ? '✓' : state === 'failed' ? '✕' : state === 'error' ? '⚠' : state === 'skipped' ? '–' : '';
+    return `<span class="ico ${state}">${char}</span>`;
+  }
+  function eventRow(opts) {
+    if (!opts.child_html) {
+      return leaf({ label_html: `${iconHtml(opts.icon)}<span>${escapeHtml(opts.label)}</span>`, meta_html: opts.time || '' });
+    }
+    return row({
+      id: opts.id,
+      expanded: opts.expanded || false,
+      label_html: `${iconHtml(opts.icon)}<span class="title">${escapeHtml(opts.label)}</span>`,
+      meta_html: opts.time || '',
+      child_html: opts.child_html,
+    });
+  }
+  function sparkline(history) {
+    return `<span class="sparkline" title="Last ${history.length} runs">
+      ${history.map((h) => `<span class="dot ${h === 'pass' ? 'pass' : h === 'fail' ? 'fail' : 'skip'}"></span>`).join('')}
+    </span>`;
+  }
+  function snippet(src) {
+    const lines = src.lines.map((l) => `
+      <div class="src-line ${l.is_failure ? 'is-failure' : ''}">
+        <span class="lineno">${l.lineno}</span><span class="marker">${l.is_failure ? '►' : ' '}</span><span class="code">${escapeHtml(l.code)}</span>
+      </div>`).join('');
+    return `<div class="snippet"><div class="snippet-head"><span>${escapeHtml(src.path)}:${src.line}</span><span>pytest</span></div>${lines}</div>`;
+  }
+  function buttonRow(buttons) {
+    return `<div class="actions" style="padding: 6px 0;">${buttons.map((b) => `<button class="btn ${b.subtle ? 'subtle' : ''}">${escapeHtml(b.label)}</button>`).join('')}</div>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // E2E test fixture — one failed (with linked issue), several passed,
+  // a skip, an error.
+  // ──────────────────────────────────────────────────────────────────
+  const E2E_FAIL = {
+    nodeid: 'tests/e2e/test_orchestrator.py::test_orchestrator_blocked_on_validation',
+    name: 'test_orchestrator_blocked_on_validation',
+    file: 'tests/e2e/test_orchestrator.py',
+    outcome: 'failed',
+    duration_s: 201.3,
+    type: 'AssertionError',
+    message: 'expected issue #4503 to reach state "completed", got "blocked"',
+    src: {
+      path: 'tests/e2e/test_orchestrator.py', line: 142,
+      lines: [
+        { lineno: 140, code: '    orchestrator.run_until_done(issue_number=4503, timeout=180)' },
+        { lineno: 141, code: '    final_state = orchestrator.state_for(4503)' },
+        { lineno: 142, code: '    assert final_state == "completed", f"got {final_state!r}"', is_failure: true },
+        { lineno: 143, code: ' ' },
+      ],
+    },
+    user_frames: 'at test_orchestrator_blocked_on_validation (tests/e2e/test_orchestrator.py:142:6)',
+    fw_frames: 'at _pytest/python.py:1234:5\nat _pytest/main.py:512:8',
+    stdout: '[orchestrator] starting issue #4503\n[orchestrator] coder session 1 started\n[orchestrator] validation: 3 tests failed\n[orchestrator] queued rework session\n[orchestrator] rework session started\n[orchestrator] validation still failing\n[orchestrator] blocking issue #4503 (limit reached)',
+    stderr: '',
+    flake_pct: 0,
+    history: ['pass','pass','pass','pass','pass','pass','pass','pass','pass','fail'],
+    tracked: null,
+    linked_issue: { number: 4503, title: 'fixture: validate cohort split' },
+    run_command: 'pytest tests/e2e/test_orchestrator.py::test_orchestrator_blocked_on_validation -v',
+  };
+  const E2E_ERROR = {
+    nodeid: 'tests/e2e/test_setup.py::orchestrator_fixture',
+    name: 'orchestrator_fixture',
+    file: 'tests/e2e/test_setup.py',
+    outcome: 'error',
+    duration_s: 0.4,
+    type: 'TimeoutError',
+    message: 'orchestrator startup timed out after 30s',
+    src: {
+      path: 'tests/e2e/test_setup.py', line: 18,
+      lines: [
+        { lineno: 16, code: '@pytest.fixture(scope="module")' },
+        { lineno: 17, code: 'def orchestrator_fixture():' },
+        { lineno: 18, code: '    orch = await spawn_orchestrator(timeout_s=30)', is_failure: true },
+        { lineno: 19, code: '    yield orch' },
+      ],
+    },
+    user_frames: 'at orchestrator_fixture (tests/e2e/test_setup.py:18:5)',
+    fw_frames: 'at _pytest/fixtures.py:1100:9',
+    stdout: '',
+    stderr: 'TimeoutError: orchestrator startup timed out after 30s\nlast log line: [supervisor] waiting on agent registry...',
+    flake_pct: 25,
+    history: ['pass','pass','fail','pass','pass','fail','pass','pass','pass','fail'],
+    tracked: { number: 4456, title: 'orchestrator startup flake under load' },
+    linked_issue: null,
+    run_command: 'pytest tests/e2e/test_setup.py::orchestrator_fixture -v',
+  };
+
+  // ──────────────────────────────────────────────────────────────────
+  // Failure detail card (identical to the per-issue mockup's triage card)
+  // ──────────────────────────────────────────────────────────────────
+  function testFailureDetail(t, idPrefix) {
+    const isError = t.outcome === 'error';
+    const tbId = `${idPrefix}-tb`;
+    const stdoutId = `${idPrefix}-stdout`;
+    const stderrId = `${idPrefix}-stderr`;
+    const frameworkId = `${idPrefix}-fw`;
+
+    const headline = `
+      <div class="headline ${isError ? 'is-error' : ''}">
+        <span class="headline-text"><strong>${escapeHtml(t.type)}:</strong> ${escapeHtml(t.message)}</span>
+        <button class="btn subtle" data-copy="${escapeAttr(t.type + ': ' + t.message)}">📋</button>
+      </div>
+    `;
+    const badges = `
+      <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
+        <span class="chip outcome ${t.outcome}">${isError ? '⚠ Errored' : '✕ Failed'}</span>
+        <span class="chip">${t.duration_s >= 1 ? t.duration_s.toFixed(1) + ' s' : Math.round(t.duration_s * 1000) + ' ms'}</span>
+        ${t.flake_pct >= 20 ? `<span class="chip flaky">↻ Flaky ${t.flake_pct}%</span>` : ''}
+        ${t.tracked ? `<span class="chip tracked">→ Tracked: <a href="#" onclick="return false;">#${t.tracked.number}</a></span>` : ''}
+        ${t.linked_issue ? `<span class="chip linked">↳ Linked: <a href="#" onclick="return false;">#${t.linked_issue.number}</a></span>` : ''}
+        <span class="chip">${sparkline(t.history)}</span>
+      </div>
+    `;
+    const tracebackContent = `
+      <pre class="code-block">${escapeHtml(t.user_frames)}</pre>
+      ${row({
+        id: frameworkId,
+        expanded: false,
+        label_html: `<span class="title">framework frames</span> <span class="summary">(2)</span>`,
+        meta_html: '',
+        child_html: `<pre class="code-block">${escapeHtml(t.fw_frames)}</pre>`,
+      })}
+    `;
+    const tracebackRow = row({
+      id: tbId, expanded: !isError,
+      label_html: `<span class="title">traceback</span> <span class="summary">1 user frame</span>`,
+      meta_html: '',
+      child_html: tracebackContent,
+    });
+    const stdoutRow = row({
+      id: stdoutId, expanded: false,
+      label_html: `<span class="title">stdout</span> <span class="summary">${t.stdout ? t.stdout.split('\n').filter(Boolean).length + ' lines' : 'empty'}</span>`,
+      meta_html: '',
+      child_html: t.stdout ? `<pre class="code-block">${escapeHtml(t.stdout)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stdout captured.</span></div>`,
+    });
+    const stderrRow = row({
+      id: stderrId, expanded: isError && !!t.stderr,
+      label_html: `<span class="title">stderr</span> <span class="summary">${t.stderr ? t.stderr.split('\n').filter(Boolean).length + ' lines' : 'empty'}</span>`,
+      meta_html: '',
+      child_html: t.stderr ? `<pre class="code-block">${escapeHtml(t.stderr)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stderr captured.</span></div>`,
+    });
+    const actions = `
+      <div class="actions">
+        <button class="btn primary">↗ Open in editor</button>
+        <button class="btn" data-copy="${escapeAttr(t.run_command)}">⌥ Copy run command</button>
+        <button class="btn subtle">↗ Open pytest record</button>
+      </div>
+    `;
+    return `
+      ${headline}
+      ${badges}
+      ${snippet(t.src)}
+      ${isError ? stderrRow + tracebackRow + stdoutRow : tracebackRow + stdoutRow + stderrRow}
+      ${actions}
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // The linked-issue subtree.  This is what appears when you expand the
+  // "Linked issue #4503" row underneath a failed E2E test.  It's the
+  // SAME structure as the per-issue drawer: Runs > Cycles > Events.
+  // For brevity I'm showing one Run with one failed Cycle (the cycle
+  // that caused the E2E test to assert).
+  // ──────────────────────────────────────────────────────────────────
+  function linkedIssueSubtree(idPrefix) {
+    // Inner validation failure card (the agent's own junit, distinct
+    // from the outer E2E pytest junit).
+    const innerValidationFailed = `
+      <div class="headline">
+        <span class="headline-text"><strong>AssertionError:</strong> cohort split mismatch (3 of 89)</span>
+        <button class="btn subtle">📋</button>
+      </div>
+      <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
+        <span class="chip outcome failed">✕ 3 failed of 89</span>
+        <span class="chip">publish_gate · 1.8 s</span>
+      </div>
+      <div class="leaf"><span class="leaf-label" style="color: var(--text-muted);">…3 failed test cards + browse passed (omitted for brevity)…</span></div>
+      ${row({
+        id: `${idPrefix}-val-arts`,
+        expanded: false,
+        label_html: `<span class="title">Validation artifacts</span> <span class="summary">record · output · stderr</span>`,
+        meta_html: '',
+        child_html: buttonRow([
+          { label: 'Open Validation Record' },
+          { label: 'Open Validation Output' },
+          { label: 'Open Validation Stderr' },
+        ]),
+      })}
+    `;
+
+    const coderEvtContent = `
+      <div class="body-block-section">
+        <div class="body-block-label">session</div>
+        ${leaf({ label_html: `<strong>Agent:</strong> agent:web (e2e fixture)`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Worktree:</strong> /tmp/e2e-pytest-fixtures/wt-4503`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Session ID:</strong> e2e-88-4503-coder-1`, meta_html: '' })}
+      </div>
+      <div class="actions">
+        <button class="btn">View Session Recording</button>
+        <button class="btn">View Claude Log</button>
+      </div>
+    `;
+    const cycle1Children = `
+      <div class="body-block-section">
+        <div class="body-block-label">events</div>
+        ${eventRow({ id: `${idPrefix}-c1-coder-start`, icon: 'passed', label: 'Coding session started', time: '13:05:21', child_html: coderEvtContent })}
+        ${eventRow({ id: `${idPrefix}-c1-coder-done`, icon: 'passed', label: 'Agent finished coding', time: '13:06:48', child_html: '<div class="leaf"><span class="leaf-label">Completion record: 4 files (+88 −12), no problems reported.</span></div>' })}
+        ${eventRow({
+          id: `${idPrefix}-c1-val`,
+          icon: 'failed',
+          label: 'Validation failed (3 of 89 · publish_gate · 1.8 s)',
+          time: '13:06:52',
+          expanded: true,
+          child_html: innerValidationFailed,
+        })}
+      </div>
+    `;
+    const cycle2Children = `
+      <div class="body-block-section">
+        <div class="body-block-label">events</div>
+        ${eventRow({ id: `${idPrefix}-c2-rework-start`, icon: 'passed', label: 'Rework session started', time: '13:07:14', child_html: '<div class="leaf"><span class="leaf-label">Rework session, attempt 2/3.</span></div>' })}
+        ${eventRow({ id: `${idPrefix}-c2-rework-done`, icon: 'passed', label: 'Rework finished', time: '13:08:01', child_html: '<div class="leaf"><span class="leaf-label">Completion record updated.</span></div>' })}
+        ${eventRow({ id: `${idPrefix}-c2-val`, icon: 'failed', label: 'Validation failed (3 of 89 · same failures)', time: '13:08:05', expanded: false, child_html: '<div class="leaf"><span class="leaf-label" style="color: var(--text-muted);">…same 3 failures as Cycle 1…</span></div>' })}
+        ${eventRow({ id: `${idPrefix}-c2-blocked`, icon: 'failed', label: 'Issue blocked — rework limit reached', time: '13:08:42' })}
+      </div>
+    `;
+
+    return `
+      ${row({
+        id: `${idPrefix}-run`,
+        expanded: true,
+        label_html: `<span class="title">Run 1</span> <span class="summary">2 cycles · agent:web · 3m 21s</span>`,
+        meta_html: '13:05 PM',
+        child_html: `
+          ${row({
+            id: `${idPrefix}-c1`,
+            expanded: true,
+            label_html: `${iconHtml('failed')}<span class="title">Cycle 1</span> <span class="summary">Validation failed</span>`,
+            meta_html: '13:05',
+            child_html: cycle1Children,
+          })}
+          ${row({
+            id: `${idPrefix}-c2`,
+            expanded: false,
+            label_html: `${iconHtml('failed')}<span class="title">Cycle 2 (rework)</span> <span class="summary">Validation still failing · issue blocked</span>`,
+            meta_html: '13:07',
+            child_html: cycle2Children,
+          })}
+        `,
+      })}
+      ${row({
+        id: `${idPrefix}-orch`,
+        expanded: false,
+        label_html: `<span class="title">Issue orchestrator log</span> <span class="summary">cross-cycle</span>`,
+        meta_html: '',
+        child_html: buttonRow([
+          { label: 'Open Orchestrator Log' },
+          { label: 'Open Full Log' },
+          { label: 'Full Diagnostics', subtle: true },
+        ]),
+      })}
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // E2E test rows
+  // ──────────────────────────────────────────────────────────────────
+  function failedTestRow(t, idPrefix, expanded) {
+    const detail = testFailureDetail(t, idPrefix);
+    const linked = t.linked_issue ? `
+      <div class="linked-issue-frame">
+        <div class="linked-issue-header">
+          ↳ Linked issue · this test drove the orchestrator on issue #${t.linked_issue.number}
+        </div>
+        ${row({
+          id: `${idPrefix}-linked`,
+          expanded: true,
+          label_html: `<span class="title">Issue #${t.linked_issue.number}</span> <span class="summary">${escapeHtml(t.linked_issue.title)}</span>`,
+          meta_html: '',
+          child_html: linkedIssueSubtree(`${idPrefix}-iss`),
+        })}
+      </div>
+    ` : '';
+    return row({
+      id: idPrefix,
+      expanded,
+      label_html: `${iconHtml(t.outcome)}<span class="title">${escapeHtml(t.name)}</span> <span class="summary">${escapeHtml(t.file)}</span>`,
+      meta_html: `<span class="chip outcome ${t.outcome}">${escapeHtml(t.type)}</span>`,
+      child_html: detail + linked,
+    });
+  }
+
+  function passedTestRow(name, file, linked_issue, idPrefix) {
+    const summary = linked_issue
+      ? `${escapeHtml(file)} · ↳ drove issue #${linked_issue.number}`
+      : escapeHtml(file);
+    const linkedContent = linked_issue ? `
+      <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
+        <span class="chip outcome passed">✓ Passed</span>
+        <span class="chip linked">↳ Issue #${linked_issue.number}</span>
+      </div>
+      <div class="linked-issue-frame">
+        <div class="linked-issue-header">↳ Linked issue · ran orchestrator to completion</div>
+        ${row({
+          id: `${idPrefix}-linked`,
+          expanded: false,
+          label_html: `<span class="title">Issue #${linked_issue.number}</span> <span class="summary">${escapeHtml(linked_issue.title)}</span>`,
+          meta_html: '',
+          child_html: `<div class="leaf"><span class="leaf-label" style="color: var(--text-muted); font-style: italic;">…issue lifecycle (same shape as the failed test's linked issue)…</span></div>`,
+        })}
+      </div>
+    ` : `
+      <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
+        <span class="chip outcome passed">✓ Passed</span>
+      </div>
+      <div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No linked issue — pure UI/route smoke test.</span></div>
+    `;
+    return row({
+      id: idPrefix,
+      expanded: false,
+      label_html: `${iconHtml('passed')}<span class="title">${escapeHtml(name)}</span> <span class="summary">${summary}</span>`,
+      meta_html: '',
+      child_html: linkedContent,
+    });
+  }
+
+  function skippedTestRow(name, file, reason, idPrefix) {
+    return row({
+      id: idPrefix,
+      expanded: false,
+      label_html: `${iconHtml('skipped')}<span class="title">${escapeHtml(name)}</span> <span class="summary">${escapeHtml(file)}</span>`,
+      meta_html: '',
+      child_html: `
+        <div class="headline" style="background: var(--surface-2); border-color: var(--border); color: var(--text-muted);">
+          <span class="headline-text">${escapeHtml(reason)}</span>
+        </div>
+      `,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Render the body
+  // ──────────────────────────────────────────────────────────────────
+  const passedBrowse = `
+    ${row({
+      id: 'passed-file-1',
+      expanded: false,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_orchestrator.py</span><span class="summary">2 passed · drove issues</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_orchestrator_completes_issue', 'tests/e2e/test_orchestrator.py', { number: 4501, title: 'fixture: simple issue' }, 'pass-orch-1')}
+        ${passedTestRow('test_orchestrator_completes_with_rework', 'tests/e2e/test_orchestrator.py', { number: 4502, title: 'fixture: issue requiring rework' }, 'pass-orch-2')}
+      `,
+    })}
+    ${row({
+      id: 'passed-file-2',
+      expanded: false,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_dashboard.py</span><span class="summary">2 passed · UI smoke</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_simple_dashboard_loads', 'tests/e2e/test_dashboard.py', null, 'pass-ui-1')}
+        ${passedTestRow('test_card_focus_opens_drawer', 'tests/e2e/test_dashboard.py', null, 'pass-ui-2')}
+      `,
+    })}
+    <div class="leaf" style="color: var(--text-faint); margin-top: 4px; font-size: 11px;">
+      <span class="caret">●</span>
+      <span>… and 34 more passing tests (not shown in mockup)</span>
+    </div>
+  `;
+
+  document.getElementById('body').innerHTML = `
+    <div class="body-block-section">
+      <div class="body-block-label">run</div>
+      ${leaf({ label_html: `<strong>Suite:</strong> e2e_smoke`, meta_html: '' })}
+      ${leaf({ label_html: `<strong>Command:</strong> pytest tests/e2e -m smoke --tb=short`, meta_html: '' })}
+      ${leaf({ label_html: `<strong>Started:</strong> 2026-05-11 14:00:00 · <strong>Ended:</strong> 14:14:22`, meta_html: '' })}
+      ${leaf({ label_html: `<strong>Total:</strong> 40 tests · 38 passed · 1 failed · 1 errored · 0 skipped`, meta_html: '' })}
+    </div>
+
+    <div class="body-block-section">
+      <div class="body-block-label">tests</div>
+      ${failedTestRow(E2E_FAIL, 'e2e-fail', true)}
+      ${failedTestRow(E2E_ERROR, 'e2e-err', false)}
+      ${row({
+        id: 'passed-browse',
+        expanded: false,
+        label_html: `${iconHtml('passed')}<span class="title">+ 38 passed, 0 skipped</span><span class="summary">browse by file</span>`,
+        meta_html: '',
+        child_html: passedBrowse,
+      })}
+    </div>
+
+    <div class="body-block-section">
+      ${row({
+        id: 'run-artifacts',
+        expanded: false,
+        label_html: `<span class="title">Run artifacts</span> <span class="summary">pytest log · junit xml · suite recording</span>`,
+        meta_html: '',
+        child_html: buttonRow([
+          { label: 'Open pytest log' },
+          { label: 'Open junit XML' },
+          { label: 'Open suite recording' },
+          { label: 'Open run dir', subtle: true },
+        ]),
+      })}
+    </div>
+  `;
+
+  // ──────────────────────────────────────────────────────────────────
+  // Toggle + copy
+  // ──────────────────────────────────────────────────────────────────
+  document.body.addEventListener('click', (e) => {
+    const toggleRow = e.target.closest('[data-toggle]');
+    if (toggleRow) {
+      const id = toggleRow.dataset.toggle;
+      const child = document.getElementById('children-' + id);
+      if (child) {
+        const opening = child.classList.contains('collapsed');
+        child.classList.toggle('collapsed');
+        toggleRow.classList.toggle('expanded', opening);
+      }
+      return;
+    }
+    const copyBtn = e.target.closest('[data-copy]');
+    if (copyBtn) {
+      const text = copyBtn.dataset.copy;
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = copyBtn.innerHTML;
+        copyBtn.innerHTML = '✓ Copied';
+        copyBtn.classList.add('copied');
+        setTimeout(() => { copyBtn.innerHTML = orig; copyBtn.classList.remove('copied'); }, 1200);
+      }).catch(() => { copyBtn.innerHTML = '⚠ blocked'; });
+    }
+  });
+</script>
+
+</body>
+</html>

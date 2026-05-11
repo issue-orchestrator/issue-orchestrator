@@ -1,0 +1,1474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Validation dialog redesign mockup — triage-first</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #fafbfc;
+    --border: #d8dde4;
+    --border-strong: #b6bdc8;
+    --text: #1f2329;
+    --text-muted: #5a6472;
+    --text-faint: #8a93a3;
+    --accent: #3870e0;
+    --accent-bg: #e8eefb;
+    --accent-strong: #1c4cab;
+    --ok: #1f8f3a;
+    --ok-bg: #e6f4ea;
+    --fail: #c0392f;
+    --fail-bg: #fbeae7;
+    --fail-strong: #8c1f17;
+    --warn: #b07a00;
+    --warn-bg: #fbf3dc;
+    --skip: #8a93a3;
+    --code-bg: #f3f5f8;
+    --code-fail-bg: #fbeae7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 24px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .note {
+    max-width: 960px;
+    margin: 0 auto 16px;
+    padding: 10px 14px;
+    background: var(--accent-bg);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: #1c3779;
+    font-size: 12px;
+  }
+  .note code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; }
+  .demo-controls {
+    max-width: 960px;
+    margin: 0 auto 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .demo-controls .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .demo-controls button {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .demo-controls button[aria-pressed="true"] {
+    background: var(--accent-bg);
+    border-color: var(--accent);
+    color: var(--accent-strong);
+    font-weight: 600;
+  }
+
+  .dialog {
+    max-width: 960px;
+    margin: 0 auto;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .header {
+    padding: 12px 18px 0;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .header-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .header-title.is-fail { color: var(--fail-strong); }
+  .header-sub {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .header-counts {
+    display: inline-flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    margin-top: 2px;
+  }
+  .header-counts .count-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .header-counts .count-pill.fail { background: var(--fail-bg); border-color: var(--fail); color: var(--fail-strong); font-weight: 600; }
+  .header-counts .count-pill.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .close-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .mode-tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 6px;
+  }
+  .mode-tab {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    padding: 8px 14px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .mode-tab[aria-selected="true"] {
+    color: var(--accent-strong);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+  .body {
+    padding: 14px 18px;
+    overflow-y: auto;
+    max-height: 600px;
+    background: var(--bg);
+  }
+  .body-empty {
+    padding: 40px 14px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  /* ── triage cards ────────────────────────────────────────── */
+  .triage-card, .cluster-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .triage-card.failed { border-left: 3px solid var(--fail); }
+  .triage-card.error { border-left: 3px solid var(--warn); }
+  .triage-card.skipped { border-left: 3px solid var(--skip); }
+  .triage-head {
+    padding: 12px 14px 8px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .triage-title {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .triage-title .filename { color: var(--text-muted); font-weight: 400; }
+  .triage-headline {
+    margin: 8px 14px 10px;
+    padding: 10px 12px;
+    background: var(--code-fail-bg);
+    border: 1px solid #f1c4bd;
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 12px;
+    color: var(--fail-strong);
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .triage-headline.is-error { background: var(--warn-bg); border-color: #e7d293; color: #6f4d00; }
+  .triage-headline-text { flex: 1; word-break: break-word; }
+  .copy-btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .copy-btn:hover { background: var(--surface-2); }
+  .copy-btn.copied { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .badges {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 0 14px 10px;
+    align-items: center;
+    font-size: 11px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .badge.flaky { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+  .badge.tracked { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-strong); }
+  .badge.tracked a { color: inherit; text-decoration: none; }
+  .badge.tracked a:hover { text-decoration: underline; }
+  .badge.quarantined { background: #ececef; color: var(--text-faint); border-color: #cdd1d8; }
+  .badge.type { background: var(--code-bg); }
+
+  .sparkline {
+    display: inline-flex;
+    gap: 2px;
+    align-items: center;
+    margin-left: 4px;
+  }
+  .sparkline .dot {
+    width: 6px; height: 12px;
+    border-radius: 1px;
+  }
+  .sparkline .dot.pass { background: var(--ok); }
+  .sparkline .dot.fail { background: var(--fail); }
+  .sparkline .dot.skip { background: var(--skip); opacity: 0.6; }
+  .sparkline-label {
+    color: var(--text-faint);
+    margin-left: 4px;
+    font-size: 10px;
+  }
+
+  .src-snippet {
+    margin: 0 14px 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    overflow: hidden;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    background: var(--surface);
+  }
+  .src-snippet-head {
+    padding: 4px 10px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .src-line {
+    display: flex;
+    padding: 1px 0;
+    white-space: pre;
+  }
+  .src-line.is-failure {
+    background: var(--code-fail-bg);
+  }
+  .src-line .lineno {
+    flex: 0 0 40px;
+    text-align: right;
+    padding: 0 8px;
+    color: var(--text-faint);
+    user-select: none;
+  }
+  .src-line.is-failure .lineno {
+    color: var(--fail);
+    font-weight: bold;
+  }
+  .src-line .marker {
+    flex: 0 0 14px;
+    color: var(--fail);
+    font-weight: bold;
+    text-align: center;
+  }
+  .src-line .code {
+    flex: 1;
+    color: var(--text);
+    padding-right: 10px;
+    overflow-x: auto;
+  }
+
+  .io-block {
+    margin: 0 14px 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface);
+  }
+  .io-block summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 6px 10px;
+    font-weight: 500;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .io-block summary::before {
+    content: '▸ ';
+    color: var(--text-muted);
+    transition: transform 0.1s ease;
+    margin-right: 4px;
+  }
+  .io-block[open] summary::before { transform: rotate(90deg); display: inline-block; }
+  .io-block-label-aux {
+    color: var(--text-faint);
+    font-weight: 400;
+    font-size: 11px;
+    margin-left: 6px;
+  }
+  .io-block pre {
+    margin: 0;
+    padding: 8px 10px 10px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #2a2f37;
+    background: var(--code-bg);
+    border-top: 1px solid var(--border);
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .framework-toggle {
+    display: block;
+    margin-top: 4px;
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0;
+    font-size: 11px;
+  }
+  .framework-toggle:hover { text-decoration: underline; }
+
+  .actions-row {
+    padding: 8px 14px 14px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .action-btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .action-btn:hover { background: var(--surface-2); }
+  .action-btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .action-btn.primary:hover { background: var(--accent-strong); }
+  .action-btn.copied { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .action-btn.subtle { color: var(--text-muted); }
+
+  /* ── cluster header ─────────────────────────────────────── */
+  .cluster-card {
+    border-left: 3px solid var(--fail);
+  }
+  .cluster-head {
+    padding: 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    justify-content: space-between;
+  }
+  .cluster-head-text { flex: 1; }
+  .cluster-message {
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 12px;
+    color: var(--fail-strong);
+    margin-top: 6px;
+  }
+  .cluster-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 14px 12px;
+  }
+  .cluster-list li {
+    padding: 4px 0 4px 18px;
+    color: var(--text);
+    font-size: 12px;
+    border-top: 1px dashed var(--border);
+    position: relative;
+  }
+  .cluster-list li::before {
+    content: '✕';
+    color: var(--fail);
+    position: absolute;
+    left: 0; top: 4px;
+  }
+  .cluster-toggle {
+    padding-top: 4px;
+  }
+
+  /* ── browse mode (column view) ───────────────────────────── */
+  .browse-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    background: var(--surface-2);
+    border-radius: 6px 6px 0 0;
+  }
+  .browse-tab {
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 4px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .browse-tab[aria-selected="true"] {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .browse-filter {
+    margin-left: auto;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 3px 8px;
+    border-radius: 4px;
+    min-width: 180px;
+    font-size: 12px;
+  }
+  .cols {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    background: var(--surface);
+    min-height: 200px;
+    max-height: 280px;
+    margin-bottom: 12px;
+  }
+  .col {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .col:last-child { border-right: none; }
+  .col-header {
+    padding: 6px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .col-list {
+    overflow-y: auto;
+    flex: 1;
+    padding: 4px 0;
+  }
+  .col-item {
+    padding: 5px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .col-item:hover { background: var(--surface-2); }
+  .col-item[aria-selected="true"] {
+    background: var(--accent-bg);
+    font-weight: 500;
+  }
+  .col-item .count { color: var(--text-faint); font-size: 11px; margin-left: auto; }
+  .file-row-stats {
+    display: inline-flex;
+    gap: 5px;
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-left: auto;
+  }
+  .file-row-stats .stat.fail { color: var(--fail); font-weight: 600; }
+  .file-row-stats .stat.skip { color: var(--skip); }
+
+  .status-icon {
+    width: 14px; height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    border-radius: 50%;
+    color: white;
+    flex-shrink: 0;
+  }
+  .status-icon.passed { background: var(--ok); }
+  .status-icon.failed { background: var(--fail); }
+  .status-icon.skipped { background: var(--skip); }
+  .status-icon.error { background: var(--warn); }
+  .detail-pane {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .detail-pane > .triage-card { margin-bottom: 0; border: none; border-left: 3px solid var(--fail); }
+  .detail-pane > .triage-card.passed { border-left-color: var(--ok); }
+  .detail-pane > .triage-card.skipped { border-left-color: var(--skip); }
+
+  /* ── all-passed view ─────────────────────────────────────── */
+  .passed-summary {
+    text-align: center;
+    padding: 36px 14px 20px;
+    color: var(--text-muted);
+  }
+  .passed-summary .big-check {
+    font-size: 36px;
+    color: var(--ok);
+    margin-bottom: 6px;
+  }
+  .passed-summary .title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .passed-summary .browse-link {
+    margin-top: 14px;
+    display: inline-block;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 5px 12px;
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  /* ── footer ──────────────────────────────────────────────── */
+  .footer {
+    padding: 0;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .footer details > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 18px;
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .footer details > summary::before {
+    content: '▸';
+    color: var(--text-muted);
+    transition: transform 0.1s ease;
+  }
+  .footer details[open] > summary::before { transform: rotate(90deg); }
+  .footer-actions {
+    padding: 0 18px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .footer-section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin: 6px 0 4px;
+    width: 100%;
+  }
+</style>
+</head>
+<body>
+
+<div class="note">
+  <strong>Mockup — triage-first.</strong> Toggle between a <em>failing</em> run and an
+  <em>all-passed</em> run with the buttons below to see how the dialog
+  adapts. In the failing case, <strong>Triage</strong> is the default tab
+  (failure cards stacked vertically); <strong>Browse</strong> is the
+  Smalltalk-style file/case columns. All data is fake. Smart features
+  shown: failure clustering (when 2+ tests share the same headline),
+  flake badge from history, linked-issue chips, sparkline history,
+  framework-frame folding, inline source snippet, "run just this test"
+  copy-paste, quick actions.
+</div>
+
+<div class="demo-controls">
+  <span class="label">Demo state:</span>
+  <button id="demo-state-failing" aria-pressed="true">Run with failures (default)</button>
+  <button id="demo-state-passed" aria-pressed="false">All passed</button>
+</div>
+
+<div class="dialog" id="dialog" role="dialog" aria-label="Validation Results">
+
+  <div class="header">
+    <div class="header-row">
+      <div>
+        <div class="header-title" id="header-title"></div>
+        <div class="header-sub" id="header-sub"></div>
+        <div class="header-counts" id="header-counts"></div>
+      </div>
+      <button class="close-btn" title="Close">✕</button>
+    </div>
+    <div class="mode-tabs" id="mode-tabs"></div>
+  </div>
+
+  <div class="body" id="body"></div>
+
+  <div class="footer">
+    <details>
+      <summary id="footer-summary">Run artifacts (13)</summary>
+      <div class="footer-actions">
+        <div class="footer-section-label">Validation artifacts</div>
+        <button class="action-btn">Open Validation Record</button>
+        <button class="action-btn">Open Validation Output</button>
+        <button class="action-btn">Open Validation Stderr</button>
+        <div class="footer-section-label">Session evidence</div>
+        <button class="action-btn">View Session Recording</button>
+        <button class="action-btn">Copy Session Recording</button>
+        <button class="action-btn">View Claude Log</button>
+        <button class="action-btn">Open Claude Log File</button>
+        <button class="action-btn">Open Claude Log Dir</button>
+        <button class="action-btn">Open Orchestrator Log</button>
+        <button class="action-btn">Open Full Log</button>
+        <div class="footer-section-label">Diagnostics</div>
+        <button class="action-btn">Open Session Dir</button>
+        <button class="action-btn">Open Session Settings</button>
+        <button class="action-btn">Full Diagnostics</button>
+      </div>
+    </details>
+  </div>
+
+</div>
+
+<script>
+  // ──────────────────────────────────────────────────────────────────
+  // Fake dataset
+  // ──────────────────────────────────────────────────────────────────
+
+  // Failure 1 — flaky AssertionError, no tracked issue, history shows occasional fails
+  const FAIL_1 = {
+    nodeid: 'src/lib/__tests__/example.test.ts::demo failed test for mockup',
+    name: 'demo failed test for mockup',
+    file_path: 'src/lib/__tests__/example.test.ts',
+    outcome: 'failed',
+    duration_seconds: 0.012,
+    failure_type: 'AssertionError',
+    failure_message: 'expected severity to equal "critical"',
+    src_path: 'src/lib/__tests__/example.test.ts',
+    src_line: 42,
+    src_snippet: [
+      { lineno: 40, code: "    const config = await fetchAlertConfig();" },
+      { lineno: 41, code: "    const severity = config.severity;" },
+      { lineno: 42, code: '    expect(severity).toBe("critical");', is_failure: true },
+      { lineno: 43, code: "  });" },
+    ],
+    user_frames: [
+      'at Object.<anonymous> (src/lib/__tests__/example.test.ts:42:18)',
+    ],
+    framework_frames: [
+      'at runTest (node_modules/vitest/dist/chunk-runner.js:1234:5)',
+      'at Object.processTask (node_modules/vitest/dist/chunk-runner.js:88:9)',
+      'at processTicksAndRejections (node:internal/process/task_queues:96:5)',
+      'at vitest.worker (node_modules/vitest/dist/chunk-worker.js:42:1)',
+    ],
+    stdout: "fetchAlertConfig() returned: { severity: 'info' }",
+    stderr: '',
+    flip_rate_percent: 40,
+    is_likely_flaky: true,
+    history: ['pass','fail','pass','pass','fail','pass','pass','pass','fail','fail'],
+    existing_issue: null,
+    is_quarantined: false,
+    run_command: 'pnpm vitest src/lib/__tests__/example.test.ts -t "demo failed test for mockup"',
+  };
+
+  // Failure 2 — SAME assertion message as failure 1 → cluster
+  const FAIL_2 = {
+    nodeid: 'src/lib/__tests__/example.test.ts::overlay uses configured severity',
+    name: 'overlay uses configured severity',
+    file_path: 'src/lib/__tests__/example.test.ts',
+    outcome: 'failed',
+    duration_seconds: 0.008,
+    failure_type: 'AssertionError',
+    failure_message: 'expected severity to equal "critical"',
+    src_path: 'src/lib/__tests__/example.test.ts',
+    src_line: 58,
+    src_snippet: [
+      { lineno: 56, code: "    const overlay = await loadAlertOverlay();" },
+      { lineno: 57, code: "    const sev = overlay.severity;" },
+      { lineno: 58, code: '    expect(sev).toBe("critical");', is_failure: true },
+      { lineno: 59, code: "  });" },
+    ],
+    user_frames: [
+      'at Object.<anonymous> (src/lib/__tests__/example.test.ts:58:14)',
+    ],
+    framework_frames: [
+      'at runTest (node_modules/vitest/dist/chunk-runner.js:1234:5)',
+      'at Object.processTask (node_modules/vitest/dist/chunk-runner.js:88:9)',
+    ],
+    stdout: '',
+    stderr: '',
+    flip_rate_percent: 0,
+    is_likely_flaky: false,
+    history: ['pass','pass','pass','pass','pass','pass','pass','pass','pass','fail'],
+    existing_issue: null,
+    is_quarantined: false,
+    run_command: 'pnpm vitest src/lib/__tests__/example.test.ts -t "overlay uses configured severity"',
+  };
+
+  // Failure 3 — TimeoutError, has tracked issue
+  const FAIL_3 = {
+    nodeid: 'src/runtime/routes.test.tsx::redirects unauthenticated /admin to /login',
+    name: 'redirects unauthenticated /admin to /login',
+    file_path: 'src/runtime/routes.test.tsx',
+    outcome: 'failed',
+    duration_seconds: 5.001,
+    failure_type: 'TimeoutError',
+    failure_message: 'Test timed out in 5000ms',
+    src_path: 'src/runtime/routes.test.tsx',
+    src_line: 78,
+    src_snippet: [
+      { lineno: 76, code: '    await waitForUrl("/login");' },
+      { lineno: 77, code: "    // expected redirect from /admin" },
+      { lineno: 78, code: "  }, 5000);", is_failure: true },
+      { lineno: 79, code: "});" },
+    ],
+    user_frames: [
+      'at handle (src/runtime/routes.test.tsx:78:5)',
+    ],
+    framework_frames: [
+      'at Object.timeoutLoop (node_modules/vitest/dist/chunk-runner.js:512:8)',
+      'at runTest (node_modules/vitest/dist/chunk-runner.js:1234:5)',
+    ],
+    stdout: '',
+    stderr: '',
+    flip_rate_percent: 18,
+    is_likely_flaky: false,
+    history: ['pass','pass','fail','pass','pass','pass','fail','pass','pass','fail'],
+    existing_issue: { number: 4523, title: 'admin redirect timing flake under load' },
+    is_quarantined: false,
+    run_command: 'pnpm vitest src/runtime/routes.test.tsx -t "redirects unauthenticated"',
+  };
+
+  // Errored (different from failed) — fixture crash
+  const ERROR_1 = {
+    nodeid: 'src/setup.test.ts::beforeAll fixture',
+    name: 'beforeAll fixture',
+    file_path: 'src/setup.test.ts',
+    outcome: 'error',
+    duration_seconds: 0.005,
+    failure_type: 'TypeError',
+    failure_message: "Cannot read properties of undefined (reading 'init')",
+    src_path: 'src/setup.test.ts',
+    src_line: 12,
+    src_snippet: [
+      { lineno: 10, code: 'beforeAll(async () => {' },
+      { lineno: 11, code: "  const cfg = await loadFixtureConfig();" },
+      { lineno: 12, code: '  cfg.adapters.init();', is_failure: true },
+      { lineno: 13, code: "});" },
+    ],
+    user_frames: [
+      'at Object.<anonymous> (src/setup.test.ts:12:18)',
+    ],
+    framework_frames: [
+      'at runFixture (node_modules/vitest/dist/chunk-runner.js:88:9)',
+    ],
+    stdout: '',
+    stderr: "TypeError: Cannot read properties of undefined (reading 'init')\n    bubbled through fixture init",
+    flip_rate_percent: 0,
+    is_likely_flaky: false,
+    history: ['pass','pass','pass','pass','pass','pass','pass','pass','pass','fail'],
+    existing_issue: null,
+    is_quarantined: false,
+    run_command: 'pnpm vitest src/setup.test.ts',
+  };
+
+  const SKIP_1 = {
+    nodeid: 'src/lib/__tests__/feature_flag.test.ts::experimental cohort',
+    name: 'experimental cohort',
+    file_path: 'src/lib/__tests__/feature_flag.test.ts',
+    outcome: 'skipped',
+    duration_seconds: 0,
+    skip_reason: 'experimental flag disabled in CI',
+    flip_rate_percent: 0,
+    is_likely_flaky: false,
+    history: ['skip','skip','skip','skip','skip','skip','skip','skip','skip','skip'],
+    existing_issue: null,
+    is_quarantined: true,
+    stdout: '',
+    stderr: '',
+  };
+
+  // Passed tests — minimal fields, sample across several files
+  function pass(file, name) {
+    return {
+      nodeid: `${file}::${name}`,
+      name, file_path: file, outcome: 'passed',
+      duration_seconds: 0.003,
+      stdout: '', stderr: '',
+      flip_rate_percent: 0, is_likely_flaky: false,
+      history: ['pass','pass','pass','pass','pass','pass','pass','pass','pass','pass'],
+      existing_issue: null, is_quarantined: false,
+    };
+  }
+  const PASSED = [
+    pass('src/commands/__tests__/openNotification.test.ts', 'exposes opener for action panel'),
+    pass('src/lib/__tests__/trackingConsent.test.ts', 'respects opt-out before tracker init'),
+    pass('src/commands/__tests__/createAlert.test.ts', 'posts to /alerts with severity payload'),
+    pass('src/commands/__tests__/createAlert.test.ts', 'escapes inline html in description'),
+    pass('src/runtime/routes.test.tsx', 'mounts /dashboard route lazily'),
+    pass('src/runtime/routes.test.tsx', 'flushes pending route state on logout'),
+    pass('src/commands/__tests__/loadSeoEventPage.test.ts', 'renders meta tags from page payload'),
+    pass('src/lib/__tests__/example.test.ts', 'fetchAlertConfig handles 304 not-modified'),
+    pass('src/lib/__tests__/example.test.ts', 'cache layer keys by tenant'),
+  ];
+
+  const CASES_FAILING = [FAIL_1, FAIL_2, FAIL_3, ERROR_1, SKIP_1, ...PASSED];
+  const CASES_PASSED = [
+    pass('src/lib/__tests__/feature_flag.test.ts', 'enabled cohort uses canary endpoint'),
+    pass('src/lib/__tests__/feature_flag.test.ts', 'rolls out evenly across user buckets'),
+    pass('src/runtime/api.test.ts', 'retries 5xx with exponential backoff'),
+    pass('src/runtime/api.test.ts', 'fails fast on 4xx'),
+    pass('src/runtime/api.test.ts', 'aborts on client-side timeout'),
+    ...PASSED,
+  ];
+
+  // ──────────────────────────────────────────────────────────────────
+  // State
+  // ──────────────────────────────────────────────────────────────────
+
+  const state = {
+    demoState: 'failing',       // 'failing' | 'passed'
+    mode: 'triage',             // 'triage' | 'browse'
+    cluster_expanded: {},        // clusterKey -> bool
+    browse: { tab: 'failed', file: null, case: null, filterTerm: '' },
+  };
+
+  function activeCases() {
+    return state.demoState === 'failing' ? CASES_FAILING : CASES_PASSED;
+  }
+
+  function counts() {
+    const cases = activeCases();
+    return {
+      total: cases.length,
+      passed: cases.filter((c) => c.outcome === 'passed').length,
+      failed: cases.filter((c) => c.outcome === 'failed').length,
+      error: cases.filter((c) => c.outcome === 'error').length,
+      skipped: cases.filter((c) => c.outcome === 'skipped').length,
+    };
+  }
+
+  function totalDurationSeconds() {
+    return activeCases().reduce((s, c) => s + (c.duration_seconds || 0), 0);
+  }
+
+  // Compute failure clusters: group failed/errored tests by failure_type + failure_message
+  function failureClusters() {
+    const map = new Map();
+    for (const c of activeCases()) {
+      if (c.outcome !== 'failed' && c.outcome !== 'error') continue;
+      const key = `${c.failure_type}::${c.failure_message}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(c);
+    }
+    return Array.from(map.entries())
+      .map(([key, members]) => ({ key, members, type: members[0].failure_type, message: members[0].failure_message }))
+      .sort((a, b) => b.members.length - a.members.length);
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Rendering — header
+  // ──────────────────────────────────────────────────────────────────
+
+  function renderHeader() {
+    const c = counts();
+    const isFail = c.failed > 0 || c.error > 0;
+    const titleEl = document.getElementById('header-title');
+    titleEl.textContent = isFail
+      ? `Validation Failed · Run #361`
+      : `Validation Passed · Run #361`;
+    titleEl.classList.toggle('is-fail', isFail);
+    document.getElementById('header-sub').textContent =
+      `suite: publish_gate · ${totalDurationSeconds().toFixed(2)}s · ended 2026-05-11 14:57`;
+
+    const countsEl = document.getElementById('header-counts');
+    const parts = [];
+    if (c.failed) parts.push(`<span class="count-pill fail">✕ ${c.failed} failed</span>`);
+    if (c.error) parts.push(`<span class="count-pill fail">⚠ ${c.error} errored</span>`);
+    parts.push(`<span class="count-pill ok">✓ ${c.passed} passed</span>`);
+    if (c.skipped) parts.push(`<span class="count-pill">– ${c.skipped} skipped</span>`);
+    countsEl.innerHTML = parts.join('');
+
+    // mode tabs
+    const tabs = document.getElementById('mode-tabs');
+    tabs.innerHTML = '';
+    const tabDefs = [
+      { key: 'triage', label: isFail ? `Triage (${c.failed + c.error})` : `Summary` },
+      { key: 'browse', label: `Browse all ${c.total}` },
+    ];
+    for (const t of tabDefs) {
+      const btn = document.createElement('button');
+      btn.className = 'mode-tab';
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', state.mode === t.key ? 'true' : 'false');
+      btn.textContent = t.label;
+      btn.addEventListener('click', () => { state.mode = t.key; render(); });
+      tabs.appendChild(btn);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Rendering — triage mode
+  // ──────────────────────────────────────────────────────────────────
+
+  function renderTriage() {
+    const body = document.getElementById('body');
+    const failures = activeCases().filter((c) => c.outcome === 'failed' || c.outcome === 'error');
+    if (failures.length === 0) {
+      renderAllPassedSummary(body);
+      return;
+    }
+
+    const clusters = failureClusters();
+    const rendered = new Set();
+    let html = '';
+    for (const cluster of clusters) {
+      if (cluster.members.length >= 2) {
+        const expanded = !!state.cluster_expanded[cluster.key];
+        html += renderClusterCard(cluster, expanded);
+        if (expanded) {
+          for (const c of cluster.members) {
+            html += renderTriageCard(c);
+            rendered.add(c.nodeid);
+          }
+        } else {
+          for (const c of cluster.members) rendered.add(c.nodeid);
+        }
+      }
+    }
+    for (const c of failures) {
+      if (!rendered.has(c.nodeid)) {
+        html += renderTriageCard(c);
+      }
+    }
+
+    const ctn = counts();
+    const skippedNote = ctn.skipped
+      ? `, ${ctn.skipped} skipped`
+      : '';
+    html += `<div style="text-align: center; color: var(--text-muted); font-size: 12px; margin-top: 10px;">`;
+    html += `<span>+ ${ctn.passed} passed${skippedNote}</span> · `;
+    html += `<a href="#" id="switch-to-browse">Browse all ${ctn.total} tests →</a>`;
+    html += `</div>`;
+
+    body.innerHTML = html;
+
+    document.getElementById('switch-to-browse')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      state.mode = 'browse';
+      render();
+    });
+    // wire copy buttons + frame toggles + cluster toggles
+    body.querySelectorAll('[data-copy-text]').forEach((btn) => {
+      btn.addEventListener('click', () => copyToClipboard(btn));
+    });
+    body.querySelectorAll('[data-framework-toggle]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = document.getElementById(btn.dataset.frameworkToggle);
+        if (!target) return;
+        const isOpen = target.dataset.open === '1';
+        target.dataset.open = isOpen ? '0' : '1';
+        target.style.display = isOpen ? 'none' : 'block';
+        btn.textContent = isOpen ? btn.dataset.labelClosed : btn.dataset.labelOpen;
+      });
+    });
+    body.querySelectorAll('[data-cluster-toggle]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.clusterToggle;
+        state.cluster_expanded[key] = !state.cluster_expanded[key];
+        render();
+      });
+    });
+  }
+
+  function renderClusterCard(cluster, expanded) {
+    const memberList = cluster.members
+      .map((m) => `<li>${escapeHtml(m.file_path)} › ${escapeHtml(m.name)}</li>`)
+      .join('');
+    return `
+      <div class="cluster-card">
+        <div class="cluster-head">
+          <div class="cluster-head-text">
+            <strong>⚠ ${cluster.members.length} tests failed with the same root cause</strong>
+            <div class="cluster-message">${escapeHtml(cluster.type)}: ${escapeHtml(cluster.message)}</div>
+          </div>
+          <button class="action-btn subtle" data-cluster-toggle="${escapeAttr(cluster.key)}">
+            ${expanded ? 'Hide details' : 'Show individually'}
+          </button>
+        </div>
+        ${!expanded ? `<ul class="cluster-list">${memberList}</ul>` : ''}
+      </div>
+    `;
+  }
+
+  function renderTriageCard(c) {
+    const outcomeChip = c.outcome === 'error'
+      ? `<span class="badge type">⚠ Errored: ${escapeHtml(c.failure_type)}</span>`
+      : c.outcome === 'failed'
+      ? `<span class="badge type">✕ Failed: ${escapeHtml(c.failure_type)}</span>`
+      : `<span class="badge type">${escapeHtml(c.outcome)}</span>`;
+
+    const durChip = `<span class="badge">${formatDuration(c.duration_seconds)}</span>`;
+
+    const flakyChip = c.is_likely_flaky || c.flip_rate_percent >= 20
+      ? `<span class="badge flaky" title="Failed in ${c.flip_rate_percent}% of recent runs">↻ Flaky ${c.flip_rate_percent}%</span>`
+      : '';
+    const trackedChip = c.existing_issue
+      ? `<span class="badge tracked" title="${escapeAttr(c.existing_issue.title)}">→ <a href="#" onclick="return false;">Tracked: #${c.existing_issue.number}</a></span>`
+      : '';
+    const quarantineChip = c.is_quarantined
+      ? `<span class="badge quarantined">⊘ Quarantined</span>`
+      : '';
+    const sparkline = renderSparkline(c.history);
+
+    const isError = c.outcome === 'error';
+    const headlineClass = isError ? 'is-error' : '';
+    const headlineCopy = `${c.failure_type}: ${c.failure_message}`;
+
+    const snippetHtml = c.src_snippet ? renderSourceSnippet(c) : '';
+
+    // traceback: show user frames; hide framework frames behind toggle
+    const userFramesText = (c.user_frames || []).join('\n');
+    const frameworkFrames = c.framework_frames || [];
+    const tbId = `tb-${Math.random().toString(36).slice(2, 8)}`;
+    let tracebackBlock = '';
+    if (c.user_frames && c.user_frames.length) {
+      tracebackBlock = `
+        <details class="io-block" open>
+          <summary>traceback <span class="io-block-label-aux">${c.user_frames.length} user frame${c.user_frames.length === 1 ? '' : 's'}</span></summary>
+          <pre>${escapeHtml(userFramesText)}</pre>
+          ${frameworkFrames.length ? `
+            <pre id="${tbId}-fw" data-open="0" style="display:none; border-top: 1px dashed var(--border);">${escapeHtml(frameworkFrames.join('\n'))}</pre>
+            <button class="framework-toggle" data-framework-toggle="${tbId}-fw"
+              data-label-closed="Show ${frameworkFrames.length} framework frame${frameworkFrames.length === 1 ? '' : 's'} ▾"
+              data-label-open="Hide framework frames ▴"
+              style="margin: 4px 10px 10px;">Show ${frameworkFrames.length} framework frame${frameworkFrames.length === 1 ? '' : 's'} ▾</button>
+          ` : ''}
+        </details>
+      `;
+    }
+
+    const stdoutLen = (c.stdout || '').split('\n').filter((l) => l).length;
+    const stderrLen = (c.stderr || '').split('\n').filter((l) => l).length;
+    const stdoutBlock = c.stdout
+      ? `<details class="io-block">
+          <summary>stdout <span class="io-block-label-aux">${stdoutLen} line${stdoutLen === 1 ? '' : 's'}</span></summary>
+          <pre>${escapeHtml(c.stdout)}</pre>
+        </details>`
+      : `<details class="io-block"><summary>stdout <span class="io-block-label-aux">empty</span></summary></details>`;
+    const stderrBlock = c.stderr
+      ? `<details class="io-block" ${isError ? 'open' : ''}>
+          <summary>stderr <span class="io-block-label-aux">${stderrLen} line${stderrLen === 1 ? '' : 's'}</span></summary>
+          <pre>${escapeHtml(c.stderr)}</pre>
+        </details>`
+      : `<details class="io-block"><summary>stderr <span class="io-block-label-aux">empty</span></summary></details>`;
+
+    return `
+      <div class="triage-card ${escapeAttr(c.outcome)}">
+        <div class="triage-head">
+          <div class="triage-title">
+            <span class="filename">${escapeHtml(c.file_path)}</span> ›
+            ${escapeHtml(c.name)}
+          </div>
+        </div>
+
+        <div class="triage-headline ${headlineClass}">
+          <span class="triage-headline-text"><strong>${escapeHtml(c.failure_type)}:</strong> ${escapeHtml(c.failure_message)}</span>
+          <button class="copy-btn" data-copy-text="${escapeAttr(headlineCopy)}" data-copy-label="Copy headline">📋 Copy</button>
+        </div>
+
+        <div class="badges">
+          ${outcomeChip}
+          ${durChip}
+          ${flakyChip}
+          ${trackedChip}
+          ${quarantineChip}
+          ${sparkline}
+        </div>
+
+        ${snippetHtml}
+
+        ${tracebackBlock}
+        ${isError ? stderrBlock + stdoutBlock : stdoutBlock + stderrBlock}
+
+        <div class="actions-row">
+          <button class="action-btn primary">↗ Open in editor</button>
+          <button class="action-btn" data-copy-text="${escapeAttr(c.run_command || '')}" data-copy-label="Copy run command">⌥ Copy: <code>${escapeHtml((c.run_command || '').split(' ')[0])}…</code></button>
+          <button class="action-btn">⊘ Quarantine</button>
+          <button class="action-btn">🔗 Link to issue</button>
+          <button class="action-btn subtle">↗ Open JUnit record</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSourceSnippet(c) {
+    const lines = c.src_snippet.map((s) => `
+      <div class="src-line ${s.is_failure ? 'is-failure' : ''}">
+        <span class="lineno">${s.lineno}</span>
+        <span class="marker">${s.is_failure ? '►' : ' '}</span>
+        <span class="code">${escapeHtml(s.code)}</span>
+      </div>
+    `).join('');
+    return `
+      <div class="src-snippet">
+        <div class="src-snippet-head">
+          <span>${escapeHtml(c.src_path)}:${c.src_line}</span>
+          <span>JS · vitest</span>
+        </div>
+        ${lines}
+      </div>
+    `;
+  }
+
+  function renderSparkline(history) {
+    if (!history) return '';
+    const dots = history.map((h) => `<span class="dot ${h === 'pass' ? 'pass' : h === 'fail' ? 'fail' : 'skip'}"></span>`).join('');
+    return `<span class="badge" title="Last ${history.length} runs (newest right)">
+      <span class="sparkline">${dots}</span>
+      <span class="sparkline-label">last ${history.length}</span>
+    </span>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Rendering — all-passed summary
+  // ──────────────────────────────────────────────────────────────────
+
+  function renderAllPassedSummary(body) {
+    const c = counts();
+    body.innerHTML = `
+      <div class="passed-summary">
+        <div class="big-check">✓</div>
+        <div class="title">All tests passed</div>
+        <div>${c.passed} tests in ${totalDurationSeconds().toFixed(2)}s${c.skipped ? `, ${c.skipped} skipped` : ''}</div>
+        <button class="browse-link" id="switch-to-browse">Browse all ${c.total} tests →</button>
+      </div>
+    `;
+    document.getElementById('switch-to-browse').addEventListener('click', () => {
+      state.mode = 'browse';
+      render();
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Rendering — browse mode (column view)
+  // ──────────────────────────────────────────────────────────────────
+
+  function browseTabs() {
+    const c = counts();
+    return [
+      { key: 'all', label: `All (${c.total})` },
+      ...(c.failed ? [{ key: 'failed', label: `Failed (${c.failed})`, tone: 'fail' }] : []),
+      ...(c.error ? [{ key: 'error', label: `Errors (${c.error})`, tone: 'fail' }] : []),
+      ...(c.passed ? [{ key: 'passed', label: `Passed (${c.passed})`, tone: 'ok' }] : []),
+      ...(c.skipped ? [{ key: 'skipped', label: `Skipped (${c.skipped})` }] : []),
+    ];
+  }
+
+  function browseCases(tab) {
+    if (tab === 'all') return activeCases();
+    return activeCases().filter((c) => c.outcome === tab);
+  }
+
+  function browseFiles(tab) {
+    const map = new Map();
+    for (const c of browseCases(tab)) {
+      if (!map.has(c.file_path)) map.set(c.file_path, []);
+      map.get(c.file_path).push(c);
+    }
+    return Array.from(map.entries()).map(([file, items]) => ({
+      file,
+      total: items.length,
+      failed: items.filter((c) => c.outcome === 'failed' || c.outcome === 'error').length,
+      skipped: items.filter((c) => c.outcome === 'skipped').length,
+      duration: items.reduce((s, c) => s + (c.duration_seconds || 0), 0),
+    }));
+  }
+
+  function renderBrowse() {
+    const tabs = browseTabs();
+    // Make sure state.browse.tab is valid
+    if (!tabs.find((t) => t.key === state.browse.tab)) {
+      state.browse.tab = tabs[0]?.key || 'all';
+    }
+    const files = browseFiles(state.browse.tab);
+    if (!state.browse.file || !files.find((f) => f.file === state.browse.file)) {
+      state.browse.file = files[0]?.file || null;
+    }
+    const visibleCases = browseCases(state.browse.tab)
+      .filter((c) => c.file_path === state.browse.file)
+      .filter((c) => !state.browse.filterTerm || c.nodeid.toLowerCase().includes(state.browse.filterTerm));
+    if (!state.browse.case || !visibleCases.find((c) => c.nodeid === state.browse.case.nodeid)) {
+      state.browse.case = visibleCases[0] || null;
+    }
+
+    const tabsHtml = tabs.map((t) =>
+      `<button class="browse-tab" data-browse-tab="${escapeAttr(t.key)}" aria-selected="${state.browse.tab === t.key ? 'true' : 'false'}">${escapeHtml(t.label)}</button>`
+    ).join('');
+
+    const filesHtml = files.length === 0
+      ? '<div class="body-empty" style="padding:20px;">No files in this bucket.</div>'
+      : files
+        .filter((f) => !state.browse.filterTerm || f.file.toLowerCase().includes(state.browse.filterTerm))
+        .map((f) => {
+          const name = f.file.split('/').pop();
+          const stats = `<span class="file-row-stats">
+            ${f.failed ? `<span class="stat fail">✕ ${f.failed}</span>` : ''}
+            ${f.skipped ? `<span class="stat skip">– ${f.skipped}</span>` : ''}
+            <span class="stat">${f.total} test${f.total === 1 ? '' : 's'}</span>
+            <span class="stat">${formatDuration(f.duration)}</span>
+          </span>`;
+          return `<div class="col-item" data-browse-file="${escapeAttr(f.file)}" aria-selected="${state.browse.file === f.file ? 'true' : 'false'}" title="${escapeAttr(f.file)}">
+            <span>${escapeHtml(name)}</span>${stats}
+          </div>`;
+        }).join('');
+
+    const casesHtml = visibleCases.length === 0
+      ? '<div class="body-empty" style="padding:20px;">Select a file.</div>'
+      : visibleCases.map((c) => {
+          const ms = c.duration_seconds ? `${(c.duration_seconds * 1000).toFixed(0)} ms` : '';
+          const icon = c.outcome === 'passed' ? '✓' : c.outcome === 'failed' ? '✕' : c.outcome === 'skipped' ? '–' : '!';
+          return `<div class="col-item" data-browse-case="${escapeAttr(c.nodeid)}" aria-selected="${state.browse.case && state.browse.case.nodeid === c.nodeid ? 'true' : 'false'}">
+            <span class="status-icon ${c.outcome}">${icon}</span>
+            <span style="flex:1;">${escapeHtml(c.name)}</span>
+            <span class="count">${ms}</span>
+          </div>`;
+        }).join('');
+
+    const detailHtml = state.browse.case
+      ? renderBrowseDetail(state.browse.case)
+      : '<div class="body-empty">Select a case to see its detail.</div>';
+
+    document.getElementById('body').innerHTML = `
+      <div class="browse-tabs">
+        ${tabsHtml}
+        <input class="browse-filter" id="browse-filter" placeholder="🔍 filter…" value="${escapeAttr(state.browse.filterTerm)}">
+      </div>
+      <div class="cols">
+        <div class="col">
+          <div class="col-header"><span>Files</span><span class="count">${files.length}</span></div>
+          <div class="col-list">${filesHtml}</div>
+        </div>
+        <div class="col">
+          <div class="col-header"><span>Cases</span><span class="count">${visibleCases.length}</span></div>
+          <div class="col-list">${casesHtml}</div>
+        </div>
+      </div>
+      <div class="detail-pane">
+        ${detailHtml}
+      </div>
+    `;
+
+    // wire interactions
+    document.querySelectorAll('[data-browse-tab]').forEach((el) => {
+      el.addEventListener('click', () => {
+        state.browse.tab = el.dataset.browseTab;
+        state.browse.file = null; state.browse.case = null;
+        render();
+      });
+    });
+    document.querySelectorAll('[data-browse-file]').forEach((el) => {
+      el.addEventListener('click', () => {
+        state.browse.file = el.dataset.browseFile;
+        state.browse.case = null;
+        render();
+      });
+    });
+    document.querySelectorAll('[data-browse-case]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const nid = el.dataset.browseCase;
+        state.browse.case = activeCases().find((c) => c.nodeid === nid);
+        render();
+      });
+    });
+    const filter = document.getElementById('browse-filter');
+    if (filter) {
+      filter.addEventListener('input', (e) => {
+        state.browse.filterTerm = e.target.value.toLowerCase();
+        render();
+      });
+    }
+    // wire copy + framework toggles inside detail
+    document.querySelectorAll('[data-copy-text]').forEach((btn) => {
+      btn.addEventListener('click', () => copyToClipboard(btn));
+    });
+    document.querySelectorAll('[data-framework-toggle]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = document.getElementById(btn.dataset.frameworkToggle);
+        if (!target) return;
+        const isOpen = target.dataset.open === '1';
+        target.dataset.open = isOpen ? '0' : '1';
+        target.style.display = isOpen ? 'none' : 'block';
+        btn.textContent = isOpen ? btn.dataset.labelClosed : btn.dataset.labelOpen;
+      });
+    });
+  }
+
+  function renderBrowseDetail(c) {
+    // For passed / skipped / etc., a slimmer card; for failed/errored use the
+    // same triage card.  Both share renderTriageCard for consistency.
+    if (c.outcome === 'passed') {
+      return `
+        <div class="triage-card passed">
+          <div class="triage-head">
+            <div class="triage-title">
+              <span class="filename">${escapeHtml(c.file_path)}</span> ›
+              ${escapeHtml(c.name)}
+            </div>
+          </div>
+          <div class="badges">
+            <span class="badge type" style="background: var(--ok-bg); border-color: var(--ok); color: var(--ok);">✓ Passed</span>
+            <span class="badge">${formatDuration(c.duration_seconds)}</span>
+            ${renderSparkline(c.history)}
+          </div>
+          <details class="io-block"><summary>stdout <span class="io-block-label-aux">${c.stdout ? '' : 'empty'}</span></summary>${c.stdout ? `<pre>${escapeHtml(c.stdout)}</pre>` : ''}</details>
+          <details class="io-block"><summary>stderr <span class="io-block-label-aux">${c.stderr ? '' : 'empty'}</span></summary>${c.stderr ? `<pre>${escapeHtml(c.stderr)}</pre>` : ''}</details>
+          <div class="actions-row">
+            <button class="action-btn">↗ Open in editor</button>
+            <button class="action-btn subtle">↗ Open JUnit record</button>
+          </div>
+        </div>
+      `;
+    }
+    if (c.outcome === 'skipped') {
+      return `
+        <div class="triage-card skipped">
+          <div class="triage-head">
+            <div class="triage-title">
+              <span class="filename">${escapeHtml(c.file_path)}</span> ›
+              ${escapeHtml(c.name)}
+            </div>
+          </div>
+          <div class="badges">
+            <span class="badge type">– Skipped</span>
+            ${c.is_quarantined ? '<span class="badge quarantined">⊘ Quarantined</span>' : ''}
+          </div>
+          ${c.skip_reason ? `
+            <div class="triage-headline" style="background: var(--surface-2); border-color: var(--border); color: var(--text-muted);">
+              <span class="triage-headline-text">${escapeHtml(c.skip_reason)}</span>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+    // failed / error
+    return renderTriageCard(c);
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Misc helpers
+  // ──────────────────────────────────────────────────────────────────
+
+  function formatDuration(seconds) {
+    if (!seconds) return '0 ms';
+    if (seconds >= 1) return `${seconds.toFixed(2)} s`;
+    return `${(seconds * 1000).toFixed(0)} ms`;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  async function copyToClipboard(btn) {
+    const text = btn.dataset.copyText || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const orig = btn.innerHTML;
+      btn.innerHTML = '✓ Copied';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.innerHTML = orig;
+        btn.classList.remove('copied');
+      }, 1200);
+    } catch (e) {
+      // fallback — no clipboard permission
+      btn.innerHTML = '⚠ ' + e.message.slice(0, 30);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Main render
+  // ──────────────────────────────────────────────────────────────────
+
+  function render() {
+    renderHeader();
+    if (state.mode === 'triage') renderTriage();
+    else renderBrowse();
+  }
+
+  // demo toggles
+  document.getElementById('demo-state-failing').addEventListener('click', () => {
+    state.demoState = 'failing';
+    state.mode = 'triage';
+    state.cluster_expanded = {};
+    state.browse = { tab: 'failed', file: null, case: null, filterTerm: '' };
+    setDemoPressed();
+    render();
+  });
+  document.getElementById('demo-state-passed').addEventListener('click', () => {
+    state.demoState = 'passed';
+    state.mode = 'triage';
+    state.browse = { tab: 'all', file: null, case: null, filterTerm: '' };
+    setDemoPressed();
+    render();
+  });
+  function setDemoPressed() {
+    document.getElementById('demo-state-failing').setAttribute('aria-pressed', state.demoState === 'failing' ? 'true' : 'false');
+    document.getElementById('demo-state-passed').setAttribute('aria-pressed', state.demoState === 'passed' ? 'true' : 'false');
+  }
+
+  render();
+</script>
+
+</body>
+</html>
