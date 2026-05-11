@@ -190,6 +190,31 @@ test('handleTimelineEventActionsClick toggles overflow menus through shared dele
     assert.equal(items.style.left, '304px');
 });
 
+test('handleTimelineEventActionsClick stops propagation on action-button clicks (Blocker 2 on PR #6315)', () => {
+    // Reviewer Blocker 2 on PR #6315: without ``event.stopPropagation``,
+    // an action-button click inside the per-issue drawer's validation
+    // step row would bubble up to the row's onclick (which toggles the
+    // inline canonical-viewer expansion).  The button click was meant
+    // for the button, not the row — stop propagation so the row's
+    // expansion isn't a second-effect.
+    const context = loadTimeline();
+    const actionPayload = JSON.stringify({ type: 'open_validation_failure', issue_number: 42 });
+    const button = new FakeElement();
+    button.attrs.add('class:timeline-action-btn');  // unused; closest() returns it directly
+    button.dataset = { action: actionPayload };
+    button.closest = (selector) => {
+        if (selector === '.timeline-action-btn, .timeline-menu-item') return button;
+        return null;
+    };
+    const calls = [];
+    context.handleTimelineEventActionsClick({
+        target: button,
+        preventDefault: () => calls.push('preventDefault'),
+        stopPropagation: () => calls.push('stopPropagation'),
+    });
+    assert.ok(calls.includes('stopPropagation'), 'stopPropagation must be called on action clicks');
+});
+
 test('handleTimelineEventActionsClick accepts a text-node target from the summary label', () => {
     const context = loadTimeline();
     const { menu, items } = makeMenu({ drawerLeft: 240 });

@@ -218,7 +218,8 @@ function _renderJourneyRuns(container, allRuns) {
                     const stepId = `${cycleId}-step-${stepIdx}`;
                     const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
                     const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
-                    const actions = renderTimelineEventActions(s.actions || []);
+                    const stepActions = _filterStepActions(s);
+                    const actions = renderTimelineEventActions(stepActions);
 
                     // Phase B: validation events become inline-expandable
                     // rows.  Expanding triggers a lazy fetch from the
@@ -288,6 +289,19 @@ function _isValidationStep(step) {
     return _VALIDATION_EVENT_NAMES.has(name);
 }
 
+// Phase B (reviewer Blocker 2 on PR #6315): a validation step's row IS
+// the expansion trigger, so the legacy ``open_validation_failure``
+// action (which the timeline action dispatcher routes to the modal)
+// is both redundant and a regression back to the modal path.  Filter
+// it out for validation steps so the row has exactly one owner for
+// the detail-view interaction.  Non-validation steps pass through
+// unchanged.
+function _filterStepActions(step) {
+    const raw = Array.isArray(step && step.actions) ? step.actions : [];
+    if (!_isValidationStep(step)) return raw;
+    return raw.filter((a) => !a || a.type !== 'open_validation_failure');
+}
+
 // The journey payload puts ``run_dir`` on individual step events when
 // available.  For a validation event that doesn't carry one (older
 // payloads or aggregated views), fall back to the cycle's first event
@@ -336,7 +350,20 @@ async function toggleValidationEventInline(stepId, issueNumber, runDir) {
                 body.dataset.loaded = 'error';
                 return;
             }
-            body.innerHTML = renderCanonicalValidationViewer(data);
+            // Inline drawer mount uses the same canonical viewer the
+            // modal does, including the artifacts footer (record /
+            // output / evidence buttons).  The viewer takes the
+            // action-section renderer as an explicit dependency
+            // (reviewer Blocker 2 on PR #6314); without passing it
+            // here we would silently drop the artifacts footer in the
+            // inline path (reviewer Blocker 1 on PR #6315).
+            // ``renderValidationFailureActionSections`` lives in
+            // session_dialogs.js — both files are loaded as plain
+            // script tags into the same global scope, so the symbol
+            // is reachable at call time.
+            body.innerHTML = renderCanonicalValidationViewer(data, {
+                renderActionSections: renderValidationFailureActionSections,
+            });
         } catch (err) {
             const message = err && err.message ? err.message : String(err);
             body.innerHTML = `<div class="cvv-error">Failed to load validation details: ${escapeHtml(message)}</div>`;

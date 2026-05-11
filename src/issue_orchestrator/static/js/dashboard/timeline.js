@@ -127,6 +127,13 @@ function handleTimelineEventActionsClick(event) {
     }
     const actionTarget = clickTarget.closest('.timeline-action-btn, .timeline-menu-item');
     if (actionTarget && actionTarget.dataset.action) {
+        // Stop propagation so the action click doesn't ALSO bubble up
+        // to ancestor row-click handlers (e.g. the per-issue drawer's
+        // ``toggleValidationEventInline`` on validation steps —
+        // reviewer Blocker 2 on PR #6315).  The action was meant for
+        // the button; the row's expansion would be a confusing
+        // second-effect.
+        event.stopPropagation();
         try {
             const action = JSON.parse(actionTarget.dataset.action);
             closeTimelineEventMenus();
