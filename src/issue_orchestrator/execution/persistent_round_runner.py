@@ -259,6 +259,10 @@ def send_round(
     log messages so an interleaved coder + reviewer log is decodable
     without cross-referencing PIDs.
 
+    ``write_timeout_seconds`` bounds only the initial prompt write. The
+    effective write deadline is capped by ``timeout_seconds`` so a short
+    total round timeout remains authoritative.
+
     ``now`` and ``sleep`` are injectable for deterministic tests.
     """
     if session.closed:

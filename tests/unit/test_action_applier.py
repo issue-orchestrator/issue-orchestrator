@@ -725,6 +725,10 @@ class TestStopSessionAction:
         result = applier.apply(action)
 
         assert result.success
+        assert result.details["review_exchange_lifecycle_checked"] is True
+        assert result.details["cancelled_review_exchange_jobs"] == [
+            "review-exchange:123:issue-123"
+        ]
         pair_registry.release.assert_called_once_with(123, reason="session-stopped")
         job_supervisor.cancel_matching.assert_called_once()
         predicate = job_supervisor.cancel_matching.call_args.args[0]
@@ -743,6 +747,8 @@ class TestStopSessionAction:
         result = applier.apply(action)
 
         assert result.result_type == ActionResultType.SKIPPED
+        assert result.details["review_exchange_lifecycle_checked"] is True
+        assert result.details["cancelled_review_exchange_jobs"] == []
 
 
 class TestQueueReviewAction:

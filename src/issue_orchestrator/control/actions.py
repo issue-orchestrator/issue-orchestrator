@@ -381,10 +381,15 @@ class ActionResult:
         )
 
     @classmethod
-    def skip(cls, action: Action, reason: str) -> "ActionResult":
+    def skip(
+        cls,
+        action: Action,
+        reason: str,
+        **details: str | int | bool | list[str] | None,
+    ) -> "ActionResult":
         """Create a skipped result."""
         return cls(
             action=action,
             result_type=ActionResultType.SKIPPED,
-            details={"skip_reason": reason},
+            details={"skip_reason": reason, **details},
         )

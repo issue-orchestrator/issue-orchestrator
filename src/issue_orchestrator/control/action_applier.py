@@ -42,6 +42,7 @@ from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
+    from .review_exchange_lifecycle import ReviewExchangeCancellation
     from ..ports.label_store import LabelStore
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
@@ -817,24 +818,38 @@ class ActionApplier:
         assert isinstance(action, StopSessionAction)
 
         ref = SessionRef(session_type=action.session_type, number=action.number)
-        self._cancel_review_exchange_for_session_ref(ref, reason="session-stopped")
+        cancellation = self._cancel_review_exchange_for_session_ref(ref, reason="session-stopped")
 
         # Check if running
         if not self.sessions.exists(ref):
-            return ActionResult.skip(action, f"Session {ref.name} not running")
+            return ActionResult.skip(
+                action,
+                f"Session {ref.name} not running",
+                review_exchange_lifecycle_checked=cancellation is not None,
+                cancelled_review_exchange_jobs=list(cancellation.cancelled_job_ids)
+                if cancellation is not None
+                else [],
+            )
 
         self.sessions.stop(ref)
-        return ActionResult.ok(action, session_name=ref.name)
+        return ActionResult.ok(
+            action,
+            session_name=ref.name,
+            review_exchange_lifecycle_checked=cancellation is not None,
+            cancelled_review_exchange_jobs=list(cancellation.cancelled_job_ids)
+            if cancellation is not None
+            else [],
+        )
 
     def _cancel_review_exchange_for_session_ref(
         self,
         ref: SessionRef,
         *,
         reason: str,
-    ) -> None:
+    ) -> "ReviewExchangeCancellation | None":
         if ref.session_type not in {SessionType.ISSUE, SessionType.REWORK}:
-            return
-        cancel_issue_review_exchange(
+            return None
+        return cancel_issue_review_exchange(
             issue_number=ref.number,
             reason=reason,
             pair_registry=self.pair_registry,

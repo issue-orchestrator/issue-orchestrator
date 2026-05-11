@@ -10,12 +10,7 @@ from pathlib import Path
 _HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _QUOTED_NESTED_DIFF_RE = re.compile(r"(?i)^(?:[rubf]{0,3})?[\"']{1,3}[+-]")
 _TEST_PATH_SEGMENTS = {"test", "tests", "spec", "specs", "__tests__"}
-_TEST_FILE_MARKERS = (
-    "test.",
-    "tests.",
-    "spec.",
-    "specs.",
-)
+_TEST_NAME_SEGMENTS = {"test", "tests", "spec", "specs"}
 
 
 @dataclass(frozen=True)
@@ -147,11 +142,30 @@ def _parse_new_path(line: str) -> str | None:
 
 def _is_test_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
-    parts = {part.lower() for part in Path(normalized).parts}
+    file_path = Path(normalized)
+    parts = {part.lower() for part in file_path.parts}
     if parts & _TEST_PATH_SEGMENTS:
         return True
-    name = Path(normalized).name.lower()
-    return any(marker in name for marker in _TEST_FILE_MARKERS)
+    return _is_test_file_name(file_path.name)
+
+
+def _is_test_file_name(name: str) -> bool:
+    lower_name = name.lower()
+    name_segments = lower_name.split(".")
+    if any(segment in _TEST_NAME_SEGMENTS for segment in name_segments):
+        return True
+
+    stem = Path(name).stem
+    lower_stem = stem.lower()
+    if lower_stem in _TEST_NAME_SEGMENTS:
+        return True
+    if lower_stem.startswith(("test_", "test-")):
+        return True
+    if lower_stem.endswith(
+        ("_test", "-test", "_tests", "-tests", "_spec", "-spec", "_specs", "-specs")
+    ):
+        return True
+    return stem.endswith(("Test", "Tests", "Spec", "Specs"))
 
 
 def _looks_like_nested_diff_fixture(text: str) -> bool:

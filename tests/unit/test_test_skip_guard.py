@@ -45,6 +45,41 @@ def test_scan_added_test_skip_guards_flags_junit_assumption_in_test_path() -> No
     assert "Newly added test-skip guard" in result.reason()
 
 
+def test_scan_added_test_skip_guards_flags_test_file_name_without_test_directory() -> None:
+    diff = """diff --git a/inventory-impl/src/main/kotlin/RepoTest.kt b/inventory-impl/src/main/kotlin/RepoTest.kt
+--- a/inventory-impl/src/main/kotlin/RepoTest.kt
++++ b/inventory-impl/src/main/kotlin/RepoTest.kt
+@@ -25,0 +26,1 @@
++        assumeTrue(PostgresTestSupport.isAvailable())
+"""
+
+    result = scan_added_test_skip_guards(diff)
+
+    assert not result.ok
+    assert result.violations[0].path == "inventory-impl/src/main/kotlin/RepoTest.kt"
+
+
+def test_scan_added_test_skip_guards_does_not_match_test_substrings_in_regular_files() -> None:
+    diff = """diff --git a/src/latest.py b/src/latest.py
+--- a/src/latest.py
++++ b/src/latest.py
+@@ -1,0 +2,1 @@
++pytest.skip("not in a test file")
+diff --git a/src/protest.kt b/src/protest.kt
+--- a/src/protest.kt
++++ b/src/protest.kt
+@@ -1,0 +2,1 @@
++        assumeTrue(PostgresTestSupport.isAvailable())
+diff --git a/pytest.ini b/pytest.ini
+--- a/pytest.ini
++++ b/pytest.ini
+@@ -1,0 +2,1 @@
++note = "pytest.skip appears in docs"
+"""
+
+    assert scan_added_test_skip_guards(diff).ok
+
+
 def test_scan_added_test_skip_guards_ignores_documentation_mentions() -> None:
     diff = """diff --git a/docs/testing.md b/docs/testing.md
 --- a/docs/testing.md

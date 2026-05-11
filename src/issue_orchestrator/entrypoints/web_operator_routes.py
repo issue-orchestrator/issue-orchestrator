@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse
 
 from ..control.label_manager import LabelManager
 from ..control.queue_cache import QueueCache
-from ..control.review_exchange_lifecycle import cancel_issue_review_exchange
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost
 from ..execution.label_ops import LabelOperation, apply_label_operations
@@ -107,11 +106,7 @@ def _terminate_issue_and_hold(orchestrator: Any, issue_number: int, sessions: li
     )
 
     errors = _terminate_sessions(orchestrator=orchestrator, sessions=sessions, killed_sessions=killed_sessions)
-    _cancel_review_exchange_runtime(
-        orchestrator=orchestrator,
-        issue_number=issue_number,
-        reason="operator-terminated",
-    )
+    orchestrator.cancel_review_exchange_for_issue(issue_number, reason="operator-terminated")
     _prune_issue_runtime_state(state=state, issue_number=issue_number)
     _append_operator_termination_history(
         state=state,
@@ -160,31 +155,6 @@ def _terminate_sessions(*, orchestrator: Any, sessions: list[Any], killed_sessio
         except Exception as exc:
             errors.append(f"{session.terminal_id}: {exc}")
     return errors
-
-
-def _cancel_review_exchange_runtime(
-    *,
-    orchestrator: Any,
-    issue_number: int,
-    reason: str,
-) -> None:
-    deps = getattr(orchestrator, "deps", None)
-    deps_attrs = getattr(deps, "__dict__", {}) if deps is not None else {}
-    services = deps_attrs.get("services")
-    pair_registry = getattr(services, "pair_registry", None) if services is not None else None
-    if pair_registry is None:
-        pair_registry = deps_attrs.get("pair_registry")
-    job_supervisor = (
-        getattr(services, "background_job_supervisor", None)
-        if services is not None
-        else None
-    )
-    cancel_issue_review_exchange(
-        issue_number=issue_number,
-        reason=reason,
-        pair_registry=pair_registry,
-        job_supervisor=job_supervisor,
-    )
 
 
 def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
