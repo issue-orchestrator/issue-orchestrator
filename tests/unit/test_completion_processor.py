@@ -38,7 +38,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
-from issue_orchestrator.ports.working_copy import PushResult
+from issue_orchestrator.ports.working_copy import DiffResult, PushResult
 from issue_orchestrator.domain.events import EventBus, SessionEvent
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
 
@@ -91,6 +91,7 @@ def mock_git_adapter():
     adapter.has_uncommitted_changes = Mock(return_value=False)
     adapter.has_tracked_changes = Mock(return_value=False)
     adapter.list_dirty_files = Mock(return_value=[])
+    adapter.diff_against_base = Mock(return_value=DiffResult(success=True, diff_text=""))
     return adapter
 
 
@@ -2325,6 +2326,48 @@ class TestCompletionProcessorPublishGate:
         comment = mock_pr_adapter.add_comment.call_args[0][1]
         assert "Validation Failed" in comment
         assert "Test-skipping patterns detected" in comment
+
+    def test_test_skip_guard_blocks_before_review_exchange_or_push(
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+        worktree_with_completion,
+    ):
+        mock_git_adapter.diff_against_base.return_value = DiffResult(
+            success=True,
+            diff_text=(
+                "diff --git a/src/test/kotlin/FooTest.kt b/src/test/kotlin/FooTest.kt\n"
+                "--- a/src/test/kotlin/FooTest.kt\n"
+                "+++ b/src/test/kotlin/FooTest.kt\n"
+                "@@ -20,0 +21,1 @@\n"
+                "+        assumeTrue(PostgresTestSupport.isAvailable())\n"
+            ),
+        )
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            session_output=FileSystemSessionOutput(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert not result.success
+        assert result.failure_kind == "validation_failed"
+        assert "Newly added test-skip guard" in result.message
+        mock_publish_gate.check.assert_not_called()
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
 
     def test_pre_publish_gate_failure_reroutes_back_into_review_exchange(
         self,

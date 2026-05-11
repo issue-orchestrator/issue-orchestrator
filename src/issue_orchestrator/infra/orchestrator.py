@@ -58,6 +58,10 @@ from ..control.session_routing import (
 from ..control.session_observation import observe_active_sessions as _observe_active_sessions
 from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
+from ..control.review_exchange_lifecycle import (
+    ReviewExchangeCancellation,
+    cancel_issue_review_exchange,
+)
 from ..control.completion_handler import (
     CompletionHandler,
     launch_review_by_number as _ch_launch_review_by_number,
@@ -149,6 +153,24 @@ class Orchestrator:
     def kill_session(self, name: str) -> None:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
+
+    def cancel_review_exchange_for_issue(
+        self,
+        issue_number: int,
+        *,
+        reason: str,
+    ) -> ReviewExchangeCancellation:
+        """Cancel issue-scoped review-exchange runtime work.
+
+        Entrypoints use this behavior-level facade instead of reaching
+        through ``deps`` to find lifecycle collaborators.
+        """
+        return cancel_issue_review_exchange(
+            issue_number=issue_number,
+            reason=reason,
+            pair_registry=self.deps.services.pair_registry,
+            job_supervisor=self.deps.services.background_job_supervisor,
+        )
 
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:

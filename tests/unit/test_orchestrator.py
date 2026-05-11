@@ -4,6 +4,7 @@ import asyncio
 import logging
 import pytest
 import tempfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
@@ -109,6 +110,35 @@ def test_start_paused_requests_initial_queue_refresh(sample_config):
 
     assert orchestrator.state.paused is True
     assert orchestrator.state.queue_refresh_requested is True
+
+
+def test_cancel_review_exchange_for_issue_delegates_to_lifecycle_services(sample_config):
+    orchestrator = create_test_orchestrator(sample_config)
+    pair_registry = MagicMock()
+    job_supervisor = MagicMock()
+    job_supervisor.cancel_matching.return_value = ["review-exchange:77:issue-77"]
+    object.__setattr__(
+        orchestrator.deps,
+        "services",
+        replace(
+            orchestrator.deps.services,
+            pair_registry=pair_registry,
+            background_job_supervisor=job_supervisor,
+        ),
+    )
+
+    result = orchestrator.cancel_review_exchange_for_issue(
+        77,
+        reason="operator-terminated",
+    )
+
+    assert result.issue_number == 77
+    assert result.cancelled_job_ids == ("review-exchange:77:issue-77",)
+    pair_registry.release.assert_called_once_with(77, reason="operator-terminated")
+    job_supervisor.cancel_matching.assert_called_once()
+    predicate = job_supervisor.cancel_matching.call_args.args[0]
+    assert predicate("review-exchange:77:issue-77")
+    assert not predicate("review-exchange:78:issue-78")
 
 
 def create_test_orchestrator(

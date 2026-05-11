@@ -16,7 +16,10 @@ from ..domain.review_exchange_resume import (
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
 from ..ports.session_output import ReviewExchangeSummary, SessionOutput
-from .background_job_supervisor import BackgroundJobSupervisor
+from .background_job_supervisor import (
+    BackgroundJobCancelledError,
+    BackgroundJobSupervisor,
+)
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
@@ -61,6 +64,12 @@ def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
     """
     base = f"review-exchange:{issue_number}"
     return f"{base}:{session_name}" if session_name else base
+
+
+def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:
+    """Return True when *job_id* belongs to *issue_number*'s exchange."""
+    base = f"review-exchange:{issue_number}"
+    return job_id == base or job_id.startswith(f"{base}:")
 
 
 def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> dict[str, str]:
@@ -348,6 +357,16 @@ class CompletionReviewExchange:
         failure = self._job_supervisor.take_failure(job_id)
         if failure is None:
             return None
+        if isinstance(failure.error, BackgroundJobCancelledError):
+            reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job cancelled: {failure.error.reason}"
+            errors.append(reason)
+            logger.info(
+                "[REVIEW_EXCHANGE] background job cancelled; halting issue=%d job_id=%s reason=%s",
+                issue_number,
+                job_id,
+                failure.error.reason,
+            )
+            return failure
         reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
         errors.append(reason)
         logger.error(

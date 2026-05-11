@@ -41,6 +41,8 @@ from ..domain.models import Session
 from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
+    from .background_job_supervisor import BackgroundJobSupervisor
+    from .review_exchange_lifecycle import ReviewExchangeCancellation
     from ..ports.label_store import LabelStore
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
@@ -52,6 +54,7 @@ from .reconciliation import (
     require_reconciliation,
 )
 from .claim_gate import ClaimGate, ClaimLostError
+from .review_exchange_lifecycle import cancel_issue_review_exchange
 from .actions import (
     Action,
     ActionResult,
@@ -171,6 +174,9 @@ class ActionApplier:
     # is escalated to human (the automated retry loop is over, the pair
     # is no longer useful). ADR 0026 / B2.
     pair_registry: Optional["PersistentExchangePairRegistry"] = None
+    # Shared background-job supervisor. Used with pair_registry to make
+    # issue/rework cancellation a terminal review-exchange lifecycle event.
+    background_job_supervisor: Optional["BackgroundJobSupervisor"] = None
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -812,13 +818,43 @@ class ActionApplier:
         assert isinstance(action, StopSessionAction)
 
         ref = SessionRef(session_type=action.session_type, number=action.number)
+        cancellation = self._cancel_review_exchange_for_session_ref(ref, reason="session-stopped")
 
         # Check if running
         if not self.sessions.exists(ref):
-            return ActionResult.skip(action, f"Session {ref.name} not running")
+            return ActionResult.skip(
+                action,
+                f"Session {ref.name} not running",
+                review_exchange_lifecycle_checked=cancellation is not None,
+                cancelled_review_exchange_jobs=list(cancellation.cancelled_job_ids)
+                if cancellation is not None
+                else [],
+            )
 
         self.sessions.stop(ref)
-        return ActionResult.ok(action, session_name=ref.name)
+        return ActionResult.ok(
+            action,
+            session_name=ref.name,
+            review_exchange_lifecycle_checked=cancellation is not None,
+            cancelled_review_exchange_jobs=list(cancellation.cancelled_job_ids)
+            if cancellation is not None
+            else [],
+        )
+
+    def _cancel_review_exchange_for_session_ref(
+        self,
+        ref: SessionRef,
+        *,
+        reason: str,
+    ) -> "ReviewExchangeCancellation | None":
+        if ref.session_type not in {SessionType.ISSUE, SessionType.REWORK}:
+            return None
+        return cancel_issue_review_exchange(
+            issue_number=ref.number,
+            reason=reason,
+            pair_registry=self.pair_registry,
+            job_supervisor=self.background_job_supervisor,
+        )
 
     def _apply_queue_operation(self, action: Action) -> ActionResult:
         """Queue operations are handled by orchestrator state.

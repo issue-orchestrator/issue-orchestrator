@@ -59,6 +59,15 @@ class PreflightResult:
     fix_hint: str | None = None
 
 
+@dataclass(frozen=True)
+class DiffResult:
+    """Result of reading a branch diff from a working copy."""
+
+    success: bool
+    diff_text: str = ""
+    error: str | None = None
+
+
 @dataclass
 class RebaseResult:
     """Result of a git rebase operation."""
@@ -238,6 +247,14 @@ class WorkingCopy(Protocol):
 
         Returns:
             PushResult indicating success or failure.
+        """
+        ...
+
+    def diff_against_base(self, worktree: Path, base_ref: str) -> DiffResult:
+        """Return unified diff for changes from *base_ref* to HEAD.
+
+        Implementations should use merge-base semantics (``base_ref...HEAD``)
+        so callers scan exactly what the branch contributes.
         """
         ...
 

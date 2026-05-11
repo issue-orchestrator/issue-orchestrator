@@ -13,7 +13,7 @@ import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
-from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, PreflightResult, PushResult, RebaseResult
+from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, DiffResult, PreflightResult, PushResult, RebaseResult
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
 from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
@@ -547,6 +547,9 @@ class StubWorkingCopy:
 
     def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True, set_upstream: bool = True, skip_hooks: bool = False) -> PushResult:
         return PushResult(success=True, branch=self.branch, remote=remote, message="ok")
+
+    def diff_against_base(self, worktree: Path, base_ref: str) -> DiffResult:
+        return DiffResult(success=True, diff_text="")
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
         parts = self.branch.split("-")

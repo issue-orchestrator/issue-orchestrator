@@ -706,6 +706,35 @@ class TestStopSessionAction:
         assert result.success
         mock_sessions.stop.assert_called_once()
 
+    def test_stop_issue_session_releases_review_exchange_lifecycle(
+        self, applier, mock_sessions
+    ):
+        """Stopping an issue must also cancel hidden review-exchange work."""
+        mock_sessions.exists.return_value = True
+        pair_registry = Mock()
+        job_supervisor = Mock()
+        job_supervisor.cancel_matching.return_value = ["review-exchange:123:issue-123"]
+        applier.pair_registry = pair_registry
+        applier.background_job_supervisor = job_supervisor
+
+        action = StopSessionAction(
+            session_type=SessionType.ISSUE,
+            number=123,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert result.details["review_exchange_lifecycle_checked"] is True
+        assert result.details["cancelled_review_exchange_jobs"] == [
+            "review-exchange:123:issue-123"
+        ]
+        pair_registry.release.assert_called_once_with(123, reason="session-stopped")
+        job_supervisor.cancel_matching.assert_called_once()
+        predicate = job_supervisor.cancel_matching.call_args.args[0]
+        assert predicate("review-exchange:123:issue-123")
+        assert not predicate("review-exchange:124:issue-124")
+
     def test_stop_session_not_running(self, applier, mock_sessions):
         """Test stopping non-existent session."""
         mock_sessions.exists.return_value = False
@@ -718,6 +747,8 @@ class TestStopSessionAction:
         result = applier.apply(action)
 
         assert result.result_type == ActionResultType.SKIPPED
+        assert result.details["review_exchange_lifecycle_checked"] is True
+        assert result.details["cancelled_review_exchange_jobs"] == []
 
 
 class TestQueueReviewAction:

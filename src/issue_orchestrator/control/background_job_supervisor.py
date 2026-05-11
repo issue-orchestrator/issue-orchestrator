@@ -63,6 +63,17 @@ class BackgroundJobTimeoutError(TimeoutError):
         )
 
 
+class BackgroundJobCancelledError(RuntimeError):
+    """Raised by the supervisor when an operator cancels a running job."""
+
+    def __init__(self, job_id: str, *, reason: str) -> None:
+        self.job_id = job_id
+        self.reason = reason
+        super().__init__(
+            f"background job cancelled: job_id={job_id} reason={reason}"
+        )
+
+
 class BackgroundJobSupervisor:
     """Owner of the ``BackgroundJobRunner`` failure-handling contract."""
 
@@ -76,6 +87,7 @@ class BackgroundJobSupervisor:
         self._clock = clock
         self._failures: dict[str, BackgroundJobFailure] = {}
         self._running: dict[str, _RunningJob] = {}
+        self._cancelled: set[str] = set()
 
     def submit(
         self,
@@ -84,8 +96,13 @@ class BackgroundJobSupervisor:
         *,
         timeout_seconds: float | None = None,
     ) -> bool:
+        if job_id in self._cancelled and self._runner.is_running(job_id):
+            logger.info("[BG] submit rejected (job is cancelling): %s", job_id)
+            return False
+        self._cancelled.discard(job_id)
         accepted = self._runner.submit(job_id, fn)
         if accepted:
+            self._failures.pop(job_id, None)
             self._running[job_id] = _RunningJob(
                 job_id=job_id,
                 started_at=self._clock(),
@@ -95,12 +112,58 @@ class BackgroundJobSupervisor:
 
     def is_running(self, job_id: str) -> bool:
         self._record_deadline_failures(job_id)
+        if job_id in self._cancelled:
+            return False
         return self._runner.is_running(job_id)
+
+    def cancel(self, job_id: str, *, reason: str) -> bool:
+        """Record *job_id* as cancelled and stop waiting on it.
+
+        Python threads cannot be killed safely. Cancellation therefore has two
+        halves: callers must release/terminate the external resources owned by
+        the job, and the supervisor records a terminal cancellation so the
+        main loop does not keep reporting "still running" while that worker
+        unwinds.
+        """
+        if not self._runner.is_running(job_id):
+            self._running.pop(job_id, None)
+            return False
+        self._running.pop(job_id, None)
+        self._cancelled.add(job_id)
+        self._failures[job_id] = BackgroundJobFailure(
+            job_id=job_id,
+            error=BackgroundJobCancelledError(job_id, reason=reason),
+            recorded_at=self._clock(),
+        )
+        logger.info("[BG] job_id=%s cancelled: %s", job_id, reason)
+        return True
+
+    def cancel_matching(
+        self,
+        predicate: Callable[[str], bool],
+        *,
+        reason: str,
+    ) -> list[str]:
+        """Cancel all supervised jobs whose job_id matches *predicate*."""
+        job_ids = [
+            job_id
+            for job_id in sorted(self._running)
+            if predicate(job_id)
+        ]
+        return [job_id for job_id in job_ids if self.cancel(job_id, reason=reason)]
 
     def tick(self) -> None:
         """Drain completed jobs; store any failures keyed by job_id."""
         for done in self._runner.drain_completed():
             self._running.pop(done.job_id, None)
+            if done.job_id in self._cancelled:
+                # The cancellation failure is the terminal fact we want the
+                # control layer to surface. The worker's eventual unwind may
+                # report a low-level PTY or process error caused by the
+                # cancellation itself; do not overwrite the operator action
+                # with that secondary effect.
+                self._cancelled.discard(done.job_id)
+                continue
             if done.error is None:
                 continue
             self._failures[done.job_id] = BackgroundJobFailure(

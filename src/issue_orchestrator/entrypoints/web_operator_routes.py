@@ -106,6 +106,7 @@ def _terminate_issue_and_hold(orchestrator: Any, issue_number: int, sessions: li
     )
 
     errors = _terminate_sessions(orchestrator=orchestrator, sessions=sessions, killed_sessions=killed_sessions)
+    orchestrator.cancel_review_exchange_for_issue(issue_number, reason="operator-terminated")
     _prune_issue_runtime_state(state=state, issue_number=issue_number)
     _append_operator_termination_history(
         state=state,

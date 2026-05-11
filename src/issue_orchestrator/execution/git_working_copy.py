@@ -20,6 +20,7 @@ from ..ports.git import Git, GitError, GitResult
 from ..ports.working_copy import (
     CommitInfo,
     BranchStatus,
+    DiffResult,
     PreflightResult,
     PushResult,
     RebaseResult,
@@ -237,6 +238,35 @@ class GitWorkingCopy:
         except GitError:
             logger.warning("Failed to list dirty files in %s", worktree)
             return None
+
+    def diff_against_base(self, worktree: Path, base_ref: str) -> DiffResult:
+        """Return branch diff using merge-base semantics.
+
+        This is execution-only: callers own any policy decisions made from
+        the diff. A command failure is a first-class result so control code can
+        fail closed with a useful operator-facing message.
+        """
+        try:
+            result = self._run_git(
+                worktree,
+                [
+                    "diff",
+                    "--unified=0",
+                    "--no-ext-diff",
+                    "--no-color",
+                    f"{base_ref}...HEAD",
+                ],
+            )
+            return DiffResult(success=True, diff_text=result.stdout)
+        except GitError as exc:
+            error = _git_error_output(exc)
+            logger.warning(
+                "Failed to read diff against %s in %s: %s",
+                base_ref,
+                worktree,
+                error,
+            )
+            return DiffResult(success=False, error=error)
 
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         """Get commits that are ahead of main branch."""

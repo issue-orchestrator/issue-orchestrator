@@ -4,6 +4,9 @@
 
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403
+from issue_orchestrator.control.review_exchange_lifecycle import (
+    ReviewExchangeCancellation,
+)
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
@@ -16,6 +19,12 @@ class TestKillSessionEndpoint:
         """Terminate-on-kill should stop and hold issue from automatic rerun."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
+        mock_orch.cancel_review_exchange_for_issue = MagicMock(
+            return_value=ReviewExchangeCancellation(
+                issue_number=1,
+                cancelled_job_ids=("review-exchange:1:issue-1",),
+            )
+        )
 
         issue = create_issue(1, "Issue to Kill")
         session = create_session(issue)
@@ -95,6 +104,10 @@ class TestKillSessionEndpoint:
             mock_orch.repository_host.remove_label.assert_any_call(1, "pr-pending")
             mock_orch.repository_host.add_label.assert_any_call(4124, "blocked-failed")
             mock_orch.repository_host.remove_label.assert_any_call(4124, "needs-rework")
+            mock_orch.cancel_review_exchange_for_issue.assert_called_once_with(
+                1,
+                reason="operator-terminated",
+            )
         finally:
             set_orchestrator(None)
 

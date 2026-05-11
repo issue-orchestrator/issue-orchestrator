@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 
 from issue_orchestrator.control.background_job_supervisor import (
+    BackgroundJobCancelledError,
     BackgroundJobSupervisor,
     BackgroundJobTimeoutError,
 )
@@ -138,6 +139,91 @@ def test_running_job_deadline_is_reported_as_failure() -> None:
     assert failure is not None
     assert isinstance(failure.error, BackgroundJobTimeoutError)
     assert "slow" in str(failure.error)
+
+    release.set()
+    assert runner.wait_until_idle(timeout=5.0)
+
+
+def test_cancel_records_terminal_failure_without_waiting_for_thread() -> None:
+    runner = ThreadBackgroundJobRunner()
+    supervisor = BackgroundJobSupervisor(runner)
+    started = threading.Event()
+    release = threading.Event()
+
+    def block() -> None:
+        started.set()
+        release.wait(timeout=5.0)
+
+    assert supervisor.submit("review-exchange:42:coding-1", block) is True
+    assert started.wait(timeout=5.0)
+
+    assert supervisor.cancel(
+        "review-exchange:42:coding-1",
+        reason="operator-terminated",
+    ) is True
+
+    assert supervisor.is_running("review-exchange:42:coding-1") is False
+    failure = supervisor.take_failure("review-exchange:42:coding-1")
+    assert failure is not None
+    assert isinstance(failure.error, BackgroundJobCancelledError)
+    assert failure.error.reason == "operator-terminated"
+
+    release.set()
+    assert runner.wait_until_idle(timeout=5.0)
+    supervisor.tick()
+    assert supervisor.take_failure("review-exchange:42:coding-1") is None
+
+
+def test_cancel_does_not_hide_finished_failure_before_tick() -> None:
+    runner = ThreadBackgroundJobRunner()
+    supervisor = BackgroundJobSupervisor(runner)
+    started = threading.Event()
+
+    def boom() -> None:
+        started.set()
+        raise RuntimeError("finished failure")
+
+    assert supervisor.submit("review-exchange:42:coding-1", boom) is True
+    assert started.wait(timeout=5.0)
+    assert runner.wait_until_idle(timeout=5.0)
+
+    assert supervisor.cancel(
+        "review-exchange:42:coding-1",
+        reason="operator-terminated",
+    ) is False
+
+    supervisor.tick()
+    failure = supervisor.take_failure("review-exchange:42:coding-1")
+    assert failure is not None
+    assert isinstance(failure.error, RuntimeError)
+    assert str(failure.error) == "finished failure"
+
+
+def test_cancel_matching_cancels_only_matching_supervised_jobs() -> None:
+    runner = ThreadBackgroundJobRunner()
+    supervisor = BackgroundJobSupervisor(runner)
+    release = threading.Event()
+    started = [threading.Event(), threading.Event()]
+
+    def make_blocker(index: int):
+        def block() -> None:
+            started[index].set()
+            release.wait(timeout=5.0)
+        return block
+
+    assert supervisor.submit("review-exchange:42:coding-1", make_blocker(0)) is True
+    assert supervisor.submit("review-exchange:99:coding-1", make_blocker(1)) is True
+    assert started[0].wait(timeout=5.0)
+    assert started[1].wait(timeout=5.0)
+
+    cancelled = supervisor.cancel_matching(
+        lambda job_id: job_id.startswith("review-exchange:42:"),
+        reason="session-stopped",
+    )
+
+    assert cancelled == ["review-exchange:42:coding-1"]
+    assert supervisor.is_running("review-exchange:42:coding-1") is False
+    assert supervisor.is_running("review-exchange:99:coding-1") is True
 
     release.set()
     assert runner.wait_until_idle(timeout=5.0)

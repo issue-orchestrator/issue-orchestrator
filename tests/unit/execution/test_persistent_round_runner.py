@@ -456,6 +456,69 @@ class TestWriteFullHandlesNonBlockingPtyWrites:
                 deadline=clock.now() - 1.0, now=clock.now, sleep=sleeper,
             )
 
+    def test_closed_fd_surfaces_as_round_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+        from issue_orchestrator.execution.persistent_round_runner import (
+            _write_full,  # noqa: PLC2701 — private helper is the contract under test
+        )
+
+        def closed_fd(_fd: int, _buf: bytes) -> int:
+            raise OSError("bad file descriptor")
+
+        monkeypatch.setattr(persistent_round_runner.os, "write", closed_fd)
+        clock = _FakeClock()
+
+        with pytest.raises(PersistentRoundError, match="bad file descriptor"):
+            _write_full(
+                fd=99,
+                payload=b"x",
+                deadline=clock.now() + 5.0,
+                now=clock.now,
+                sleep=clock.make_sleeper(),
+                role_label="coder@round-1",
+                pid=123,
+            )
+
+    def test_send_round_uses_separate_write_deadline(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+
+        class _Proc:
+            pid = 456
+
+            def poll(self) -> None:
+                return None
+
+        captured: dict[str, float] = {}
+
+        def fake_write_full(_fd: int, _payload: bytes, **kwargs: object) -> int:
+            captured["deadline"] = kwargs["deadline"]  # type: ignore[assignment]
+            raise PersistentRoundTimeoutError("stop after write deadline capture")
+
+        monkeypatch.setattr(persistent_round_runner, "_write_full", fake_write_full)
+        session = persistent_round_runner.PersistentSession(
+            proc=_Proc(),  # type: ignore[arg-type]
+            master_fd=99,
+        )
+        clock = _FakeClock()
+        clock.value = 10.0
+
+        with pytest.raises(PersistentRoundTimeoutError, match="deadline capture"):
+            send_round(
+                session,
+                prompt="hello",
+                response_file=tmp_path / "response.json",
+                timeout_seconds=100.0,
+                write_timeout_seconds=3.0,
+                now=clock.now,
+                sleep=clock.make_sleeper(),
+            )
+
+        assert captured["deadline"] == 13.0
+
 
 # ---------------------------------------------------------------------------
 # Recording event count
