@@ -19,6 +19,7 @@ Getting started with Issue Orchestrator:
 
 If you're assessing the project as applied AI or using it as a portfolio artifact:
 
+- [No Free Lunch for Coding Agents](journeys/no-free-lunch.md)
 - [Applied AI Evaluation](journeys/applied-ai.md)
 - [Portfolio Benchmarking](journeys/benchmarking.md)
 - [Evaluating the System](journeys/evaluating.md)
@@ -57,6 +58,7 @@ System design and decision records:
 
 ## Design
 
+- [Making Agentic Development Sustainable](design/sustainable-agentic-development.md) - Design thesis for enforceable architecture and deterministic workflow
 - [Goal Pilot Design](design/goal-pilot.md) - Goal Pilot architecture and design
 - [Blocked Issues UX Ideas](design/blocked-issues-ux-ideas.md) - UX improvement brainstorm
 

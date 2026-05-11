@@ -14,6 +14,7 @@ I designed and built Issue-Orchestrator as a solo project. I used coding agents 
 | Architectural decisions documented | **24 ADRs** in [`docs/architecture/ADR/`](docs/architecture/ADR/) |
 | Hexagonal architecture, fully wired | [ADR-0011](docs/architecture/ADR/0011-hexagonal-architecture.md); ~31 Protocol interfaces in [`src/issue_orchestrator/ports/`](src/issue_orchestrator/ports/) |
 | Architecture boundaries enforced, not just documented | `import-linter` contracts in [`pyproject.toml`](pyproject.toml) + pre-push hooks |
+| Engineering contract articulated | [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md) explains the architecture, guardrail, validation, test, and human-authority contract around agent work |
 | Mechanical guardrails, not prompt-based rules | [ADR-0012](docs/architecture/ADR/0012-mechanical-guardrails.md); multi-layer hook enforcement in [`docs/architecture/hooks.md`](docs/architecture/hooks.md) |
 | Crash-safe state via GitHub labels | [ADR-0013](docs/architecture/ADR/0013-labels-as-crash-safe-truth.md); restart-recovery scenarios in [`tests/simulated_scenarios/`](tests/simulated_scenarios/) |
 | Observe-Plan-Apply discipline | [ADR-0014](docs/architecture/ADR/0014-observe-plan-apply-loop.md); pure-logic decision layer in [`src/issue_orchestrator/control/`](src/issue_orchestrator/control/) |
@@ -53,6 +54,7 @@ pytest tests/unit/ -q --timeout=60
 ## Deeper
 
 - [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md) — design essay; why the system exists and the three engineering tracks
+- [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md) — concise thesis: the issue runner is not the product; the engineering contract is
 - [Applied AI Evaluation](docs/journeys/applied-ai.md) — how to frame the project for hiring conversations
 - [Evaluating the System](docs/journeys/evaluating.md) — architecture walkthrough, guardrails, where to read code
 - [Portfolio Benchmarking](docs/journeys/benchmarking.md) — full benchmark documentation

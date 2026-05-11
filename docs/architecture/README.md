@@ -2,6 +2,17 @@
 
 For engineering conventions, dependency-injection rules, event vs log guidance, and package-level boundaries, see [AGENTS.md](../../AGENTS.md). Directory-specific `AGENTS.md` files under `src/` and `tests/` refine those rules for each area.
 
+This architecture is part of the product thesis. Issue-Orchestrator treats agent output as untrusted input, so the codebase needs boundaries that can be named, tested, and enforced mechanically. The hexagonal structure is not just organization; it keeps policy testable without GitHub, terminals, storage, or UI dependencies.
+
+The key artifacts are:
+
+- Protocol ports in `src/issue_orchestrator/ports/`
+- adapters for concrete external systems
+- a single composition root in `src/issue_orchestrator/entrypoints/bootstrap.py`
+- import-linter and AST guardrails that detect boundary drift
+- tests that mock at port boundaries
+- ADRs that record decisions affecting correctness, safety, and extensibility
+
 ## System Overview
 
 ```mermaid

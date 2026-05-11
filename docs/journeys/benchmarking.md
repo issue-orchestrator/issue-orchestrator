@@ -4,6 +4,8 @@ This repo includes a deterministic benchmark path aimed at evaluation, demos, an
 
 It does **not** try to prove that the orchestrator is production-perfect. It does give you a repeatable way to show that the core workflow handles success, review, rework, escalation, reconciliation, diagnostics, and restart recovery in a testable way.
 
+The benchmark complements the project-specific engineering contract. It proves selected orchestration behavior; it does not replace architecture checks, validation commands, coverage gates, or human review criteria for a target repo.
+
 ## Quick start
 
 From the repo root:
