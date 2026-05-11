@@ -5,6 +5,20 @@ from __future__ import annotations
 DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "core.js",
     "session_replay.js",
+    # ``validation_viewer.js`` defines the canonical JUnit viewer and
+    # the Phase-0 plugin registry (issue #6310 follow-up).  Loaded
+    # before ``session_dialogs.js`` (which calls into the viewer to
+    # render the validation dialog body) and before any plugin module
+    # (which call ``registerValidationPlugin`` at load time).
+    "validation_viewer.js",
+    # Plugin modules register themselves at load time with the registry
+    # defined in ``validation_viewer.js``.  Today the only Phase-0
+    # plugin is the issue-orchestrator agent-context renderer — Phase C
+    # populates ``case.extras`` to invoke it from the E2E view.  For
+    # ``general-case`` consumers (tixmeup et al.) the plugin sits idle:
+    # generic JUnit parsers never set the ``io.agent-context`` extras
+    # entry, so the registered renderer is never reached.
+    "plugins/agent_context.js",
     "session_dialogs.js",
     "controls_refresh.js",
     "kanban_columns.js",
@@ -35,5 +49,11 @@ DASHBOARD_CSS_CHUNKS: tuple[str, ...] = (
     "cards.css",
     "issue_detail.css",
     "overlays.css",
+    # ``validation_viewer.css`` scopes the canonical validation viewer's
+    # ``cvv-*`` classes (issue #6310 follow-up).  Loaded after
+    # ``overlays.css`` so the viewer's chip / row styling overrides
+    # legacy ``diag-`` rules where they share class names — but the
+    # ``cvv-`` prefix means there's no actual overlap.
+    "validation_viewer.css",
     "e2e_run_detail.css",
 )

@@ -201,57 +201,31 @@ function renderValidationDialog(data, issueNumber, runDir = null) {
             { label: 'Ended', value: String(data.ended_at || '-') },
         ];
 
+    // Header chip row stays as the at-a-glance summary; body delegates
+    // to the canonical viewer (``validation_viewer.js``) which renders
+    // the rich per-test triage cards + browse-by-file + per-test
+    // detail.  Issue #6310 follow-up: this is the Phase-A swap — the
+    // entry point still opens a modal, but the body is now the shared
+    // viewer that Phase B/C will mount elsewhere too.
     let html = '<div class="diag-modal diag-validation-shell">';
     html += '<div class="diag-header">';
     html += '<div class="diag-header-title">Validation Results</div>';
     html += `<div class="diag-chip-row">${renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections)}</div>`;
     html += '</div>';
 
-    html += '<div class="diag-validation-grid">';
     html += '<section class="diag-section diag-validation-summary">';
     html += '<div class="diag-section-title">Results</div>';
     html += renderDialogRows(summaryRows, { monospace: true });
     html += '</section>';
 
     html += '<section class="diag-section">';
-    if (status === 'passed') {
-        html += '<div class="diag-section-title">Tests</div>';
-        html += '<div class="diag-empty">All tests passed. Open the JUnit / stdout sections below for the per-test breakdown.</div>';
-    } else {
-        html += `<div class="diag-section-title">Failed Tests${failedTests.length > 0 ? ` (${failedTests.length})` : ''}</div>`;
-        if (failedTests.length > 0) {
-            html += '<ul class="diag-validation-tests">';
-            for (const testName of failedTests) {
-                html += `<li><code>${escapeHtml(String(testName))}</code></li>`;
-            }
-            html += '</ul>';
-        } else {
-            html += '<div class="diag-empty">No failed test names were extracted from validation output.</div>';
-        }
-    }
+    // Pass the action-section renderer explicitly — the viewer no longer
+    // reaches into session_dialogs.js globals (issue #6310 follow-up
+    // reviewer Blocker 2).
+    html += renderCanonicalValidationViewer(data, {
+        renderActionSections: renderValidationFailureActionSections,
+    });
     html += '</section>';
-    html += '</div>';
-
-    html += '<section class="diag-section">';
-    html += '<div class="diag-section-title">Artifacts</div>';
-    html += renderValidationFailureActionSections(actionSections);
-    html += '</section>';
-
-    html += '<section class="diag-section">';
-    html += '<div class="diag-section-title">Validation Output Excerpt</div>';
-    if (stdoutExcerpt.length > 0) {
-        html += `<pre class="diag-validation-pre">${escapeHtml(stdoutExcerpt.join('\n'))}</pre>`;
-    } else {
-        html += '<div class="diag-empty">No stdout excerpt captured.</div>';
-    }
-    html += '</section>';
-
-    if (stderrExcerpt.length > 0) {
-        html += '<section class="diag-section">';
-        html += '<div class="diag-section-title">Validation Error Output</div>';
-        html += `<pre class="diag-validation-pre">${escapeHtml(stderrExcerpt.join('\n'))}</pre>`;
-        html += '</section>';
-    }
 
     html += '<div class="diag-footnote">Validation details come from the run-scoped validation record and log artifacts.</div>';
     html += '</div>';

@@ -508,6 +508,7 @@ export interface JUnitCasePayload {
   case_id: string;
   display_name: string;
   duration_seconds?: number | null;
+  extras: ValidationExtraPayload[];
   failure_details?: string | null;
   outcome: "passed" | "failed" | "error" | "skipped";
   suite_name?: string | null;
@@ -842,6 +843,11 @@ export interface ValidationEvidenceMissingPayload {
   diagnostics: TimelineDiagnosticPayload[];
   expected_record_path?: string | null;
   kind: "missing_evidence";
+}
+
+export interface ValidationExtraPayload {
+  namespace: string;
+  payload: Record<string, any>;
 }
 
 export interface ValidationFailedPayload {

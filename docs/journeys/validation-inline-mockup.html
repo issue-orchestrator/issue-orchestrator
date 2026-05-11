@@ -1,0 +1,1195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Validation as journey continuation — inline expanders</title>
+<style>
+  :root {
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #fafbfc;
+    --surface-3: #f6f8fa;
+    --border: #d8dde4;
+    --border-strong: #b6bdc8;
+    --text: #1f2329;
+    --text-muted: #5a6472;
+    --text-faint: #8a93a3;
+    --accent: #3870e0;
+    --accent-bg: #e8eefb;
+    --accent-strong: #1c4cab;
+    --ok: #1f8f3a;
+    --ok-bg: #e6f4ea;
+    --fail: #c0392f;
+    --fail-bg: #fbeae7;
+    --fail-strong: #8c1f17;
+    --warn: #b07a00;
+    --warn-bg: #fbf3dc;
+    --skip: #8a93a3;
+    --code-bg: #f3f5f8;
+    --code-fail-bg: #fbeae7;
+    --spine: #e0e4e9;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* ── faded dashboard backdrop ─────────────────────────────────── */
+  .dashboard-backdrop {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    padding: 16px 24px;
+    overflow: hidden;
+  }
+  .dashboard-backdrop::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(245, 247, 250, 0.55);
+    pointer-events: none;
+  }
+  .dashboard-cols {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    height: 100%;
+  }
+  .dashboard-col h3 {
+    font-size: 11px;
+    margin: 0 0 6px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .dashboard-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .dashboard-card .num {
+    font-weight: 600;
+    color: var(--text);
+    margin-right: 6px;
+  }
+
+  /* ── note bar ─────────────────────────────────────────────────── */
+  .note {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 820px;
+    padding: 8px 14px;
+    background: var(--accent-bg);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: #1c3779;
+    font-size: 12px;
+    z-index: 10;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  .note code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; }
+  .note kbd { background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; font-size: 11px; }
+
+  /* ── drawer ───────────────────────────────────────────────────── */
+  .drawer-wrap {
+    position: fixed;
+    inset: 60px 60px 24px auto;
+    width: 820px;
+    max-width: calc(100vw - 80px);
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+  }
+  .drawer {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.18);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 90px);
+  }
+  .drawer-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    justify-content: space-between;
+    background: var(--surface);
+  }
+  .drawer-title {
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .drawer-sub {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .drawer-close {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .drawer-body {
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+
+  /* ── the single idiom: row[clickable] → child block ──────────── */
+  /* Every row that expands looks the same: caret + label + meta. */
+  /* Children render in a child block with a left spine for context. */
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px 8px 8px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 4px;
+    margin: 1px 6px;
+  }
+  .row:hover { background: var(--surface-3); }
+  .row .caret {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    transition: transform 0.12s ease;
+    text-align: center;
+    font-size: 11px;
+  }
+  .row.expanded > .caret { transform: rotate(90deg); }
+  .row .row-label {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .row .row-label .title {
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .row .row-label .summary {
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row .row-meta {
+    color: var(--text-faint);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .children {
+    margin: 0 6px 6px 22px;
+    padding: 4px 0 4px 14px;
+    border-left: 2px solid var(--spine);
+  }
+  .children.collapsed { display: none; }
+
+  /* leaf rows look like rows but with no caret (just a dot) */
+  .leaf {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px 4px 8px;
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+  }
+  .leaf .caret {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 9px;
+  }
+  .leaf .leaf-label { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; }
+  .leaf .leaf-meta { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+
+  /* status icons used in both rows + leaves */
+  .ico {
+    width: 14px; height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    border-radius: 50%;
+    color: white;
+    flex-shrink: 0;
+  }
+  .ico.passed, .ico.pass { background: var(--ok); }
+  .ico.failed, .ico.fail { background: var(--fail); }
+  .ico.error { background: var(--warn); }
+  .ico.skipped, .ico.skip { background: var(--skip); }
+  .ico.pending { background: var(--surface); color: var(--text-faint); border: 1px solid var(--border); }
+
+  /* chips */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+  }
+  .chip.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .chip.fail { background: var(--fail-bg); border-color: var(--fail); color: var(--fail-strong); }
+  .chip.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+  .chip.flaky { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+  .chip.tracked { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-strong); }
+  .chip.tracked a { color: inherit; text-decoration: none; }
+
+  .chip.outcome.passed { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+  .chip.outcome.failed { background: var(--fail-bg); border-color: var(--fail); color: var(--fail-strong); }
+  .chip.outcome.error { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+
+  /* sparkline */
+  .sparkline {
+    display: inline-flex;
+    gap: 2px;
+    align-items: center;
+  }
+  .sparkline .dot { width: 5px; height: 10px; border-radius: 1px; }
+  .sparkline .dot.pass { background: var(--ok); }
+  .sparkline .dot.fail { background: var(--fail); }
+  .sparkline .dot.skip { background: var(--skip); opacity: 0.5; }
+
+  /* expanded content (the body that appears below a row) */
+  .body-block {
+    padding: 8px 0;
+  }
+  .body-block-section {
+    margin: 6px 12px 8px 8px;
+  }
+  .body-block-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-faint);
+    margin: 0 0 4px 6px;
+  }
+
+  /* failure headline */
+  .headline {
+    margin: 6px 8px;
+    padding: 8px 10px;
+    background: var(--code-fail-bg);
+    border: 1px solid #f1c4bd;
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 12px;
+    color: var(--fail-strong);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .headline.is-error { background: var(--warn-bg); border-color: #e7d293; color: #6f4d00; }
+  .headline-text { flex: 1; word-break: break-word; }
+
+  /* source snippet */
+  .snippet {
+    margin: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    overflow: hidden;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    background: var(--surface);
+  }
+  .snippet-head {
+    padding: 4px 10px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .src-line { display: flex; padding: 1px 0; white-space: pre; }
+  .src-line.is-failure { background: var(--code-fail-bg); }
+  .src-line .lineno { flex: 0 0 38px; text-align: right; padding: 0 8px; color: var(--text-faint); user-select: none; }
+  .src-line.is-failure .lineno { color: var(--fail); font-weight: 600; }
+  .src-line .marker { flex: 0 0 14px; color: var(--fail); font-weight: 600; text-align: center; }
+  .src-line .code { flex: 1; color: var(--text); padding-right: 10px; }
+
+  /* code blocks (for stdout/stderr/traceback under expanders) */
+  pre.code-block {
+    margin: 0 8px 6px;
+    padding: 8px 10px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #2a2f37;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+
+  /* action button row */
+  .actions {
+    margin: 8px 6px 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn.primary:hover { background: var(--accent-strong); }
+  .btn.subtle { color: var(--text-muted); }
+  .btn.copied { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+
+  /* status explanation banner inside drawer */
+  .status-banner {
+    margin: 8px 12px 10px;
+    padding: 8px 10px;
+    background: var(--ok-bg);
+    border: 1px solid var(--ok);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--ok);
+  }
+  .status-banner.fail {
+    background: var(--fail-bg);
+    border-color: var(--fail);
+    color: var(--fail-strong);
+  }
+
+  /* "events" leaves with small icons */
+  .event-leaf .ico {
+    width: 12px; height: 12px;
+    font-size: 9px;
+  }
+</style>
+</head>
+<body>
+
+<!-- faded dashboard for context -->
+<div class="dashboard-backdrop">
+  <div class="dashboard-cols">
+    <div class="dashboard-col">
+      <h3>Queued</h3>
+      <div class="dashboard-card"><span class="num">#410</span> Validated cycle fixture</div>
+      <div class="dashboard-card"><span class="num">#177</span> Blocked merge item</div>
+      <div class="dashboard-card"><span class="num">#420</span> M4-061 onboarding polish</div>
+      <div class="dashboard-card"><span class="num">#421</span> M4-062 doc rewrite</div>
+    </div>
+    <div class="dashboard-col">
+      <h3>Active</h3>
+      <div class="dashboard-card"><span class="num">#409</span> Running flow item</div>
+      <div class="dashboard-card"><span class="num">#361</span> Card timeline affordance</div>
+    </div>
+    <div class="dashboard-col">
+      <h3>Blocked</h3>
+      <div class="dashboard-card"><span class="num">#408</span> Flow smoke item</div>
+      <div class="dashboard-card"><span class="num">#418</span> Needs human review</div>
+    </div>
+    <div class="dashboard-col">
+      <h3>Done</h3>
+      <div class="dashboard-card"><span class="num">#406</span> Migrate validation-outcome</div>
+      <div class="dashboard-card"><span class="num">#404</span> Diagnostic papercuts</div>
+      <div class="dashboard-card"><span class="num">#403</span> Dirty-guard diagnostics</div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>One idiom: every event is the entry to whatever ran at that point.</strong>
+  Click any <code>▸</code> event to drill in: <em>Coding session started</em>
+  reveals the coder agent's session + recording; <em>Agent finished coding</em>
+  reveals the completion record; <em>Validation passed/failed</em> reveals the junit
+  dialog (browse-by-file for passed, triage-cards for failed); <em>Reviewer
+  approved</em> reveals the transcript. Events with no extra content show no caret
+  (the affordance is unambiguous). If validation runs twice in the same cycle
+  (e.g. orchestrator reruns after a sha change), each <em>Validation passed</em>
+  event is independently expandable — same model, no special case. The drawer
+  scrolls vertically only.
+</div>
+
+<div class="drawer-wrap">
+  <div class="drawer" role="dialog" aria-label="Issue #361 detail">
+
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title">Issue #361 — Card timeline affordance</div>
+        <div class="drawer-sub">
+          <span class="chip fail">⚠ Awaiting rework</span>
+          <span>Cycle 2 of Run 2 failed validation · 3 failed of 106</span>
+        </div>
+      </div>
+      <button class="drawer-close" title="Close">✕</button>
+    </div>
+
+    <div class="status-banner fail">
+      ✕ Validation failed on the latest cycle. The first failure is auto-expanded below.
+    </div>
+
+    <div class="drawer-body" id="body"></div>
+
+  </div>
+</div>
+
+<script>
+  // ──────────────────────────────────────────────────────────────────
+  // Data fixture
+  // ──────────────────────────────────────────────────────────────────
+  const FAIL_B = {
+    name: 'overlay uses configured severity',
+    file: 'src/lib/__tests__/example.test.ts',
+    outcome: 'failed',
+    duration_ms: 8,
+    type: 'AssertionError',
+    message: 'expected severity to equal "critical"',
+    src: {
+      path: 'src/lib/__tests__/example.test.ts', line: 58,
+      lines: [
+        { lineno: 56, code: '    const overlay = await loadAlertOverlay();' },
+        { lineno: 57, code: '    const sev = overlay.severity;' },
+        { lineno: 58, code: '    expect(sev).toBe("critical");', is_failure: true },
+        { lineno: 59, code: '  });' },
+      ],
+    },
+    user_frames: 'at Object.<anonymous> (src/lib/__tests__/example.test.ts:58:14)',
+    fw_frames: 'at runTest (node_modules/vitest/dist/chunk-runner.js:1234:5)\nat processTask (node_modules/vitest/dist/chunk-runner.js:88:9)',
+    stdout: '',
+    stderr: '',
+    flake_pct: 0,
+    history: ['pass','pass','pass','pass','pass','pass','pass','pass','pass','fail'],
+    tracked: null,
+    run_command: 'pnpm vitest src/lib/__tests__/example.test.ts -t "overlay uses configured severity"',
+  };
+  const FAIL_X = {
+    name: 'redirects unauthenticated /admin to /login',
+    file: 'src/runtime/routes.test.tsx',
+    outcome: 'failed',
+    duration_ms: 5001,
+    type: 'TimeoutError',
+    message: 'Test timed out in 5000ms',
+    src: {
+      path: 'src/runtime/routes.test.tsx', line: 78,
+      lines: [
+        { lineno: 76, code: '    await waitForUrl("/login");' },
+        { lineno: 77, code: '    // expected redirect from /admin' },
+        { lineno: 78, code: '  }, 5000);', is_failure: true },
+      ],
+    },
+    user_frames: 'at handle (src/runtime/routes.test.tsx:78:5)',
+    fw_frames: 'at timeoutLoop (node_modules/vitest/dist/chunk-runner.js:512:8)',
+    stdout: '',
+    stderr: '',
+    flake_pct: 18,
+    history: ['pass','pass','fail','pass','pass','pass','fail','pass','pass','fail'],
+    tracked: { number: 4523, title: 'admin redirect timing flake under load' },
+    run_command: 'pnpm vitest src/runtime/routes.test.tsx -t "redirects unauthenticated"',
+  };
+  const ERR_Y = {
+    name: 'beforeAll fixture',
+    file: 'src/setup.test.ts',
+    outcome: 'error',
+    duration_ms: 5,
+    type: 'TypeError',
+    message: "Cannot read properties of undefined (reading 'init')",
+    src: {
+      path: 'src/setup.test.ts', line: 12,
+      lines: [
+        { lineno: 10, code: 'beforeAll(async () => {' },
+        { lineno: 11, code: '  const cfg = await loadFixtureConfig();' },
+        { lineno: 12, code: '  cfg.adapters.init();', is_failure: true },
+        { lineno: 13, code: '});' },
+      ],
+    },
+    user_frames: 'at Object.<anonymous> (src/setup.test.ts:12:18)',
+    fw_frames: 'at runFixture (node_modules/vitest/dist/chunk-runner.js:88:9)',
+    stdout: '',
+    stderr: "TypeError: Cannot read properties of undefined (reading 'init')",
+    flake_pct: 0,
+    history: ['pass','pass','pass','pass','pass','pass','pass','pass','pass','fail'],
+    tracked: null,
+    run_command: 'pnpm vitest src/setup.test.ts',
+  };
+
+  // Sample of passed tests, grouped by file.  Real runs have ~100; the
+  // mockup shows 6 files / 9 tests as a representative slice.
+  const PASSED_FILES = [
+    { file: 'src/commands/__tests__/openNotification.test.ts', tests: [
+      { name: 'exposes opener for action panel', duration_ms: 3, stdout: "notifyOpener({ repo: 'tixmeup', notif: 'release.v3' })" },
+    ]},
+    { file: 'src/lib/__tests__/trackingConsent.test.ts', tests: [
+      { name: 'respects opt-out before tracker init', duration_ms: 3, stdout: 'consent.deny() observed prior to init' },
+    ]},
+    { file: 'src/commands/__tests__/createAlert.test.ts', tests: [
+      { name: 'posts to /alerts with severity payload', duration_ms: 4, stdout: '' },
+      { name: 'escapes inline html in description', duration_ms: 4, stdout: '' },
+    ]},
+    { file: 'src/runtime/routes.test.tsx', tests: [
+      { name: 'mounts /dashboard route lazily', duration_ms: 2, stdout: 'router warming /dashboard import...\nimport resolved in 1ms' },
+      { name: 'flushes pending route state on logout', duration_ms: 2, stdout: '' },
+    ]},
+    { file: 'src/lib/__tests__/example.test.ts', tests: [
+      { name: 'fetchAlertConfig handles 304 not-modified', duration_ms: 3, stdout: '' },
+      { name: 'cache layer keys by tenant', duration_ms: 3, stdout: '' },
+    ]},
+    { file: 'src/commands/__tests__/loadSeoEventPage.test.ts', tests: [
+      { name: 'renders meta tags from page payload', duration_ms: 3, stdout: '' },
+    ]},
+  ];
+
+  // ──────────────────────────────────────────────────────────────────
+  // Helpers
+  // ──────────────────────────────────────────────────────────────────
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  function row(opts) {
+    // opts: { id, expanded, label_html, meta_html, child_html }
+    const childHidden = opts.expanded ? '' : 'collapsed';
+    return `
+      <div class="row ${opts.expanded ? 'expanded' : ''}" data-toggle="${opts.id}">
+        <span class="caret">▸</span>
+        <span class="row-label">${opts.label_html}</span>
+        <span class="row-meta">${opts.meta_html || ''}</span>
+      </div>
+      <div class="children ${childHidden}" id="children-${opts.id}">
+        ${opts.child_html || ''}
+      </div>
+    `;
+  }
+
+  function leaf(opts) {
+    return `
+      <div class="leaf">
+        <span class="caret">●</span>
+        <span class="leaf-label">${opts.label_html}</span>
+        <span class="leaf-meta">${opts.meta_html || ''}</span>
+      </div>
+    `;
+  }
+
+  function iconHtml(state) {
+    const char = state === 'passed' ? '✓'
+      : state === 'failed' ? '✕'
+      : state === 'error' ? '⚠'
+      : state === 'pending' ? '…'
+      : state === 'skipped' ? '–'
+      : '';
+    return `<span class="ico ${state}">${char}</span>`;
+  }
+
+  // Event row: an event in the cycle timeline that may or may not expand
+  // into its own content (the session's artifacts, the validation's
+  // junit dialog, the review's transcript, etc.).  Events with no extra
+  // content render as a plain leaf — no caret — so the affordance is
+  // unambiguous: "the ▸ means there's more to see here."
+  function eventRow(opts) {
+    // opts: { id, icon, label, time, expanded?, child_html? }
+    if (!opts.child_html) {
+      return leaf({
+        label_html: `${iconHtml(opts.icon)}<span>${escapeHtml(opts.label)}</span>`,
+        meta_html: opts.time || '',
+      });
+    }
+    return row({
+      id: opts.id,
+      expanded: opts.expanded || false,
+      label_html: `${iconHtml(opts.icon)}<span class="title">${escapeHtml(opts.label)}</span>`,
+      meta_html: opts.time || '',
+      child_html: opts.child_html,
+    });
+  }
+
+  function sparkline(history) {
+    if (!history) return '';
+    return `<span class="sparkline" title="Last ${history.length} runs (newest right)">
+      ${history.map((h) => `<span class="dot ${h === 'pass' ? 'pass' : h === 'fail' ? 'fail' : 'skip'}"></span>`).join('')}
+    </span>`;
+  }
+
+  function snippet(src) {
+    const lines = src.lines.map((l) => `
+      <div class="src-line ${l.is_failure ? 'is-failure' : ''}">
+        <span class="lineno">${l.lineno}</span>
+        <span class="marker">${l.is_failure ? '►' : ' '}</span>
+        <span class="code">${escapeHtml(l.code)}</span>
+      </div>
+    `).join('');
+    return `
+      <div class="snippet">
+        <div class="snippet-head">
+          <span>${escapeHtml(src.path)}:${src.line}</span>
+          <span>vitest</span>
+        </div>
+        ${lines}
+      </div>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Test detail (inside a failed-test row's children)
+  // ──────────────────────────────────────────────────────────────────
+  function testDetailChildren(t, idPrefix) {
+    const tracebackId = `${idPrefix}-traceback`;
+    const stdoutId = `${idPrefix}-stdout`;
+    const stderrId = `${idPrefix}-stderr`;
+    const frameworkId = `${idPrefix}-fw`;
+    const isError = t.outcome === 'error';
+
+    // Failure headline
+    const headline = `
+      <div class="headline ${isError ? 'is-error' : ''}">
+        <span class="headline-text">
+          <strong>${escapeHtml(t.type)}:</strong> ${escapeHtml(t.message)}
+        </span>
+        <button class="btn subtle" data-copy="${escapeAttr(`${t.type}: ${t.message}`)}" title="Copy headline">📋</button>
+      </div>
+    `;
+
+    // Badges row
+    const badges = `
+      <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
+        <span class="chip outcome ${t.outcome}">${t.outcome === 'error' ? '⚠ Errored' : '✕ Failed'}</span>
+        <span class="chip">${t.duration_ms >= 1000 ? (t.duration_ms / 1000).toFixed(2) + ' s' : t.duration_ms + ' ms'}</span>
+        ${t.flake_pct >= 20 ? `<span class="chip flaky">↻ Flaky ${t.flake_pct}%</span>` : ''}
+        ${t.tracked ? `<span class="chip tracked" title="${escapeAttr(t.tracked.title)}">→ Tracked: <a href="#" onclick="return false;">#${t.tracked.number}</a></span>` : ''}
+        <span class="chip">${sparkline(t.history)}</span>
+      </div>
+    `;
+
+    // Traceback row (expander)
+    const tbChildren = `
+      <pre class="code-block">${escapeHtml(t.user_frames)}</pre>
+      ${row({
+        id: frameworkId,
+        expanded: false,
+        label_html: `<span class="title">framework frames</span> <span class="summary">(2)</span>`,
+        meta_html: '',
+        child_html: `<pre class="code-block">${escapeHtml(t.fw_frames)}</pre>`,
+      })}
+    `;
+    const tracebackRow = row({
+      id: tracebackId,
+      expanded: !isError,
+      label_html: `<span class="title">traceback</span> <span class="summary">${(t.user_frames || '').split('\n').length} user frame${(t.user_frames || '').split('\n').length === 1 ? '' : 's'}</span>`,
+      meta_html: '',
+      child_html: tbChildren,
+    });
+
+    // stdout / stderr rows
+    const stdoutCount = t.stdout ? t.stdout.split('\n').filter(Boolean).length : 0;
+    const stderrCount = t.stderr ? t.stderr.split('\n').filter(Boolean).length : 0;
+    const stdoutRow = row({
+      id: stdoutId,
+      expanded: false,
+      label_html: `<span class="title">stdout</span> <span class="summary">${stdoutCount === 0 ? 'empty' : `${stdoutCount} line${stdoutCount === 1 ? '' : 's'}`}</span>`,
+      meta_html: '',
+      child_html: t.stdout ? `<pre class="code-block">${escapeHtml(t.stdout)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stdout captured.</span></div>`,
+    });
+    const stderrRow = row({
+      id: stderrId,
+      expanded: isError && !!t.stderr,
+      label_html: `<span class="title">stderr</span> <span class="summary">${stderrCount === 0 ? 'empty' : `${stderrCount} line${stderrCount === 1 ? '' : 's'}`}</span>`,
+      meta_html: '',
+      child_html: t.stderr ? `<pre class="code-block">${escapeHtml(t.stderr)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stderr captured.</span></div>`,
+    });
+
+    // actions
+    const actions = `
+      <div class="actions">
+        <button class="btn primary">↗ Open in editor</button>
+        <button class="btn" data-copy="${escapeAttr(t.run_command)}">⌥ Copy run command</button>
+        <button class="btn">⊘ Quarantine</button>
+        <button class="btn">🔗 Link to issue</button>
+        <button class="btn subtle">↗ Open JUnit record</button>
+      </div>
+    `;
+
+    return `
+      ${headline}
+      ${badges}
+      ${snippet(t.src)}
+      ${isError ? stderrRow : ''}
+      ${tracebackRow}
+      ${stdoutRow}
+      ${!isError ? stderrRow : ''}
+      ${actions}
+    `;
+  }
+
+  function testRow(t, idPrefix, expanded) {
+    const icon = t.outcome === 'error' ? '⚠' : '✕';
+    return row({
+      id: idPrefix,
+      expanded,
+      label_html: `
+        <span class="ico ${t.outcome}">${icon}</span>
+        <span class="title">${escapeHtml(t.name)}</span>
+        <span class="summary">${escapeHtml(t.file)}</span>
+      `,
+      meta_html: `<span class="chip outcome ${t.outcome}">${escapeHtml(t.type)}</span>`,
+      child_html: testDetailChildren(t, idPrefix),
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Passed test detail (no traceback / no headline — just stdout + actions)
+  // ──────────────────────────────────────────────────────────────────
+  function passedTestDetailChildren(t, idPrefix) {
+    const stdoutId = `${idPrefix}-stdout`;
+    const badges = `
+      <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+        <span class="chip outcome passed">✓ Passed</span>
+        <span class="chip">${t.duration_ms} ms</span>
+        <span class="chip">${sparkline(['pass','pass','pass','pass','pass','pass','pass','pass','pass','pass'])}</span>
+      </div>
+    `;
+    const stdoutLines = t.stdout ? t.stdout.split('\n').filter(Boolean).length : 0;
+    const stdoutRow = row({
+      id: stdoutId,
+      expanded: false,
+      label_html: `<span class="title">stdout</span> <span class="summary">${stdoutLines === 0 ? 'empty' : `${stdoutLines} line${stdoutLines === 1 ? '' : 's'}`}</span>`,
+      meta_html: '',
+      child_html: t.stdout
+        ? `<pre class="code-block">${escapeHtml(t.stdout)}</pre>`
+        : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stdout captured.</span></div>`,
+    });
+    const actions = `
+      <div class="actions">
+        <button class="btn primary">↗ Open in editor</button>
+        <button class="btn" data-copy="pnpm vitest -t &quot;${escapeAttr(t.name)}&quot;">⌥ Copy run command</button>
+        <button class="btn subtle">↗ Open JUnit record</button>
+      </div>
+    `;
+    return `${badges}${stdoutRow}${actions}`;
+  }
+
+  function passedTestRow(t, idPrefix) {
+    return row({
+      id: idPrefix,
+      expanded: false,
+      label_html: `
+        <span class="ico passed">✓</span>
+        <span class="title">${escapeHtml(t.name)}</span>
+      `,
+      meta_html: `<span style="color: var(--text-faint); font-size: 11px;">${t.duration_ms} ms</span>`,
+      child_html: passedTestDetailChildren(t, idPrefix),
+    });
+  }
+
+  function passedFileRow(f, idPrefix) {
+    const fileBase = f.file.split('/').pop();
+    const dirPart = f.file.slice(0, f.file.length - fileBase.length - 1);
+    const totalMs = f.tests.reduce((s, t) => s + t.duration_ms, 0);
+    const testRows = f.tests.map((t, i) => passedTestRow(t, `${idPrefix}-t${i}`)).join('');
+    return row({
+      id: idPrefix,
+      expanded: false,
+      label_html: `
+        <span class="ico passed">✓</span>
+        <span class="title">${escapeHtml(fileBase)}</span>
+        <span class="summary">${escapeHtml(dirPart)}</span>
+      `,
+      meta_html: `<span style="color: var(--text-faint); font-size: 11px;">${f.tests.length} passed · ${totalMs} ms</span>`,
+      child_html: testRows,
+    });
+  }
+
+  function passedTestsBrowse(idPrefix, footerNote) {
+    const files = PASSED_FILES.map((f, i) => passedFileRow(f, `${idPrefix}-f${i}`)).join('');
+    return `${files}
+      <div class="leaf" style="color: var(--text-faint); margin-top: 4px; font-size: 11px;">
+        <span class="caret">●</span>
+        <span>${escapeHtml(footerNote)}</span>
+      </div>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Phase-grouped artifact expander
+  // ──────────────────────────────────────────────────────────────────
+  function phaseArtifactsRow(opts) {
+    // opts: { id, phase_label, summary, buttons: [{label, subtle?}], empty_note? }
+    const childHtml = opts.empty_note
+      ? `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">${escapeHtml(opts.empty_note)}</span></div>`
+      : `<div class="actions" style="padding: 6px 0;">
+          ${opts.buttons.map((b) => `<button class="btn ${b.subtle ? 'subtle' : ''}">${escapeHtml(b.label)}</button>`).join('')}
+        </div>`;
+    return row({
+      id: opts.id,
+      expanded: false,
+      label_html: `<span class="title">${escapeHtml(opts.phase_label)}</span>${opts.summary ? `<span class="summary">${escapeHtml(opts.summary)}</span>` : ''}`,
+      meta_html: '',
+      child_html: childHtml,
+    });
+  }
+
+  function cycleArtifacts(idPrefix, opts) {
+    // opts: { coder, review, orchestrator } — each either { buttons } or { empty_note }
+    const inner = `
+      ${phaseArtifactsRow({ id: `${idPrefix}-coder`, phase_label: 'Coder session', summary: opts.coder.summary || '', buttons: opts.coder.buttons, empty_note: opts.coder.empty_note })}
+      ${phaseArtifactsRow({ id: `${idPrefix}-review`, phase_label: 'Review session', summary: opts.review.summary || '', buttons: opts.review.buttons, empty_note: opts.review.empty_note })}
+      ${phaseArtifactsRow({ id: `${idPrefix}-orch`, phase_label: 'Orchestrator', summary: opts.orchestrator.summary || 'cycle-wide logs', buttons: opts.orchestrator.buttons, empty_note: opts.orchestrator.empty_note })}
+    `;
+    return row({
+      id: idPrefix,
+      expanded: false,
+      label_html: `<span class="title">Cycle artifacts</span> <span class="summary">grouped by phase</span>`,
+      meta_html: '',
+      child_html: inner,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Cycle 2 expanded content
+  // ──────────────────────────────────────────────────────────────────
+  function cycle2Children() {
+    // Each event in the timeline IS its own expander.  The "Validation
+    // failed" event is the entry point to the junit dialog content
+    // (auto-expanded for failures).  Per-session artifacts live under
+    // their session's start event, not in a separate cycle-level lump.
+
+    // "Validation failed" event content: failed tests flat (triage),
+    // then a "+ 103 passed" browse expander, then a nested validation
+    // artifacts expander (record / output / stderr).
+    const validationFailedContent = `
+      ${testRow(FAIL_B, 'test-b', true)}
+      ${testRow(FAIL_X, 'test-x', false)}
+      ${testRow(ERR_Y, 'err-y', false)}
+      ${row({
+        id: 'cycle2-passed-browse',
+        expanded: false,
+        label_html: `<span class="ico passed">✓</span><span class="title">+ 103 passed, 0 skipped</span><span class="summary">browse by file</span>`,
+        meta_html: '',
+        child_html: passedTestsBrowse('cycle2-browse', '… and 97 more files (not shown in mockup)'),
+      })}
+      ${phaseArtifactsRow({
+        id: 'cycle2-validation-arts',
+        phase_label: 'Validation artifacts',
+        summary: 'record · output · stderr',
+        buttons: [
+          { label: 'Open Validation Record' },
+          { label: 'Open Validation Output' },
+          { label: 'Open Validation Stderr' },
+        ],
+      })}
+    `;
+
+    // Per-event content for the coder session start
+    const coderSessionStartContent = `
+      <div class="body-block-section">
+        <div class="body-block-label">session</div>
+        ${leaf({ label_html: `<strong>Agent:</strong> agent:web (rework)`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Worktree:</strong> /path/to/worktree-361`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Session ID:</strong> abc-2-rework-1`, meta_html: '' })}
+      </div>
+      <div class="actions">
+        <button class="btn">View Session Recording</button>
+        <button class="btn">View Claude Log</button>
+        <button class="btn">Open Claude Log File</button>
+        <button class="btn">Open Session Dir</button>
+      </div>
+    `;
+
+    // Per-event content for "agent finished coding": the completion record
+    const codingCompletedContent = `
+      <div class="body-block-section">
+        <div class="body-block-label">completion record</div>
+        ${leaf({ label_html: `<strong>Implementation:</strong> Fixed severity propagation in alert overlay, added test coverage for cohort routing.`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Problems:</strong> none`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Files changed:</strong> 4 files (+88 −12)`, meta_html: '' })}
+      </div>
+      <div class="actions">
+        <button class="btn">Open Completion Record</button>
+      </div>
+    `;
+
+    return `
+      <div class="body-block-section">
+        <div class="body-block-label">events</div>
+        ${eventRow({
+          id: 'c2-evt-coder-start',
+          icon: 'passed',
+          label: 'Coding session started',
+          time: '3:18:00 PM',
+          child_html: coderSessionStartContent,
+        })}
+        ${eventRow({
+          id: 'c2-evt-coder-done',
+          icon: 'passed',
+          label: 'Agent finished coding',
+          time: '3:23:42 PM',
+          child_html: codingCompletedContent,
+        })}
+        ${eventRow({
+          id: 'c2-evt-validation',
+          icon: 'failed',
+          label: 'Validation failed (3 of 106 · publish_gate · 12 s)',
+          time: '3:24:18 PM',
+          expanded: true,
+          child_html: validationFailedContent,
+        })}
+      </div>
+      <div class="body-block-section">
+        ${row({
+          id: 'c2-orch-log',
+          expanded: false,
+          label_html: `<span class="title">Orchestrator log</span> <span class="summary">cycle-wide</span>`,
+          meta_html: '',
+          child_html: `<div class="actions" style="padding: 6px 0;">
+            <button class="btn">Open Orchestrator Log</button>
+            <button class="btn">Open Full Log</button>
+            <button class="btn subtle">Full Diagnostics</button>
+          </div>`,
+        })}
+      </div>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Cycle 1 / 3 expanded content (passed cycles, minimal)
+  // ──────────────────────────────────────────────────────────────────
+  function passedCycleChildren() {
+    // "Validation passed" event content for a green cycle: browse the
+    // 106 tests by file, plus the validation-record/output/stderr nested
+    // expander.  Same shape as the failed case, just no triage cards on
+    // top.
+    const validationPassedContent = `
+      ${passedTestsBrowse('cycle1-browse', '… and 100 more files (not shown in mockup)')}
+      ${phaseArtifactsRow({
+        id: 'cycle1-validation-arts',
+        phase_label: 'Validation artifacts',
+        summary: 'record · output · stderr',
+        buttons: [
+          { label: 'Open Validation Record' },
+          { label: 'Open Validation Output' },
+          { label: 'Open Validation Stderr' },
+        ],
+      })}
+    `;
+
+    const coderSessionStartContent = `
+      <div class="body-block-section">
+        <div class="body-block-label">session</div>
+        ${leaf({ label_html: `<strong>Agent:</strong> agent:web`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Worktree:</strong> /path/to/worktree-361`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Session ID:</strong> abc-1`, meta_html: '' })}
+      </div>
+      <div class="actions">
+        <button class="btn">View Session Recording</button>
+        <button class="btn">View Claude Log</button>
+        <button class="btn">Open Session Dir</button>
+      </div>
+    `;
+
+    const codingCompletedContent = `
+      <div class="body-block-section">
+        <div class="body-block-label">completion record</div>
+        ${leaf({ label_html: `<strong>Implementation:</strong> Added card-timeline-btn affordance; hooked to openIssueDetail.`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Problems:</strong> none`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Files changed:</strong> 3 files (+35 −0)`, meta_html: '' })}
+      </div>
+      <div class="actions">
+        <button class="btn">Open Completion Record</button>
+      </div>
+    `;
+
+    const reviewerApprovedContent = `
+      <div class="body-block-section">
+        <div class="body-block-label">verdict</div>
+        ${leaf({ label_html: `<strong>Reviewer:</strong> agent:reviewer`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Risk:</strong> low`, meta_html: '' })}
+        ${leaf({ label_html: `<strong>Summary:</strong> Architecturally clean; tests cover the new affordance.`, meta_html: '' })}
+      </div>
+      <div class="actions">
+        <button class="btn">Open Review Transcript</button>
+        <button class="btn">View Reviewer Recording</button>
+        <button class="btn">View Reviewer Log</button>
+      </div>
+    `;
+
+    return `
+      <div class="body-block-section">
+        <div class="body-block-label">events</div>
+        ${eventRow({
+          id: 'c1-evt-coder-start',
+          icon: 'passed',
+          label: 'Coding session started',
+          time: '3:14:00 PM',
+          child_html: coderSessionStartContent,
+        })}
+        ${eventRow({
+          id: 'c1-evt-coder-done',
+          icon: 'passed',
+          label: 'Agent finished coding',
+          time: '3:15:48 PM',
+          child_html: codingCompletedContent,
+        })}
+        ${eventRow({
+          id: 'c1-evt-validation',
+          icon: 'passed',
+          label: 'Validation passed (106 tests · 2.4 s)',
+          time: '3:16:02 PM',
+          expanded: false,
+          child_html: validationPassedContent,
+        })}
+        ${eventRow({
+          id: 'c1-evt-review',
+          icon: 'passed',
+          label: 'Reviewer approved',
+          time: '3:16:42 PM',
+          child_html: reviewerApprovedContent,
+        })}
+      </div>
+      <div class="body-block-section">
+        ${row({
+          id: 'c1-orch-log',
+          expanded: false,
+          label_html: `<span class="title">Orchestrator log</span> <span class="summary">cycle-wide</span>`,
+          meta_html: '',
+          child_html: `<div class="actions" style="padding: 6px 0;">
+            <button class="btn">Open Orchestrator Log</button>
+            <button class="btn">Open Full Log</button>
+            <button class="btn subtle">Full Diagnostics</button>
+          </div>`,
+        })}
+      </div>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Run 2 cycles
+  // ──────────────────────────────────────────────────────────────────
+  function run2Children() {
+    return `
+      ${row({
+        id: 'cycle-1',
+        expanded: false,
+        label_html: `<span class="ico passed">✓</span><span class="title">Cycle 1</span><span class="summary">Approved · agent:web · 1m 12s</span>`,
+        meta_html: '3:14 PM',
+        child_html: passedCycleChildren(),
+      })}
+      ${row({
+        id: 'cycle-2',
+        expanded: true,
+        label_html: `<span class="ico failed">✕</span><span class="title">Cycle 2</span><span class="summary">Validation failed · agent:web · 5m 03s</span>`,
+        meta_html: '3:18 PM',
+        child_html: cycle2Children(),
+      })}
+      ${row({
+        id: 'cycle-3',
+        expanded: false,
+        label_html: `<span class="ico pending">…</span><span class="title">Cycle 3</span><span class="summary">Awaiting rework session</span>`,
+        meta_html: '—',
+        child_html: '<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">Not started yet.</span></div>',
+      })}
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Run 1 (older, collapsed)
+  // ──────────────────────────────────────────────────────────────────
+  function run1Children() {
+    return `
+      ${row({
+        id: 'run1-cycle-1',
+        expanded: false,
+        label_html: `<span class="ico failed">✕</span><span class="title">Cycle 1</span><span class="summary">Validation failed · scratch retry triggered</span>`,
+        meta_html: '2:51 PM',
+        child_html: '<div class="leaf"><span class="leaf-label" style="color: var(--text-faint);">…older cycle detail…</span></div>',
+      })}
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Top-level: runs
+  // ──────────────────────────────────────────────────────────────────
+  document.getElementById('body').innerHTML = `
+    ${row({
+      id: 'run-2',
+      expanded: true,
+      label_html: `<span class="title">Run 2</span><span class="summary">current · 3 cycles · agent:web</span>`,
+      meta_html: '3:14 PM',
+      child_html: run2Children(),
+    })}
+    ${row({
+      id: 'run-1',
+      expanded: false,
+      label_html: `<span class="title">Run 1</span><span class="summary">superseded · scratch retry · 1 cycle</span>`,
+      meta_html: '2:51 PM',
+      child_html: run1Children(),
+    })}
+  `;
+
+  // ──────────────────────────────────────────────────────────────────
+  // Wire up toggles + copy
+  // ──────────────────────────────────────────────────────────────────
+  document.body.addEventListener('click', (e) => {
+    const toggleRow = e.target.closest('[data-toggle]');
+    if (toggleRow) {
+      const id = toggleRow.dataset.toggle;
+      const child = document.getElementById('children-' + id);
+      if (child) {
+        const opening = child.classList.contains('collapsed');
+        child.classList.toggle('collapsed');
+        toggleRow.classList.toggle('expanded', opening);
+      }
+      return;
+    }
+    const copyBtn = e.target.closest('[data-copy]');
+    if (copyBtn) {
+      const text = copyBtn.dataset.copy;
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = copyBtn.innerHTML;
+        copyBtn.innerHTML = '✓ Copied';
+        copyBtn.classList.add('copied');
+        setTimeout(() => { copyBtn.innerHTML = orig; copyBtn.classList.remove('copied'); }, 1200);
+      }).catch(() => {
+        copyBtn.innerHTML = '⚠ blocked';
+      });
+    }
+  });
+</script>
+
+</body>
+</html>

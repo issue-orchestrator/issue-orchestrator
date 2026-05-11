@@ -1,0 +1,273 @@
+/* Canonical validation viewer styles (issue #6310 follow-up).
+ *
+ * The viewer is rendered by ``static/js/dashboard/validation_viewer.js``.
+ * Phase A uses these styles inside the existing validation dialog modal
+ * (``.diag-modal``).  Phase B mounts the same DOM under the per-issue
+ * drawer's "Validation" cycle event.  Phase C uses it as the entire E2E
+ * run view body.  Same classes everywhere.
+ *
+ * Visual language inherits from ``base.css``'s var(--…) palette where
+ * available; the ``cvv-`` prefix scopes everything so we don't collide
+ * with the legacy ``diag-`` rules in ``overlays.css``.
+ */
+
+.cvv-root {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 13px;
+}
+
+/* ── triage cards (failed/errored tests) ────────────────────────── */
+.cvv-triage {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.cvv-triage-card {
+    border: 1px solid #d8dde4;
+    border-left: 3px solid #c0392f;
+    border-radius: 6px;
+    background: #ffffff;
+    overflow: hidden;
+}
+.cvv-triage-card.cvv-error {
+    border-left-color: #b07a00;
+}
+.cvv-triage-head {
+    padding: 10px 12px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.cvv-triage-title {
+    font-weight: 600;
+    font-size: 13px;
+}
+.cvv-headline {
+    margin: 6px 10px;
+    padding: 8px 10px;
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.cvv-headline.is-failed {
+    background: #fbeae7;
+    border: 1px solid #f1c4bd;
+    color: #8c1f17;
+}
+.cvv-headline.is-error {
+    background: #fbf3dc;
+    border: 1px solid #e7d293;
+    color: #6f4d00;
+}
+.cvv-headline-text {
+    word-break: break-word;
+}
+.cvv-badges {
+    margin: 0 10px 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.cvv-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid #d8dde4;
+    background: #fafbfc;
+    color: #5a6472;
+}
+.cvv-chip-passed { background: #e6f4ea; border-color: #1f8f3a; color: #1f8f3a; }
+.cvv-chip-failed { background: #fbeae7; border-color: #c0392f; color: #8c1f17; }
+.cvv-chip-error  { background: #fbf3dc; border-color: #b07a00; color: #b07a00; }
+.cvv-chip-skipped { background: #ececef; border-color: #cdd1d8; color: #8a93a3; }
+
+.cvv-ico {
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    border-radius: 50%;
+    color: white;
+    flex-shrink: 0;
+}
+.cvv-ico-passed  { background: #1f8f3a; }
+.cvv-ico-failed  { background: #c0392f; }
+.cvv-ico-error   { background: #b07a00; }
+.cvv-ico-skipped { background: #8a93a3; }
+
+/* ── expanders (one idiom rules all) ────────────────────────────── */
+.cvv-row {
+    border: 1px solid #d8dde4;
+    border-radius: 5px;
+    background: #fbfcfd;
+    margin: 0;
+}
+.cvv-row + .cvv-row { margin-top: 6px; }
+.cvv-triage-card .cvv-row,
+.cvv-row-body .cvv-row {
+    margin: 6px 10px;
+}
+.cvv-row > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+.cvv-row > summary::-webkit-details-marker { display: none; }
+.cvv-caret {
+    width: 14px;
+    flex-shrink: 0;
+    color: #8a93a3;
+    transition: transform 0.12s ease;
+    text-align: center;
+    font-size: 11px;
+    display: inline-block;
+}
+.cvv-row[open] > summary > .cvv-caret { transform: rotate(90deg); }
+.cvv-title {
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.cvv-summary {
+    color: #5a6472;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cvv-meta {
+    color: #8a93a3;
+    font-size: 11px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.cvv-row-body {
+    padding: 4px 0 8px;
+    border-top: 1px solid #e8eaef;
+}
+
+/* ── browse-by-file (passed tests) ──────────────────────────────── */
+.cvv-row-browse > summary {
+    background: #fafbfc;
+}
+.cvv-file > summary {
+    background: #fafbfc;
+}
+
+/* ── per-test details ───────────────────────────────────────────── */
+.cvv-test {
+    background: #ffffff;
+}
+
+/* ── code blocks (stdout, stderr, traceback) ────────────────────── */
+.cvv-pre {
+    margin: 0 10px 8px;
+    padding: 8px 10px;
+    background: #f3f5f8;
+    border: 1px solid #d8dde4;
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #2a2f37;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    line-height: 1.5;
+}
+.cvv-pre-fail {
+    background: #fbeae7;
+    border-color: #f1c4bd;
+    color: #2a2f37;
+}
+.cvv-empty {
+    margin: 0 10px 8px;
+    padding: 6px 10px;
+    color: #8a93a3;
+    font-style: italic;
+    font-size: 11px;
+}
+
+/* ── run-level stdout/stderr (legacy excerpts) ──────────────────── */
+.cvv-run-output .cvv-row { background: #fbfcfd; }
+
+/* ── artifacts footer ───────────────────────────────────────────── */
+.cvv-artifacts .cvv-row { background: #fafbfc; }
+
+/* ── plugin slot ────────────────────────────────────────────────── */
+.cvv-triage-card > .cvv-plugin,
+.cvv-row-body > .cvv-plugin {
+    margin: 6px 10px;
+    border: 1px solid #3870e0;
+    background: #e8eefb;
+    border-radius: 6px;
+    overflow: hidden;
+}
+.cvv-plugin-header {
+    padding: 5px 10px;
+    background: rgba(255, 255, 255, 0.5);
+    border-bottom: 1px solid #3870e0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.cvv-plugin-tag {
+    color: #1c4cab;
+    font-weight: 600;
+}
+.cvv-plugin-body {
+    padding: 8px 10px;
+    font-size: 12px;
+    color: #1f2329;
+}
+.cvv-plugin .agent-context-row {
+    margin-bottom: 4px;
+}
+.cvv-plugin .agent-context-row code {
+    background: rgba(255, 255, 255, 0.6);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+.cvv-plugin .agent-context-actions {
+    margin-top: 6px;
+}
+.cvv-plugin .btn {
+    display: inline-block;
+    padding: 3px 10px;
+    border: 1px solid #3870e0;
+    background: #ffffff;
+    color: #1c4cab;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 12px;
+}
+.cvv-plugin .btn:hover {
+    background: #f0f4fb;
+}
+.cvv-validation-plugin-error,
+.diag-validation-plugin-error {
+    margin: 6px 10px;
+    padding: 6px 10px;
+    background: #fbf3dc;
+    border: 1px solid #b07a00;
+    border-radius: 5px;
+    color: #6f4d00;
+    font-size: 11px;
+}
+
+/* ── focus styling (Phase D adds full ARIA tree nav; this is the
+       baseline so keyboard users at least see focus today) ─────── */
+.cvv-row > summary:focus-visible {
+    outline: 2px solid #3870e0;
+    outline-offset: -2px;
+}

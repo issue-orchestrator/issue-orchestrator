@@ -1,0 +1,416 @@
+// JS-vm tests for the canonical validation viewer (issue #6310 follow-up,
+// Phase A).  Exercises:
+//
+//   1. ``registerValidationPlugin`` registry semantics — register,
+//      lookup, unknown namespace silently skips, misbehaving renderer
+//      doesn't crash the viewer.
+//   2. ``renderCanonicalValidationViewer`` output for the four canonical
+//      cases: passed run, failed run with triage cards, mixed
+//      pass/fail, empty.
+//   3. Browse-by-file expansion of non-failed cases, with per-test
+//      stdout rendering.
+//   4. Plugin extras: when a case carries a registered namespace, the
+//      plugin renderer's HTML appears inside the test's expansion.
+//
+// All tests run in a node:vm context with the viewer source loaded,
+// matching the existing ``tests/js/e2e_run_view_actions.test.js``
+// pattern.  No DOM library — we assert on rendered HTML strings.
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+function loadViewer(overrides = {}) {
+    // Stubs for the shared dashboard primitives the viewer calls into.
+    // The viewer is intentionally self-contained: action-section
+    // rendering is now an explicit ``options.renderActionSections``
+    // dependency (reviewer Blocker 2 on PR #6314), so we no longer need
+    // a global stub for it here.
+    const baseStubs = {
+        console,
+        escapeHtml: (v) => String(v == null ? '' : v)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
+        escapeAttr: (v) => String(v == null ? '' : v)
+            .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
+    };
+    const context = { ...baseStubs, ...overrides };
+    vm.createContext(context);
+    const source = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/validation_viewer.js'),
+        'utf8',
+    );
+    vm.runInContext(source, context, { filename: 'validation_viewer.js' });
+    return context;
+}
+
+function loadViewerWithAgentPlugin(overrides = {}) {
+    const ctx = loadViewer(overrides);
+    const pluginSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
+        'utf8',
+    );
+    vm.runInContext(pluginSource, ctx, { filename: 'plugins/agent_context.js' });
+    return ctx;
+}
+
+// ── Registry tests ────────────────────────────────────────────────────────
+
+test('registry: registerValidationPlugin rejects empty namespace', () => {
+    const ctx = loadViewer();
+    assert.throws(() => ctx.registerValidationPlugin('', () => ''), /namespace/);
+    assert.throws(() => ctx.registerValidationPlugin(null, () => ''), /namespace/);
+});
+
+test('registry: registerValidationPlugin rejects non-function renderer', () => {
+    const ctx = loadViewer();
+    assert.throws(() => ctx.registerValidationPlugin('test.foo', null), /renderer/);
+    assert.throws(() => ctx.registerValidationPlugin('test.foo', 'not a function'), /renderer/);
+});
+
+test('registry: register + getValidationPlugin round-trips', () => {
+    const ctx = loadViewer();
+    const renderer = (payload) => `[rendered ${payload.x}]`;
+    ctx.registerValidationPlugin('test.echo', renderer);
+    assert.strictEqual(ctx.getValidationPlugin('test.echo'), renderer);
+    assert.strictEqual(ctx.getValidationPlugin('test.missing'), null);
+});
+
+test('registry: renderPluginExtras dispatches by namespace', () => {
+    const ctx = loadViewer();
+    ctx.registerValidationPlugin('test.echo', (p) => `<div data-x="${p.x}">echo</div>`);
+    const html = ctx.renderPluginExtras({
+        extras: [{ namespace: 'test.echo', payload: { x: 7 } }],
+    });
+    assert.match(html, /data-x="7"/);
+});
+
+test('registry: unknown namespace is silently skipped', () => {
+    const ctx = loadViewer();
+    ctx.registerValidationPlugin('test.echo', () => '<div>echo</div>');
+    const html = ctx.renderPluginExtras({
+        extras: [
+            { namespace: 'test.unknown', payload: {} },
+            { namespace: 'test.echo', payload: {} },
+        ],
+    });
+    assert.match(html, /echo/);
+    assert.doesNotMatch(html, /unknown/);
+});
+
+test('registry: misbehaving plugin renders an inline error, not a crash', () => {
+    const ctx = loadViewer();
+    ctx.registerValidationPlugin('test.crash', () => { throw new Error('boom'); });
+    const html = ctx.renderPluginExtras({
+        extras: [{ namespace: 'test.crash', payload: {} }],
+    });
+    assert.match(html, /Plugin <code>test\.crash<\/code> failed to render: boom/);
+});
+
+test('registry: extras with non-array shape is treated as empty', () => {
+    const ctx = loadViewer();
+    assert.strictEqual(ctx.renderPluginExtras({}), '');
+    assert.strictEqual(ctx.renderPluginExtras({ extras: null }), '');
+    assert.strictEqual(ctx.renderPluginExtras({ extras: 'not an array' }), '');
+});
+
+// ── Canonical viewer tests ────────────────────────────────────────────────
+
+test('viewer: passed run renders the browse-by-file expander and no triage cards', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [
+            { case_id: 'a', display_name: 'test a', outcome: 'passed', duration_seconds: 0.003, suite_name: 'tests/test_a.py', extras: [] },
+            { case_id: 'b', display_name: 'test b', outcome: 'passed', duration_seconds: 0.004, suite_name: 'tests/test_b.py', extras: [] },
+        ],
+    });
+    assert.doesNotMatch(html, /cvv-triage-card/);
+    assert.match(html, /cvv-row-browse/);
+    assert.match(html, /2 passed/);
+    // Each file rendered as its own expander
+    assert.match(html, /test_a\.py/);
+    assert.match(html, /test_b\.py/);
+});
+
+test('viewer: failed run renders one triage card per failed/errored test', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [
+            {
+                case_id: 'a', display_name: 'broken assertion', outcome: 'failed',
+                duration_seconds: 0.012, suite_name: 'tests/test_a.py',
+                failure_details: 'AssertionError: expected x to equal y\n  at tests/test_a.py:42',
+                extras: [],
+            },
+            {
+                case_id: 'b', display_name: 'fixture exploded', outcome: 'error',
+                duration_seconds: 0.001, suite_name: 'tests/test_b.py',
+                failure_details: "TypeError: cannot read 'init' of undefined",
+                extras: [],
+            },
+            { case_id: 'c', display_name: 'still works', outcome: 'passed', duration_seconds: 0.003, suite_name: 'tests/test_c.py', extras: [] },
+        ],
+    });
+    // Two triage cards
+    const triageCount = (html.match(/cvv-triage-card/g) || []).length;
+    assert.ok(triageCount >= 2, `expected at least 2 triage cards, got ${triageCount}`);
+    // Headline content for the failed test
+    assert.match(html, /AssertionError: expected x to equal y/);
+    // Headline content for the errored test
+    assert.match(html, /TypeError: cannot read/);
+    // Failed gets is-failed class; errored gets is-error
+    assert.match(html, /cvv-headline is-failed/);
+    assert.match(html, /cvv-headline is-error/);
+    // Passed cases still browseable via browse expander
+    assert.match(html, /cvv-row-browse/);
+    assert.match(html, /1 passed/);
+});
+
+test('viewer: triage cards render stdout and stderr expanders', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'with output', outcome: 'failed',
+            duration_seconds: 0.01, suite_name: 'tests/test_a.py',
+            failure_details: 'AssertionError: nope',
+            system_out: 'before assertion',
+            system_err: 'WARNING: spooky',
+            extras: [],
+        }],
+    });
+    assert.match(html, /before assertion/);
+    assert.match(html, /WARNING: spooky/);
+});
+
+test('viewer: errored case auto-opens its stderr expander', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'fixture error', outcome: 'error',
+            failure_details: 'TypeError',
+            system_err: 'fixture failure stderr',
+            extras: [],
+        }],
+    });
+    // The viewer marks the stderr row open=true when outcome is error
+    // and stderr is present.  We match the row opener with the stderr
+    // pre-block immediately following.
+    assert.match(html, /<details class="cvv-row" open><summary><span class="cvv-caret">▸<\/span><span class="cvv-title">stderr<\/span>/);
+});
+
+test('viewer: empty payload renders cleanly with no triage and no browse', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({ junit_cases: [], status: 'passed' });
+    assert.doesNotMatch(html, /cvv-triage-card/);
+    assert.doesNotMatch(html, /cvv-row-browse/);
+});
+
+test('viewer: skipped tests appear in browse with skipped chip', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [
+            { case_id: 'a', display_name: 'experimental', outcome: 'skipped', suite_name: 'tests/test_a.py', extras: [] },
+        ],
+    });
+    assert.match(html, /1 skipped/);
+    assert.match(html, /cvv-ico-skipped/);
+});
+
+test('viewer: legacy stdout_excerpt and stderr_excerpt appear in collapsed run-output expanders', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [],
+        stdout_excerpt: ['line 1', 'line 2'],
+        stderr_excerpt: ['err line'],
+    });
+    assert.match(html, /Run stdout/);
+    assert.match(html, /Run stderr/);
+    assert.match(html, /line 1\nline 2/);
+});
+
+test('viewer: action_sections render under a Validation artifacts expander when caller passes a renderer', () => {
+    // Reviewer Blocker 2 (PR #6314): the viewer takes an explicit
+    // renderer via ``options.renderActionSections`` and never reaches
+    // into session_dialogs.js or any other module's globals.  The
+    // ``loadViewer`` helper deliberately does NOT stub
+    // ``renderValidationFailureActionSections`` — this test passes the
+    // renderer directly through options.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer(
+        {
+            status: 'failed',
+            junit_cases: [],
+            action_sections: [{ title: 'Validation Artifacts', actions: [{ type: 'open_path', label: 'Open Record' }] }],
+        },
+        {
+            renderActionSections: (sections) => `<div data-test-action-sections-count="${sections.length}"></div>`,
+        },
+    );
+    assert.match(html, /Validation artifacts/);
+    assert.match(html, /data-test-action-sections-count="1"/);
+});
+
+test('viewer: action_sections are omitted when no renderer is passed (no hidden global lookup)', () => {
+    // The viewer must NOT silently call into a global to render artifact
+    // actions — that hidden cross-module dependency was the design smell
+    // the reviewer flagged.  Without an explicit renderer the section is
+    // simply omitted.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [],
+        action_sections: [{ title: 'Validation Artifacts', actions: [{ type: 'open_path', label: 'Open Record' }] }],
+    });
+    assert.doesNotMatch(html, /Validation artifacts/);
+    assert.doesNotMatch(html, /cvv-artifacts/);
+});
+
+// ── failed_tests fallback (reviewer Blocker 1) ────────────────────────────
+
+test('viewer: synthesizes triage cards from failed_tests when junit_cases is empty', () => {
+    // Regression for PR #6314 reviewer Blocker 1: the canonical viewer
+    // must surface the failing node IDs even when JUnit XML isn't
+    // available (junit_cases empty) and the stdout excerpt doesn't carry
+    // them.  Without this fallback only the chip-row count survives and
+    // the operator can't tell *what* failed.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        failed_tests: [
+            'tests/unit/test_alpha.py::test_first',
+            'tests/integration/test_beta.py::test_second',
+            'tests/e2e/test_gamma.py::test_third',
+        ],
+        junit_cases: [],
+        // stdout/stderr deliberately omit the node IDs so the *only*
+        // surface for them is the synthesized triage cards.
+        stdout_excerpt: ['================= short test summary ================='],
+        stderr_excerpt: ['make: *** [validate] Error 2'],
+    });
+    // All three node IDs render as triage cards.
+    assert.match(html, /tests\/unit\/test_alpha\.py::test_first/);
+    assert.match(html, /tests\/integration\/test_beta\.py::test_second/);
+    assert.match(html, /tests\/e2e\/test_gamma\.py::test_third/);
+    // Three triage cards (one per synthesized failure).
+    const triageCount = (html.match(/cvv-triage-card/g) || []).length;
+    assert.strictEqual(triageCount, 3, `expected 3 synthesized triage cards, got ${triageCount}`);
+    // Each card carries the failed-headline class so styling is
+    // consistent with JUnit-driven failures.
+    const headlineCount = (html.match(/cvv-headline is-failed/g) || []).length;
+    assert.strictEqual(headlineCount, 3);
+    // And the fallback headline explains where the data came from so
+    // the operator isn't confused by the missing traceback.
+    assert.match(html, /No JUnit XML detail was available/);
+});
+
+test('viewer: failed_tests fallback skips node IDs already represented in junit_cases', () => {
+    // When the parser populated *some* junit_cases, the viewer must not
+    // double-render the same node ID as both a real case and a
+    // synthesized fallback card.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        failed_tests: [
+            'tests/unit/test_one.py::test_a',  // already in junit_cases (display_name match)
+            'tests/unit/test_two.py::test_b',  // missing — must be synthesized
+        ],
+        junit_cases: [{
+            case_id: 'cid-1',
+            display_name: 'tests/unit/test_one.py::test_a',
+            outcome: 'failed',
+            duration_seconds: 0.01,
+            suite_name: 'tests/unit/test_one.py',
+            failure_details: 'AssertionError: nope',
+            system_out: '',
+            system_err: '',
+            extras: [],
+        }],
+    });
+    // Exactly two triage cards: one real (with traceback) + one synthesized.
+    const triageCount = (html.match(/cvv-triage-card/g) || []).length;
+    assert.strictEqual(triageCount, 2, `expected 2 triage cards, got ${triageCount}`);
+    // The real one carries the traceback headline.
+    assert.match(html, /AssertionError: nope/);
+    // The synthesized one carries the fallback explanation.
+    assert.match(html, /No JUnit XML detail was available/);
+    // And the node ID for the missing one shows up.
+    assert.match(html, /tests\/unit\/test_two\.py::test_b/);
+});
+
+test('viewer: empty failed_tests + empty junit_cases renders no triage cards', () => {
+    // Sanity: a clean passed run with neither junit_cases nor
+    // failed_tests must not render any triage cards (regression guard
+    // against the synthesis accidentally running on empty lists).
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [],
+        failed_tests: [],
+    });
+    assert.doesNotMatch(html, /cvv-triage-card/);
+});
+
+// ── Plugin integration ────────────────────────────────────────────────────
+
+test('plugin: agent-context plugin renders when case carries the namespace', () => {
+    const ctx = loadViewerWithAgentPlugin();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'e2e drove issue', outcome: 'failed',
+            failure_details: 'AssertionError: not completed',
+            extras: [{
+                namespace: 'io.agent-context',
+                payload: {
+                    issue_number: 4503,
+                    issue_title: 'fixture cohort split',
+                    final_state: 'blocked',
+                    summary: 'agent retried 2x then blocked on validation',
+                    run_url: '/api/dashboard/issue/4503?focus=timeline',
+                },
+            }],
+        }],
+    });
+    assert.match(html, /Linked issue · driven by orchestrator/);
+    assert.match(html, /#4503/);
+    assert.match(html, /fixture cohort split/);
+    assert.match(html, /blocked/);
+    assert.match(html, /Open issue drawer/);
+});
+
+test('plugin: agent-context plugin renders nothing when case lacks the namespace', () => {
+    // Generic JUnit consumers don't populate ``extras``.  The plugin is
+    // loaded but never invoked.  This is the tixmeup-style scenario.
+    const ctx = loadViewerWithAgentPlugin();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'generic failure', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [],
+        }],
+    });
+    assert.doesNotMatch(html, /agent-context/);
+    assert.doesNotMatch(html, /Linked issue/);
+});
+
+test('plugin: agent-context rejects malformed payload (no issue_number)', () => {
+    const ctx = loadViewerWithAgentPlugin();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'malformed extras', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [{ namespace: 'io.agent-context', payload: { /* missing issue_number */ } }],
+        }],
+    });
+    assert.doesNotMatch(html, /Linked issue/);
+});
