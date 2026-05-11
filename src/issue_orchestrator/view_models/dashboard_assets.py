@@ -17,6 +17,7 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "shell_actions.js",
     "e2e_runtime.js",
     "e2e_triage.js",
+    "test_results_panel.js",
     "e2e_run_view.js",
 )
 

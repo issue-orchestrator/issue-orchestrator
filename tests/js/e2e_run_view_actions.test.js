@@ -61,6 +61,11 @@ function loadE2ERunView(overrides = {}) {
     };
     const context = { ...preLoadStubs, ...overrides };
     vm.createContext(context);
+    const sharedSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/test_results_panel.js'),
+        'utf8',
+    );
+    vm.runInContext(sharedSource, context, { filename: 'test_results_panel.js' });
     const source = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/e2e_run_view.js'),
         'utf8',
@@ -348,10 +353,39 @@ test('filter chip: short-circuits when click happens outside a panel', () => {
     ctx.filterTestResults('failed', orphanChip);
 });
 
+function _e2eCapturedUrl(runId, nodeid) {
+    // Mirror the URL `_e2eCapturedOutputUrl` in e2e_run_view.js bakes into
+    // the placeholder via opts.capturedOutputUrl. Keeping the URL shape in
+    // one place here means a future endpoint move only touches one test
+    // helper.
+    return `/api/e2e-run/${runId}/test-output?nodeid=${encodeURIComponent(nodeid)}`;
+}
+
+function _e2eRowOpts(runId) {
+    // Reusable opts payload for tests that drive _renderTestRow / Expand
+    // through the shared module. Matches what renderE2EResultsPanel passes
+    // in production — the shared module no longer knows about runId or the
+    // e2e-run endpoint shape on its own.
+    return {
+        runId,
+        capturedOutputUrl: (test) => {
+            if (!Number.isFinite(runId) || runId === null) return '';
+            const src = String(test && test.result_source || '').toLowerCase();
+            if (!src.includes('junit')) return '';
+            const nodeid = String(test && test.nodeid || '');
+            if (!nodeid) return '';
+            return _e2eCapturedUrl(runId, nodeid);
+        },
+    };
+}
+
 function _makeFailedRowWithPlaceholder({ runId, nodeid, hidden }) {
     const status = _stubElement();
     const placeholder = _stubElement();
-    placeholder.dataset = { needsFetch: '1', runId: String(runId), nodeid };
+    // Placeholder carries `data-url` now — the renderer bakes the URL in via
+    // opts.capturedOutputUrl, and _maybeLoadCapturedOutput reads it back out.
+    // No more hardcoded /api/e2e-run/ in the shared module.
+    placeholder.dataset = { needsFetch: '1', url: _e2eCapturedUrl(runId, nodeid), nodeid };
     placeholder.querySelector = (sel) => sel === '.trr-captured-status' ? status : null;
     const expand = _stubElement();
     // Failed rows render expanded by default (no hidden attribute).
@@ -431,7 +465,7 @@ test('toggle: expands a closed expand, updates caret, and triggers lazy fetch', 
     const { main, expand, caret } = _makeRowFor({ startOpen: false });
     // Wire a placeholder so we can confirm the toggle reaches into lazy-load.
     const placeholder = _stubElement();
-    placeholder.dataset = { needsFetch: '1', runId: '11', nodeid: 'pkg::test_a' };
+    placeholder.dataset = { needsFetch: '1', url: _e2eCapturedUrl(11, 'pkg::test_a'), nodeid: 'pkg::test_a' };
     placeholder.querySelector = (sel) => sel === '.trr-captured-status' ? _stubElement() : null;
     expand.querySelector = (sel) => sel === '.trr-captured-output[data-needs-fetch="1"]' ? placeholder : null;
 
@@ -466,7 +500,7 @@ test('lazy-load: GETs /api/e2e-run/{id}/test-output with the placeholder nodeid'
     });
     const status = _stubElement();
     const placeholder = _stubElement();
-    placeholder.dataset = { needsFetch: '1', runId: '42', nodeid: 'tests/e2e/test_smoke.py::test_x' };
+    placeholder.dataset = { needsFetch: '1', url: _e2eCapturedUrl(42, 'tests/e2e/test_smoke.py::test_x'), nodeid: 'tests/e2e/test_smoke.py::test_x' };
     placeholder.querySelector = (sel) => sel === '.trr-captured-status' ? status : null;
     const expand = _stubElement();
     expand.querySelector = (sel) => sel === '.trr-captured-output[data-needs-fetch="1"]' ? placeholder : null;
@@ -497,7 +531,7 @@ test('lazy-load: 404 renders an empty note rather than an error', async () => {
     const ctx = loadE2ERunView({ fetch: () => new Promise((resolve) => { resolveFetch = resolve; }) });
     const status = _stubElement();
     const placeholder = _stubElement();
-    placeholder.dataset = { needsFetch: '1', runId: '7', nodeid: 'pkg::test_quiet' };
+    placeholder.dataset = { needsFetch: '1', url: _e2eCapturedUrl(7, 'pkg::test_quiet'), nodeid: 'pkg::test_quiet' };
     placeholder.querySelector = (sel) => sel === '.trr-captured-status' ? status : null;
     const expand = _stubElement();
     expand.querySelector = (sel) => sel === '.trr-captured-output[data-needs-fetch="1"]' ? placeholder : null;
@@ -514,7 +548,7 @@ test('lazy-load: network error renders a load-failed note', async () => {
     const ctx = loadE2ERunView({ fetch: () => Promise.reject(new Error('econnrefused')) });
     const status = _stubElement();
     const placeholder = _stubElement();
-    placeholder.dataset = { needsFetch: '1', runId: '7', nodeid: 'pkg::test_loud' };
+    placeholder.dataset = { needsFetch: '1', url: _e2eCapturedUrl(7, 'pkg::test_loud'), nodeid: 'pkg::test_loud' };
     placeholder.querySelector = (sel) => sel === '.trr-captured-status' ? status : null;
     const expand = _stubElement();
     expand.querySelector = (sel) => sel === '.trr-captured-output[data-needs-fetch="1"]' ? placeholder : null;
@@ -552,7 +586,7 @@ test('render: failed row is marked expandable, defaults open, has a failure-deta
         _testFixture({ outcome: 'failed', longrepr: 'AssertionError: expected 1 got 2', category: 'untriaged', result_category: 'untriaged' }),
         null,
         'all',
-        { runId: 99 },
+        _e2eRowOpts(99),
     );
     assert.match(html, /data-expandable="1"/);
     assert.match(html, /class="trr-caret" aria-hidden="true">▾</);  // open
@@ -568,7 +602,7 @@ test('render: passed JUnit row is expandable and renders a captured-output place
     // The UI exposes that via the same lazy-fetch placeholder used for failed
     // rows, so users have a path to drill in regardless of outcome.
     const ctx = loadE2ERunView();
-    const html = ctx._renderTestRow(_testFixture(), null, 'all', { runId: 99 });
+    const html = ctx._renderTestRow(_testFixture(), null, 'all', _e2eRowOpts(99));
     assert.match(html, /data-expandable="1"/);
     assert.match(html, /class="trr-caret" aria-hidden="true">▸</);  // collapsed by default
     assert.match(html, /aria-expanded="false"/);
@@ -594,7 +628,7 @@ test('render: passed row with non-junit source is not expandable', () => {
         _testFixture({ result_source: 'external_report' }),
         null,
         'all',
-        { runId: 99 },
+        _e2eRowOpts(99),
     );
     assert.match(html, /data-expandable="0"/);
     assert.doesNotMatch(html, /trr-captured-output/);
@@ -611,7 +645,7 @@ test('render: passed row with history shows the recent-runs cluster alongside th
         }),
         null,
         'all',
-        { runId: 99 },
+        _e2eRowOpts(99),
     );
     assert.match(html, /class="test-history-label">Recent</);
     assert.match(html, /50% flake/);
@@ -620,13 +654,13 @@ test('render: passed row with history shows the recent-runs cluster alongside th
 
 test('render: result_source=junit_xml suppresses the per-row provenance tag', () => {
     const ctx = loadE2ERunView();
-    const html = ctx._renderTestRow(_testFixture({ result_source: 'junit_xml' }), null, 'all', { runId: 99 });
+    const html = ctx._renderTestRow(_testFixture({ result_source: 'junit_xml' }), null, 'all', _e2eRowOpts(99));
     assert.doesNotMatch(html, /class="test-source"/);
 });
 
 test('render: unusual result_source (external_report) renders the per-row provenance tag', () => {
     const ctx = loadE2ERunView();
-    const html = ctx._renderTestRow(_testFixture({ result_source: 'external_report' }), null, 'all', { runId: 99 });
+    const html = ctx._renderTestRow(_testFixture({ result_source: 'external_report' }), null, 'all', _e2eRowOpts(99));
     assert.match(html, /class="test-source">External Report/);
 });
 
@@ -731,7 +765,7 @@ test('render expand: passed row with junit source AND runId returns a captured-o
     const html = ctx._renderTestRowExpand(
         _testFixture({ outcome: 'passed', result_source: 'junit_xml' }),
         null,
-        { runId: 99 },
+        _e2eRowOpts(99),
     );
     assert.match(html, /trr-captured-output/);
     assert.match(html, /data-needs-fetch="1"/);
@@ -756,7 +790,7 @@ test('render expand: failed row with non-junit source omits captured-output (not
             result_source: 'external_report', longrepr: 'boom',
         }),
         null,
-        { runId: 99 },
+        _e2eRowOpts(99),
     );
     assert.match(html, /Failure details/);
     assert.doesNotMatch(html, /trr-captured-output/);
