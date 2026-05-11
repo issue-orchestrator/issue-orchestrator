@@ -488,14 +488,17 @@ def test_copy_journey_timeline_formats_raw_timestamps_locally() -> None:
 
 
 def test_journey_cycle_header_renders_validation_badge() -> None:
-    """Each cycle in the journey timeline carries a validation badge that
-    opens the validation-failure dialog for its run_dir. This is the
-    replacement for the dropped top-of-drawer flat validation list.
+    """Each cycle in the journey timeline carries a validation badge.
+    After issue #6310 AC-2 the badge is a typed ``CycleValidationBadge``
+    and the click goes through the existing ``runE2ELifecycleCommand``
+    Command dispatcher — no bespoke ``_handleCycleValidationBadgeClick``
+    anymore.
 
-    Three badge states:
-    - passed → green button → openValidationFailure
-    - failed → red button → openValidationFailure
-    - not_validated → amber static badge (anti-pattern marker)
+    Three rendered states:
+    - passed → green button via ``_renderLifecycleCommandButton`` →
+      ``runE2ELifecycleCommand`` → ``openValidationFailure``.
+    - failed → red button via the same Command pipeline.
+    - not_validated → amber static span (anti-pattern marker; no command).
     """
     js = _read(DASHBOARD_JS)
     badge_body = _function_body(js, "_renderCycleValidationBadge")
@@ -505,33 +508,25 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     assert "_renderCycleValidationBadge(c.validation" in runs_body
     assert "${validationBadge}" in runs_body
 
-    # Badge wiring: passed and failed states both reach the dialog through
-    # _handleCycleValidationBadgeClick (the dispatcher reads run_dir from
-    # data-validation-run-dir). The badge HTML itself MUST NOT interpolate
-    # run_dir directly into an inline JS string — escapeAttr is HTML-attr
-    # escaping, not JS-string escaping, so a path with an apostrophe would
-    # break out of the handler.
+    # Typed badge: state-driven, command-dispatched.
+    assert "badge.state" in badge_body
+    assert "badge.command" in badge_body
+    assert "_renderLifecycleCommandButton" in badge_body
     assert "is-passed" in badge_body
     assert "is-failed" in badge_body
     assert "is-not-validated" in badge_body
-    assert "data-validation-run-dir=" in badge_body
-    assert "data-validation-issue=" in badge_body
-    assert "_handleCycleValidationBadgeClick(event, this)" in badge_body
-    # The badge HTML must not call openValidationFailure with a string
-    # literal argument — that's the inline-JS injection footgun.
-    assert "openValidationFailure(${" not in badge_body
-    # Not-validated is non-clickable (no _handleCycleValidationBadgeClick inside
-    # that branch) — guard a future "make everything clickable" cleanup from
-    # accidentally routing missing-validation cycles into the dialog endpoint.
-    assert "'not_validated'" in badge_body
-    assert "'pending'" not in badge_body  # pending falls through to no badge
-
-    # Dispatcher pulls run_dir from the data attribute and forwards via
-    # openValidationFailure — the only path to the dialog endpoint.
-    handler_body = _function_body(js, "_handleCycleValidationBadgeClick")
-    assert "btn.dataset.validationRunDir" in handler_body
-    assert "btn.dataset.validationIssue" in handler_body
-    assert "openValidationFailure(issueNumber, runDir, 'modal')" in handler_body
+    # The non-validated span never has a clickable command attached.
+    assert "data-validation-state=\"not_validated\"" in badge_body
+    # Pending falls through to no badge.
+    assert "if (state === 'pending') return ''" in badge_body
+    # The bespoke handler is gone — the Command pipeline owns the click.
+    assert "_handleCycleValidationBadgeClick" not in js, (
+        "_handleCycleValidationBadgeClick has been replaced by the "
+        "runE2ELifecycleCommand Command dispatcher (issue #6310 AC-2)"
+    )
+    # Drawer no longer hand-builds inline ``onclick`` calls into
+    # ``openValidationFailure`` — the Command pipeline handles that.
+    assert "_handleCycleValidationBadgeClick(event, this)" not in badge_body
 
     css = _read_dashboard_css_bundle()
     assert ".journey-cycle-validation-badge" in css

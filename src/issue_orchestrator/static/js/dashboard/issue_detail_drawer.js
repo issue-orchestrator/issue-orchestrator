@@ -240,59 +240,34 @@ function _renderJourneyRuns(container, allRuns) {
     }
 }
 
-function _renderCycleValidationBadge(validation, issueNumber) {
-    // The cycle's validation badge is the primary entry point into JUnit
-    // evidence for that cycle. Four kinds, three badge states:
-    //   - passed         → green "Validated" button → opens validation dialog
-    //   - failed         → red "Failed" button → opens validation dialog
-    //   - not_validated  → amber "Not validated" badge (no dialog target —
-    //                       anti-pattern marker for cycles that finished
-    //                       coding work without recording any tests)
+function _renderCycleValidationBadge(badge, _issueNumber) {
+    // Per issue #6310 AC-2 the cycle's validation badge is a typed
+    // ``CycleValidationBadge`` (state + optional typed command):
+    //   - passed         → green "Validated" button; dispatches the typed
+    //                       ``OpenValidationDetailsCommand`` through the
+    //                       existing ``runE2ELifecycleCommand`` pipeline.
+    //   - failed         → red "Failed" button; same dispatch path.
+    //   - not_validated  → amber "Not validated" span (anti-pattern
+    //                       marker; no command).
     //   - pending        → no badge (cycle still running; validation may
-    //                       yet run, so the anti-pattern signal would be
-    //                       premature)
-    //
-    // Run dir + issue number ride on data-* attrs, NOT as inline JS string
-    // interpolation, because escapeAttr() escapes for HTML attribute parsing
-    // (& and ") but not for the JS string delimiter ('). A run_dir
-    // containing an apostrophe would otherwise break out of the onclick
-    // handler. _handleCycleValidationBadgeClick reads the attrs back at
-    // click time.
-    if (!validation || typeof validation !== 'object') return '';
-    const kind = String(validation.kind || '').toLowerCase();
-    if (kind !== 'passed' && kind !== 'failed' && kind !== 'not_validated') {
-        return '';
+    //                       yet run).
+    if (!badge || typeof badge !== 'object') return '';
+    const state = String(badge.state || '').toLowerCase();
+    if (state === 'pending') return '';
+    if (state === 'not_validated') {
+        return `<span class="journey-cycle-validation-badge is-not-validated"
+            data-validation-state="not_validated"
+            title="No validation recorded for this cycle — coding work without test evidence is an anti-pattern.">⚠ Not validated</span>`;
     }
-    const runDir = validation.run_dir ? String(validation.run_dir) : '';
-    if (kind === 'passed' && runDir) {
-        return `<button type="button" class="journey-cycle-validation-badge is-passed"
-            data-validation-kind="passed"
-            data-validation-issue="${escapeAttr(String(issueNumber))}"
-            data-validation-run-dir="${escapeAttr(runDir)}"
-            onclick="_handleCycleValidationBadgeClick(event, this);"
-            title="Open validation details for this cycle">✓ Validated</button>`;
-    }
-    if (kind === 'failed' && runDir) {
-        return `<button type="button" class="journey-cycle-validation-badge is-failed"
-            data-validation-kind="failed"
-            data-validation-issue="${escapeAttr(String(issueNumber))}"
-            data-validation-run-dir="${escapeAttr(runDir)}"
-            onclick="_handleCycleValidationBadgeClick(event, this);"
-            title="Open validation details for this cycle">✗ Failed</button>`;
-    }
-    // not_validated — non-clickable anti-pattern marker.
-    return `<span class="journey-cycle-validation-badge is-not-validated"
-        data-validation-kind="not_validated"
-        title="No validation recorded for this cycle — coding work without test evidence is an anti-pattern.">⚠ Not validated</span>`;
-}
-
-function _handleCycleValidationBadgeClick(event, btn) {
-    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-    if (!btn || !btn.dataset) return;
-    const issueNumber = Number(btn.dataset.validationIssue);
-    const runDir = String(btn.dataset.validationRunDir || '');
-    if (!Number.isInteger(issueNumber) || !runDir) return;
-    openValidationFailure(issueNumber, runDir, 'modal');
+    if (state !== 'passed' && state !== 'failed') return '';
+    if (!badge.command || typeof badge.command !== 'object') return '';
+    const cls = state === 'passed'
+        ? 'journey-cycle-validation-badge is-passed'
+        : 'journey-cycle-validation-badge is-failed';
+    const label = state === 'passed' ? '✓ Validated' : '✗ Failed';
+    // Reuse the shared Command renderer so the click goes through
+    // ``runE2ELifecycleCommand`` like every other typed-command button.
+    return _renderLifecycleCommandButton(badge.command, label, cls);
 }
 
 function _cycleOutcomeClass(outcome) {
