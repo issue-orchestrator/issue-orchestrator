@@ -35,6 +35,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     RunningE2ETestExecution,
     ValidationEvidenceMissing,
     ValidationFailed,
+    ValidationPassed,
     command_kinds,
 )
 
@@ -1099,6 +1100,60 @@ def test_validation_failed_and_missing_evidence_branches_project_distinctly() ->
     assert isinstance(missing_run_dir_cycle.coder.validation, ValidationEvidenceMissing)
     assert (
         missing_run_dir_cycle.coder.validation.diagnostics[0].code
+        == "validation.run_dir_missing"
+    )
+
+
+def test_validation_passed_exposes_details_command_for_modal_drilldown() -> None:
+    # The per-cycle validation modal needs `run_dir` to fetch JUnit evidence
+    # via the existing /api/dialog/validation-failure endpoint. Failed cycles
+    # have always exposed it; green cycles must too so the modal works on
+    # both outcomes.
+    started, completed, *_ = _complete_issue_events()
+    passed_event = _event(
+        "validation.passed",
+        event_id="validation-passed-with-run-dir",
+        timestamp="2026-04-21T12:12:00Z",
+        run_dir="/tmp/run-1",
+        summary="pytest passed",
+        artifacts=[_artifact("validation", "/tmp/run-1/validation.json")],
+    )
+    cycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=[started, completed, passed_event],
+        cycles=[{"cycle": 1, "events": [started, completed, passed_event]}],
+    ).cycles[0]
+    assert isinstance(cycle.coder, CompletedCodingAttempt)
+    assert isinstance(cycle.coder.validation, ValidationPassed)
+    assert cycle.coder.validation.details_command is not None
+    assert cycle.coder.validation.details_command.issue_number == 5723
+    assert cycle.coder.validation.details_command.run_dir == "/tmp/run-1"
+
+
+def test_validation_passed_without_run_dir_projects_missing_evidence() -> None:
+    # A passed validation event with no run_dir has no way to surface
+    # JUnit evidence in the per-cycle modal, so the projection treats it
+    # the same as a failed event without run_dir: `ValidationEvidenceMissing`
+    # with a `validation.run_dir_missing` diagnostic. No backcompat for
+    # ValidationPassed with a null details_command — the field is required.
+    started, completed, *_ = _complete_issue_events()
+    passed_event = _event(
+        "validation.passed",
+        event_id="validation-passed-no-run-dir",
+        timestamp="2026-04-21T12:12:00Z",
+        summary="pytest passed",
+        artifacts=[_artifact("validation", "/tmp/run-1/validation.json")],
+    )
+    cycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=[started, completed, passed_event],
+        cycles=[{"cycle": 1, "events": [started, completed, passed_event]}],
+    ).cycles[0]
+    assert isinstance(cycle.coder.validation, ValidationEvidenceMissing)
+    assert (
+        cycle.coder.validation.diagnostics[0].code
         == "validation.run_dir_missing"
     )
 

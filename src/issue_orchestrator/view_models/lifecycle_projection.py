@@ -1078,8 +1078,8 @@ def _validation_outcome(
                 ),
             ),
         )
+    run_dir = _optional_text(terminal.get("run_dir"))
     if failed is not None:
-        run_dir = _optional_text(terminal.get("run_dir"))
         if not run_dir:
             return ValidationEvidenceMissing(
                 expected_record_path=record_path,
@@ -1101,7 +1101,33 @@ def _validation_outcome(
                 run_dir=run_dir,
             ),
         )
-    return ValidationPassed(command=command, record_path=record_path)
+    # Passed events also carry run_dir (session_controller emits both
+    # SESSION_VALIDATION_PASSED and SESSION_VALIDATION_FAILED with run_dir);
+    # we project the details_command on green cycles so the per-cycle
+    # validation modal can load JUnit evidence without a new endpoint.
+    # A passed event missing run_dir is treated the same way a failed
+    # event without run_dir is — `ValidationEvidenceMissing` — because the
+    # outcome we'd otherwise project would be unactionable from the UI.
+    if not run_dir:
+        return ValidationEvidenceMissing(
+            expected_record_path=record_path,
+            diagnostics=(
+                TimelineDiagnostic(
+                    code="validation.run_dir_missing",
+                    message="passed validation event did not expose run_dir for details",
+                    severity="error",
+                    evidence_ref=_event_ref(terminal),
+                ),
+            ),
+        )
+    return ValidationPassed(
+        command=command,
+        record_path=record_path,
+        details_command=OpenValidationDetailsCommand(
+            issue_number=issue_number,
+            run_dir=run_dir,
+        ),
+    )
 
 
 def _project_e2e_tests(

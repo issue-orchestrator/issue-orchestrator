@@ -1236,11 +1236,12 @@
       "ValidationPassedPayload": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "command", "record_path"],
+        "required": ["kind", "command", "record_path", "details_command"],
         "properties": {
           "kind": {"const": "passed"},
           "command": {"type": "string"},
-          "record_path": {"type": "string"}
+          "record_path": {"type": "string"},
+          "details_command": {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"}
         }
       },
       "ValidationFailedPayload": {

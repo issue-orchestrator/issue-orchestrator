@@ -175,6 +175,12 @@ class ValidationPassed(LifecycleBase):
     kind: Literal["passed"] = "passed"
     command: str
     record_path: str
+    # Same shape as ValidationFailed so the per-cycle validation modal can
+    # fetch full evidence (JUnit cases, stdout/stderr) for green cycles too.
+    # Required: a ValidationPassed without somewhere to find the evidence
+    # is unactionable, and we don't keep a backcompat path for older
+    # projections — writers always emit run_dir on passed events.
+    details_command: OpenValidationDetailsCommand
 
 
 class ValidationFailed(LifecycleBase):

@@ -89,6 +89,9 @@ def _validated_coding_attempt(
         validation=ValidationPassed(
             command="pytest tests/unit -q",
             record_path="/runs/issue-1/validation.json",
+            details_command=OpenValidationDetailsCommand(
+                issue_number=1, run_dir="/runs/issue-1",
+            ),
         ),
         session_recording=_session_unavailable(),
         commands=(_details(), _completion_cmd()),
@@ -147,6 +150,9 @@ def test_completed_coding_attempt_requires_completion_command() -> None:
             validation=ValidationPassed(
                 command="pytest",
                 record_path="/runs/validation.json",
+                details_command=OpenValidationDetailsCommand(
+                    issue_number=1, run_dir="/runs",
+                ),
             ),
             session_recording=_session_unavailable(),
             commands=(_details(),),
@@ -285,6 +291,9 @@ def test_issue_cycle_requires_publish_failure_review_reason() -> None:
         validation=ValidationPassed(
             command="pytest",
             record_path="/runs/validation.json",
+            details_command=OpenValidationDetailsCommand(
+                issue_number=1, run_dir="/runs",
+            ),
         ),
         session_recording=_session_unavailable(),
         diagnostics=(
@@ -363,7 +372,13 @@ def test_terminal_lifecycle_states_reject_inverted_chronology() -> None:
             started_at="2026-04-21T10:10:00Z",
             completed_at="2026-04-21T10:00:00Z",
             completion_record=_completion(),
-            validation=ValidationPassed(command="pytest", record_path="/runs/validation.json"),
+            validation=ValidationPassed(
+                command="pytest",
+                record_path="/runs/validation.json",
+                details_command=OpenValidationDetailsCommand(
+                    issue_number=1, run_dir="/runs",
+                ),
+            ),
             session_recording=_session_unavailable(),
             commands=(_details(), _completion_cmd()),
         )
