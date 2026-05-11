@@ -205,22 +205,31 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
 ) -> None:
     """Phase D (issue #6310 follow-up): the canonical validation viewer
     is a real ARIA tree.  ``role="tree"`` on the root, ``role="treeitem"``
-    on every row, ``role="group"`` on every children container.
-    ``enhanceCanonicalValidationViewerAccessibility`` (called after mount
-    by the drawer) fills in aria-level / aria-setsize / aria-posinset
-    and wires arrow-key navigation with roving tabindex.
+    on every row, ``role="group"`` on every children container — and on
+    every triage card so failed-run children share the same tree/group
+    ownership model as the browse rows.
+    ``enhanceCanonicalValidationViewerAccessibility`` (called after
+    mount by the drawer) fills in aria-level / aria-setsize /
+    aria-posinset and wires the WAI-ARIA keyboard contract.
 
-    The JS-vm tests cover the render-time invariants on raw HTML.  This
-    test pins the live-DOM behavior — that the enhancer runs, that
-    keyboard nav actually moves focus, and that the open/close keys
-    work.
+    The matrix of keyboard commands is covered by JS-vm tests via the
+    pure ``_treeCommandForKey`` translator and the dependency-injected
+    ``_executeTreeCommand`` executor (with a fake tree fixture).  This
+    test is the thin browser smoke that proves the wire-up works under
+    a real keypress pipeline: it focuses a treeitem with
+    ``element.focus()`` (real focus, not synthetic dispatch) and uses
+    ``page.keyboard.press(...)`` for real keypresses.
+
+    Uses a *failed* payload (reviewer Blocker 1 on PR #6316) so the
+    triage-card treeitems are exercised and we can assert their
+    position metadata is complete.
     """
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
-    # Stub the dialog endpoint with a payload rich enough to give the
-    # viewer multiple treeitems at multiple levels (a failed test +
-    # passed tests in browse-by-file).
+    # Failed payload: two failing tests + one passing test so we cover
+    # both the triage hierarchy (under .cvv-triage-card[role=group]) and
+    # the browse-by-file hierarchy (under .cvv-row-browse[role=treeitem]).
     page.route(
         "**/api/dialog/validation-failure/410**",
         lambda route: route.fulfill(
@@ -229,21 +238,29 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
             body="""
             {
               "title": "Validation Results #410",
-              "reason": "Validation passed",
+              "reason": "2 tests failed",
               "suite": "publish_gate",
               "command": "make validate-pr",
-              "exit_code": 0,
+              "exit_code": 2,
               "started_at": "2026-01-01T13:00:00Z",
               "ended_at": "2026-01-01T13:06:00Z",
-              "status": "passed",
-              "failed_tests": [],
+              "status": "failed",
+              "failed_tests": ["tests/test_a.py::test_alpha", "tests/test_a.py::test_gamma"],
               "junit_cases": [
-                {"case_id": "a", "display_name": "test_alpha", "suite_name": "tests/test_a.py", "outcome": "passed", "duration_seconds": 0.003, "extras": []},
-                {"case_id": "b", "display_name": "test_beta", "suite_name": "tests/test_b.py", "outcome": "passed", "duration_seconds": 0.004, "extras": []}
+                {"case_id": "a", "display_name": "test_alpha", "suite_name": "tests/test_a.py",
+                 "outcome": "failed", "duration_seconds": 0.003,
+                 "failure_details": "AssertionError: bad\\n  at frame 1",
+                 "system_out": "before", "system_err": "after", "extras": []},
+                {"case_id": "c", "display_name": "test_gamma", "suite_name": "tests/test_a.py",
+                 "outcome": "failed", "duration_seconds": 0.004,
+                 "failure_details": "AssertionError: also bad\\n  at frame 2",
+                 "extras": []},
+                {"case_id": "b", "display_name": "test_beta", "suite_name": "tests/test_b.py",
+                 "outcome": "passed", "duration_seconds": 0.004, "extras": []}
               ],
-              "stdout_excerpt": ["all checks green"],
+              "stdout_excerpt": [],
               "stderr_excerpt": [],
-              "summary_rows": [{"label": "Reason", "value": "Validation passed"}],
+              "summary_rows": [{"label": "Outcome", "value": "Failed"}],
               "action_sections": []
             }
             """,
@@ -263,10 +280,17 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
     # ── Render-time ARIA roles are live in the DOM ──────────────────
     expect(cvv).to_have_attribute("role", "tree")
     expect(cvv).to_have_attribute("aria-orientation", "vertical")
+    # Triage card carries role="group" so its child treeitems share the
+    # same ownership model as browse rows (reviewer Blocker 1).
+    triage_cards = cvv.locator(".cvv-triage-card")
+    assert triage_cards.count() >= 1, "failed payload should render at least one triage card"
+    expect(triage_cards.first).to_have_attribute("role", "group")
+
     treeitems = cvv.locator('[role="treeitem"]')
     assert treeitems.count() >= 1
-    # Every treeitem has aria-level + aria-setsize + aria-posinset
-    # filled in by the post-mount enhancer.
+    # Every treeitem has complete position metadata.  This is the
+    # specific regression the reviewer caught: failed-triage treeitems
+    # previously had aria-setsize but no aria-posinset.
     levels = treeitems.evaluate_all(
         "elements => elements.map(el => [el.getAttribute('aria-level'),"
         " el.getAttribute('aria-setsize'), el.getAttribute('aria-posinset')])"
@@ -276,84 +300,56 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
         assert setsize is not None and int(setsize) >= 1, f"aria-setsize missing: {setsize}"
         assert posinset is not None and int(posinset) >= 1, f"aria-posinset missing: {posinset}"
 
-    # ── Roving tabindex: exactly one treeitem in the tab order ──────
+    # Within each triage card, the children's posinset values form a
+    # contiguous 1..N sequence — that's what a screen reader uses to
+    # announce position-within-set.
+    triage_child_meta = cvv.evaluate(
+        "root => Array.from(root.querySelectorAll('.cvv-triage-card')).map(card =>"
+        "  Array.from(card.querySelectorAll(':scope > [role=\"treeitem\"]')).map(el => ({"
+        "    setsize: el.getAttribute('aria-setsize'),"
+        "    posinset: el.getAttribute('aria-posinset'),"
+        "  }))"
+        ")"
+    )
+    for card_children in triage_child_meta:
+        assert len(card_children) > 0, "triage card should contain at least one treeitem"
+        for idx, meta in enumerate(card_children, start=1):
+            assert meta["setsize"] == str(len(card_children))
+            assert meta["posinset"] == str(idx)
+
+    # Exactly one treeitem in the tab order (roving tabindex).
     tab_stops = treeitems.evaluate_all(
         "elements => elements.filter(el => el.tabIndex === 0).length"
     )
     assert tab_stops == 1, f"expected exactly 1 tab-stop in tree, got {tab_stops}"
 
-    # ── Keyboard nav: dispatch keydown directly via JS to bypass
-    #    browser-specific focus quirks on <details> elements (in some
-    #    browsers `details.focus()` moves focus to the summary, which
-    #    affects what gets the keydown).  The tree's keydown listener
-    #    is delegated at .cvv-root, so dispatching keydown on the
-    #    treeitem reliably exercises it.  We assert on the *resulting*
-    #    DOM state (open/closed) rather than on focus movement.
-    def _dispatch_keydown(selector: str, key: str) -> None:
-        page.evaluate(
-            "([sel, key]) => {"
-            "  const el = document.querySelector(sel);"
-            "  if (!el) throw new Error('selector not found: ' + sel);"
-            "  el.focus();"
-            "  el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));"
-            "}",
-            [selector, key],
-        )
-
-    # Diagnostic: confirm the keydown listener is bound to .cvv-root.
-    bound = page.evaluate(
+    # ── Real keyboard input on the mounted viewer ───────────────────
+    # The matrix is JS-vm-tested via _treeCommandForKey and
+    # _executeTreeCommand.  Here we prove that real keypresses flow
+    # through the wire-up: focus the tab-stop, press ArrowDown, and
+    # verify focus moves to a different treeitem.
+    page.evaluate(
         "() => {"
-        "  const el = document.querySelector('.journey-step-validation-body .cvv-root');"
-        "  return el && el.dataset.cvvA11yBound;"
-        "}"
-    )
-    assert bound == "1", f"cvv-root keydown listener not bound (dataset.cvvA11yBound={bound})"
-
-    # ── ArrowRight on a collapsed treeitem expands it ───────────────
-    # Drive the keyboard handler and assert on the *same* element after.
-    # (Re-querying with ``:not([open])`` would resolve to a different
-    # element once the first one opens, which masked the win.)
-    open_after_right = page.evaluate(
-        "() => {"
-        "  const el = document.querySelector("
-        "    '.journey-step-validation-body .cvv-root details[role=\"treeitem\"]:not([open])'"
-        "  );"
-        "  if (!el) return { found: false };"
+        "  const el = document.querySelector('.journey-step-validation-body .cvv-root [role=\"treeitem\"][tabindex=\"0\"]');"
+        "  if (!el) throw new Error('no tab-stop treeitem found');"
         "  el.focus();"
-        "  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));"
-        "  return { found: true, open: el.open, ariaExpanded: el.getAttribute('aria-expanded') };"
         "}"
     )
-    if open_after_right.get("found"):
-        assert open_after_right["open"] is True, (
-            f"ArrowRight did not open the treeitem; got {open_after_right}"
-        )
-        # ``aria-expanded`` is synced on the toggle event handler — wait
-        # for the microtask to flush.
-        page.wait_for_function(
-            "() => {"
-            "  const el = document.querySelector('.journey-step-validation-body .cvv-root details[role=\"treeitem\"][open]');"
-            "  return el && el.getAttribute('aria-expanded') === 'true';"
-            "}",
-            timeout=2000,
-        )
-
-    # ── ArrowLeft on an expanded treeitem collapses it ──────────────
-    open_after_left = page.evaluate(
-        "() => {"
-        "  const el = document.querySelector("
-        "    '.journey-step-validation-body .cvv-row-browse[open]'"
-        "  );"
-        "  if (!el) return { found: false };"
-        "  el.focus();"
-        "  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));"
-        "  return { found: true, open: el.open };"
-        "}"
+    first_focused = page.evaluate(
+        "() => document.activeElement && document.activeElement.getAttribute('aria-label')"
+        " || (document.activeElement && document.activeElement.outerHTML.slice(0, 80))"
     )
-    if open_after_left.get("found"):
-        assert open_after_left["open"] is False, (
-            f"ArrowLeft did not close the treeitem; got {open_after_left}"
-        )
+    page.keyboard.press("ArrowDown")
+    after_down_focused = page.evaluate(
+        "() => document.activeElement && document.activeElement.outerHTML.slice(0, 80)"
+    )
+    assert after_down_focused != first_focused, (
+        f"ArrowDown should move focus; before={first_focused!r}, after={after_down_focused!r}"
+    )
+    after_down_role = page.evaluate(
+        "() => document.activeElement && document.activeElement.getAttribute('role')"
+    )
+    assert after_down_role == "treeitem", f"ArrowDown should land on a treeitem, got role={after_down_role}"
 
     assert errors == []
 

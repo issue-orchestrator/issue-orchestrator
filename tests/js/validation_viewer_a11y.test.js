@@ -186,3 +186,331 @@ test('a11y: enhancer is exported as a symbol on the viewer module', () => {
         'enhancer must be available on the viewer module',
     );
 });
+
+// ── Triage card role="group" (reviewer Blocker 1 on PR #6316) ──────────────
+
+test('a11y: failed triage card carries role="group" so children belong to an owned group', () => {
+    // The reviewer found that the canonical failure UI (triage cards
+    // for failed/errored tests) had no owning ARIA group, so
+    // ``_treeitemSiblings`` resolved the children's parent group all
+    // the way up to ``.cvv-root[role=tree]``.  That gave the
+    // traceback / stdout / stderr rows ``aria-setsize`` from unrelated
+    // top-level rows and ``aria-posinset = null``.  The triage card
+    // now carries ``role="group"`` so its children own a proper
+    // group/treeitem hierarchy.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'test_alpha', outcome: 'failed',
+            failure_details: 'AssertionError: bad\n  at frame 1',
+            system_out: 'out', system_err: 'err',
+            extras: [],
+        }],
+    });
+    const cardTag = html.match(/<div class="cvv-triage-card[^"]*"[^>]*>/);
+    assert.ok(cardTag, 'triage card should render');
+    assert.match(cardTag[0], /role="group"/);
+});
+
+// ── Key → command translation (pure, no DOM needed) ────────────────────────
+
+test('keyboard cmd: ArrowDown / ArrowUp map to next / prev regardless of details state', () => {
+    const ctx = loadViewer();
+    for (const isDetails of [true, false]) {
+        for (const isOpen of [true, false]) {
+            assert.strictEqual(ctx._treeCommandForKey('ArrowDown', { isDetails, isOpen }), 'next');
+            assert.strictEqual(ctx._treeCommandForKey('ArrowUp', { isDetails, isOpen }), 'prev');
+        }
+    }
+});
+
+test('keyboard cmd: ArrowRight expands a collapsed details, focuses first child otherwise', () => {
+    const ctx = loadViewer();
+    assert.strictEqual(ctx._treeCommandForKey('ArrowRight', { isDetails: true, isOpen: false }), 'expand');
+    assert.strictEqual(ctx._treeCommandForKey('ArrowRight', { isDetails: true, isOpen: true }), 'focus-first-child');
+    assert.strictEqual(ctx._treeCommandForKey('ArrowRight', { isDetails: false, isOpen: false }), 'focus-first-child');
+});
+
+test('keyboard cmd: ArrowLeft collapses an open details, focuses parent otherwise', () => {
+    const ctx = loadViewer();
+    assert.strictEqual(ctx._treeCommandForKey('ArrowLeft', { isDetails: true, isOpen: true }), 'collapse');
+    assert.strictEqual(ctx._treeCommandForKey('ArrowLeft', { isDetails: true, isOpen: false }), 'focus-parent');
+    assert.strictEqual(ctx._treeCommandForKey('ArrowLeft', { isDetails: false, isOpen: false }), 'focus-parent');
+});
+
+test('keyboard cmd: Home / End map to first / last', () => {
+    const ctx = loadViewer();
+    assert.strictEqual(ctx._treeCommandForKey('Home', { isDetails: false, isOpen: false }), 'first');
+    assert.strictEqual(ctx._treeCommandForKey('End', { isDetails: false, isOpen: false }), 'last');
+});
+
+test('keyboard cmd: Enter / Space toggle details, no-op otherwise', () => {
+    const ctx = loadViewer();
+    assert.strictEqual(ctx._treeCommandForKey('Enter', { isDetails: true, isOpen: false }), 'toggle');
+    assert.strictEqual(ctx._treeCommandForKey(' ', { isDetails: true, isOpen: true }), 'toggle');
+    assert.strictEqual(ctx._treeCommandForKey('Enter', { isDetails: false, isOpen: false }), null);
+    assert.strictEqual(ctx._treeCommandForKey(' ', { isDetails: false, isOpen: false }), null);
+});
+
+test('keyboard cmd: unrelated keys return null (no preventDefault)', () => {
+    const ctx = loadViewer();
+    for (const key of ['Tab', 'Escape', 'a', 'PageDown']) {
+        assert.strictEqual(ctx._treeCommandForKey(key, { isDetails: true, isOpen: true }), null);
+    }
+});
+
+// ── Command executor with a fake-tree ops adapter ──────────────────────────
+//
+// The executor only talks to the DOM through ``ops``.  Tests pass a
+// fake adapter backed by a tiny tree of plain-JS objects; the
+// commands' results (focus movement, expand/collapse, roving tabindex)
+// are observable on those objects.
+
+function makeFakeTree() {
+    // Build a small tree:
+    //   root
+    //     ├─ A (details, collapsed)   ← starts focused (tabIndex=0)
+    //     │   ├─ A1 (details)
+    //     │   └─ A2 (details)
+    //     ├─ B (details, open)
+    //     │   └─ B1 (details)
+    //     └─ C (details, collapsed)
+    function node(name, opts = {}) {
+        return {
+            name,
+            tagName: opts.tagName || 'DETAILS',
+            open: !!opts.open,
+            tabIndex: -1,
+            focused: false,
+            children: [],
+            parent: null,
+            focus() { this.focused = true; },
+        };
+    }
+    const A = node('A');
+    const A1 = node('A1');
+    const A2 = node('A2');
+    const B = node('B', { open: true });
+    const B1 = node('B1');
+    const C = node('C');
+    A.children = [A1, A2]; A1.parent = A; A2.parent = A;
+    B.children = [B1]; B1.parent = B;
+    const root = { name: 'root', children: [A, B, C] };
+    A.parent = B.parent = C.parent = root;
+    A.tabIndex = 0;  // initial focus / tab-stop
+    A.focused = true;
+    return { root, A, A1, A2, B, B1, C };
+}
+
+function makeFakeOps() {
+    // The ops surface matches what ``_executeTreeCommand`` uses.  All
+    // implementations operate on the fake-tree node objects above.
+    function flatten(root) {
+        // Pre-order traversal.
+        const out = [];
+        function walk(node) {
+            for (const child of node.children) {
+                out.push(child);
+                walk(child);
+            }
+        }
+        walk(root);
+        return out;
+    }
+    function isVisible(node) {
+        // Visible = every ancestor is open.
+        let p = node.parent;
+        while (p && p.children) {
+            if (p.children && p.tagName === 'DETAILS' && !p.open) return false;
+            p = p.parent;
+        }
+        return true;
+    }
+    function visibleList(root) {
+        return flatten(root).filter(isVisible);
+    }
+    return {
+        nextVisible: (item, root) => {
+            const v = visibleList(root);
+            const i = v.indexOf(item);
+            return i >= 0 && i < v.length - 1 ? v[i + 1] : null;
+        },
+        prevVisible: (item, root) => {
+            const v = visibleList(root);
+            const i = v.indexOf(item);
+            return i > 0 ? v[i - 1] : null;
+        },
+        firstVisible: (root) => visibleList(root)[0] || null,
+        lastVisible: (root) => {
+            const v = visibleList(root);
+            return v.length > 0 ? v[v.length - 1] : null;
+        },
+        firstChild: (item) => item.children && item.children[0] || null,
+        // Only return the parent if it's itself a treeitem (mirrors the
+        // production adapter, which uses ``closest('[role="treeitem"]')``
+        // and therefore skips non-treeitem ancestors like the tree
+        // root or unrelated groups).  In the fake tree, the root is
+        // not a treeitem (it has no ``tagName``).
+        parent: (item) => item.parent && item.parent.tagName === 'DETAILS' ? item.parent : null,
+        setOpen: (item, val) => { if (item.tagName === 'DETAILS') item.open = !!val; },
+        getOpen: (item) => !!(item.tagName === 'DETAILS' && item.open),
+        focusItem: (item, root) => {
+            for (const n of flatten(root)) { n.tabIndex = -1; n.focused = false; }
+            item.tabIndex = 0;
+            item.focused = true;
+        },
+    };
+}
+
+test('executor: next moves focus to the following visible treeitem and updates the roving tabindex', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    // Start at A (tabIndex=0).  A is collapsed so its children A1/A2 aren't visible.
+    // Next visible after A should be B.
+    const ok = ctx._executeTreeCommand('next', tree.A, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.A.tabIndex, -1, 'A loses tab-stop');
+    assert.strictEqual(tree.B.tabIndex, 0, 'B gains tab-stop');
+    assert.strictEqual(tree.B.focused, true, 'B receives focus');
+});
+
+test('executor: next from the last visible item returns false (no movement)', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    ops.focusItem(tree.C, tree.root);
+    const ok = ctx._executeTreeCommand('next', tree.C, tree.root, ops);
+    assert.strictEqual(ok, false);
+    assert.strictEqual(tree.C.focused, true, 'focus stays put');
+});
+
+test('executor: prev moves focus to the preceding visible treeitem', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    ops.focusItem(tree.B, tree.root);
+    const ok = ctx._executeTreeCommand('prev', tree.B, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.A.focused, true);
+});
+
+test('executor: expand sets details.open without moving focus', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    assert.strictEqual(tree.A.open, false);
+    const ok = ctx._executeTreeCommand('expand', tree.A, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.A.open, true);
+    assert.strictEqual(tree.A.focused, true, 'focus does not change on expand');
+});
+
+test('executor: collapse clears details.open', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    const ok = ctx._executeTreeCommand('collapse', tree.B, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.B.open, false);
+});
+
+test('executor: focus-first-child moves focus to the first child treeitem', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    // B is open and has one child B1.
+    ops.focusItem(tree.B, tree.root);
+    const ok = ctx._executeTreeCommand('focus-first-child', tree.B, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.B1.focused, true);
+});
+
+test('executor: focus-first-child returns false when there is no child', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    ops.focusItem(tree.C, tree.root);
+    const ok = ctx._executeTreeCommand('focus-first-child', tree.C, tree.root, ops);
+    assert.strictEqual(ok, false);
+});
+
+test('executor: focus-parent moves focus to the parent treeitem', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    ops.focusItem(tree.B1, tree.root);
+    const ok = ctx._executeTreeCommand('focus-parent', tree.B1, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.B.focused, true);
+});
+
+test('executor: focus-parent at the top of the tree returns false', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    const ok = ctx._executeTreeCommand('focus-parent', tree.A, tree.root, ops);
+    assert.strictEqual(ok, false);
+});
+
+test('executor: first / last focus the boundary visible items', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    ops.focusItem(tree.B, tree.root);
+
+    let ok = ctx._executeTreeCommand('first', tree.B, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.A.focused, true);
+
+    ok = ctx._executeTreeCommand('last', tree.A, tree.root, ops);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(tree.C.focused, true);
+});
+
+test('executor: toggle flips details.open', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    const wasOpen = tree.B.open;
+    ctx._executeTreeCommand('toggle', tree.B, tree.root, ops);
+    assert.strictEqual(tree.B.open, !wasOpen);
+    ctx._executeTreeCommand('toggle', tree.B, tree.root, ops);
+    assert.strictEqual(tree.B.open, wasOpen);
+});
+
+test('executor: invisible items are skipped by visible-traversal commands', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    // A collapsed → A1/A2 are NOT visible.
+    // From A, ArrowDown → B (not A1).
+    let cmd = ctx._treeCommandForKey('ArrowDown', { isDetails: true, isOpen: tree.A.open });
+    assert.strictEqual(cmd, 'next');
+    ctx._executeTreeCommand(cmd, tree.A, tree.root, ops);
+    assert.strictEqual(tree.B.focused, true);
+    assert.strictEqual(tree.A1.focused, false);
+});
+
+test('executor: roving tabindex always has exactly one tab-stop after any focus command', () => {
+    const ctx = loadViewer();
+    const tree = makeFakeTree();
+    const ops = makeFakeOps();
+    function countTabStops() {
+        let n = 0;
+        function walk(node) {
+            if (node.tabIndex === 0) n++;
+            for (const c of node.children || []) walk(c);
+        }
+        walk(tree.root);
+        return n;
+    }
+    assert.strictEqual(countTabStops(), 1);
+    ctx._executeTreeCommand('next', tree.A, tree.root, ops);
+    assert.strictEqual(countTabStops(), 1, 'one tab-stop after next');
+    ctx._executeTreeCommand('focus-first-child', tree.B, tree.root, ops);
+    assert.strictEqual(countTabStops(), 1, 'one tab-stop after focus-first-child');
+    ctx._executeTreeCommand('first', tree.B1, tree.root, ops);
+    assert.strictEqual(countTabStops(), 1, 'one tab-stop after first');
+});

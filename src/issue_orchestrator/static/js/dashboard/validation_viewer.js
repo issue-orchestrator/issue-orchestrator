@@ -228,6 +228,28 @@ function renderCanonicalValidationViewer(data, options = {}) {
 //   * ArrowLeft   → if expanded, collapse; else focus parent treeitem.
 //   * Home / End  → focus first / last visible treeitem.
 //   * Enter / Space → toggle expansion.
+//
+// The keyboard pipeline is split into three pieces so the semantics
+// are testable without a real browser (reviewer Blocker 2 on PR #6316):
+//
+//   1. ``_treeCommandForKey(key, viewState) → command | null``
+//      A pure function that translates a key + a tiny ``viewState``
+//      ({isDetails, isOpen}) into a tree command — one of
+//      ``next`` / ``prev`` / ``expand`` / ``collapse`` /
+//      ``focus-first-child`` / ``focus-parent`` / ``first`` /
+//      ``last`` / ``toggle``.  JS-vm tests cover the matrix.
+//
+//   2. ``_executeTreeCommand(command, item, root, ops) → boolean``
+//      Applies the command via a small ``ops`` adapter that
+//      abstracts the DOM operations the command needs.  Production
+//      uses ``_DOM_TREE_OPS`` (real-DOM adapter); JS-vm tests pass a
+//      fake adapter backed by a plain-JS tree fixture so traversal,
+//      expand/collapse, parent/child focus, and roving-tabindex
+//      results are verified without a browser.
+//
+//   3. ``_onTreeKeydown(event)`` — the bound listener.  Thin wrapper
+//      that translates the key, executes the command, and prevents
+//      default on a successful command.
 
 function enhanceCanonicalValidationViewerAccessibility(root) {
     if (!root || typeof root.querySelectorAll !== 'function') return;
@@ -297,68 +319,138 @@ function _onTreeToggle(event) {
     }
 }
 
+// ── Layer 1: pure key → command translation (testable in JS-vm) ─────
+
+function _treeCommandForKey(key, viewState) {
+    // ``viewState`` is the minimum a translation needs to know:
+    //   * ``isDetails`` — whether the focused treeitem is a <details>
+    //     element (and therefore can expand/collapse/toggle).
+    //   * ``isOpen``    — whether that <details> is currently open.
+    // Returning ``null`` means the key is not a tree-nav binding and
+    // the event handler should not preventDefault.
+    const state = viewState || {};
+    switch (key) {
+        case 'ArrowDown': return 'next';
+        case 'ArrowUp': return 'prev';
+        case 'ArrowRight':
+            if (state.isDetails && !state.isOpen) return 'expand';
+            return 'focus-first-child';
+        case 'ArrowLeft':
+            if (state.isDetails && state.isOpen) return 'collapse';
+            return 'focus-parent';
+        case 'Home': return 'first';
+        case 'End': return 'last';
+        case 'Enter':
+        case ' ':
+            if (state.isDetails) return 'toggle';
+            return null;
+        default:
+            return null;
+    }
+}
+
+// ── Layer 2: command executor with dependency-injected DOM ops ──────
+
+function _executeTreeCommand(command, item, root, ops) {
+    switch (command) {
+        case 'next': {
+            const next = ops.nextVisible(item, root);
+            if (!next) return false;
+            ops.focusItem(next, root);
+            return true;
+        }
+        case 'prev': {
+            const prev = ops.prevVisible(item, root);
+            if (!prev) return false;
+            ops.focusItem(prev, root);
+            return true;
+        }
+        case 'expand': {
+            ops.setOpen(item, true);
+            return true;
+        }
+        case 'collapse': {
+            ops.setOpen(item, false);
+            return true;
+        }
+        case 'focus-first-child': {
+            const child = ops.firstChild(item);
+            if (!child) return false;
+            ops.focusItem(child, root);
+            return true;
+        }
+        case 'focus-parent': {
+            const parent = ops.parent(item, root);
+            if (!parent) return false;
+            ops.focusItem(parent, root);
+            return true;
+        }
+        case 'first': {
+            const first = ops.firstVisible(root);
+            if (!first) return false;
+            ops.focusItem(first, root);
+            return true;
+        }
+        case 'last': {
+            const last = ops.lastVisible(root);
+            if (!last) return false;
+            ops.focusItem(last, root);
+            return true;
+        }
+        case 'toggle': {
+            ops.setOpen(item, !ops.getOpen(item));
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+// Production adapter — the real-DOM implementation of ``ops``.  Each
+// method is a thin wrapper around the small set of DOM operations the
+// commands need.  JS-vm tests pass an alternative adapter; the
+// production listener uses this one.
+const _DOM_TREE_OPS = {
+    nextVisible: (item, root) => _nextVisibleTreeitem(item, root),
+    prevVisible: (item, root) => _prevVisibleTreeitem(item, root),
+    firstVisible: (root) => {
+        const all = _visibleTreeitems(root);
+        return all.length > 0 ? all[0] : null;
+    },
+    lastVisible: (root) => {
+        const all = _visibleTreeitems(root);
+        return all.length > 0 ? all[all.length - 1] : null;
+    },
+    firstChild: (item) =>
+        item.querySelector(':scope > [role="group"] [role="treeitem"], :scope [role="group"] > [role="treeitem"]'),
+    parent: (item) =>
+        item.parentElement ? item.parentElement.closest('[role="treeitem"]') : null,
+    setOpen: (item, value) => {
+        if (item.tagName === 'DETAILS') item.open = !!value;
+    },
+    getOpen: (item) => !!(item.tagName === 'DETAILS' && item.open),
+    focusItem: (item, root) => _focusTreeitem(item, root),
+};
+
+// ── Layer 3: thin event listener ────────────────────────────────────
+
 function _onTreeKeydown(event) {
     const item = event.target && event.target.closest && event.target.closest('[role="treeitem"]');
     if (!item) return;
-    const root = event.currentTarget;
-    let handled = false;
-    switch (event.key) {
-        case 'ArrowDown': {
-            const next = _nextVisibleTreeitem(item, root);
-            if (next) { _focusTreeitem(next, root); handled = true; }
-            break;
-        }
-        case 'ArrowUp': {
-            const prev = _prevVisibleTreeitem(item, root);
-            if (prev) { _focusTreeitem(prev, root); handled = true; }
-            break;
-        }
-        case 'ArrowRight': {
-            if (item.tagName === 'DETAILS' && !item.open) {
-                item.open = true;
-                handled = true;
-            } else {
-                const child = item.querySelector(':scope > [role="group"] [role="treeitem"], :scope [role="group"] > [role="treeitem"]');
-                if (child) { _focusTreeitem(child, root); handled = true; }
-            }
-            break;
-        }
-        case 'ArrowLeft': {
-            if (item.tagName === 'DETAILS' && item.open) {
-                item.open = false;
-                handled = true;
-            } else {
-                const parent = item.parentElement && item.parentElement.closest('[role="treeitem"]');
-                if (parent) { _focusTreeitem(parent, root); handled = true; }
-            }
-            break;
-        }
-        case 'Home': {
-            const all = _visibleTreeitems(root);
-            if (all.length > 0) { _focusTreeitem(all[0], root); handled = true; }
-            break;
-        }
-        case 'End': {
-            const all = _visibleTreeitems(root);
-            if (all.length > 0) { _focusTreeitem(all[all.length - 1], root); handled = true; }
-            break;
-        }
-        case 'Enter':
-        case ' ': {
-            if (item.tagName === 'DETAILS') {
-                item.open = !item.open;
-                handled = true;
-            }
-            break;
-        }
-        default:
-            break;
-    }
+    const viewState = {
+        isDetails: item.tagName === 'DETAILS',
+        isOpen: !!(item.tagName === 'DETAILS' && item.open),
+    };
+    const command = _treeCommandForKey(event.key, viewState);
+    if (!command) return;
+    const handled = _executeTreeCommand(command, item, event.currentTarget, _DOM_TREE_OPS);
     if (handled) {
         event.preventDefault();
         event.stopPropagation();
     }
 }
+
+// ── DOM-backed helpers (used by the production ops adapter) ─────────
 
 function _visibleTreeitems(root) {
     // A treeitem is "visible" if every ancestor treeitem (within the
@@ -411,7 +503,15 @@ function _renderTriageCard(testCase, idPrefix) {
     // packs both into a single text blob; we split on the first newline.
     const { headlineMessage, tracebackBody } = _splitFailureDetails(testCase.failure_details || '');
 
-    let html = `<div class="cvv-triage-card cvv-${outcome}">`;
+    // The triage card is a ``role="group"`` so its child treeitems
+    // (traceback / stdout / stderr) share the same tree/group ownership
+    // model as the browse rows (reviewer Blocker 1 on PR #6316).
+    // Without this role the children's parent group resolves all the
+    // way up to ``.cvv-root[role=tree]``, which leaks both
+    // ``aria-setsize`` (counted against unrelated top-level rows) and
+    // ``aria-posinset`` (the children aren't members of that distant
+    // sibling set, so the enhancer can't assign a position).
+    let html = `<div class="cvv-triage-card cvv-${outcome}" role="group">`;
 
     html += '<div class="cvv-triage-head">';
     html += `<span class="cvv-ico cvv-ico-${outcome}">${outcome === 'error' ? '⚠' : '✕'}</span>`;
