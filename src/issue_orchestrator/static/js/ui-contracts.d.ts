@@ -65,6 +65,11 @@ export interface CycleArtifactsPayload {
   pr_url: string | null;
 }
 
+export interface CycleValidationBadgePayload {
+  command: OpenValidationDetailsCommandPayload | null;
+  state: "pending" | "not_validated" | "passed" | "failed";
+}
+
 export interface DashboardDataPayload {
   agents: string[];
   e2eLastRun?: Record<string, any> | null;
@@ -195,7 +200,7 @@ export interface E2ERunDetailPayload {
   results_summary: E2ERunResultsSummaryPayload;
   run: E2ERunExecutionPayload;
   run_count: number;
-  runs: Record<string, any>[];
+  runs: JourneyRunPayload[];
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
@@ -377,28 +382,28 @@ export interface InfoDialogPayload {
 }
 
 export interface IssueCyclePayload {
-  agent: string;
-  artifacts: CycleArtifactsPayload;
+  agent: string | null;
+  artifacts: CycleArtifactsPayload | null;
   coder: CodingAttemptPayload;
   cycle_in_run: number | null;
-  cycle_label: string;
+  cycle_label: string | null;
   cycle_number: number;
   diagnostics: TimelineDiagnosticPayload[];
-  expanded: boolean;
-  iteration: number;
-  lifecycle: number;
+  expanded: boolean | null;
+  iteration: number | null;
+  lifecycle: number | null;
   outcome: string;
   phase_groups: JourneyPhaseGroupPayload[];
-  reset_from_scratch: boolean;
-  retry_count: number;
+  reset_from_scratch: boolean | null;
+  retry_count: number | null;
   review: ReviewStagePayload;
-  reviewer_agent: string;
+  reviewer_agent: string | null;
   run_id: string | null;
   session_run_ids: string[];
   steps: JourneyStepPayload[];
-  time_label: string;
-  timestamp: string;
-  validation: Record<string, any> | null;
+  time_label: string | null;
+  timestamp: string | null;
+  validation: CycleValidationBadgePayload | null;
 }
 
 export interface IssueDetailActionPayload {
@@ -429,7 +434,7 @@ export interface IssueDetailPayload {
   previous_runs_count: number;
   raw_events_count: number;
   run_count: number;
-  runs: Record<string, any>[];
+  runs: JourneyRunPayload[];
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];

@@ -13,6 +13,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from ..domain.logical_run_projection import group_events_by_logical_cycle
+from .lifecycle_event_sets import (
+    BLOCKED_EVENT_NAMES,
+    CODING_TERMINAL_EVENTS,
+    OUTCOME_EVENTS,
+    VALIDATION_FAILED_EVENTS,
+    VALIDATION_PASSED_EVENTS,
+)
 from .lifecycle_semantics import (
     AgentIdentity,
     BlockedCodingAttempt,
@@ -112,84 +119,11 @@ _CODING_FAILED_EVENTS = frozenset(
 )
 _CODING_PUBLISH_FAILED_EVENTS = frozenset({"publish.failed"})
 
-# Public union: the events that mark a coding attempt as terminal — its
-# code change either succeeded (any completed variant), got blocked, failed
-# outright, or failed at publish. Exported so other view-models can share
-# the same definition of "coding is over" without redefining (and drifting
-# from) the set. The per-cycle validation badge in the issue-detail
-# projection uses this to decide when an absent validation event becomes
-# an anti-pattern marker vs. a still-pending cycle.
-CODING_TERMINAL_EVENTS: frozenset[str] = (
-    _CODING_COMPLETED_EVENTS
-    | _CODING_BLOCKED_EVENTS
-    | _CODING_FAILED_EVENTS
-    | _CODING_PUBLISH_FAILED_EVENTS
-)
-
-_VALIDATION_PASSED_EVENTS = frozenset(
-    {"validation.passed", "session.validation_passed"}
-)
-_VALIDATION_FAILED_EVENTS = frozenset(
-    {
-        "validation.failed",
-        "session.validation_failed",
-        "session.validation_retry_needed",
-    }
-)
-
-# Public re-exports. Same objects as the private sets above — promoted so
-# other view-models (e.g. the issue-detail per-cycle validation badge) can
-# consume the canonical classification without redefining it. Pin with an
-# identity assertion (drift-guard) in the tests so a future "I'll just copy
-# this set" change cannot reintroduce the disagreement we just fixed for
-# `CODING_TERMINAL_EVENTS`.
-VALIDATION_PASSED_EVENTS: frozenset[str] = _VALIDATION_PASSED_EVENTS
-VALIDATION_FAILED_EVENTS: frozenset[str] = _VALIDATION_FAILED_EVENTS
-
-# Canonical "outcome-relevant" event set used to derive a cycle's outcome
-# label.  Promoted from ``view_models.issue_detail`` so the dict-based and
-# typed projections classify the same events the same way (issue #6310 AC-4).
-#
-# Preserves the original ``_OUTCOME_EVENTS`` content from
-# ``view_models.issue_detail`` — including the cluster-terminal
-# ``review_exchange.round_completed`` and merge-terminal ``review.merged``
-# names — without expanding to every ``agent.*`` coding-terminal name.  That
-# keeps outcome-event semantics identical to the pre-consolidation behavior
-# while still giving lifecycle ownership.
-OUTCOME_EVENTS: frozenset[str] = frozenset(
-    {
-        "session.failed",
-        "session.timeout",
-        "session.blocked",
-        "session.completed",
-        "review_exchange.round_completed",
-        "review.changes_requested",
-        "review.approved",
-        "review.escalated",
-        "review.merged",
-        "issue.blocked",
-        "issue.needs_human",
-        "publish.failed",
-        "issue.completed",
-    }
-)
-
-# Canonical "blocked-relevant" event set used to derive a blocked-status
-# explanation.  Promoted from ``view_models.issue_detail`` for the same
-# reason as ``OUTCOME_EVENTS``.
-BLOCKED_EVENT_NAMES: frozenset[str] = frozenset(
-    {
-        "session.timeout",
-        "session.failed",
-        "session.blocked",
-        "session.validation_failed",
-        "issue.blocked",
-        "issue.needs_human",
-        "publish.failed",
-        "review.changes_requested",
-        "review.escalated",
-    }
-)
+# Back-compat private aliases — same identity as the canonical sets
+# imported from ``lifecycle_event_sets`` (consumed by the AC-4 drift-guard
+# test).
+_VALIDATION_PASSED_EVENTS = VALIDATION_PASSED_EVENTS
+_VALIDATION_FAILED_EVENTS = VALIDATION_FAILED_EVENTS
 
 _REVIEW_START_EVENTS = frozenset(
     {
@@ -1640,7 +1574,12 @@ def _coder_outcome(coder: CodingAttempt) -> str:
 
 
 __all__ = [
+    "BLOCKED_EVENT_NAMES",
+    "CODING_TERMINAL_EVENTS",
     "LifecycleProjectionError",
+    "OUTCOME_EVENTS",
+    "VALIDATION_FAILED_EVENTS",
+    "VALIDATION_PASSED_EVENTS",
     "project_dashboard_lifecycle_container",
     "project_e2e_run_iteration",
     "project_e2e_suite_lifecycle_container_for_run",

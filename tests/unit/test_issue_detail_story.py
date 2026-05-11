@@ -9,13 +9,36 @@ from issue_orchestrator.entrypoints.web_issue_detail_routes import _determine_is
 from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION
 from issue_orchestrator.view_models.issue_detail import (
     IssueStoryContext,
-    _build_journey_cycles,
     _build_journey_steps,
     _build_status_explanation,
-    _collect_cycle_artifacts,
     build_issue_detail_view_model,
     filter_last_run_cycles,
 )
+from issue_orchestrator.view_models.journey_projection import (
+    build_journey_cycles_from_events,
+    collect_cycle_artifacts,
+)
+from issue_orchestrator.view_models.lifecycle_semantics import IssueProjectionContext
+
+
+def _projection_ctx(**overrides: object) -> IssueProjectionContext:
+    base: dict[str, object] = {"flow_stage": "queued"}
+    base.update(overrides)
+    return IssueProjectionContext(**base)  # type: ignore[arg-type]
+
+
+def _journey_cycles(events: list[dict[str, object]], today: str) -> tuple:
+    """Test helper: build typed journey cycles with a default projection context.
+
+    Uses the typed entry point in ``lifecycle_projection``.  Returns a
+    tuple of ``IssueCycle`` models with journey fields populated.
+    """
+    return build_journey_cycles_from_events(
+        events,
+        today,
+        _projection_ctx(),
+        issue_number=4124,
+    )
 
 
 def _ctx(**overrides: object) -> IssueStoryContext:
@@ -154,7 +177,7 @@ def test_issue_detail_flow_stage_treats_reconciled_pr_history_as_done() -> None:
 
 def test_journey_cycles_require_logical_semantics() -> None:
     events = [{"event": "session.started", "timestamp": "2026-02-16T10:00:00Z"}]
-    assert _build_journey_cycles(events, "2026-02-16") == []
+    assert _journey_cycles(events, "2026-02-16") == ()
 
 
 def test_journey_cycles_group_by_logical_run_and_cycle() -> None:
@@ -168,10 +191,10 @@ def test_journey_cycles_group_by_logical_run_and_cycle() -> None:
         _evt("session.started", timestamp="2026-02-16T11:00:00Z", logical_run=2, logical_cycle=1, agent="agent:backend"),
     ]
 
-    cycles = _build_journey_cycles(events, "2026-02-16")
+    cycles = _journey_cycles(events, "2026-02-16")
     assert len(cycles) == 3
-    assert [c["lifecycle"] for c in cycles] == [1, 1, 2]
-    assert [c["iteration"] for c in cycles] == [1, 2, 1]
+    assert [c.lifecycle for c in cycles] == [1, 1, 2]
+    assert [c.iteration for c in cycles] == [1, 2, 1]
 
 
 def test_last_run_filter_uses_logical_run() -> None:
@@ -190,8 +213,8 @@ def test_rework_cycle_outcome_prefixed_for_non_review_cycle() -> None:
         _evt("rework.started", timestamp="2026-02-16T10:20:00Z", logical_run=1, logical_cycle=2, task="rework"),
         _evt("session.failed", timestamp="2026-02-16T10:30:00Z", logical_run=1, logical_cycle=2, status="failed", summary="compile error"),
     ]
-    cycles = _build_journey_cycles(events, "2026-02-16")
-    assert cycles[0]["outcome"].startswith("Rework →")
+    cycles = _journey_cycles(events, "2026-02-16")
+    assert cycles[0].outcome.startswith("Rework →")
 
 
 def test_phase_groups_follow_logical_phase_not_event_name_guessing() -> None:
@@ -201,8 +224,8 @@ def test_phase_groups_follow_logical_phase_not_event_name_guessing() -> None:
         _evt("review.started", timestamp="2026-02-16T10:02:00Z", logical_run=1, logical_cycle=1, task="review"),
         _evt("review.approved", timestamp="2026-02-16T10:03:00Z", logical_run=1, logical_cycle=1, task="review"),
     ]
-    cycles = _build_journey_cycles(events, "2026-02-16")
-    labels = [group["label"] for group in cycles[0]["phase_groups"]]
+    cycles = _journey_cycles(events, "2026-02-16")
+    labels = [group.label for group in cycles[0].phase_groups]
     assert labels == ["Coding", "Orchestrator", "Review"]
 
 
@@ -217,9 +240,9 @@ def test_collect_cycle_artifacts_extracts_pr_and_review_feedback() -> None:
         ),
         _evt("review.approved", timestamp="2026-02-16T10:01:00Z", logical_run=1, logical_cycle=1, task="review"),
     ]
-    artifacts = _collect_cycle_artifacts(events)
-    assert artifacts["pr_number"] == 4124
-    assert artifacts["has_review_feedback"] is True
+    artifacts = collect_cycle_artifacts(events)
+    assert artifacts.pr_number == 4124
+    assert artifacts.has_review_feedback is True
 
 
 def test_timeline_steps_preserve_day_field() -> None:
@@ -370,10 +393,10 @@ def test_validation_retry_creates_separate_cycles() -> None:
         _evt("review.started", timestamp="2026-02-16T10:15:00Z", logical_run=1, logical_cycle=2, task="review"),
         _evt("review.approved", timestamp="2026-02-16T10:16:00Z", logical_run=1, logical_cycle=2, task="review", status="completed"),
     ]
-    cycles = _build_journey_cycles(events, "2026-02-16")
+    cycles = _journey_cycles(events, "2026-02-16")
     assert len(cycles) == 2, f"Expected 2 cycles, got {len(cycles)}"
-    assert cycles[0]["iteration"] == 1
-    assert cycles[1]["iteration"] == 2
+    assert cycles[0].iteration == 1
+    assert cycles[1].iteration == 2
 
 
 def test_review_exchange_rework_events_surface_coder_step_between_review_rounds() -> None:
@@ -393,10 +416,10 @@ def test_review_exchange_rework_events_surface_coder_step_between_review_rounds(
         _evt("review.approved", timestamp="2026-02-16T10:05:00Z", logical_run=1, logical_cycle=1, task="review", status="completed"),
     ]
 
-    cycles = _build_journey_cycles(events, "2026-02-16")
-    labels = [group["label"] for group in cycles[0]["phase_groups"]]
+    cycles = _journey_cycles(events, "2026-02-16")
+    labels = [group.label for group in cycles[0].phase_groups]
     assert labels == ["Review", "Rework", "Review"]
-    narratives = [step["narrative"] for step in cycles[0]["steps"]]
+    narratives = [step.narrative for step in cycles[0].steps]
     assert "Coder addressing review feedback: Fix two issues" in narratives
     assert "Coder finished review rework" in narratives[3]
 

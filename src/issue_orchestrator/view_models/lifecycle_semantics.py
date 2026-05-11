@@ -586,6 +586,27 @@ class IssueProjectionContext(LifecycleBase):
     max_rework_cycles: int = 5
 
 
+class CycleValidationBadge(LifecycleBase):
+    """Per-cycle validation badge state (issue #6310 AC-2).
+
+    One typed model owns both the badge state and the action it dispatches.
+    A ``passed``/``failed`` badge requires an ``OpenValidationDetailsCommand``
+    (so the dialog can fetch evidence); ``pending``/``not_validated`` must
+    not carry a command (there is no dialog to open).
+    """
+
+    state: Literal["pending", "not_validated", "passed", "failed"]
+    command: OpenValidationDetailsCommand | None = None
+
+    @model_validator(mode="after")
+    def _command_matches_state(self) -> "CycleValidationBadge":
+        if self.state in ("passed", "failed") and self.command is None:
+            raise ValueError(f"command required for state={self.state!r}")
+        if self.state in ("pending", "not_validated") and self.command is not None:
+            raise ValueError(f"command must be absent for state={self.state!r}")
+        return self
+
+
 class IssueCycle(LifecycleBase):
     cycle_number: int
     coder: CodingAttempt
@@ -595,28 +616,31 @@ class IssueCycle(LifecycleBase):
 
     # Journey/drawer fields — populated when the projection is built with
     # ``IssueProjectionContext`` (e.g. ``/api/issue-detail``).  E2E
-    # ``linked_issue_lifecycles[].cycles[]`` leave these at defaults.
-    lifecycle: int = 0
-    iteration: int = 0
+    # ``linked_issue_lifecycles[].cycles[]`` leave these at ``None`` since
+    # the typed lifecycle does not have journey context.  Per #6310 AC's
+    # review feedback: required placeholder facts (lifecycle=0,
+    # iteration=0, cycle_label="") would mislead non-journey consumers,
+    # so absent journey context is represented as ``None`` rather than
+    # sentinel values.
+    lifecycle: int | None = None
+    iteration: int | None = None
     run_id: str | None = None
-    timestamp: str = ""
+    timestamp: str | None = None
     session_run_ids: tuple[str, ...] = ()
-    agent: str = ""
-    reviewer_agent: str = ""
-    retry_count: int = 0
-    reset_from_scratch: bool = False
-    cycle_label: str = ""
-    time_label: str = ""
-    expanded: bool = False
+    agent: str | None = None
+    reviewer_agent: str | None = None
+    retry_count: int | None = None
+    reset_from_scratch: bool | None = None
+    cycle_label: str | None = None
+    time_label: str | None = None
+    expanded: bool | None = None
     cycle_in_run: int | None = None
-    artifacts: CycleArtifacts = Field(default_factory=CycleArtifacts)
+    artifacts: CycleArtifacts | None = None
     steps: tuple[JourneyStep, ...] = ()
     phase_groups: tuple[JourneyPhaseGroup, ...] = ()
-    # PR-1 carries the per-cycle validation badge as an opaque dict
-    # (matches the post-PR-#6309 dict-projection shape on the wire). PR 2
-    # replaces this with a typed ``CycleValidationBadge`` per issue #6310
-    # AC-2.
-    validation: dict[str, Any] | None = None
+    # Typed per-cycle validation badge.  ``None`` when no journey context
+    # is threaded (e.g. E2E linked-issue lifecycle projection).
+    validation: CycleValidationBadge | None = None
 
     @field_validator("cycle_number")
     @classmethod
@@ -1006,6 +1030,7 @@ __all__ = [
     "CompletedCodingAttempt",
     "CompletionRecordEvidence",
     "CycleArtifacts",
+    "CycleValidationBadge",
     "DashboardIteration",
     "DashboardTimelineContainer",
     "E2EFailureDetailsAvailable",

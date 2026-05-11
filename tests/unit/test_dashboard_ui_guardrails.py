@@ -540,12 +540,18 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     assert ".journey-cycle-validation-badge.is-not-validated" in css
 
 
-def test_cycle_validation_summary_derived_from_raw_events() -> None:
-    """The per-cycle validation payload (kind + run_dir) is computed from
-    raw events at view-model build time so the frontend never has to
-    re-scan event streams to render the badge."""
-    from issue_orchestrator.view_models.issue_detail import (  # type: ignore[attr-defined]
-        _cycle_validation_summary,
+def test_cycle_validation_badge_derived_from_raw_events() -> None:
+    """The per-cycle validation badge is a typed ``CycleValidationBadge``
+    (issue #6310 AC-2) derived from canonical event classifiers in the
+    lifecycle projection.  Drawer renders ``state`` directly; for
+    passed/failed states it dispatches the typed
+    ``OpenValidationDetailsCommand`` through the existing
+    ``runE2ELifecycleCommand`` Command pipeline."""
+    from issue_orchestrator.view_models.journey_projection import (
+        derive_cycle_validation_badge,
+    )
+    from issue_orchestrator.view_models.lifecycle_semantics import (
+        OpenValidationDetailsCommand,
     )
 
     passed_events = [
@@ -556,23 +562,23 @@ def test_cycle_validation_summary_derived_from_raw_events() -> None:
             "artifacts": [{"kind": "validation", "path": "/tmp/run-1/validation.json"}],
         },
     ]
-    assert _cycle_validation_summary(passed_events) == {
-        "kind": "passed",
-        "run_dir": "/tmp/run-1",
-    }
+    badge = derive_cycle_validation_badge(passed_events, issue_number=4124)
+    assert badge.state == "passed"
+    assert badge.command == OpenValidationDetailsCommand(
+        issue_number=4124, run_dir="/tmp/run-1"
+    )
 
-    failed_events = [
-        {"event": "validation.failed", "run_dir": "/tmp/run-2"},
-    ]
-    assert _cycle_validation_summary(failed_events) == {
-        "kind": "failed",
-        "run_dir": "/tmp/run-2",
-    }
+    failed_events = [{"event": "validation.failed", "run_dir": "/tmp/run-2"}]
+    badge = derive_cycle_validation_badge(failed_events, issue_number=4124)
+    assert badge.state == "failed"
+    assert badge.command == OpenValidationDetailsCommand(
+        issue_number=4124, run_dir="/tmp/run-2"
+    )
 
     # Terminated coding cycle without a validation event = anti-pattern.
     # All canonical completed/blocked/failed/publish-failed events count
     # as terminal — the badge policy must not drift from the lifecycle
-    # projection's `CODING_TERMINAL_EVENTS` set.
+    # projection's ``CODING_TERMINAL_EVENTS`` set.
     for terminal_event in (
         "session.completed",
         "agent.coding_completed",
@@ -586,26 +592,28 @@ def test_cycle_validation_summary_derived_from_raw_events() -> None:
             {"event": "agent.coding_started", "run_dir": "/tmp/run-3"},
             {"event": terminal_event, "run_dir": "/tmp/run-3"},
         ]
-        assert _cycle_validation_summary(terminated_unvalidated) == {
-            "kind": "not_validated",
-            "run_dir": None,
-        }, (
+        badge = derive_cycle_validation_badge(
+            terminated_unvalidated, issue_number=4124
+        )
+        assert badge.state == "not_validated", (
             f"Terminal event {terminal_event!r} without validation must "
             "project not_validated (drift from CODING_TERMINAL_EVENTS)"
+        )
+        assert badge.command is None, (
+            "not_validated must not carry a command (no dialog to open)"
         )
 
     # Cycle still running (no terminal event yet) MUST NOT surface the
     # "Not validated" anti-pattern marker — validation has not had its
-    # chance to run. Returning `pending` lets the frontend draw no badge
-    # at all, which is the correct UX for in-flight work.
+    # chance to run.  Returning ``pending`` lets the frontend draw no
+    # badge for in-flight work.
     running = [
         {"event": "session.started", "run_dir": "/tmp/run-4"},
         {"event": "agent.coding_started", "run_dir": "/tmp/run-4"},
     ]
-    assert _cycle_validation_summary(running) == {
-        "kind": "pending",
-        "run_dir": None,
-    }
+    badge = derive_cycle_validation_badge(running, issue_number=4124)
+    assert badge.state == "pending"
+    assert badge.command is None
 
     # Failed wins when both fire — the latest-event-wins reverse scan picks
     # up the failure (final retry was the outcome).
@@ -613,27 +621,71 @@ def test_cycle_validation_summary_derived_from_raw_events() -> None:
         {"event": "validation.passed", "run_dir": "/tmp/run-4"},
         {"event": "validation.failed", "run_dir": "/tmp/run-4"},
     ]
-    assert _cycle_validation_summary(later_failed)["kind"] == "failed"
+    later_badge = derive_cycle_validation_badge(later_failed, issue_number=4124)
+    assert later_badge.state == "failed"
 
 
-def test_cycle_validation_summary_shares_terminal_set_with_lifecycle() -> None:
-    """Pin the shared-owner abstraction: the badge's notion of "coding is
-    over" comes from `lifecycle_projection.CODING_TERMINAL_EVENTS`, not a
-    parallel set in `issue_detail`. If someone reintroduces a private
-    duplicate, this test fails."""
+def test_cycle_validation_badge_typed_model_rejects_invalid_state_command_combos() -> None:
+    """``CycleValidationBadge`` validates the state↔command invariant
+    (issue #6310 AC-2)."""
+    import pytest
+
+    from issue_orchestrator.view_models.lifecycle_semantics import (
+        CycleValidationBadge,
+        OpenValidationDetailsCommand,
+    )
+
+    valid_command = OpenValidationDetailsCommand(issue_number=1, run_dir="/tmp/r")
+
+    # passed/failed without command → rejected
+    for state in ("passed", "failed"):
+        with pytest.raises(ValueError, match="command required"):
+            CycleValidationBadge(state=state, command=None)  # type: ignore[arg-type]
+
+    # pending/not_validated with command → rejected
+    for state in ("pending", "not_validated"):
+        with pytest.raises(ValueError, match="command must be absent"):
+            CycleValidationBadge(state=state, command=valid_command)  # type: ignore[arg-type]
+
+
+def test_cycle_validation_badge_shares_event_sets_with_lifecycle() -> None:
+    """Pin the shared-owner abstraction (issue #6310 AC-4): the badge
+    derives from canonical event sets owned by ``lifecycle_event_sets``.
+    No parallel ``_CYCLE_*`` aliases live in ``issue_detail`` anymore —
+    ``journey_projection.derive_cycle_validation_badge`` consumes the
+    canonical sets directly."""
     from issue_orchestrator.view_models import (  # type: ignore[attr-defined]
         issue_detail as _issue_detail,
+        journey_projection as _journey,
+        lifecycle_event_sets as _classifiers,
         lifecycle_projection as _lifecycle,
     )
 
-    # The two names must refer to the same frozenset object — not a copy
-    # with the same contents, because copy-with-same-contents is exactly
-    # the drift pattern we're guarding against.
-    assert (
-        _issue_detail._CYCLE_CODING_TERMINAL_EVENTS
-        is _lifecycle.CODING_TERMINAL_EVENTS
-    )
-    # Sanity: the union must cover all four canonical phases.
+    # ``issue_detail`` no longer re-exports the per-cycle classifier
+    # frozensets; the typed badge derives them directly.
+    assert not hasattr(_issue_detail, "_CYCLE_CODING_TERMINAL_EVENTS")
+    assert not hasattr(_issue_detail, "_CYCLE_VALIDATION_PASSED_EVENTS")
+    assert not hasattr(_issue_detail, "_CYCLE_VALIDATION_FAILED_EVENTS")
+    # No dict-shaped ``_cycle_validation_summary`` either — replaced by
+    # the typed ``derive_cycle_validation_badge`` in
+    # ``journey_projection``.
+    assert not hasattr(_issue_detail, "_cycle_validation_summary")
+    assert callable(_journey.derive_cycle_validation_badge)
+
+    # lifecycle_projection re-publishes canonical sets by identity.
+    assert _lifecycle.CODING_TERMINAL_EVENTS is _classifiers.CODING_TERMINAL_EVENTS
+    assert _lifecycle.VALIDATION_PASSED_EVENTS is _classifiers.VALIDATION_PASSED_EVENTS
+    assert _lifecycle.VALIDATION_FAILED_EVENTS is _classifiers.VALIDATION_FAILED_EVENTS
+    # Public re-export must equal the private set it aliases (no
+    # accidental decoupling of the public name).
+    assert _lifecycle.VALIDATION_PASSED_EVENTS is _lifecycle._VALIDATION_PASSED_EVENTS  # noqa: SLF001
+    assert _lifecycle.VALIDATION_FAILED_EVENTS is _lifecycle._VALIDATION_FAILED_EVENTS  # noqa: SLF001
+    # Sanity: canonical event names are in the right sets.
+    assert "validation.passed" in _classifiers.VALIDATION_PASSED_EVENTS
+    assert "session.validation_passed" in _classifiers.VALIDATION_PASSED_EVENTS
+    assert "validation.failed" in _classifiers.VALIDATION_FAILED_EVENTS
+    assert "session.validation_failed" in _classifiers.VALIDATION_FAILED_EVENTS
+    assert "session.validation_retry_needed" in _classifiers.VALIDATION_FAILED_EVENTS
     assert {
         "session.completed",
         "agent.coding_completed",
@@ -641,40 +693,7 @@ def test_cycle_validation_summary_shares_terminal_set_with_lifecycle() -> None:
         "session.blocked",
         "session.failed",
         "publish.failed",
-    } <= _lifecycle.CODING_TERMINAL_EVENTS
-
-
-def test_cycle_validation_summary_shares_validation_event_sets_with_lifecycle() -> None:
-    """Same drift-guard, for the passed/failed validation event sets.
-
-    A new validation event name added to `lifecycle_projection` must
-    automatically be honored by the per-cycle badge — no parallel
-    private set in `issue_detail` to forget to update.
-    """
-    from issue_orchestrator.view_models import (  # type: ignore[attr-defined]
-        issue_detail as _issue_detail,
-        lifecycle_projection as _lifecycle,
-    )
-
-    # Identity, not equality — equal-contents would be the bug.
-    assert (
-        _issue_detail._CYCLE_VALIDATION_PASSED_EVENTS
-        is _lifecycle.VALIDATION_PASSED_EVENTS
-    )
-    assert (
-        _issue_detail._CYCLE_VALIDATION_FAILED_EVENTS
-        is _lifecycle.VALIDATION_FAILED_EVENTS
-    )
-    # Public re-export must equal the private set it aliases (no
-    # accidental decoupling of the public name).
-    assert _lifecycle.VALIDATION_PASSED_EVENTS is _lifecycle._VALIDATION_PASSED_EVENTS  # noqa: SLF001
-    assert _lifecycle.VALIDATION_FAILED_EVENTS is _lifecycle._VALIDATION_FAILED_EVENTS  # noqa: SLF001
-    # Sanity: canonical event names are in the right sets.
-    assert "validation.passed" in _lifecycle.VALIDATION_PASSED_EVENTS
-    assert "session.validation_passed" in _lifecycle.VALIDATION_PASSED_EVENTS
-    assert "validation.failed" in _lifecycle.VALIDATION_FAILED_EVENTS
-    assert "session.validation_failed" in _lifecycle.VALIDATION_FAILED_EVENTS
-    assert "session.validation_retry_needed" in _lifecycle.VALIDATION_FAILED_EVENTS
+    } <= _classifiers.CODING_TERMINAL_EVENTS
 
 
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:

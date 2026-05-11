@@ -76,6 +76,11 @@ class CycleArtifactsPayload(BaseModel):
     pr_number: int | None
     pr_url: str | None
 
+class CycleValidationBadgePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: OpenValidationDetailsCommandPayload | None
+    state: Literal['pending', 'not_validated', 'passed', 'failed']
+
 class DashboardDataPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     agents: list[str]
@@ -206,7 +211,7 @@ class E2ERunDetailPayload(BaseModel):
     results_summary: E2ERunResultsSummaryPayload
     run: E2ERunExecutionPayload
     run_count: int
-    runs: list[dict[str, Any]]
+    runs: list[JourneyRunPayload]
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
@@ -388,28 +393,28 @@ class InfoDialogPayload(BaseModel):
 
 class IssueCyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    agent: str
-    artifacts: CycleArtifactsPayload
+    agent: str | None
+    artifacts: CycleArtifactsPayload | None
     coder: CodingAttemptPayload
     cycle_in_run: int | None
-    cycle_label: str
+    cycle_label: str | None
     cycle_number: int
     diagnostics: list[TimelineDiagnosticPayload]
-    expanded: bool
-    iteration: int
-    lifecycle: int
+    expanded: bool | None
+    iteration: int | None
+    lifecycle: int | None
     outcome: str
     phase_groups: list[JourneyPhaseGroupPayload]
-    reset_from_scratch: bool
-    retry_count: int
+    reset_from_scratch: bool | None
+    retry_count: int | None
     review: ReviewStagePayload
-    reviewer_agent: str
+    reviewer_agent: str | None
     run_id: str | None
     session_run_ids: list[str]
     steps: list[JourneyStepPayload]
-    time_label: str
-    timestamp: str
-    validation: dict[str, Any] | None
+    time_label: str | None
+    timestamp: str | None
+    validation: CycleValidationBadgePayload | None
 
 class IssueDetailActionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -440,7 +445,7 @@ class IssueDetailPayload(BaseModel):
     previous_runs_count: int
     raw_events_count: int
     run_count: int
-    runs: list[dict[str, Any]]
+    runs: list[JourneyRunPayload]
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]

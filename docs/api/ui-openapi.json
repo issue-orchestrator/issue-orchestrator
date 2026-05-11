@@ -656,7 +656,7 @@
           "summary": {"$ref": "#/components/schemas/IssueDetailSummaryPayload"},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/IssueDetailActionPayload"}},
           "status_explanation": {"type": "string"},
-          "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "runs": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyRunPayload"}},
           "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "run_count": {"type": "integer"},
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -721,7 +721,7 @@
           "summary": {"$ref": "#/components/schemas/IssueDetailSummaryPayload"},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/IssueDetailActionPayload"}},
           "status_explanation": {"type": "string"},
-          "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "runs": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyRunPayload"}},
           "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "run_count": {"type": "integer"},
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -1598,6 +1598,20 @@
           "steps": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyStepPayload"}}
         }
       },
+      "CycleValidationBadgePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "command"],
+        "properties": {
+          "state": {"enum": ["pending", "not_validated", "passed", "failed"]},
+          "command": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
       "IssueCyclePayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1614,25 +1628,30 @@
           "review": {"$ref": "#/components/schemas/ReviewStagePayload"},
           "outcome": {"type": "string"},
           "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
-          "lifecycle": {"type": "integer"},
-          "iteration": {"type": "integer"},
+          "lifecycle": {"type": ["integer", "null"]},
+          "iteration": {"type": ["integer", "null"]},
           "run_id": {"type": ["string", "null"]},
-          "timestamp": {"type": "string"},
+          "timestamp": {"type": ["string", "null"]},
           "session_run_ids": {"type": "array", "items": {"type": "string"}},
-          "agent": {"type": "string"},
-          "reviewer_agent": {"type": "string"},
-          "retry_count": {"type": "integer"},
-          "reset_from_scratch": {"type": "boolean"},
-          "cycle_label": {"type": "string"},
-          "time_label": {"type": "string"},
-          "expanded": {"type": "boolean"},
+          "agent": {"type": ["string", "null"]},
+          "reviewer_agent": {"type": ["string", "null"]},
+          "retry_count": {"type": ["integer", "null"]},
+          "reset_from_scratch": {"type": ["boolean", "null"]},
+          "cycle_label": {"type": ["string", "null"]},
+          "time_label": {"type": ["string", "null"]},
+          "expanded": {"type": ["boolean", "null"]},
           "cycle_in_run": {"type": ["integer", "null"]},
-          "artifacts": {"$ref": "#/components/schemas/CycleArtifactsPayload"},
+          "artifacts": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/CycleArtifactsPayload"},
+              {"type": "null"}
+            ]
+          },
           "steps": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyStepPayload"}},
           "phase_groups": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyPhaseGroupPayload"}},
           "validation": {
             "oneOf": [
-              {"type": "object", "additionalProperties": true},
+              {"$ref": "#/components/schemas/CycleValidationBadgePayload"},
               {"type": "null"}
             ]
           }
