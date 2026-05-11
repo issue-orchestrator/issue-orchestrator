@@ -760,8 +760,12 @@ def build_orchestrator(
     # Wire the registry into action_applier so ``_apply_escalate``
     # and ``_apply_reconcile_history_entry`` can release the pair at
     # their lifecycle boundaries (escalation, await-merge terminal).
+    # The shared supervisor completes the cancellation contract for
+    # STOP_SESSION: release the subprocess pair, then mark matching
+    # review-exchange jobs terminal so the main tick stops polling them.
     if action_applier is not None:
         action_applier.pair_registry = pair_registry
+        action_applier.background_job_supervisor = background_job_supervisor
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
@@ -938,6 +942,8 @@ def build_orchestrator_for_testing(
         Orchestrator configured with test dependencies
     """
     from ..infra.orchestrator import Orchestrator
+    from ..control.background_job_supervisor import BackgroundJobSupervisor
+    from ..ports.background_job import NullBackgroundJobRunner
 
     install_gh_guard()
 
@@ -946,6 +952,7 @@ def build_orchestrator_for_testing(
     events = events or NullEventSink()
     runner = runner or NullSessionRunner()
     events = SequencedEventSink(events)
+    background_job_supervisor = BackgroundJobSupervisor(NullBackgroundJobRunner())
 
     provider_resilience = ProviderResilienceManager(
         config.provider_resilience,
@@ -1056,6 +1063,7 @@ def build_orchestrator_for_testing(
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
+        action_applier.background_job_supervisor = background_job_supervisor
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -1148,6 +1156,7 @@ def build_orchestrator_for_testing(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry_for_testing,
+        background_job_supervisor=background_job_supervisor,
     )
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)

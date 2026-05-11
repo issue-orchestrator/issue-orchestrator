@@ -16,6 +16,13 @@ class TestKillSessionEndpoint:
         """Terminate-on-kill should stop and hold issue from automatic rerun."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
+        pair_registry = MagicMock()
+        job_supervisor = MagicMock()
+        job_supervisor.cancel_matching.return_value = ["review-exchange:1:issue-1"]
+        mock_orch.deps.services = SimpleNamespace(
+            pair_registry=pair_registry,
+            background_job_supervisor=job_supervisor,
+        )
 
         issue = create_issue(1, "Issue to Kill")
         session = create_session(issue)
@@ -95,6 +102,11 @@ class TestKillSessionEndpoint:
             mock_orch.repository_host.remove_label.assert_any_call(1, "pr-pending")
             mock_orch.repository_host.add_label.assert_any_call(4124, "blocked-failed")
             mock_orch.repository_host.remove_label.assert_any_call(4124, "needs-rework")
+            pair_registry.release.assert_called_once_with(1, reason="operator-terminated")
+            job_supervisor.cancel_matching.assert_called_once()
+            predicate = job_supervisor.cancel_matching.call_args.args[0]
+            assert predicate("review-exchange:1:issue-1")
+            assert not predicate("review-exchange:2:issue-2")
         finally:
             set_orchestrator(None)
 

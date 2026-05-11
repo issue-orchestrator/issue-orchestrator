@@ -77,6 +77,7 @@ from .completion_types import (
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
+from .test_skip_guard import scan_added_test_skip_guards
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
 
@@ -903,23 +904,11 @@ class CompletionProcessor:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
 
-        # Validate worktree state
-        worktree_state = self.validate_worktree_state(worktree, record)
-        if not worktree_state.ok:
-            return self._handle_invalid_worktree_state(
-                worktree,
-                record,
-                session_name,
-                issue_number,
-                worktree_state,
-            )
-
-        # Check publish gate if actions require it
-        gate_error = self._check_publish_gate_if_required(
+        pre_action_failure = self._check_pre_action_policies(
             worktree, record, session_name, issue_number
         )
-        if gate_error:
-            return gate_error
+        if pre_action_failure:
+            return pre_action_failure
 
         # Get branch name for PR operations
         branch = self.git_adapter.get_current_branch(worktree)
@@ -1025,6 +1014,34 @@ class CompletionProcessor:
             cleanup_completion_record_fn=self._cleanup_completion_record,
         )
 
+    def _check_pre_action_policies(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+    ) -> ProcessingResult | None:
+        """Run completion policies that must pass before any action executes."""
+        worktree_state = self.validate_worktree_state(worktree, record)
+        if not worktree_state.ok:
+            return self._handle_invalid_worktree_state(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                worktree_state,
+            )
+
+        test_skip_error = self._check_test_skip_guard_if_required(
+            worktree, record, session_name, issue_number
+        )
+        if test_skip_error:
+            return test_skip_error
+
+        return self._check_publish_gate_if_required(
+            worktree, record, session_name, issue_number
+        )
+
     def _read_and_validate_record(
         self,
         worktree: Path,
@@ -1096,6 +1113,44 @@ class CompletionProcessor:
             success=False,
             message=f"Validation failed: {worktree_state.reason}",
             errors=[tagged_reason],
+        )
+
+    def _check_test_skip_guard_if_required(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+    ) -> ProcessingResult | None:
+        """Reject newly added test-skip constructs before review/publish."""
+        if not self._requires_publish_gate(record):
+            return None
+
+        base_ref = f"origin/{self._base_branch()}"
+        diff_result = self.git_adapter.diff_against_base(worktree, base_ref)
+        if not diff_result.success:
+            return self._handle_gate_failure(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                (
+                    "Could not scan branch diff for banned test skips "
+                    f"against {base_ref}: {diff_result.error or 'unknown git error'}"
+                ),
+                gate_record=None,
+            )
+
+        scan = scan_added_test_skip_guards(diff_result.diff_text)
+        if scan.ok:
+            return None
+        return self._handle_gate_failure(
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            scan.reason(),
+            gate_record=None,
         )
 
     def _check_publish_gate_if_required(

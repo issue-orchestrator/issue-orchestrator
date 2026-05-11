@@ -50,6 +50,7 @@ _DEFAULT_PTY_ROWS = 40
 _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 _DEFAULT_RESPONSE_DRAIN_SECONDS = 0.1
 _DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
+_DEFAULT_PTY_WRITE_TIMEOUT_SECONDS = 30.0
 
 # Heartbeat cadence for the ``send_round`` poll loop. Without this, a
 # wedged agent shows up as 17 minutes of total log silence (#6160 e2e
@@ -57,6 +58,7 @@ _DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
 # growth, and the agent's process state so the next reproduction tells
 # us *which* step is wedged instead of just "something hung."
 _SEND_ROUND_HEARTBEAT_SECONDS = 30.0
+_PTY_WRITE_HEARTBEAT_SECONDS = 5.0
 
 
 class PersistentRoundError(RuntimeError):
@@ -145,6 +147,9 @@ def _write_full(
     deadline: float,
     now: Callable[[], float],
     sleep: Callable[[float], None],
+    role_label: str | None = None,
+    pid: int | None = None,
+    heartbeat_seconds: float = _PTY_WRITE_HEARTBEAT_SECONDS,
 ) -> int:
     """Write all of ``payload`` to a non-blocking fd, looping on partial writes.
 
@@ -165,19 +170,53 @@ def _write_full(
     """
     written = 0
     backoff = 0.005
+    started_at = now()
+    last_heartbeat = started_at
+    label = role_label or f"fd={fd}"
     while written < len(payload):
-        if now() > deadline:
+        current = now()
+        if current > deadline:
             raise PersistentRoundTimeoutError(
-                f"Could not write {len(payload)} bytes to PTY fd={fd} "
+                f"Could not write {len(payload)} bytes to PTY fd={fd} role={label} "
                 f"within deadline ({written} bytes accepted before timeout)"
             )
         try:
             n = os.write(fd, payload[written:])
         except BlockingIOError:
+            if current - last_heartbeat >= heartbeat_seconds:
+                logger.info(
+                    "[send_round] waiting for PTY write role=%s pid=%s fd=%d "
+                    "elapsed=%.1fs deadline_in=%.1fs written=%d remaining=%d",
+                    label,
+                    pid if pid is not None else "n/a",
+                    fd,
+                    current - started_at,
+                    deadline - current,
+                    written,
+                    len(payload) - written,
+                )
+                last_heartbeat = current
             sleep(backoff)
             backoff = min(backoff * 2, 0.1)
             continue
+        except OSError as exc:
+            raise PersistentRoundError(
+                f"Could not write prompt to PTY fd={fd} role={label}: {exc}"
+            ) from exc
         if n == 0:
+            if current - last_heartbeat >= heartbeat_seconds:
+                logger.info(
+                    "[send_round] waiting for PTY write role=%s pid=%s fd=%d "
+                    "elapsed=%.1fs deadline_in=%.1fs written=%d remaining=%d",
+                    label,
+                    pid if pid is not None else "n/a",
+                    fd,
+                    current - started_at,
+                    deadline - current,
+                    written,
+                    len(payload) - written,
+                )
+                last_heartbeat = current
             sleep(backoff)
             backoff = min(backoff * 2, 0.1)
             continue
@@ -197,6 +236,7 @@ def send_round(
     prompt: str,
     response_file: Path,
     timeout_seconds: float,
+    write_timeout_seconds: float = _DEFAULT_PTY_WRITE_TIMEOUT_SECONDS,
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     response_drain_seconds: float = _DEFAULT_RESPONSE_DRAIN_SECONDS,
     now: Callable[[], float] = time.monotonic,
@@ -223,21 +263,29 @@ def send_round(
     """
     if session.closed:
         raise PersistentRoundError("Session already closed; cannot send another round")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if write_timeout_seconds <= 0:
+        raise ValueError("write_timeout_seconds must be positive")
     label = role_label or f"pid={session.proc.pid}"
     payload = (prompt + "\n").encode("utf-8")
     started_at = now()
     logger.info(
         "[send_round] start role=%s pid=%d response_file=%s prompt_bytes=%d "
-        "timeout=%.1fs poll_interval=%.2fs",
+        "timeout=%.1fs write_timeout=%.1fs poll_interval=%.2fs",
         label, session.proc.pid, response_file, len(payload),
-        timeout_seconds, poll_interval_seconds,
+        timeout_seconds, write_timeout_seconds, poll_interval_seconds,
     )
 
     response_file.unlink(missing_ok=True)
-    write_deadline = started_at + timeout_seconds
+    write_deadline = started_at + min(timeout_seconds, write_timeout_seconds)
     written = _write_full(
         session.master_fd, payload,
-        deadline=write_deadline, now=now, sleep=sleep,
+        deadline=write_deadline,
+        now=now,
+        sleep=sleep,
+        role_label=label,
+        pid=session.proc.pid,
     )
     write_elapsed = now() - started_at
     logger.info(
