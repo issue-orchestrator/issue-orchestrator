@@ -125,7 +125,17 @@ function renderCanonicalValidationViewer(data, options = {}) {
         failureCases.push(_synthesizeFailedCaseFromNodeId(id));
     }
 
-    let html = '<div class="cvv-root" data-cvv-status="' + escapeAttr(status) + '">';
+    // ``role="tree"`` + the per-row ``role="treeitem"`` + per-body
+    // ``role="group"`` give the viewer a textbook ARIA tree shape
+    // (issue #6310 follow-up Phase D).  ``aria-orientation="vertical"``
+    // pins keyboard nav semantics; ``aria-label`` gives the tree a name
+    // for screen readers.  Initial ``aria-level``/``aria-setsize``/
+    // ``aria-posinset`` values are filled in by
+    // ``enhanceCanonicalValidationViewerAccessibility`` after mount
+    // because they require live DOM context.
+    let html = '<div class="cvv-root" data-cvv-status="' + escapeAttr(status) + '"'
+        + ' role="tree" aria-orientation="vertical"'
+        + ' aria-label="Validation results">';
 
     // Triage: failed/errored tests as cards at the top, auto-expanded.
     if (failureCases.length > 0) {
@@ -148,9 +158,10 @@ function renderCanonicalValidationViewer(data, options = {}) {
         if (skippedCount > 0) summaryParts.push(`${skippedCount} skipped`);
         const summary = (failureCases.length > 0 ? '+ ' : '') + summaryParts.join(', ');
         html += '<section class="cvv-browse">';
-        html += `<details class="cvv-row cvv-row-browse" ${failureCases.length === 0 ? 'open' : ''}>`;
+        const browseOpen = failureCases.length === 0;
+        html += `<details class="cvv-row cvv-row-browse" role="treeitem" aria-expanded="${browseOpen ? 'true' : 'false'}" ${browseOpen ? 'open' : ''}>`;
         html += `<summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-passed">✓</span><span class="cvv-title">${escapeHtml(summary)}</span><span class="cvv-summary">browse by file</span></summary>`;
-        html += '<div class="cvv-row-body">';
+        html += '<div class="cvv-row-body" role="group">';
         html += _renderBrowseByFile(otherCases, 'cvv-browse');
         html += '</div></details>';
         html += '</section>';
@@ -165,12 +176,12 @@ function renderCanonicalValidationViewer(data, options = {}) {
     if (stdoutExcerpt.length > 0 || stderrExcerpt.length > 0) {
         html += '<section class="cvv-run-output">';
         if (stdoutExcerpt.length > 0) {
-            html += `<details class="cvv-row"><summary><span class="cvv-caret">▸</span><span class="cvv-title">Run stdout</span><span class="cvv-summary">${stdoutExcerpt.length} line${stdoutExcerpt.length === 1 ? '' : 's'}</span></summary>`;
+            html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">Run stdout</span><span class="cvv-summary">${stdoutExcerpt.length} line${stdoutExcerpt.length === 1 ? '' : 's'}</span></summary>`;
             html += `<pre class="cvv-pre">${escapeHtml(stdoutExcerpt.join('\n'))}</pre>`;
             html += '</details>';
         }
         if (stderrExcerpt.length > 0) {
-            html += `<details class="cvv-row" ${status === 'failed' ? '' : ''}><summary><span class="cvv-caret">▸</span><span class="cvv-title">Run stderr</span><span class="cvv-summary">${stderrExcerpt.length} line${stderrExcerpt.length === 1 ? '' : 's'}</span></summary>`;
+            html += `<details class="cvv-row" role="treeitem" aria-expanded="false" ${status === 'failed' ? '' : ''}><summary><span class="cvv-caret">▸</span><span class="cvv-title">Run stderr</span><span class="cvv-summary">${stderrExcerpt.length} line${stderrExcerpt.length === 1 ? '' : 's'}</span></summary>`;
             html += `<pre class="cvv-pre">${escapeHtml(stderrExcerpt.join('\n'))}</pre>`;
             html += '</details>';
         }
@@ -188,8 +199,8 @@ function renderCanonicalValidationViewer(data, options = {}) {
     // their own footer.
     if (actionSections.length > 0 && renderActionSections) {
         html += '<section class="cvv-artifacts">';
-        html += '<details class="cvv-row"><summary><span class="cvv-caret">▸</span><span class="cvv-title">Validation artifacts</span><span class="cvv-summary">record · output · evidence</span></summary>';
-        html += '<div class="cvv-row-body">';
+        html += '<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">Validation artifacts</span><span class="cvv-summary">record · output · evidence</span></summary>';
+        html += '<div class="cvv-row-body" role="group">';
         html += renderActionSections(actionSections);
         html += '</div></details>';
         html += '</section>';
@@ -197,6 +208,194 @@ function renderCanonicalValidationViewer(data, options = {}) {
 
     html += '</div>';  // cvv-root
     return html;
+}
+
+// ── Accessibility enhancer (issue #6310 follow-up Phase D) ──────────────────
+//
+// Renders the canonical viewer with the right ARIA roles baked into the
+// HTML (``role="tree"`` on the root, ``role="treeitem"`` on each row,
+// ``role="group"`` on each row's body).  The render-time pass can't
+// compute ``aria-level``/``aria-setsize``/``aria-posinset`` because they
+// depend on the live DOM (nesting depth + sibling counts).  Callers
+// (modal / drawer / E2E view) invoke this after mounting the HTML.
+//
+// The enhancer is idempotent: re-running it on the same DOM is safe.
+//
+// Keyboard nav contract (matches WAI-ARIA Authoring Practices for tree):
+//   * ArrowDown   → focus next visible treeitem.
+//   * ArrowUp     → focus previous visible treeitem.
+//   * ArrowRight  → if collapsed, expand; else focus first child.
+//   * ArrowLeft   → if expanded, collapse; else focus parent treeitem.
+//   * Home / End  → focus first / last visible treeitem.
+//   * Enter / Space → toggle expansion.
+
+function enhanceCanonicalValidationViewerAccessibility(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    // Walk the tree: for each treeitem, compute aria-level (nesting),
+    // aria-setsize (# of treeitem siblings under its parent group), and
+    // aria-posinset (1-indexed position).
+    const treeitems = root.querySelectorAll('[role="treeitem"]');
+    for (const item of treeitems) {
+        const level = _computeTreeitemLevel(item, root);
+        item.setAttribute('aria-level', String(level));
+        const siblings = _treeitemSiblings(item);
+        item.setAttribute('aria-setsize', String(siblings.length));
+        const pos = siblings.indexOf(item) + 1;
+        if (pos > 0) item.setAttribute('aria-posinset', String(pos));
+        // Tab-stop discipline: only one treeitem is in the tab order at
+        // a time (the focused one).  Pre-mount we put the first
+        // treeitem in tab order and the rest at -1 — arrow keys move
+        // focus from there.
+        if (!item.hasAttribute('tabindex')) {
+            item.tabIndex = (item === treeitems[0]) ? 0 : -1;
+        }
+        // Sync aria-expanded with the underlying <details>.open state
+        // (the open attribute may have changed between render and
+        // enhance, e.g. browsers restoring scroll position).
+        if (item.tagName === 'DETAILS') {
+            item.setAttribute('aria-expanded', item.open ? 'true' : 'false');
+        }
+    }
+
+    // One delegated keydown listener covers the whole tree.  Mark the
+    // root so re-enhancing doesn't stack listeners.
+    if (root.dataset.cvvA11yBound !== '1') {
+        root.addEventListener('keydown', _onTreeKeydown);
+        root.addEventListener('toggle', _onTreeToggle, true);
+        root.dataset.cvvA11yBound = '1';
+    }
+}
+
+function _computeTreeitemLevel(item, root) {
+    let level = 1;
+    let parent = item.parentElement;
+    while (parent && parent !== root) {
+        if (parent.getAttribute && parent.getAttribute('role') === 'treeitem') level++;
+        parent = parent.parentElement;
+    }
+    return level;
+}
+
+function _treeitemSiblings(item) {
+    // Siblings are the treeitems sharing the same parent treeitem (or
+    // sharing the tree root if this is a top-level item).  ``cvv-row +
+    // cvv-row`` is the visual sibling relationship; we walk up to the
+    // closest ``role="group"`` (or ``role="tree"``) and gather its
+    // direct ``role="treeitem"`` descendants.
+    const parentGroup = item.parentElement && item.parentElement.closest('[role="group"], [role="tree"]');
+    if (!parentGroup) return [item];
+    const all = parentGroup.querySelectorAll(':scope > [role="treeitem"], :scope > section > [role="treeitem"], :scope > section > details[role="treeitem"]');
+    return Array.from(all);
+}
+
+function _onTreeToggle(event) {
+    // <details> fires a ``toggle`` event when open flips.  Keep the
+    // ARIA state in sync so screen readers report it correctly.
+    const target = event.target;
+    if (target && target.tagName === 'DETAILS' && target.getAttribute('role') === 'treeitem') {
+        target.setAttribute('aria-expanded', target.open ? 'true' : 'false');
+    }
+}
+
+function _onTreeKeydown(event) {
+    const item = event.target && event.target.closest && event.target.closest('[role="treeitem"]');
+    if (!item) return;
+    const root = event.currentTarget;
+    let handled = false;
+    switch (event.key) {
+        case 'ArrowDown': {
+            const next = _nextVisibleTreeitem(item, root);
+            if (next) { _focusTreeitem(next, root); handled = true; }
+            break;
+        }
+        case 'ArrowUp': {
+            const prev = _prevVisibleTreeitem(item, root);
+            if (prev) { _focusTreeitem(prev, root); handled = true; }
+            break;
+        }
+        case 'ArrowRight': {
+            if (item.tagName === 'DETAILS' && !item.open) {
+                item.open = true;
+                handled = true;
+            } else {
+                const child = item.querySelector(':scope > [role="group"] [role="treeitem"], :scope [role="group"] > [role="treeitem"]');
+                if (child) { _focusTreeitem(child, root); handled = true; }
+            }
+            break;
+        }
+        case 'ArrowLeft': {
+            if (item.tagName === 'DETAILS' && item.open) {
+                item.open = false;
+                handled = true;
+            } else {
+                const parent = item.parentElement && item.parentElement.closest('[role="treeitem"]');
+                if (parent) { _focusTreeitem(parent, root); handled = true; }
+            }
+            break;
+        }
+        case 'Home': {
+            const all = _visibleTreeitems(root);
+            if (all.length > 0) { _focusTreeitem(all[0], root); handled = true; }
+            break;
+        }
+        case 'End': {
+            const all = _visibleTreeitems(root);
+            if (all.length > 0) { _focusTreeitem(all[all.length - 1], root); handled = true; }
+            break;
+        }
+        case 'Enter':
+        case ' ': {
+            if (item.tagName === 'DETAILS') {
+                item.open = !item.open;
+                handled = true;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+}
+
+function _visibleTreeitems(root) {
+    // A treeitem is "visible" if every ancestor treeitem (within the
+    // tree) is open.  Walk every treeitem and filter.
+    const all = Array.from(root.querySelectorAll('[role="treeitem"]'));
+    return all.filter((it) => _isTreeitemVisible(it, root));
+}
+
+function _isTreeitemVisible(item, root) {
+    let parent = item.parentElement;
+    while (parent && parent !== root) {
+        if (parent.getAttribute && parent.getAttribute('role') === 'treeitem') {
+            if (parent.tagName === 'DETAILS' && !parent.open) return false;
+        }
+        parent = parent.parentElement;
+    }
+    return true;
+}
+
+function _nextVisibleTreeitem(current, root) {
+    const all = _visibleTreeitems(root);
+    const idx = all.indexOf(current);
+    return idx >= 0 && idx < all.length - 1 ? all[idx + 1] : null;
+}
+
+function _prevVisibleTreeitem(current, root) {
+    const all = _visibleTreeitems(root);
+    const idx = all.indexOf(current);
+    return idx > 0 ? all[idx - 1] : null;
+}
+
+function _focusTreeitem(item, root) {
+    // Roving tabindex: only the focused item is in the tab order.
+    const all = root.querySelectorAll('[role="treeitem"]');
+    for (const it of all) it.tabIndex = -1;
+    item.tabIndex = 0;
+    if (typeof item.focus === 'function') item.focus();
 }
 
 // ── Triage card (one failed/errored test, auto-expanded) ────────────────────
@@ -230,7 +429,7 @@ function _renderTriageCard(testCase, idPrefix) {
     html += '</div>';
 
     if (tracebackBody) {
-        html += `<details class="cvv-row" open><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
+        html += `<details class="cvv-row" role="treeitem" aria-expanded="true" open><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
         html += `<pre class="cvv-pre cvv-pre-fail">${escapeHtml(tracebackBody)}</pre>`;
         html += '</details>';
     }
@@ -271,8 +470,8 @@ function _renderBrowseByFile(cases, idPrefix) {
         const stats = statsParts.join(' · ');
         const base = fileName.split('/').pop();
         const dirPart = fileName.length > base.length ? fileName.slice(0, fileName.length - base.length - 1) : '';
-        html += `<details class="cvv-row cvv-file"><summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-passed">✓</span><span class="cvv-title">${escapeHtml(base)}</span>${dirPart ? `<span class="cvv-summary">${escapeHtml(dirPart)}</span>` : ''}<span class="cvv-meta">${escapeHtml(stats)}</span></summary>`;
-        html += '<div class="cvv-row-body">';
+        html += `<details class="cvv-row cvv-file" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-passed">✓</span><span class="cvv-title">${escapeHtml(base)}</span>${dirPart ? `<span class="cvv-summary">${escapeHtml(dirPart)}</span>` : ''}<span class="cvv-meta">${escapeHtml(stats)}</span></summary>`;
+        html += '<div class="cvv-row-body" role="group">';
         for (let j = 0; j < items.length; j++) {
             html += _renderPassedTestRow(items[j], `${idPrefix}-f${i}-t${j}`);
         }
@@ -287,9 +486,9 @@ function _renderPassedTestRow(testCase, idPrefix) {
     const outcome = testCase.outcome === 'skipped' ? 'skipped' : 'passed';
     const outcomeIcon = outcome === 'skipped' ? '–' : '✓';
 
-    let html = `<details class="cvv-row cvv-test">`;
+    let html = `<details class="cvv-row cvv-test" role="treeitem" aria-expanded="false">`;
     html += `<summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-${outcome}">${outcomeIcon}</span><span class="cvv-title">${escapeHtml(displayName)}</span>${duration ? `<span class="cvv-meta">${escapeHtml(duration)}</span>` : ''}</summary>`;
-    html += '<div class="cvv-row-body">';
+    html += '<div class="cvv-row-body" role="group">';
     html += '<div class="cvv-badges">';
     html += `<span class="cvv-chip cvv-chip-${outcome}">${outcome === 'skipped' ? '– Skipped' : '✓ Passed'}</span>`;
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
@@ -307,11 +506,12 @@ function _renderTestSystemOutErr(testCase, idPrefix, errorOpenStderr) {
     const stdoutLines = stdout ? stdout.split('\n').filter((l) => l.length > 0).length : 0;
     const stderrLines = stderr ? stderr.split('\n').filter((l) => l.length > 0).length : 0;
 
-    html += `<details class="cvv-row"><summary><span class="cvv-caret">▸</span><span class="cvv-title">stdout</span><span class="cvv-summary">${stdoutLines === 0 ? 'empty' : `${stdoutLines} line${stdoutLines === 1 ? '' : 's'}`}</span></summary>`;
+    html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">stdout</span><span class="cvv-summary">${stdoutLines === 0 ? 'empty' : `${stdoutLines} line${stdoutLines === 1 ? '' : 's'}`}</span></summary>`;
     html += stdout ? `<pre class="cvv-pre">${escapeHtml(stdout)}</pre>` : '<div class="cvv-empty">No stdout captured.</div>';
     html += '</details>';
 
-    html += `<details class="cvv-row"${errorOpenStderr && stderr ? ' open' : ''}><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
+    const stderrOpen = !!(errorOpenStderr && stderr);
+    html += `<details class="cvv-row" role="treeitem" aria-expanded="${stderrOpen ? 'true' : 'false'}"${stderrOpen ? ' open' : ''}><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
     html += stderr ? `<pre class="cvv-pre">${escapeHtml(stderr)}</pre>` : '<div class="cvv-empty">No stderr captured.</div>';
     html += '</details>';
 
