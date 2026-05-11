@@ -821,7 +821,7 @@ export interface ValidationNotRunPayload {
 
 export interface ValidationPassedPayload {
   command: string;
-  details_command?: OpenValidationDetailsCommandPayload | null;
+  details_command: OpenValidationDetailsCommandPayload;
   kind: "passed";
   record_path: string;
 }

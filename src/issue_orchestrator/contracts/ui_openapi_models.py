@@ -830,7 +830,7 @@ class ValidationNotRunPayload(BaseModel):
 class ValidationPassedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str
-    details_command: OpenValidationDetailsCommandPayload | None = None
+    details_command: OpenValidationDetailsCommandPayload
     kind: Literal['passed']
     record_path: str
 

@@ -55,6 +55,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     IssueCycle,
     IssueLifecycle,
     OpenCompletionRecordCommand,
+    OpenValidationDetailsCommand,
     PassedE2ETestExecution,
     ReviewNotReached,
     SessionRecordingUnavailable,
@@ -552,6 +553,10 @@ def _issue_lifecycle(issue_number: int) -> IssueLifecycle:
                     validation=ValidationPassed(
                         command="pytest tests/unit -q",
                         record_path=f"/runs/issue-{issue_number}/validation.json",
+                        details_command=OpenValidationDetailsCommand(
+                            issue_number=issue_number,
+                            run_dir=f"/runs/issue-{issue_number}",
+                        ),
                     ),
                     session_recording=SessionRecordingUnavailable(
                         reason="fixture has no recording",

@@ -177,9 +177,10 @@ class ValidationPassed(LifecycleBase):
     record_path: str
     # Same shape as ValidationFailed so the per-cycle validation modal can
     # fetch full evidence (JUnit cases, stdout/stderr) for green cycles too.
-    # Older projections may have been serialized without it; keep optional
-    # so re-reading historical payloads doesn't fail validation.
-    details_command: OpenValidationDetailsCommand | None = None
+    # Required: a ValidationPassed without somewhere to find the evidence
+    # is unactionable, and we don't keep a backcompat path for older
+    # projections — writers always emit run_dir on passed events.
+    details_command: OpenValidationDetailsCommand
 
 
 class ValidationFailed(LifecycleBase):
