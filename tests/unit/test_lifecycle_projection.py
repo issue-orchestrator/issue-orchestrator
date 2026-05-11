@@ -1131,10 +1131,12 @@ def test_validation_passed_exposes_details_command_for_modal_drilldown() -> None
     assert cycle.coder.validation.details_command.run_dir == "/tmp/run-1"
 
 
-def test_validation_passed_without_run_dir_omits_details_command() -> None:
-    # Older payloads may not carry run_dir on the passed event. Tolerate that
-    # without rejecting the projection — details_command is optional on
-    # ValidationPassed, just unavailable when the source data is missing.
+def test_validation_passed_without_run_dir_projects_missing_evidence() -> None:
+    # A passed validation event with no run_dir has no way to surface
+    # JUnit evidence in the per-cycle modal, so the projection treats it
+    # the same as a failed event without run_dir: `ValidationEvidenceMissing`
+    # with a `validation.run_dir_missing` diagnostic. No backcompat for
+    # ValidationPassed with a null details_command — the field is required.
     started, completed, *_ = _complete_issue_events()
     passed_event = _event(
         "validation.passed",
@@ -1149,8 +1151,11 @@ def test_validation_passed_without_run_dir_omits_details_command() -> None:
         events=[started, completed, passed_event],
         cycles=[{"cycle": 1, "events": [started, completed, passed_event]}],
     ).cycles[0]
-    assert isinstance(cycle.coder.validation, ValidationPassed)
-    assert cycle.coder.validation.details_command is None
+    assert isinstance(cycle.coder.validation, ValidationEvidenceMissing)
+    assert (
+        cycle.coder.validation.diagnostics[0].code
+        == "validation.run_dir_missing"
+    )
 
 
 def test_dashboard_projection_container_iterates_singleton_issue_model() -> None:
