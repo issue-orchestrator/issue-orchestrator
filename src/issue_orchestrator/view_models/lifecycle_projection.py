@@ -111,6 +111,21 @@ _CODING_FAILED_EVENTS = frozenset(
     }
 )
 _CODING_PUBLISH_FAILED_EVENTS = frozenset({"publish.failed"})
+
+# Public union: the events that mark a coding attempt as terminal — its
+# code change either succeeded (any completed variant), got blocked, failed
+# outright, or failed at publish. Exported so other view-models can share
+# the same definition of "coding is over" without redefining (and drifting
+# from) the set. The per-cycle validation badge in the issue-detail
+# projection uses this to decide when an absent validation event becomes
+# an anti-pattern marker vs. a still-pending cycle.
+CODING_TERMINAL_EVENTS: frozenset[str] = (
+    _CODING_COMPLETED_EVENTS
+    | _CODING_BLOCKED_EVENTS
+    | _CODING_FAILED_EVENTS
+    | _CODING_PUBLISH_FAILED_EVENTS
+)
+
 _VALIDATION_PASSED_EVENTS = frozenset(
     {"validation.passed", "session.validation_passed"}
 )
@@ -121,6 +136,15 @@ _VALIDATION_FAILED_EVENTS = frozenset(
         "session.validation_retry_needed",
     }
 )
+
+# Public re-exports. Same objects as the private sets above — promoted so
+# other view-models (e.g. the issue-detail per-cycle validation badge) can
+# consume the canonical classification without redefining it. Pin with an
+# identity assertion (drift-guard) in the tests so a future "I'll just copy
+# this set" change cannot reintroduce the disagreement we just fixed for
+# `CODING_TERMINAL_EVENTS`.
+VALIDATION_PASSED_EVENTS: frozenset[str] = _VALIDATION_PASSED_EVENTS
+VALIDATION_FAILED_EVENTS: frozenset[str] = _VALIDATION_FAILED_EVENTS
 _REVIEW_START_EVENTS = frozenset(
     {
         "review.started",

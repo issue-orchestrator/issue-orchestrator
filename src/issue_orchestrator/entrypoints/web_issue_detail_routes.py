@@ -187,15 +187,12 @@ def _apply_issue_detail_run_diagnostic(
     # Status explanation differs by outcome: a failed run is a problem
     # the user wants to drill into; a passed run is informational and
     # shouldn't pretend to be a failure.
+    #
+    # The "N test case(s) available" line was dropped — per-cycle validation
+    # badges in the timeline are the discoverable entry point now, and the
+    # count was redundant once the modal exposes it directly.
     if run_diagnostic.get("state") == "validation_passed":
-        case_count = len(run_diagnostic.get("junit_cases") or [])
-        if case_count > 0:
-            payload["status_explanation"] = (
-                f"Current run passed validation: {case_count} test case(s) "
-                f"available."
-            )
-        else:
-            payload["status_explanation"] = "Current run passed validation."
+        payload["status_explanation"] = "Current run passed validation."
         return
 
     failed_tests = run_diagnostic.get("failed_tests")

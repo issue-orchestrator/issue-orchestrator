@@ -19,6 +19,15 @@ from ..domain.logical_run_projection import (
     group_events_by_logical_cycle,
 )
 from ..events import EventName
+# Re-exported here so the per-cycle validation badge in this projection
+# uses the same "coding terminated" definition as the lifecycle projection
+# — no separate set to drift. Imported under the existing private name so
+# the call site stays unchanged.
+from .lifecycle_projection import (
+    CODING_TERMINAL_EVENTS as _CYCLE_CODING_TERMINAL_EVENTS,
+    VALIDATION_FAILED_EVENTS as _CYCLE_VALIDATION_FAILED_EVENTS,
+    VALIDATION_PASSED_EVENTS as _CYCLE_VALIDATION_PASSED_EVENTS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +913,66 @@ def _finalize_cycle_from_events(
         "artifacts": artifacts,
         "steps": steps,
         "phase_groups": phase_groups,
+        "validation": _cycle_validation_summary(raw_events),
     }
+
+
+# Validation passed/failed event classification: imported at module top
+# from `lifecycle_projection.VALIDATION_PASSED_EVENTS` /
+# `VALIDATION_FAILED_EVENTS` so this projection cannot drift from the
+# lifecycle projection's own definition of "what counts as a passed /
+# failed validation event". Adding a new validation event name in
+# lifecycle_projection automatically propagates here.
+#
+# Coding-side terminal events: imported at module top from
+# `lifecycle_projection.CODING_TERMINAL_EVENTS` so the per-cycle validation
+# badge here uses the same definition of "coding is over" as the lifecycle
+# projection. A cycle that hasn't yet emitted one of these is still running,
+# so the absence of a validation event is expected — not an anti-pattern.
+# We only surface "Not validated" once coding has actually finished without
+# recording any test evidence.
+
+
+def _cycle_validation_summary(raw_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Distill validation evidence for the cycle header badge.
+
+    Four outcomes:
+      - "passed"        → validation ran and succeeded; badge → dialog
+      - "failed"        → validation ran and failed; badge → dialog
+      - "not_validated" → coding terminated *without* recording any
+                          validation event (anti-pattern marker)
+      - "pending"       → cycle has not yet emitted a terminal coding
+                          event; validation might still run. No badge
+                          is drawn so we don't shame in-flight work.
+
+    Full JUnit cases load lazily inside the dialog endpoint — only the
+    outcome kind and a `run_dir` pointer live in the projection payload.
+    """
+    cycle_has_terminal = False
+    for evt in reversed(raw_events):
+        name = str(evt.get("event") or evt.get("source_event") or "").lower()
+        if name in _CYCLE_VALIDATION_FAILED_EVENTS:
+            return {
+                "kind": "failed",
+                "run_dir": _optional_str(evt.get("run_dir")),
+            }
+        if name in _CYCLE_VALIDATION_PASSED_EVENTS:
+            return {
+                "kind": "passed",
+                "run_dir": _optional_str(evt.get("run_dir")),
+            }
+        if not cycle_has_terminal and name in _CYCLE_CODING_TERMINAL_EVENTS:
+            cycle_has_terminal = True
+    if cycle_has_terminal:
+        return {"kind": "not_validated", "run_dir": None}
+    return {"kind": "pending", "run_dir": None}
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _annotate_cycle_in_run(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:

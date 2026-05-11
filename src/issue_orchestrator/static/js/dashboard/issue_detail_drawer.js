@@ -36,7 +36,6 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
         retryPublishBtn.style.display = 'none';
         retryPublishBtn.disabled = true;
     }
-    resetIssueDetailValidation();
     const closeBtn = document.getElementById('issueDetailCloseBtn');
     if (closeBtn) closeBtn.focus();
 
@@ -185,6 +184,7 @@ function _renderJourneyRuns(container, allRuns) {
             const outcomeClass = _cycleOutcomeClass(c.outcome || '');
             const artifacts = c.artifacts || {};
             const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
+            const validationBadge = _renderCycleValidationBadge(c.validation, issueNum);
 
             html += `<div class="journey-cycle" id="${cycleId}">
             <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
@@ -193,6 +193,7 @@ function _renderJourneyRuns(container, allRuns) {
                 ${agentPill}
                 ${retryInfo}
                 <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
+                ${validationBadge}
                 <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || ''))}</span>
                 ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
             </div>
@@ -237,6 +238,61 @@ function _renderJourneyRuns(container, allRuns) {
         container.addEventListener('click', handleTimelineEventActionsClick);
         container.dataset.journeyActionsBound = 'true';
     }
+}
+
+function _renderCycleValidationBadge(validation, issueNumber) {
+    // The cycle's validation badge is the primary entry point into JUnit
+    // evidence for that cycle. Four kinds, three badge states:
+    //   - passed         → green "Validated" button → opens validation dialog
+    //   - failed         → red "Failed" button → opens validation dialog
+    //   - not_validated  → amber "Not validated" badge (no dialog target —
+    //                       anti-pattern marker for cycles that finished
+    //                       coding work without recording any tests)
+    //   - pending        → no badge (cycle still running; validation may
+    //                       yet run, so the anti-pattern signal would be
+    //                       premature)
+    //
+    // Run dir + issue number ride on data-* attrs, NOT as inline JS string
+    // interpolation, because escapeAttr() escapes for HTML attribute parsing
+    // (& and ") but not for the JS string delimiter ('). A run_dir
+    // containing an apostrophe would otherwise break out of the onclick
+    // handler. _handleCycleValidationBadgeClick reads the attrs back at
+    // click time.
+    if (!validation || typeof validation !== 'object') return '';
+    const kind = String(validation.kind || '').toLowerCase();
+    if (kind !== 'passed' && kind !== 'failed' && kind !== 'not_validated') {
+        return '';
+    }
+    const runDir = validation.run_dir ? String(validation.run_dir) : '';
+    if (kind === 'passed' && runDir) {
+        return `<button type="button" class="journey-cycle-validation-badge is-passed"
+            data-validation-kind="passed"
+            data-validation-issue="${escapeAttr(String(issueNumber))}"
+            data-validation-run-dir="${escapeAttr(runDir)}"
+            onclick="_handleCycleValidationBadgeClick(event, this);"
+            title="Open validation details for this cycle">✓ Validated</button>`;
+    }
+    if (kind === 'failed' && runDir) {
+        return `<button type="button" class="journey-cycle-validation-badge is-failed"
+            data-validation-kind="failed"
+            data-validation-issue="${escapeAttr(String(issueNumber))}"
+            data-validation-run-dir="${escapeAttr(runDir)}"
+            onclick="_handleCycleValidationBadgeClick(event, this);"
+            title="Open validation details for this cycle">✗ Failed</button>`;
+    }
+    // not_validated — non-clickable anti-pattern marker.
+    return `<span class="journey-cycle-validation-badge is-not-validated"
+        data-validation-kind="not_validated"
+        title="No validation recorded for this cycle — coding work without test evidence is an anti-pattern.">⚠ Not validated</span>`;
+}
+
+function _handleCycleValidationBadgeClick(event, btn) {
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    if (!btn || !btn.dataset) return;
+    const issueNumber = Number(btn.dataset.validationIssue);
+    const runDir = String(btn.dataset.validationRunDir || '');
+    if (!Number.isInteger(issueNumber) || !runDir) return;
+    openValidationFailure(issueNumber, runDir, 'modal');
 }
 
 function _cycleOutcomeClass(outcome) {
@@ -608,158 +664,6 @@ async function retryPublishFromDrawer() {
     }
 }
 
-function resetIssueDetailValidation() {
-    const validationEl = document.getElementById('issueDetailValidation');
-    const validationBtn = document.getElementById('issueDetailValidationBtn');
-    const reasonEl = document.getElementById('issueDetailValidationReason');
-    const testsEl = document.getElementById('issueDetailValidationTests');
-    const structuredEl = document.getElementById('issueDetailValidationStructured');
-    const titleEl = document.getElementById('issueDetailValidationTitle');
-    if (validationEl) {
-        validationEl.style.display = 'none';
-        // Symmetry with renderIssueDetailValidation: clear the
-        // outcome-tone classes so a stale `is-passed` / `is-failed`
-        // can't bleed through if the section is re-shown before
-        // the next render runs.
-        validationEl.classList.remove('is-passed', 'is-failed');
-    }
-    if (validationBtn) {
-        validationBtn.style.display = 'none';
-        validationBtn.disabled = false;
-        validationBtn.onclick = null;
-    }
-    if (titleEl) {
-        // Match the template default — the failure header is the
-        // baseline; passed runs flip the title text in the renderer.
-        titleEl.textContent = 'Validation failed';
-    }
-    if (reasonEl) reasonEl.textContent = '';
-    if (testsEl) {
-        testsEl.innerHTML = '';
-        testsEl.style.display = '';
-    }
-    if (structuredEl) {
-        structuredEl.innerHTML = '';
-        structuredEl.style.display = 'none';
-    }
-}
-
-function _renderIssueValidationStructured(container, junitCases) {
-    if (!container) return;
-    const cases = Array.isArray(junitCases) ? junitCases : [];
-    if (!cases.length) {
-        container.style.display = 'none';
-        container.innerHTML = '';
-        return;
-    }
-    const counts = {
-        all: cases.length,
-        failed: cases.filter(c => _testFilterGroup(c) === 'failed').length,
-        passed: cases.filter(c => _testFilterGroup(c) === 'passed').length,
-        skipped: cases.filter(c => _testFilterGroup(c) === 'skipped').length,
-        quarantined: 0,
-    };
-    const rows = cases
-        .map(test => _renderTestRow(test, null))
-        .join('');
-    container.style.display = '';
-    container.innerHTML = `
-        <div class="test-results-panel issue-detail-validation-structured-panel">
-            ${renderTestResultsHeadline(cases)}
-            ${renderTestResultsFilters(counts)}
-            <div class="test-results-list">${rows}</div>
-        </div>
-    `;
-}
-
-function renderIssueDetailValidation(detail) {
-    const validationEl = document.getElementById('issueDetailValidation');
-    const validationBtn = document.getElementById('issueDetailValidationBtn');
-    const reasonEl = document.getElementById('issueDetailValidationReason');
-    const testsEl = document.getElementById('issueDetailValidationTests');
-    const structuredEl = document.getElementById('issueDetailValidationStructured');
-    // Use the stable id (matches the pattern of every other element
-    // in this function); avoids a global class-selector that would
-    // accidentally pick up duplicates if the markup ever evolved.
-    const titleEl = document.getElementById('issueDetailValidationTitle');
-    const summary = detail && typeof detail.summary === 'object' ? detail.summary : {};
-    const diagnostic = summary && typeof summary.run_diagnostic === 'object' ? summary.run_diagnostic : null;
-    const actions = Array.isArray(detail.actions) ? detail.actions : [];
-    const validationAction = actions.find((action) => action && action.id === 'open_validation_failure');
-
-    if (!validationEl || !reasonEl || !testsEl || !diagnostic) {
-        resetIssueDetailValidation();
-        return;
-    }
-
-    validationEl.style.display = '';
-    // The diagnostic is now surfaced for both passed and failed runs.
-    // Reflect the outcome in the section title and a status class so CSS
-    // (and accessibility tooling) can distinguish them.
-    const passed = diagnostic.state === 'validation_passed';
-    validationEl.classList.toggle('is-passed', passed);
-    validationEl.classList.toggle('is-failed', !passed);
-    if (titleEl) {
-        titleEl.textContent = passed ? 'Validation passed' : 'Validation failed';
-    }
-    const fallbackReason = passed ? 'Validation passed' : 'Validation failed';
-    const reason = diagnostic.reason || fallbackReason;
-    const command = diagnostic.command ? `Command: ${diagnostic.command}` : '';
-    reasonEl.textContent = command ? `${reason} • ${command}` : reason;
-
-    const junitCases = Array.isArray(diagnostic.junit_cases) ? diagnostic.junit_cases : [];
-    if (junitCases.length > 0) {
-        // Structured JUnit results available — render the test-centric view
-        // (same component as the E2E run modal) and hide the simple <ul>.
-        testsEl.innerHTML = '';
-        testsEl.style.display = 'none';
-        _renderIssueValidationStructured(structuredEl, junitCases);
-    } else if (passed) {
-        // Passed with no JUnit cases — most likely the repo hasn't
-        // configured `validation.junit_xml_paths`. Don't render the
-        // failure-list fallback (it would say "no failed test names",
-        // which is true but pointless on a green run).
-        if (structuredEl) {
-            structuredEl.innerHTML = '';
-            structuredEl.style.display = 'none';
-        }
-        testsEl.innerHTML = '';
-        testsEl.style.display = 'none';
-    } else {
-        // Failed and no structured cases — fall back to the simple
-        // failed-test-name preview list.
-        if (structuredEl) {
-            structuredEl.innerHTML = '';
-            structuredEl.style.display = 'none';
-        }
-        testsEl.style.display = '';
-        const preview = Array.isArray(diagnostic.failed_tests_preview)
-            ? diagnostic.failed_tests_preview
-            : [];
-        const totalFailed = Array.isArray(diagnostic.failed_tests)
-            ? diagnostic.failed_tests.length
-            : preview.length;
-        if (preview.length > 0) {
-            const extraCount = Math.max(0, totalFailed - preview.length);
-            const items = preview.map((nodeid) => `<li><code>${escapeHtml(String(nodeid))}</code></li>`);
-            if (extraCount > 0) {
-                items.push(`<li>${extraCount} more failed test${extraCount === 1 ? '' : 's'}…</li>`);
-            }
-            testsEl.innerHTML = items.join('');
-        } else {
-            testsEl.innerHTML = '<li>No failed test names extracted from validation output.</li>';
-        }
-    }
-
-    if (validationBtn && validationAction && validationAction.run_dir) {
-        validationBtn.style.display = '';
-        validationBtn.textContent = validationAction.label || 'Validation Details';
-        validationBtn.onclick = () => openValidationFailure(detail.issue_number, validationAction.run_dir, 'inline');
-    } else if (validationBtn) {
-        validationBtn.style.display = 'none';
-    }
-}
-
 function renderIssueDetail() {
     if (!issueDetailData) return;
     const d = issueDetailData;
@@ -799,7 +703,10 @@ function renderIssueDetail() {
     else if ((summary.status || '').toLowerCase().includes('running') || (summary.status || '').toLowerCase().includes('in_progress')) statusEl.classList.add('status-running');
     else statusEl.classList.add('status-queued');
 
-    renderIssueDetailValidation(d);
+    // Validation evidence now lives per-cycle in the journey timeline below
+    // (see `_renderCycleValidationBadge`); the old top-of-drawer flat list
+    // was dropped in favor of cycle-scoped badges that open the validation
+    // dialog for the specific cycle's run_dir.
 
     // Journey timeline with "Last run / All" filter
     const journeyEl = document.getElementById('issueDetailJourney');
