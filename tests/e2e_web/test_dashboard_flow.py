@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page, expect
 
 
@@ -88,6 +90,98 @@ def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> 
     page.locator("#tab-e2e").click(no_wait_after=True)
     page.wait_for_url("**?tab=e2e**", timeout=90_000)
     expect(page.locator("#panel-e2e")).to_be_visible()
+
+
+def test_validation_badge_click_dispatches_through_command_pipeline(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """End-to-end proof of the typed ``CycleValidationBadge`` chain (issue
+    #6310 AC-2).
+
+    Exercises the full path the previous coverage only hit in pieces:
+
+    1. Backend builds ``IssueCycle.validation = CycleValidationBadge(
+       state='passed', command=OpenValidationDetailsCommand(...))`` from
+       seeded events (``session.completed`` + ``validation.passed``).
+    2. ``.model_dump`` serializes the typed badge onto the wire.
+    3. The drawer reads the typed payload and renders a green
+       ``✓ Validated`` button carrying ``data-lifecycle-command`` JSON.
+    4. Clicking the button routes through the shared
+       ``runE2ELifecycleCommand`` dispatcher in ``lifecycle_commands.js``.
+    5. ``runE2ELifecycleCommand`` dispatches to ``openValidationFailure``
+       which fetches the dialog endpoint.
+    6. The validation dialog renders with the expected body.
+
+    The JS-vm tests stub step 5; this test does it in a real browser,
+    closing the seam the earlier JS-vm + Python tests left implicit.
+    """
+    errors: list[str] = []
+    page.on("pageerror", lambda err: errors.append(str(err)))
+
+    # Stub the dialog endpoint just like the existing dialog test —
+    # ``openValidationFailure`` will fetch it after the badge click.
+    page.route(
+        "**/api/dialog/validation-failure/410**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body="""
+            {
+              "title": "Validation Results #410",
+              "reason": "Validation passed for run-410",
+              "suite": "publish_gate",
+              "command": "make validate-pr",
+              "exit_code": 0,
+              "started_at": "2026-01-01T13:00:00Z",
+              "ended_at": "2026-01-01T13:06:00Z",
+              "failed_tests": [],
+              "stdout_excerpt": ["all checks green"],
+              "stderr_excerpt": [],
+              "summary_rows": [
+                {"label": "Reason", "value": "Validation passed"},
+                {"label": "Exit Code", "value": "0"}
+              ],
+              "action_sections": []
+            }
+            """,
+        ),
+    )
+
+    _goto_dashboard(page, str(web_server["url"]))
+
+    # Open the drawer for issue 410 (the validated-cycle fixture).
+    card_focus = page.locator(
+        ".dashboard-columns .issue-card[data-issue='410'] .card-focus"
+    ).first
+    expect(card_focus).to_be_visible()
+    card_focus.click()
+
+    _wait_for_issue_detail_hydration(page)
+
+    # Step 3 + 4: the drawer rendered the typed-Command badge.  The
+    # passed-state class proves the backend derived ``state='passed'``
+    # from the seeded ``validation.passed`` event, and the
+    # ``data-lifecycle-command`` attribute carries the typed
+    # ``OpenValidationDetailsCommand`` payload — without it, the
+    # ``runE2ELifecycleCommand`` dispatcher would have nothing to route.
+    badge = page.locator(".journey-cycle-validation-badge.is-passed").first
+    expect(badge).to_be_visible(timeout=5000)
+    expect(badge).to_contain_text("✓ Validated")
+    expect(badge).to_have_attribute(
+        "data-lifecycle-command",
+        re.compile(r'"kind":\s*"open_validation_details"'),
+    )
+
+    # Step 5 + 6: clicking the typed-Command button goes through the
+    # shared dispatcher and opens the dialog.
+    badge.click()
+    modal = page.locator("#modalOverlay.visible")
+    expect(modal).to_be_visible(timeout=5000)
+    expect(page.locator("#modalTitle")).to_contain_text("Validation Results #410")
+    expect(page.locator("#modalBody")).to_contain_text("Validation passed")
+
+    assert errors == []
 
 
 def test_validation_failure_dialog_renders_results_and_artifacts(

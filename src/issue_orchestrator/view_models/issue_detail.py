@@ -14,20 +14,23 @@ from ..domain.event_taxonomy import (
     EventIntent,
     infer_event_intent,
 )
-from ..domain.logical_run_projection import (
-    LogicalRunProjector,
-    group_events_by_logical_cycle,
-)
+from ..domain.logical_run_projection import LogicalRunProjector
 from ..events import EventName
-# Re-exported here so the per-cycle validation badge in this projection
-# uses the same "coding terminated" definition as the lifecycle projection
-# — no separate set to drift. Imported under the existing private name so
-# the call site stays unchanged.
-from .lifecycle_projection import (
-    CODING_TERMINAL_EVENTS as _CYCLE_CODING_TERMINAL_EVENTS,
-    VALIDATION_FAILED_EVENTS as _CYCLE_VALIDATION_FAILED_EVENTS,
-    VALIDATION_PASSED_EVENTS as _CYCLE_VALIDATION_PASSED_EVENTS,
+# Canonical event-set ownership lives in ``view_models.lifecycle_event_sets``
+# (issue #6310 AC-4).  Issue_detail aliases ``OUTCOME_EVENTS`` and
+# ``BLOCKED_EVENT_NAMES`` for blocked-detail derivation and the AC-4 guard
+# test.  Journey projection (typed cycles, runs, validation badge) is built
+# by ``view_models.journey_projection`` — see the typed pipeline call in
+# ``build_issue_detail_view_model``.
+from .journey_projection import (
+    build_journey_cycles_from_events,
+    build_journey_runs,
 )
+from .lifecycle_event_sets import (
+    BLOCKED_EVENT_NAMES as _CANONICAL_BLOCKED_EVENT_NAMES,
+    OUTCOME_EVENTS as _CANONICAL_OUTCOME_EVENTS,
+)
+from .lifecycle_semantics import IssueProjectionContext
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +75,21 @@ def build_issue_detail_view_model(
     story_events = _story_projection_events(filtered, view)
     timeline_steps = _build_journey_steps(story_events, today)
     previous_runs = _build_previous_cycles(cycles, today)
-    run_cycles = _build_journey_cycles(story_events, today, context)
-    runs = _build_runs(run_cycles)
+
+    # Typed projection pipeline (issue #6310): journey cycles + runs are
+    # now built by ``lifecycle_projection`` as typed models, including the
+    # typed ``CycleValidationBadge`` (AC-2).  The drawer payload comes
+    # from ``.model_dump(mode="json")`` — same wire field names, but the
+    # parallel dict projection is gone.
+    projection_context = _projection_context_from_story_context(context)
+    typed_cycles = build_journey_cycles_from_events(
+        story_events,
+        today,
+        projection_context,
+        issue_number=issue_number,
+    )
+    typed_runs = build_journey_runs(typed_cycles)
+    runs = [run.model_dump(mode="json") for run in typed_runs]
 
     return {
         "issue_number": issue_number,
@@ -98,6 +114,27 @@ def build_issue_detail_view_model(
         "raw_events_count": len(events),
         "blocked_detail": _build_blocked_detail(context, filtered),
     }
+
+
+def _projection_context_from_story_context(
+    context: IssueStoryContext | None,
+) -> IssueProjectionContext:
+    """Build the neutral projection-layer context from the entry-point one.
+
+    Keeps the layering inversion away from ``lifecycle_projection`` (see
+    issue #6310 AC-3): the projection module never imports
+    ``IssueStoryContext``.
+    """
+    if context is None:
+        return IssueProjectionContext()
+    return IssueProjectionContext(
+        flow_stage=context.flow_stage,
+        labels=context.labels,
+        current_rework_cycle=context.current_rework_cycle,
+        max_rework_cycles=context.max_rework_cycles,
+    )
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -428,17 +465,10 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
     return _fallback_explanation(events)
 
 
-_BLOCKED_EVENT_NAMES = frozenset({
-    "session.timeout",
-    "session.failed",
-    "session.blocked",
-    "session.validation_failed",
-    "issue.blocked",
-    "issue.needs_human",
-    "publish.failed",
-    "review.changes_requested",
-    "review.escalated",
-})
+# Canonical blocked-event set lives in ``lifecycle_projection``.  The local
+# alias is preserved so call sites stay stable while the canonical set
+# remains the single source of truth (issue #6310 AC-4).
+_BLOCKED_EVENT_NAMES = _CANONICAL_BLOCKED_EVENT_NAMES
 
 
 def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -> str:  # noqa: C901 — maps blocking conditions to explanations
@@ -694,22 +724,9 @@ def _format_agent(event: dict[str, Any]) -> str:
 # Journey cycles — collapsible lifecycle groups
 # ---------------------------------------------------------------------------
 
-# Outcome derivation: last significant event → outcome label
-_OUTCOME_EVENTS = frozenset({
-    "session.failed",
-    "session.timeout",
-    "session.blocked",
-    "session.completed",
-    "review_exchange.round_completed",
-    "review.changes_requested",
-    "review.approved",
-    "review.escalated",
-    "review.merged",
-    "issue.blocked",
-    "issue.needs_human",
-    "publish.failed",
-    "issue.completed",
-})
+# Canonical outcome-event set lives in ``lifecycle_projection``.  The local
+# alias keeps existing call sites stable (issue #6310 AC-4).
+_OUTCOME_EVENTS = _CANONICAL_OUTCOME_EVENTS
 
 
 def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -722,199 +739,6 @@ def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]
     grouping only for legacy payloads without lifecycle annotations.
     """
     return _logical_run_projector.filter_last_run_cycles(cycles)
-
-
-def _build_runs(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group cycle rows into logical runs for UI rendering.
-
-    Logical runs are lifecycle-based (coding + review + rework chain),
-    not individual physical session launches.
-    """
-    runs = _logical_run_projector.build_runs(cycles)
-    for run in runs:
-        run_number = run.get("run_number") or "?"
-        reset_from_scratch = any(
-            bool(cycle.get("reset_from_scratch"))
-            for cycle in run.get("cycles", [])
-            if isinstance(cycle, dict)
-        )
-        run["reset_from_scratch"] = reset_from_scratch
-        run["run_label"] = (
-            f"Run {run_number} (scratch retry)"
-            if reset_from_scratch
-            else f"Run {run_number}"
-        )
-    if not runs:
-        return runs
-
-    latest = runs[-1]
-    if not _run_contains_review_events(latest):
-        latest["outcome"] = _coerce_non_review_latest_outcome(str(latest.get("outcome") or ""))
-        for cycle in latest.get("cycles", []):
-            cycle["outcome"] = _coerce_non_review_latest_outcome(str(cycle.get("outcome") or ""))
-    return runs
-
-
-def _run_contains_review_events(run: dict[str, Any]) -> bool:
-    for cycle in run.get("cycles", []):
-        steps = cycle.get("steps")
-        if not isinstance(steps, list):
-            continue
-        if any(
-            str(step.get("event") or "").startswith(("review.", "review_exchange."))
-            for step in steps
-            if isinstance(step, dict)
-        ):
-            return True
-    return False
-
-
-def _coerce_non_review_latest_outcome(outcome: str) -> str:
-    lower = outcome.strip().lower()
-    if "approved" in lower or "completed" in lower or "awaiting merge" in lower:
-        if lower.startswith("rework"):
-            return "Rework \u2192 In progress"
-        return "In progress"
-    return outcome
-
-
-def _build_journey_cycles(
-    events: list[dict[str, Any]],
-    today: str,
-    context: IssueStoryContext | None = None,
-) -> list[dict[str, Any]]:
-    """Build collapsible cycle groups from backend-owned logical semantics."""
-    if not _has_logical_semantics(events):
-        return []
-    return _build_semantic_journey_cycles(events, today, context)
-
-
-def _has_logical_semantics(events: list[dict[str, Any]]) -> bool:
-    if not events:
-        return False
-    return all(
-        isinstance(e.get("logical_run"), int)
-        and isinstance(e.get("logical_cycle"), int)
-        and isinstance(e.get("logical_phase"), str)
-        for e in events
-    )
-
-
-def _build_semantic_journey_cycles(
-    events: list[dict[str, Any]],
-    today: str,
-    context: IssueStoryContext | None = None,
-) -> list[dict[str, Any]]:
-    """Group events using backend-owned logical semantics."""
-    cycles: list[dict[str, Any]] = []
-    grouped_events = [
-        event
-        for event in events
-        if event.get("views") is not None
-        or not _should_skip_event(str(event.get("event") or ""))
-    ]
-    for idx, group in enumerate(group_events_by_logical_cycle(grouped_events), start=1):
-        raw_events = list(group.events)
-        cycle = _finalize_cycle_from_events(
-            idx,
-            group.logical_run,
-            group.logical_cycle,
-            raw_events,
-            today,
-            context,
-        )
-        cycles.append(cycle)
-
-    if cycles:
-        cycles[-1]["expanded"] = True
-
-    return _annotate_cycle_in_run(cycles)
-
-
-def _finalize_cycle_from_events(
-    cycle_number: int,
-    lifecycle: int,
-    iteration: int,
-    raw_events: list[dict[str, Any]],
-    today: str,
-    context: IssueStoryContext | None,
-) -> dict[str, Any]:
-    """Build one cycle dict from plain events (signal-based path)."""
-    # Agent label: from the first event with an agent
-    agent = ""
-    for evt in raw_events:
-        a = _format_agent(evt)
-        if a:
-            agent = a
-            break
-
-    # Reviewer agent: from review outcome events
-    reviewer_agent = ""
-    for evt in raw_events:
-        ra = evt.get("reviewer_agent")
-        if ra and isinstance(ra, str):
-            reviewer_agent = ra.removeprefix("agent:")
-            break
-
-    # Retry count: number of session.started events minus 1 (first start is not a retry)
-    # Use source_event so fan-out renames don't break the count.
-    session_starts = sum(
-        1 for evt in raw_events
-        if str(evt.get("source_event") or evt.get("event") or "") in (
-            "session.started", "rework.started", "rework.launching",
-        )
-    )
-    retry_count = max(0, session_starts - 1)
-
-    # Time label from first event
-    first_ts = raw_events[0].get("timestamp") or "" if raw_events else ""
-    time_label = _format_date_time_label(first_ts)
-    run_id = next(
-        (str(evt.get("run_id")) for evt in raw_events if evt.get("run_id")),
-        None,
-    )
-    session_run_ids = [
-        run for run in dict.fromkeys(
-            str(evt.get("run_id"))
-            for evt in raw_events
-            if evt.get("run_id")
-        )
-    ]
-
-    # Outcome from last significant event
-    outcome = _derive_cycle_outcome(raw_events, iteration, context)
-    reset_from_scratch = any(
-        bool(evt.get("from_scratch") or evt.get("reset_from_scratch"))
-        for evt in raw_events
-    )
-
-    # Artifacts
-    artifacts = _collect_cycle_artifacts(raw_events)
-
-    # Nested journey steps + phase groups
-    steps = [_build_cycle_step(evt, today) for evt in raw_events]
-    phase_groups = _build_phase_groups(raw_events, steps, iteration)
-
-    return {
-        "cycle": cycle_number,
-        "lifecycle": lifecycle,
-        "iteration": iteration,
-        "run_id": run_id,
-        "timestamp": first_ts,
-        "session_run_ids": session_run_ids,
-        "agent": agent,
-        "reviewer_agent": reviewer_agent,
-        "retry_count": retry_count,
-        "reset_from_scratch": reset_from_scratch,
-        "cycle_label": f"Cycle {iteration} (scratch)" if reset_from_scratch else f"Cycle {iteration}",
-        "outcome": outcome,
-        "time_label": time_label,
-        "expanded": False,
-        "artifacts": artifacts,
-        "steps": steps,
-        "phase_groups": phase_groups,
-        "validation": _cycle_validation_summary(raw_events),
-    }
 
 
 # Validation passed/failed event classification: imported at module top
@@ -932,325 +756,6 @@ def _finalize_cycle_from_events(
 # We only surface "Not validated" once coding has actually finished without
 # recording any test evidence.
 
-
-def _cycle_validation_summary(raw_events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Distill validation evidence for the cycle header badge.
-
-    Four outcomes:
-      - "passed"        → validation ran and succeeded; badge → dialog
-      - "failed"        → validation ran and failed; badge → dialog
-      - "not_validated" → coding terminated *without* recording any
-                          validation event (anti-pattern marker)
-      - "pending"       → cycle has not yet emitted a terminal coding
-                          event; validation might still run. No badge
-                          is drawn so we don't shame in-flight work.
-
-    Full JUnit cases load lazily inside the dialog endpoint — only the
-    outcome kind and a `run_dir` pointer live in the projection payload.
-    """
-    cycle_has_terminal = False
-    for evt in reversed(raw_events):
-        name = str(evt.get("event") or evt.get("source_event") or "").lower()
-        if name in _CYCLE_VALIDATION_FAILED_EVENTS:
-            return {
-                "kind": "failed",
-                "run_dir": _optional_str(evt.get("run_dir")),
-            }
-        if name in _CYCLE_VALIDATION_PASSED_EVENTS:
-            return {
-                "kind": "passed",
-                "run_dir": _optional_str(evt.get("run_dir")),
-            }
-        if not cycle_has_terminal and name in _CYCLE_CODING_TERMINAL_EVENTS:
-            cycle_has_terminal = True
-    if cycle_has_terminal:
-        return {"kind": "not_validated", "run_dir": None}
-    return {"kind": "pending", "run_dir": None}
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _annotate_cycle_in_run(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Annotate cycles with a run-local sequence number.
-
-    Uses ``run_id`` when available. Falls back to lifecycle grouping when
-    ``run_id`` is absent (legacy timelines).
-    """
-    return _logical_run_projector.annotate_cycle_in_run(cycles)
-
-
-def _build_cycle_step(evt: dict[str, Any], today: str) -> dict[str, Any]:
-    """Build one journey step entry from a timeline event."""
-    ts = evt.get("timestamp") or ""
-    actions = evt.get("actions")
-    step_dict: dict[str, Any] = {
-        "timestamp": ts,
-        "time_label": _format_time_label(ts, today),
-        "day": str(ts)[:10] if ts else "",
-        "narrative": _event_to_narrative(evt),
-        "status": str(evt.get("status") or ""),
-        "event": str(evt.get("event") or ""),
-    }
-    detail = _step_detail_text(evt)
-    if detail:
-        step_dict["detail"] = detail
-    if actions:
-        step_dict["actions"] = actions
-    return step_dict
-
-
-def _step_detail_text(evt: dict[str, Any]) -> str | None:
-    # Only surface the event's own detail text.  Artifact-resolution errors
-    # (actions_error / show_actions_error) are already accessible via the
-    # "What is missing?" action button and should not pollute the narrative.
-    detail = evt.get("detail")
-    if not detail:
-        return None
-    return str(detail)
-
-
-def _build_phase_groups(
-    raw_events: list[dict[str, Any]],
-    steps: list[dict[str, Any]],
-    iteration: int,
-) -> list[dict[str, Any]]:
-    """Group cycle steps into user-facing phase buckets."""
-    groups: list[dict[str, Any]] = []
-    current_key: str | None = None
-
-    for evt, step in zip(raw_events, steps, strict=False):
-        phase_key = _phase_key_for_event(evt, iteration)
-        if current_key != phase_key:
-            groups.append({
-                "key": phase_key,
-                "label": _phase_label_for_key(phase_key),
-                "steps": [],
-            })
-            current_key = phase_key
-        groups[-1]["steps"].append(step)
-
-    return groups
-
-
-def _phase_key_for_event(evt: dict[str, Any], iteration: int) -> str:
-    """Map an event to a phase key for cycle rendering."""
-    logical_phase = str(evt.get("logical_phase") or "").strip().lower()
-    if logical_phase in {"coding", "review", "rework", "orchestrator"}:
-        return logical_phase
-
-    intent_raw = evt.get("event_intent")
-    intent = (
-        intent_raw
-        if isinstance(intent_raw, str) and intent_raw
-        else infer_event_intent(
-            event_name=str(evt.get("source_event") or evt.get("event") or ""),
-            task=str(evt.get("task") or ""),
-        ).value
-    )
-
-    if intent == EventIntent.ORCHESTRATOR.value:
-        return "orchestrator"
-    if intent == EventIntent.REVIEW.value:
-        return "review"
-    if intent == EventIntent.REWORK.value:
-        return "rework"
-    if intent == EventIntent.CODING.value:
-        return "rework" if iteration > 1 else "coding"
-
-    return "rework" if iteration > 1 else "coding"
-
-
-def _phase_label_for_key(key: str) -> str:
-    if key == "review":
-        return "Review"
-    if key == "orchestrator":
-        return "Orchestrator"
-    if key == "rework":
-        return "Rework"
-    return "Coding"
-
-
-def _derive_cycle_outcome(
-    events: list[dict[str, Any]],
-    iteration: int,
-    context: IssueStoryContext | None,
-) -> str:
-    """Derive outcome label from the last significant event in the cycle."""
-    # Find the last outcome-relevant event (use source_event for canonical matching)
-    last_outcome_event: dict[str, Any] | None = None
-    for evt in reversed(events):
-        canonical = str(evt.get("source_event") or evt.get("event") or "")
-        if canonical in _OUTCOME_EVENTS:
-            last_outcome_event = evt
-            break
-
-    if last_outcome_event is None:
-        return "In progress"
-
-    event_name = str(last_outcome_event.get("source_event") or last_outcome_event.get("event") or "")
-    summary = str(last_outcome_event.get("summary") or "")
-
-    label = _outcome_label(event_name, summary, context)
-
-    # Prefix with "Rework → " when iteration > 1, but not for review-dominated cycles
-    if iteration > 1:
-        is_review_cycle = any(
-            str(e.get("event_intent") or "") == EventIntent.REVIEW.value
-            for e in events
-        )
-        if not is_review_cycle:
-            label = f"Rework \u2192 {label}"
-
-    return label
-
-
-def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
-    event_name: str,
-    summary: str,
-    context: IssueStoryContext | None,
-) -> str:
-    """Map a single event name to its outcome label text."""
-    round_completed_label = _round_completed_outcome_label(event_name, summary)
-    if round_completed_label is not None:
-        return round_completed_label
-
-    session_label = _session_outcome_label(event_name, summary)
-    if session_label is not None:
-        return session_label
-
-    direct_label = _DIRECT_OUTCOME_LABELS.get(event_name)
-    if direct_label is not None:
-        return direct_label
-
-    blocked_label = _issue_blocked_outcome_label(event_name, summary, context)
-    if blocked_label is not None:
-        return blocked_label
-
-    return summary or event_name
-
-
-def _round_completed_outcome_label(event_name: str, summary: str) -> str | None:
-    """Map round-completion summaries into cycle outcome labels when applicable."""
-    if event_name != "review_exchange.round_completed":
-        return None
-    if not summary:
-        return None
-    summary_lower = summary.strip().lower()
-    if "changes_requested" in summary_lower:
-        return "Changes Requested"
-    if "ok" in summary_lower:
-        return "Approved"
-    return None
-
-
-def _session_outcome_label(event_name: str, summary: str) -> str | None:
-    if event_name == "session.failed":
-        return f"Failed{_duration_suffix(summary)}"
-    if event_name == "session.timeout":
-        return f"Timed out{_duration_suffix(summary)}"
-    if event_name == "session.blocked":
-        reason = summary or "unknown"
-        return f"Agent blocked: {reason}"
-    return None
-
-
-def _issue_blocked_outcome_label(
-    event_name: str,
-    summary: str,
-    context: IssueStoryContext | None,
-) -> str | None:
-    if event_name == "issue.blocked":
-        if context and context.flow_stage == "blocked":
-            return _blocked_explanation(context, [{"event": event_name, "summary": summary}])
-        reason = summary or "blocked"
-        return f"Blocked: {reason}"
-    if event_name == "issue.needs_human":
-        reason = summary or "unknown"
-        return f"Needs human: {reason}"
-    return None
-
-
-_DIRECT_OUTCOME_LABELS = {
-    "session.completed": "Completed",
-    "review.changes_requested": "Changes Requested",
-    "review.approved": "Approved",
-    "review.escalated": "Escalated",
-    "review.merged": "Merged",
-    "issue.completed": "Completed",
-}
-
-
-def _duration_suffix(summary: str) -> str:
-    """Extract a duration hint from summary, e.g. ' (2 min)'."""
-    # Summaries sometimes contain duration info; pass through if present
-    if summary:
-        return f": {summary}"
-    return ""
-
-
-def _collect_cycle_artifacts(events: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: C901 — collects artifacts from heterogeneous event types
-    """Collect artifact references from cycle events."""
-    log_url: str | None = None
-    pr_url: str | None = None
-    pr_number: int | None = None
-    has_review_feedback = False
-
-    for evt in events:
-        event_name = str(evt.get("source_event") or evt.get("event") or "")
-
-        # PR from issue.pr_created
-        if event_name == "issue.pr_created":
-            for artifact in evt.get("artifacts") or []:
-                if not isinstance(artifact, dict):
-                    continue
-                value = str(artifact.get("value") or "")
-                if "/pull/" in value:
-                    pr_url = value
-                    # Extract PR number from URL
-                    try:
-                        pr_number = int(value.rstrip("/").rsplit("/", 1)[-1])
-                    except (ValueError, IndexError):
-                        pass
-
-        # Review feedback presence
-        if event_name in ("review.changes_requested", "review.approved"):
-            has_review_feedback = True
-
-        # Log URL from session artifacts
-        for artifact in evt.get("artifacts") or []:
-            if not isinstance(artifact, dict):
-                continue
-            atype = str(artifact.get("type") or "")
-            if atype == "log" or atype == "transcript":
-                log_url = str(artifact.get("value") or artifact.get("url") or "")
-
-    return {
-        "log_url": log_url,
-        "pr_url": pr_url,
-        "pr_number": pr_number,
-        "has_review_feedback": has_review_feedback,
-    }
-
-
-def _format_date_time_label(timestamp: Any) -> str:
-    """Format a timestamp to 'Feb 9, 2:10:30 PM' style for cycle headers."""
-    if not timestamp:
-        return ""
-    ts = str(timestamp)
-    try:
-        dt = datetime.fromisoformat(ts)
-        time_part = dt.strftime("%-I:%M:%S %p").lstrip("0")
-        date_part = dt.strftime("%b %-d")
-        return f"{date_part}, {time_part}"
-    except (ValueError, TypeError):
-        if "T" in ts and len(ts) >= 19:
-            return ts[:19].replace("T", " ")
-        return ts
 
 
 def _format_time_label(timestamp: Any, today: str = "") -> str:

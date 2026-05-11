@@ -274,6 +274,213 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
     _validator("IssueDetailPayload").validate(payload)
 
 
+def _journey_event(
+    event: str,
+    *,
+    timestamp: str,
+    logical_run: int,
+    logical_cycle: int,
+    logical_phase: str = "coding",
+    status: str = "started",
+    summary: str | None = None,
+    run_dir: str | None = None,
+    agent: str | None = None,
+) -> dict[str, object]:
+    """Minimal logical-cycle-annotated event suitable for the typed pipeline."""
+    return {
+        "event": event,
+        "timestamp": timestamp,
+        "status": status,
+        "logical_run": logical_run,
+        "logical_cycle": logical_cycle,
+        "logical_phase": logical_phase,
+        "summary": summary,
+        "run_dir": run_dir,
+        "agent": agent,
+    }
+
+
+def test_issue_detail_runs_payload_uses_typed_journey_run_shape() -> None:
+    """``/api/issue-detail`` exposes ``runs[].cycles[]`` as typed journey
+    cycles with the new ``CycleValidationBadge`` (issue #6310 AC-1).
+    The wire shape conforms to ``JourneyRunPayload`` and
+    ``IssueCyclePayload``; the typed badge carries an
+    ``OpenValidationDetailsCommand`` when a validation event is recorded.
+    """
+    from issue_orchestrator.view_models.issue_detail import IssueStoryContext
+
+    events = [
+        _journey_event(
+            "session.started",
+            timestamp="2026-04-21T10:00:00Z",
+            logical_run=1,
+            logical_cycle=1,
+            run_dir="/tmp/run-1",
+            agent="agent:backend",
+        ),
+        _journey_event(
+            "validation.passed",
+            timestamp="2026-04-21T10:05:00Z",
+            logical_run=1,
+            logical_cycle=1,
+            logical_phase="coding",
+            run_dir="/tmp/run-1",
+            status="completed",
+        ),
+        _journey_event(
+            "session.completed",
+            timestamp="2026-04-21T10:06:00Z",
+            logical_run=1,
+            logical_cycle=1,
+            logical_phase="coding",
+            status="completed",
+        ),
+    ]
+    payload = build_issue_detail_view_model(
+        issue_number=4124,
+        title="Issue #4124",
+        issue_url="https://github.com/test/repo/issues/4124",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        context=IssueStoryContext(flow_stage="in_progress"),
+    )
+    _validator("IssueDetailPayload").validate(payload)
+
+    runs = payload["runs"]
+    assert len(runs) == 1
+    run = runs[0]
+    # JourneyRun typed shape
+    assert run["run_number"] == 1
+    assert run["run_label"] == "Run 1"
+    assert run["reset_from_scratch"] is False
+    cycles = run["cycles"]
+    assert len(cycles) == 1
+    cycle = cycles[0]
+    # IssueCycle journey-overlay fields are populated (not None) because the
+    # journey pipeline ran with an ``IssueProjectionContext``.
+    assert cycle["lifecycle"] == 1
+    assert cycle["iteration"] == 1
+    assert cycle["cycle_label"] == "Cycle 1"
+    assert cycle["agent"] == "backend"
+    assert isinstance(cycle["steps"], list) and cycle["steps"]
+    assert isinstance(cycle["phase_groups"], list) and cycle["phase_groups"]
+    # Typed CycleValidationBadge with the typed command
+    badge = cycle["validation"]
+    assert badge is not None
+    assert badge["state"] == "passed"
+    assert badge["command"] is not None
+    assert badge["command"]["kind"] == "open_validation_details"
+    assert badge["command"]["issue_number"] == 4124
+    assert badge["command"]["run_dir"] == "/tmp/run-1"
+
+
+def test_issue_detail_runs_payload_rejects_arbitrary_journey_run_dicts() -> None:
+    """Untyped journey run dicts no longer satisfy ``IssueDetailPayload`` —
+    the public drawer field is genuinely typed (issue #6310 AC-1)."""
+    payload = build_issue_detail_view_model(
+        issue_number=12,
+        title="Issue #12",
+        issue_url="https://github.com/test/repo/issues/12",
+        events=[{"event": "session.started", "status": "started"}],
+        phase_toc=[],
+        cycles=[],
+    )
+    # Inject a typed-violating run; validation must reject.
+    payload["runs"] = [{"not_a_journey_run": True}]
+    errors = list(_validator("IssueDetailPayload").iter_errors(payload))
+    assert errors, "untyped runs dict should fail schema validation"
+    messages = _schema_error_messages(errors)
+    assert (
+        "not_a_journey_run" in messages
+        or "run_number" in messages
+        or "is a required property" in messages
+    ), f"unexpected validation message: {messages}"
+
+
+def test_e2e_linked_issue_lifecycle_cycles_leave_journey_fields_null() -> None:
+    """E2E ``linked_issue_lifecycles[].cycles[]`` has no journey context —
+    the typed ``IssueCycle`` reports journey fields as ``None``, not
+    sentinel placeholders (issue #6310 AC-1 / Blocker 3)."""
+    from issue_orchestrator.view_models.lifecycle_projection import (
+        project_e2e_suite_lifecycle_container_for_run,
+    )
+
+    container = project_e2e_suite_lifecycle_container_for_run(
+        run_id=88,
+        events=[
+            {
+                "event": "e2e.run_started",
+                "timestamp": "2026-04-21T11:00:00Z",
+                "run_id": 88,
+            },
+            {
+                "event": "e2e.test_started",
+                "timestamp": "2026-04-21T11:00:05Z",
+                "nodeid": "tests/e2e/test_x.py::test_y",
+                "run_id": 88,
+            },
+            {
+                "event": "e2e.test_completed",
+                "timestamp": "2026-04-21T11:00:25Z",
+                "nodeid": "tests/e2e/test_x.py::test_y",
+                "status": "passed",
+                "run_id": 88,
+            },
+            {
+                "event": "e2e.run_finished",
+                "timestamp": "2026-04-21T11:00:30Z",
+                "run_id": 88,
+                "status": "passed",
+            },
+        ],
+        agent_events=[
+            {
+                "event": "session.started",
+                "issue_number": 4001,
+                "timestamp": "2026-04-21T11:01:00Z",
+            },
+            {
+                "event": "session.completed",
+                "issue_number": 4001,
+                "timestamp": "2026-04-21T11:02:00Z",
+                "status": "completed",
+            },
+        ],
+    )
+    payload = container.model_dump(mode="json")
+
+    # Drill into the typed linked-lifecycle cycle for issue 4001.
+    runs = payload["runs"]
+    linked_lifecycles = runs[0]["e2e_run"]["linked_issue_lifecycles"]
+    assert linked_lifecycles, "expected at least one linked-issue lifecycle"
+    linked_cycle = linked_lifecycles[0]["cycles"][0]
+
+    # Journey fields are explicitly null (not 0 / "" / False placeholders).
+    for journey_field in (
+        "lifecycle",
+        "iteration",
+        "timestamp",
+        "agent",
+        "reviewer_agent",
+        "retry_count",
+        "reset_from_scratch",
+        "cycle_label",
+        "time_label",
+        "expanded",
+        "artifacts",
+        "validation",
+    ):
+        assert linked_cycle[journey_field] is None, (
+            f"E2E linked cycle's {journey_field} must be null when no journey "
+            f"context is threaded; got {linked_cycle[journey_field]!r}"
+        )
+    # Empty journey collections, not absent.
+    assert linked_cycle["session_run_ids"] == []
+    assert linked_cycle["steps"] == []
+    assert linked_cycle["phase_groups"] == []
+
+
 def test_e2e_run_timeline_payload_matches_ui_openapi() -> None:
     event = _e2e_timeline_event(
         issue_affordances=[{"issue_number": 12, "run_id": 88, "label": "fixture"}],

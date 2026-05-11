@@ -235,12 +235,91 @@ def _seed_issue_409_timeline(store: SqliteTimelineStore, repo_root: Path) -> Non
     )
 
 
+def _seed_issue_410_timeline(store: SqliteTimelineStore, repo_root: Path) -> None:
+    """Populate an issue whose cycle records a ``validation.passed`` event.
+
+    Issue 410 is the fixture for the typed ``CycleValidationBadge``
+    click-through Playwright test (``test_validation_badge_click_opens_dialog``).
+    It seeds a complete coding cycle plus a passed-validation event so
+    the drawer renders a clickable green badge whose typed
+    ``OpenValidationDetailsCommand`` dispatches into
+    ``openValidationFailure`` and opens the validation dialog (issue
+    #6310 AC-2 end-to-end coverage).
+    """
+    run_dir = repo_root / ".issue-orchestrator" / "sessions" / "flow-run-410"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "terminal-recording.jsonl").write_text(
+        '{"event_type":"resize","offset_ms":0,"rows":24,"cols":80}\n',
+        encoding="utf-8",
+    )
+    base = {
+        "issue_number": 410,
+        "timeline_schema_version": 4,
+        "logical_run": 1,
+        "logical_cycle": 1,
+        "views": ["user", "ops", "debug"],
+        "run_id": "flow-run-410",
+        "run_dir": str(run_dir),
+    }
+    records = [
+        TimelineRecord(
+            event_id="410-session-started",
+            timestamp="2026-01-01T13:00:00Z",
+            event="session.started",
+            source_event="session.started",
+            data={
+                **base,
+                "logical_phase": "coding",
+                "event_intent": "coding",
+                "agent": "agent:web",
+                "task": "coding",
+                "narrative": "Coding session started",
+                "summary": "Implement validated cycle fixture",
+            },
+        ),
+        TimelineRecord(
+            event_id="410-session-completed",
+            timestamp="2026-01-01T13:05:00Z",
+            event="session.completed",
+            source_event="session.completed",
+            data={
+                **base,
+                "logical_phase": "coding",
+                "event_intent": "coding",
+                "agent": "agent:web",
+                "task": "coding",
+                "narrative": "Agent finished coding",
+                "summary": "Validated cycle implementation complete",
+            },
+        ),
+        TimelineRecord(
+            event_id="410-validation-passed",
+            timestamp="2026-01-01T13:06:00Z",
+            event="validation.passed",
+            source_event="validation.passed",
+            data={
+                **base,
+                "logical_phase": "coding",
+                "event_intent": "coding",
+                "agent": "agent:web",
+                "task": "coding",
+                "narrative": "Validation passed",
+                "summary": "All checks green",
+                "status": "completed",
+            },
+        ),
+    ]
+    for record in records:
+        store.append(410, record)
+
+
 def _configure_flow_deps(orchestrator: FlowWebMockOrchestrator, repo_root: Path) -> None:
     state_dir = repo_root / ".issue-orchestrator" / "state"
     state_dir.mkdir(parents=True)
     store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
     _seed_issue_408_timeline(store, repo_root)
     _seed_issue_409_timeline(store, repo_root)
+    _seed_issue_410_timeline(store, repo_root)
 
     publish_recovery = MagicMock(spec=["can_retry_publish"])
     publish_recovery.can_retry_publish.return_value = False
@@ -268,6 +347,7 @@ def web_server(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
     orchestrator.add_queue_issue(408, "Flow smoke item")
     orchestrator.add_queue_issue(177, "Blocked merge item", labels=["agent:web", "blocked-needs-human"])
     orchestrator.add_active_issue(409, "Running flow item", repo_root=repo_root)
+    orchestrator.add_queue_issue(410, "Validated cycle fixture")
     port = find_free_port()
 
     # Make sure module-level auth state from an earlier test doesn't

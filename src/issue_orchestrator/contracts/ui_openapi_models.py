@@ -69,6 +69,18 @@ class ConfigDialogPayload(BaseModel):
     config_text: str
     title: str
 
+class CycleArtifactsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    has_review_feedback: bool
+    log_url: str | None
+    pr_number: int | None
+    pr_url: str | None
+
+class CycleValidationBadgePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: OpenValidationDetailsCommandPayload | None
+    state: Literal['pending', 'not_validated', 'passed', 'failed']
+
 class DashboardDataPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     agents: list[str]
@@ -199,7 +211,7 @@ class E2ERunDetailPayload(BaseModel):
     results_summary: E2ERunResultsSummaryPayload
     run: E2ERunExecutionPayload
     run_count: int
-    runs: list[dict[str, Any]]
+    runs: list[JourneyRunPayload]
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
@@ -381,11 +393,28 @@ class InfoDialogPayload(BaseModel):
 
 class IssueCyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    agent: str | None
+    artifacts: CycleArtifactsPayload | None
     coder: CodingAttemptPayload
+    cycle_in_run: int | None
+    cycle_label: str | None
     cycle_number: int
     diagnostics: list[TimelineDiagnosticPayload]
+    expanded: bool | None
+    iteration: int | None
+    lifecycle: int | None
     outcome: str
+    phase_groups: list[JourneyPhaseGroupPayload]
+    reset_from_scratch: bool | None
+    retry_count: int | None
     review: ReviewStagePayload
+    reviewer_agent: str | None
+    run_id: str | None
+    session_run_ids: list[str]
+    steps: list[JourneyStepPayload]
+    time_label: str | None
+    timestamp: str | None
+    validation: CycleValidationBadgePayload | None
 
 class IssueDetailActionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -416,7 +445,7 @@ class IssueDetailPayload(BaseModel):
     previous_runs_count: int
     raw_events_count: int
     run_count: int
-    runs: list[dict[str, Any]]
+    runs: list[JourneyRunPayload]
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
@@ -494,6 +523,37 @@ class JUnitCasePayload(BaseModel):
     suite_name: str | None = None
     system_err: str | None = None
     system_out: str | None = None
+
+class JourneyPhaseGroupPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: Literal['coding', 'review', 'rework', 'orchestrator']
+    label: str
+    steps: list[JourneyStepPayload]
+
+class JourneyRunPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cycles: list[IssueCyclePayload]
+    expanded: bool
+    outcome: str
+    reset_from_scratch: bool
+    run_id: str | None
+    run_key: str
+    run_label: str
+    run_number: int
+    session_run_ids: list[str]
+    time_label: str
+    timestamp: str
+
+class JourneyStepPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions: list[dict[str, Any]]
+    day: str
+    detail: str | None = None
+    event: str
+    narrative: str
+    status: str
+    time_label: str
+    timestamp: str
 
 class LinkedIssueLifecyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -58,6 +58,18 @@ export interface ConfigDialogPayload {
   title: string;
 }
 
+export interface CycleArtifactsPayload {
+  has_review_feedback: boolean;
+  log_url: string | null;
+  pr_number: number | null;
+  pr_url: string | null;
+}
+
+export interface CycleValidationBadgePayload {
+  command: OpenValidationDetailsCommandPayload | null;
+  state: "pending" | "not_validated" | "passed" | "failed";
+}
+
 export interface DashboardDataPayload {
   agents: string[];
   e2eLastRun?: Record<string, any> | null;
@@ -188,7 +200,7 @@ export interface E2ERunDetailPayload {
   results_summary: E2ERunResultsSummaryPayload;
   run: E2ERunExecutionPayload;
   run_count: number;
-  runs: Record<string, any>[];
+  runs: JourneyRunPayload[];
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
@@ -370,11 +382,28 @@ export interface InfoDialogPayload {
 }
 
 export interface IssueCyclePayload {
+  agent: string | null;
+  artifacts: CycleArtifactsPayload | null;
   coder: CodingAttemptPayload;
+  cycle_in_run: number | null;
+  cycle_label: string | null;
   cycle_number: number;
   diagnostics: TimelineDiagnosticPayload[];
+  expanded: boolean | null;
+  iteration: number | null;
+  lifecycle: number | null;
   outcome: string;
+  phase_groups: JourneyPhaseGroupPayload[];
+  reset_from_scratch: boolean | null;
+  retry_count: number | null;
   review: ReviewStagePayload;
+  reviewer_agent: string | null;
+  run_id: string | null;
+  session_run_ids: string[];
+  steps: JourneyStepPayload[];
+  time_label: string | null;
+  timestamp: string | null;
+  validation: CycleValidationBadgePayload | null;
 }
 
 export interface IssueDetailActionPayload {
@@ -405,7 +434,7 @@ export interface IssueDetailPayload {
   previous_runs_count: number;
   raw_events_count: number;
   run_count: number;
-  runs: Record<string, any>[];
+  runs: JourneyRunPayload[];
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
@@ -484,6 +513,37 @@ export interface JUnitCasePayload {
   suite_name?: string | null;
   system_err?: string | null;
   system_out?: string | null;
+}
+
+export interface JourneyPhaseGroupPayload {
+  key: "coding" | "review" | "rework" | "orchestrator";
+  label: string;
+  steps: JourneyStepPayload[];
+}
+
+export interface JourneyRunPayload {
+  cycles: IssueCyclePayload[];
+  expanded: boolean;
+  outcome: string;
+  reset_from_scratch: boolean;
+  run_id: string | null;
+  run_key: string;
+  run_label: string;
+  run_number: number;
+  session_run_ids: string[];
+  time_label: string;
+  timestamp: string;
+}
+
+export interface JourneyStepPayload {
+  actions: Record<string, any>[];
+  day: string;
+  detail?: string | null;
+  event: string;
+  narrative: string;
+  status: string;
+  time_label: string;
+  timestamp: string;
 }
 
 export interface LinkedIssueLifecyclePayload {

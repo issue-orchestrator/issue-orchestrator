@@ -656,7 +656,7 @@
           "summary": {"$ref": "#/components/schemas/IssueDetailSummaryPayload"},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/IssueDetailActionPayload"}},
           "status_explanation": {"type": "string"},
-          "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "runs": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyRunPayload"}},
           "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "run_count": {"type": "integer"},
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -721,7 +721,7 @@
           "summary": {"$ref": "#/components/schemas/IssueDetailSummaryPayload"},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/IssueDetailActionPayload"}},
           "status_explanation": {"type": "string"},
-          "runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "runs": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyRunPayload"}},
           "timeline_steps": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "run_count": {"type": "integer"},
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
@@ -1562,16 +1562,121 @@
         ],
         "discriminator": {"propertyName": "kind"}
       },
+      "CycleArtifactsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["log_url", "pr_url", "pr_number", "has_review_feedback"],
+        "properties": {
+          "log_url": {"type": ["string", "null"]},
+          "pr_url": {"type": ["string", "null"]},
+          "pr_number": {"type": ["integer", "null"]},
+          "has_review_feedback": {"type": "boolean"}
+        }
+      },
+      "JourneyStepPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["timestamp", "time_label", "day", "narrative", "status", "event", "actions"],
+        "properties": {
+          "timestamp": {"type": "string"},
+          "time_label": {"type": "string"},
+          "day": {"type": "string"},
+          "narrative": {"type": "string"},
+          "status": {"type": "string"},
+          "event": {"type": "string"},
+          "detail": {"type": ["string", "null"]},
+          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+        }
+      },
+      "JourneyPhaseGroupPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label", "steps"],
+        "properties": {
+          "key": {"enum": ["coding", "review", "rework", "orchestrator"]},
+          "label": {"type": "string"},
+          "steps": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyStepPayload"}}
+        }
+      },
+      "CycleValidationBadgePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "command"],
+        "properties": {
+          "state": {"enum": ["pending", "not_validated", "passed", "failed"]},
+          "command": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
       "IssueCyclePayload": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["cycle_number", "coder", "review", "outcome", "diagnostics"],
+        "required": [
+          "cycle_number", "coder", "review", "outcome", "diagnostics",
+          "lifecycle", "iteration", "run_id", "timestamp", "session_run_ids",
+          "agent", "reviewer_agent", "retry_count", "reset_from_scratch",
+          "cycle_label", "time_label", "expanded", "cycle_in_run",
+          "artifacts", "steps", "phase_groups", "validation"
+        ],
         "properties": {
           "cycle_number": {"type": "integer"},
           "coder": {"$ref": "#/components/schemas/CodingAttemptPayload"},
           "review": {"$ref": "#/components/schemas/ReviewStagePayload"},
           "outcome": {"type": "string"},
-          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "lifecycle": {"type": ["integer", "null"]},
+          "iteration": {"type": ["integer", "null"]},
+          "run_id": {"type": ["string", "null"]},
+          "timestamp": {"type": ["string", "null"]},
+          "session_run_ids": {"type": "array", "items": {"type": "string"}},
+          "agent": {"type": ["string", "null"]},
+          "reviewer_agent": {"type": ["string", "null"]},
+          "retry_count": {"type": ["integer", "null"]},
+          "reset_from_scratch": {"type": ["boolean", "null"]},
+          "cycle_label": {"type": ["string", "null"]},
+          "time_label": {"type": ["string", "null"]},
+          "expanded": {"type": ["boolean", "null"]},
+          "cycle_in_run": {"type": ["integer", "null"]},
+          "artifacts": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/CycleArtifactsPayload"},
+              {"type": "null"}
+            ]
+          },
+          "steps": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyStepPayload"}},
+          "phase_groups": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyPhaseGroupPayload"}},
+          "validation": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/CycleValidationBadgePayload"},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
+      "JourneyRunPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_number", "run_label", "outcome", "run_key", "run_id",
+          "session_run_ids", "timestamp", "time_label", "expanded",
+          "reset_from_scratch", "cycles"
+        ],
+        "properties": {
+          "run_number": {"type": "integer"},
+          "run_label": {"type": "string"},
+          "outcome": {"type": "string"},
+          "run_key": {"type": "string"},
+          "run_id": {"type": ["string", "null"]},
+          "session_run_ids": {"type": "array", "items": {"type": "string"}},
+          "timestamp": {"type": "string"},
+          "time_label": {"type": "string"},
+          "expanded": {"type": "boolean"},
+          "reset_from_scratch": {"type": "boolean"},
+          "cycles": {"type": "array", "items": {"$ref": "#/components/schemas/IssueCyclePayload"}}
         }
       },
       "IssueLifecyclePayload": {
