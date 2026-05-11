@@ -179,12 +179,18 @@ def test_issue_detail_template_includes_retry_publish_button() -> None:
     assert 'id="issueDetailRetryPublishBtn"' in html
 
 
-def test_issue_detail_template_includes_validation_failure_section() -> None:
+def test_issue_detail_template_drops_top_of_drawer_validation_section() -> None:
+    # The top-of-drawer flat validation list (which dumped 600+ passed
+    # cases as a non-scrollable wall of rows) was replaced by per-cycle
+    # validation badges in the journey timeline. Make sure the old
+    # markup stays gone — re-adding it would resurrect the bug we fixed.
     html = _read(DASHBOARD_TEMPLATE)
-    assert 'id="issueDetailValidation"' in html
-    assert 'id="issueDetailValidationBtn"' in html
-    # Container for the structured (JUnit-backed) test results view.
-    assert 'id="issueDetailValidationStructured"' in html
+    assert 'id="issueDetailValidation"' not in html
+    assert 'id="issueDetailValidationBtn"' not in html
+    assert 'id="issueDetailValidationStructured"' not in html
+    assert 'id="issueDetailValidationTitle"' not in html
+    assert 'id="issueDetailValidationTests"' not in html
+    assert 'id="issueDetailValidationReason"' not in html
 
 
 def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
@@ -481,89 +487,85 @@ def test_copy_journey_timeline_formats_raw_timestamps_locally() -> None:
     assert "formatJourneyStepTimestamp(s.timestamp || '', s.time_label || '')" in body
 
 
-def test_render_issue_detail_renders_validation_failure_callout() -> None:
-    js = _read(DASHBOARD_JS)
-    body = _function_body(js, "renderIssueDetailValidation")
-    assert "summary.run_diagnostic" in body
-    assert "action.id === 'open_validation_failure'" in body
-    assert "openValidationFailure" in body
+def test_journey_cycle_header_renders_validation_badge() -> None:
+    """Each cycle in the journey timeline carries a validation badge that
+    opens the validation-failure dialog for its run_dir. This is the
+    replacement for the dropped top-of-drawer flat validation list.
 
-
-def test_issue_detail_validation_renders_structured_view_when_junit_cases_present() -> None:
-    """When the validation diagnostic carries parsed JUnit cases, the drawer
-    renders the same test-centric layout used by the E2E run modal — pass/fail
-    headline, filter chips, per-row error expand. Falls back to the simple
-    failed-test-name list when no JUnit data is available."""
-    js = _read(DASHBOARD_JS)
-    render_body = _function_body(js, "renderIssueDetailValidation")
-    structured_body = _function_body(js, "_renderIssueValidationStructured")
-    reset_body = _function_body(js, "resetIssueDetailValidation")
-
-    # Render branches on junit_cases.
-    assert "diagnostic.junit_cases" in render_body
-    assert "_renderIssueValidationStructured" in render_body
-    # Falls through to the existing failed_tests_preview <ul> when junit_cases is empty.
-    assert "failed_tests_preview" in render_body
-
-    # Structured renderer reuses the shared test-results primitives.
-    assert "renderTestResultsHeadline(" in structured_body
-    assert "renderTestResultsFilters(" in structured_body
-    assert "_renderTestRow(" in structured_body
-    assert "_testFilterGroup" in structured_body
-
-    # Reset clears both the simple <ul> and the structured panel.
-    assert "issueDetailValidationStructured" in reset_body
-
-    css = _read_dashboard_css_bundle()
-    assert ".issue-detail-validation-structured" in css
-
-
-def test_render_issue_detail_validation_handles_passed_runs() -> None:
-    """The drawer's validation panel must surface for passed runs as
-    well as failures (PR #6300 follow-up). Pin the JS branches the
-    review called out so a future cleanup can't quietly delete them.
-
-    Asserts on `renderIssueDetailValidation`:
-    - Title flips to "Validation passed" / "Validation failed" via a
-      stable id, not a global class selector.
-    - `is-passed` / `is-failed` classes are toggled on the section so
-      CSS can flip the left-rule colour.
-    - Passed-with-no-JUnit takes the new "skip the failure-list
-      fallback" branch (the failure-list message would be wrong on
-      green).
-
-    Asserts on `resetIssueDetailValidation`:
-    - The new outcome classes are cleared symmetrically with the
-      render path so a stale class can't leak into a re-shown section.
-    - The title element is reset to the template default.
+    Three badge states:
+    - passed → green button → openValidationFailure
+    - failed → red button → openValidationFailure
+    - not_validated → amber static badge (anti-pattern marker)
     """
     js = _read(DASHBOARD_JS)
-    render_body = _function_body(js, "renderIssueDetailValidation")
-    reset_body = _function_body(js, "resetIssueDetailValidation")
+    badge_body = _function_body(js, "_renderCycleValidationBadge")
+    runs_body = _function_body(js, "_renderJourneyRuns")
 
-    # Title element is queried via the stable id (not a global class
-    # selector that would silently start matching duplicates).
-    assert "getElementById('issueDetailValidationTitle')" in render_body
-    assert "getElementById('issueDetailValidationTitle')" in reset_body
+    # The cycle header includes the badge.
+    assert "_renderCycleValidationBadge(c.validation" in runs_body
+    assert "${validationBadge}" in runs_body
 
-    # Title text flips per outcome.
-    assert "'Validation passed'" in render_body
-    assert "'Validation failed'" in render_body
+    # Badge wiring: passed and failed states both open the dialog.
+    assert "is-passed" in badge_body
+    assert "is-failed" in badge_body
+    assert "is-not-validated" in badge_body
+    assert "openValidationFailure(" in badge_body
+    # Not-validated is non-clickable (no openValidationFailure inside that branch)
+    # — guard a future "make everything clickable" cleanup from accidentally
+    # routing missing-validation cycles into the dialog endpoint.
+    assert "'not_validated'" in badge_body
 
-    # Outcome class is toggled on the section.
-    assert "classList.toggle('is-passed'" in render_body
-    assert "classList.toggle('is-failed'" in render_body
-
-    # Reset clears the toggle classes so they can't leak.
-    assert "classList.remove('is-passed', 'is-failed')" in reset_body
-
-    # Passed branches off `diagnostic.state === 'validation_passed'`.
-    assert "validation_passed" in render_body
-
-    # CSS rules carry the outcome-specific border colours.
     css = _read_dashboard_css_bundle()
-    assert ".issue-detail-validation.is-passed" in css
-    assert ".issue-detail-validation.is-failed" in css
+    assert ".journey-cycle-validation-badge" in css
+    assert ".journey-cycle-validation-badge.is-passed" in css
+    assert ".journey-cycle-validation-badge.is-failed" in css
+    assert ".journey-cycle-validation-badge.is-not-validated" in css
+
+
+def test_cycle_validation_summary_derived_from_raw_events() -> None:
+    """The per-cycle validation payload (kind + run_dir) is computed from
+    raw events at view-model build time so the frontend never has to
+    re-scan event streams to render the badge."""
+    from issue_orchestrator.view_models.issue_detail import (  # type: ignore[attr-defined]
+        _cycle_validation_summary,
+    )
+
+    passed_events = [
+        {"event": "agent.coding_started", "run_dir": "/tmp/run-1"},
+        {
+            "event": "validation.passed",
+            "run_dir": "/tmp/run-1",
+            "artifacts": [{"kind": "validation", "path": "/tmp/run-1/validation.json"}],
+        },
+    ]
+    assert _cycle_validation_summary(passed_events) == {
+        "kind": "passed",
+        "run_dir": "/tmp/run-1",
+    }
+
+    failed_events = [
+        {"event": "validation.failed", "run_dir": "/tmp/run-2"},
+    ]
+    assert _cycle_validation_summary(failed_events) == {
+        "kind": "failed",
+        "run_dir": "/tmp/run-2",
+    }
+
+    no_validation_events = [
+        {"event": "agent.coding_started", "run_dir": "/tmp/run-3"},
+    ]
+    assert _cycle_validation_summary(no_validation_events) == {
+        "kind": "not_validated",
+        "run_dir": None,
+    }
+
+    # Failed wins when both fire — the latest-event-wins reverse scan picks
+    # up the failure (final retry was the outcome).
+    later_failed = [
+        {"event": "validation.passed", "run_dir": "/tmp/run-4"},
+        {"event": "validation.failed", "run_dir": "/tmp/run-4"},
+    ]
+    assert _cycle_validation_summary(later_failed)["kind"] == "failed"
 
 
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:

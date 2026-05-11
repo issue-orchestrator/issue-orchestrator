@@ -904,7 +904,50 @@ def _finalize_cycle_from_events(
         "artifacts": artifacts,
         "steps": steps,
         "phase_groups": phase_groups,
+        "validation": _cycle_validation_summary(raw_events),
     }
+
+
+_CYCLE_VALIDATION_PASSED_EVENTS = frozenset(
+    {"validation.passed", "session.validation_passed"}
+)
+_CYCLE_VALIDATION_FAILED_EVENTS = frozenset(
+    {
+        "validation.failed",
+        "session.validation_failed",
+        "session.validation_retry_needed",
+    }
+)
+
+
+def _cycle_validation_summary(raw_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Distill validation evidence for the cycle header badge.
+
+    The journey renders a per-cycle badge (Validated / Failed / Not validated)
+    that opens the existing validation-failure dialog for that cycle's
+    run_dir. We only need the outcome kind and a run_dir pointer here —
+    full JUnit cases load lazily inside the dialog endpoint.
+    """
+    for evt in reversed(raw_events):
+        name = str(evt.get("event") or evt.get("source_event") or "").lower()
+        if name in _CYCLE_VALIDATION_FAILED_EVENTS:
+            return {
+                "kind": "failed",
+                "run_dir": _optional_str(evt.get("run_dir")),
+            }
+        if name in _CYCLE_VALIDATION_PASSED_EVENTS:
+            return {
+                "kind": "passed",
+                "run_dir": _optional_str(evt.get("run_dir")),
+            }
+    return {"kind": "not_validated", "run_dir": None}
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _annotate_cycle_in_run(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:

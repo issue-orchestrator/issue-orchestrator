@@ -648,15 +648,3 @@
     flex-direction: column;
 }
 
-/* Issue-detail drawer: structured validation results reuse the test-results
-   layout. Slightly tighter rhythm because the drawer is narrower. */
-.issue-detail-validation-structured {
-    margin-top: 10px;
-}
-.issue-detail-validation-structured-panel .test-results-headline {
-    padding: 8px 10px;
-    font-size: 13px;
-}
-.issue-detail-validation-structured-panel .trh-stat {
-    font-size: 13px;
-}

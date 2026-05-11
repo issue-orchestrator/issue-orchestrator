@@ -99,54 +99,6 @@
 .issue-detail-status.status-done { border-left-color: var(--success, #5a5); }
 .issue-detail-status.status-queued { border-left-color: var(--text-muted, #888); }
 
-.issue-detail-validation {
-    display: grid;
-    gap: 8px;
-    padding: 12px;
-    border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-panel-soft) 74%, transparent);
-    /* Default to a danger-toned left rule; the JS toggles
-       `.is-passed` / `.is-failed` to flip the colour to success
-       when the run passed. The default keeps backward compat for
-       payloads that don't carry a `state` field. */
-    border-left: 3px solid var(--danger, #e55);
-}
-.issue-detail-validation.is-passed {
-    border-left-color: var(--success, #5a5);
-}
-.issue-detail-validation.is-failed {
-    border-left-color: var(--danger, #e55);
-}
-.issue-detail-validation-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-.issue-detail-validation-title {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text);
-}
-.issue-detail-validation-reason {
-    font-size: 12px;
-    color: var(--text-muted);
-    line-height: 1.5;
-}
-.issue-detail-validation-tests {
-    margin: 0;
-    padding-left: 18px;
-    display: grid;
-    gap: 4px;
-    color: var(--text);
-    font-size: 12px;
-}
-.issue-detail-validation-tests li {
-    line-height: 1.4;
-    word-break: break-word;
-}
-
 .issue-detail-section-title {
     font-size: 11px;
     font-weight: 600;
@@ -287,6 +239,49 @@
 .journey-cycle-outcome.outcome-warning { color: var(--warn, #f0b24f); }
 .journey-cycle-time { font-size: 11px; color: var(--text-muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .journey-cycle-artifacts-btn { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+
+/* Per-cycle validation badge — the discoverable entry point into JUnit
+   evidence for that cycle. Three states map to three CSS classes that
+   each pick up a semantic color from the global tokens. */
+.journey-cycle-validation-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    background: transparent;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.journey-cycle-validation-badge:focus-visible {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: 2px;
+}
+button.journey-cycle-validation-badge:hover {
+    filter: brightness(1.1);
+}
+.journey-cycle-validation-badge.is-passed {
+    color: var(--success, #46c37b);
+    border-color: color-mix(in srgb, var(--success, #46c37b) 60%, transparent);
+    background: color-mix(in srgb, var(--success, #46c37b) 12%, transparent);
+}
+.journey-cycle-validation-badge.is-failed {
+    color: var(--danger, #e55);
+    border-color: color-mix(in srgb, var(--danger, #e55) 60%, transparent);
+    background: color-mix(in srgb, var(--danger, #e55) 12%, transparent);
+}
+.journey-cycle-validation-badge.is-not-validated {
+    /* No click target — anti-pattern marker only. Cursor reflects that. */
+    cursor: help;
+    color: var(--warn, #f0b24f);
+    border-color: color-mix(in srgb, var(--warn, #f0b24f) 60%, transparent);
+    background: color-mix(in srgb, var(--warn, #f0b24f) 12%, transparent);
+}
 .journey-cycle-body { padding-left: 20px; }
 .journey-cycle-body.collapsed { display: none; }
 .journey-phase-group {
