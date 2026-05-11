@@ -69,6 +69,13 @@ class ConfigDialogPayload(BaseModel):
     config_text: str
     title: str
 
+class CycleArtifactsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    has_review_feedback: bool
+    log_url: str | None
+    pr_number: int | None
+    pr_url: str | None
+
 class DashboardDataPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     agents: list[str]
@@ -381,11 +388,28 @@ class InfoDialogPayload(BaseModel):
 
 class IssueCyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    agent: str
+    artifacts: CycleArtifactsPayload
     coder: CodingAttemptPayload
+    cycle_in_run: int | None
+    cycle_label: str
     cycle_number: int
     diagnostics: list[TimelineDiagnosticPayload]
+    expanded: bool
+    iteration: int
+    lifecycle: int
     outcome: str
+    phase_groups: list[JourneyPhaseGroupPayload]
+    reset_from_scratch: bool
+    retry_count: int
     review: ReviewStagePayload
+    reviewer_agent: str
+    run_id: str | None
+    session_run_ids: list[str]
+    steps: list[JourneyStepPayload]
+    time_label: str
+    timestamp: str
+    validation: dict[str, Any] | None
 
 class IssueDetailActionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -494,6 +518,37 @@ class JUnitCasePayload(BaseModel):
     suite_name: str | None = None
     system_err: str | None = None
     system_out: str | None = None
+
+class JourneyPhaseGroupPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: Literal['coding', 'review', 'rework', 'orchestrator']
+    label: str
+    steps: list[JourneyStepPayload]
+
+class JourneyRunPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cycles: list[IssueCyclePayload]
+    expanded: bool
+    outcome: str
+    reset_from_scratch: bool
+    run_id: str | None
+    run_key: str
+    run_label: str
+    run_number: int
+    session_run_ids: list[str]
+    time_label: str
+    timestamp: str
+
+class JourneyStepPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions: list[dict[str, Any]]
+    day: str
+    detail: str | None = None
+    event: str
+    narrative: str
+    status: str
+    time_label: str
+    timestamp: str
 
 class LinkedIssueLifecyclePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -24,7 +24,9 @@ from ..events import EventName
 # — no separate set to drift. Imported under the existing private name so
 # the call site stays unchanged.
 from .lifecycle_projection import (
+    BLOCKED_EVENT_NAMES as _CANONICAL_BLOCKED_EVENT_NAMES,
     CODING_TERMINAL_EVENTS as _CYCLE_CODING_TERMINAL_EVENTS,
+    OUTCOME_EVENTS as _CANONICAL_OUTCOME_EVENTS,
     VALIDATION_FAILED_EVENTS as _CYCLE_VALIDATION_FAILED_EVENTS,
     VALIDATION_PASSED_EVENTS as _CYCLE_VALIDATION_PASSED_EVENTS,
 )
@@ -428,17 +430,10 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
     return _fallback_explanation(events)
 
 
-_BLOCKED_EVENT_NAMES = frozenset({
-    "session.timeout",
-    "session.failed",
-    "session.blocked",
-    "session.validation_failed",
-    "issue.blocked",
-    "issue.needs_human",
-    "publish.failed",
-    "review.changes_requested",
-    "review.escalated",
-})
+# Canonical blocked-event set lives in ``lifecycle_projection``.  The local
+# alias is preserved so call sites stay stable while the canonical set
+# remains the single source of truth (issue #6310 AC-4).
+_BLOCKED_EVENT_NAMES = _CANONICAL_BLOCKED_EVENT_NAMES
 
 
 def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -> str:  # noqa: C901 — maps blocking conditions to explanations
@@ -694,22 +689,9 @@ def _format_agent(event: dict[str, Any]) -> str:
 # Journey cycles — collapsible lifecycle groups
 # ---------------------------------------------------------------------------
 
-# Outcome derivation: last significant event → outcome label
-_OUTCOME_EVENTS = frozenset({
-    "session.failed",
-    "session.timeout",
-    "session.blocked",
-    "session.completed",
-    "review_exchange.round_completed",
-    "review.changes_requested",
-    "review.approved",
-    "review.escalated",
-    "review.merged",
-    "issue.blocked",
-    "issue.needs_human",
-    "publish.failed",
-    "issue.completed",
-})
+# Canonical outcome-event set lives in ``lifecycle_projection``.  The local
+# alias keeps existing call sites stable (issue #6310 AC-4).
+_OUTCOME_EVENTS = _CANONICAL_OUTCOME_EVENTS
 
 
 def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:

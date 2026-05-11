@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -529,12 +529,94 @@ ReviewStage = Annotated[
 ]
 
 
+class CycleArtifacts(LifecycleBase):
+    """Artifact references collected for one cycle (logs, PR, review flag)."""
+
+    log_url: str | None = None
+    pr_url: str | None = None
+    pr_number: int | None = None
+    has_review_feedback: bool = False
+
+
+class JourneyStep(LifecycleBase):
+    """One narrative entry in a journey cycle's step list.
+
+    ``actions`` is an opaque tuple of action descriptors (e.g.
+    ``{"type": "open_agent_log", "value": "/path"}``) that the drawer reads
+    by ``type``.  The shapes vary across event sources and are not part of
+    the typed contract yet — they are pass-through from the event stream.
+    PR 2 introduces typed Command dispatch for the per-cycle validation
+    badge; broader step-action typing is a later follow-up.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    timestamp: str
+    time_label: str
+    day: str
+    narrative: str
+    status: str
+    event: str
+    detail: str | None = None
+    actions: tuple[dict[str, Any], ...] = ()
+
+
+JourneyPhaseKey = Literal["coding", "review", "rework", "orchestrator"]
+
+
+class JourneyPhaseGroup(LifecycleBase):
+    """A bucket of journey steps under a single user-facing phase label."""
+
+    key: JourneyPhaseKey
+    label: str
+    steps: tuple[JourneyStep, ...] = ()
+
+
+class IssueProjectionContext(LifecycleBase):
+    """Primitive policy inputs the projection needs for outcome labeling.
+
+    Owned by the projection layer; constructed from the entry-point
+    ``IssueStoryContext`` so ``lifecycle_projection`` never imports the
+    entry-point dataclass (see issue #6310 AC-3).
+    """
+
+    flow_stage: str = ""
+    labels: tuple[str, ...] = ()
+    current_rework_cycle: int = 0
+    max_rework_cycles: int = 5
+
+
 class IssueCycle(LifecycleBase):
     cycle_number: int
     coder: CodingAttempt
     review: ReviewStage
     outcome: str
     diagnostics: tuple[TimelineDiagnostic, ...] = ()
+
+    # Journey/drawer fields — populated when the projection is built with
+    # ``IssueProjectionContext`` (e.g. ``/api/issue-detail``).  E2E
+    # ``linked_issue_lifecycles[].cycles[]`` leave these at defaults.
+    lifecycle: int = 0
+    iteration: int = 0
+    run_id: str | None = None
+    timestamp: str = ""
+    session_run_ids: tuple[str, ...] = ()
+    agent: str = ""
+    reviewer_agent: str = ""
+    retry_count: int = 0
+    reset_from_scratch: bool = False
+    cycle_label: str = ""
+    time_label: str = ""
+    expanded: bool = False
+    cycle_in_run: int | None = None
+    artifacts: CycleArtifacts = Field(default_factory=CycleArtifacts)
+    steps: tuple[JourneyStep, ...] = ()
+    phase_groups: tuple[JourneyPhaseGroup, ...] = ()
+    # PR-1 carries the per-cycle validation badge as an opaque dict
+    # (matches the post-PR-#6309 dict-projection shape on the wire). PR 2
+    # replaces this with a typed ``CycleValidationBadge`` per issue #6310
+    # AC-2.
+    validation: dict[str, Any] | None = None
 
     @field_validator("cycle_number")
     @classmethod
@@ -554,6 +636,22 @@ class IssueCycle(LifecycleBase):
         elif isinstance(self.coder, CompletedCodingAttempt) and isinstance(self.coder.validation, ValidationFailed):
             _ensure_review_not_reached_reason(self.review, "validation_failed")
         return self
+
+
+class JourneyRun(LifecycleBase):
+    """A logical-run grouping of issue cycles for the drawer view."""
+
+    run_number: int
+    run_label: str
+    outcome: str
+    run_key: str = ""
+    run_id: str | None = None
+    session_run_ids: tuple[str, ...] = ()
+    timestamp: str = ""
+    time_label: str = ""
+    expanded: bool = False
+    reset_from_scratch: bool = False
+    cycles: tuple[IssueCycle, ...] = ()
 
 
 class IssueLifecycle(LifecycleBase):
@@ -907,6 +1005,7 @@ __all__ = [
     "CodingOutputs",
     "CompletedCodingAttempt",
     "CompletionRecordEvidence",
+    "CycleArtifacts",
     "DashboardIteration",
     "DashboardTimelineContainer",
     "E2EFailureDetailsAvailable",
@@ -920,6 +1019,11 @@ __all__ = [
     "FailedE2ETestExecution",
     "IssueCycle",
     "IssueLifecycle",
+    "IssueProjectionContext",
+    "JourneyPhaseGroup",
+    "JourneyPhaseKey",
+    "JourneyRun",
+    "JourneyStep",
     "LinkedIssueLifecycle",
     "MissingCodingEvidence",
     "MissingE2ETestEvidence",

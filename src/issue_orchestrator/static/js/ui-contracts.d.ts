@@ -58,6 +58,13 @@ export interface ConfigDialogPayload {
   title: string;
 }
 
+export interface CycleArtifactsPayload {
+  has_review_feedback: boolean;
+  log_url: string | null;
+  pr_number: number | null;
+  pr_url: string | null;
+}
+
 export interface DashboardDataPayload {
   agents: string[];
   e2eLastRun?: Record<string, any> | null;
@@ -370,11 +377,28 @@ export interface InfoDialogPayload {
 }
 
 export interface IssueCyclePayload {
+  agent: string;
+  artifacts: CycleArtifactsPayload;
   coder: CodingAttemptPayload;
+  cycle_in_run: number | null;
+  cycle_label: string;
   cycle_number: number;
   diagnostics: TimelineDiagnosticPayload[];
+  expanded: boolean;
+  iteration: number;
+  lifecycle: number;
   outcome: string;
+  phase_groups: JourneyPhaseGroupPayload[];
+  reset_from_scratch: boolean;
+  retry_count: number;
   review: ReviewStagePayload;
+  reviewer_agent: string;
+  run_id: string | null;
+  session_run_ids: string[];
+  steps: JourneyStepPayload[];
+  time_label: string;
+  timestamp: string;
+  validation: Record<string, any> | null;
 }
 
 export interface IssueDetailActionPayload {
@@ -484,6 +508,37 @@ export interface JUnitCasePayload {
   suite_name?: string | null;
   system_err?: string | null;
   system_out?: string | null;
+}
+
+export interface JourneyPhaseGroupPayload {
+  key: "coding" | "review" | "rework" | "orchestrator";
+  label: string;
+  steps: JourneyStepPayload[];
+}
+
+export interface JourneyRunPayload {
+  cycles: IssueCyclePayload[];
+  expanded: boolean;
+  outcome: string;
+  reset_from_scratch: boolean;
+  run_id: string | null;
+  run_key: string;
+  run_label: string;
+  run_number: number;
+  session_run_ids: string[];
+  time_label: string;
+  timestamp: string;
+}
+
+export interface JourneyStepPayload {
+  actions: Record<string, any>[];
+  day: string;
+  detail?: string | null;
+  event: string;
+  narrative: string;
+  status: string;
+  time_label: string;
+  timestamp: string;
 }
 
 export interface LinkedIssueLifecyclePayload {

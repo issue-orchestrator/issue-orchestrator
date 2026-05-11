@@ -145,6 +145,52 @@ _VALIDATION_FAILED_EVENTS = frozenset(
 # `CODING_TERMINAL_EVENTS`.
 VALIDATION_PASSED_EVENTS: frozenset[str] = _VALIDATION_PASSED_EVENTS
 VALIDATION_FAILED_EVENTS: frozenset[str] = _VALIDATION_FAILED_EVENTS
+
+# Canonical "outcome-relevant" event set used to derive a cycle's outcome
+# label.  Promoted from ``view_models.issue_detail`` so the dict-based and
+# typed projections classify the same events the same way (issue #6310 AC-4).
+#
+# Preserves the original ``_OUTCOME_EVENTS`` content from
+# ``view_models.issue_detail`` — including the cluster-terminal
+# ``review_exchange.round_completed`` and merge-terminal ``review.merged``
+# names — without expanding to every ``agent.*`` coding-terminal name.  That
+# keeps outcome-event semantics identical to the pre-consolidation behavior
+# while still giving lifecycle ownership.
+OUTCOME_EVENTS: frozenset[str] = frozenset(
+    {
+        "session.failed",
+        "session.timeout",
+        "session.blocked",
+        "session.completed",
+        "review_exchange.round_completed",
+        "review.changes_requested",
+        "review.approved",
+        "review.escalated",
+        "review.merged",
+        "issue.blocked",
+        "issue.needs_human",
+        "publish.failed",
+        "issue.completed",
+    }
+)
+
+# Canonical "blocked-relevant" event set used to derive a blocked-status
+# explanation.  Promoted from ``view_models.issue_detail`` for the same
+# reason as ``OUTCOME_EVENTS``.
+BLOCKED_EVENT_NAMES: frozenset[str] = frozenset(
+    {
+        "session.timeout",
+        "session.failed",
+        "session.blocked",
+        "session.validation_failed",
+        "issue.blocked",
+        "issue.needs_human",
+        "publish.failed",
+        "review.changes_requested",
+        "review.escalated",
+    }
+)
+
 _REVIEW_START_EVENTS = frozenset(
     {
         "review.started",

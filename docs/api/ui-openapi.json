@@ -1562,16 +1562,102 @@
         ],
         "discriminator": {"propertyName": "kind"}
       },
+      "CycleArtifactsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["log_url", "pr_url", "pr_number", "has_review_feedback"],
+        "properties": {
+          "log_url": {"type": ["string", "null"]},
+          "pr_url": {"type": ["string", "null"]},
+          "pr_number": {"type": ["integer", "null"]},
+          "has_review_feedback": {"type": "boolean"}
+        }
+      },
+      "JourneyStepPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["timestamp", "time_label", "day", "narrative", "status", "event", "actions"],
+        "properties": {
+          "timestamp": {"type": "string"},
+          "time_label": {"type": "string"},
+          "day": {"type": "string"},
+          "narrative": {"type": "string"},
+          "status": {"type": "string"},
+          "event": {"type": "string"},
+          "detail": {"type": ["string", "null"]},
+          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+        }
+      },
+      "JourneyPhaseGroupPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label", "steps"],
+        "properties": {
+          "key": {"enum": ["coding", "review", "rework", "orchestrator"]},
+          "label": {"type": "string"},
+          "steps": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyStepPayload"}}
+        }
+      },
       "IssueCyclePayload": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["cycle_number", "coder", "review", "outcome", "diagnostics"],
+        "required": [
+          "cycle_number", "coder", "review", "outcome", "diagnostics",
+          "lifecycle", "iteration", "run_id", "timestamp", "session_run_ids",
+          "agent", "reviewer_agent", "retry_count", "reset_from_scratch",
+          "cycle_label", "time_label", "expanded", "cycle_in_run",
+          "artifacts", "steps", "phase_groups", "validation"
+        ],
         "properties": {
           "cycle_number": {"type": "integer"},
           "coder": {"$ref": "#/components/schemas/CodingAttemptPayload"},
           "review": {"$ref": "#/components/schemas/ReviewStagePayload"},
           "outcome": {"type": "string"},
-          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}}
+          "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
+          "lifecycle": {"type": "integer"},
+          "iteration": {"type": "integer"},
+          "run_id": {"type": ["string", "null"]},
+          "timestamp": {"type": "string"},
+          "session_run_ids": {"type": "array", "items": {"type": "string"}},
+          "agent": {"type": "string"},
+          "reviewer_agent": {"type": "string"},
+          "retry_count": {"type": "integer"},
+          "reset_from_scratch": {"type": "boolean"},
+          "cycle_label": {"type": "string"},
+          "time_label": {"type": "string"},
+          "expanded": {"type": "boolean"},
+          "cycle_in_run": {"type": ["integer", "null"]},
+          "artifacts": {"$ref": "#/components/schemas/CycleArtifactsPayload"},
+          "steps": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyStepPayload"}},
+          "phase_groups": {"type": "array", "items": {"$ref": "#/components/schemas/JourneyPhaseGroupPayload"}},
+          "validation": {
+            "oneOf": [
+              {"type": "object", "additionalProperties": true},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
+      "JourneyRunPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_number", "run_label", "outcome", "run_key", "run_id",
+          "session_run_ids", "timestamp", "time_label", "expanded",
+          "reset_from_scratch", "cycles"
+        ],
+        "properties": {
+          "run_number": {"type": "integer"},
+          "run_label": {"type": "string"},
+          "outcome": {"type": "string"},
+          "run_key": {"type": "string"},
+          "run_id": {"type": ["string", "null"]},
+          "session_run_ids": {"type": "array", "items": {"type": "string"}},
+          "timestamp": {"type": "string"},
+          "time_label": {"type": "string"},
+          "expanded": {"type": "boolean"},
+          "reset_from_scratch": {"type": "boolean"},
+          "cycles": {"type": "array", "items": {"$ref": "#/components/schemas/IssueCyclePayload"}}
         }
       },
       "IssueLifecyclePayload": {
