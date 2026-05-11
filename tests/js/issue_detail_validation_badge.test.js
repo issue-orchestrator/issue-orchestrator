@@ -85,7 +85,13 @@ function _extractPayload(html) {
     );
 }
 
-test('badge passed state renders a typed OpenValidationDetailsCommand payload', () => {
+test('badge passed state renders an inline-expansion button (Phase B)', () => {
+    // Phase B (issue #6310 follow-up): the badge no longer carries a
+    // typed-Command payload that opens a modal.  It's an in-drawer
+    // button that triggers ``_handleCycleValidationBadgeClick`` which
+    // expands the cycle's validation event row inline.  The Command
+    // pipeline is still used elsewhere (e.g. timeline event actions);
+    // it's just no longer the badge's path.
     const { context } = loadBadgeContext();
     const badge = {
         state: 'passed',
@@ -99,11 +105,13 @@ test('badge passed state renders a typed OpenValidationDetailsCommand payload', 
     const html = context._renderCycleValidationBadge(badge, 4124);
     assert.match(html, /journey-cycle-validation-badge is-passed/);
     assert.match(html, /✓ Validated/);
-    const payload = _extractPayload(html);
-    assert.deepEqual(payload, badge.command);
+    assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
+    assert.match(html, /data-validation-state="passed"/);
+    // Modal Command payload is gone from the badge HTML.
+    assert.doesNotMatch(html, /data-lifecycle-command/);
 });
 
-test('badge failed state renders a typed OpenValidationDetailsCommand payload', () => {
+test('badge failed state renders an inline-expansion button (Phase B)', () => {
     const { context } = loadBadgeContext();
     const badge = {
         state: 'failed',
@@ -117,8 +125,9 @@ test('badge failed state renders a typed OpenValidationDetailsCommand payload', 
     const html = context._renderCycleValidationBadge(badge, 4124);
     assert.match(html, /journey-cycle-validation-badge is-failed/);
     assert.match(html, /✗ Failed/);
-    const payload = _extractPayload(html);
-    assert.deepEqual(payload, badge.command);
+    assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
+    assert.match(html, /data-validation-state="failed"/);
+    assert.doesNotMatch(html, /data-lifecycle-command/);
 });
 
 test('badge not_validated state renders a non-clickable span with no command', () => {
@@ -143,62 +152,16 @@ test('badge pending state renders nothing', () => {
     assert.strictEqual(html, '');
 });
 
-test('badge with no command refuses to render a clickable passed/failed button', () => {
+test('badge passed/failed state renders even without a command payload (Phase B)', () => {
+    // The badge no longer needs the typed Command — the inline
+    // expander locates the run_dir from the cycle's data attributes.
+    // Server-side ``CycleValidationBadge`` validators still require the
+    // command for passed/failed states (so the contract stays typed for
+    // any OTHER consumer of the data), but the badge HTML path doesn't
+    // require it.
     const { context } = loadBadgeContext();
-    // ``CycleValidationBadge`` validators reject this server-side, but
-    // the frontend MUST also refuse to render a phantom button if a
-    // malformed payload ever reaches it.
-    assert.strictEqual(
-        context._renderCycleValidationBadge({ state: 'passed', command: null }, 1),
-        '',
-    );
-    assert.strictEqual(
-        context._renderCycleValidationBadge({ state: 'failed', command: null }, 1),
-        '',
-    );
-});
-
-test('clicking a passed badge dispatches openValidationFailure with the typed payload', () => {
-    const { context, calls } = loadBadgeContext();
-    const badge = {
-        state: 'passed',
-        command: {
-            kind: 'open_validation_details',
-            label: 'Validation Details',
-            issue_number: 4124,
-            run_dir: '/tmp/run-pass',
-        },
-    };
-    const html = context._renderCycleValidationBadge(badge, 4124);
-    // Find the encoded payload on the button and feed it to the dispatcher
-    // exactly the way ``runE2ELifecycleCommandFromButton`` would after a
-    // real click.
-    const payload = _extractPayload(html);
-    const fakeButton = { dataset: { lifecycleCommand: JSON.stringify(payload) } };
-    context.runE2ELifecycleCommandFromButton(fakeButton);
-    assert.deepEqual(calls, [
-        ['open_validation_details', 4124, '/tmp/run-pass', 'toast'],
-    ]);
-});
-
-test('clicking a failed badge dispatches openValidationFailure with the typed payload', () => {
-    const { context, calls } = loadBadgeContext();
-    const badge = {
-        state: 'failed',
-        command: {
-            kind: 'open_validation_details',
-            label: 'Validation Details',
-            issue_number: 4124,
-            run_dir: '/tmp/run-fail',
-        },
-    };
-    const html = context._renderCycleValidationBadge(badge, 4124);
-    const payload = _extractPayload(html);
-    const fakeButton = { dataset: { lifecycleCommand: JSON.stringify(payload) } };
-    context.runE2ELifecycleCommandFromButton(fakeButton);
-    assert.deepEqual(calls, [
-        ['open_validation_details', 4124, '/tmp/run-fail', 'toast'],
-    ]);
+    const html = context._renderCycleValidationBadge({ state: 'passed' }, 1);
+    assert.match(html, /journey-cycle-validation-badge is-passed/);
 });
 
 test('badge dispatch covers every supported lifecycle command kind', () => {

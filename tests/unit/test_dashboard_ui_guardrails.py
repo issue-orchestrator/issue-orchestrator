@@ -494,16 +494,18 @@ def test_copy_journey_timeline_formats_raw_timestamps_locally() -> None:
 
 def test_journey_cycle_header_renders_validation_badge() -> None:
     """Each cycle in the journey timeline carries a validation badge.
-    After issue #6310 AC-2 the badge is a typed ``CycleValidationBadge``
-    and the click goes through the existing ``runE2ELifecycleCommand``
-    Command dispatcher — no bespoke ``_handleCycleValidationBadgeClick``
-    anymore.
+
+    Phase B (issue #6310 follow-up): the badge is no longer a modal
+    trigger.  It is an in-drawer affordance that, when clicked, expands
+    the corresponding cycle's validation event and scrolls it into
+    view.  The body of that expansion is the canonical viewer.  No more
+    modal.
 
     Three rendered states:
-    - passed → green button via ``_renderLifecycleCommandButton`` →
-      ``runE2ELifecycleCommand`` → ``openValidationFailure``.
-    - failed → red button via the same Command pipeline.
-    - not_validated → amber static span (anti-pattern marker; no command).
+    - passed → green button, click expands inline detail.
+    - failed → red button, click expands inline detail.
+    - not_validated → amber static span (anti-pattern marker; no click).
+    - pending → no badge.
     """
     js = _read(DASHBOARD_JS)
     badge_body = _function_body(js, "_renderCycleValidationBadge")
@@ -513,10 +515,8 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     assert "_renderCycleValidationBadge(c.validation" in runs_body
     assert "${validationBadge}" in runs_body
 
-    # Typed badge: state-driven, command-dispatched.
+    # Typed badge: state-driven, drawer-routed.
     assert "badge.state" in badge_body
-    assert "badge.command" in badge_body
-    assert "_renderLifecycleCommandButton" in badge_body
     assert "is-passed" in badge_body
     assert "is-failed" in badge_body
     assert "is-not-validated" in badge_body
@@ -524,14 +524,15 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     assert "data-validation-state=\"not_validated\"" in badge_body
     # Pending falls through to no badge.
     assert "if (state === 'pending') return ''" in badge_body
-    # The bespoke handler is gone — the Command pipeline owns the click.
-    assert "_handleCycleValidationBadgeClick" not in js, (
-        "_handleCycleValidationBadgeClick has been replaced by the "
-        "runE2ELifecycleCommand Command dispatcher (issue #6310 AC-2)"
-    )
-    # Drawer no longer hand-builds inline ``onclick`` calls into
-    # ``openValidationFailure`` — the Command pipeline handles that.
-    assert "_handleCycleValidationBadgeClick(event, this)" not in badge_body
+    # Phase B (issue #6310 follow-up): the badge now routes through the
+    # drawer's inline-expansion handler, not the modal-opening
+    # ``runE2ELifecycleCommand`` pipeline.  The expansion handler lives
+    # on the drawer module and the badge calls it via the dashboard's
+    # ``_handleCycleValidationBadgeClick`` helper.
+    assert "_handleCycleValidationBadgeClick" in badge_body
+    # Drawer no longer pops a modal — the inline expansion is the canonical
+    # viewer mounted right under the validation event row.
+    assert "openValidationFailure(" not in badge_body
 
     css = _read_dashboard_css_bundle()
     assert ".journey-cycle-validation-badge" in css
