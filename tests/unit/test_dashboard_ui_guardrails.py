@@ -570,14 +570,29 @@ def test_cycle_validation_summary_derived_from_raw_events() -> None:
     }
 
     # Terminated coding cycle without a validation event = anti-pattern.
-    terminated_unvalidated = [
-        {"event": "agent.coding_started", "run_dir": "/tmp/run-3"},
-        {"event": "session.completed", "run_dir": "/tmp/run-3"},
-    ]
-    assert _cycle_validation_summary(terminated_unvalidated) == {
-        "kind": "not_validated",
-        "run_dir": None,
-    }
+    # All canonical completed/blocked/failed/publish-failed events count
+    # as terminal — the badge policy must not drift from the lifecycle
+    # projection's `CODING_TERMINAL_EVENTS` set.
+    for terminal_event in (
+        "session.completed",
+        "agent.coding_completed",
+        "observation.completion_detected",
+        "session.failed",
+        "session.timeout",
+        "session.blocked",
+        "publish.failed",
+    ):
+        terminated_unvalidated = [
+            {"event": "agent.coding_started", "run_dir": "/tmp/run-3"},
+            {"event": terminal_event, "run_dir": "/tmp/run-3"},
+        ]
+        assert _cycle_validation_summary(terminated_unvalidated) == {
+            "kind": "not_validated",
+            "run_dir": None,
+        }, (
+            f"Terminal event {terminal_event!r} without validation must "
+            "project not_validated (drift from CODING_TERMINAL_EVENTS)"
+        )
 
     # Cycle still running (no terminal event yet) MUST NOT surface the
     # "Not validated" anti-pattern marker — validation has not had its
@@ -599,6 +614,34 @@ def test_cycle_validation_summary_derived_from_raw_events() -> None:
         {"event": "validation.failed", "run_dir": "/tmp/run-4"},
     ]
     assert _cycle_validation_summary(later_failed)["kind"] == "failed"
+
+
+def test_cycle_validation_summary_shares_terminal_set_with_lifecycle() -> None:
+    """Pin the shared-owner abstraction: the badge's notion of "coding is
+    over" comes from `lifecycle_projection.CODING_TERMINAL_EVENTS`, not a
+    parallel set in `issue_detail`. If someone reintroduces a private
+    duplicate, this test fails."""
+    from issue_orchestrator.view_models import (  # type: ignore[attr-defined]
+        issue_detail as _issue_detail,
+        lifecycle_projection as _lifecycle,
+    )
+
+    # The two names must refer to the same frozenset object — not a copy
+    # with the same contents, because copy-with-same-contents is exactly
+    # the drift pattern we're guarding against.
+    assert (
+        _issue_detail._CYCLE_CODING_TERMINAL_EVENTS
+        is _lifecycle.CODING_TERMINAL_EVENTS
+    )
+    # Sanity: the union must cover all four canonical phases.
+    assert {
+        "session.completed",
+        "agent.coding_completed",
+        "observation.completion_detected",
+        "session.blocked",
+        "session.failed",
+        "publish.failed",
+    } <= _lifecycle.CODING_TERMINAL_EVENTS
 
 
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:

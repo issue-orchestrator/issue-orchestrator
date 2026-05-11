@@ -19,6 +19,13 @@ from ..domain.logical_run_projection import (
     group_events_by_logical_cycle,
 )
 from ..events import EventName
+# Re-exported here so the per-cycle validation badge in this projection
+# uses the same "coding terminated" definition as the lifecycle projection
+# — no separate set to drift. Imported under the existing private name so
+# the call site stays unchanged.
+from .lifecycle_projection import (
+    CODING_TERMINAL_EVENTS as _CYCLE_CODING_TERMINAL_EVENTS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -918,23 +925,13 @@ _CYCLE_VALIDATION_FAILED_EVENTS = frozenset(
         "session.validation_retry_needed",
     }
 )
-# Coding-side terminal events. A cycle that hasn't yet emitted one of
-# these is still running, so the absence of a validation event is
-# expected — not an anti-pattern. We only surface "Not validated" once
-# the cycle has actually finished its coding work without recording any
-# test evidence.
-_CYCLE_CODING_TERMINAL_EVENTS = frozenset(
-    {
-        "session.completed",
-        "session.failed",
-        "session.timeout",
-        "session.blocked",
-        "issue.blocked",
-        "issue.needs_human",
-        "publish.failed",
-        "issue.completed",
-    }
-)
+# Coding-side terminal events: imported at module top from
+# `lifecycle_projection.CODING_TERMINAL_EVENTS` so the per-cycle validation
+# badge here uses the same definition of "coding is over" as the lifecycle
+# projection. A cycle that hasn't yet emitted one of these is still running,
+# so the absence of a validation event is expected — not an anti-pattern.
+# We only surface "Not validated" once coding has actually finished without
+# recording any test evidence.
 
 
 def _cycle_validation_summary(raw_events: list[dict[str, Any]]) -> dict[str, Any]:

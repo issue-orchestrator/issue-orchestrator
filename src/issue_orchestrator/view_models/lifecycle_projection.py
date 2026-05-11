@@ -111,6 +111,21 @@ _CODING_FAILED_EVENTS = frozenset(
     }
 )
 _CODING_PUBLISH_FAILED_EVENTS = frozenset({"publish.failed"})
+
+# Public union: the events that mark a coding attempt as terminal — its
+# code change either succeeded (any completed variant), got blocked, failed
+# outright, or failed at publish. Exported so other view-models can share
+# the same definition of "coding is over" without redefining (and drifting
+# from) the set. The per-cycle validation badge in the issue-detail
+# projection uses this to decide when an absent validation event becomes
+# an anti-pattern marker vs. a still-pending cycle.
+CODING_TERMINAL_EVENTS: frozenset[str] = (
+    _CODING_COMPLETED_EVENTS
+    | _CODING_BLOCKED_EVENTS
+    | _CODING_FAILED_EVENTS
+    | _CODING_PUBLISH_FAILED_EVENTS
+)
+
 _VALIDATION_PASSED_EVENTS = frozenset(
     {"validation.passed", "session.validation_passed"}
 )
