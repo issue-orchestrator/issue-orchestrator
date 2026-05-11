@@ -219,7 +219,12 @@ function renderValidationDialog(data, issueNumber, runDir = null) {
     html += '</section>';
 
     html += '<section class="diag-section">';
-    html += renderCanonicalValidationViewer(data);
+    // Pass the action-section renderer explicitly — the viewer no longer
+    // reaches into session_dialogs.js globals (issue #6310 follow-up
+    // reviewer Blocker 2).
+    html += renderCanonicalValidationViewer(data, {
+        renderActionSections: renderValidationFailureActionSections,
+    });
     html += '</section>';
 
     html += '<div class="diag-footnote">Validation details come from the run-scoped validation record and log artifacts.</div>';

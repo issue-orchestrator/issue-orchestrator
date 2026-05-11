@@ -710,10 +710,14 @@ def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     # and that the body delegates to the canonical viewer (issue #6310
     # follow-up, Phase A).  The legacy ``diag-validation-grid`` two-pane
     # body is replaced by ``renderCanonicalValidationViewer`` which
-    # produces the ``cvv-root`` wrapper.
+    # produces the ``cvv-root`` wrapper.  The viewer takes the
+    # action-section renderer as an explicit ``options.renderActionSections``
+    # dependency (reviewer Blocker 2 on PR #6314) — the dialog passes
+    # ``renderValidationFailureActionSections`` from session_dialogs.js.
     assert "Validation Results" in render_body
-    assert "renderCanonicalValidationViewer(data)" in render_body
-    assert "renderValidationFailureActionSections" in js  # used inside the viewer
+    assert "renderCanonicalValidationViewer(data" in render_body
+    assert "renderActionSections: renderValidationFailureActionSections" in render_body
+    assert "renderValidationFailureActionSections" in js  # used inside the dialog
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:

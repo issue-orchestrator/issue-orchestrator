@@ -24,6 +24,10 @@ const vm = require('node:vm');
 
 function loadViewer(overrides = {}) {
     // Stubs for the shared dashboard primitives the viewer calls into.
+    // The viewer is intentionally self-contained: action-section
+    // rendering is now an explicit ``options.renderActionSections``
+    // dependency (reviewer Blocker 2 on PR #6314), so we no longer need
+    // a global stub for it here.
     const baseStubs = {
         console,
         escapeHtml: (v) => String(v == null ? '' : v)
@@ -31,11 +35,6 @@ function loadViewer(overrides = {}) {
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
         escapeAttr: (v) => String(v == null ? '' : v)
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
-        // Minimal stub: the viewer calls renderValidationFailureActionSections
-        // when ``data.action_sections`` is populated.  We don't exercise
-        // action_sections in these tests, so a no-op stub is fine.
-        renderValidationFailureActionSections: (sections) =>
-            `<div data-test-action-sections-count="${sections.length}"></div>`,
     };
     const context = { ...baseStubs, ...overrides };
     vm.createContext(context);
@@ -237,15 +236,126 @@ test('viewer: legacy stdout_excerpt and stderr_excerpt appear in collapsed run-o
     assert.match(html, /line 1\nline 2/);
 });
 
-test('viewer: action_sections render under a Validation artifacts expander', () => {
+test('viewer: action_sections render under a Validation artifacts expander when caller passes a renderer', () => {
+    // Reviewer Blocker 2 (PR #6314): the viewer takes an explicit
+    // renderer via ``options.renderActionSections`` and never reaches
+    // into session_dialogs.js or any other module's globals.  The
+    // ``loadViewer`` helper deliberately does NOT stub
+    // ``renderValidationFailureActionSections`` — this test passes the
+    // renderer directly through options.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer(
+        {
+            status: 'failed',
+            junit_cases: [],
+            action_sections: [{ title: 'Validation Artifacts', actions: [{ type: 'open_path', label: 'Open Record' }] }],
+        },
+        {
+            renderActionSections: (sections) => `<div data-test-action-sections-count="${sections.length}"></div>`,
+        },
+    );
+    assert.match(html, /Validation artifacts/);
+    assert.match(html, /data-test-action-sections-count="1"/);
+});
+
+test('viewer: action_sections are omitted when no renderer is passed (no hidden global lookup)', () => {
+    // The viewer must NOT silently call into a global to render artifact
+    // actions — that hidden cross-module dependency was the design smell
+    // the reviewer flagged.  Without an explicit renderer the section is
+    // simply omitted.
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
         junit_cases: [],
         action_sections: [{ title: 'Validation Artifacts', actions: [{ type: 'open_path', label: 'Open Record' }] }],
     });
-    assert.match(html, /Validation artifacts/);
-    assert.match(html, /data-test-action-sections-count="1"/);
+    assert.doesNotMatch(html, /Validation artifacts/);
+    assert.doesNotMatch(html, /cvv-artifacts/);
+});
+
+// ── failed_tests fallback (reviewer Blocker 1) ────────────────────────────
+
+test('viewer: synthesizes triage cards from failed_tests when junit_cases is empty', () => {
+    // Regression for PR #6314 reviewer Blocker 1: the canonical viewer
+    // must surface the failing node IDs even when JUnit XML isn't
+    // available (junit_cases empty) and the stdout excerpt doesn't carry
+    // them.  Without this fallback only the chip-row count survives and
+    // the operator can't tell *what* failed.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        failed_tests: [
+            'tests/unit/test_alpha.py::test_first',
+            'tests/integration/test_beta.py::test_second',
+            'tests/e2e/test_gamma.py::test_third',
+        ],
+        junit_cases: [],
+        // stdout/stderr deliberately omit the node IDs so the *only*
+        // surface for them is the synthesized triage cards.
+        stdout_excerpt: ['================= short test summary ================='],
+        stderr_excerpt: ['make: *** [validate] Error 2'],
+    });
+    // All three node IDs render as triage cards.
+    assert.match(html, /tests\/unit\/test_alpha\.py::test_first/);
+    assert.match(html, /tests\/integration\/test_beta\.py::test_second/);
+    assert.match(html, /tests\/e2e\/test_gamma\.py::test_third/);
+    // Three triage cards (one per synthesized failure).
+    const triageCount = (html.match(/cvv-triage-card/g) || []).length;
+    assert.strictEqual(triageCount, 3, `expected 3 synthesized triage cards, got ${triageCount}`);
+    // Each card carries the failed-headline class so styling is
+    // consistent with JUnit-driven failures.
+    const headlineCount = (html.match(/cvv-headline is-failed/g) || []).length;
+    assert.strictEqual(headlineCount, 3);
+    // And the fallback headline explains where the data came from so
+    // the operator isn't confused by the missing traceback.
+    assert.match(html, /No JUnit XML detail was available/);
+});
+
+test('viewer: failed_tests fallback skips node IDs already represented in junit_cases', () => {
+    // When the parser populated *some* junit_cases, the viewer must not
+    // double-render the same node ID as both a real case and a
+    // synthesized fallback card.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        failed_tests: [
+            'tests/unit/test_one.py::test_a',  // already in junit_cases (display_name match)
+            'tests/unit/test_two.py::test_b',  // missing — must be synthesized
+        ],
+        junit_cases: [{
+            case_id: 'cid-1',
+            display_name: 'tests/unit/test_one.py::test_a',
+            outcome: 'failed',
+            duration_seconds: 0.01,
+            suite_name: 'tests/unit/test_one.py',
+            failure_details: 'AssertionError: nope',
+            system_out: '',
+            system_err: '',
+            extras: [],
+        }],
+    });
+    // Exactly two triage cards: one real (with traceback) + one synthesized.
+    const triageCount = (html.match(/cvv-triage-card/g) || []).length;
+    assert.strictEqual(triageCount, 2, `expected 2 triage cards, got ${triageCount}`);
+    // The real one carries the traceback headline.
+    assert.match(html, /AssertionError: nope/);
+    // The synthesized one carries the fallback explanation.
+    assert.match(html, /No JUnit XML detail was available/);
+    // And the node ID for the missing one shows up.
+    assert.match(html, /tests\/unit\/test_two\.py::test_b/);
+});
+
+test('viewer: empty failed_tests + empty junit_cases renders no triage cards', () => {
+    // Sanity: a clean passed run with neither junit_cases nor
+    // failed_tests must not render any triage cards (regression guard
+    // against the synthesis accidentally running on empty lists).
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [],
+        failed_tests: [],
+    });
+    assert.doesNotMatch(html, /cvv-triage-card/);
 });
 
 // ── Plugin integration ────────────────────────────────────────────────────

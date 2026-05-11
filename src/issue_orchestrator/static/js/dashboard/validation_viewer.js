@@ -20,7 +20,11 @@
 // Phase-0 scope (this commit) — what's here:
 //   * registry: ``registerValidationPlugin(namespace, renderer)``,
 //     ``renderPluginExtras(case)``.
-//   * canonical viewer: ``renderCanonicalValidationViewer(data)``.
+//   * canonical viewer: ``renderCanonicalValidationViewer(data, options)``.
+//     ``options.renderActionSections`` is an explicit dependency — when
+//     ``data.action_sections`` is non-empty and the caller wants a
+//     "Validation artifacts" footer, it passes a renderer.  The viewer
+//     never reaches into other dashboard modules' globals.
 // What's NOT here (deliberate Phase-0 limits — see redesign doc):
 //   * stdout marker protocol (we own the parser; case.extras is fine)
 //   * plugin manifest / dynamic loading
@@ -77,19 +81,49 @@ function _resetValidationPluginRegistryForTests() {
 
 // ── Canonical viewer ────────────────────────────────────────────────────────
 
-function renderCanonicalValidationViewer(data) {
+// ``options`` is the viewer's explicit dependency boundary (issue #6310
+// follow-up reviewer Blocker 2).  Callers that want artifact actions
+// rendered MUST pass ``options.renderActionSections`` — the viewer no
+// longer reaches into session_dialogs.js globals.  Tests that need
+// action-section coverage pass a stub; tests that don't can leave it
+// unset and the artifacts section is simply omitted.
+function renderCanonicalValidationViewer(data, options = {}) {
     // Tolerate partial payloads: production always sends the full shape
     // (the route validates against ``ValidationFailureDialogPayload``),
     // but JS-vm tests + the per-event embed in Phase B may pass slimmer
     // objects.  Default arrays to empty.
     const cases = Array.isArray(data && data.junit_cases) ? data.junit_cases : [];
+    const failedTests = Array.isArray(data && data.failed_tests) ? data.failed_tests : [];
     const stdoutExcerpt = Array.isArray(data && data.stdout_excerpt) ? data.stdout_excerpt : [];
     const stderrExcerpt = Array.isArray(data && data.stderr_excerpt) ? data.stderr_excerpt : [];
     const actionSections = Array.isArray(data && data.action_sections) ? data.action_sections : [];
+    const renderActionSections = (options && typeof options.renderActionSections === 'function')
+        ? options.renderActionSections
+        : null;
     const status = (data && data.status === 'passed') ? 'passed' : 'failed';
 
     const failureCases = cases.filter((c) => c && (c.outcome === 'failed' || c.outcome === 'error'));
     const otherCases = cases.filter((c) => c && c.outcome !== 'failed' && c.outcome !== 'error');
+
+    // failed_tests fallback (reviewer Blocker 1): when JUnit XML wasn't
+    // available — e.g. the runner died before writing it, or the suite
+    // isn't JUnit-configured — the endpoint still reports failures via
+    // the legacy ``failed_tests`` string list (node IDs).  Without this
+    // fallback those IDs disappear from the rendered dialog (only the
+    // chip-row count survives).  Synthesize minimal failed cases for any
+    // node ID not already represented in ``cases``, so each failing test
+    // gets a triage card and the operator can see *what* failed.
+    const representedNodeIds = new Set();
+    for (const c of cases) {
+        if (c && typeof c.case_id === 'string') representedNodeIds.add(c.case_id);
+        if (c && typeof c.display_name === 'string') representedNodeIds.add(c.display_name);
+    }
+    for (const nodeId of failedTests) {
+        const id = String(nodeId || '').trim();
+        if (!id || representedNodeIds.has(id)) continue;
+        representedNodeIds.add(id);
+        failureCases.push(_synthesizeFailedCaseFromNodeId(id));
+    }
 
     let html = '<div class="cvv-root" data-cvv-status="' + escapeAttr(status) + '">';
 
@@ -145,12 +179,18 @@ function renderCanonicalValidationViewer(data) {
 
     // Validation artifacts (record / output / stderr / session evidence
     // / diagnostics) — historical action_sections, rendered as a
-    // collapsed footer so the user's eye lands on tests first.
-    if (actionSections.length > 0) {
+    // collapsed footer so the user's eye lands on tests first.  Action
+    // *button* rendering belongs to dashboard-wide code (each button
+    // type has its own onclick handler), so the viewer takes a renderer
+    // via ``options.renderActionSections`` instead of reaching out to a
+    // global.  If no renderer was passed, the section is omitted — the
+    // payload data is still present for callers that want to render
+    // their own footer.
+    if (actionSections.length > 0 && renderActionSections) {
         html += '<section class="cvv-artifacts">';
         html += '<details class="cvv-row"><summary><span class="cvv-caret">▸</span><span class="cvv-title">Validation artifacts</span><span class="cvv-summary">record · output · evidence</span></summary>';
         html += '<div class="cvv-row-body">';
-        html += renderValidationFailureActionSections(actionSections);
+        html += renderActionSections(actionSections);
         html += '</div></details>';
         html += '</section>';
     }
@@ -279,6 +319,28 @@ function _renderTestSystemOutErr(testCase, idPrefix, errorOpenStderr) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+// Build a minimal failed JUnitCasePayload-shaped object from a raw
+// node-ID string.  Used when the endpoint reports failures via the
+// legacy ``failed_tests`` list but ``junit_cases`` is empty or doesn't
+// cover the ID (reviewer Blocker 1 fallback).  The triage card
+// downgrades gracefully: no traceback, no system_out/err — just the
+// node ID + a "from validation log" headline so the operator knows
+// where the data came from.
+function _synthesizeFailedCaseFromNodeId(nodeId) {
+    return {
+        case_id: nodeId,
+        display_name: nodeId,
+        outcome: 'failed',
+        duration_seconds: null,
+        suite_name: '',
+        failure_details: 'Reported as failed by the validation runner. No JUnit XML detail was available — see the run stdout/stderr expanders below or open the validation record for full output.',
+        system_out: '',
+        system_err: '',
+        extras: [],
+        _synthesized_from_failed_tests: true,
+    };
+}
 
 function _splitFailureDetails(text) {
     if (!text) return { headlineMessage: '', tracebackBody: '' };
