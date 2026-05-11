@@ -505,15 +505,33 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     assert "_renderCycleValidationBadge(c.validation" in runs_body
     assert "${validationBadge}" in runs_body
 
-    # Badge wiring: passed and failed states both open the dialog.
+    # Badge wiring: passed and failed states both reach the dialog through
+    # _handleCycleValidationBadgeClick (the dispatcher reads run_dir from
+    # data-validation-run-dir). The badge HTML itself MUST NOT interpolate
+    # run_dir directly into an inline JS string — escapeAttr is HTML-attr
+    # escaping, not JS-string escaping, so a path with an apostrophe would
+    # break out of the handler.
     assert "is-passed" in badge_body
     assert "is-failed" in badge_body
     assert "is-not-validated" in badge_body
-    assert "openValidationFailure(" in badge_body
-    # Not-validated is non-clickable (no openValidationFailure inside that branch)
-    # — guard a future "make everything clickable" cleanup from accidentally
-    # routing missing-validation cycles into the dialog endpoint.
+    assert "data-validation-run-dir=" in badge_body
+    assert "data-validation-issue=" in badge_body
+    assert "_handleCycleValidationBadgeClick(event, this)" in badge_body
+    # The badge HTML must not call openValidationFailure with a string
+    # literal argument — that's the inline-JS injection footgun.
+    assert "openValidationFailure(${" not in badge_body
+    # Not-validated is non-clickable (no _handleCycleValidationBadgeClick inside
+    # that branch) — guard a future "make everything clickable" cleanup from
+    # accidentally routing missing-validation cycles into the dialog endpoint.
     assert "'not_validated'" in badge_body
+    assert "'pending'" not in badge_body  # pending falls through to no badge
+
+    # Dispatcher pulls run_dir from the data attribute and forwards via
+    # openValidationFailure — the only path to the dialog endpoint.
+    handler_body = _function_body(js, "_handleCycleValidationBadgeClick")
+    assert "btn.dataset.validationRunDir" in handler_body
+    assert "btn.dataset.validationIssue" in handler_body
+    assert "openValidationFailure(issueNumber, runDir, 'modal')" in handler_body
 
     css = _read_dashboard_css_bundle()
     assert ".journey-cycle-validation-badge" in css
@@ -551,11 +569,26 @@ def test_cycle_validation_summary_derived_from_raw_events() -> None:
         "run_dir": "/tmp/run-2",
     }
 
-    no_validation_events = [
+    # Terminated coding cycle without a validation event = anti-pattern.
+    terminated_unvalidated = [
         {"event": "agent.coding_started", "run_dir": "/tmp/run-3"},
+        {"event": "session.completed", "run_dir": "/tmp/run-3"},
     ]
-    assert _cycle_validation_summary(no_validation_events) == {
+    assert _cycle_validation_summary(terminated_unvalidated) == {
         "kind": "not_validated",
+        "run_dir": None,
+    }
+
+    # Cycle still running (no terminal event yet) MUST NOT surface the
+    # "Not validated" anti-pattern marker — validation has not had its
+    # chance to run. Returning `pending` lets the frontend draw no badge
+    # at all, which is the correct UX for in-flight work.
+    running = [
+        {"event": "session.started", "run_dir": "/tmp/run-4"},
+        {"event": "agent.coding_started", "run_dir": "/tmp/run-4"},
+    ]
+    assert _cycle_validation_summary(running) == {
+        "kind": "pending",
         "run_dir": None,
     }
 

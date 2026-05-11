@@ -918,16 +918,41 @@ _CYCLE_VALIDATION_FAILED_EVENTS = frozenset(
         "session.validation_retry_needed",
     }
 )
+# Coding-side terminal events. A cycle that hasn't yet emitted one of
+# these is still running, so the absence of a validation event is
+# expected — not an anti-pattern. We only surface "Not validated" once
+# the cycle has actually finished its coding work without recording any
+# test evidence.
+_CYCLE_CODING_TERMINAL_EVENTS = frozenset(
+    {
+        "session.completed",
+        "session.failed",
+        "session.timeout",
+        "session.blocked",
+        "issue.blocked",
+        "issue.needs_human",
+        "publish.failed",
+        "issue.completed",
+    }
+)
 
 
 def _cycle_validation_summary(raw_events: list[dict[str, Any]]) -> dict[str, Any]:
     """Distill validation evidence for the cycle header badge.
 
-    The journey renders a per-cycle badge (Validated / Failed / Not validated)
-    that opens the existing validation-failure dialog for that cycle's
-    run_dir. We only need the outcome kind and a run_dir pointer here —
-    full JUnit cases load lazily inside the dialog endpoint.
+    Four outcomes:
+      - "passed"        → validation ran and succeeded; badge → dialog
+      - "failed"        → validation ran and failed; badge → dialog
+      - "not_validated" → coding terminated *without* recording any
+                          validation event (anti-pattern marker)
+      - "pending"       → cycle has not yet emitted a terminal coding
+                          event; validation might still run. No badge
+                          is drawn so we don't shame in-flight work.
+
+    Full JUnit cases load lazily inside the dialog endpoint — only the
+    outcome kind and a `run_dir` pointer live in the projection payload.
     """
+    cycle_has_terminal = False
     for evt in reversed(raw_events):
         name = str(evt.get("event") or evt.get("source_event") or "").lower()
         if name in _CYCLE_VALIDATION_FAILED_EVENTS:
@@ -940,7 +965,11 @@ def _cycle_validation_summary(raw_events: list[dict[str, Any]]) -> dict[str, Any
                 "kind": "passed",
                 "run_dir": _optional_str(evt.get("run_dir")),
             }
-    return {"kind": "not_validated", "run_dir": None}
+        if not cycle_has_terminal and name in _CYCLE_CODING_TERMINAL_EVENTS:
+            cycle_has_terminal = True
+    if cycle_has_terminal:
+        return {"kind": "not_validated", "run_dir": None}
+    return {"kind": "pending", "run_dir": None}
 
 
 def _optional_str(value: Any) -> str | None:

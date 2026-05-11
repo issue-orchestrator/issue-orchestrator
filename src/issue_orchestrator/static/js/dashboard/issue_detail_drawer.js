@@ -242,38 +242,57 @@ function _renderJourneyRuns(container, allRuns) {
 
 function _renderCycleValidationBadge(validation, issueNumber) {
     // The cycle's validation badge is the primary entry point into JUnit
-    // evidence for that cycle. Three states:
-    //   - passed → green "Validated" button → opens validation dialog
-    //   - failed → red "Failed" button → opens validation dialog
-    //   - not_validated → amber "Not validated" badge (no dialog target —
-    //     anti-pattern marker for cycles that ran without recording tests)
-    // Cycles where validation is absent and the cycle isn't a coding/rework
-    // step (e.g. review-only) get no badge: an undefined / missing kind
-    // means "validation not expected here".
+    // evidence for that cycle. Four kinds, three badge states:
+    //   - passed         → green "Validated" button → opens validation dialog
+    //   - failed         → red "Failed" button → opens validation dialog
+    //   - not_validated  → amber "Not validated" badge (no dialog target —
+    //                       anti-pattern marker for cycles that finished
+    //                       coding work without recording any tests)
+    //   - pending        → no badge (cycle still running; validation may
+    //                       yet run, so the anti-pattern signal would be
+    //                       premature)
+    //
+    // Run dir + issue number ride on data-* attrs, NOT as inline JS string
+    // interpolation, because escapeAttr() escapes for HTML attribute parsing
+    // (& and ") but not for the JS string delimiter ('). A run_dir
+    // containing an apostrophe would otherwise break out of the onclick
+    // handler. _handleCycleValidationBadgeClick reads the attrs back at
+    // click time.
     if (!validation || typeof validation !== 'object') return '';
     const kind = String(validation.kind || '').toLowerCase();
-    if (!kind || kind === 'unknown') return '';
+    if (kind !== 'passed' && kind !== 'failed' && kind !== 'not_validated') {
+        return '';
+    }
     const runDir = validation.run_dir ? String(validation.run_dir) : '';
     if (kind === 'passed' && runDir) {
-        const encoded = escapeAttr(runDir);
         return `<button type="button" class="journey-cycle-validation-badge is-passed"
             data-validation-kind="passed"
-            onclick="event.stopPropagation(); openValidationFailure(${issueNumber}, '${encoded}', 'modal');"
+            data-validation-issue="${escapeAttr(String(issueNumber))}"
+            data-validation-run-dir="${escapeAttr(runDir)}"
+            onclick="_handleCycleValidationBadgeClick(event, this);"
             title="Open validation details for this cycle">✓ Validated</button>`;
     }
     if (kind === 'failed' && runDir) {
-        const encoded = escapeAttr(runDir);
         return `<button type="button" class="journey-cycle-validation-badge is-failed"
             data-validation-kind="failed"
-            onclick="event.stopPropagation(); openValidationFailure(${issueNumber}, '${encoded}', 'modal');"
+            data-validation-issue="${escapeAttr(String(issueNumber))}"
+            data-validation-run-dir="${escapeAttr(runDir)}"
+            onclick="_handleCycleValidationBadgeClick(event, this);"
             title="Open validation details for this cycle">✗ Failed</button>`;
     }
-    if (kind === 'not_validated') {
-        return `<span class="journey-cycle-validation-badge is-not-validated"
-            data-validation-kind="not_validated"
-            title="No validation recorded for this cycle — coding work without test evidence is an anti-pattern.">⚠ Not validated</span>`;
-    }
-    return '';
+    // not_validated — non-clickable anti-pattern marker.
+    return `<span class="journey-cycle-validation-badge is-not-validated"
+        data-validation-kind="not_validated"
+        title="No validation recorded for this cycle — coding work without test evidence is an anti-pattern.">⚠ Not validated</span>`;
+}
+
+function _handleCycleValidationBadgeClick(event, btn) {
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    if (!btn || !btn.dataset) return;
+    const issueNumber = Number(btn.dataset.validationIssue);
+    const runDir = String(btn.dataset.validationRunDir || '');
+    if (!Number.isInteger(issueNumber) || !runDir) return;
+    openValidationFailure(issueNumber, runDir, 'modal');
 }
 
 function _cycleOutcomeClass(outcome) {
