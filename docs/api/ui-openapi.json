@@ -1240,7 +1240,13 @@
         "properties": {
           "kind": {"const": "passed"},
           "command": {"type": "string"},
-          "record_path": {"type": "string"}
+          "record_path": {"type": "string"},
+          "details_command": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"},
+              {"type": "null"}
+            ]
+          }
         }
       },
       "ValidationFailedPayload": {

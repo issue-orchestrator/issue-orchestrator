@@ -35,6 +35,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     RunningE2ETestExecution,
     ValidationEvidenceMissing,
     ValidationFailed,
+    ValidationPassed,
     command_kinds,
 )
 
@@ -1101,6 +1102,55 @@ def test_validation_failed_and_missing_evidence_branches_project_distinctly() ->
         missing_run_dir_cycle.coder.validation.diagnostics[0].code
         == "validation.run_dir_missing"
     )
+
+
+def test_validation_passed_exposes_details_command_for_modal_drilldown() -> None:
+    # The per-cycle validation modal needs `run_dir` to fetch JUnit evidence
+    # via the existing /api/dialog/validation-failure endpoint. Failed cycles
+    # have always exposed it; green cycles must too so the modal works on
+    # both outcomes.
+    started, completed, *_ = _complete_issue_events()
+    passed_event = _event(
+        "validation.passed",
+        event_id="validation-passed-with-run-dir",
+        timestamp="2026-04-21T12:12:00Z",
+        run_dir="/tmp/run-1",
+        summary="pytest passed",
+        artifacts=[_artifact("validation", "/tmp/run-1/validation.json")],
+    )
+    cycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=[started, completed, passed_event],
+        cycles=[{"cycle": 1, "events": [started, completed, passed_event]}],
+    ).cycles[0]
+    assert isinstance(cycle.coder, CompletedCodingAttempt)
+    assert isinstance(cycle.coder.validation, ValidationPassed)
+    assert cycle.coder.validation.details_command is not None
+    assert cycle.coder.validation.details_command.issue_number == 5723
+    assert cycle.coder.validation.details_command.run_dir == "/tmp/run-1"
+
+
+def test_validation_passed_without_run_dir_omits_details_command() -> None:
+    # Older payloads may not carry run_dir on the passed event. Tolerate that
+    # without rejecting the projection — details_command is optional on
+    # ValidationPassed, just unavailable when the source data is missing.
+    started, completed, *_ = _complete_issue_events()
+    passed_event = _event(
+        "validation.passed",
+        event_id="validation-passed-no-run-dir",
+        timestamp="2026-04-21T12:12:00Z",
+        summary="pytest passed",
+        artifacts=[_artifact("validation", "/tmp/run-1/validation.json")],
+    )
+    cycle = project_issue_lifecycle(
+        issue_number=5723,
+        title="Timeline regression",
+        events=[started, completed, passed_event],
+        cycles=[{"cycle": 1, "events": [started, completed, passed_event]}],
+    ).cycles[0]
+    assert isinstance(cycle.coder.validation, ValidationPassed)
+    assert cycle.coder.validation.details_command is None
 
 
 def test_dashboard_projection_container_iterates_singleton_issue_model() -> None:
