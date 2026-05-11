@@ -25,6 +25,8 @@ from ..events import EventName
 # the call site stays unchanged.
 from .lifecycle_projection import (
     CODING_TERMINAL_EVENTS as _CYCLE_CODING_TERMINAL_EVENTS,
+    VALIDATION_FAILED_EVENTS as _CYCLE_VALIDATION_FAILED_EVENTS,
+    VALIDATION_PASSED_EVENTS as _CYCLE_VALIDATION_PASSED_EVENTS,
 )
 
 
@@ -915,16 +917,13 @@ def _finalize_cycle_from_events(
     }
 
 
-_CYCLE_VALIDATION_PASSED_EVENTS = frozenset(
-    {"validation.passed", "session.validation_passed"}
-)
-_CYCLE_VALIDATION_FAILED_EVENTS = frozenset(
-    {
-        "validation.failed",
-        "session.validation_failed",
-        "session.validation_retry_needed",
-    }
-)
+# Validation passed/failed event classification: imported at module top
+# from `lifecycle_projection.VALIDATION_PASSED_EVENTS` /
+# `VALIDATION_FAILED_EVENTS` so this projection cannot drift from the
+# lifecycle projection's own definition of "what counts as a passed /
+# failed validation event". Adding a new validation event name in
+# lifecycle_projection automatically propagates here.
+#
 # Coding-side terminal events: imported at module top from
 # `lifecycle_projection.CODING_TERMINAL_EVENTS` so the per-cycle validation
 # badge here uses the same definition of "coding is over" as the lifecycle

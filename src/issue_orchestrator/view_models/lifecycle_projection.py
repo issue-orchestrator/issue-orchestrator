@@ -136,6 +136,15 @@ _VALIDATION_FAILED_EVENTS = frozenset(
         "session.validation_retry_needed",
     }
 )
+
+# Public re-exports. Same objects as the private sets above — promoted so
+# other view-models (e.g. the issue-detail per-cycle validation badge) can
+# consume the canonical classification without redefining it. Pin with an
+# identity assertion (drift-guard) in the tests so a future "I'll just copy
+# this set" change cannot reintroduce the disagreement we just fixed for
+# `CODING_TERMINAL_EVENTS`.
+VALIDATION_PASSED_EVENTS: frozenset[str] = _VALIDATION_PASSED_EVENTS
+VALIDATION_FAILED_EVENTS: frozenset[str] = _VALIDATION_FAILED_EVENTS
 _REVIEW_START_EVENTS = frozenset(
     {
         "review.started",

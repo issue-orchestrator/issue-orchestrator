@@ -644,6 +644,39 @@ def test_cycle_validation_summary_shares_terminal_set_with_lifecycle() -> None:
     } <= _lifecycle.CODING_TERMINAL_EVENTS
 
 
+def test_cycle_validation_summary_shares_validation_event_sets_with_lifecycle() -> None:
+    """Same drift-guard, for the passed/failed validation event sets.
+
+    A new validation event name added to `lifecycle_projection` must
+    automatically be honored by the per-cycle badge — no parallel
+    private set in `issue_detail` to forget to update.
+    """
+    from issue_orchestrator.view_models import (  # type: ignore[attr-defined]
+        issue_detail as _issue_detail,
+        lifecycle_projection as _lifecycle,
+    )
+
+    # Identity, not equality — equal-contents would be the bug.
+    assert (
+        _issue_detail._CYCLE_VALIDATION_PASSED_EVENTS
+        is _lifecycle.VALIDATION_PASSED_EVENTS
+    )
+    assert (
+        _issue_detail._CYCLE_VALIDATION_FAILED_EVENTS
+        is _lifecycle.VALIDATION_FAILED_EVENTS
+    )
+    # Public re-export must equal the private set it aliases (no
+    # accidental decoupling of the public name).
+    assert _lifecycle.VALIDATION_PASSED_EVENTS is _lifecycle._VALIDATION_PASSED_EVENTS  # noqa: SLF001
+    assert _lifecycle.VALIDATION_FAILED_EVENTS is _lifecycle._VALIDATION_FAILED_EVENTS  # noqa: SLF001
+    # Sanity: canonical event names are in the right sets.
+    assert "validation.passed" in _lifecycle.VALIDATION_PASSED_EVENTS
+    assert "session.validation_passed" in _lifecycle.VALIDATION_PASSED_EVENTS
+    assert "validation.failed" in _lifecycle.VALIDATION_FAILED_EVENTS
+    assert "session.validation_failed" in _lifecycle.VALIDATION_FAILED_EVENTS
+    assert "session.validation_retry_needed" in _lifecycle.VALIDATION_FAILED_EVENTS
+
+
 def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     js = _read(DASHBOARD_JS)
     fetch_body = _function_body(js, "openValidationFailure")
