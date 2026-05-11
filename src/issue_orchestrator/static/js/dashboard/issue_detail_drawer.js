@@ -202,6 +202,11 @@ function _renderJourneyRuns(container, allRuns) {
             const phaseGroups = Array.isArray(c.phase_groups) && c.phase_groups.length > 0
                 ? c.phase_groups
                 : [{ key: 'events', label: '', steps: c.steps || [] }];
+            // Run-dir context for the cycle's validation events — sourced
+            // from the first step that carries one.  Validation events
+            // emitted later in the cycle inherit it via the same lookup.
+            const cycleRunDir = _findCycleRunDir(c);
+            let stepCounter = 0;
             for (const group of phaseGroups) {
                 html += `<div class="journey-phase-group">`;
                 if (group.label) {
@@ -209,19 +214,47 @@ function _renderJourneyRuns(container, allRuns) {
                 }
                 const steps = group.steps || [];
                 for (const s of steps) {
+                    const stepIdx = stepCounter++;
+                    const stepId = `${cycleId}-step-${stepIdx}`;
                     const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
                     const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
-                    const actions = renderTimelineEventActions(s.actions || []);
-                    html += `<div class="journey-step ${statusClass}">
-                    <span class="journey-time">${escapeHtml(formatJourneyStepTimestamp(s.timestamp || '', s.time_label || ''))}</span>
-                    <div class="journey-main">
-                        <div class="journey-summary-row">
-                            <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
-                            ${actions}
+                    const stepActions = _filterStepActions(s);
+                    const actions = renderTimelineEventActions(stepActions);
+
+                    // Phase B: validation events become inline-expandable
+                    // rows.  Expanding triggers a lazy fetch from the
+                    // dialog endpoint, then renders the canonical viewer
+                    // beneath the step.  No more modal popover — the
+                    // detail lives in the same scroll context as the
+                    // journey it belongs to.
+                    if (_isValidationStep(s)) {
+                        const stepRunDir = String(s.run_dir || cycleRunDir || '');
+                        html += `<div class="journey-step journey-step-validation ${statusClass}" id="${stepId}">
+                            <div class="journey-step-row" onclick="toggleValidationEventInline('${stepId}', ${issueNum}, ${JSON.stringify(stepRunDir)})">
+                                <span class="journey-step-caret">▸</span>
+                                <span class="journey-time">${escapeHtml(formatJourneyStepTimestamp(s.timestamp || '', s.time_label || ''))}</span>
+                                <div class="journey-main">
+                                    <div class="journey-summary-row">
+                                        <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+                                        ${actions}
+                                    </div>
+                                    ${detail}
+                                </div>
+                            </div>
+                            <div class="journey-step-validation-body collapsed" id="${stepId}-body" data-loaded="0" data-run-dir="${escapeAttr(stepRunDir)}"></div>
+                        </div>`;
+                    } else {
+                        html += `<div class="journey-step ${statusClass}">
+                        <span class="journey-time">${escapeHtml(formatJourneyStepTimestamp(s.timestamp || '', s.time_label || ''))}</span>
+                        <div class="journey-main">
+                            <div class="journey-summary-row">
+                                <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+                                ${actions}
+                            </div>
+                            ${detail}
                         </div>
-                        ${detail}
-                    </div>
-                </div>`;
+                    </div>`;
+                    }
                 }
                 html += `</div>`;
             }
@@ -240,17 +273,116 @@ function _renderJourneyRuns(container, allRuns) {
     }
 }
 
+// Phase B: validation events are inline-expandable within their cycle.
+// Detect the four canonical validation event names (the same set the
+// shared CycleValidationBadge derivation uses) so the row renders with
+// a caret + lazy-loaded body instead of a flat narrative.
+const _VALIDATION_EVENT_NAMES = new Set([
+    'validation.passed',
+    'validation.failed',
+    'session.validation_passed',
+    'session.validation_failed',
+]);
+function _isValidationStep(step) {
+    if (!step || typeof step !== 'object') return false;
+    const name = String(step.event || '').toLowerCase();
+    return _VALIDATION_EVENT_NAMES.has(name);
+}
+
+// Phase B (reviewer Blocker 2 on PR #6315): a validation step's row IS
+// the expansion trigger, so the legacy ``open_validation_failure``
+// action (which the timeline action dispatcher routes to the modal)
+// is both redundant and a regression back to the modal path.  Filter
+// it out for validation steps so the row has exactly one owner for
+// the detail-view interaction.  Non-validation steps pass through
+// unchanged.
+function _filterStepActions(step) {
+    const raw = Array.isArray(step && step.actions) ? step.actions : [];
+    if (!_isValidationStep(step)) return raw;
+    return raw.filter((a) => !a || a.type !== 'open_validation_failure');
+}
+
+// The journey payload puts ``run_dir`` on individual step events when
+// available.  For a validation event that doesn't carry one (older
+// payloads or aggregated views), fall back to the cycle's first event
+// with a run_dir — same run, same validation record.
+function _findCycleRunDir(cycle) {
+    if (!cycle) return '';
+    if (cycle.artifacts && typeof cycle.artifacts === 'object' && typeof cycle.artifacts.run_dir === 'string') {
+        return cycle.artifacts.run_dir;
+    }
+    const phaseGroups = Array.isArray(cycle.phase_groups) ? cycle.phase_groups : [];
+    for (const group of phaseGroups) {
+        for (const s of (group.steps || [])) {
+            if (s && typeof s.run_dir === 'string' && s.run_dir) return s.run_dir;
+        }
+    }
+    for (const s of (cycle.steps || [])) {
+        if (s && typeof s.run_dir === 'string' && s.run_dir) return s.run_dir;
+    }
+    return '';
+}
+
+async function toggleValidationEventInline(stepId, issueNumber, runDir) {
+    const step = document.getElementById(stepId);
+    const body = document.getElementById(`${stepId}-body`);
+    if (!step || !body) return;
+    const caret = step.querySelector(':scope > .journey-step-row > .journey-step-caret');
+    const wasCollapsed = body.classList.contains('collapsed');
+    body.classList.toggle('collapsed');
+    if (caret) caret.textContent = wasCollapsed ? '▾' : '▸';
+
+    // Lazy-load on first expand.  Cache via data-loaded so subsequent
+    // toggles just show/hide the existing DOM.
+    if (wasCollapsed && body.dataset.loaded !== '1') {
+        body.dataset.loaded = '1';  // optimistic — prevents double-fetch
+        body.innerHTML = '<div class="cvv-loading">Loading validation details…</div>';
+        try {
+            const effectiveRunDir = runDir || body.dataset.runDir || '';
+            const params = new URLSearchParams();
+            if (effectiveRunDir) params.set('run_dir', effectiveRunDir);
+            const suffix = params.toString() ? `?${params.toString()}` : '';
+            const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || data.error) {
+                const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
+                body.innerHTML = `<div class="cvv-error">${escapeHtml(String(message))}</div>`;
+                body.dataset.loaded = 'error';
+                return;
+            }
+            // Inline drawer mount uses the same canonical viewer the
+            // modal does, including the artifacts footer (record /
+            // output / evidence buttons).  The viewer takes the
+            // action-section renderer as an explicit dependency
+            // (reviewer Blocker 2 on PR #6314); without passing it
+            // here we would silently drop the artifacts footer in the
+            // inline path (reviewer Blocker 1 on PR #6315).
+            // ``renderValidationFailureActionSections`` lives in
+            // session_dialogs.js — both files are loaded as plain
+            // script tags into the same global scope, so the symbol
+            // is reachable at call time.
+            body.innerHTML = renderCanonicalValidationViewer(data, {
+                renderActionSections: renderValidationFailureActionSections,
+            });
+        } catch (err) {
+            const message = err && err.message ? err.message : String(err);
+            body.innerHTML = `<div class="cvv-error">Failed to load validation details: ${escapeHtml(message)}</div>`;
+            body.dataset.loaded = 'error';
+        }
+    }
+}
+
 function _renderCycleValidationBadge(badge, _issueNumber) {
-    // Per issue #6310 AC-2 the cycle's validation badge is a typed
-    // ``CycleValidationBadge`` (state + optional typed command):
-    //   - passed         → green "Validated" button; dispatches the typed
-    //                       ``OpenValidationDetailsCommand`` through the
-    //                       existing ``runE2ELifecycleCommand`` pipeline.
-    //   - failed         → red "Failed" button; same dispatch path.
-    //   - not_validated  → amber "Not validated" span (anti-pattern
-    //                       marker; no command).
-    //   - pending        → no badge (cycle still running; validation may
-    //                       yet run).
+    // Phase B (issue #6310 follow-up): the badge is now an in-drawer
+    // affordance, not a modal trigger.  Click → expand the cycle +
+    // expand the cycle's validation event row + scroll it into view.
+    // The inline expansion is the canonical viewer (same content the
+    // modal used to show); see ``toggleValidationEventInline``.
+    //
+    // States:
+    //   passed / failed  → clickable button, jumps to the inline detail
+    //   not_validated    → amber static span (no detail to jump to)
+    //   pending          → no badge (cycle still running)
     if (!badge || typeof badge !== 'object') return '';
     const state = String(badge.state || '').toLowerCase();
     if (state === 'pending') return '';
@@ -260,14 +392,37 @@ function _renderCycleValidationBadge(badge, _issueNumber) {
             title="No validation recorded for this cycle — coding work without test evidence is an anti-pattern.">⚠ Not validated</span>`;
     }
     if (state !== 'passed' && state !== 'failed') return '';
-    if (!badge.command || typeof badge.command !== 'object') return '';
     const cls = state === 'passed'
         ? 'journey-cycle-validation-badge is-passed'
         : 'journey-cycle-validation-badge is-failed';
     const label = state === 'passed' ? '✓ Validated' : '✗ Failed';
-    // Reuse the shared Command renderer so the click goes through
-    // ``runE2ELifecycleCommand`` like every other typed-command button.
-    return _renderLifecycleCommandButton(badge.command, label, cls);
+    return `<button type="button" class="${cls}"
+        data-validation-state="${escapeAttr(state)}"
+        onclick="event.stopPropagation(); _handleCycleValidationBadgeClick(this);"
+        title="Jump to validation details for this cycle">${label}</button>`;
+}
+
+function _handleCycleValidationBadgeClick(button) {
+    if (!button) return;
+    const cycle = button.closest('.journey-cycle');
+    if (!cycle) return;
+    // Ensure the cycle body is expanded so the validation-event row is
+    // mounted and clickable.
+    const cycleBody = cycle.querySelector(':scope > .journey-cycle-body');
+    if (cycleBody && cycleBody.classList.contains('collapsed')) {
+        toggleJourneyCycle(cycle.id);
+    }
+    const stepEl = cycle.querySelector(':scope > .journey-cycle-body .journey-step-validation');
+    if (!stepEl) return;
+    const stepBody = stepEl.querySelector(':scope > .journey-step-validation-body');
+    if (stepBody && stepBody.classList.contains('collapsed')) {
+        // Re-derive the runDir from the data attribute (same value the
+        // server wrote when rendering the step).
+        const runDir = stepBody.dataset.runDir || '';
+        const issueNum = issueDetailData ? issueDetailData.issue_number : null;
+        toggleValidationEventInline(stepEl.id, issueNum, runDir);
+    }
+    stepEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function _cycleOutcomeClass(outcome) {

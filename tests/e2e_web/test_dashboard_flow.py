@@ -92,35 +92,42 @@ def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> 
     expect(page.locator("#panel-e2e")).to_be_visible()
 
 
-def test_validation_badge_click_dispatches_through_command_pipeline(
+def test_validation_badge_click_expands_inline_drawer_detail(
     page: Page,
     web_server: dict[str, object],
 ) -> None:
-    """End-to-end proof of the typed ``CycleValidationBadge`` chain (issue
-    #6310 AC-2).
+    """End-to-end proof of the Phase-B drawer inline-expansion flow
+    (issue #6310 follow-up).
 
-    Exercises the full path the previous coverage only hit in pieces:
+    Phase B replaced the modal-popping badge with an in-drawer
+    affordance: clicking the cycle's validation badge now expands the
+    cycle's validation event row in place, lazy-fetches the canonical
+    viewer payload, and mounts it directly under the step.  No more
+    context-switching to a modal.
 
-    1. Backend builds ``IssueCycle.validation = CycleValidationBadge(
-       state='passed', command=OpenValidationDetailsCommand(...))`` from
-       seeded events (``session.completed`` + ``validation.passed``).
-    2. ``.model_dump`` serializes the typed badge onto the wire.
-    3. The drawer reads the typed payload and renders a green
-       ``✓ Validated`` button carrying ``data-lifecycle-command`` JSON.
-    4. Clicking the button routes through the shared
-       ``runE2ELifecycleCommand`` dispatcher in ``lifecycle_commands.js``.
-    5. ``runE2ELifecycleCommand`` dispatches to ``openValidationFailure``
-       which fetches the dialog endpoint.
-    6. The validation dialog renders with the expected body.
+    Steps exercised:
 
-    The JS-vm tests stub step 5; this test does it in a real browser,
-    closing the seam the earlier JS-vm + Python tests left implicit.
+    1. Backend still builds ``IssueCycle.validation = CycleValidationBadge(
+       state='passed')`` from seeded events (``session.completed`` +
+       ``validation.passed``); ``.model_dump`` serializes it.
+    2. The drawer renders a green ``✓ Validated`` button with
+       ``data-validation-state="passed"`` (no more typed-Command
+       payload — that was the Phase-A contract).
+    3. Clicking the button expands the cycle (if collapsed), finds the
+       validation event step, and triggers
+       ``toggleValidationEventInline`` which fetches the dialog
+       endpoint.
+    4. The canonical viewer (``cvv-root``) mounts under the step.  No
+       modal opens.
+
+    The JS-vm tests cover the helpers in isolation; this test pins the
+    real browser flow so a regression that re-introduces the modal
+    would fail here.
     """
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
-    # Stub the dialog endpoint just like the existing dialog test —
-    # ``openValidationFailure`` will fetch it after the badge click.
+    # Stub the dialog endpoint that the inline expansion fetches.
     page.route(
         "**/api/dialog/validation-failure/410**",
         lambda route: route.fulfill(
@@ -135,7 +142,9 @@ def test_validation_badge_click_dispatches_through_command_pipeline(
               "exit_code": 0,
               "started_at": "2026-01-01T13:00:00Z",
               "ended_at": "2026-01-01T13:06:00Z",
+              "status": "passed",
               "failed_tests": [],
+              "junit_cases": [],
               "stdout_excerpt": ["all checks green"],
               "stderr_excerpt": [],
               "summary_rows": [
@@ -159,27 +168,33 @@ def test_validation_badge_click_dispatches_through_command_pipeline(
 
     _wait_for_issue_detail_hydration(page)
 
-    # Step 3 + 4: the drawer rendered the typed-Command badge.  The
-    # passed-state class proves the backend derived ``state='passed'``
-    # from the seeded ``validation.passed`` event, and the
-    # ``data-lifecycle-command`` attribute carries the typed
-    # ``OpenValidationDetailsCommand`` payload — without it, the
-    # ``runE2ELifecycleCommand`` dispatcher would have nothing to route.
+    # The drawer rendered the inline-expansion badge.  Phase B's
+    # contract: ``data-validation-state="passed"`` (state-driven, no
+    # typed-Command payload) and the button text is the
+    # passed-validated label.
     badge = page.locator(".journey-cycle-validation-badge.is-passed").first
     expect(badge).to_be_visible(timeout=5000)
     expect(badge).to_contain_text("✓ Validated")
-    expect(badge).to_have_attribute(
-        "data-lifecycle-command",
-        re.compile(r'"kind":\s*"open_validation_details"'),
-    )
+    expect(badge).to_have_attribute("data-validation-state", "passed")
 
-    # Step 5 + 6: clicking the typed-Command button goes through the
-    # shared dispatcher and opens the dialog.
+    # Phase B removed the typed-Command payload — it's intentionally
+    # absent now.  If a future refactor brings it back, the inline
+    # expansion flow should still own the click.
+    assert badge.get_attribute("data-lifecycle-command") is None
+
+    # Clicking the badge expands the cycle's validation event inline,
+    # not a modal.  The expansion lazy-fetches the dialog endpoint and
+    # mounts the canonical viewer (``cvv-root``) under the step.
     badge.click()
+
+    # No modal opens — the Phase B explicit non-regression.
     modal = page.locator("#modalOverlay.visible")
-    expect(modal).to_be_visible(timeout=5000)
-    expect(page.locator("#modalTitle")).to_contain_text("Validation Results #410")
-    expect(page.locator("#modalBody")).to_contain_text("Validation passed")
+    expect(modal).not_to_be_visible(timeout=2000)
+
+    # The inline expansion body mounted with the canonical viewer.
+    cvv = page.locator(".journey-step-validation-body .cvv-root").first
+    expect(cvv).to_be_visible(timeout=5000)
+    expect(cvv).to_have_attribute("data-cvv-status", "passed")
 
     assert errors == []
 

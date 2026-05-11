@@ -271,3 +271,51 @@
     outline: 2px solid #3870e0;
     outline-offset: -2px;
 }
+
+/* ── Phase B: inline validation event in the per-issue drawer ─── */
+.journey-step.journey-step-validation {
+    display: block;
+    padding: 0;
+}
+.journey-step.journey-step-validation > .journey-step-row {
+    display: flex;
+    align-items: flex-start;
+    padding: 6px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    user-select: none;
+}
+.journey-step.journey-step-validation > .journey-step-row:hover {
+    background: #f6f8fa;
+}
+.journey-step.journey-step-validation > .journey-step-row .journey-step-caret {
+    width: 14px;
+    color: #8a93a3;
+    text-align: center;
+    font-size: 11px;
+    margin-right: 4px;
+    transition: transform 0.12s ease;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+.journey-step-validation-body {
+    padding: 6px 12px 8px 26px;
+    border-left: 2px solid #e0e4e9;
+    margin-left: 14px;
+}
+.journey-step-validation-body.collapsed { display: none; }
+.cvv-loading {
+    padding: 10px 12px;
+    color: #5a6472;
+    font-size: 12px;
+    font-style: italic;
+}
+.cvv-error {
+    margin: 6px 0;
+    padding: 8px 10px;
+    background: #fbeae7;
+    border: 1px solid #f1c4bd;
+    border-radius: 5px;
+    color: #8c1f17;
+    font-size: 12px;
+}
