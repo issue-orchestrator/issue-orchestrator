@@ -154,13 +154,17 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(summary).to_contain_text("3 passing")
     expect(summary).to_contain_text("1 skipped")
 
-    # ── two failure triage cards ───────────────────────────────────
+    # ── Phase D outcome groups: Failed (1) is a collapsed group; open
+    #    it to reveal the failed test's triage card.  (The untracked
+    #    failure has outcome="failed" too in this fixture, so both
+    #    failures live under the same Failed group.)
+    failed_group = cvv.locator(".cvv-group-failed")
+    expect(failed_group).to_have_count(1)
+    failed_group.locator("summary").first.click()
+
+    # ── two failure triage cards inside the Failed group ───────────
     triage_cards = cvv.locator(".cvv-triage-card")
     expect(triage_cards).to_have_count(2)
-    # Both node IDs appear in the summary rows of the cards (Phase D:
-    # cards are <details> closed by default; the summary row carries
-    # the test name + 1-line headline so the user can scan without
-    # expanding).
     expect(cvv).to_contain_text("test_untracked_failure")
     expect(cvv).to_contain_text("test_linked_failure")
 
@@ -232,11 +236,15 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     )
     assert tab_stops == 1
 
-    # ── browse-by-file row exists and is collapsed by default ──────
-    browse_row = cvv.locator(".cvv-row-browse").first
-    expect(browse_row).to_be_visible()
-    # When there ARE failures, browse-by-file starts closed.
-    expect(browse_row).not_to_have_attribute("open", "")
+    # ── Phase D outcome groups: Passed and Skipped groups render
+    #    collapsed when they have cases.  No more "browse-by-file"
+    #    single-row — passed and skipped are separate groups now.
+    passed_group = cvv.locator(".cvv-group-passed")
+    expect(passed_group).to_have_count(1)
+    expect(passed_group).not_to_have_attribute("open", "")
+    skipped_group = cvv.locator(".cvv-group-skipped")
+    expect(skipped_group).to_have_count(1)
+    expect(skipped_group).not_to_have_attribute("open", "")
 
     # ── skip-reason renders inline when a skipped test row is opened
     # (Phase C confidence: a JUnit ``<skipped message="..."/>`` value

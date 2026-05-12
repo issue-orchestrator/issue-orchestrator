@@ -202,7 +202,10 @@ test('cmd surface: mixed run (linked + untracked failures) produces one Command 
     assert.match(html, /AssertionError: brand new/);
 });
 
-test('cmd surface: all-passing run produces NO Commands and a browse-by-file row instead of triage cards', () => {
+test('cmd surface: all-passing run produces NO Commands and only the Passed group', () => {
+    // Phase D redesign (issue #6322): all-passing run → just the
+    // Passed group (count 3), no Failed/Errored/Skipped groups.
+    // Predictable-collapse: the Passed group starts CLOSED.
     const ctx = loadCanonicalSurface();
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
@@ -215,11 +218,17 @@ test('cmd surface: all-passing run produces NO Commands and a browse-by-file row
     });
     const html = ctx.renderCanonicalValidationViewer(canonical);
     assert.deepEqual(extractCommands(html), []);
-    // No triage cards.
+    // No triage cards (those only render under Failed/Errored).
     assert.doesNotMatch(html, /cvv-triage-card/);
-    // Browse-by-file row, open by default (no failures pulling focus).
-    assert.match(html, /cvv-row-browse[^>]*aria-expanded="true"/);
-    // Specific test names appear inside the browse-by-file.
+    // Passed group renders, closed by default.
+    assert.match(html, /cvv-group-passed[^"]*"[^>]*aria-expanded="false"/);
+    // Group count reads "(3)".
+    assert.match(html, /Passed<\/span><span class="cvv-summary">\(3\)/);
+    // No Failed/Errored/Skipped groups (zero-count → hidden).
+    assert.doesNotMatch(html, /cvv-group-failed/);
+    assert.doesNotMatch(html, /cvv-group-error/);
+    assert.doesNotMatch(html, /cvv-group-skipped/);
+    // Specific test names appear inside the Passed group body.
     assert.match(html, /test_p1/);
     assert.match(html, /test_p2/);
     assert.match(html, /test_p3/);

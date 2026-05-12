@@ -156,16 +156,21 @@ test('a11y: every cvv-row-body has role="group"', () => {
     }
 });
 
-test('a11y: browse-by-file expander aria-expanded reflects the open attribute', () => {
-    // When there are no failures, the browse expander auto-opens — its
-    // aria-expanded must read "true".  When there ARE failures, it
-    // stays closed and aria-expanded="false".
+test('a11y: outcome groups start collapsed regardless of mix', () => {
+    // Phase D redesign (issue #6322): outcome groups (Failed /
+    // Errored / Skipped / Passed) replace the old single
+    // browse-by-file expander.  Each group is a <details> closed by
+    // default — predictable-collapse rule — including the Passed
+    // group in an all-passing run.  Previously the browse-by-file
+    // expander auto-opened when there were no failures; that
+    // special case is gone.
     const ctx = loadViewer();
     const passedOnly = ctx.renderCanonicalValidationViewer({
         status: 'passed',
         junit_cases: [{ case_id: 'a', display_name: 'a', outcome: 'passed', suite_name: 'tests/test_a.py', extras: [] }],
     });
-    assert.match(passedOnly, /class="cvv-row cvv-row-browse"[^>]*aria-expanded="true"[^>]* open/);
+    assert.match(passedOnly, /cvv-group-passed[^"]*"[^>]*aria-expanded="false"/);
+    assert.doesNotMatch(passedOnly, /cvv-group-passed[^>]* open[^>]*>/);
 
     const mixed = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -174,7 +179,8 @@ test('a11y: browse-by-file expander aria-expanded reflects the open attribute', 
             { case_id: 'b', display_name: 'b', outcome: 'passed', extras: [] },
         ],
     });
-    assert.match(mixed, /class="cvv-row cvv-row-browse"[^>]*aria-expanded="false"/);
+    assert.match(mixed, /cvv-group-failed[^"]*"[^>]*aria-expanded="false"/);
+    assert.match(mixed, /cvv-group-passed[^"]*"[^>]*aria-expanded="false"/);
 });
 
 test('a11y: enhancer is exported as a symbol on the viewer module', () => {
