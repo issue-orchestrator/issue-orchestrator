@@ -421,26 +421,54 @@ function renderDialogActionMenuItem(action, labelOverride = null) {
 // label gets a trailing glyph that tells the user what'll happen
 // before they click.
 //   ``↗`` — external viewer (browser tab, OS app, editor, anything
-//           outside this scroll context).  Examples: ``open_path``
-//           opens a file in a tab; ``open_orchestrator_log`` opens
-//           a log viewer page.
-//   ``⧉`` — modal viewer.  Today: ``open_agent_log`` (session
-//           recording) and ``view_claude_log`` (Claude log viewer)
-//           pop up modals.  Marked honestly with ``⧉`` until
-//           migration to pages.
+//           outside this scroll context).  Maps to handlers that
+//           leave the page or open a file via the OS.
+//   ``⧉`` — modal viewer.  Maps to handlers that open
+//           ``#modalOverlay`` (the dashboard's in-page overlay).
+//           Honest about today's behavior; migration to pages is
+//           filed as follow-up work.
 //   (none) — local action; does the thing in place, no navigation
-//           and no overlay.  Example: ``copy_agent_log``.
+//           and no overlay.  Example: ``copy_agent_log`` writes
+//           to the clipboard.
 // The glyph is appended to whatever label the action carried in,
 // so backend label assertions still pass on the bare string.
+//
+// Mapping rationale per action type:
+//   open_path                  → OS host opens the file via
+//                                ``uiActionContract.buildHostOpenPathRequest``
+//                                — external viewer → ``↗``.
+//   open_orchestrator_log      → fetches a filtered log, then
+//                                ``openPath()`` opens it externally
+//                                — external viewer → ``↗``.
+//   open_validation_failure    → ``openModal()`` on success
+//                                — modal → ``⧉``.
+//   open_review_transcript     → ``openModal()`` with the transcript
+//                                — modal → ``⧉``.
+//   open_review_feedback       → toggles ``#modalOverlay.visible``
+//                                — modal → ``⧉``.
+//   open_session_diagnostics   → ``openSessionManifest()`` calls
+//                                ``openModal()`` — modal → ``⧉``.
+//   open_agent_log             → opens the session recording in the
+//                                session-replay modal — modal → ``⧉``.
+//   view_claude_log            → opens the Claude log viewer modal
+//                                — modal → ``⧉``.
+//   copy_agent_log             → writes to clipboard, no UI change
+//                                — local action → (none).
 const _AFFORDANCE_GLYPH_BY_ACTION_TYPE = {
+    // External — opens in an OS app / external viewer.
     open_path: ' ↗',
-    open_validation_failure: ' ↗',
-    open_review_transcript: ' ↗',
     open_orchestrator_log: ' ↗',
-    open_review_feedback: ' ↗',
-    open_session_diagnostics: ' ↗',
+    // Modal — opens ``#modalOverlay`` on this page.  Reviewer flagged
+    // the four mid-list entries on PR #6325 round 1: they were
+    // mapped to ``↗`` but their handlers actually open modals.
+    // Corrected.
+    open_validation_failure: ' ⧉',
+    open_review_transcript: ' ⧉',
+    open_review_feedback: ' ⧉',
+    open_session_diagnostics: ' ⧉',
     open_agent_log: ' ⧉',
     view_claude_log: ' ⧉',
+    // Local action — no glyph.
     copy_agent_log: '',
 };
 

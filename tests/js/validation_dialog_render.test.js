@@ -228,3 +228,102 @@ test('runDir from caller takes precedence over payload', () => {
     const { runDir } = renderValidationDialog(payload, 4242, '/run/caller-knows-best');
     assert.strictEqual(runDir, '/run/caller-knows-best');
 });
+
+// ── Affordance-glyph convention (issue #6322 / PR #6325) ──────────────────
+//
+// Every supported action.type maps to exactly one glyph
+// (or to none, for local actions).  The convention is:
+//   ``↗`` — external viewer (opens an OS app, file, or page outside
+//           the current scroll context)
+//   ``⧉`` — modal viewer (opens ``#modalOverlay`` on this page)
+//   (none) — local action (does the thing in place, no UI change)
+//
+// Reviewer blocker on round 1 of #6325: several modal-opening
+// actions were tagged ``↗``.  These tests pin every supported
+// action's glyph against the handler's actual behavior so future
+// drift fails the test, not the user.
+
+test('affordance: every supported action.type maps to the right glyph', () => {
+    const ctx = loadSessionDialogs();
+    // External viewers: handler opens an OS app or external page.
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_path' }), ' ↗');
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_orchestrator_log' }), ' ↗');
+    // Modal viewers: handler opens ``#modalOverlay``.
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_validation_failure' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_review_transcript' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_review_feedback' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_session_diagnostics' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_agent_log' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'view_claude_log' }), ' ⧉');
+    // Local actions: no glyph.
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'copy_agent_log' }), '');
+    // Unknown action types default to no glyph (intentional — better
+    // a missing affordance than a wrong one for actions we don't
+    // know how to characterize).
+    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'made_up_action' }), '');
+    assert.strictEqual(ctx._affordanceGlyphForAction({}), '');
+    assert.strictEqual(ctx._affordanceGlyphForAction(null), '');
+});
+
+test('affordance: rendered button label carries the right trailing glyph for every action', () => {
+    // End-to-end through the renderer: ``_renderDialogActionButton``
+    // appends the glyph to whatever backend label the action came
+    // with.  The handler hookup is unchanged — we're asserting the
+    // visible label suffix matches the convention.
+    const ctx = loadSessionDialogs();
+    // The renderer falls back to the module-level
+    // ``currentDiagnosticsRunDir`` when ``action.run_dir`` is missing.
+    // Force it to null so we exercise the fall-through honestly.
+    ctx.currentDiagnosticsRunDir = null;
+    const cases = [
+        // [type, runDir, expectedSuffix, extraFields]
+        ['open_path', null, ' ↗', { path: '/tmp/some.log' }],
+        ['open_orchestrator_log', '/run/x', ' ↗', { issue_number: 42 }],
+        ['open_validation_failure', '/run/x', ' ⧉', { issue_number: 42 }],
+        ['open_review_transcript', '/run/x', ' ⧉', { issue_number: 42, round_index: 0, transcript_role: 'coder' }],
+        ['open_review_feedback', '/run/x', ' ⧉', { issue_number: 42 }],
+        ['open_session_diagnostics', '/run/x', ' ⧉', { issue_number: 42 }],
+        ['open_agent_log', '/run/x', ' ⧉', { issue_number: 42 }],
+        ['view_claude_log', '/run/x', ' ⧉', { issue_number: 42 }],
+        ['copy_agent_log', '/run/x', '', { issue_number: 42 }],
+    ];
+    for (const [type, runDir, suffix, extras] of cases) {
+        const action = { type, label: 'TheLabel', run_dir: runDir, ...extras };
+        const html = ctx._renderDialogActionButton(action, null, 'diag-btn');
+        // Some actions return '' when run_dir is missing (e.g. open_agent_log).
+        // Our cases above provide run_dir where needed.
+        assert.notStrictEqual(html, '',
+            `expected non-empty HTML for type=${type}; got empty (probably a missing required field)`);
+        // Strip the dispatch wrapper to just look at the visible button text.
+        const visibleLabel = html.match(/>([^<]+)<\/button>/);
+        assert.ok(visibleLabel, `could not find visible label in: ${html.slice(0, 200)}…`);
+        const expected = `TheLabel${suffix}`;
+        assert.strictEqual(visibleLabel[1], expected,
+            `type=${type}: expected button label ${JSON.stringify(expected)}, got ${JSON.stringify(visibleLabel[1])}`);
+    }
+});
+
+test('affordance: rendered button still dispatches to the correct handler', () => {
+    // The glyph is purely presentational; the onclick handler stays
+    // correct.  Tie the visible label to the dispatch function in
+    // the rendered onclick so neither half can drift unnoticed.
+    const ctx = loadSessionDialogs();
+    ctx.currentDiagnosticsRunDir = null;
+    const expectedHandlers = {
+        open_path: 'openPath(',
+        open_orchestrator_log: 'openFilteredOrchestratorLog(',
+        open_validation_failure: 'openValidationFailure(',
+        open_review_transcript: 'openReviewTranscript(',
+        open_review_feedback: 'openReviewFeedback(',
+        open_session_diagnostics: 'openSessionManifest(',
+        open_agent_log: 'openAgentLogAction(',
+        view_claude_log: 'viewClaudeLog(',
+        copy_agent_log: 'copyAgentLogAction(',
+    };
+    for (const [type, handler] of Object.entries(expectedHandlers)) {
+        const action = { type, label: 'L', run_dir: '/run/x', issue_number: 1, path: '/p' };
+        const html = ctx._renderDialogActionButton(action, null, 'diag-btn');
+        assert.ok(html.includes(handler),
+            `type=${type}: expected onclick to call ${handler}, got: ${html.slice(0, 240)}…`);
+    }
+});
