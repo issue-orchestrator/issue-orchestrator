@@ -660,11 +660,46 @@ class CycleValidationBadge(LifecycleBase):
         return self
 
 
+class OutcomeBadge(LifecycleBase):
+    """Typed (label, tone) for a JourneyRun / IssueCycle outcome.
+
+    Background — reviewer blocker on PR #6333: the inline Attempts
+    expander rendered unknown outcome labels as green ✓ because the UI
+    string-matched ``cycle.outcome`` against a tiny exact-match set and
+    fell through to ``passed`` for anything else.  The labels are
+    constructed in the projection layer (``journey_projection.py``)
+    and include human strings like ``Changes Requested``,
+    ``Timed out: <summary>``, ``Agent blocked: <reason>``,
+    ``Needs human: <reason>``, ``Superseded``, ``Rework → ...``, etc.
+    String-matching at the UI layer is the wrong place to own
+    "is this green or red?" — every new label silently miscategorizes.
+
+    The fix: the projection owns both ``label`` (what to display) and
+    ``tone`` (visual semantics).  UI reads ``tone`` directly to pick
+    its CSS class.  Unknown / pass-through labels are ``neutral``,
+    never ``passed`` — silent green for "I don't know" is the bug
+    this type exists to prevent.
+
+    Tones:
+      * ``passed``      — success terminal (Completed, Approved, Merged)
+      * ``failed``      — failure terminal (Changes Requested, Failed,
+                          Blocked, Needs human, Timed out, Agent blocked,
+                          Escalated)
+      * ``error``       — explicit error / abnormal terminal
+      * ``in_progress`` — work is still moving (In progress)
+      * ``neutral``     — known-non-terminal-non-error or unclassified
+                          (Superseded, raw summary pass-through)
+    """
+
+    label: str
+    tone: Literal["passed", "failed", "error", "in_progress", "neutral"]
+
+
 class IssueCycle(LifecycleBase):
     cycle_number: int
     coder: CodingAttempt
     review: ReviewStage
-    outcome: str
+    outcome: OutcomeBadge
     diagnostics: tuple[TimelineDiagnostic, ...] = ()
 
     # Journey/drawer fields — populated when the projection is built with
@@ -720,7 +755,7 @@ class JourneyRun(LifecycleBase):
 
     run_number: int
     run_label: str
-    outcome: str
+    outcome: OutcomeBadge
     run_key: str = ""
     run_id: str | None = None
     session_run_ids: tuple[str, ...] = ()

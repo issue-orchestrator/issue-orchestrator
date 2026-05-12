@@ -403,7 +403,7 @@ class IssueCyclePayload(BaseModel):
     expanded: bool | None
     iteration: int | None
     lifecycle: int | None
-    outcome: str
+    outcome: OutcomeBadgePayload
     phase_groups: list[JourneyPhaseGroupPayload]
     reset_from_scratch: bool | None
     retry_count: int | None
@@ -536,7 +536,7 @@ class JourneyRunPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cycles: list[IssueCyclePayload]
     expanded: bool
-    outcome: str
+    outcome: OutcomeBadgePayload
     reset_from_scratch: bool
     run_id: str | None
     run_key: str
@@ -647,6 +647,11 @@ class OpenValidationDetailsCommandPayload(BaseModel):
     kind: Literal['open_validation_details']
     label: str
     run_dir: str
+
+class OutcomeBadgePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    tone: Literal['passed', 'failed', 'error', 'in_progress', 'neutral']
 
 class PassedE2ETestExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

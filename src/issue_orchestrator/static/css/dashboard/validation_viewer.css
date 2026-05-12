@@ -178,6 +178,13 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
 .cvv-ico-failed  { background: #c0392f; }
 .cvv-ico-error   { background: #b07a00; }
 .cvv-ico-skipped { background: #8a93a3; }
+/* PR #6333: typed OutcomeBadge tones for the inline Agent-attempts
+   tree.  ``in_progress`` is a muted blue (work is still moving);
+   ``neutral`` is grey (known-non-terminal-non-error or unknown —
+   explicitly NOT green, to avoid green-by-default for unclassified
+   outcomes).  Same diameter as the success/failure icons. */
+.cvv-ico-in_progress { background: #5a78a3; }
+.cvv-ico-neutral     { background: #8a93a3; }
 
 /* ── expanders (one idiom rules all) ────────────────────────────── */
 .cvv-row {

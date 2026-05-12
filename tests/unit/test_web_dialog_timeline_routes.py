@@ -344,7 +344,7 @@ class TestApiTimelineEndpoint:
             "kind": "review_not_reached",
             "reason": "coding_failed",
         }
-        assert cycle["outcome"] == "failed"
+        assert cycle["outcome"] == {"label": "failed", "tone": "failed"}
 
     def test_issue_detail_starts_new_lifecycle_after_completion_without_review(self):
         """Signal path: a new coding session after completion becomes a new lifecycle."""

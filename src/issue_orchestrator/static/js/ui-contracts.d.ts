@@ -392,7 +392,7 @@ export interface IssueCyclePayload {
   expanded: boolean | null;
   iteration: number | null;
   lifecycle: number | null;
-  outcome: string;
+  outcome: OutcomeBadgePayload;
   phase_groups: JourneyPhaseGroupPayload[];
   reset_from_scratch: boolean | null;
   retry_count: number | null;
@@ -526,7 +526,7 @@ export interface JourneyPhaseGroupPayload {
 export interface JourneyRunPayload {
   cycles: IssueCyclePayload[];
   expanded: boolean;
-  outcome: string;
+  outcome: OutcomeBadgePayload;
   reset_from_scratch: boolean;
   run_id: string | null;
   run_key: string;
@@ -637,6 +637,11 @@ export interface OpenValidationDetailsCommandPayload {
   kind: "open_validation_details";
   label: string;
   run_dir: string;
+}
+
+export interface OutcomeBadgePayload {
+  label: string;
+  tone: "passed" | "failed" | "error" | "in_progress" | "neutral";
 }
 
 export interface PassedE2ETestExecutionPayload {

@@ -82,16 +82,20 @@
 
     function _renderAttemptRow(run, attemptIdx) {
         const cycles = Array.isArray(run && run.cycles) ? run.cycles : [];
-        const outcome = String(run && run.outcome || 'unknown');
-        const outcomeClass = _outcomeIconClass(outcome);
+        // Path B (PR #6333): outcome is a typed ``OutcomeBadge``
+        // ``{label, tone}``.  The projection layer owns tone
+        // classification; the UI just reads ``.tone`` to pick its
+        // visual treatment.  No string-matching, no green-by-default
+        // for unknown labels.
+        const outcome = _outcomeBadge(run && run.outcome);
         const reworkSuffix = run && run.reset_from_scratch ? ' (reset)' : '';
         const summaryParts = [
             `${cycles.length} cycle${cycles.length === 1 ? '' : 's'}`,
-            `final: ${escapeHtml(outcome)}`,
+            `final: ${escapeHtml(outcome.label)}`,
         ];
         let html = `<details class="agent-context-attempt">`;
         html += `<summary><span class="caret">▸</span>`;
-        html += `<span class="cvv-ico cvv-ico-${outcomeClass}">${_outcomeGlyph(outcomeClass)}</span>`;
+        html += `<span class="cvv-ico cvv-ico-${outcome.tone}">${_toneGlyph(outcome.tone)}</span>`;
         html += `<span class="agent-context-attempt-title">Attempt ${attemptIdx}${reworkSuffix}</span>`;
         html += `<span class="agent-context-attempt-meta">${summaryParts.join(' · ')}</span>`;
         html += `</summary>`;
@@ -112,35 +116,44 @@
         const cycleLabel = cycle && typeof cycle.cycle_label === 'string' && cycle.cycle_label
             ? String(cycle.cycle_label)
             : `Cycle ${cycleNumber}`;
-        const outcome = String(cycle && cycle.outcome || 'unknown');
-        const outcomeClass = _outcomeIconClass(outcome);
+        const outcome = _outcomeBadge(cycle && cycle.outcome);
         const validation = cycle && cycle.validation && typeof cycle.validation === 'object'
             ? String(cycle.validation.state || '')
             : '';
-        const parts = [`outcome: ${escapeHtml(outcome)}`];
+        const parts = [`outcome: ${escapeHtml(outcome.label)}`];
         if (validation) parts.push(`validation: ${escapeHtml(validation)}`);
         return (
             `<div class="agent-context-cycle">` +
-            `<span class="cvv-ico cvv-ico-${outcomeClass}">${_outcomeGlyph(outcomeClass)}</span>` +
+            `<span class="cvv-ico cvv-ico-${outcome.tone}">${_toneGlyph(outcome.tone)}</span>` +
             `<span class="agent-context-cycle-title">${escapeHtml(cycleLabel)}</span>` +
             `<span class="agent-context-cycle-meta">${parts.join(' · ')}</span>` +
             `</div>`
         );
     }
 
-    function _outcomeIconClass(outcome) {
-        const s = String(outcome || '').toLowerCase();
-        if (s === 'completed' || s === 'passed') return 'passed';
-        if (s === 'blocked' || s === 'failed') return 'failed';
-        if (s === 'errored') return 'error';
-        if (s === 'skipped') return 'skipped';
-        return 'passed';  // unknown → muted-visual default; not used to mislead, just to avoid red noise
+    // Outcome reader: the backend ships ``OutcomeBadge {label, tone}``.
+    // Defensive normalization for malformed/legacy shapes — never
+    // silently render "?" as green.
+    function _outcomeBadge(value) {
+        if (value && typeof value === 'object' && typeof value.label === 'string') {
+            const tone = _knownTone(value.tone) ? value.tone : 'neutral';
+            return { label: value.label, tone };
+        }
+        // Defensive fallback for a malformed payload — neutral, not
+        // passed.  Path B's whole point: unknown ≠ success.
+        return { label: String(value == null ? '' : value) || 'unknown', tone: 'neutral' };
     }
 
-    function _outcomeGlyph(cls) {
-        if (cls === 'failed') return '✕';
-        if (cls === 'error') return '⚠';
-        if (cls === 'skipped') return '–';
+    function _knownTone(t) {
+        return t === 'passed' || t === 'failed' || t === 'error'
+            || t === 'in_progress' || t === 'neutral';
+    }
+
+    function _toneGlyph(tone) {
+        if (tone === 'failed') return '✕';
+        if (tone === 'error') return '⚠';
+        if (tone === 'in_progress') return '…';
+        if (tone === 'neutral') return '·';
         return '✓';
     }
 
@@ -205,9 +218,10 @@
     // dispatcher (``openIssueTimeline``, ``openAgentLogAction``, …).
     window.renderInlineAgentAttemptsExpander = renderInlineAgentAttemptsExpander;
     window.loadInlineAgentAttempts = loadInlineAgentAttempts;
-    // For tests: expose the cache + fetch helper.  Underscored
-    // names mark them as private to production code (tests use
-    // them to spy on the fetch path).
-    window._inlineAgentAttemptsCache = _issueDetailCache;
-    window._fetchIssueDetailOnce = _fetchIssueDetailOnce;
+    // PR #6333 reviewer feedback: do NOT publish the fetch helper
+    // or the module-private cache on ``window``.  Earlier drafts
+    // exposed them as test-only globals; in practice no test uses
+    // them, and test-only globals expand the UI's public API
+    // surface for no value.  Tests drive the typed-Command
+    // dispatcher (``runE2ELifecycleCommandFromToggle``) instead.
 })();

@@ -163,15 +163,22 @@ function _ctxWithFetch(payload, ok = true, status = 200) {
     };
 }
 
+// Backend payload uses the typed ``OutcomeBadge {label, tone}`` shape
+// after PR #6333 (Path B).  Helper builds a badge inline so the
+// per-tone tests below can read explicitly.
+function _ob(label, tone) {
+    return { label, tone };
+}
+
 test('loader: lazy-fetches /api/issue-detail on first call and populates body', async () => {
     const payload = {
         runs: [
             {
-                outcome: 'blocked',
+                outcome: _ob('blocked', 'failed'),
                 run_number: 1,
                 cycles: [
-                    { cycle_number: 1, outcome: 'failed', validation: { state: 'failed' } },
-                    { cycle_number: 2, outcome: 'failed', cycle_label: 'Cycle 2 (rework)', validation: { state: 'failed' } },
+                    { cycle_number: 1, outcome: _ob('failed', 'failed'), validation: { state: 'failed' } },
+                    { cycle_number: 2, outcome: _ob('failed', 'failed'), cycle_label: 'Cycle 2 (rework)', validation: { state: 'failed' } },
                 ],
             },
         ],
@@ -194,7 +201,7 @@ test('loader: lazy-fetches /api/issue-detail on first call and populates body', 
 });
 
 test('loader: cache shared across calls for the same issue', async () => {
-    const payload = { runs: [{ outcome: 'completed', run_number: 1, cycles: [] }] };
+    const payload = { runs: [{ outcome: _ob('completed', 'passed'), run_number: 1, cycles: [] }] };
     const { ctx, calls } = _ctxWithFetch(payload);
     const body1 = _fakeBody();
     const body2 = _fakeBody();
@@ -226,6 +233,90 @@ test('loader: invalid issue number is a defensive no-op', () => {
     ctx.loadInlineAgentAttempts('not-a-number', _fakeDetailsEl(1, _fakeBody()));
     ctx.loadInlineAgentAttempts(123, null);  // no element → no-op
     assert.deepStrictEqual(calls.fetch, []);
+});
+
+// ── Reviewer's per-tone matrix (PR #6333 blocker) ────────────────
+//
+// The reviewer found that pre-Path-B, labels like ``Changes Requested``,
+// ``Timed out: ...``, ``Needs human: ...``, ``In progress``, etc. all
+// rendered as green ✓ because the JS-side classifier fell through to
+// ``passed`` for unknowns.  Path B: tone comes from the backend
+// (the projection's ``outcome_badge()`` is the single owner).  These
+// tests verify the rendered ``cvv-ico-{tone}`` class on the
+// attempt-row icon for every label the reviewer called out, with a
+// neutral fallback for unknown / malformed shapes.
+async function _renderedToneFor(outcomeBadge) {
+    const payload = {
+        runs: [
+            { outcome: outcomeBadge, run_number: 1, cycles: [] },
+        ],
+    };
+    const { ctx } = _ctxWithFetch(payload);
+    const body = _fakeBody();
+    const detailsEl = _fakeDetailsEl(1, body);
+    ctx.loadInlineAgentAttempts(1, detailsEl);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    const match = body.innerHTML.match(/cvv-ico-(\w+)/);
+    return match ? match[1] : null;
+}
+
+test('per-tone: Approved → passed', async () => {
+    assert.strictEqual(await _renderedToneFor(_ob('Approved', 'passed')), 'passed');
+});
+test('per-tone: Changes Requested → failed (NOT passed — regression of #6333 review finding)', async () => {
+    assert.strictEqual(await _renderedToneFor(_ob('Changes Requested', 'failed')), 'failed');
+});
+test('per-tone: Timed out: <summary> → failed (prefixed label)', async () => {
+    assert.strictEqual(
+        await _renderedToneFor(_ob('Timed out: agent did not call coding-done', 'failed')),
+        'failed',
+    );
+});
+test('per-tone: Agent blocked: <reason> → failed (prefixed label)', async () => {
+    assert.strictEqual(
+        await _renderedToneFor(_ob('Agent blocked: waiting for product decision', 'failed')),
+        'failed',
+    );
+});
+test('per-tone: Needs human: <reason> → failed (prefixed label)', async () => {
+    assert.strictEqual(
+        await _renderedToneFor(_ob('Needs human: clarify acceptance criteria', 'failed')),
+        'failed',
+    );
+});
+test('per-tone: Superseded → neutral (older-run mutation; NOT green)', async () => {
+    assert.strictEqual(await _renderedToneFor(_ob('Superseded', 'neutral')), 'neutral');
+});
+test('per-tone: In progress → in_progress', async () => {
+    assert.strictEqual(await _renderedToneFor(_ob('In progress', 'in_progress')), 'in_progress');
+});
+test('per-tone: Completed → passed', async () => {
+    assert.strictEqual(await _renderedToneFor(_ob('Completed', 'passed')), 'passed');
+});
+
+test('per-tone: malformed payload (bare string outcome from stale producer) → neutral, NOT passed', async () => {
+    // Pre-Path-B contract: outcome was a bare string and the JS
+    // classifier returned ``passed`` for anything it didn't
+    // recognize.  This was the exact bug the reviewer caught.  The
+    // defensive ``_outcomeBadge`` reader on the JS side returns
+    // ``neutral`` for any non-typed-shape outcome so a stale
+    // backend can't silently render its raw label as green.
+    assert.strictEqual(await _renderedToneFor('Changes Requested'), 'neutral');
+    assert.strictEqual(await _renderedToneFor(null), 'neutral');
+    assert.strictEqual(await _renderedToneFor({ label: 'X' /* tone missing */ }), 'neutral');
+    assert.strictEqual(await _renderedToneFor({ label: 'X', tone: 'bogus' }), 'neutral');
+});
+
+test('per-tone: unknown-but-typed payload (tone "neutral" from projection) → neutral, NOT passed', async () => {
+    // The Path B projection emits ``tone: "neutral"`` for raw
+    // summary pass-throughs the projection didn't classify.  This
+    // proves the renderer trusts the projection's neutral verdict
+    // rather than defaulting to ``passed``.
+    assert.strictEqual(
+        await _renderedToneFor(_ob('unfamiliar third-party label', 'neutral')),
+        'neutral',
+    );
 });
 
 // ── Layer C: typed-Command dispatch through the shared owner ─────

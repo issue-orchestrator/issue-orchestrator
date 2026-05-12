@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from issue_orchestrator.view_models.lifecycle_semantics import (
+    OutcomeBadge,
     AgentIdentity,
     CompletedCodingAttempt,
     CompletionRecordEvidence,
@@ -48,6 +49,18 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     validate_lifecycle_container,
 )
 
+
+
+# OutcomeBadge constructor shim for tests (PR #6333): the
+# projection layer owns tone classification, but tests construct
+# IssueCycle/JourneyRun directly with bare label strings.  This
+# helper wraps any label in the typed shape so the assertions
+# stay focused on cycle/run shape, not tone bookkeeping.
+def _ob(label: str, tone: str = "neutral") -> OutcomeBadge:
+    """Test helper: wrap a bare outcome label in an OutcomeBadge.
+    Tone defaults to neutral; tests that care about tone pass it
+    explicitly."""
+    return OutcomeBadge(label=label, tone=tone)  # type: ignore[arg-type]
 
 def _coder() -> AgentIdentity:
     return AgentIdentity(name="codex", role="coder")
@@ -107,7 +120,7 @@ def _issue_lifecycle(issue_number: int = 1) -> IssueLifecycle:
                 cycle_number=1,
                 coder=_validated_coding_attempt(issue_number=issue_number),
                 review=ReviewNotReached(reason="not_required"),
-                outcome="Completed",
+                outcome=_ob("Completed"),
             ),
         ),
     )
@@ -275,7 +288,7 @@ def test_issue_cycle_rejects_incoherent_coder_review_combinations() -> None:
             cycle_number=1,
             coder=running,
             review=terminal_review,
-            outcome="changes_requested",
+            outcome=_ob("changes_requested"),
         )
 
 
@@ -311,14 +324,14 @@ def test_issue_cycle_requires_publish_failure_review_reason() -> None:
             cycle_number=1,
             coder=publish_failed,
             review=ReviewNotReached(reason="coding_failed"),
-            outcome="publish_failed",
+            outcome=_ob("publish_failed"),
         )
 
     cycle = IssueCycle(
         cycle_number=1,
         coder=publish_failed,
         review=ReviewNotReached(reason="publish_failed"),
-        outcome="publish_failed",
+        outcome=_ob("publish_failed"),
     )
 
     assert cycle.coder.kind == "publish_failed_coding_attempt"
@@ -357,7 +370,7 @@ def test_issue_cycle_allows_missing_coding_evidence_with_review_evidence() -> No
         cycle_number=1,
         coder=missing_coder,
         review=review,
-        outcome="approved",
+        outcome=_ob("approved"),
     )
 
     assert cycle.coder.kind == "missing_coding_evidence"

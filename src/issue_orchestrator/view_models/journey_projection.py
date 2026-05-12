@@ -50,6 +50,7 @@ from .lifecycle_semantics import (
     JourneyRun,
     JourneyStep,
     OpenValidationDetailsCommand,
+    OutcomeBadge,
 )
 
 EventDict = Mapping[str, Any]
@@ -226,8 +227,14 @@ def derive_cycle_outcome(
     events: Sequence[EventDict],
     iteration: int,
     projection_context: IssueProjectionContext | None = None,
-) -> str:
-    """Derive a cycle outcome label from the last canonical OUTCOME_EVENTS entry."""
+) -> OutcomeBadge:
+    """Derive a cycle outcome badge from the last canonical OUTCOME_EVENTS entry.
+
+    Returns a typed ``OutcomeBadge`` ``(label, tone)`` rather than a bare
+    string.  Tone classification is the projection layer's responsibility
+    (single owner per PR #6333 reviewer feedback) — the UI just reads the
+    tone to pick its visual treatment.
+    """
     last_outcome_event: EventDict | None = None
     for evt in reversed(tuple(events)):
         if _journey_event_name(evt) in OUTCOME_EVENTS:
@@ -235,7 +242,7 @@ def derive_cycle_outcome(
             break
 
     if last_outcome_event is None:
-        return "In progress"
+        return outcome_badge("In progress")
 
     event_name = _journey_event_name(last_outcome_event)
     summary = str(last_outcome_event.get("summary") or "")
@@ -248,7 +255,107 @@ def derive_cycle_outcome(
         )
         if not is_review_cycle:
             label = f"Rework → {label}"
-    return label
+    return outcome_badge(label)
+
+
+# Tone lookup tables.  These are the canonical labels emitted by the
+# projection helpers above (``_outcome_label`` / ``_round_completed_outcome_label``
+# / ``_session_outcome_label`` / ``_issue_blocked_outcome_label`` and the
+# ``_DIRECT_OUTCOME_LABELS`` set), plus the ``Superseded`` mutation
+# applied by ``LogicalRunProjector.build_runs`` and the
+# ``In progress`` placeholder.
+#
+# Every label the projection knows how to emit has an entry below.  An
+# unknown label (e.g. a raw summary pass-through from a third-party
+# event) falls through to the ``neutral`` tone, never ``passed``.
+# Silent green for "I don't know" is the bug the typed
+# ``OutcomeBadge`` exists to prevent.
+_OUTCOME_TONE_EXACT: dict[str, str] = {
+    "Completed": "passed",
+    "Approved": "passed",
+    "Merged": "passed",
+    "Changes Requested": "failed",
+    "Escalated": "failed",
+    "Failed": "failed",
+    "Blocked": "failed",
+    "Timed out": "failed",
+    "Needs human": "failed",
+    "Agent blocked": "failed",
+    "In progress": "in_progress",
+    "Superseded": "neutral",
+    "Rework": "in_progress",
+}
+
+# Prefixes the projection emits with a trailing ``: <summary>`` or
+# ``— <summary>``.  Each maps to the same tone as its exact form.
+_OUTCOME_TONE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("Rework limit reached", "failed"),
+    ("Timed out:", "failed"),
+    ("Timed out —", "failed"),
+    ("Timed out -", "failed"),
+    ("Agent blocked:", "failed"),
+    ("Blocked:", "failed"),
+    ("Needs human:", "failed"),
+    ("Failed:", "failed"),
+)
+
+
+def outcome_badge(label: str) -> "OutcomeBadge":
+    """Wrap a human-readable outcome label in a typed ``OutcomeBadge``.
+
+    Single owner for tone classification (PR #6333 reviewer
+    blocker).  The projection layer constructs every label; this
+    function maps each canonical label to its visual ``tone``.
+    Unknown labels are ``neutral`` — never silently ``passed``.
+
+    Handles three label shapes:
+      * Direct labels (``Completed``, ``Approved``, ``Changes Requested``)
+        — exact match.
+      * Prefixed labels (``Timed out: <summary>``, ``Blocked: <reason>``,
+        ``Needs human: <reason>``, ``Agent blocked: <reason>``,
+        ``Failed: <summary>``, ``Rework limit reached ...``) — prefix
+        match.
+      * Composed labels (``Rework → <inner>``) — recursive lookup on
+        ``<inner>``, with a non-terminal ``rework`` parent treated as
+        ``in_progress`` if the inner is unknown.
+    """
+    stripped = label.strip() if isinstance(label, str) else ""
+    if not stripped:
+        return OutcomeBadge(label=label or "", tone="neutral")
+
+    # ``Rework → <inner>`` composition: tone is determined by the
+    # inner label.  Unknown inner → in_progress (rework parent
+    # implies still moving forward, not green).
+    rework_arrow = "Rework → "
+    if stripped.startswith(rework_arrow):
+        inner = stripped[len(rework_arrow):].strip()
+        inner_badge = outcome_badge(inner)
+        tone = inner_badge.tone if inner_badge.tone != "neutral" else "in_progress"
+        return OutcomeBadge(label=label, tone=tone)
+
+    direct = _OUTCOME_TONE_EXACT.get(stripped)
+    if direct is not None:
+        return OutcomeBadge(label=label, tone=direct)
+
+    for prefix, tone in _OUTCOME_TONE_PREFIXES:
+        if stripped.startswith(prefix):
+            return OutcomeBadge(label=label, tone=tone)
+
+    # Lifecycle state strings (lowercase exact match) used by some
+    # callers that bypass the human-label pipeline.
+    lower = stripped.lower()
+    if lower in {"passed", "completed"}:
+        return OutcomeBadge(label=label, tone="passed")
+    if lower in {"failed", "blocked"}:
+        return OutcomeBadge(label=label, tone="failed")
+    if lower == "errored":
+        return OutcomeBadge(label=label, tone="error")
+    if lower == "skipped":
+        return OutcomeBadge(label=label, tone="neutral")
+
+    # Unknown label — neutral, NOT passed.  Silent green for
+    # unrecognized outcomes was the original bug.
+    return OutcomeBadge(label=label, tone="neutral")
 
 
 def build_journey_step(evt: EventDict, today: str) -> JourneyStep:
@@ -402,13 +509,15 @@ def build_journey_runs(cycles: Sequence[IssueCycle]) -> tuple[JourneyRun, ...]:
                 reset_from_scratch = True
             # LogicalRunProjector.build_runs mutates older-run cycle
             # outcomes to "Superseded"; mirror that on the typed cycle to
-            # keep wire parity with the legacy dict path.
-            mutated_outcome = str(cd.get("outcome") or typed.outcome)
-            if mutated_outcome != typed.outcome:
-                typed = typed.model_copy(update={"outcome": mutated_outcome})
+            # keep wire parity with the legacy dict path.  The dict
+            # carries a bare string label; wrap it back into a typed
+            # OutcomeBadge before assigning.
+            mutated_label = str(cd.get("outcome") or typed.outcome.label)
+            if mutated_label != typed.outcome.label:
+                typed = typed.model_copy(update={"outcome": outcome_badge(mutated_label)})
             run_typed_cycles.append(typed)
         run_number = int(run.get("run_number") or 0)
-        outcome = str(run.get("outcome") or "")
+        outcome = outcome_badge(str(run.get("outcome") or ""))
         run_label = (
             f"Run {run_number} (scratch retry)"
             if reset_from_scratch
@@ -451,7 +560,12 @@ def build_journey_runs(cycles: Sequence[IssueCycle]) -> tuple[JourneyRun, ...]:
 
 
 def _cycle_to_run_proxy(cycle: IssueCycle) -> dict[str, Any]:
-    """Build the minimal dict shape that ``LogicalRunProjector`` understands."""
+    """Build the minimal dict shape that ``LogicalRunProjector`` understands.
+
+    The projector operates on string outcomes; flatten the typed
+    ``OutcomeBadge`` to its label for the dict-layer pass.  Tone is
+    re-derived on the way back out.
+    """
     return {
         "lifecycle": cycle.lifecycle,
         "iteration": cycle.iteration,
@@ -460,7 +574,7 @@ def _cycle_to_run_proxy(cycle: IssueCycle) -> dict[str, Any]:
         "session_run_ids": list(cycle.session_run_ids),
         "timestamp": cycle.timestamp,
         "time_label": cycle.time_label,
-        "outcome": cycle.outcome,
+        "outcome": cycle.outcome.label,
         "expanded": cycle.expanded,
         "reset_from_scratch": cycle.reset_from_scratch,
         "steps": [
@@ -480,12 +594,19 @@ def _run_contains_review_events_typed(run: JourneyRun) -> bool:
     return False
 
 
-def _coerce_non_review_latest_outcome(outcome: str) -> str:
-    lower = outcome.strip().lower()
+def _coerce_non_review_latest_outcome(outcome: OutcomeBadge) -> OutcomeBadge:
+    """Coerce a latest-run outcome that lacks review events away from
+    success-terminal labels.
+
+    Pre-PR-#6333 this operated on bare strings; now it preserves the
+    typed-badge contract.  The label-level logic is unchanged.
+    """
+    label = outcome.label
+    lower = label.strip().lower()
     if "approved" in lower or "completed" in lower or "awaiting merge" in lower:
         if lower.startswith("rework"):
-            return "Rework → In progress"
-        return "In progress"
+            return outcome_badge("Rework → In progress")
+        return outcome_badge("In progress")
     return outcome
 
 

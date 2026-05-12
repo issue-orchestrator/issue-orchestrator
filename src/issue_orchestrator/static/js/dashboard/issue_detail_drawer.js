@@ -165,7 +165,7 @@ function _renderJourneyRuns(container, allRuns) {
             <div class="journey-cycle-header" onclick="toggleJourneyCycle('${runId}')">
                 <span class="journey-cycle-toggle">${runToggle}</span>
                 <span class="journey-cycle-label">${escapeHtml(runLabel)}</span>
-                <span class="journey-cycle-outcome ${_cycleOutcomeClass(run.outcome || '')}">\u2014 ${escapeHtml(run.outcome || 'In progress')}</span>
+                <span class="journey-cycle-outcome ${_readOutcomeBadge(run.outcome).toneClass}">\u2014 ${escapeHtml(_readOutcomeBadge(run.outcome).label || 'In progress')}</span>
                 <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || ''))}</span>
             </div>
             <div class="journey-cycle-body${runBodyClass}" id="${runId}-body">`;
@@ -181,7 +181,8 @@ function _renderJourneyRuns(container, allRuns) {
             const cycleLabel = c.cycle_label || `Cycle ${displayCycleNumber}`;
             const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
             const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
-            const outcomeClass = _cycleOutcomeClass(c.outcome || '');
+            const cycleOutcomeBadge = _readOutcomeBadge(c.outcome);
+            const outcomeClass = cycleOutcomeBadge.toneClass;
             const artifacts = c.artifacts || {};
             const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
             const validationBadge = _renderCycleValidationBadge(c.validation, issueNum);
@@ -192,7 +193,7 @@ function _renderJourneyRuns(container, allRuns) {
                 <span class="journey-cycle-label">${escapeHtml(cycleLabel)}</span>
                 ${agentPill}
                 ${retryInfo}
-                <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
+                <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(cycleOutcomeBadge.label || 'In progress')}</span>
                 ${validationBadge}
                 <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || ''))}</span>
                 ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
@@ -433,12 +434,23 @@ function _handleCycleValidationBadgeClick(button) {
     stepEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-function _cycleOutcomeClass(outcome) {
-    const lower = outcome.toLowerCase();
-    if (lower.includes('failed') || lower.includes('blocked') || lower.includes('timed out')) return 'outcome-failed';
-    if (lower.includes('approved') || lower.includes('merged') || lower.includes('completed')) return 'outcome-success';
-    if (lower.includes('changes requested') || lower.includes('escalated')) return 'outcome-warning';
-    return '';
+// Read the typed ``OutcomeBadge { label, tone }`` shape from a
+// JourneyRun / IssueCycle payload (PR #6333).  Returns
+// ``{ label, toneClass }`` where ``toneClass`` maps the projection-
+// owned tone to the drawer's outcome CSS class.  Path B: no
+// string-matching against backend labels at the UI layer — the
+// projection already classified, we just read.
+function _readOutcomeBadge(outcome) {
+    const isObj = outcome && typeof outcome === 'object' && typeof outcome.label === 'string';
+    const label = isObj ? outcome.label : (outcome ? String(outcome) : '');
+    const tone = isObj ? String(outcome.tone || '') : '';
+    let toneClass = '';
+    if (tone === 'passed') toneClass = 'outcome-success';
+    else if (tone === 'failed') toneClass = 'outcome-failed';
+    else if (tone === 'error') toneClass = 'outcome-failed';
+    // ``in_progress`` and ``neutral`` deliberately have no class so
+    // the row renders without a colored treatment.
+    return { label, toneClass };
 }
 
 function toggleJourneyCycle(cycleId) {
@@ -581,12 +593,14 @@ function copyJourneyTimeline() {
     let text = `Issue #${issueNum}: ${title}\n`;
     for (const run of runs) {
         const runTime = formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '');
-        text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${run.outcome || 'In progress'}  ${runTime}\n`;
+        const runLabelText = _readOutcomeBadge(run.outcome).label || 'In progress';
+        text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${runLabelText}  ${runTime}\n`;
         for (const c of (run.cycles || [])) {
             const agent = c.agent ? ` (${c.agent})` : '';
             const cycleNum = c.cycle_in_run || c.cycle || '?';
             const cycleTime = formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || '');
-            text += `  ${c.cycle_label || `Cycle ${cycleNum}`}${agent} \u2014 ${c.outcome || 'In progress'}  ${cycleTime}\n`;
+            const cycleLabelText = _readOutcomeBadge(c.outcome).label || 'In progress';
+            text += `  ${c.cycle_label || `Cycle ${cycleNum}`}${agent} \u2014 ${cycleLabelText}  ${cycleTime}\n`;
             for (const s of (c.steps || [])) {
                 const time = formatJourneyStepTimestamp(s.timestamp || '', s.time_label || '');
                 const narrative = s.narrative || s.event || '';

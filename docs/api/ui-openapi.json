@@ -1651,6 +1651,15 @@
           }
         }
       },
+      "OutcomeBadgePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "tone"],
+        "properties": {
+          "label": {"type": "string"},
+          "tone": {"enum": ["passed", "failed", "error", "in_progress", "neutral"]}
+        }
+      },
       "IssueCyclePayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1665,7 +1674,7 @@
           "cycle_number": {"type": "integer"},
           "coder": {"$ref": "#/components/schemas/CodingAttemptPayload"},
           "review": {"$ref": "#/components/schemas/ReviewStagePayload"},
-          "outcome": {"type": "string"},
+          "outcome": {"$ref": "#/components/schemas/OutcomeBadgePayload"},
           "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
           "lifecycle": {"type": ["integer", "null"]},
           "iteration": {"type": ["integer", "null"]},
@@ -1707,7 +1716,7 @@
         "properties": {
           "run_number": {"type": "integer"},
           "run_label": {"type": "string"},
-          "outcome": {"type": "string"},
+          "outcome": {"$ref": "#/components/schemas/OutcomeBadgePayload"},
           "run_key": {"type": "string"},
           "run_id": {"type": ["string", "null"]},
           "session_run_ids": {"type": "array", "items": {"type": "string"}},
