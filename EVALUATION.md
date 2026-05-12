@@ -35,20 +35,22 @@ I designed and built Issue-Orchestrator as a solo project. I used coding agents 
 
 ## Quick evaluator path
 
-**~30 seconds — generate the proof artifact bundle (primary):**
+**No clone, ~30 seconds to read (primary):** open the checked-in [portfolio benchmark sample](docs/journeys/portfolio-benchmark-sample.md) — the latest captured run of 10 deterministic simulated scenarios covering coder-reviewer completion, review rework loops, bounded validation retry, needs-human escalation, label-drift reconciliation, and restart recovery, with one-line "what it proves" rationale per case.
+
+**Hands-on, ~12 seconds after install — regenerate the artifact bundle:**
 
 ```bash
 make portfolio-benchmark
 cat .issue-orchestrator/portfolio-benchmark/latest/summary.md
 ```
 
-Runs 10 deterministic simulated scenarios covering coder-reviewer completion, review rework loops, bounded validation retry, needs-human escalation, label-drift reconciliation, and restart recovery. The artifact is auditable: `summary.json`, `junit.xml`, and the exact pytest invocation are all written alongside the markdown summary.
+A fresh clone needs `make worktree-setup` first (several minutes for `uv sync`, Playwright browsers, and the VS Code extension's `npm install`). After that, the benchmark itself runs in ~12s and writes `summary.md`, `summary.json`, `junit.xml`, the exact pytest invocation, and stdout/stderr to `.issue-orchestrator/portfolio-benchmark/latest/`.
 
-**~90 seconds — verify the full unit test suite (secondary):**
+**Hands-on, ~2 minutes — verify the full unit test suite (secondary):**
 
 ```bash
 pytest tests/unit/ -q --timeout=60
-# expected: the unit suite passes
+# expected: the unit suite passes (last measured: 6908 passed, 2 skipped in ~1:45)
 ```
 
 ## Deeper
