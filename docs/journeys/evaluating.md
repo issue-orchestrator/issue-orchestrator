@@ -43,9 +43,9 @@ This is the part worth scrutinizing. The thesis is: AI agents optimize for compl
 
 **[Hook Enforcement Architecture](../architecture/hooks.md)** — Three defense-in-depth layers (AI agent hooks, git hooks, server-side protection). Focus on the support matrix and the verification flow — hooks aren't just installed, they're tested.
 
-## Architectural decisions
+## Architectural Decisions
 
-The [ADR index](../architecture/ADR/README.md) captures decisions that materially affect correctness, security, boundaries, and extensibility. These five capture the core thinking:
+The [ADR guide](../architecture/ADR/README.md) explains how to read the ADR directory and highlights core starting points. These five capture the core thinking:
 
 | ADR | Why it matters |
 |-----|----------------|
