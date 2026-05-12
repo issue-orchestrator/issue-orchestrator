@@ -164,6 +164,55 @@ test('viewer: passed run renders a single Passed group and no triage cards', () 
     assert.match(html, /test_b\.py/);
 });
 
+test('viewer: skipped-only run renders the Skipped group with the SKIPPED icon on file rows (reviewer blocker on #6324)', () => {
+    // Reviewer blocker: the Skipped outcome group used to render its
+    // file rows with the Passed icon (``cvv-ico-passed`` / ``✓``)
+    // because ``_renderBrowseByFile`` hard-coded that.  Now the group
+    // passes its outcome down so the file row's icon matches.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [
+            { case_id: 's1', display_name: 'test_macos', outcome: 'skipped', suite_name: 'tests/test_platform.py', failure_details: 'platform mismatch', extras: [] },
+            { case_id: 's2', display_name: 'test_windows', outcome: 'skipped', suite_name: 'tests/test_platform.py', failure_details: 'platform mismatch', extras: [] },
+        ],
+    });
+    // Skipped group renders.
+    assert.match(html, /cvv-group-skipped/);
+    // No Passed group (zero passed → hidden).
+    assert.doesNotMatch(html, /cvv-group-passed/);
+    // The file row inside the Skipped group uses the SKIPPED icon class,
+    // not the passed one.  Extract the file row's opening tag and check.
+    const fileTag = html.match(/<details class="cvv-row cvv-file"[^>]*>(?=<summary>[^<]*<span class="cvv-caret">[^<]*<\/span><span class="cvv-ico cvv-ico-(?<icon>[^"]+)">)/);
+    assert.ok(fileTag, 'expected file row inside the Skipped group');
+    assert.strictEqual(fileTag.groups.icon, 'skipped',
+        'file row in Skipped group must use the skipped icon class');
+    // And the icon character is the skipped glyph (en-dash), not the check.
+    assert.match(html, /cvv-ico cvv-ico-skipped">–</);
+    assert.doesNotMatch(html, /cvv-ico cvv-ico-passed">✓<.*test_platform\.py/);
+});
+
+test('viewer: mixed passed+skipped run renders each in its own group with matching icons', () => {
+    // Same test should appear in only one group based on outcome.
+    // Passed group's files get ✓; Skipped group's files get –.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [
+            { case_id: 'p1', display_name: 'test_linux', outcome: 'passed', suite_name: 'tests/test_platform.py', extras: [] },
+            { case_id: 's1', display_name: 'test_macos', outcome: 'skipped', suite_name: 'tests/test_platform.py', failure_details: 'platform mismatch', extras: [] },
+        ],
+    });
+    assert.match(html, /cvv-group-passed/);
+    assert.match(html, /cvv-group-skipped/);
+    // Pull out each group's body and check icon there.
+    const passedGroupBody = html.match(/cvv-group-passed[^>]*>[\s\S]*?<\/details>$/m);
+    const skippedGroupBody = html.match(/cvv-group-skipped[^>]*>[\s\S]*?(?=<details class="cvv-row cvv-group cvv-group-passed|$)/);
+    assert.ok(skippedGroupBody, 'skipped group must render');
+    assert.match(skippedGroupBody[0], /cvv-ico cvv-ico-skipped/,
+        'skipped group must use skipped icon on its file row');
+});
+
 test('viewer: failed run renders one triage card per failed/errored test', () => {
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({

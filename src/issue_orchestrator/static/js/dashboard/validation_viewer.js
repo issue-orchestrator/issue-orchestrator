@@ -548,8 +548,9 @@ function _renderOutcomeGroup(opts) {
     } else {
         // Passed / Skipped cases share the browse-by-file tree.
         // The helper groups by suite file and renders each test as
-        // a row (with skip-reason inline rendering for skipped).
-        html += _renderBrowseByFile(cases, idPrefix);
+        // a row.  Pass the group's outcome so the file row's icon
+        // matches (skipped files get ``–`` not ``✓``).
+        html += _renderBrowseByFile(cases, idPrefix, outcome);
     }
 
     html += '</div></details>';
@@ -664,8 +665,19 @@ function _cvvCopyErrorFromButton(button) {
 }
 
 // ── Browse-by-file (passed + skipped) ───────────────────────────────────────
+//
+// Renders test cases grouped by their suite file.  Each file becomes
+// a collapsed expander whose body lists the individual test rows.
+//
+// ``fileIconOutcome`` controls the icon on the FILE summary row.  When
+// the caller is the Phase D outcome group (#6322), it passes the group's
+// own outcome so a Skipped group's file rows show the skipped icon
+// (``–``) rather than the passed icon (``✓``).  Default is ``passed``
+// for back-compat with the older single-section browse caller.
+function _renderBrowseByFile(cases, idPrefix, fileIconOutcome) {
+    const fileOutcome = (fileIconOutcome === 'skipped') ? 'skipped' : 'passed';
+    const fileIcon = fileOutcome === 'skipped' ? '–' : '✓';
 
-function _renderBrowseByFile(cases, idPrefix) {
     const byFile = new Map();
     for (const c of cases) {
         const key = String(c.suite_name || '(unknown file)');
@@ -687,7 +699,7 @@ function _renderBrowseByFile(cases, idPrefix) {
         const stats = statsParts.join(' · ');
         const base = fileName.split('/').pop();
         const dirPart = fileName.length > base.length ? fileName.slice(0, fileName.length - base.length - 1) : '';
-        html += `<details class="cvv-row cvv-file" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-passed">✓</span><span class="cvv-title">${escapeHtml(base)}</span>${dirPart ? `<span class="cvv-summary">${escapeHtml(dirPart)}</span>` : ''}<span class="cvv-meta">${escapeHtml(stats)}</span></summary>`;
+        html += `<details class="cvv-row cvv-file" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-${fileOutcome}">${fileIcon}</span><span class="cvv-title">${escapeHtml(base)}</span>${dirPart ? `<span class="cvv-summary">${escapeHtml(dirPart)}</span>` : ''}<span class="cvv-meta">${escapeHtml(stats)}</span></summary>`;
         html += '<div class="cvv-row-body" role="group">';
         for (let j = 0; j < items.length; j++) {
             html += _renderPassedTestRow(items[j], `${idPrefix}-f${i}-t${j}`);
