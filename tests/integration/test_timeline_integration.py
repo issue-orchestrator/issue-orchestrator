@@ -630,11 +630,11 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
         assert payload["run_count"] == 1
         run = _latest_run(payload)
         assert run["session_run_ids"] == [code_run_id, review_run_id]
-        assert run["outcome"] == "Approved"
+        assert run["outcome"]["label"] == "Approved"
         assert len(run["cycles"]) == 1
 
         cycle = _first_cycle(run)
-        assert cycle["outcome"] == "Approved"
+        assert cycle["outcome"]["label"] == "Approved"
         assert cycle["session_run_ids"] == [code_run_id, review_run_id]
         assert _phase_group_labels(cycle) == [
             "Coding",
@@ -818,8 +818,8 @@ def test_issue_detail_latest_run_stays_single_after_pr_pending_removed_and_reque
         assert len(latest_run["cycles"]) == 2
         first_cycle = latest_run["cycles"][0]
         rework_cycle = latest_run["cycles"][1]
-        assert first_cycle["outcome"] == "Approved"
-        assert rework_cycle["outcome"] == "In progress"
+        assert first_cycle["outcome"]["label"] == "Approved"
+        assert rework_cycle["outcome"]["label"] == "In progress"
         assert _phase_group_labels(rework_cycle)[0] == "Rework"
         # Both cycles belong to the same logical run — pr-pending churn does
         # not create a new run, it just adds another cycle to the existing one.
@@ -967,7 +967,7 @@ def test_issue_detail_local_loop_review_rounds_split_into_distinct_cycles(
 
         assert [cycle["iteration"] for cycle in latest_run["cycles"]] == [1, 2]
         assert [cycle["cycle_in_run"] for cycle in latest_run["cycles"]] == [1, 2]
-        assert [cycle["outcome"] for cycle in latest_run["cycles"]] == ["Changes Requested", "Approved"]
+        assert [cycle["outcome"]["label"] for cycle in latest_run["cycles"]] == ["Changes Requested", "Approved"]
 
         assert _phase_group_labels(first_cycle) == ["Coding", "Orchestrator", "Review"]
         assert _step_events(first_cycle) == [
@@ -1116,7 +1116,7 @@ def test_review_approved_after_validation_retry_stays_in_current_cycle(
             "review.started",
             "review.approved",
         ]
-        assert latest_cycle["outcome"] == "Approved"
+        assert latest_cycle["outcome"]["label"] == "Approved"
     finally:
         web.set_orchestrator(None)
 
@@ -1200,7 +1200,7 @@ def test_user_view_shows_validation_retry_transition_after_review_approval(
             "agent.coding_started",
             "agent.failed",
         ]
-        assert "failed" in str(latest_run["cycles"][1]["outcome"]).lower()
+        assert "failed" in str(latest_run["cycles"][1]["outcome"]["label"]).lower()
     finally:
         web.set_orchestrator(None)
 
@@ -1304,7 +1304,7 @@ def test_issue_detail_outcome_labels_correct_after_fan_out_renames(
         assert resp_a.status_code == 200
         run_a = _latest_run(resp_a.json())
         cycle_a = _first_cycle(run_a)
-        assert "Failed" in cycle_a["outcome"], (
+        assert "Failed" in cycle_a["outcome"]["label"], (
             f"session.failed → agent.failed must produce 'Failed' outcome, got: {cycle_a['outcome']}"
         )
         # The fan-out event name should be agent.failed
@@ -1315,7 +1315,7 @@ def test_issue_detail_outcome_labels_correct_after_fan_out_renames(
         assert resp_b.status_code == 200
         run_b = _latest_run(resp_b.json())
         cycle_b = _first_cycle(run_b)
-        assert "Timed out" in cycle_b["outcome"], (
+        assert "Timed out" in cycle_b["outcome"]["label"], (
             f"session.timeout → agent.timed_out must produce 'Timed out' outcome, got: {cycle_b['outcome']}"
         )
         assert "agent.timed_out" in _step_events(cycle_b)
@@ -1325,7 +1325,7 @@ def test_issue_detail_outcome_labels_correct_after_fan_out_renames(
         assert resp_c.status_code == 200
         run_c = _latest_run(resp_c.json())
         cycle_c = _first_cycle(run_c)
-        assert "blocked" in cycle_c["outcome"].lower(), (
+        assert "blocked" in cycle_c["outcome"]["label"].lower(), (
             f"session.blocked → agent.blocked must produce 'blocked' outcome, got: {cycle_c['outcome']}"
         )
         assert "agent.blocked" in _step_events(cycle_c)
@@ -1595,7 +1595,7 @@ def test_latest_run_without_review_events_is_not_projected_as_approved_or_comple
         payload = response.json()
         assert int(payload.get("run_count") or 0) >= 2
         latest_run = _latest_run(payload)
-        latest_outcome = str(latest_run.get("outcome") or "").lower()
+        latest_outcome = str(((latest_run.get("outcome") or {}) if isinstance(latest_run.get("outcome"), dict) else {}).get("label") or latest_run.get("outcome") or "").lower()
         assert "approved" not in latest_outcome
         assert "completed" not in latest_outcome
 
