@@ -417,9 +417,44 @@ function renderDialogActionMenuItem(action, labelOverride = null) {
     return _renderDialogActionButton(action, labelOverride, 'diag-more-item');
 }
 
+// Affordance-glyph convention (issue #6322): the rendered button
+// label gets a trailing glyph that tells the user what'll happen
+// before they click.
+//   ``↗`` — external viewer (browser tab, OS app, editor, anything
+//           outside this scroll context).  Examples: ``open_path``
+//           opens a file in a tab; ``open_orchestrator_log`` opens
+//           a log viewer page.
+//   ``⧉`` — modal viewer.  Today: ``open_agent_log`` (session
+//           recording) and ``view_claude_log`` (Claude log viewer)
+//           pop up modals.  Marked honestly with ``⧉`` until
+//           migration to pages.
+//   (none) — local action; does the thing in place, no navigation
+//           and no overlay.  Example: ``copy_agent_log``.
+// The glyph is appended to whatever label the action carried in,
+// so backend label assertions still pass on the bare string.
+const _AFFORDANCE_GLYPH_BY_ACTION_TYPE = {
+    open_path: ' ↗',
+    open_validation_failure: ' ↗',
+    open_review_transcript: ' ↗',
+    open_orchestrator_log: ' ↗',
+    open_review_feedback: ' ↗',
+    open_session_diagnostics: ' ↗',
+    open_agent_log: ' ⧉',
+    view_claude_log: ' ⧉',
+    copy_agent_log: '',
+};
+
+function _affordanceGlyphForAction(action) {
+    const type = action && action.type;
+    return Object.prototype.hasOwnProperty.call(_AFFORDANCE_GLYPH_BY_ACTION_TYPE, type)
+        ? _AFFORDANCE_GLYPH_BY_ACTION_TYPE[type]
+        : '';
+}
+
 function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (!action) return '';
-    const label = escapeHtml(labelOverride || action.label || 'Action');
+    const baseLabel = escapeHtml(labelOverride || action.label || 'Action');
+    const label = baseLabel + _affordanceGlyphForAction(action);
     const fallbackRunDir = action.run_dir || currentDiagnosticsRunDir || null;
     if (action.type === 'open_path') {
         return `<button class="${cssClass}" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
