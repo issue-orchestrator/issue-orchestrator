@@ -394,68 +394,85 @@ function _renderE2EIssueLifecycleBlock(test, lifecycle, runId) {
     `;
 }
 
+// Phase C (issue #6310 follow-up): the E2E run view's body is now the
+// canonical validation viewer.  We translate the E2E run payload to the
+// JUnit-canonical shape (via ``e2eRunToCanonicalPayload``), then mount
+// the shared viewer.  The filter pills, bulk-action bar, and per-row
+// triage actions from the legacy panel are gone — orchestrator-
+// specific affordances (Open issue drawer, Create issue, Agent
+// journey) live in the per-test ``io.agent-context`` plugin block now;
+// the Copy-error button is a built-in canonical-viewer action.
+//
+// Quarantine UI is deferred to issue #6318 (its design wasn't ready;
+// the existing quarantine API + sidebar entrypoints continue to work,
+// they're just not surfaced in the redesigned run modal).
 function renderE2EResultsPanel(data) {
-    const tests = _flattenTestsByCategory(data);
-    const lifecycleMap = _lifecyclesByIssueNumber(data);
-    const counts = {
-        all: tests.length,
-        action_needed: tests.filter(t => _testFilterGroup(t) === 'action_needed').length,
-        tracked: tests.filter(t => _testFilterGroup(t) === 'tracked').length,
-        passed_on_retry: tests.filter(t => _testFilterGroup(t) === 'passed_on_retry').length,
-        passed: tests.filter(t => _testFilterGroup(t) === 'passed').length,
-        skipped: tests.filter(t => _testFilterGroup(t) === 'skipped').length,
-        quarantined: tests.filter(t => _testFilterGroup(t) === 'quarantined').length,
-    };
-    const activeFilter = counts.action_needed ? 'action_needed' : 'all';
-
-    const runId = data && data.run && Number.isFinite(Number(data.run.id)) ? Number(data.run.id) : null;
-    // E2E-specific opts injected into the shared renderer:
-    //   - capturedOutputUrl    → the e2e-run endpoint (only when a JUnit row
-    //                            has a valid runId; other rows opt out)
-    //   - renderRowActions     → Create Issue / Quarantine / Close / Copy
-    //                            buttons that only make sense for E2E test
-    //                            triage
-    //   - renderLifecycleBlock → "Related issue activity" cluster keyed on
-    //                            test.existing_issue and the lifecycle map
-    // Keeping these here means test_results_panel.js stays framework-agnostic
-    // and a validation-modal consumer can use the same renderer with its
-    // own opts (or no opts at all).
-    const opts = {
-        runId,
-        capturedOutputUrl: (test) => _e2eCapturedOutputUrl(test, runId),
-        renderRowActions: _renderE2ETestRowActions,
-        renderLifecycleBlock: (test, lifecycle) => _renderE2EIssueLifecycleBlock(test, lifecycle, runId),
-    };
-    const rowsHtml = tests.length
-        ? tests.map(test => {
-            const lifecycle = test.existing_issue ? lifecycleMap.get(Number(test.existing_issue.number)) : null;
-            return _renderTestRow(test, lifecycle, activeFilter, opts);
-        }).join('')
-        : '<div class="empty-state">No test cases recorded for this run.</div>';
-
-    const untriaged = (data.results_by_category && data.results_by_category.untriaged) || [];
-    const bulkBar = untriaged.length ? `
-        <div class="bulk-action-bar">
-            <span class="bulk-info">${untriaged.length} test${untriaged.length === 1 ? '' : 's'} need action</span>
-            <div class="bulk-actions">
-                <select id="unifiedRunAgent" class="agent-select">
-                    <option value="">Select agent...</option>
-                    ${window.dashboardData.agents.map(a => `<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join('')}
-                </select>
-                <button class="btn-primary" onclick="createIssuesForUntriaged()">Create Issues</button>
-            </div>
-        </div>
-    ` : '';
+    const canonical = e2eRunToCanonicalPayload(data);
+    const untrackedCount = _untrackedFailureCount(data);
+    const viewerHtml = renderCanonicalValidationViewer(canonical);
 
     return `
-        <div class="test-results-panel">
-            ${renderTestResultsHeadline(tests)}
-            ${renderTestResultsFilters(counts, activeFilter)}
-            <div class="test-results-list">${rowsHtml}</div>
-            ${bulkBar}
+        <div class="e2e-canonical-panel">
+            ${_renderRunSummaryChips(data, canonical)}
+            ${untrackedCount > 0 ? _renderUntrackedFailuresBanner(untrackedCount) : ''}
+            <div class="e2e-canonical-body">${viewerHtml}</div>
             ${renderRunDetailsDisclosure(data)}
         </div>
     `;
+}
+
+// Run-level summary chips.  Info display only — NOT filter pills.
+// Layout: outcome chip + counts + (optional) command/duration meta.
+function _renderRunSummaryChips(data, canonical) {
+    const status = canonical.status === 'passed' ? 'passed' : 'failed';
+    const totalCases = canonical.junit_cases.length;
+    const failedCount = canonical.failed_tests.length;
+    const passedCount = canonical.junit_cases.filter(c => c.outcome === 'passed').length;
+    const skippedCount = canonical.junit_cases.filter(c => c.outcome === 'skipped').length;
+    const command = _formatRunCommand(data && data.run);
+    const duration = data && data.run ? _formatDurationSeconds(data.run.duration_seconds) : '';
+
+    const chips = [
+        `<span class="e2e-run-chip e2e-run-chip-${status}">${status}</span>`,
+        `<span class="e2e-run-chip">${totalCases} case${totalCases === 1 ? '' : 's'}</span>`,
+    ];
+    if (failedCount > 0) chips.push(`<span class="e2e-run-chip is-fail">${failedCount} failing</span>`);
+    chips.push(`<span class="e2e-run-chip">${passedCount} passing</span>`);
+    if (skippedCount > 0) chips.push(`<span class="e2e-run-chip muted">${skippedCount} skipped</span>`);
+
+    const meta = (command || duration)
+        ? `<span class="e2e-run-summary-meta">${command ? escapeHtml(command) : ''}${command && duration ? ' · ' : ''}${duration ? escapeHtml(duration) : ''}</span>`
+        : '';
+    return `<div class="e2e-run-summary">${chips.join('')}${meta}</div>`;
+}
+
+// Untracked-failures banner: only renders when at least one failing
+// test has no linked issue.  Hooks the shared agent-picker → Create
+// Issues for the orchestrator's existing bulk-create flow.
+function _renderUntrackedFailuresBanner(untrackedCount) {
+    const agentSelect = (window && window.dashboardData && Array.isArray(window.dashboardData.agents))
+        ? window.dashboardData.agents.map(a => `<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join('')
+        : '';
+    const plural = untrackedCount === 1 ? 'test has' : 'tests have';
+    return `
+        <div class="e2e-untracked-banner">
+            <span class="e2e-untracked-banner-text">🎯 ${untrackedCount} failing ${plural} no linked issue</span>
+            <div class="e2e-untracked-banner-actions">
+                <select id="unifiedRunAgent" class="agent-select">
+                    <option value="">Select agent…</option>
+                    ${agentSelect}
+                </select>
+                <button class="btn-primary" onclick="createIssuesForUntriaged()">Create issue${untrackedCount === 1 ? '' : 's'}</button>
+            </div>
+        </div>
+    `;
+}
+
+function _untrackedFailureCount(data) {
+    const untriaged = (data && data.results_by_category && Array.isArray(data.results_by_category.untriaged))
+        ? data.results_by_category.untriaged
+        : [];
+    return untriaged.length;
 }
 
 function renderRunDetailsDisclosure(data) {
@@ -519,12 +536,20 @@ function renderUnifiedRunView(data, runId, options) {
     `;
     content.innerHTML = html;
 
-    // Failed rows render expanded by default — kick off captured-output fetches
-    // for the ones the user can see. Skip rows hidden by the initial filter
-    // (a tracked-failure-heavy run defaults to "Action needed" and would
-    // otherwise spam dozens of fetches for off-screen tracked rows). Collapsed
-    // rows and filtered-in-later rows defer until toggle / filter dispatch.
-    _autoLoadVisibleCapturedOutput(content);
+    // Phase C (issue #6310 follow-up): the canonical viewer is mounted
+    // as the body.  Enhance it with the ARIA tree semantics + keyboard
+    // nav that the modal and per-issue drawer mounts get.
+    const cvvRoot = content.querySelector('.cvv-root');
+    if (cvvRoot && typeof enhanceCanonicalValidationViewerAccessibility === 'function') {
+        enhanceCanonicalValidationViewerAccessibility(cvvRoot);
+    }
+    // The legacy ``_autoLoadVisibleCapturedOutput`` lazy-loaded
+    // per-row captured stdout/stderr into the old test-results-panel
+    // DOM.  The canonical viewer renders its own stdout/stderr rows
+    // and doesn't need this entry point.  Captured-output lazy-load
+    // for the canonical viewer is a follow-up (no regression in
+    // diagnostic info — failure_details still carries the headline +
+    // traceback).
 
     const timelineContainer = document.getElementById('e2eTimelineContent');
     if (timelineContainer) {

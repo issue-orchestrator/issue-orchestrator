@@ -41,6 +41,12 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "e2e_runtime.js",
     "e2e_triage.js",
     "test_results_panel.js",
+    # ``e2e_canonical_payload.js`` provides the pure translator from
+    # the orchestrator's per-category E2E run-detail shape to the
+    # JUnit-canonical payload that ``renderCanonicalValidationViewer``
+    # consumes (Phase C of #6310 follow-up).  Loaded before
+    # ``e2e_run_view.js`` so the symbol is in scope at call time.
+    "e2e_canonical_payload.js",
     "e2e_run_view.js",
 )
 

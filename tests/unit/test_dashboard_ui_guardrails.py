@@ -1709,97 +1709,45 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
     assert ".e2e-issue-timeline-btn" in css
 
 
-def test_e2e_run_modal_uses_test_centric_layout() -> None:
-    """Run modal: tests are the headline, with filter chips and per-row expansion."""
+def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
+    """Phase C of #6310 follow-up: the E2E run modal body is the
+    canonical validation viewer.  The legacy filter pills / bulk-action
+    bar / per-row triage actions are gone; per-test orchestrator
+    affordances live in the ``io.agent-context`` plugin block
+    rendered inside the canonical viewer.
+    """
     js = _read(DASHBOARD_JS)
     results_body = _function_body(js, "renderE2EResultsPanel")
-    headline_body = _function_body(js, "renderTestResultsHeadline")
-    filters_body = _function_body(js, "renderTestResultsFilters")
-    row_body = _function_body(js, "_renderTestRow")
-    expand_body = _function_body(js, "_renderTestRowExpand")
-    actions_body = _function_body(js, "_renderTestRowActions")
-    toggle_body = _function_body(js, "toggleTestRowExpand")
-    filter_body = _function_body(js, "filterTestResults")
 
-    # Headline + filters + flat list are the primary surface.
-    assert "renderTestResultsHeadline(tests)" in results_body
-    assert "renderTestResultsFilters(counts" in results_body
-    assert 'class="test-results-list"' in results_body
-    # The E2E modal injects its behaviors via `opts`, then passes the opts
-    # object into the shared renderer. The shared renderer no longer knows
-    # about runIds or e2e endpoints on its own — that decoupling is what
-    # makes the validation-modal consumer possible. The exact opts shape is
-    # asserted below.
-    assert "_renderTestRow(test, lifecycle, activeFilter, opts)" in results_body
-    assert "renderRowActions: _renderE2ETestRowActions" in results_body
-    assert "renderLifecycleBlock:" in results_body
-    assert "capturedOutputUrl:" in results_body
-    # The test-results-list MUST NOT carry a fixed id — both the E2E run
-    # modal and the issue-detail drawer render this layout, so a fixed id
-    # would create duplicates and break panel-scoped filter dispatch.
-    assert "testResultsList" not in js
+    # The panel translates the orchestrator-categorized run-detail
+    # payload to the JUnit-canonical viewer payload, then mounts the
+    # shared viewer + the run-details footer.
+    assert "e2eRunToCanonicalPayload(data)" in results_body
+    assert "renderCanonicalValidationViewer(canonical)" in results_body
+    assert "renderRunDetailsDisclosure(data)" in results_body
+    # Run-level summary chips + untracked-failures banner are the only
+    # two run-scoped surfaces above the body.
+    assert "_renderRunSummaryChips(data" in results_body
+    assert "_renderUntrackedFailuresBanner(untrackedCount)" in results_body
 
-    # Headline shows user-facing pass/fail/action/skipped/quarantined counts.
-    assert "passed" in headline_body
-    assert "failed" in headline_body
-    assert "action needed" in headline_body
-    assert "trh-stat" in headline_body
-    assert "_testOutcomeCounts(tests)" in headline_body
-    assert "data-passed-count" in headline_body
-    assert "data-failed-count" in headline_body
+    # The legacy "test-results-panel" container is gone — the new wrapper
+    # is .e2e-canonical-panel.  test_results_list / test-results-list
+    # references are also gone from the panel body.
+    assert "test-results-panel" not in results_body
+    assert 'class="test-results-list"' not in results_body
+    # Filter pills + bulk-action bar are gone.
+    assert "renderTestResultsFilters" not in results_body
+    assert "bulk-action-bar" not in results_body
+    assert "filterTestResults" not in results_body
 
-    # Filter chips are tablist with task-oriented groups.
-    assert "trf-chip" in filters_body
-    assert "data-filter=" in filters_body
-    assert 'role="tablist"' in filters_body
-    assert "filterTestResults(" in filters_body
-    assert "Action needed" in filters_body
-    assert "Tracked failures" in filters_body
-    assert "Passed on retry" in filters_body
+    # After mounting, the E2E view calls the canonical-viewer ARIA
+    # enhancer (matching the modal + drawer paths).
+    unified_body = _function_body(js, "renderUnifiedRunView")
+    assert "enhanceCanonicalValidationViewerAccessibility(cvvRoot)" in unified_body
 
-    # Per-test rows are expandable when there's error or linked lifecycle.
-    assert "data-filter-group=" in row_body
-    assert "data-expandable=" in row_body
-    assert "_renderTestResultPills(test)" in row_body
-    assert "_renderTestFailureSummary(test)" in row_body
-    assert "toggleTestRowExpand(this)" in row_body
-
-    # Per-row expand owns failure-details only. Lifecycle ("Related issue
-    # activity") moved to `_renderE2EIssueLifecycleBlock` in e2e_run_view.js,
-    # wired via `opts.renderLifecycleBlock`, so the shared module stays
-    # framework-agnostic. Row actions follow the same opt-in pattern via
-    # `_renderE2ETestRowActions`.
-    assert "trr-error-text" in expand_body
-    assert "Failure details" in expand_body
-    assert "opts.renderLifecycleBlock" in expand_body
-    # The actual lifecycle markup + buttons live in the E2E helper.
-    e2e_lifecycle_body = _function_body(js, "_renderE2EIssueLifecycleBlock")
-    assert "Related issue activity" in e2e_lifecycle_body
-    assert "Coder Session" in e2e_lifecycle_body
-    assert "Review Session" in e2e_lifecycle_body
-    assert "Validation" in e2e_lifecycle_body
-
-    # Shared row actions delegate to opts.renderRowActions — the shared
-    # module never emits Create Issue / Quarantine / Copy Error itself.
-    assert "opts.renderRowActions" in actions_body
-    assert "create_issue_dropdown" not in actions_body
-    # Those E2E-specific actions live in the E2E helper.
-    e2e_actions_body = _function_body(js, "_renderE2ETestRowActions")
-    assert "create_issue_dropdown" in e2e_actions_body
-    assert "quarantine_test" in e2e_actions_body
-    assert "copy_test_error" in e2e_actions_body
-
-    # Toggle and filter behavior helpers exist.
-    assert ".trr-row" in toggle_body
-    assert "trr-expand" in toggle_body
-    assert "filterGroup" in filter_body
-    assert ".trf-chip" in filter_body
-    # Filter dispatch must be panel-scoped, not global. Looking up the
-    # list/chips through document.* would target the wrong panel when the
-    # E2E run modal and the issue-detail drawer are open concurrently.
-    assert "btnEl.closest('.test-results-panel')" in filter_body
-    assert "document.getElementById" not in filter_body
-    assert "document.querySelectorAll" not in filter_body
+    # The translator is the seam where categories collapse onto JUnit
+    # outcomes.  It must be reachable as a top-level symbol.
+    assert "function e2eRunToCanonicalPayload" in js
 
 
 def test_e2e_test_row_history_cluster_uses_inline_labels() -> None:
@@ -1867,62 +1815,51 @@ def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
     """Captured stdout/stderr is fetched on demand from the JUnit XML.
 
     Captured output is intentionally NOT persisted to SQLite (it can be MB per
-    test). Lock in the lazy-load contract: a placeholder marks the row as
-    needing fetch; the toggle handler calls /api/e2e-run/{id}/test-output and
-    fills in the placeholder. Render-time pre-fetch covers failed rows that
-    auto-expand.
+    test). The shared lazy-load infrastructure
+    (``_renderTestRowExpand`` + ``_maybeLoadCapturedOutput``) still
+    lives in ``test_results_panel.js`` for future consumers, but Phase C
+    of #6310 follow-up replaced the E2E run modal's body with the
+    canonical validation viewer, which renders stdout/stderr expanders
+    via ``_renderTestSystemOutErr`` on whatever data is on the JUnit
+    case payload.  Lazy-fetching captured output into the canonical
+    viewer is a follow-up — for now the new E2E view shows what's in
+    the payload and the captured-output endpoint is reachable only via
+    callers who still mount the legacy panel.
     """
     js = _read(DASHBOARD_JS)
     expand_body = _function_body(js, "_renderTestRowExpand")
     toggle_body = _function_body(js, "toggleTestRowExpand")
     fetch_body = _function_body(js, "_maybeLoadCapturedOutput")
     auto_body = _function_body(js, "_autoLoadVisibleCapturedOutput")
-    panel_body = _function_body(js, "renderE2EResultsPanel")
-    mount_body = _function_body(js, "renderUnifiedRunView")
-    filter_body = _function_body(js, "filterTestResults")
-    # Placeholder + URL handle travel on the DOM, not in JS state. The URL
-    # is baked in via the consumer's `opts.capturedOutputUrl` callback — the
-    # shared renderer doesn't assume any specific endpoint shape, so a
-    # validation-modal consumer can point at its own URL builder.
+    # Shared lazy-load helpers in test_results_panel.js remain intact —
+    # only the E2E run view stopped calling them.
     assert 'class="trr-captured-output"' in expand_body
     assert 'data-needs-fetch="1"' in expand_body
     assert 'data-url=' in expand_body
     assert "data-nodeid=" in expand_body
-    # No JUnit-source check in the shared renderer — that's the consumer's
-    # call. (E2E modal does the check inside its capturedOutputUrl callback;
-    # see `_e2eCapturedOutputUrl` in e2e_run_view.js.)
-    assert "sourceKey.includes('junit')" not in expand_body
-    # The captured-output slot is opt-in via opts.capturedOutputUrl. When the
-    # consumer returns '' (no URL available), no placeholder renders, which
-    # is also the standalone-default for consumers that omit the opt entirely.
     assert "opts.capturedOutputUrl" in expand_body
-    # Toggle handler triggers fetch on first expand.
     assert "_maybeLoadCapturedOutput(expand)" in toggle_body
-    # The fetcher reads data-url back off the DOM — endpoint-agnostic.
     assert "placeholder.dataset.url" in fetch_body
     assert "/api/e2e-run/" not in fetch_body  # MUST NOT be hardcoded in shared module
-    # 404 must render an empty note rather than an error.
     assert "_renderCapturedOutputEmpty" in fetch_body
-    # E2E modal still uses /api/e2e-run/{id}/test-output as ITS URL, but
-    # via its _e2eCapturedOutputUrl helper — not in the shared renderer.
+    assert ".trr-expand:not([hidden])" in auto_body
+    # The endpoint helper itself is unchanged.
     e2e_url_body = _function_body(js, "_e2eCapturedOutputUrl")
     assert "/api/e2e-run/" in e2e_url_body
     assert "/test-output" in e2e_url_body
     assert "encodeURIComponent(nodeid)" in e2e_url_body
-    # Panel constructs runId, wraps it into opts.capturedOutputUrl, passes opts.
-    assert "data.run.id" in panel_body
-    assert "capturedOutputUrl:" in panel_body
-    # Auto-expanded failed rows kick off the fetch on initial mount, but only
-    # for rows the user can see — a failure-heavy run with most rows hidden by
-    # the default "Action needed" filter would otherwise spam dozens of fetches.
-    assert "_autoLoadVisibleCapturedOutput(content)" in mount_body
-    assert ".trr-expand:not([hidden])" in auto_body
-    assert "row.style.display === 'none'" in auto_body
-    # When the user changes the filter, newly visible rows must trigger fetch.
-    assert "_autoLoadVisibleCapturedOutput(panel)" in filter_body
     css = _read_dashboard_css_bundle()
     assert ".trr-captured-output" in css
     assert ".trr-captured-channel-label" in css
+
+    # The new E2E run panel no longer wires the captured-output lazy
+    # loader.  The canonical viewer handles its own per-test
+    # stdout/stderr rows.  This is the Phase C exit criterion — if a
+    # future PR re-wires lazy-fetch into the canonical viewer, that PR
+    # should add its own coverage and this guardrail can update.
+    panel_body = _function_body(js, "renderE2EResultsPanel")
+    assert "capturedOutputUrl" not in panel_body
+    assert "_autoLoadVisibleCapturedOutput" not in panel_body
 
 
 def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:

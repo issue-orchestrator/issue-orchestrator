@@ -162,9 +162,13 @@ test('viewer: failed run renders one triage card per failed/errored test', () =>
     assert.match(html, /AssertionError: expected x to equal y/);
     // Headline content for the errored test
     assert.match(html, /TypeError: cannot read/);
-    // Failed gets is-failed class; errored gets is-error
-    assert.match(html, /cvv-headline is-failed/);
-    assert.match(html, /cvv-headline is-error/);
+    // Failed gets is-failed class; errored gets is-error.  Phase C
+    // added the 3a inline-headline variant for single-line failures —
+    // the "fixture exploded" case has no traceback body so its
+    // headline renders with the inline class instead of the
+    // two-row red-box class.  Accept either form.
+    assert.match(html, /(cvv-headline|cvv-inline-headline) is-failed/);
+    assert.match(html, /(cvv-headline|cvv-inline-headline) is-error/);
     // Passed cases still browseable via browse expander
     assert.match(html, /cvv-row-browse/);
     assert.match(html, /1 passed/);
@@ -308,8 +312,14 @@ test('viewer: synthesizes triage cards from failed_tests when junit_cases is emp
     const triageCount = (html.match(/cvv-triage-card/g) || []).length;
     assert.strictEqual(triageCount, 3, `expected 3 synthesized triage cards, got ${triageCount}`);
     // Each card carries the failed-headline class so styling is
-    // consistent with JUnit-driven failures.
-    const headlineCount = (html.match(/cvv-headline is-failed/g) || []).length;
+    // consistent with JUnit-driven failures.  Phase C added the 3a
+    // ``inline`` variant (no traceback body → headline renders next to
+    // the test name) — the synthesized fallback message is a single
+    // line, so each card uses the inline variant.  The styling class
+    // is ``cvv-inline-headline is-failed`` in that branch.
+    const headlineCount =
+        (html.match(/cvv-headline is-failed/g) || []).length +
+        (html.match(/cvv-inline-headline is-failed/g) || []).length;
     assert.strictEqual(headlineCount, 3);
     // And the fallback headline explains where the data came from so
     // the operator isn't confused by the missing traceback.
