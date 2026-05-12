@@ -543,9 +543,16 @@ function _renderTriageCard(testCase, idPrefix) {
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
 
-    // traceback row only when there's a body to show (two-row variant).
+    // Traceback row (two-row variant only — when there's a body to
+    // show beneath the headline).  Starts COLLAPSED.  Rationale: a
+    // run with many failures shouldn't dump every traceback on the
+    // user at landing — they came to triage and pick.  The headline
+    // box above already shows the 1-line error summary; the user
+    // clicks ``traceback ▸`` to drill into the one they want.
+    // Predictable everywhere: same default whether there's 1 failure
+    // or 20.
     if (layout.variant === 'two-row' && layout.tracebackBody) {
-        html += `<details class="cvv-row" role="treeitem" aria-expanded="true" open><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
+        html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
         html += `<pre class="cvv-pre cvv-pre-fail">${escapeHtml(layout.tracebackBody)}</pre>`;
         html += '</details>';
     }
@@ -646,7 +653,12 @@ function _renderPassedTestRow(testCase, idPrefix) {
     return html;
 }
 
-function _renderTestSystemOutErr(testCase, idPrefix, errorOpenStderr) {
+// Render stdout + stderr expander rows.  Both default COLLAPSED.
+// (The third argument is retained for call-site compatibility but
+// is now ignored — previous design auto-opened stderr for errored
+// tests; the predictable rule is "never auto-open, user clicks to
+// drill in".)
+function _renderTestSystemOutErr(testCase, idPrefix, _errorOpenStderr) {
     let html = '';
     const stdout = testCase.system_out || '';
     const stderr = testCase.system_err || '';
@@ -657,8 +669,7 @@ function _renderTestSystemOutErr(testCase, idPrefix, errorOpenStderr) {
     html += stdout ? `<pre class="cvv-pre">${escapeHtml(stdout)}</pre>` : '<div class="cvv-empty">No stdout captured.</div>';
     html += '</details>';
 
-    const stderrOpen = !!(errorOpenStderr && stderr);
-    html += `<details class="cvv-row" role="treeitem" aria-expanded="${stderrOpen ? 'true' : 'false'}"${stderrOpen ? ' open' : ''}><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
+    html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
     html += stderr ? `<pre class="cvv-pre">${escapeHtml(stderr)}</pre>` : '<div class="cvv-empty">No stderr captured.</div>';
     html += '</details>';
 

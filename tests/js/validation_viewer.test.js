@@ -209,7 +209,12 @@ test('viewer: triage cards render stdout and stderr expanders', () => {
     assert.match(html, /WARNING: spooky/);
 });
 
-test('viewer: errored case auto-opens its stderr expander', () => {
+test('viewer: errored case renders stderr expander COLLAPSED by default', () => {
+    // Predictable-collapse rule: stdout, stderr, and the
+    // traceback row all start closed regardless of outcome.  Previous
+    // design auto-opened stderr for errored tests "because the crash
+    // diagnostic lives in stderr" — but the predictable rule wins.
+    // The user clicks ``stderr ▸`` when they want to drill in.
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -220,15 +225,12 @@ test('viewer: errored case auto-opens its stderr expander', () => {
             extras: [],
         }],
     });
-    // The viewer marks the stderr row open=true when outcome is error
-    // and stderr is present.  Phase D added ARIA tree roles to every
-    // cvv-row, so the opening tag now also carries
-    // role="treeitem" and aria-expanded="true".  We assert on the
-    // opener prefix and the expander summary content separately.
     const stderrTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">stderr<\/span>)/);
     assert.ok(stderrTag, `stderr <details> tag not found in: ${html.slice(0, 300)}…`);
-    assert.match(stderrTag[0], /\bopen\b/);
-    assert.match(stderrTag[0], /aria-expanded="true"/);
+    assert.doesNotMatch(stderrTag[0], /\bopen\b/,
+        'stderr row must NOT carry the open attribute');
+    assert.match(stderrTag[0], /aria-expanded="false"/,
+        'stderr row must carry aria-expanded="false"');
 });
 
 test('viewer: empty payload renders cleanly with no triage and no browse', () => {

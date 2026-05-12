@@ -119,7 +119,10 @@ test('render: inline variant produces .cvv-inline-headline and no .cvv-headline 
     assert.doesNotMatch(html, /<span class="cvv-title">traceback<\/span>/);
 });
 
-test('render: two-row variant produces .cvv-headline box + auto-open traceback row', () => {
+test('render: two-row variant produces .cvv-headline box + COLLAPSED traceback row', () => {
+    // Predictable-collapse rule: the traceback row defaults closed
+    // regardless of failure count.  The headline above shows the
+    // 1-line summary; the user clicks ``traceback ▸`` to drill in.
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -136,6 +139,15 @@ test('render: two-row variant produces .cvv-headline box + auto-open traceback r
     assert.match(html, /<div class="cvv-headline is-failed">/);
     assert.match(html, /<span class="cvv-title">traceback<\/span>/);
     assert.doesNotMatch(html, /class="cvv-inline-headline/);
+
+    // Traceback row must NOT carry the ``open`` attribute or
+    // aria-expanded="true".  Find the row's opening tag and assert
+    // on its attributes.
+    const tracebackTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">traceback<\/span>)/);
+    assert.ok(tracebackTag, 'traceback <details> tag not found');
+    assert.doesNotMatch(tracebackTag[0], /\bopen\b/,
+        'traceback row must NOT carry the open attribute');
+    assert.match(tracebackTag[0], /aria-expanded="false"/);
 });
 
 test('render: none variant produces no headline and no traceback row', () => {

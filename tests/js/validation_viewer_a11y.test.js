@@ -98,11 +98,13 @@ test('a11y: every cvv-row has role="treeitem" with aria-expanded set', () => {
     }
 });
 
-test('a11y: auto-open rows render with aria-expanded="true" matching the open attribute', () => {
+test('a11y: every <details> row including traceback and stderr-on-error is COLLAPSED by default', () => {
+    // Predictable-collapse rule (see issue #6322): nothing in the
+    // canonical viewer auto-opens.  Previous design auto-opened the
+    // traceback row (two-row variant) and stderr-on-error.  Both
+    // now start closed.  The user clicks ``traceback ▸`` /
+    // ``stderr ▸`` to drill in.
     const ctx = loadViewer();
-    // Multi-line failure_details so the traceback row renders (the
-    // headline goes to a non-collapsible block; the rest of the body
-    // is the auto-open traceback row).
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
         junit_cases: [{
@@ -112,18 +114,19 @@ test('a11y: auto-open rows render with aria-expanded="true" matching the open at
             extras: [],
         }],
     });
-    // Traceback row auto-opens for failed/errored cases when there's a
-    // body to show.
     const tracebackTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">traceback<\/span>)/);
     assert.ok(tracebackTag, 'traceback <details> tag not found');
-    assert.match(tracebackTag[0], /aria-expanded="true"/);
-    assert.match(tracebackTag[0], /\bopen\b/);
+    assert.match(tracebackTag[0], /aria-expanded="false"/,
+        'traceback row must NOT auto-open');
+    assert.doesNotMatch(tracebackTag[0], /\bopen\b/,
+        'traceback row must NOT carry the open attribute');
 
-    // Stderr row auto-opens when outcome is error AND stderr is present.
     const stderrTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">stderr<\/span>)/);
     assert.ok(stderrTag, 'stderr <details> tag not found');
-    assert.match(stderrTag[0], /aria-expanded="true"/);
-    assert.match(stderrTag[0], /\bopen\b/);
+    assert.match(stderrTag[0], /aria-expanded="false"/,
+        'stderr row must NOT auto-open even when outcome is error');
+    assert.doesNotMatch(stderrTag[0], /\bopen\b/,
+        'stderr row must NOT carry the open attribute');
 });
 
 test('a11y: collapsed rows render with aria-expanded="false" and no open attribute', () => {
