@@ -163,18 +163,16 @@ function _extrasForTest(test, outcome) {
 
 function _agentContextPayload(test, linkedIssue) {
     // The Phase-A plugin renderer reads
-    //   {issue_number, issue_title, final_state, summary, run_url}
-    // and degrades gracefully on missing fields.  We populate what the
-    // E2E run-detail endpoint actually carries; the rest is omitted.
+    //   {issue_number, issue_title, final_state, summary}
+    // and degrades gracefully on missing fields.  The drawer-open
+    // affordance routes through the shared lifecycle Command
+    // dispatcher (``open_issue_timeline``), so the plugin only needs
+    // ``issue_number`` — no URL field required.
     const issueNumber = Number(linkedIssue.number);
     const payload = { issue_number: issueNumber };
-
     if (linkedIssue.title) payload.issue_title = String(linkedIssue.title);
     if (linkedIssue.state) payload.final_state = String(linkedIssue.state);
     if (test && test.failure_summary) payload.summary = String(test.failure_summary);
-    // run_url points the "Open issue drawer" button at the per-issue
-    // route.  The dashboard's drawer opens directly from this URL.
-    payload.run_url = `/api/dashboard/issue/${issueNumber}`;
     return payload;
 }
 
@@ -184,49 +182,11 @@ function _shortNameFromNodeId(nodeId) {
     return parts.length > 0 ? parts[parts.length - 1] : '';
 }
 
-// ─── flaky-history chip (Phase C: surface failing frequency at scan time) ──
-//
-// Pure helper that derives the small chip we render next to the
-// failed-test summary line.  Three flavors:
-//   * `flaky · N/M`     — the test failed in N of the last M runs (M ≥ 2).
-//   * `new failure`     — failed for the first time (no prior history or
-//                          all prior history is passing).
-//   * `regression · N`  — failed every one of the last N runs (N ≥ 2).
-// Returns null when the test isn't a failure or when there's no
-// historical signal worth showing.
-//
-// Lives in this module so the chip semantics are JS-vm-tested without
-// touching the renderer.  The renderer just asks for the chip and
-// places it in the meta row.
-
-function flakinessChipForTest(test) {
-    if (!test || typeof test !== 'object') return null;
-    const outcome = String(test.retry_outcome || test.outcome || '').toLowerCase();
-    if (outcome !== 'failed' && outcome !== 'error') return null;
-    const history = Array.isArray(test.history) ? test.history : [];
-    if (history.length === 0) {
-        return { kind: 'new', label: 'new failure', title: 'first time this test has failed' };
-    }
-    const recent = history.slice(0, 5);
-    const fails = recent.filter((h) => {
-        const o = String(h && (h.outcome || h.retry_outcome) || '').toLowerCase();
-        return o === 'failed' || o === 'error';
-    }).length;
-    if (recent.length >= 2 && fails === recent.length) {
-        return {
-            kind: 'regression',
-            label: `regression · ${fails}`,
-            title: `failed every one of the last ${fails} runs`,
-        };
-    }
-    if (fails >= 1 && fails < recent.length) {
-        return {
-            kind: 'flaky',
-            label: `flaky · ${fails}/${recent.length}`,
-            title: `failed in ${fails} of the last ${recent.length} runs`,
-        };
-    }
-    // failing this run, but all of the last N were green — first failure
-    // in the window.  Same UX as "new failure".
-    return { kind: 'new', label: 'new failure', title: 'first time this test has failed in the recent window' };
-}
+// (Phase C originally introduced a ``flakinessChipForTest`` helper here
+// that derived a "flaky · N/M" / "new failure" / "regression · N" chip
+// from the test's prior-run history.  Reviewer Blocker 3 on PR #6319
+// flagged it as dead — the helper was tested but the chip was never
+// rendered.  Removed pending a real render path; the data is still on
+// ``test.history`` and the chip semantics can be re-introduced when
+// the rendering surface lands.  Tracked alongside the validation
+// viewer redesign as a follow-up.)

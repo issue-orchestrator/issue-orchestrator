@@ -89,13 +89,9 @@ function _resultCategories(data) {
     };
 }
 
-function _allResultCases(data) {
-    return Object.values(_resultCategories(data)).flatMap(items => Array.isArray(items) ? items : []);
-}
-
-function _findResultCase(nodeid) {
-    return _allResultCases(unifiedRunData).find(test => test && test.nodeid === nodeid) || null;
-}
+// ``_allResultCases`` and ``_findResultCase`` removed in Phase C
+// (PR #6319 Blocker 2) — they were only used by the deleted
+// ``copyTestErrorFromRun`` handler.
 
 function _humanizeSnakeCase(value) {
     const text = String(value || '').trim();
@@ -153,74 +149,17 @@ function openE2EArtifactFromButton(button) {
     window.openPath(path);
 }
 
-function _datasetButtonAttr(name, value) {
-    if (value === null || value === undefined || value === '') return '';
-    return ` data-${name}="${escapeAttr(String(value))}"`;
-}
+// Legacy ``_e2eRowActionButton`` / ``runE2ERowActionFromButton``
+// removed in Phase C (PR #6319 Blocker 2).  Per-row triage actions
+// (Close issue, Create issue, Quarantine, Copy error) are no longer
+// the row-action contract: Copy-error is now a built-in icon on the
+// canonical viewer's failure card, the linked-issue affordance is
+// the ``io.agent-context`` plugin block, and quarantine is deferred
+// to issue #6318.
 
-function _e2eRowActionButton(label, options) {
-    options = options || {};
-    const action = String(options.action || '').trim();
-    if (!action) {
-        throw new Error('E2E row action button requires an action');
-    }
-    const cssClass = options.cssClass || 'action-btn';
-    const disabled = options.disabled ? ' disabled aria-disabled="true"' : '';
-    const title = options.title ? ` title="${escapeAttr(options.title)}"` : '';
-    return `<button class="${cssClass}" data-e2e-action="${escapeAttr(action)}"${_datasetButtonAttr('nodeid', options.nodeid)}${_datasetButtonAttr('issue-number', options.issueNumber)}${_datasetButtonAttr('agent', options.agent)}${title}${disabled} onclick="runE2ERowActionFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
-}
-
-function runE2ERowActionFromButton(button) {
-    const dataset = button && button.dataset ? button.dataset : {};
-    const action = String(dataset.e2eAction || '').trim();
-    const nodeid = String(dataset.nodeid || '').trim();
-    switch (action) {
-    case 'close_issue': {
-        const issueNumber = Number.parseInt(String(dataset.issueNumber || '').trim(), 10);
-        if (!Number.isInteger(issueNumber) || !nodeid) {
-            throw new Error('Close-issue action missing issue number or nodeid');
-        }
-        void closeE2EIssue(issueNumber, nodeid);
-        return;
-    }
-    case 'create_issue_dropdown':
-        if (!nodeid) {
-            throw new Error('Create-issue action missing nodeid');
-        }
-        showCreateIssueDropdown(button, nodeid);
-        return;
-    case 'quarantine_test':
-        if (!nodeid) {
-            throw new Error('Quarantine action missing nodeid');
-        }
-        void quarantineSingleTest(nodeid);
-        return;
-    case 'copy_test_error':
-        if (!nodeid) {
-            throw new Error('Copy-error action missing nodeid');
-        }
-        copyTestErrorFromRun(nodeid);
-        return;
-    case 'create_issue_with_agent': {
-        const agent = String(dataset.agent || '').trim();
-        if (!nodeid || !agent) {
-            throw new Error('Create-issue-with-agent action missing nodeid or agent');
-        }
-        void createSingleIssueWithAgent(nodeid, agent);
-        return;
-    }
-    default:
-        throw new Error(`Unknown E2E row action: ${action}`);
-    }
-}
-
-function _primaryRunReport(data) {
-    const reports = Array.isArray(data && data.reports) ? data.reports : [];
-    return reports.find(report => report && report.kind === 'html_report')
-        || reports.find(report => report && report.kind === 'junit_xml')
-        || reports[0]
-        || null;
-}
+// ``_primaryRunReport`` removed in Phase C — it picked a primary
+// report among the run's artifacts but had no remaining caller after
+// the per-row triage UI went away.
 
 function _renderRunArtifactButtons(data) {
     const run = data && data.run ? data.run : {};
@@ -244,155 +183,23 @@ function _renderRunArtifactButtons(data) {
     return html.join('');
 }
 
-function _normalizeE2ERunLifecycle(data) {
-    const lifecycle = data && typeof data.lifecycle === 'object' ? data.lifecycle : null;
-    if (!lifecycle || lifecycle.kind !== 'e2e_suite') return null;
-    const runIteration = Array.isArray(lifecycle.runs) ? lifecycle.runs[0] : null;
-    const e2eRun = runIteration && typeof runIteration === 'object' && runIteration.e2e_run && typeof runIteration.e2e_run === 'object'
-        ? runIteration.e2e_run
-        : null;
-    if (!e2eRun) return null;
-    return { container: lifecycle, runIteration, e2eRun };
-}
-
-function _lifecycleSessionCommand(recording) {
-    if (!recording || typeof recording !== 'object') return null;
-    if (recording.kind !== 'available') return null;
-    return recording.command && typeof recording.command === 'object' ? recording.command : null;
-}
-
-function _lifecycleValidationCommand(issueNumber, cycle) {
-    const coder = cycle && cycle.coder && typeof cycle.coder === 'object' ? cycle.coder : null;
-    const validation = coder && coder.validation && typeof coder.validation === 'object'
-        ? coder.validation
-        : null;
-    if (!validation || validation.kind !== 'failed' || !validation.details_command) return null;
-    return {
-        kind: 'open_validation_details',
-        issue_number: issueNumber,
-        run_dir: validation.details_command.run_dir,
-        label: validation.details_command.label || 'Validation Details',
-    };
-}
-
-function _lifecycleReviewTranscriptCommand(issueNumber, cycle) {
-    const review = cycle && cycle.review && typeof cycle.review === 'object' ? cycle.review : null;
-    const reviewSession = _lifecycleSessionCommand(review && review.session_recording);
-    if (!review || review.kind !== 'review_approved') return null;
-    if (!review.transcript || review.transcript.kind !== 'available') return null;
-    if (!reviewSession || !reviewSession.run_dir) return null;
-    return {
-        kind: 'open_review_transcript',
-        issue_number: issueNumber,
-        run_dir: reviewSession.run_dir,
-        round_index: reviewSession.round_index || null,
-        transcript_role: 'reviewer',
-        label: 'Review Transcript',
-    };
-}
-
-// ``_renderLifecycleCommandButton``, ``runE2ELifecycleCommandFromButton``,
-// and ``runE2ELifecycleCommand`` moved to the shared
+// Legacy helpers removed in Phase C (PR #6319 Blocker 2):
+//   ``_normalizeE2ERunLifecycle`` / ``_lifecycleSessionCommand`` /
+//   ``_lifecycleValidationCommand`` / ``_lifecycleReviewTranscriptCommand``
+//   — per-row inline lifecycle block; superseded by the
+//   ``io.agent-context`` plugin's drawer-open affordance.
+//   ``_flattenTestsByCategory`` / ``_lifecyclesByIssueNumber`` —
+//   helpers for the old categorized panel.
+//   ``_e2eCapturedOutputUrl`` — captured-output URL builder for the
+//   legacy panel's lazy-fetch path.
+//   ``_renderE2ETestRowActions`` / ``_renderE2EIssueLifecycleBlock`` —
+//   per-row triage actions; replaced by the canonical viewer +
+//   ``io.agent-context`` plugin.
+//
+// ``_renderLifecycleCommandButton`` / ``runE2ELifecycleCommandFromButton``
+// / ``runE2ELifecycleCommand`` live in the shared
 // ``static/js/dashboard/lifecycle_commands.js`` module (loaded before
-// this file and before ``issue_detail_drawer.js``), so the drawer and
-// the E2E run view share a single Command renderer/dispatcher.  See
-// issue #6310 review feedback on PR #6312.
-
-function _flattenTestsByCategory(data) {
-    const categories = _resultCategories(data);
-    const order = ['untriaged', 'has_issue', 'flaky', 'fixed', 'passed', 'quarantined', 'skipped'];
-    return order.flatMap(key => Array.isArray(categories[key]) ? categories[key] : []);
-}
-
-function _lifecyclesByIssueNumber(data) {
-    const lifecycleInfo = _normalizeE2ERunLifecycle(data);
-    const list = lifecycleInfo && Array.isArray(lifecycleInfo.e2eRun.linked_issue_lifecycles)
-        ? lifecycleInfo.e2eRun.linked_issue_lifecycles
-        : [];
-    const map = new Map();
-    for (const lifecycle of list) {
-        const issueNumber = Number(lifecycle && lifecycle.issue_number);
-        if (Number.isInteger(issueNumber) && issueNumber > 0) {
-            map.set(issueNumber, lifecycle);
-        }
-    }
-    return map;
-}
-
-function _e2eCapturedOutputUrl(test, runId) {
-    // Only JUnit-sourced rows have captured output to serve, and only when
-    // we have a positive run id. Returning '' means "no captured-output
-    // placeholder for this row" — the shared renderer respects that.
-    if (!Number.isFinite(runId) || runId === null) return '';
-    const sourceKey = String(test && test.result_source || '').toLowerCase();
-    if (!sourceKey.includes('junit')) return '';
-    const nodeid = String(test && test.nodeid || '');
-    if (!nodeid) return '';
-    return `/api/e2e-run/${runId}/test-output?nodeid=${encodeURIComponent(nodeid)}`;
-}
-
-function _renderE2ETestRowActions(test) {
-    const category = _testResultCategory(test);
-    const outcomeState = _testOutcomeState(test);
-    const hasErrorText = Boolean(_testErrorText(test));
-    const copyErrorButton = _e2eRowActionButton(hasErrorText ? 'Copy Error' : 'No Error Text', {
-        action: 'copy_test_error',
-        cssClass: 'action-btn',
-        nodeid: test.nodeid,
-        disabled: !hasErrorText,
-        title: hasErrorText ? 'Copy the failure text for this test' : 'No failure text was recorded for this test',
-    });
-    if (test.existing_issue) {
-        const issueNum = test.existing_issue.number;
-        const issueStatus = test.existing_issue.status;
-        const ghLink = `<a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}" target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">#${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span></a>`;
-        if (category === 'fixed' && issueStatus === 'open') {
-            return `${ghLink}${_e2eRowActionButton(`Close #${issueNum}`, { action: 'close_issue', cssClass: 'action-btn success', issueNumber: issueNum, nodeid: test.nodeid })}`;
-        }
-        return outcomeState === 'failed' ? `${ghLink}${copyErrorButton}` : ghLink;
-    }
-    if (_testNeedsAction(test) && outcomeState === 'failed') {
-        return [
-            _e2eRowActionButton('Create Issue ▼', { action: 'create_issue_dropdown', cssClass: 'action-btn primary', nodeid: test.nodeid }),
-            _e2eRowActionButton('Quarantine', { action: 'quarantine_test', cssClass: 'action-btn warning', nodeid: test.nodeid }),
-            copyErrorButton,
-        ].join('');
-    }
-    if (outcomeState === 'failed') return copyErrorButton;
-    return '';
-}
-
-function _renderE2EIssueLifecycleBlock(test, lifecycle, runId) {
-    if (!test || !test.existing_issue || !lifecycle) return '';
-    const issueNumber = Number(lifecycle.issue_number);
-    const cycles = Array.isArray(lifecycle.cycles) ? lifecycle.cycles : [];
-    const latestCycle = cycles.length ? cycles[cycles.length - 1] : null;
-    const timelineCommand = {
-        kind: 'open_issue_timeline',
-        issue_number: issueNumber,
-        scope_kind: 'e2e_run',
-        e2e_run_id: Number.isFinite(runId) ? Number(runId) : 0,
-        label: `Issue #${issueNumber}`,
-    };
-    const coderCmd = latestCycle ? _lifecycleSessionCommand(latestCycle.coder && latestCycle.coder.session_recording) : null;
-    const reviewCmd = latestCycle ? _lifecycleSessionCommand(latestCycle.review && latestCycle.review.session_recording) : null;
-    const transcriptCmd = latestCycle ? _lifecycleReviewTranscriptCommand(issueNumber, latestCycle) : null;
-    const validationCmd = latestCycle ? _lifecycleValidationCommand(issueNumber, latestCycle) : null;
-    const cycleChips = cycles.map(c => `<span class="e2e-lifecycle-chip">Cycle ${escapeHtml(c.cycle_number)} · ${escapeHtml(_humanizeSnakeCase(c.outcome || 'unknown'))}</span>`).join('');
-    return `
-        <div class="trr-lifecycle">
-            <div class="trr-lifecycle-heading">Related issue activity · Issue #${issueNumber}${lifecycle.title ? ` — ${escapeHtml(lifecycle.title)}` : ''}</div>
-            <div class="trr-lifecycle-cycles">${cycleChips || '<span class="e2e-empty-note">No cycles projected.</span>'}</div>
-            <div class="trr-lifecycle-actions">
-                ${_renderLifecycleCommandButton(timelineCommand, 'Timeline', 'action-btn primary')}
-                ${_renderLifecycleCommandButton(coderCmd, 'Coder Session', 'action-btn subtle')}
-                ${_renderLifecycleCommandButton(reviewCmd, 'Review Session', 'action-btn subtle')}
-                ${_renderLifecycleCommandButton(transcriptCmd, 'Review Transcript', 'action-btn subtle')}
-                ${_renderLifecycleCommandButton(validationCmd, 'Validation', 'action-btn subtle')}
-            </div>
-        </div>
-    `;
-}
+// this file).
 
 // Phase C (issue #6310 follow-up): the E2E run view's body is now the
 // canonical validation viewer.  We translate the E2E run payload to the
@@ -620,50 +427,11 @@ async function switchE2ETimelineView(view, btn) {
     }
 }
 
-async function _copyTextToClipboard(text) {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        try {
-            await navigator.clipboard.writeText(text);
-            return;
-        } catch (_err) {
-            // Fall back for browser contexts where Clipboard API permission is unavailable.
-        }
-    }
-    const textArea = document.createElement('textarea');
-    textArea.value = text;
-    textArea.setAttribute('readonly', '');
-    textArea.style.position = 'fixed';
-    textArea.style.left = '-9999px';
-    textArea.style.top = '0';
-    document.body.appendChild(textArea);
-    textArea.select();
-    try {
-        const copied = document.execCommand('copy');
-        if (!copied) {
-            throw new Error('copy command was rejected');
-        }
-    } finally {
-        document.body.removeChild(textArea);
-    }
-}
-
-function copyTestErrorFromRun(nodeid) {
-    if (!unifiedRunData) return;
-
-    const test = _findResultCase(nodeid);
-    if (test) {
-        const errorText = _testErrorText(test);
-        if (!errorText) {
-            showToast('No error text was recorded for this test', true);
-            return;
-        }
-        const text = `Test: ${test.nodeid}\n\nResult: ${_testOutcomeState(test)}\n\nError:\n${errorText}`;
-        _copyTextToClipboard(text).then(
-            () => showToast('Error copied to clipboard'),
-            (err) => showToast(`Failed to copy: ${err instanceof Error ? err.message : String(err)}`, true)
-        );
-    }
-}
+// Legacy ``_copyTextToClipboard`` + ``copyTestErrorFromRun`` removed
+// in Phase C (PR #6319 Blocker 2).  The canonical viewer renders a
+// built-in Copy-error icon on every failed triage card and uses
+// ``navigator.clipboard.writeText`` directly; that's the single
+// owner now.
 
 /**
  * Create issues for all untriaged tests.
@@ -712,110 +480,18 @@ async function createIssuesForUntriaged() {
     }
 }
 
-/**
- * Close an E2E failure issue that has been fixed.
- */
-async function closeE2EIssue(issueNumber, nodeid) {
-    if (!confirm(`Close issue #${issueNumber}? The test "${nodeid.split('::').pop()}" is now passing.`)) {
-        return;
-    }
-
-    try {
-        const res = await fetch(`/control/e2e/close-issue/${issueNumber}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeid }),
-        });
-        const data = await res.json();
-
-        if (!res.ok) {
-            showToast(data.error || 'Failed to close issue', true);
-            return;
-        }
-
-        showToast(`Closed issue #${issueNumber}`);
-
-        // Refresh the view
-        if (unifiedRunData) {
-            showUnifiedRunView(unifiedRunData.run.id);
-        }
-    } catch (err) {
-        showToast('Failed to close issue: ' + err.message, true);
-    }
-}
-
-/**
- * Show dropdown for creating a single issue with agent selection.
- */
-function showCreateIssueDropdown(button, nodeid) {
-    // If dropdown already exists, toggle it
-    let dropdown = button.nextElementSibling;
-    if (dropdown && dropdown.classList.contains('create-issue-dropdown')) {
-        dropdown.remove();
-        return;
-    }
-
-    // Remove any other open dropdowns
-    document.querySelectorAll('.create-issue-dropdown').forEach(d => d.remove());
-
-    // Create dropdown
-    dropdown = document.createElement('div');
-    dropdown.className = 'create-issue-dropdown';
-    dropdown.innerHTML = `
-        <div class="dropdown-content">
-            ${window.dashboardData.agents.map(a => _e2eRowActionButton(a, {
-                action: 'create_issue_with_agent',
-                cssClass: 'dropdown-item',
-                nodeid,
-                agent: a,
-            })).join('')}
-        </div>
-    `;
-    button.parentNode.insertBefore(dropdown, button.nextSibling);
-
-    // Close dropdown when clicking elsewhere
-    const closeHandler = (e) => {
-        if (!dropdown.contains(e.target) && e.target !== button) {
-            dropdown.remove();
-            document.removeEventListener('click', closeHandler);
-        }
-    };
-    setTimeout(() => document.addEventListener('click', closeHandler), 0);
-}
-
-/**
- * Create a single issue with specified agent.
- */
-async function createSingleIssueWithAgent(nodeid, agent) {
-    if (!unifiedRunData) return;
-
-    try {
-        const res = await fetch(`/control/e2e/create-issues/${unifiedRunData.run.id}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeids: [nodeid], agent }),
-        });
-        const data = await res.json();
-
-        if (!res.ok) {
-            showToast(data.error || data.detail || 'Failed to create issue', true);
-            return;
-        }
-
-        const testName = nodeid.split('::').pop();
-        showToast(`Created issue #${data.parent_issue.number} for ${testName}`);
-
-        // Close dropdown
-        document.querySelectorAll('.create-issue-dropdown').forEach(d => d.remove());
-
-        // Refresh the view
-        showUnifiedRunView(unifiedRunData.run.id);
-
-        // Open issue in new tab
-        if (data.parent_issue.url) {
-            window.open(data.parent_issue.url, '_blank');
-        }
-    } catch (err) {
-        showToast('Failed to create issue: ' + err.message, true);
-    }
-}
+// Legacy per-test action handlers removed in Phase C (PR #6319
+// Blocker 2):
+//   ``closeE2EIssue``           — Phase C dropped per-test Close-Issue.
+//                                 Issues close at orchestrator publish
+//                                 time, not from the dashboard.
+//   ``showCreateIssueDropdown`` — Phase C dropped per-row Create-Issue
+//                                 dropdown.  The bulk
+//                                 ``createIssuesForUntriaged`` flow
+//                                 (driven by the untracked-failures
+//                                 banner) is the single owner now.
+//   ``createSingleIssueWithAgent``  — same; superseded by the bulk
+//                                 flow + the canonical viewer's
+//                                 per-test plugin block (which
+//                                 navigates to the per-issue drawer
+//                                 for further triage).

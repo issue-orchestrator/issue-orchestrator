@@ -1750,116 +1750,16 @@ def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
     assert "function e2eRunToCanonicalPayload" in js
 
 
-def test_e2e_test_row_history_cluster_uses_inline_labels() -> None:
-    """The recent-runs glyph cluster and flake % must carry visible labels.
-
-    The original row jammed glyphs and a bare "50%" together with no inline
-    labels — users misread the glyphs as a single test's retry sequence and
-    couldn't tell what the percent meant. Lock in the labels so the row stays
-    self-explanatory.
-    """
-    js = _read(DASHBOARD_JS)
-    cluster_body = _function_body(js, "_renderHistoryCluster")
-    row_body = _function_body(js, "_renderTestRow")
-    assert 'class="test-history-label"' in cluster_body
-    assert ">Recent<" in cluster_body
-    assert "test-history-flake" in cluster_body
-    assert "% flake" in cluster_body
-    # Row delegates to the cluster — no bare flip_rate_percent rendering left.
-    assert "_renderHistoryCluster(test)" in row_body
-    assert 'class="flip-rate"' not in row_body
-    css = _read_dashboard_css_bundle()
-    assert ".test-history-label" in css
-    assert ".test-history-flake" in css
-
-
-def test_e2e_test_row_drops_flaky_pill_in_favor_of_history_cluster() -> None:
-    """`Flaky` is no longer a peer pill alongside `Passed`/`Failed`.
-
-    Reading "Passed" and "Flaky" as two pills made the outcome look
-    contradictory. Flakiness now lives in the history cluster (glyphs + flake
-    %); the only fallback is a small inline note when there's no history.
-    """
-    js = _read(DASHBOARD_JS)
-    pills_body = _function_body(js, "_renderTestResultPills")
-    assert 'test-result-pill flaky' not in pills_body
-    assert "test-result-flaky-note" in pills_body
-    # Fallback is gated by absence of history — don't double-up with the cluster.
-    assert "_hasHistory(test)" in pills_body
-
-
-def test_e2e_test_row_suppresses_default_provenance_tag() -> None:
-    """`JUnit XML` provenance is the framework-agnostic default — no per-row tag."""
-    js = _read(DASHBOARD_JS)
-    row_body = _function_body(js, "_renderTestRow")
-    # Both runtime and junit_xml are common defaults; only show the tag for
-    # genuinely unusual sources (e.g. external_report).
-    assert "sourceKey !== 'runtime'" in row_body
-    assert "sourceKey !== 'junit_xml'" in row_body
-
-
-def test_e2e_failed_rows_render_expanded_by_default() -> None:
-    """Failed tests are the headline — expansion must not hide behind a caret."""
-    js = _read(DASHBOARD_JS)
-    expand_body = _function_body(js, "_renderTestRowExpand")
-    row_body = _function_body(js, "_renderTestRow")
-    # Expand div omits the hidden attribute when the row is failed.
-    assert "outcomeState === 'failed'" in expand_body
-    assert "startOpen" in expand_body
-    # Row's caret + aria-expanded mirror the open state so a11y stays honest.
-    assert "outcomeState === 'failed'" in row_body
-    assert 'aria-expanded="${ariaExpandedAttr}"' in row_body
-
-
-def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
-    """Captured stdout/stderr is fetched on demand from the JUnit XML.
-
-    Captured output is intentionally NOT persisted to SQLite (it can be MB per
-    test). The shared lazy-load infrastructure
-    (``_renderTestRowExpand`` + ``_maybeLoadCapturedOutput``) still
-    lives in ``test_results_panel.js`` for future consumers, but Phase C
-    of #6310 follow-up replaced the E2E run modal's body with the
-    canonical validation viewer, which renders stdout/stderr expanders
-    via ``_renderTestSystemOutErr`` on whatever data is on the JUnit
-    case payload.  Lazy-fetching captured output into the canonical
-    viewer is a follow-up — for now the new E2E view shows what's in
-    the payload and the captured-output endpoint is reachable only via
-    callers who still mount the legacy panel.
-    """
-    js = _read(DASHBOARD_JS)
-    expand_body = _function_body(js, "_renderTestRowExpand")
-    toggle_body = _function_body(js, "toggleTestRowExpand")
-    fetch_body = _function_body(js, "_maybeLoadCapturedOutput")
-    auto_body = _function_body(js, "_autoLoadVisibleCapturedOutput")
-    # Shared lazy-load helpers in test_results_panel.js remain intact —
-    # only the E2E run view stopped calling them.
-    assert 'class="trr-captured-output"' in expand_body
-    assert 'data-needs-fetch="1"' in expand_body
-    assert 'data-url=' in expand_body
-    assert "data-nodeid=" in expand_body
-    assert "opts.capturedOutputUrl" in expand_body
-    assert "_maybeLoadCapturedOutput(expand)" in toggle_body
-    assert "placeholder.dataset.url" in fetch_body
-    assert "/api/e2e-run/" not in fetch_body  # MUST NOT be hardcoded in shared module
-    assert "_renderCapturedOutputEmpty" in fetch_body
-    assert ".trr-expand:not([hidden])" in auto_body
-    # The endpoint helper itself is unchanged.
-    e2e_url_body = _function_body(js, "_e2eCapturedOutputUrl")
-    assert "/api/e2e-run/" in e2e_url_body
-    assert "/test-output" in e2e_url_body
-    assert "encodeURIComponent(nodeid)" in e2e_url_body
-    css = _read_dashboard_css_bundle()
-    assert ".trr-captured-output" in css
-    assert ".trr-captured-channel-label" in css
-
-    # The new E2E run panel no longer wires the captured-output lazy
-    # loader.  The canonical viewer handles its own per-test
-    # stdout/stderr rows.  This is the Phase C exit criterion — if a
-    # future PR re-wires lazy-fetch into the canonical viewer, that PR
-    # should add its own coverage and this guardrail can update.
-    panel_body = _function_body(js, "renderE2EResultsPanel")
-    assert "capturedOutputUrl" not in panel_body
-    assert "_autoLoadVisibleCapturedOutput" not in panel_body
+# Legacy test_results_panel.js guardrails were deleted in Phase C
+# (PR #6319 Blocker 2) — the panel module + its row-renderer helpers
+# (``_renderTestRow``, ``_renderTestRowExpand``, ``_renderTestRowActions``,
+# ``_renderHistoryCluster``, ``_renderTestResultPills``,
+# ``toggleTestRowExpand``, ``_maybeLoadCapturedOutput``,
+# ``_autoLoadVisibleCapturedOutput``, ``_e2eCapturedOutputUrl``) were
+# removed from the production bundle.  The new E2E run modal mounts
+# the canonical viewer instead, covered by
+# ``test_e2e_run_modal_uses_canonical_viewer_body`` above and the
+# Playwright smoke at ``tests/e2e_web/test_e2e_canonical_view.py``.
 
 
 def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:
@@ -1891,50 +1791,25 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     assert "button.dataset.artifactPath" in artifact_open_body
     css = _read_dashboard_css_bundle()
     assert ".run-details-disclosure" in css
-    assert ".test-results-headline" in css
-    assert ".test-results-filters" in css
-    assert ".trr-row" in css
-    assert ".trr-expand" in css
-    assert ".trr-lifecycle" in css
+    # Phase C: ``.test-results-headline`` / ``.test-results-filters``
+    # / ``.trr-*`` CSS classes were specific to the deleted
+    # ``test_results_panel.js`` panel and are no longer in the
+    # bundle.  The run-details disclosure (this test's actual
+    # subject) is unchanged.
 
 
-def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
-    """Per-test action buttons use the data-e2e-action dispatch contract, not inline handlers."""
-    js = _read(DASHBOARD_JS)
-    row_action_button_body = _function_body(js, "_e2eRowActionButton")
-    row_action_dispatch_body = _function_body(js, "runE2ERowActionFromButton")
-    actions_body = _function_body(js, "_renderTestRowActions")
-    dropdown_body = _function_body(js, "showCreateIssueDropdown")
-    command_body = _function_body(js, "runE2ELifecycleCommand")
-    assert "data-e2e-action" in row_action_button_body
-    assert "dataset.nodeid" in row_action_dispatch_body
-    assert "case 'copy_test_error'" in row_action_dispatch_body
-    assert "Copy-error action missing nodeid" in row_action_dispatch_body
-    assert "copyTestErrorFromRun(nodeid)" in row_action_dispatch_body
-    assert "closeE2EIssue(" not in actions_body
-    assert "showCreateIssueDropdown(this, '" not in actions_body
-    assert "quarantineSingleTest('" not in actions_body
-    assert "copyTestErrorFromRun('" not in actions_body
-    assert "createSingleIssueWithAgent('" not in dropdown_body
-    assert "openIssueTimeline" in command_body
-    assert "openAgentLogAction" in command_body
-    assert "openReviewTranscript" in command_body
-    assert "openValidationFailure" in command_body
-
-
-def test_e2e_result_category_owns_client_grouping() -> None:
-    """The client trusts server result_category instead of re-deriving groups ad hoc."""
-    js = _read(DASHBOARD_JS)
-    category_body = _function_body(js, "_testResultCategory")
-    outcome_body = _function_body(js, "_testOutcomeState")
-    filter_body = _function_body(js, "_testFilterGroup")
-
-    assert "RESULT_CATEGORY_OUTCOME_STATE" in js
-    assert "ACTION_NEEDED_RESULT_CATEGORIES" in js
-    assert "test.result_category" in category_body
-    assert "RESULT_CATEGORY_OUTCOME_STATE.get(category)" in outcome_body
-    assert "effectiveOutcome === 'failed' || effectiveOutcome === 'error' || category ===" not in outcome_body
-    assert "Actionable categories intentionally win" in filter_body
+# ``test_e2e_run_modal_actions_use_data_action_dispatch`` and
+# ``test_e2e_result_category_owns_client_grouping`` were deleted in
+# Phase C (PR #6319 Blocker 2) — both tested helpers that lived in
+# the legacy ``test_results_panel.js`` and the per-row action
+# dispatcher in ``e2e_run_view.js`` (``_e2eRowActionButton`` /
+# ``runE2ERowActionFromButton`` / ``_testResultCategory`` /
+# ``_testOutcomeState`` / ``_testFilterGroup`` / etc.), all of which
+# are gone now.  The action contract for the new E2E view is the
+# canonical viewer + ``io.agent-context`` plugin (typed-Command
+# dispatch), covered by the new
+# ``test_e2e_run_modal_uses_canonical_viewer_body`` above and the
+# Playwright smoke ``test_e2e_canonical_view.py``.
 
 
 def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:

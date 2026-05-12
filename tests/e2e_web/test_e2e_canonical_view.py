@@ -159,7 +159,38 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     plugin_block = linked_card.locator(".cvv-plugin.agent-context")
     expect(plugin_block).to_be_visible()
     expect(plugin_block).to_contain_text("#4503")
-    expect(plugin_block).to_contain_text("Open issue drawer")
+
+    # PR #6319 Blocker 1: the drawer affordance routes through the
+    # typed-Command pipeline (``data-lifecycle-command`` →
+    # ``runE2ELifecycleCommand`` → ``openIssueTimeline``), not a raw
+    # ``<a href="/api/...">``.  Verify both the button shape and that
+    # a click actually dispatches into ``openIssueTimeline``.
+    drawer_button = plugin_block.locator("button", has_text="Open issue drawer").first
+    expect(drawer_button).to_be_visible()
+    cmd_attr = drawer_button.get_attribute("data-lifecycle-command") or ""
+    assert cmd_attr, "Open-issue-drawer button must carry data-lifecycle-command"
+    cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+    assert cmd.get("kind") == "open_issue_timeline"
+    assert cmd.get("issue_number") == 4503
+    assert cmd.get("scope_kind") == "dashboard"
+
+    # Click-through proof: replace ``openIssueTimeline`` with a spy and
+    # verify it gets called with the right issue number when the
+    # button is clicked.  This catches a regression where the typed
+    # command lands on the button but the dispatcher's
+    # ``open_issue_timeline`` branch silently breaks.
+    page.evaluate(
+        "() => {"
+        "  window.__openIssueTimelineCalls = [];"
+        "  window.openIssueTimeline = (issueNumber, triggerEl, opts) => {"
+        "    window.__openIssueTimelineCalls.push({issueNumber, opts: opts || null});"
+        "  };"
+        "}"
+    )
+    drawer_button.click()
+    calls = page.evaluate("() => window.__openIssueTimelineCalls")
+    assert calls, "openIssueTimeline must be invoked when the drawer button is clicked"
+    assert calls[0]["issueNumber"] == 4503
 
     # ── untracked failure has NO plugin block (no linked issue) ────
     untracked_card = cvv.locator(".cvv-triage-card", has_text="test_untracked_failure")

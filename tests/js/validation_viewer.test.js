@@ -48,6 +48,24 @@ function loadViewer(overrides = {}) {
 
 function loadViewerWithAgentPlugin(overrides = {}) {
     const ctx = loadViewer(overrides);
+    // The plugin's "Open issue drawer" affordance renders through the
+    // shared lifecycle Command pipeline (PR #6319 Blocker 1 fix).  In
+    // production ``lifecycle_commands.js`` is loaded earlier in the
+    // bundle; in JS-vm tests we load it before the plugin so the
+    // symbol is in scope.
+    const lifecycleSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
+        'utf8',
+    );
+    vm.runInContext(lifecycleSource, ctx, { filename: 'lifecycle_commands.js' });
+    // ``_renderLifecycleCommandButton`` depends on ``_humanizeSnakeCase``
+    // when falling back on a derived label.  Provide a thin stub —
+    // tests pass an explicit fallbackLabel so the stub is never
+    // actually consulted, but loading it avoids a ReferenceError if
+    // some future test omits the label.
+    if (typeof ctx._humanizeSnakeCase !== 'function') {
+        ctx._humanizeSnakeCase = (s) => String(s || '');
+    }
     const pluginSource = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
         'utf8',
@@ -399,6 +417,18 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.match(html, /fixture cohort split/);
     assert.match(html, /blocked/);
     assert.match(html, /Open issue drawer/);
+    // PR #6319 Blocker 1: the Open-issue-drawer affordance must route
+    // through the typed-Command pipeline (data-lifecycle-command on
+    // a real button) so a click actually dispatches into
+    // ``runE2ELifecycleCommand`` → ``openIssueTimeline``.  Plain
+    // ``<a href="/api/...">`` had no real route behind it.
+    const buttonMatch = html.match(/<button[^>]*data-lifecycle-command="([^"]+)"[^>]*>/);
+    assert.ok(buttonMatch, `expected a data-lifecycle-command button; got: ${html.slice(0, 400)}…`);
+    const decoded = buttonMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    const cmd = JSON.parse(decoded);
+    assert.strictEqual(cmd.kind, 'open_issue_timeline');
+    assert.strictEqual(cmd.issue_number, 4503);
+    assert.strictEqual(cmd.scope_kind, 'dashboard');
 });
 
 test('plugin: agent-context plugin renders nothing when case lacks the namespace', () => {

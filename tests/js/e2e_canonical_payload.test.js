@@ -111,7 +111,10 @@ test('translator: has_issue failure → io.agent-context extra carries the issue
     assert.strictEqual(extra.payload.issue_title, 'orchestrator publish flake');
     assert.strictEqual(extra.payload.final_state, 'open');
     assert.strictEqual(extra.payload.summary, 'TimeoutError: orchestrator did not publish within 30s');
-    assert.match(extra.payload.run_url, /\/api\/dashboard\/issue\/4503/);
+    // The drawer-open affordance routes through the typed Command
+    // dispatcher (``open_issue_timeline``), so the translator no
+    // longer emits a ``run_url`` (PR #6319 Blocker 1).
+    assert.strictEqual(extra.payload.run_url, undefined);
 });
 
 test('translator: flaky failure → still failed in canonical viewer (rendered as failed in *this* run)', () => {
@@ -240,66 +243,7 @@ test('translator: malformed results_by_category degrades to empty payload', () =
     assert.strictEqual(ctx.e2eRunToCanonicalPayload({ results_by_category: { passed: 'oops' } }).junit_cases.length, 0);
 });
 
-// ── flakinessChipForTest ───────────────────────────────────────────────────
-
-test('flakiness chip: no history on a failed test → "new failure"', () => {
-    const ctx = loadModule();
-    const chip = ctx.flakinessChipForTest({ outcome: 'failed' });
-    assert.strictEqual(chip.kind, 'new');
-    assert.strictEqual(chip.label, 'new failure');
-});
-
-test('flakiness chip: all of the last 5 runs failed → "regression · 5"', () => {
-    const ctx = loadModule();
-    const chip = ctx.flakinessChipForTest({
-        outcome: 'failed',
-        history: [
-            { outcome: 'failed' }, { outcome: 'failed' }, { outcome: 'failed' },
-            { outcome: 'failed' }, { outcome: 'failed' },
-        ],
-    });
-    assert.strictEqual(chip.kind, 'regression');
-    assert.match(chip.label, /regression · 5/);
-});
-
-test('flakiness chip: mixed pass/fail in window → "flaky · N/M"', () => {
-    const ctx = loadModule();
-    const chip = ctx.flakinessChipForTest({
-        outcome: 'failed',
-        history: [
-            { outcome: 'passed' }, { outcome: 'failed' }, { outcome: 'passed' },
-            { outcome: 'failed' }, { outcome: 'failed' },
-        ],
-    });
-    assert.strictEqual(chip.kind, 'flaky');
-    assert.strictEqual(chip.label, 'flaky · 3/5');
-});
-
-test('flakiness chip: all-green history on a fresh failure → "new failure"', () => {
-    const ctx = loadModule();
-    const chip = ctx.flakinessChipForTest({
-        outcome: 'failed',
-        history: [
-            { outcome: 'passed' }, { outcome: 'passed' }, { outcome: 'passed' },
-        ],
-    });
-    assert.strictEqual(chip.kind, 'new');
-});
-
-test('flakiness chip: passing test → null (no chip)', () => {
-    const ctx = loadModule();
-    assert.strictEqual(ctx.flakinessChipForTest({ outcome: 'passed' }), null);
-});
-
-test('flakiness chip: skipped test → null', () => {
-    const ctx = loadModule();
-    assert.strictEqual(ctx.flakinessChipForTest({ outcome: 'skipped' }), null);
-});
-
-test('flakiness chip: retry_outcome takes precedence over outcome', () => {
-    const ctx = loadModule();
-    // The runner reported 'failed' initially but retried to passed; the
-    // current run state is passing, no chip.
-    const chip = ctx.flakinessChipForTest({ outcome: 'failed', retry_outcome: 'passed' });
-    assert.strictEqual(chip, null);
-});
+// ``flakinessChipForTest`` tests removed alongside the helper itself
+// (PR #6319 Blocker 3) — it was added without a render path and
+// therefore had no shipped behavior to verify.  Re-introduce both
+// helper and tests when the rendering surface lands.
