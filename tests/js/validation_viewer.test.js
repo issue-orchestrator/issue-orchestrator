@@ -136,7 +136,12 @@ test('registry: extras with non-array shape is treated as empty', () => {
 
 // ── Canonical viewer tests ────────────────────────────────────────────────
 
-test('viewer: passed run renders the browse-by-file expander and no triage cards', () => {
+test('viewer: passed run renders a single Passed group and no triage cards', () => {
+    // Phase D redesign (issue #6322): the canonical viewer renders
+    // outcome-grouped expanders.  All-passing run → just the
+    // Passed (N) group; no Failed/Errored/Skipped groups (zero-count
+    // groups are hidden).  No triage cards (those only render under
+    // Failed/Errored groups).
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'passed',
@@ -146,9 +151,15 @@ test('viewer: passed run renders the browse-by-file expander and no triage cards
         ],
     });
     assert.doesNotMatch(html, /cvv-triage-card/);
-    assert.match(html, /cvv-row-browse/);
-    assert.match(html, /2 passed/);
-    // Each file rendered as its own expander
+    // Passed group renders.
+    assert.match(html, /cvv-group-passed/);
+    // Group count reads "(2)".
+    assert.match(html, /Passed<\/span><span class="cvv-summary">\(2\)/);
+    // No Failed/Errored/Skipped groups (zero-count → hidden).
+    assert.doesNotMatch(html, /cvv-group-failed/);
+    assert.doesNotMatch(html, /cvv-group-error/);
+    assert.doesNotMatch(html, /cvv-group-skipped/);
+    // Each file rendered as its own expander inside the group.
     assert.match(html, /test_a\.py/);
     assert.match(html, /test_b\.py/);
 });
@@ -187,9 +198,15 @@ test('viewer: failed run renders one triage card per failed/errored test', () =>
     // two-row red-box class.  Accept either form.
     assert.match(html, /(cvv-headline|cvv-inline-headline) is-failed/);
     assert.match(html, /(cvv-headline|cvv-inline-headline) is-error/);
-    // Passed cases still browseable via browse expander
-    assert.match(html, /cvv-row-browse/);
-    assert.match(html, /1 passed/);
+    // Phase D: passed cases live under the Passed group.
+    assert.match(html, /cvv-group-passed/);
+    // Phase D: failed and errored cases live in separate outcome
+    // groups (Failed and Errored), each with its own count.
+    assert.match(html, /cvv-group-failed/);
+    assert.match(html, /cvv-group-error/);
+    assert.match(html, /Failed<\/span><span class="cvv-summary">\(1\)/);
+    assert.match(html, /Errored<\/span><span class="cvv-summary">\(1\)/);
+    assert.match(html, /Passed<\/span><span class="cvv-summary">\(1\)/);
 });
 
 test('viewer: triage cards render stdout and stderr expanders', () => {

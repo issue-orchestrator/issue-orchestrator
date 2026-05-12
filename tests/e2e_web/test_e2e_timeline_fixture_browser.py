@@ -2068,6 +2068,12 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
     expect(summary).to_contain_text("1 failing")
     expect(summary).to_contain_text("1 passing")
 
+    # Phase D outcome groups: the Failed group is collapsed; open it
+    # first to reveal the triage cards inside.
+    failed_group = cvv.locator(".cvv-group-failed")
+    expect(failed_group).to_have_count(1)
+    failed_group.locator("summary").first.click()
+
     # ── Failure triage card carries the right name + longrepr ─────────
     failure_card = cvv.locator(".cvv-triage-card", has_text=expected_failed_label)
     expect(failure_card).to_be_visible(timeout=2000)

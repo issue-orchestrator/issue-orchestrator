@@ -137,34 +137,52 @@ function renderCanonicalValidationViewer(data, options = {}) {
         + ' role="tree" aria-orientation="vertical"'
         + ' aria-label="Validation results">';
 
-    // Triage: failed/errored tests as cards at the top, auto-expanded.
-    if (failureCases.length > 0) {
-        html += '<section class="cvv-triage">';
-        for (let i = 0; i < failureCases.length; i++) {
-            html += _renderTriageCard(failureCases[i], `cvv-fail-${i}`);
-        }
-        html += '</section>';
-    }
+    // Phase D redesign (issue #6322): outcome-grouped expanders.
+    // Each outcome (Failed / Errored / Skipped / Passed) becomes a
+    // top-level <details> closed by default; zero-count groups are
+    // hidden entirely.  Severity order: Failed → Errored → Skipped
+    // → Passed.  Replaces the old "always-visible triage cards +
+    // collapsed browse-by-file" layout.
+    //
+    // Predictable-collapse: every group starts closed; nothing
+    // auto-opens.  The group headers carry the counts AND the
+    // affordance — no chips, no banner, no redundant summary.
+    const failedCases = failureCases.filter((c) => c.outcome === 'failed');
+    const erroredCases = failureCases.filter((c) => c.outcome === 'error');
+    const skippedCases = otherCases.filter((c) => c.outcome === 'skipped');
+    const passedCases = otherCases.filter((c) => c.outcome === 'passed');
 
-    // Browse-by-file for non-failed cases (passed/skipped).  Single
-    // top-level expander; clicking opens the file list.  Each file
-    // expands to test rows; each test expands to its stdout / duration /
-    // sparkline.
-    if (otherCases.length > 0) {
-        const passedCount = otherCases.filter((c) => c.outcome === 'passed').length;
-        const skippedCount = otherCases.filter((c) => c.outcome === 'skipped').length;
-        const summaryParts = [];
-        if (passedCount > 0) summaryParts.push(`${passedCount} passed`);
-        if (skippedCount > 0) summaryParts.push(`${skippedCount} skipped`);
-        const summary = (failureCases.length > 0 ? '+ ' : '') + summaryParts.join(', ');
-        html += '<section class="cvv-browse">';
-        const browseOpen = failureCases.length === 0;
-        html += `<details class="cvv-row cvv-row-browse" role="treeitem" aria-expanded="${browseOpen ? 'true' : 'false'}" ${browseOpen ? 'open' : ''}>`;
-        html += `<summary><span class="cvv-caret">▸</span><span class="cvv-ico cvv-ico-passed">✓</span><span class="cvv-title">${escapeHtml(summary)}</span><span class="cvv-summary">browse by file</span></summary>`;
-        html += '<div class="cvv-row-body" role="group">';
-        html += _renderBrowseByFile(otherCases, 'cvv-browse');
-        html += '</div></details>';
-        html += '</section>';
+    if (failedCases.length > 0) {
+        html += _renderOutcomeGroup({
+            outcome: 'failed',
+            label: 'Failed',
+            cases: failedCases,
+            idPrefix: 'cvv-grp-failed',
+        });
+    }
+    if (erroredCases.length > 0) {
+        html += _renderOutcomeGroup({
+            outcome: 'error',
+            label: 'Errored',
+            cases: erroredCases,
+            idPrefix: 'cvv-grp-errored',
+        });
+    }
+    if (skippedCases.length > 0) {
+        html += _renderOutcomeGroup({
+            outcome: 'skipped',
+            label: 'Skipped',
+            cases: skippedCases,
+            idPrefix: 'cvv-grp-skipped',
+        });
+    }
+    if (passedCases.length > 0) {
+        html += _renderOutcomeGroup({
+            outcome: 'passed',
+            label: 'Passed',
+            cases: passedCases,
+            idPrefix: 'cvv-grp-passed',
+        });
     }
 
     // stdout/stderr excerpts — preserved from the historical dialog
@@ -488,6 +506,54 @@ function _focusTreeitem(item, root) {
     for (const it of all) it.tabIndex = -1;
     item.tabIndex = 0;
     if (typeof item.focus === 'function') item.focus();
+}
+
+// ── Outcome-grouped expander (Phase D redesign — issue #6322) ──────────────
+//
+// Each outcome bucket (Failed / Errored / Skipped / Passed) renders
+// as a top-level <details> closed by default.  Summary row:
+//   caret + outcome icon + label + (count).
+// Body: cases belonging to this outcome.  Failed/Errored render
+// triage cards; Passed/Skipped render the browse-by-file tree
+// (Skipped only — passed are included too when in the Passed
+// group, but the browse-by-file helper is shared).
+//
+// Predictable-collapse: every group starts closed; nothing auto-
+// opens at any level.
+
+function _renderOutcomeGroup(opts) {
+    const outcome = opts.outcome;
+    const label = opts.label;
+    const cases = opts.cases || [];
+    const idPrefix = opts.idPrefix || `cvv-grp-${outcome}`;
+    const iconChar = outcome === 'error' ? '⚠' : outcome === 'failed' ? '✕' : outcome === 'skipped' ? '–' : '✓';
+    const count = cases.length;
+
+    let html = `<details class="cvv-row cvv-group cvv-group-${outcome}" role="treeitem" aria-expanded="false">`;
+    html += '<summary>';
+    html += '<span class="cvv-caret">▸</span>';
+    html += `<span class="cvv-ico cvv-ico-${outcome}">${iconChar}</span>`;
+    html += `<span class="cvv-title">${escapeHtml(label)}</span>`;
+    html += `<span class="cvv-summary">(${count})</span>`;
+    html += '</summary>';
+    html += '<div class="cvv-row-body" role="group">';
+
+    if (outcome === 'failed' || outcome === 'error') {
+        // Failed and errored cases render as triage cards (each is
+        // its own <details> expander further down — predictable-
+        // collapse all the way through).
+        for (let i = 0; i < cases.length; i++) {
+            html += _renderTriageCard(cases[i], `${idPrefix}-${i}`);
+        }
+    } else {
+        // Passed / Skipped cases share the browse-by-file tree.
+        // The helper groups by suite file and renders each test as
+        // a row (with skip-reason inline rendering for skipped).
+        html += _renderBrowseByFile(cases, idPrefix);
+    }
+
+    html += '</div></details>';
+    return html;
 }
 
 // ── Triage card (one failed/errored test, collapsed by default) ─────────────
