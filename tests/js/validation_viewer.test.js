@@ -331,16 +331,18 @@ test('viewer: synthesizes triage cards from failed_tests when junit_cases is emp
     // Three triage cards (one per synthesized failure).
     const triageCount = (html.match(/cvv-triage-card/g) || []).length;
     assert.strictEqual(triageCount, 3, `expected 3 synthesized triage cards, got ${triageCount}`);
-    // Each card carries the failed-headline class so styling is
-    // consistent with JUnit-driven failures.  Phase C added the 3a
-    // ``inline`` variant (no traceback body → headline renders next to
-    // the test name) — the synthesized fallback message is a single
-    // line, so each card uses the inline variant.  The styling class
-    // is ``cvv-inline-headline is-failed`` in that branch.
-    const headlineCount =
-        (html.match(/cvv-headline is-failed/g) || []).length +
-        (html.match(/cvv-inline-headline is-failed/g) || []).length;
-    assert.strictEqual(headlineCount, 3);
+    // Each card renders BOTH the inline-headline (in the summary row,
+    // 1-line truncated) AND the body headline box (full text shown
+    // when the card is expanded).  Phase D redesign (issue #6322)
+    // dropped the inline/two-row variant distinction — every card has
+    // the same shape.  So we expect 3 of each.  The two regexes are
+    // disjoint: ``cvv-headline is-failed`` (body) does NOT match
+    // inside ``cvv-inline-headline is-failed`` (summary) because the
+    // ``-i`` between ``cvv-`` and ``headline`` breaks the substring.
+    const inlineHeadlineCount = (html.match(/cvv-inline-headline is-failed/g) || []).length;
+    const bodyHeadlineCount = (html.match(/cvv-headline is-failed/g) || []).length;
+    assert.strictEqual(inlineHeadlineCount, 3, 'expected 3 inline headlines (one per card)');
+    assert.strictEqual(bodyHeadlineCount, 3, 'expected 3 body headlines (one per card)');
     // And the fallback headline explains where the data came from so
     // the operator isn't confused by the missing traceback.
     assert.match(html, /No JUnit XML detail was available/);

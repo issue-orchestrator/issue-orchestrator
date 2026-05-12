@@ -192,15 +192,20 @@ test('a11y: enhancer is exported as a symbol on the viewer module', () => {
 
 // ── Triage card role="group" (reviewer Blocker 1 on PR #6316) ──────────────
 
-test('a11y: failed triage card carries role="group" so children belong to an owned group', () => {
-    // The reviewer found that the canonical failure UI (triage cards
-    // for failed/errored tests) had no owning ARIA group, so
-    // ``_treeitemSiblings`` resolved the children's parent group all
-    // the way up to ``.cvv-root[role=tree]``.  That gave the
-    // traceback / stdout / stderr rows ``aria-setsize`` from unrelated
-    // top-level rows and ``aria-posinset = null``.  The triage card
-    // now carries ``role="group"`` so its children own a proper
-    // group/treeitem hierarchy.
+test('a11y: failed triage card is a treeitem; its body carries role="group"', () => {
+    // Phase D redesign (issue #6322): the triage card is now a
+    // ``<details role="treeitem">`` closed by default.  Its body
+    // ``<div class="cvv-triage-body" role="group">`` is the owning
+    // group for the children (traceback / stdout / stderr leaf rows).
+    //
+    // Why both roles matter:
+    //   - The card itself is a treeitem so it participates in the
+    //     ARIA tree at the top level (aria-level=1).
+    //   - The body's role="group" gives the leaf rows a proper
+    //     parent group for ``aria-setsize``/``aria-posinset``
+    //     enumeration — without it, ``_treeitemSiblings`` would
+    //     resolve all the way up to ``.cvv-root[role=tree]`` and
+    //     leak counts from unrelated top-level rows.
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -211,9 +216,15 @@ test('a11y: failed triage card carries role="group" so children belong to an own
             extras: [],
         }],
     });
-    const cardTag = html.match(/<div class="cvv-triage-card[^"]*"[^>]*>/);
-    assert.ok(cardTag, 'triage card should render');
-    assert.match(cardTag[0], /role="group"/);
+    // Card itself: <details role="treeitem">
+    const cardTag = html.match(/<details class="cvv-triage-card[^"]*"[^>]*>/);
+    assert.ok(cardTag, 'triage card should render as <details>');
+    assert.match(cardTag[0], /role="treeitem"/, 'card must be a treeitem');
+    assert.match(cardTag[0], /aria-expanded="false"/, 'card must start collapsed');
+    // Body: <div class="cvv-triage-body" role="group">
+    const bodyTag = html.match(/<div class="cvv-triage-body"[^>]*>/);
+    assert.ok(bodyTag, 'triage card body should render');
+    assert.match(bodyTag[0], /role="group"/, 'body must own the group for child leaf rows');
 });
 
 // ── Key → command translation (pure, no DOM needed) ────────────────────────

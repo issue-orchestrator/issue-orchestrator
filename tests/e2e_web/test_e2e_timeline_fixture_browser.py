@@ -2071,12 +2071,22 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
     # ── Failure triage card carries the right name + longrepr ─────────
     failure_card = cvv.locator(".cvv-triage-card", has_text=expected_failed_label)
     expect(failure_card).to_be_visible(timeout=2000)
-    # The traceback row inside the failure card holds the specific longrepr
-    # text.  Auto-open by default for failures, so it's reachable without
-    # an extra click.
+
+    # Phase D: the failure card is a <details> closed by default.  Open
+    # it to reveal the traceback / plugin / leaf rows so the
+    # assertions below see their targets visible.
+    failure_card.locator("summary").first.click()
+    # The traceback row inside the card holds the specific longrepr.
+    # It still starts closed (predictable-collapse rule) — but the
+    # text is in the DOM regardless of open state, so to_contain_text
+    # finds it.
     expect(failure_card).to_contain_text(expected_longrepr)
 
     # ── Built-in Copy-error icon writes the failure text to clipboard ─
+    # The Copy-error icon lives in the card's summary row, so it's
+    # visible even when the card is closed.  But the failure card
+    # body is now open (we clicked summary above), so we can test the
+    # full path.
     page.evaluate(
         """() => {
             window.__copiedE2EText = "";
@@ -2097,6 +2107,7 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
     )
 
     # ── Linked-failure plugin block carries the issue number + drawer link ─
+    # Inside the now-open card body.
     plugin = failure_card.locator(".cvv-plugin.agent-context")
     expect(plugin).to_be_visible()
     expect(plugin).to_contain_text("#5723")

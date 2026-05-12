@@ -98,7 +98,14 @@ test('layout: trailing newline after headline → still inline (no body)', () =>
 
 // ── rendered output ───────────────────────────────────────────────────────
 
-test('render: inline variant produces .cvv-inline-headline and no .cvv-headline box', () => {
+test('render: short single-line failure shows inline headline + body headline + NO traceback row', () => {
+    // Phase D redesign (issue #6322): the triage card is always the
+    // same shape now — the old inline/two-row/none layout variants
+    // are gone.  The card is a <details> closed by default:
+    //   summary row → inline-headline (1-line, truncated)
+    //   body → full headline box + chips + leaf rows
+    // For a single-line failure (no multi-line body), the traceback
+    // <details> row is omitted (nothing to expand into).
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -111,18 +118,16 @@ test('render: inline variant produces .cvv-inline-headline and no .cvv-headline 
             extras: [],
         }],
     });
-    assert.match(html, /cvv-layout-inline/);
-    assert.match(html, /cvv-inline-headline/);
+    assert.match(html, /cvv-inline-headline/, 'inline headline must appear in summary row');
+    assert.match(html, /<div class="cvv-headline is-failed">/, 'body headline box must appear');
     assert.match(html, /TimeoutError: 30s/);
-    assert.doesNotMatch(html, /class="cvv-headline /);
-    // No traceback row when no body.
+    // Single-line failure → no traceback expander row.
     assert.doesNotMatch(html, /<span class="cvv-title">traceback<\/span>/);
 });
 
-test('render: two-row variant produces .cvv-headline box + COLLAPSED traceback row', () => {
-    // Predictable-collapse rule: the traceback row defaults closed
-    // regardless of failure count.  The headline above shows the
-    // 1-line summary; the user clicks ``traceback ▸`` to drill in.
+test('render: multi-line failure shows inline headline + body headline + COLLAPSED traceback row', () => {
+    // Same card shape; the multi-line body adds a traceback expander
+    // that starts CLOSED (predictable-collapse rule).
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -135,14 +140,11 @@ test('render: two-row variant produces .cvv-headline box + COLLAPSED traceback r
             extras: [],
         }],
     });
-    assert.match(html, /cvv-layout-two-row/);
+    assert.match(html, /cvv-inline-headline/);
     assert.match(html, /<div class="cvv-headline is-failed">/);
     assert.match(html, /<span class="cvv-title">traceback<\/span>/);
-    assert.doesNotMatch(html, /class="cvv-inline-headline/);
 
-    // Traceback row must NOT carry the ``open`` attribute or
-    // aria-expanded="true".  Find the row's opening tag and assert
-    // on its attributes.
+    // Traceback row must start CLOSED.
     const tracebackTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">traceback<\/span>)/);
     assert.ok(tracebackTag, 'traceback <details> tag not found');
     assert.doesNotMatch(tracebackTag[0], /\bopen\b/,
@@ -150,7 +152,10 @@ test('render: two-row variant produces .cvv-headline box + COLLAPSED traceback r
     assert.match(tracebackTag[0], /aria-expanded="false"/);
 });
 
-test('render: none variant produces no headline and no traceback row', () => {
+test('render: failure with empty failure_details shows no headline and no traceback row', () => {
+    // Edge case: a failed test case with no failure_details at all.
+    // Inline-headline and body headline both suppressed; no traceback
+    // expander; only the chips + stdout/stderr rows remain.
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -163,10 +168,11 @@ test('render: none variant produces no headline and no traceback row', () => {
             extras: [],
         }],
     });
-    assert.match(html, /cvv-layout-none/);
     assert.doesNotMatch(html, /cvv-inline-headline/);
     assert.doesNotMatch(html, /class="cvv-headline /);
     assert.doesNotMatch(html, /<span class="cvv-title">traceback<\/span>/);
+    // But the card still renders (it has chips + leaf rows).
+    assert.match(html, /cvv-triage-card/);
 });
 
 // ── Copy-error icon ───────────────────────────────────────────────────────
