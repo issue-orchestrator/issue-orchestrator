@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Literal, TypeAlias
 
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 
@@ -609,7 +609,7 @@ class OpenE2ERunCommandPayload(BaseModel):
     expand_run_details: bool | None = None
     kind: Literal['open_e2e_run']
     label: str
-    run_id: int
+    run_id: int = Field(..., ge=1)
 
 class OpenIssueTimelineCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

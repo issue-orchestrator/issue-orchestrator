@@ -510,8 +510,15 @@ async function createIssuesForUntriaged() {
 
         showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
 
-        // Refresh the view
-        showUnifiedRunView(unifiedRunData.run.id);
+        // Refresh the view via the typed Command dispatcher so EVERY
+        // route into ``showUnifiedRunView`` goes through one owner
+        // (PR #6329 single-owner contract).
+        runE2ELifecycleCommand({
+            kind: 'open_e2e_run',
+            label: 'Open E2E Run',
+            run_id: Number(unifiedRunData.run.id),
+            expand_run_details: false,
+        });
 
         // Open parent issue in new tab
         if (data.parent_issue.url) {

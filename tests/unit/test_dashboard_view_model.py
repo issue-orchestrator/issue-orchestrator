@@ -1487,6 +1487,40 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
     assert "note" not in items[0]
 
 
+def test_e2e_recent_run_item_exposes_typed_open_run_command(tmp_path):
+    """Every recent-run item must carry the typed ``open_run_command``.
+
+    PR #6329 contract: the dashboard chip serializes the view-model
+    field via ``{{ run.open_run_command | tojson | forceescape }}``.
+    If the view model stops emitting it, the chip's
+    ``data-lifecycle-command`` attribute renders as ``null`` and the
+    dispatcher silently no-ops on the click.  This test pins the
+    emission at the model layer.
+    """
+    from issue_orchestrator.infra.e2e_db import E2EDB
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_recent_run_items
+
+    config = _make_config()
+    orch_id = config.orchestrator_id
+    db = E2EDB(tmp_path / "e2e.db")
+    run_id = db.start_run(repo_root=str(tmp_path), orchestrator_id=orch_id, pytest_args=[])
+    db.finish_run(run_id, status="passed", exit_code=0)
+
+    items = build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
+    assert len(items) == 1
+    item = items[0]
+    assert item["e2e_run_id"] == run_id
+    # The typed Command must be emitted as a dict matching the
+    # ``OpenE2ERunCommand.model_dump()`` shape — same fields the
+    # OpenAPI schema validates.
+    assert item["open_run_command"] == {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": run_id,
+        "expand_run_details": False,
+    }
+
+
 def test_e2e_recent_run_item_exposes_formatted_results_action(tmp_path):
     """Passed runs still need an explicit action into the formatted results modal."""
     from issue_orchestrator.infra.e2e_db import E2EDB

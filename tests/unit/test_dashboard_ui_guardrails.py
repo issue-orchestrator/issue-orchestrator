@@ -2255,3 +2255,91 @@ def test_flaky_analysis_parses_response_as_text_first() -> None:
     assert "JSON.parse(" in body, (
         "Must parse text as JSON rather than using res.json()"
     )
+
+
+def test_show_unified_run_view_has_a_single_owner() -> None:
+    """``showUnifiedRunView`` is only legitimately called from the
+    typed-Command dispatcher.
+
+    PR #6329 reviewer Blocker 2: every user-facing "open E2E run"
+    affordance must dispatch the typed ``open_e2e_run`` Command,
+    which the dispatcher then routes to ``showUnifiedRunView``.
+    Direct ``showUnifiedRunView(...)`` callers anywhere ELSE
+    re-introduce the parallel untyped surface.
+
+    This guardrail walks every JS file under
+    ``static/js/dashboard/`` and asserts that ``showUnifiedRunView(``
+    appears only in:
+      - ``e2e_run_view.js`` — the function's DEFINITION.
+      - ``lifecycle_commands.js`` — the typed-Command dispatcher
+        (the single legitimate non-definition call site).
+    Any new file containing ``showUnifiedRunView(`` fails this test.
+    The dispatcher's own call line is the only allowed
+    non-definition use.
+    """
+    import re
+
+    allowed_files = {
+        "e2e_run_view.js",  # contains the function definition
+        "lifecycle_commands.js",  # the typed-Command dispatcher
+    }
+    direct_callers: list[tuple[str, int, str]] = []
+
+    for js_path in sorted(DASHBOARD_JS_DIR.rglob("*.js")):
+        relpath = js_path.relative_to(DASHBOARD_JS_DIR).as_posix()
+        if relpath in allowed_files:
+            continue
+        text = js_path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Strip JS line/block-comment fragments before matching so
+            # ``// ... showUnifiedRunView()`` mentions in prose don't
+            # trip the guard.
+            stripped = re.sub(r"//.*$", "", line)
+            if "showUnifiedRunView(" in stripped:
+                direct_callers.append((relpath, lineno, line.strip()))
+
+    assert direct_callers == [], (
+        "showUnifiedRunView() must only be called from the typed-Command "
+        "dispatcher in lifecycle_commands.js (and its definition in "
+        "e2e_run_view.js).  Found direct callers:\n  "
+        + "\n  ".join(f"{f}:{ln}: {src}" for f, ln, src in direct_callers)
+    )
+
+
+def test_no_hand_built_open_e2e_run_json_anywhere() -> None:
+    """The legacy hand-built ``data-lifecycle-command`` JSON shape
+    for ``open_e2e_run`` is gone everywhere.
+
+    PR #6329: every ``open_run_command`` payload renders through
+    the view-model's typed dict (``OpenE2ERunCommand.model_dump()``)
+    and the Jinja ``| tojson | forceescape`` filter chain.  No
+    template or JS file should contain a literal
+    ``{"kind":"open_e2e_run",...}`` string.
+    """
+    import re
+
+    hand_built_pattern = re.compile(
+        r'(?:data-lifecycle-command\s*=\s*[\'"]|\{)\s*\{?\s*"kind"\s*:\s*"open_e2e_run"'
+    )
+    # Search the production template + JS surfaces.  Tests and
+    # mockups may legitimately reference the shape (e.g. our
+    # JS-vm cheap-integration test builds a representative chip
+    # to extract from), so the guard scopes to production files.
+    production_files = [
+        ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html",
+        ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html",
+    ]
+    production_files.extend(sorted(DASHBOARD_JS_DIR.rglob("*.js")))
+
+    hits: list[tuple[str, int, str]] = []
+    for path in production_files:
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if hand_built_pattern.search(line):
+                hits.append((path.as_posix(), lineno, line.strip()))
+
+    assert hits == [], (
+        "No production file may hand-build the open_e2e_run JSON payload "
+        "(the view model + tojson filter own the serialization).  "
+        "Found:\n  " + "\n  ".join(f"{f}:{ln}: {src}" for f, ln, src in hits)
+    )

@@ -248,6 +248,83 @@ def test_issue_item_open_run_command_validates_against_ui_openapi() -> None:
     with pytest.raises(JsonSchemaValidationError):
         validator.validate(bad_expand_type)
 
+    # Malformed: ``run_id`` must be a positive integer (PR #6329
+    # round-4 blocker — the OpenAPI schema must enforce the same
+    # invariant the canonical ``OpenE2ERunCommand`` Pydantic model
+    # enforces).
+    bad_run_id_zero = {**valid_item}
+    bad_run_id_zero["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": 0,
+        "expand_run_details": False,
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_run_id_zero)
+
+    bad_run_id_negative = {**valid_item}
+    bad_run_id_negative["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": -5,
+        "expand_run_details": False,
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_run_id_negative)
+
+
+def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> None:
+    """The GENERATED Pydantic contract must enforce the same
+    ``run_id >= 1`` invariant the canonical model enforces.
+
+    PR #6329 round-4 blocker: the generator was emitting
+    ``run_id: int`` with no constraint, so
+    ``IssueItemPayload.model_validate({...})`` silently accepted
+    ``run_id: 0``.  After extending the generator to map
+    ``minimum: 1`` → ``Field(..., ge=1)``, the generated contract
+    enforces the same invariant at the Python boundary that JSON
+    schema enforces at the validator boundary.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import IssueItemPayload
+    from pydantic import ValidationError
+
+    # Valid → succeeds.
+    valid = IssueItemPayload.model_validate({
+        "issue_number": "E2E-88",
+        "open_run_command": {
+            "kind": "open_e2e_run",
+            "label": "Open E2E Run",
+            "run_id": 88,
+            "expand_run_details": False,
+        },
+    })
+    assert valid.open_run_command is not None
+    assert valid.open_run_command.run_id == 88
+
+    # run_id=0 → rejected by the generated Pydantic model.
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": 0,
+                "expand_run_details": False,
+            },
+        })
+
+    # Negative run_id → also rejected.
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": -1,
+                "expand_run_details": False,
+            },
+        })
+
 
 def test_dialog_payloads_match_ui_openapi() -> None:
     info = build_info_dialog({

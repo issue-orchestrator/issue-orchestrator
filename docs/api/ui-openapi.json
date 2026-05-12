@@ -1207,7 +1207,7 @@
         "properties": {
           "kind": {"const": "open_e2e_run"},
           "label": {"type": "string"},
-          "run_id": {"type": "integer"},
+          "run_id": {"type": "integer", "minimum": 1},
           "expand_run_details": {"type": "boolean"}
         }
       },
