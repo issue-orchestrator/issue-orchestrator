@@ -28,3 +28,4 @@ These ADRs capture the core architecture and safety story:
 - [0016 Orchestrator as mediator (agents never touch GitHub)](0016-orchestrator-as-mediator.md)
 - [0019 Structured completion protocol (agent-done)](0019-agent-done-completion-protocol.md)
 - [0023 Deterministic orchestrator required (cannot replace with agentic-first solution)](0023-deterministic-orchestrator-required.md)
+- [0028 Deep module boundaries](0028-deep-module-boundaries.md)
