@@ -242,3 +242,94 @@ test('copy-error: handler degrades silently when navigator.clipboard is absent',
         getAttribute(name) { return this.attrs[name] || ''; },
     });
 });
+
+// ── Skip reason (content-checked) ─────────────────────────────────────────
+
+test('skip-reason: a skipped test surfaces its failure_details inline when the row opens', () => {
+    // The JUnit parser maps ``<skipped message="reason"/>`` into
+    // ``failure_details`` on the JUnitCase.  The viewer surfaces it
+    // verbatim in a muted block so users can read it without
+    // leaving the dashboard.  This test asserts the *exact text*
+    // appears in the rendered HTML (content, not just structure).
+    const ctx = loadViewer();
+    const reason = "Skipped: not implemented on macOS — see PR #5500 for the cross-platform shim";
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'a',
+            display_name: 'test_macos_specific',
+            suite_name: 'tests/integration/test_platform.py',
+            outcome: 'skipped',
+            failure_details: reason,
+            extras: [],
+        }],
+    });
+    // The skip-reason block uses its dedicated class.
+    assert.match(html, /<div class="cvv-skip-reason">/);
+    // The exact reason text appears in the rendered DOM.  ``&#39;``
+    // is the entity for ``'`` (the escapeHtml output for the reason
+    // would contain it if the reason had an apostrophe — this one
+    // doesn't, so the text passes through unchanged).
+    assert.match(html, /Skipped: not implemented on macOS — see PR #5500 for the cross-platform shim/);
+});
+
+test('skip-reason: a skipped test with no failure_details shows the "no skip reason" placeholder', () => {
+    // If the JUnit XML wrote ``<skipped/>`` with no message body,
+    // ``failure_details`` ends up empty.  The viewer still has to
+    // render something — a muted placeholder so the absent reason
+    // is itself visible information (not a layout-collapse).
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'a',
+            display_name: 'test_silently_skipped',
+            outcome: 'skipped',
+            failure_details: '',
+            extras: [],
+        }],
+    });
+    assert.match(html, /No skip reason was recorded for this test/);
+    // No empty skip-reason block (no signal to show).
+    assert.doesNotMatch(html, /<div class="cvv-skip-reason"><\/div>/);
+});
+
+test('skip-reason: passing tests do NOT render a skip-reason block (failure_details ignored)', () => {
+    // A passing test should never carry a skip-reason block even
+    // if its ``failure_details`` is accidentally set — the field
+    // only has meaning for skips in the viewer's render path.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'a',
+            display_name: 'test_works',
+            outcome: 'passed',
+            failure_details: 'should not appear',
+            extras: [],
+        }],
+    });
+    assert.doesNotMatch(html, /cvv-skip-reason/);
+    assert.doesNotMatch(html, /should not appear/);
+});
+
+test('skip-reason: HTML in the reason is escaped, not interpreted', () => {
+    // A defense-in-depth check: skip-reason text comes from JUnit
+    // XML (which is decoded by the parser already), but the viewer
+    // must HTML-escape on its way into the DOM so a hostile
+    // adopter who plants ``<script>`` in a JUnit ``<skipped
+    // message="...">`` does not get a script execution out of it.
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'a',
+            display_name: 'test_hostile',
+            outcome: 'skipped',
+            failure_details: '<script>alert("xss")</script>',
+            extras: [],
+        }],
+    });
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.match(html, /&lt;script&gt;alert/);
+});

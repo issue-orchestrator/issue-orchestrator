@@ -242,6 +242,24 @@
     font-size: 11px;
 }
 
+/* Skip-reason: surfaced inline when a skipped test is expanded.
+   JUnit's ``<skipped message="..."/>`` lands on
+   ``failure_details``; the viewer renders it in a muted block so
+   the user can see *why* the test was skipped without leaving the
+   dashboard. */
+.cvv-skip-reason {
+    margin: 0 10px 8px;
+    padding: 8px 10px;
+    background: #f6f8fa;
+    border: 1px solid #d8dde4;
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #5a6472;
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
 /* ── run-level stdout/stderr (legacy excerpts) ──────────────────── */
 .cvv-run-output .cvv-row { background: #fbfcfd; }
 

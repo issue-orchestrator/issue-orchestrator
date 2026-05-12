@@ -626,6 +626,20 @@ function _renderPassedTestRow(testCase, idPrefix) {
     html += `<span class="cvv-chip cvv-chip-${outcome}">${outcome === 'skipped' ? '– Skipped' : '✓ Passed'}</span>`;
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
+    // Skipped tests carry their skip reason in ``failure_details``
+    // (the JUnit parser stores ``<skipped message="..."/>`` and any
+    // inline body text there).  Surface it inline so a user
+    // expanding a skipped row can see *why* without leaving the
+    // dashboard.  Passed tests have no equivalent — they're just
+    // green.
+    if (outcome === 'skipped') {
+        const skipReason = String(testCase.failure_details || '').trim();
+        if (skipReason) {
+            html += `<div class="cvv-skip-reason">${escapeHtml(skipReason)}</div>`;
+        } else {
+            html += '<div class="cvv-empty">No skip reason was recorded for this test.</div>';
+        }
+    }
     html += _renderTestSystemOutErr(testCase, idPrefix, false);
     html += renderPluginExtras(testCase);
     html += '</div></details>';
