@@ -430,6 +430,53 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.strictEqual(cmd.scope_kind, 'dashboard');
 });
 
+test('plugin: agent-context plugin degrades to text-only when lifecycle_commands.js is not loaded', () => {
+    // Generic JUnit consumers (tixmeup et al.) may register the
+    // agent-context plugin but NOT load
+    // ``lifecycle_commands.js`` — they don't have a typed-Command
+    // pipeline.  The plugin must still render the linked-issue
+    // summary (issue number, title, final state, summary text)
+    // without throwing or emitting a broken button.  The
+    // Open-issue-drawer button is simply omitted when the shared
+    // command renderer is unavailable.
+    //
+    // This test loads only the viewer + the plugin (no
+    // lifecycle_commands.js) and exercises a normal linked-issue
+    // payload.  Without the guard in the plugin, the call to
+    // ``_renderLifecycleCommandButton`` would ReferenceError.
+    const ctx = loadViewer();
+    const pluginSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
+        'utf8',
+    );
+    vm.runInContext(pluginSource, ctx, { filename: 'plugins/agent_context.js (no lifecycle bundle)' });
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'driven failure', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [{
+                namespace: 'io.agent-context',
+                payload: {
+                    issue_number: 4503,
+                    issue_title: 'fixture cohort split',
+                    final_state: 'blocked',
+                    summary: 'agent retried 2x then blocked on validation',
+                },
+            }],
+        }],
+    });
+    // Plugin block still renders the data.
+    assert.match(html, /Linked issue · driven by orchestrator/);
+    assert.match(html, /#4503/);
+    assert.match(html, /fixture cohort split/);
+    assert.match(html, /blocked/);
+    // ... but with no Open-issue-drawer button (no typed-Command
+    // pipeline available to dispatch the click).
+    assert.doesNotMatch(html, /data-lifecycle-command/);
+    assert.doesNotMatch(html, /Open issue drawer/);
+});
+
 test('plugin: agent-context plugin ignores legacy run_url even if a stale payload passes one', () => {
     // PR #6319 round 2 (Blocker 2): an earlier iteration of the
     // plugin emitted ``<a href={run_url}>`` and the translator built a
