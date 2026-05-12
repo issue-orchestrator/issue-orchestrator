@@ -110,6 +110,12 @@ Agents cannot merge PRs. Humans merge. Validation runs automatically before code
 
 [Multi-layer hooks](docs/architecture/hooks.md) enforce these rules at the AI-agent level, git level, orchestrator level, and CI. The guardrails are installed and verified, not just described. See [Guardrails & Safety Model](docs/design/guardrails.md) for the guarantee and limitation boundaries.
 
+## Is your repo ready?
+
+The orchestrator works best on repos with basic discipline: PR-required branches, CI that gates merge, architecture you can name, tests at public boundaries, and a culture of adding tests when you add code. Under-disciplined repos burn cycles — fixing CI, fighting flaky tests, rediscovering layer boundaries.
+
+Run `/readiness` from your target repo to check before scaling agent work. The skill is conversational and read-only by default; it grades the repo against 11 pillars (PR/CI discipline, architecture documented + enforced, tests at boundaries, mechanical DoD, reviewer in place, issue sizing, abstraction quality, deep modules, tests grow with code) and produces a punch list of fixes. v0.1 — expect rough edges and iteration.
+
 ## Quickstart
 
 ```bash
