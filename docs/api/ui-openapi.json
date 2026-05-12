@@ -397,7 +397,13 @@
           "action": {"type": ["string", "null"]},
           "action_hint": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
-          "issue_url": {"type": ["string", "null"]}
+          "issue_url": {"type": ["string", "null"]},
+          "open_run_command": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
+              {"type": "null"}
+            ]
+          }
         }
       },
       "DashboardDataPayload": {

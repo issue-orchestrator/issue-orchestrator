@@ -21,6 +21,7 @@ import pytest
 from issue_orchestrator.view_models.lifecycle_semantics import (
     CycleValidationBadge,
     OpenCompletionRecordCommand,
+    OpenE2ERunCommand,
     OpenIssueTimelineCommand,
     OpenReviewFeedbackCommand,
     OpenSessionRecordingCommand,
@@ -122,6 +123,40 @@ def test_open_issue_timeline_command_e2e_scope_requires_run_id() -> None:
         OpenIssueTimelineCommand(
             issue_number=4124, scope_kind="e2e_run", e2e_run_id=None
         )
+
+
+def test_open_e2e_run_command_wire_shape_default_expand() -> None:
+    """``OpenE2ERunCommand`` (issue #6322): default ``expand_run_details=False``."""
+    assert _dump(OpenE2ERunCommand(run_id=88)) == {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": 88,
+        "expand_run_details": False,
+    }
+
+
+def test_open_e2e_run_command_wire_shape_expand_true() -> None:
+    """The ``expand_run_details=True`` variant carries through to the dispatch."""
+    assert _dump(OpenE2ERunCommand(run_id=88, expand_run_details=True)) == {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": 88,
+        "expand_run_details": True,
+    }
+
+
+def test_open_e2e_run_command_rejects_non_positive_run_id() -> None:
+    """``run_id`` must be a positive integer.
+
+    The frontend dispatcher already guards on truthy ``run_id``, but
+    the Pydantic validator is the contract-level source of truth.
+    Zero and negative values must fail validation, not silently pass
+    through to the JS guard.
+    """
+    with pytest.raises(ValueError, match="run_id"):
+        OpenE2ERunCommand(run_id=0)
+    with pytest.raises(ValueError, match="run_id"):
+        OpenE2ERunCommand(run_id=-1)
 
 
 def test_cycle_validation_badge_wire_shape_for_each_state() -> None:

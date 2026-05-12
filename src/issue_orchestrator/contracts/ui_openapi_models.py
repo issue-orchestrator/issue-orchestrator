@@ -491,6 +491,7 @@ class IssueItemPayload(BaseModel):
     action_hint: str | None = None
     issue_number: int | str | None = None
     issue_url: str | None = None
+    open_run_command: OpenE2ERunCommandPayload | None = None
     status: str | None = None
     title: str | None = None
     url: str | None = None

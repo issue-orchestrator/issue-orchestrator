@@ -14,6 +14,7 @@ warnings.filterwarnings(
     message="jsonschema.RefResolver is deprecated",
 )
 
+import pytest
 from jsonschema import Draft202012Validator, RefResolver
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
@@ -175,6 +176,77 @@ def test_dashboard_view_model_matches_ui_openapi() -> None:
 
     validator = _validator("DashboardViewModelPayload")
     validator.validate(view_model.to_dict())
+
+
+def test_issue_item_open_run_command_validates_against_ui_openapi() -> None:
+    """PR #6329 reviewer Blocker 2: ``open_run_command`` is a typed
+    field on ``IssueItemPayload``, not an opaque extra.
+
+    Before the fix, ``IssueItemPayload`` was ``additionalProperties: true``
+    with no declared ``open_run_command`` schema — meaning the field
+    was accepted as an extra regardless of its shape.  The reviewer
+    pointed out that malformed payloads (e.g. ``run_id: 0`` which the
+    Pydantic model rejects) flowed through silently.
+
+    Now ``open_run_command`` is an explicit
+    ``OpenE2ERunCommandPayload | null`` field.  Valid payloads pass;
+    malformed ones (wrong ``kind``, missing ``run_id``, wrong types
+    on ``expand_run_details``) fail the JSON-schema validation.
+    """
+    validator = _validator("IssueItemPayload")
+
+    # Valid case: a well-formed open_run_command attaches to an
+    # E2E issue item.
+    valid_item = {
+        "issue_number": "E2E-88",
+        "title": "Run details",
+        "status": "passed",
+        "action": "details",
+        "action_hint": "View run details",
+        "is_e2e": True,
+        "e2e_run_id": 88,
+        "open_run_command": {
+            "kind": "open_e2e_run",
+            "label": "Open E2E Run",
+            "run_id": 88,
+            "expand_run_details": False,
+        },
+    }
+    validator.validate(valid_item)  # must not raise
+
+    # Null is allowed (non-E2E items don't carry the command).
+    valid_item_no_command = {**valid_item, "open_run_command": None}
+    validator.validate(valid_item_no_command)
+
+    # Malformed: wrong kind discriminator (using a different command kind).
+    bad_kind = {**valid_item}
+    bad_kind["open_run_command"] = {
+        "kind": "open_issue_timeline",
+        "label": "X",
+        "run_id": 88,
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_kind)
+
+    # Malformed: missing required ``run_id``.
+    bad_missing_run_id = {**valid_item}
+    bad_missing_run_id["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_missing_run_id)
+
+    # Malformed: wrong type for ``expand_run_details``.
+    bad_expand_type = {**valid_item}
+    bad_expand_type["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": 88,
+        "expand_run_details": "yes",  # must be boolean
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_expand_type)
 
 
 def test_dialog_payloads_match_ui_openapi() -> None:

@@ -480,6 +480,7 @@ export interface IssueItemPayload {
   action_hint?: string | null;
   issue_number?: number | string | null;
   issue_url?: string | null;
+  open_run_command?: OpenE2ERunCommandPayload | null;
   status?: string | null;
   title?: string | null;
   url?: string | null;
