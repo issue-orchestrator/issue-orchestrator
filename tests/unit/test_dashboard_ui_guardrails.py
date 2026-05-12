@@ -1812,6 +1812,54 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
 # Playwright smoke ``test_e2e_canonical_view.py``.
 
 
+def test_e2e_legacy_triage_paths_are_absent_from_bundle() -> None:
+    """Round-3 reviewer ask on PR #6319: the legacy run-details and
+    test-detail UI in ``e2e_triage.js`` (and the ``currentRunDetails``
+    state) must not survive in the shipped dashboard bundle.  The
+    canonical ``showUnifiedRunView`` + ``unifiedRunData`` own the run
+    modal end-to-end now; any vestige of the old categorized
+    ``test-result-item`` / ``test-detail-view`` UI would render
+    unstyled obsolete markup if it ever fired.
+    """
+    js = _read(DASHBOARD_JS)
+    dead_symbols = [
+        # Legacy run-details + test-detail entry points.
+        "function showE2ERunDetailsLegacy",
+        "function showRunTestDetail",
+        # Per-test action helpers that only made sense inside the
+        # deleted detail view.
+        "function rerunTest",
+        "function copyTestCommand",
+        "function rerunCurrentTest",
+        "function copyCurrentTestCommand",
+        # Legacy state.
+        "let currentRunDetails",
+    ]
+    for symbol in dead_symbols:
+        assert symbol not in js, (
+            f"Legacy e2e_triage.js symbol {symbol!r} leaked back into the bundle"
+        )
+    # Legacy CSS class names + URL contract that those functions rendered.
+    legacy_markers = [
+        # The old per-test row's class name.
+        'class="test-result-item ',
+        # The per-test drill-down container.
+        'class="test-detail-view"',
+        'class="test-detail-header"',
+        'class="test-detail-info"',
+        'class="test-detail-actions"',
+        # The categorized-results endpoint that the legacy view called.
+        "enhanced=false",
+    ]
+    for marker in legacy_markers:
+        assert marker not in js, (
+            f"Legacy e2e_triage.js marker {marker!r} leaked into the bundle"
+        )
+    # The ``currentRunDetails`` global is gone; the canonical
+    # ``unifiedRunData`` owns the current-run id now.
+    assert "currentRunDetails" not in js
+
+
 def test_e2e_legacy_panel_selectors_are_absent_from_css_bundle() -> None:
     """Round-2 reviewer ask on PR #6319: the legacy panel CSS classes
     must not ship in the dashboard CSS bundle after the panel itself
