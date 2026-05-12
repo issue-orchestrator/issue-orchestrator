@@ -383,16 +383,46 @@ function renderE2ETimeline(container, timelineData) {
 }
 
 function renderE2EIssueTimelineAffordances(affordances) {
+    // PR #6319 round 4: the run-level issue-timeline affordance now
+    // routes through the shared typed-Command pipeline
+    // (``_renderLifecycleCommandButton`` →
+    // ``runE2ELifecycleCommandFromButton`` → ``runE2ELifecycleCommand``
+    // → ``openIssueTimeline``).  The previous inline ``onclick``
+    // path was a second owner for the same UI command — the
+    // ``open_issue_timeline`` kind already has a typed shape with
+    // ``scope_kind: 'e2e_run'`` / ``e2e_run_id``, so the dispatcher
+    // can route it.
     const items = (Array.isArray(affordances) ? affordances : [])
         .map((affordance) => {
             const issueNumber = Number(affordance.issue_number);
             const runId = Number(affordance.run_id);
             if (!Number.isInteger(issueNumber) || !Number.isInteger(runId)) return '';
             const label = affordance.label ? String(affordance.label) : '';
+            // The label inside the button matches the prior visual
+            // shape: ``#N`` + optional human label, both rendered
+            // as a single inline string.  ``_renderLifecycleCommandButton``
+            // does its own escapeHtml, so the labelHtml chunk has
+            // to be assembled into a plain string label (the typed
+            // renderer doesn't take inner-HTML overrides).  To
+            // preserve the two-span layout we emit a custom button
+            // that still carries ``data-lifecycle-command`` — the
+            // shared dispatcher reads only the data attribute.
+            const cmd = {
+                kind: 'open_issue_timeline',
+                issue_number: issueNumber,
+                scope_kind: 'e2e_run',
+                e2e_run_id: runId,
+                label: `Open cycle timeline for issue #${issueNumber}`,
+            };
             const labelHtml = label
                 ? `<span class="e2e-issue-timeline-label">${escapeHtml(label)}</span>`
                 : '';
-            return `<button class="e2e-issue-timeline-btn" onclick="openIssueTimeline(${issueNumber}, this, {e2eRunId: ${runId}});event.stopPropagation();" title="Open cycle timeline for issue #${issueNumber}" aria-label="Open cycle timeline for issue #${issueNumber}">
+            const cmdAttr = escapeAttr(JSON.stringify(cmd));
+            return `<button class="e2e-issue-timeline-btn"
+                data-lifecycle-command="${cmdAttr}"
+                onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();"
+                title="Open cycle timeline for issue #${issueNumber}"
+                aria-label="Open cycle timeline for issue #${issueNumber}">
                 <span class="e2e-issue-timeline-number">#${issueNumber}</span>${labelHtml}
             </button>`;
         })

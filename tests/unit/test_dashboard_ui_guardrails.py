@@ -1697,13 +1697,30 @@ def test_e2e_run_timeline_is_directly_addressable() -> None:
 
 
 def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
-    """Run-level issue affordances open cycle-aware E2E issue timelines."""
+    """Run-level issue affordances open cycle-aware E2E issue
+    timelines through the shared typed-Command pipeline
+    (PR #6319 round 4): the affordance no longer wires its own
+    ``openIssueTimeline(...)`` ``onclick`` — that was a second owner
+    for the same UI command.  It now carries
+    ``data-lifecycle-command`` with the typed shape
+    ``{kind: 'open_issue_timeline', issue_number, scope_kind: 'e2e_run',
+    e2e_run_id}`` and routes through
+    ``runE2ELifecycleCommandFromButton`` → ``runE2ELifecycleCommand``
+    → ``openIssueTimeline``.
+    """
     js = _read(DASHBOARD_JS)
     timeline_body = _function_body(js, "renderE2ETimeline")
     affordance_body = _function_body(js, "renderE2EIssueTimelineAffordances")
     assert "tl.issue_affordances" in timeline_body
     assert "e2e-issue-timeline-affordances" in affordance_body
-    assert "openIssueTimeline(${issueNumber}, this, {e2eRunId: ${runId}})" in affordance_body
+    # Typed command on the button, dispatched through the shared owner.
+    assert "data-lifecycle-command=" in affordance_body
+    assert "'open_issue_timeline'" in affordance_body
+    assert "scope_kind: 'e2e_run'" in affordance_body
+    assert "e2e_run_id: runId" in affordance_body
+    assert "runE2ELifecycleCommandFromButton(this)" in affordance_body
+    # No second-owner direct onclick path.
+    assert "openIssueTimeline(${issueNumber}" not in affordance_body
     css = _read_dashboard_css_bundle()
     assert ".e2e-issue-timeline-affordances" in css
     assert ".e2e-issue-timeline-btn" in css

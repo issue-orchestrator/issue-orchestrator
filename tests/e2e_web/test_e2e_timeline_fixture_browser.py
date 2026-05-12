@@ -1070,6 +1070,48 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
             f"{run_level_issue_text!r}"
         )
 
+    # PR #6319 round 4: the affordance now routes through the shared
+    # typed-Command pipeline.  Each button must carry a
+    # ``data-lifecycle-command`` attribute with the right typed shape.
+    # Without that, the click would not dispatch through the
+    # ``runE2ELifecycleCommand`` owner.
+    for issue_number in expected_run_level_issues:
+        button = run_level_affordances.locator(
+            ".e2e-issue-timeline-btn",
+            has_text=f"#{issue_number}",
+        ).first
+        cmd_attr = button.get_attribute("data-lifecycle-command") or ""
+        assert cmd_attr, (
+            f"run-level affordance button for issue #{issue_number} must carry "
+            f"data-lifecycle-command"
+        )
+        cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+        assert cmd.get("kind") == "open_issue_timeline"
+        assert cmd.get("issue_number") == issue_number
+        assert cmd.get("scope_kind") == "e2e_run"
+        assert cmd.get("e2e_run_id") == int(run_id)
+
+    # Spy on ``openIssueTimeline`` so we can prove the click chain
+    # reaches the final UI dispatcher (not just the data-lifecycle-
+    # command attribute on the button).  The spy must run before the
+    # click loop below — install it once, then verify it was invoked
+    # for each clicked affordance.
+    page.evaluate(
+        """() => {
+            window.__openIssueTimelineCalls = [];
+            const orig = window.openIssueTimeline;
+            window.openIssueTimeline = (issueNumber, triggerEl, opts) => {
+                window.__openIssueTimelineCalls.push({
+                    issueNumber,
+                    opts: opts || null,
+                });
+                if (typeof orig === 'function') {
+                    orig(issueNumber, triggerEl, opts);
+                }
+            };
+        }"""
+    )
+
     for issue_number in expected_run_level_issues:
         per_issue_payload = _browser_fetch_json(
             page,
@@ -1085,6 +1127,19 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         ).first
         expect(per_issue_button).to_be_visible(timeout=5000)
         per_issue_button.click()
+        # PR #6319 round 4: the click must reach the final UI
+        # dispatcher.  The spy installed above captures every
+        # ``openIssueTimeline`` call; the most recent entry must
+        # match this issue + the e2e_run_id scope.
+        calls = page.evaluate("() => window.__openIssueTimelineCalls")
+        assert calls, (
+            f"openIssueTimeline should fire when affordance #{issue_number} is clicked"
+        )
+        last = calls[-1]
+        assert last["issueNumber"] == issue_number
+        assert last["opts"] == {"e2eRunId": int(run_id)}, (
+            f"affordance #{issue_number} must pass e2eRunId={run_id}; got opts={last['opts']!r}"
+        )
         _assert_issue_drawer_counts_match_payload(
             page,
             per_issue_payload,
@@ -1541,8 +1596,89 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     # Phase C: canonical viewer is mounted; run-summary chips visible.
     # ``cvv-root`` may have zero bounding box when the fixture has no
     # tests — use presence rather than visibility for the viewer.
-    expect(modal.locator(".cvv-root")).to_have_count(1)
+    cvv = modal.locator(".cvv-root")
+    expect(cvv).to_have_count(1)
     expect(modal.locator(".e2e-run-summary")).to_be_visible(timeout=5000)
+
+    # ── Real-data automated smoke: the canonical viewer rendered the
+    #    actual fixture-backed payload, not just an empty shell. ────
+    # Derive expectations from the run-detail payload the backend
+    # actually served (no synthetic stub here).  Each failing
+    # category contributes one triage card; each linked failure
+    # carries an ``io.agent-context`` plugin block with the right
+    # issue number; the Copy-error icon must appear on every failed
+    # card.  This is what catches the wiring breaking between the
+    # backend payload shape and the canonical viewer's render path.
+    categories = (run_detail_payload or {}).get("results_by_category", {}) or {}
+    failing_tests: list[dict] = []
+    for key in ("untriaged", "has_issue", "flaky"):
+        for test in categories.get(key) or []:
+            failing_tests.append(test)
+    linked_failing_tests = [
+        t for t in failing_tests
+        if t.get("existing_issue")
+        and isinstance(t["existing_issue"].get("number"), int)
+    ]
+    passing_count = len(categories.get("passed") or []) + len(categories.get("fixed") or [])
+
+    if failing_tests:
+        # Triage card count must match the failing-test count.  The
+        # canonical viewer renders one ``cvv-triage-card`` per failed
+        # JUnit case, and the translator covers every failing
+        # category.  A miscount here means the translator dropped a
+        # failure.
+        expect(cvv.locator(".cvv-triage-card")).to_have_count(len(failing_tests))
+        # Every failure must surface the built-in Copy-error icon
+        # (the canonical viewer's generic affordance — not plugin-
+        # scoped).  A missing icon means the failure card has no
+        # ``failure_details`` somehow, or the icon got dropped.
+        expect(cvv.locator(".cvv-triage-card .cvv-copy-icon")).to_have_count(
+            len(failing_tests)
+        )
+
+    if linked_failing_tests:
+        # Every linked failure must carry the io.agent-context plugin
+        # block with the right issue number.  If even one block is
+        # missing, the translator forgot to emit ``extras`` for that
+        # test.
+        plugin_blocks = cvv.locator(".cvv-plugin.agent-context")
+        expect(plugin_blocks).to_have_count(len(linked_failing_tests))
+        for test in linked_failing_tests:
+            issue_number = int(test["existing_issue"]["number"])
+            issue_block = cvv.locator(
+                ".cvv-plugin.agent-context",
+                has_text=f"#{issue_number}",
+            )
+            expect(issue_block).to_have_count(1)
+            # The drawer button on the block must carry the typed
+            # Command — same single-owner check as the run-level
+            # affordance.
+            drawer_button = issue_block.locator(
+                "button",
+                has_text="Open issue drawer",
+            ).first
+            expect(drawer_button).to_be_visible()
+            cmd_attr = drawer_button.get_attribute("data-lifecycle-command") or ""
+            assert cmd_attr, (
+                f"plugin Open-issue-drawer button for #{issue_number} must "
+                f"carry data-lifecycle-command"
+            )
+            cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+            assert cmd.get("kind") == "open_issue_timeline"
+            assert cmd.get("issue_number") == issue_number
+            assert cmd.get("scope_kind") == "dashboard"
+
+    if passing_count > 0:
+        # Passing tests live inside the browse-by-file expander.  The
+        # row must exist and report the right total.
+        browse_row = cvv.locator(".cvv-row-browse")
+        expect(browse_row).to_have_count(1)
+        expect(browse_row).to_contain_text(f"{passing_count} passed")
+
+    # ARIA tree must be enhanced after mount (Phase D wire-up).  If
+    # ``enhanceCanonicalValidationViewerAccessibility`` didn't run,
+    # the dataset marker would be missing.
+    expect(cvv).to_have_attribute("data-cvv-a11y-bound", "1")
 
     # The run command + raw artifact buttons relocated to the collapsed
     # "Run details" disclosure. Expand it and verify they're reachable.
