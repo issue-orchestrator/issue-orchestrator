@@ -280,11 +280,15 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
     # ── Render-time ARIA roles are live in the DOM ──────────────────
     expect(cvv).to_have_attribute("role", "tree")
     expect(cvv).to_have_attribute("aria-orientation", "vertical")
-    # Triage card carries role="group" so its child treeitems share the
-    # same ownership model as browse rows (reviewer Blocker 1).
+    # Phase D redesign (issue #6322): the triage card is now itself a
+    # treeitem (the outer <details>), and its body (.cvv-triage-body)
+    # carries role="group" so child leaf rows have a proper parent
+    # group for aria-setsize/posinset enumeration.  Asserts on both.
     triage_cards = cvv.locator(".cvv-triage-card")
     assert triage_cards.count() >= 1, "failed payload should render at least one triage card"
-    expect(triage_cards.first).to_have_attribute("role", "group")
+    expect(triage_cards.first).to_have_attribute("role", "treeitem")
+    triage_body = triage_cards.first.locator(".cvv-triage-body")
+    expect(triage_body).to_have_attribute("role", "group")
 
     treeitems = cvv.locator('[role="treeitem"]')
     assert treeitems.count() >= 1
@@ -300,12 +304,13 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
         assert setsize is not None and int(setsize) >= 1, f"aria-setsize missing: {setsize}"
         assert posinset is not None and int(posinset) >= 1, f"aria-posinset missing: {posinset}"
 
-    # Within each triage card, the children's posinset values form a
+    # Within each triage card's BODY (Phase D: cvv-triage-body wraps
+    # the child treeitems), the children's posinset values form a
     # contiguous 1..N sequence — that's what a screen reader uses to
     # announce position-within-set.
     triage_child_meta = cvv.evaluate(
         "root => Array.from(root.querySelectorAll('.cvv-triage-card')).map(card =>"
-        "  Array.from(card.querySelectorAll(':scope > [role=\"treeitem\"]')).map(el => ({"
+        "  Array.from(card.querySelectorAll(':scope > .cvv-triage-body > [role=\"treeitem\"]')).map(el => ({"
         "    setsize: el.getAttribute('aria-setsize'),"
         "    posinset: el.getAttribute('aria-posinset'),"
         "  }))"

@@ -18,31 +18,62 @@
     font-size: 13px;
 }
 
-/* ── triage cards (failed/errored tests) ────────────────────────── */
+/* ── triage cards (failed/errored tests) ──────────────────────────
+   Phase D redesign (issue #6322): each card is now a <details>
+   closed by default.  The summary row carries the inline 1-line
+   error message + Copy-error icon; the body (revealed on click)
+   carries the full headline + chips + leaf rows + plugin extras.
+   Predictable-collapse: never auto-opens. */
 .cvv-triage {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
 }
-.cvv-triage-card {
+details.cvv-triage-card {
     border: 1px solid #d8dde4;
     border-left: 3px solid #c0392f;
     border-radius: 6px;
     background: #ffffff;
     overflow: hidden;
 }
-.cvv-triage-card.cvv-error {
+details.cvv-triage-card.cvv-error {
     border-left-color: #b07a00;
 }
-.cvv-triage-head {
-    padding: 10px 12px 6px;
+details.cvv-triage-card > summary.cvv-triage-head {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 12px;
     display: flex;
     align-items: center;
     gap: 8px;
+    user-select: none;
+}
+details.cvv-triage-card > summary.cvv-triage-head::-webkit-details-marker {
+    display: none;
+}
+details.cvv-triage-card > summary.cvv-triage-head:hover {
+    background: #fafbfc;
+}
+details.cvv-triage-card > summary.cvv-triage-head > .cvv-caret {
+    width: 14px;
+    flex-shrink: 0;
+    color: #8a93a3;
+    text-align: center;
+    font-size: 11px;
+    transition: transform 0.12s ease;
+    display: inline-block;
+}
+details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
+    transform: rotate(90deg);
 }
 .cvv-triage-title {
     font-weight: 600;
     font-size: 13px;
+    flex-shrink: 0;
+}
+.cvv-triage-body {
+    padding: 4px 0 8px;
+    border-top: 1px solid #e8eaef;
 }
 .cvv-headline {
     margin: 6px 10px;

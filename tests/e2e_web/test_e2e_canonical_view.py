@@ -157,13 +157,18 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     # ── two failure triage cards ───────────────────────────────────
     triage_cards = cvv.locator(".cvv-triage-card")
     expect(triage_cards).to_have_count(2)
-    # Both node IDs appear in the rendered HTML (cards are always visible).
+    # Both node IDs appear in the summary rows of the cards (Phase D:
+    # cards are <details> closed by default; the summary row carries
+    # the test name + 1-line headline so the user can scan without
+    # expanding).
     expect(cvv).to_contain_text("test_untracked_failure")
     expect(cvv).to_contain_text("test_linked_failure")
 
     # ── linked failure has the io.agent-context plugin block with
-    #    Open-issue-drawer affordance ───────────────────────────────
+    #    Open-issue-drawer affordance.  Phase D: open the triage card
+    #    first to reveal its body (the plugin renders inside the body).
     linked_card = cvv.locator(".cvv-triage-card", has_text="test_linked_failure")
+    linked_card.locator("summary").first.click()
     plugin_block = linked_card.locator(".cvv-plugin.agent-context")
     expect(plugin_block).to_be_visible()
     expect(plugin_block).to_contain_text("#4503")

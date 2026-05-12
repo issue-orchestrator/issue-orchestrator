@@ -490,7 +490,18 @@ function _focusTreeitem(item, root) {
     if (typeof item.focus === 'function') item.focus();
 }
 
-// ── Triage card (one failed/errored test, auto-expanded) ────────────────────
+// ── Triage card (one failed/errored test, collapsed by default) ─────────────
+//
+// Phase D redesign (issue #6322): the triage card is now a
+// ``<details>`` closed by default.  At landing the user sees only
+// the summary row — caret + icon + test name + suite + inline 1-line
+// error message + Copy-error icon.  Click to unfold the body: full
+// headline box + chips + collapsed traceback / stdout / stderr leaf
+// rows + plugin extras.
+//
+// Predictable-collapse: every clickable thing starts closed; never
+// auto-opens.  A run with many failures lands as a scannable list
+// of collapsed rows, not a wall of tracebacks.
 
 function _renderTriageCard(testCase, idPrefix) {
     const outcome = testCase.outcome === 'error' ? 'error' : 'failed';
@@ -499,42 +510,49 @@ function _renderTriageCard(testCase, idPrefix) {
     const suiteName = testCase.suite_name ? String(testCase.suite_name) : '';
     const duration = _formatDuration(testCase.duration_seconds);
 
-    // Layout selector (Phase C / 3a): a 1-line failure renders the
-    // headline message inline next to the test name, saving vertical
-    // space on cards that have no traceback to drill into.  A
-    // multi-line failure keeps the red headline box + traceback row.
+    // Failure body: ``failure_details`` is the raw text; split it into
+    // a 1-line headline (rendered in the summary row) and an optional
+    // multi-line body (rendered as the traceback expander inside the
+    // card body).  The old ``inline`` vs ``two-row`` layout variant is
+    // gone — the card itself is the variant container now.
     const layout = _failureCardLayoutForCase(testCase);
 
-    // The triage card is a ``role="group"`` so its child treeitems
-    // (traceback / stdout / stderr) share the same tree/group ownership
-    // model as the browse rows (reviewer Blocker 1 on PR #6316).
-    // Without this role the children's parent group resolves all the
-    // way up to ``.cvv-root[role=tree]``, which leaks both
-    // ``aria-setsize`` (counted against unrelated top-level rows) and
-    // ``aria-posinset`` (the children aren't members of that distant
-    // sibling set, so the enhancer can't assign a position).
-    let html = `<div class="cvv-triage-card cvv-${outcome} cvv-layout-${layout.variant}" role="group">`;
+    // Outer card is a ``<details role="treeitem">`` — it participates
+    // in the ARIA tree at the top level of the canonical viewer.
+    // Closed by default.
+    let html = `<details class="cvv-triage-card cvv-${outcome}" role="treeitem" aria-expanded="false">`;
 
-    html += '<div class="cvv-triage-head">';
+    // Summary row (the always-visible 1-liner).  Click toggles the
+    // details.  Inside we render:
+    //   caret + outcome icon + test name + (suite name) +
+    //   inline 1-line error message + Copy-error icon
+    html += '<summary class="cvv-triage-head">';
+    html += '<span class="cvv-caret">▸</span>';
     html += `<span class="cvv-ico cvv-ico-${outcome}">${outcome === 'error' ? '⚠' : '✕'}</span>`;
     html += `<span class="cvv-triage-title">${escapeHtml(displayName)}</span>`;
     if (suiteName) html += `<span class="cvv-summary">${escapeHtml(suiteName)}</span>`;
-    // 3a: inline-variant headline lives in the head row so it scans on
-    // one line.  Truncates via CSS if it overflows.
-    if (layout.variant === 'inline' && layout.headlineMessage) {
+    if (layout.headlineMessage) {
         html += `<span class="cvv-inline-headline ${headlineKind}" title="${escapeAttr(layout.headlineMessage)}">${escapeHtml(layout.headlineMessage)}</span>`;
     }
-    // Copy-error built-in icon: generic to every failed card,
-    // independent of any plugin.  Lives next to the test name so it's
-    // scan-accessible whether the card is opened or not.
+    // Copy-error icon.  Lives in the summary row so it's scan-
+    // accessible without opening the card.  ``preventDefault`` and
+    // ``stopPropagation`` are required: a click on a button inside
+    // ``<summary>`` would otherwise toggle the parent ``<details>``.
     if (testCase.failure_details) {
         const copyPayload = escapeAttr(String(testCase.failure_details));
-        html += `<button class="cvv-copy-icon" type="button" title="Copy error" aria-label="Copy error text to clipboard" data-cvv-copy-text="${copyPayload}" onclick="event.stopPropagation(); _cvvCopyErrorFromButton(this);">⎘</button>`;
+        html += `<button class="cvv-copy-icon" type="button" title="Copy error" aria-label="Copy error text to clipboard" data-cvv-copy-text="${copyPayload}" onclick="event.preventDefault(); event.stopPropagation(); _cvvCopyErrorFromButton(this);">⎘</button>`;
     }
-    html += '</div>';
+    html += '</summary>';
 
-    // two-row variant: keep the existing red-headline box.
-    if (layout.variant === 'two-row' && layout.headlineMessage) {
+    // Body of the expanded card.  ``role="group"`` so child treeitems
+    // (traceback / stdout / stderr) have a proper parent group for
+    // ARIA setsize/posinset enumeration.
+    html += '<div class="cvv-triage-body" role="group">';
+
+    // Full headline box.  The summary's inline-headline truncates with
+    // ellipsis when long; the body's headline box shows the full
+    // text so the user has it once they expand.
+    if (layout.headlineMessage) {
         html += `<div class="cvv-headline ${headlineKind}"><span class="cvv-headline-text">${escapeHtml(layout.headlineMessage)}</span></div>`;
     }
 
@@ -543,28 +561,21 @@ function _renderTriageCard(testCase, idPrefix) {
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
 
-    // Traceback row (two-row variant only — when there's a body to
-    // show beneath the headline).  Starts COLLAPSED.  Rationale: a
-    // run with many failures shouldn't dump every traceback on the
-    // user at landing — they came to triage and pick.  The headline
-    // box above already shows the 1-line error summary; the user
-    // clicks ``traceback ▸`` to drill into the one they want.
-    // Predictable everywhere: same default whether there's 1 failure
-    // or 20.
-    if (layout.variant === 'two-row' && layout.tracebackBody) {
+    // Traceback row (only when there's a multi-line body).  Closed
+    // by default — same predictable-collapse rule.
+    if (layout.tracebackBody) {
         html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
         html += `<pre class="cvv-pre cvv-pre-fail">${escapeHtml(layout.tracebackBody)}</pre>`;
         html += '</details>';
     }
 
-    html += _renderTestSystemOutErr(testCase, idPrefix, outcome === 'error');
+    html += _renderTestSystemOutErr(testCase, idPrefix, false);
 
-    // Plugin extras: render below the test detail, before any closing
-    // actions row.  The io.agent-context plugin renders here for E2E
-    // tests carrying linked-issue data in ``extras``.
+    // Plugin extras: render at the bottom of the expanded body.
     html += renderPluginExtras(testCase);
 
-    html += '</div>';  // cvv-triage-card
+    html += '</div>';  // cvv-triage-body
+    html += '</details>';  // cvv-triage-card
     return html;
 }
 
