@@ -574,16 +574,20 @@
   }
 
   function skippedTestRow(name, file, reason, idPrefix) {
+    // Skip-reason rendering mirrors the production .cvv-skip-reason
+    // block: muted monospace surface so the user can see *why* a test
+    // was skipped without leaving the dashboard.  When a skipped test
+    // carries no reason at all, the viewer falls back to a "no skip
+    // reason recorded" placeholder (shown below for ``test_silent``).
+    const reasonHtml = reason
+      ? `<div class="skip-reason" style="margin: 0 10px 8px; padding: 8px 10px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 5px; font-family: SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px; color: var(--text-muted); white-space: pre-wrap; line-height: 1.5;">${escapeHtml(reason)}</div>`
+      : `<div class="skip-empty" style="margin: 0 10px 8px; padding: 6px 10px; color: var(--text-faint); font-style: italic; font-size: 11px;">No skip reason was recorded for this test.</div>`;
     return row({
       id: idPrefix,
       expanded: false,
       label_html: `${iconHtml('skipped')}<span class="title">${escapeHtml(name)}</span> <span class="summary">${escapeHtml(file)}</span>`,
-      meta_html: '',
-      child_html: `
-        <div class="headline" style="background: var(--surface-2); border-color: var(--border); color: var(--text-muted);">
-          <span class="headline-text">${escapeHtml(reason)}</span>
-        </div>
-      `,
+      meta_html: '<span class="meta" style="margin-left: auto;">skipped</span>',
+      child_html: reasonHtml,
     });
   }
 
@@ -611,9 +615,34 @@
         ${passedTestRow('test_card_focus_opens_drawer', 'tests/e2e/test_dashboard.py', null, 'pass-ui-2')}
       `,
     })}
+    ${row({
+      // Mixed-outcome file: the file row groups passed + skipped tests
+      // together (anything not failed/errored lives in the
+      // "browse by file" branch).  Skipped tests are expanded here so
+      // the inline skip-reason block is visible in the mockup.
+      id: 'mixed-file-1',
+      expanded: true,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_platform.py</span><span class="summary">1 passed · 2 skipped</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_runs_on_linux', 'tests/e2e/test_platform.py', null, 'pass-plat-1')}
+        ${skippedTestRow(
+          'test_runs_on_macos',
+          'tests/e2e/test_platform.py',
+          "Skipped: not implemented on macOS — see #5500 for the shim",
+          'skip-plat-1'
+        )}
+        ${skippedTestRow(
+          'test_runs_on_windows',
+          'tests/e2e/test_platform.py',
+          null,
+          'skip-plat-2'
+        )}
+      `,
+    })}
     <div class="leaf" style="color: var(--text-faint); margin-top: 4px; font-size: 11px;">
       <span class="caret">●</span>
-      <span>… and 34 more passing tests (not shown in mockup)</span>
+      <span>… and 33 more passing tests (not shown in mockup)</span>
     </div>
   `;
 
@@ -623,7 +652,7 @@
       ${leaf({ label_html: `<strong>Suite:</strong> e2e_smoke`, meta_html: '' })}
       ${leaf({ label_html: `<strong>Command:</strong> pytest tests/e2e -m smoke --tb=short`, meta_html: '' })}
       ${leaf({ label_html: `<strong>Started:</strong> 2026-05-11 14:00:00 · <strong>Ended:</strong> 14:14:22`, meta_html: '' })}
-      ${leaf({ label_html: `<strong>Total:</strong> 40 tests · 38 passed · 1 failed · 1 errored · 0 skipped`, meta_html: '' })}
+      ${leaf({ label_html: `<strong>Total:</strong> 40 tests · 36 passed · 1 failed · 1 errored · 2 skipped`, meta_html: '' })}
     </div>
 
     <div class="body-block-section">
@@ -632,8 +661,12 @@
       ${failedTestRow(E2E_ERROR, 'e2e-err', false)}
       ${row({
         id: 'passed-browse',
-        expanded: false,
-        label_html: `${iconHtml('passed')}<span class="title">+ 38 passed, 0 skipped</span><span class="summary">browse by file</span>`,
+        // In production this row defaults to CLOSED when there are
+        // failures (so the triage cards are the first thing the user
+        // sees).  Default it to open in the mockup so the skip-reason
+        // feature is immediately visible without an extra click.
+        expanded: true,
+        label_html: `${iconHtml('passed')}<span class="title">+ 36 passed, 2 skipped</span><span class="summary">browse by file</span>`,
         meta_html: '',
         child_html: passedBrowse,
       })}
