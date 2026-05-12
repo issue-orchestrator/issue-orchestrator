@@ -19,6 +19,7 @@ Getting started with Issue Orchestrator:
 
 If you're assessing the project as applied AI or using it as a portfolio artifact:
 
+- [No Free Lunch for Coding Agents](journeys/no-free-lunch.md)
 - [Applied AI Evaluation](journeys/applied-ai.md)
 - [Portfolio Benchmarking](journeys/benchmarking.md)
 - [Evaluating the System](journeys/evaluating.md)
@@ -49,6 +50,7 @@ If you're an AI agent working on this codebase:
 System design and decision records:
 
 - [Architecture Overview](architecture/README.md) - Core architecture and boundaries
+- [Issue-Orchestrator Internal Architecture](architecture/internal-architecture.md) - How this repo is built and enforced
 - [Architecture Decision Records](architecture/ADR/README.md) - Why decisions were made
 - [Guardrails & Safety Model](design/guardrails.md) - Enforcement layers and trust boundaries
 - [Hooks](architecture/hooks.md) - Multi-layer hook enforcement
@@ -57,6 +59,7 @@ System design and decision records:
 
 ## Design
 
+- [Making Agentic Development Sustainable](design/sustainable-agentic-development.md) - Design thesis for enforceable architecture and deterministic workflow
 - [Goal Pilot Design](design/goal-pilot.md) - Goal Pilot architecture and design
 - [Blocked Issues UX Ideas](design/blocked-issues-ux-ideas.md) - UX improvement brainstorm
 

@@ -4,21 +4,36 @@ You're assessing Issue Orchestrator's design — whether the architecture is sou
 
 ## Start here
 
+**[No Free Lunch for Coding Agents](no-free-lunch.md)** — The concise thesis. The issue runner is not the main point; the engineering contract around agent work is the product.
+
 **[Making Agentic Development Sustainable](../design/sustainable-agentic-development.md)** — The design essay. Why the system exists, the three tracks (enforceable architecture, deterministic workflow, externalized management), and lessons learned. 10 minute read.
 
 **[Applied AI Evaluation](applied-ai.md)** — How to frame the repo for hiring conversations, what evidence matters most, and how to demo it without overselling autonomy.
 
 **[Portfolio Benchmarking](benchmarking.md)** — Deterministic scenario-based benchmark path that emits a shareable markdown and JSON artifact bundle.
 
-**[README](../../README.md)** — The pitch and how-it-works diagram. Takes 2 minutes. Notice the agent-reviewer loop with cycle limits — that's the core quality enforcement mechanism.
+**[README](../../README.md)** — The pitch, concrete lifecycle, and project quality contract. Takes 2 minutes. Notice that agent output is treated as untrusted input; validation, review, and publish gates decide whether it moves forward.
 
 **[Project Status](../../README.md#project-status)** — Current maturity statement. What is stable versus still evolving.
 
 ## Architecture
 
-**[Architecture diagram](../architecture/README.md)** — The hexagonal (ports and adapters) system diagram. Everything flows through Protocol interfaces — the core has no knowledge of GitHub, terminals, or storage implementations.
+This section is about how the Issue-Orchestrator repo itself is built. It is implementation proof, not a claim that every target repo must use the same architecture.
+
+**[Issue-Orchestrator Internal Architecture](../architecture/internal-architecture.md)** — The clearest separation of product thesis from implementation architecture.
+
+**[Architecture diagram](../architecture/README.md)** — The hexagonal (ports and adapters) system diagram. Everything flows through Protocol interfaces, so orchestrator policy can be tested without GitHub, terminals, storage implementations, or UI clients.
 
 **[AGENTS.md](../../AGENTS.md)** — This is the maintained contributor guide. It captures the engineering rules that shape the codebase: fail-fast design, event vs log boundaries, DI, and abstraction heuristics.
+
+The artifact to evaluate is not only the diagram. Look for the implementation contract around it:
+
+- Protocol ports and adapter boundaries
+- import-linter and custom AST guardrails
+- validation records tied to the current commit
+- tests that mock at port boundaries instead of patching internals
+- ADRs that explain why the boundaries exist
+- structured events and generated contracts that keep UI/tests off log parsing
 
 ## Guardrails — the key differentiator
 
@@ -28,9 +43,9 @@ This is the part worth scrutinizing. The thesis is: AI agents optimize for compl
 
 **[Hook Enforcement Architecture](../architecture/hooks.md)** — Three defense-in-depth layers (AI agent hooks, git hooks, server-side protection). Focus on the support matrix and the verification flow — hooks aren't just installed, they're tested.
 
-## Architectural decisions
+## Architectural Decisions
 
-There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core thinking:
+The [ADR guide](../architecture/ADR/README.md) explains how to read the ADR directory and highlights core starting points. These five capture the core thinking:
 
 | ADR | Why it matters |
 |-----|----------------|
@@ -46,13 +61,14 @@ There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core 
 |------|-------------|------------------|
 | Orchestrator core | `src/issue_orchestrator/infra/orchestrator.py` | Main facade, delegates to control/services |
 | Decision logic | `src/issue_orchestrator/control/` | Scheduler, planner, action applier — all pure logic, no I/O |
-| Port interfaces | `src/issue_orchestrator/ports/` | ~31 Protocol definitions — the abstraction layer |
+| Port interfaces | `src/issue_orchestrator/ports/` | Protocol definitions — the abstraction layer |
 | State machines | `src/issue_orchestrator/domain/state_machines/` | Issue and review lifecycle |
 | Composition root | `src/issue_orchestrator/entrypoints/bootstrap.py` | Where dependencies are wired |
 
 ## Quality signals
 
 - **Large automated test suite** with import-linter enforcing architecture boundaries
+- **Validation contract** that can combine tests, linting, typing, coverage, architecture checks, and repo-specific policy scans
 - **Strict Pyright** on core modules, standard mode elsewhere
 - **Fail-fast by default** — fallbacks are explicitly discouraged (see AGENTS "Fail-Fast Design")
 - **Events over logging** — structured trace events drive the UI, tests assert on events not log text

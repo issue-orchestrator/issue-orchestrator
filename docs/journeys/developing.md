@@ -29,7 +29,7 @@ make worktree-setup
 | Section | What you'll learn |
 |---------|-------------------|
 | Architecture Principles | Hexagonal, DI, layered separation, labels as truth, agent intent vs orchestrator authority |
-| Key Ports | The 4 foundational Protocol interfaces (and a pointer to the full ~26 in `ports/`) |
+| Key Ports | The foundational Protocol interfaces and a pointer to the full port set in `ports/` |
 | Events vs Logs | Structured events drive the UI; logs are for humans. Never parse log text in code. |
 | Fail-Fast Design | No fallbacks, no silent degradation. Crash on unexpected state. |
 | Conventions | Where ports live, where adapters live, how to test, how to emit events |

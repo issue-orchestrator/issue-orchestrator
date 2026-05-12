@@ -66,7 +66,7 @@ For UI-facing changes, follow `.claude/skills/frontend-design/SKILL.md`; task is
 | `IssueTracker` | GitHub issue operations | `GitHubAdapter` |
 | `SessionStore` | Persist session state | `JsonSessionStore` |
 
-These are the foundational ports. See `ports/` for the full set (~31 protocols including `WorkingCopy`, `WorktreeManager`, `RepositoryHost`, `CommandRunner`, and others).
+These are the foundational ports. See `ports/` for the full set, including `WorkingCopy`, `WorktreeManager`, `RepositoryHost`, `CommandRunner`, and others.
 
 ## Composition Root
 
@@ -139,7 +139,7 @@ Test and source directories have local `AGENTS.md` files auto-read when working 
 
 **Run tests:**
 ```bash
-pytest tests/unit/ -v          # 1100+ unit tests
+pytest tests/unit/ -v          # unit test suite
 pytest tests/e2e/ -v           # Live e2e tests (requires gh auth)
 ```
 
