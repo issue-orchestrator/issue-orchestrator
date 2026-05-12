@@ -174,17 +174,9 @@
     gap: 6px;
     margin-top: 8px;
 }
-.e2e-lifecycle-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 24px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--bg-panel-soft);
-    color: var(--text);
-    font-size: 12px;
-}
+/* ``.e2e-lifecycle-chip`` was the per-row inline-lifecycle chip in the
+   legacy panel; removed alongside that panel in Phase C
+   (PR #6319 round 2). */
 .e2e-timeline-view-switcher {
     display: flex;
     gap: 4px;
@@ -276,304 +268,13 @@
 .timeline-issue-links a:hover {
     text-decoration: underline;
 }
-.test-row-copy {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-.test-suite {
-    color: var(--text-muted);
-    font-size: 11px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.test-source {
-    display: inline-flex;
-    align-items: center;
-    min-height: 22px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text-muted);
-    font-size: 11px;
-}
-.action-btn.subtle {
-    background: transparent;
-    border-color: var(--border);
-}
-
-/* ── Test-centric run modal layout ───────────────────────────────── */
-.test-results-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.test-results-headline {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    align-items: center;
-    padding: 12px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-panel-soft);
-}
-.trh-stat {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text);
-}
-.trh-stat.trh-zero {
-    opacity: 0.45;
-    font-weight: 500;
-}
-.trh-passed { color: var(--success, #2da44e); }
-.trh-failed { color: var(--danger, #cf222e); }
-.trh-action, .trh-warning { color: var(--warning, #9a6700); }
-.trh-skipped, .trh-quarantined { color: var(--text-muted); }
-
-.test-results-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-.trf-chip {
-    padding: 4px 12px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 12px;
-    cursor: pointer;
-}
-.trf-chip:hover {
-    background: var(--bg-panel);
-    color: var(--text);
-}
-.trf-chip.active {
-    background: var(--accent);
-    color: var(--bg);
-    border-color: var(--accent);
-}
-
-.test-results-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-.trr-row {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-panel-soft);
-    overflow: hidden;
-}
-.trr-row.failed {
-    border-color: color-mix(in srgb, var(--danger, #cf222e) 35%, var(--border));
-}
-.trr-row-main {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-}
-.trr-row[data-expandable="1"] .trr-row-main {
-    cursor: pointer;
-}
-.trr-row[data-expandable="1"] .trr-row-main:hover {
-    background: var(--bg-panel);
-}
-.trr-caret, .trr-caret-spacer {
-    display: inline-block;
-    width: 14px;
-    color: var(--text-muted);
-    font-size: 11px;
-    text-align: center;
-}
-.trr-row-copy {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-.test-result-pills {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    align-items: center;
-}
-.test-result-pill {
-    display: inline-flex;
-    align-items: center;
-    width: fit-content;
-    min-height: 20px;
-    padding: 2px 7px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.2;
-}
-.test-result-pill.primary.failed,
-.test-result-pill.action-needed {
-    color: var(--danger, #cf222e);
-    border-color: color-mix(in srgb, var(--danger, #cf222e) 35%, var(--border));
-    background: color-mix(in srgb, var(--danger, #cf222e) 8%, var(--bg));
-}
-.test-result-pill.primary.passed {
-    color: var(--success, #2da44e);
-    border-color: color-mix(in srgb, var(--success, #2da44e) 35%, var(--border));
-}
-.test-result-pill.primary.passed_on_retry,
-.test-result-pill.flaky {
-    color: var(--warning, #9a6700);
-    border-color: color-mix(in srgb, var(--warning, #9a6700) 35%, var(--border));
-    background: color-mix(in srgb, var(--warning, #9a6700) 8%, var(--bg));
-}
-.test-result-pill.tracked {
-    color: var(--accent);
-    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-}
-.test-result-pill.primary.skipped,
-.test-result-pill.primary.quarantined {
-    color: var(--text-muted);
-}
-.test-result-flaky-note {
-    color: var(--warning, #9a6700);
-    font-size: 11px;
-    font-style: italic;
-    align-self: center;
-}
-.test-history {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    color: var(--text-muted);
-    white-space: nowrap;
-}
-.test-history-label {
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-    font-size: 10px;
-}
-.test-history-glyphs {
-    letter-spacing: 1px;
-}
-.test-history-glyphs .hist-icon {
-    font-weight: 700;
-}
-.test-history-glyphs .hist-icon.pass { color: var(--success, #2da44e); }
-.test-history-glyphs .hist-icon.fail { color: var(--danger, #cf222e); }
-.test-history-glyphs .hist-icon.skip { color: var(--text-muted); }
-.test-history-flake {
-    color: var(--warning, #9a6700);
-}
-.test-failure-summary {
-    color: var(--danger, #cf222e);
-    font-size: 12px;
-    line-height: 1.35;
-    overflow-wrap: anywhere;
-}
-.test-failure-summary.muted {
-    color: var(--text-muted);
-}
-.trr-row-actions {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex-shrink: 0;
-}
-.trr-expand {
-    padding: 10px 14px 12px 36px;
-    border-top: 1px dashed var(--border);
-    background: var(--bg);
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.trr-expand[hidden] {
-    display: none;
-}
-.trr-error-text {
-    margin: 0;
-    padding: 8px 10px;
-    background: var(--bg-panel-soft);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-family: var(--font-mono, monospace);
-    font-size: 12px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--text);
-    max-height: 320px;
-    overflow: auto;
-}
-.trr-expand-heading {
-    margin-bottom: 6px;
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-.trr-captured-output {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-.trr-captured-channel {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-.trr-captured-channel-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-}
-.trr-captured-text {
-    max-height: 240px;
-}
-.trr-captured-status {
-    color: var(--text-muted);
-    font-size: 12px;
-    font-style: italic;
-}
-.trr-captured-error {
-    color: var(--danger, #cf222e);
-}
-.trr-lifecycle {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-panel-soft);
-}
-.trr-lifecycle-heading {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text);
-}
-.trr-lifecycle-cycles {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-}
-.trr-lifecycle-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
+/* Legacy test-centric run modal styles were removed in Phase C
+   (PR #6319 reviewer round 2): no production DOM owns the
+   former panel/row/lifecycle/history/pill selectors anymore — the
+   canonical viewer's ``cvv-*`` classes replace them.  See
+   tests/unit/test_dashboard_ui_guardrails.py for the absence
+   guardrail; see git history for the exact selector list and the
+   matching js + tests deletion. */
 
 /* ── Run evidence disclosure ─────────────────────────────────────── */
 .run-details-disclosure {
@@ -644,6 +345,78 @@
     margin-bottom: 6px;
 }
 .rdd-artifacts, .rdd-timeline {
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Phase C canonical-viewer-based E2E panel ────────────────────────── */
+
+.e2e-canonical-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Run-level summary chips — info display only, NOT filter pills. */
+.e2e-run-summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    background: #fafbfc;
+    border: 1px solid #d8dde4;
+    border-radius: 6px;
+}
+.e2e-run-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid #d8dde4;
+    background: #ffffff;
+    color: #5a6472;
+}
+.e2e-run-chip-failed { background: #fbeae7; border-color: #c0392f; color: #8c1f17; }
+.e2e-run-chip-passed { background: #e6f4ea; border-color: #1f8f3a; color: #1f8f3a; }
+.e2e-run-chip.is-fail { background: #fbeae7; border-color: #c0392f; color: #8c1f17; }
+.e2e-run-chip.muted { background: #f6f8fa; color: #8a93a3; }
+.e2e-run-summary-meta {
+    color: #8a93a3;
+    font-size: 11px;
+    margin-left: auto;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+}
+
+/* Untracked-failures banner — conditional, rendered only when at
+   least one failing test has no linked issue.  Hooks the existing
+   createIssuesForUntriaged() flow. */
+.e2e-untracked-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    background: #e8eefb;
+    border: 1px solid #3870e0;
+    border-radius: 6px;
+    color: #1c4cab;
+    font-weight: 500;
+}
+.e2e-untracked-banner-text { flex: 1; }
+.e2e-untracked-banner-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.e2e-untracked-banner-actions .agent-select {
+    font-size: 11px;
+    padding: 2px 6px;
+}
+
+.e2e-canonical-body {
     display: flex;
     flex-direction: column;
 }

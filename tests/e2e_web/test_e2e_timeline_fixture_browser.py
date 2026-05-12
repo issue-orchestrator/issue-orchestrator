@@ -688,16 +688,27 @@ def _route_synthetic_passed_run_detail(
 
 
 def _expect_formatted_passed_run_modal(page: Page) -> None:
+    # Phase C of #6310 follow-up: the E2E run modal body is now the
+    # canonical validation viewer (``.cvv-root``).  The legacy
+    # ``.test-results-headline`` / ``.trr-row`` structure is gone;
+    # passing tests live inside the canonical viewer's browse-by-file
+    # row (closed by default but their node-id + display name still
+    # appear in the rendered HTML).
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=5000)
     expect(modal.locator(".diagnosis-header")).to_have_count(0)
-    headline = modal.locator(".test-results-headline")
-    expect(headline).to_be_visible(timeout=5000)
-    expect(headline).to_have_attribute("data-passed-count", "1")
-    expect(headline).to_have_attribute("data-failed-count", "0")
-    expect(modal.locator(f".trr-row[data-nodeid='{_PASSED_RUN_NODEID}']")).to_contain_text(
-        "package.build_image"
-    )
+    cvv = modal.locator(".cvv-root").first
+    expect(cvv).to_be_visible(timeout=5000)
+    expect(cvv).to_have_attribute("data-cvv-status", "passed")
+    # Run-level chips show "passed" status + 1 passing.
+    summary = modal.locator(".e2e-run-summary")
+    expect(summary).to_be_visible()
+    expect(summary).to_contain_text("passed")
+    expect(summary).to_contain_text("1 passing")
+    # The passing test name appears in the rendered HTML (inside the
+    # browse-by-file collapsible — it's in the DOM whether the row is
+    # open or closed).
+    expect(cvv).to_contain_text("package.build_image")
 
 
 def _issue_affordance_numbers(timeline_payload: dict[str, Any]) -> list[int]:
@@ -1012,10 +1023,13 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         timeout=15_000,
     )
 
-    # Test-centric layout: pass/fail headline + filter chips are the modal's
-    # primary surface. The legacy run-level Results/Timeline tabs are gone.
-    expect(modal.locator(".test-results-headline")).to_be_visible(timeout=15_000)
-    expect(modal.locator(".test-results-filters")).to_be_visible(timeout=15_000)
+    # Phase C of #6310 follow-up: the canonical validation viewer is
+    # the modal's body.  Run-level summary chips replace the legacy
+    # headline; filter chips are gone.  ``cvv-root`` may have zero
+    # visible bounding box when the run has no test cases — use a
+    # presence check rather than visibility.
+    expect(modal.locator(".cvv-root")).to_have_count(1)
+    expect(modal.locator(".e2e-run-summary")).to_be_visible(timeout=15_000)
 
     # Run timeline is rendered eagerly inside the (collapsed) "Run details"
     # disclosure. Expand it to assert on its content.
@@ -1056,6 +1070,48 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
             f"{run_level_issue_text!r}"
         )
 
+    # PR #6319 round 4: the affordance now routes through the shared
+    # typed-Command pipeline.  Each button must carry a
+    # ``data-lifecycle-command`` attribute with the right typed shape.
+    # Without that, the click would not dispatch through the
+    # ``runE2ELifecycleCommand`` owner.
+    for issue_number in expected_run_level_issues:
+        button = run_level_affordances.locator(
+            ".e2e-issue-timeline-btn",
+            has_text=f"#{issue_number}",
+        ).first
+        cmd_attr = button.get_attribute("data-lifecycle-command") or ""
+        assert cmd_attr, (
+            f"run-level affordance button for issue #{issue_number} must carry "
+            f"data-lifecycle-command"
+        )
+        cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+        assert cmd.get("kind") == "open_issue_timeline"
+        assert cmd.get("issue_number") == issue_number
+        assert cmd.get("scope_kind") == "e2e_run"
+        assert cmd.get("e2e_run_id") == int(run_id)
+
+    # Spy on ``openIssueTimeline`` so we can prove the click chain
+    # reaches the final UI dispatcher (not just the data-lifecycle-
+    # command attribute on the button).  The spy must run before the
+    # click loop below — install it once, then verify it was invoked
+    # for each clicked affordance.
+    page.evaluate(
+        """() => {
+            window.__openIssueTimelineCalls = [];
+            const orig = window.openIssueTimeline;
+            window.openIssueTimeline = (issueNumber, triggerEl, opts) => {
+                window.__openIssueTimelineCalls.push({
+                    issueNumber,
+                    opts: opts || null,
+                });
+                if (typeof orig === 'function') {
+                    orig(issueNumber, triggerEl, opts);
+                }
+            };
+        }"""
+    )
+
     for issue_number in expected_run_level_issues:
         per_issue_payload = _browser_fetch_json(
             page,
@@ -1071,6 +1127,19 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         ).first
         expect(per_issue_button).to_be_visible(timeout=5000)
         per_issue_button.click()
+        # PR #6319 round 4: the click must reach the final UI
+        # dispatcher.  The spy installed above captures every
+        # ``openIssueTimeline`` call; the most recent entry must
+        # match this issue + the e2e_run_id scope.
+        calls = page.evaluate("() => window.__openIssueTimelineCalls")
+        assert calls, (
+            f"openIssueTimeline should fire when affordance #{issue_number} is clicked"
+        )
+        last = calls[-1]
+        assert last["issueNumber"] == issue_number
+        assert last["opts"] == {"e2eRunId": int(run_id)}, (
+            f"affordance #{issue_number} must pass e2eRunId={run_id}; got opts={last['opts']!r}"
+        )
         _assert_issue_drawer_counts_match_payload(
             page,
             per_issue_payload,
@@ -1524,10 +1593,92 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=5000)
 
-    # Tests are the modal headline; pass/fail counts and filter chips are
-    # always visible.
-    expect(modal.locator(".test-results-headline")).to_be_visible(timeout=5000)
-    expect(modal.locator(".test-results-filters")).to_be_visible(timeout=5000)
+    # Phase C: canonical viewer is mounted; run-summary chips visible.
+    # ``cvv-root`` may have zero bounding box when the fixture has no
+    # tests — use presence rather than visibility for the viewer.
+    cvv = modal.locator(".cvv-root")
+    expect(cvv).to_have_count(1)
+    expect(modal.locator(".e2e-run-summary")).to_be_visible(timeout=5000)
+
+    # ── Real-data automated smoke: the canonical viewer rendered the
+    #    actual fixture-backed payload, not just an empty shell. ────
+    # Derive expectations from the run-detail payload the backend
+    # actually served (no synthetic stub here).  Each failing
+    # category contributes one triage card; each linked failure
+    # carries an ``io.agent-context`` plugin block with the right
+    # issue number; the Copy-error icon must appear on every failed
+    # card.  This is what catches the wiring breaking between the
+    # backend payload shape and the canonical viewer's render path.
+    categories = (run_detail_payload or {}).get("results_by_category", {}) or {}
+    failing_tests: list[dict] = []
+    for key in ("untriaged", "has_issue", "flaky"):
+        for test in categories.get(key) or []:
+            failing_tests.append(test)
+    linked_failing_tests = [
+        t for t in failing_tests
+        if t.get("existing_issue")
+        and isinstance(t["existing_issue"].get("number"), int)
+    ]
+    passing_count = len(categories.get("passed") or []) + len(categories.get("fixed") or [])
+
+    if failing_tests:
+        # Triage card count must match the failing-test count.  The
+        # canonical viewer renders one ``cvv-triage-card`` per failed
+        # JUnit case, and the translator covers every failing
+        # category.  A miscount here means the translator dropped a
+        # failure.
+        expect(cvv.locator(".cvv-triage-card")).to_have_count(len(failing_tests))
+        # Every failure must surface the built-in Copy-error icon
+        # (the canonical viewer's generic affordance — not plugin-
+        # scoped).  A missing icon means the failure card has no
+        # ``failure_details`` somehow, or the icon got dropped.
+        expect(cvv.locator(".cvv-triage-card .cvv-copy-icon")).to_have_count(
+            len(failing_tests)
+        )
+
+    if linked_failing_tests:
+        # Every linked failure must carry the io.agent-context plugin
+        # block with the right issue number.  If even one block is
+        # missing, the translator forgot to emit ``extras`` for that
+        # test.
+        plugin_blocks = cvv.locator(".cvv-plugin.agent-context")
+        expect(plugin_blocks).to_have_count(len(linked_failing_tests))
+        for test in linked_failing_tests:
+            issue_number = int(test["existing_issue"]["number"])
+            issue_block = cvv.locator(
+                ".cvv-plugin.agent-context",
+                has_text=f"#{issue_number}",
+            )
+            expect(issue_block).to_have_count(1)
+            # The drawer button on the block must carry the typed
+            # Command — same single-owner check as the run-level
+            # affordance.
+            drawer_button = issue_block.locator(
+                "button",
+                has_text="Open issue drawer",
+            ).first
+            expect(drawer_button).to_be_visible()
+            cmd_attr = drawer_button.get_attribute("data-lifecycle-command") or ""
+            assert cmd_attr, (
+                f"plugin Open-issue-drawer button for #{issue_number} must "
+                f"carry data-lifecycle-command"
+            )
+            cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+            assert cmd.get("kind") == "open_issue_timeline"
+            assert cmd.get("issue_number") == issue_number
+            assert cmd.get("scope_kind") == "dashboard"
+
+    if passing_count > 0:
+        # Passing tests live inside the browse-by-file expander.  The
+        # row must exist and report the right total.
+        browse_row = cvv.locator(".cvv-row-browse")
+        expect(browse_row).to_have_count(1)
+        expect(browse_row).to_contain_text(f"{passing_count} passed")
+
+    # ARIA tree must be enhanced after mount (Phase D wire-up).  If
+    # ``enhanceCanonicalValidationViewerAccessibility`` didn't run,
+    # the dataset marker would be missing.
+    expect(cvv).to_have_attribute("data-cvv-a11y-bound", "1")
 
     # The run command + raw artifact buttons relocated to the collapsed
     # "Run details" disclosure. Expand it and verify they're reachable.
@@ -1679,15 +1830,13 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=5000)
 
-    # Tests are the modal headline; the single passed test row should render.
-    expect(modal.locator(".trr-row")).to_have_count(1)
-    expect(modal.locator(".trr-row")).to_contain_text("package.build_image")
-    # Per-row provenance tag is suppressed when the source is the framework-
-    # agnostic default (JUnit XML or runtime). Surfacing "JUnit XML" on every
-    # row was redundant noise — JUnit is the default lingua franca, not a
-    # notable per-row signal. The artifact link below still exposes it at the
-    # run level.
-    expect(modal.locator(".test-source")).to_have_count(0)
+    # Phase C: the canonical viewer holds the test list.  For a
+    # single passing test the body's status is passed and the test
+    # name appears in the rendered HTML (inside browse-by-file).
+    cvv = modal.locator(".cvv-root").first
+    expect(cvv).to_be_visible(timeout=5000)
+    expect(cvv).to_have_attribute("data-cvv-status", "passed")
+    expect(cvv).to_contain_text("package.build_image")
 
     # Run command + raw artifact buttons live in the collapsed Run details
     # disclosure. Expand it before clicking the artifact buttons.
@@ -1780,22 +1929,28 @@ def test_latest_view_results_opens_formatted_passed_run_modal(
     _expect_formatted_passed_run_modal(page)
 
 
-def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
+def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugin(
     page: Page,
     fixture_web_server: dict[str, object],
 ) -> None:
-    """Exhaustive browser-level coverage of the test-centric run modal:
+    """Phase C of #6310 follow-up: the test-centric layout that this
+    test used to exercise (filter chips + per-row triage actions +
+    per-row lifecycle block) was replaced by the canonical validation
+    viewer.  This rewrite pins the equivalent Phase C behaviors:
 
-    - Headline counts numerically match the run summary.
-    - Filter chips actually filter rows (Tracked failures → only tracked failure visible,
-      Passed → only passed visible, All → both visible) and the visible
-      row content matches the expected test names.
-    - Clicking a failing test row expands inline and renders the *specific*
-      longrepr text (not just "an error" but the actual error string).
-    - For a test with `existing_issue`, the inline lifecycle block carries
-      the expected cycle count, coder session, review session, transcript,
-      and validation buttons — wired to the right command kinds.
-    - Clicking the row again collapses the expansion.
+    - The canonical viewer renders both tests with the right outcome
+      shape (failed triage card on top + passing test inside browse-by-file).
+    - The failure card shows the specific longrepr text (catches
+      regressions where the wrong field is wired or text gets escaped).
+    - The built-in Copy-error icon writes the failure text to the
+      clipboard (no per-row Copy Error button — same capability,
+      different surface).
+    - The linked failure carries the ``io.agent-context`` plugin
+      block with the right issue number and an Open-issue-drawer
+      affordance.  Per-row Coder Session / Timeline / Review buttons
+      are intentionally gone — navigation into the per-issue drawer is
+      the single entry point now.
+    - Filter chips are intentionally gone (cut in Phase C).
     """
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
@@ -1903,29 +2058,25 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=5000)
 
-    # ── Headline counts must numerically match the synthetic summary ──
-    headline = modal.locator(".test-results-headline")
-    expect(headline).to_be_visible(timeout=5000)
-    expect(headline).to_contain_text("2 tests")
-    expect(headline).to_contain_text("1 passed")
-    expect(headline).to_contain_text("1 failed")
+    # ── Canonical viewer mounted with the right shape ─────────────────
+    cvv = modal.locator(".cvv-root").first
+    expect(cvv).to_be_visible(timeout=5000)
+    expect(cvv).to_have_attribute("data-cvv-status", "failed")
 
-    # ── Default state: All filter active, both rows visible ──
-    rows = modal.locator(".trr-row")
-    expect(rows).to_have_count(2)
-    expect(rows.nth(0)).to_be_visible()
-    expect(rows.nth(1)).to_be_visible()
-    visible_text_all = " ".join(rows.all_text_contents())
-    assert expected_failed_label in visible_text_all
-    assert expected_passed_label in visible_text_all
+    # ── Run-level summary chips show 1 failing + 1 passing ────────────
+    summary = modal.locator(".e2e-run-summary")
+    expect(summary).to_contain_text("1 failing")
+    expect(summary).to_contain_text("1 passing")
 
-    failing_row = modal.locator(f".trr-row[data-nodeid='{failed_nodeid}']")
-    expect(failing_row.locator(".test-result-pill.primary.failed")).to_contain_text("Failed")
-    expect(failing_row.locator(".test-result-pill.tracked")).to_contain_text("Tracked")
-    expect(failing_row.locator(".test-failure-summary")).to_contain_text(
-        "AssertionError: expected primary search"
-    )
+    # ── Failure triage card carries the right name + longrepr ─────────
+    failure_card = cvv.locator(".cvv-triage-card", has_text=expected_failed_label)
+    expect(failure_card).to_be_visible(timeout=2000)
+    # The traceback row inside the failure card holds the specific longrepr
+    # text.  Auto-open by default for failures, so it's reachable without
+    # an extra click.
+    expect(failure_card).to_contain_text(expected_longrepr)
 
+    # ── Built-in Copy-error icon writes the failure text to clipboard ─
     page.evaluate(
         """() => {
             window.__copiedE2EText = "";
@@ -1937,105 +2088,33 @@ def test_run_modal_filter_chips_and_per_row_expand_show_correct_content(
             });
         }"""
     )
-    failing_row.get_by_role("button", name="Copy Error", exact=True).click()
+    copy_icon = failure_card.locator(".cvv-copy-icon").first
+    expect(copy_icon).to_be_visible()
+    copy_icon.click()
     copied_text = page.evaluate("() => window.__copiedE2EText")
-    assert failed_nodeid in copied_text
-    assert expected_longrepr in copied_text
-
-    # ── Click "Tracked failures" chip — only the tracked failed row should be visible ──
-    tracked_chip = modal.locator(".trf-chip[data-filter='tracked']")
-    expect(tracked_chip).to_be_visible(timeout=2000)
-    tracked_chip.click()
-    expect(tracked_chip).to_have_class(re.compile(r"\bactive\b"))
-    visible_after_tracked = [
-        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
-    ]
-    assert len(visible_after_tracked) == 1, (
-        f"Tracked failures filter should leave 1 row visible, got {len(visible_after_tracked)}"
+    assert expected_longrepr in copied_text, (
+        f"Copy-error icon must copy the failure detail; got {copied_text!r}"
     )
-    assert expected_failed_label in (visible_after_tracked[0].text_content() or "")
-    assert expected_passed_label not in (visible_after_tracked[0].text_content() or "")
 
-    # ── Click "Passed" chip — only the passed row should be visible ──
-    passed_chip = modal.locator(".trf-chip[data-filter='passed']")
-    expect(passed_chip).to_be_visible(timeout=2000)
-    passed_chip.click()
-    expect(passed_chip).to_have_class(re.compile(r"\bactive\b"))
-    visible_after_passed = [
-        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
-    ]
-    assert len(visible_after_passed) == 1
-    assert expected_passed_label in (visible_after_passed[0].text_content() or "")
-    assert expected_failed_label not in (visible_after_passed[0].text_content() or "")
+    # ── Linked-failure plugin block carries the issue number + drawer link ─
+    plugin = failure_card.locator(".cvv-plugin.agent-context")
+    expect(plugin).to_be_visible()
+    expect(plugin).to_contain_text("#5723")
+    expect(plugin).to_contain_text("Open issue drawer")
 
-    # ── Click "All" chip — both rows visible again ──
-    all_chip = modal.locator(".trf-chip[data-filter='all']")
-    all_chip.click()
-    expect(all_chip).to_have_class(re.compile(r"\bactive\b"))
-    visible_after_all = [
-        r for r in rows.all() if r.evaluate("el => el.style.display !== 'none'")
-    ]
-    assert len(visible_after_all) == 2
+    # ── Passing test renders inside the canonical viewer (browse-by-file) ─
+    expect(cvv).to_contain_text(expected_passed_label)
 
-    # ── Failing row must be expandable AND render expanded by default ──
-    # Failures are the headline of a test-centric view — they shouldn't hide
-    # behind a caret. The first toggle click collapses; a second re-expands.
-    expect(failing_row).to_have_attribute("data-expandable", "1")
-    expand_block = failing_row.locator(".trr-expand")
-    expect(expand_block).to_be_visible(timeout=2000)
-    failing_row.locator(".trr-row-main").click()
-    expect(expand_block).to_be_hidden(timeout=2000)
-    failing_row.locator(".trr-row-main").click()
-    expect(expand_block).to_be_visible(timeout=2000)
-
-    # The error pre must contain the *specific* longrepr text — not just
-    # something error-shaped. This catches regressions where the wrong
-    # field is wired or where the text gets truncated/escaped wrong.
-    error_pre = expand_block.locator(".trr-error-text")
-    expect(error_pre).to_be_visible()
-    expect(error_pre).to_contain_text(expected_longrepr)
-
-    # The inline lifecycle block must carry the right cycle count and the
-    # full set of agentic-cycle action buttons, each wired to a command
-    # kind. We also verify the buttons go through the lifecycle command
-    # dispatcher (data-lifecycle-command attribute set with parseable JSON).
-    lifecycle_block = expand_block.locator(".trr-lifecycle")
-    expect(lifecycle_block).to_be_visible()
-    expect(lifecycle_block).to_contain_text("Issue #5723")
-    timeline_btn = lifecycle_block.locator("button", has_text="Timeline").first
-    expect(timeline_btn).to_be_visible()
-    timeline_cmd_attr = timeline_btn.get_attribute("data-lifecycle-command") or ""
-    assert timeline_cmd_attr, "Timeline button must carry data-lifecycle-command"
-    timeline_cmd = json.loads(timeline_cmd_attr)
-    assert timeline_cmd["kind"] == "open_issue_timeline"
-    assert timeline_cmd["issue_number"] == 5723
-    assert timeline_cmd["scope_kind"] == "e2e_run"
-
-    coder_session_btn = lifecycle_block.locator(
-        "button", has_text="Coder Session"
-    ).first
-    expect(coder_session_btn).to_be_visible()
-    coder_cmd = json.loads(
-        coder_session_btn.get_attribute("data-lifecycle-command") or "{}"
-    )
-    assert coder_cmd.get("kind") == "open_session_recording"
-    assert coder_cmd.get("issue_number") == 5723
-
-    # ── Toggle the row again — expand block collapses ──
-    failing_row.locator(".trr-row-main").click()
-    expect(expand_block).to_be_hidden(timeout=2000)
-
-    # ── Passed row IS expandable: any JUnit-sourced row carries a
-    # captured-output placeholder so the user can drill into stdout/stderr,
-    # not just failed rows. The placeholder is collapsed by default and only
-    # fetches on first expand; tests with nothing captured fall through to
-    # the 404 → "No captured output" empty note.
-    passed_row = modal.locator(f".trr-row[data-nodeid='{passed_nodeid}']")
-    expect(passed_row).to_have_attribute("data-expandable", "1")
-    passed_expand = passed_row.locator(".trr-expand")
-    expect(passed_expand).to_have_count(1)
-    expect(passed_expand).to_have_attribute("hidden", "")
-    expect(passed_expand.locator('.trr-captured-output[data-needs-fetch="1"]')).to_have_count(1)
+    # ── No legacy filter chips or per-row triage UI anywhere in the
+    #    modal — these were all Phase C cuts. ────────────────────────
+    expect(modal.locator(".trf-chip")).to_have_count(0)
+    expect(modal.locator(".test-results-headline")).to_have_count(0)
+    expect(modal.locator(".trr-row")).to_have_count(0)
+    # Phase C deferred lazy captured-output fetch for the canonical
+    # viewer (the canonical viewer renders stdout/stderr rows itself,
+    # populated from whatever's on the JUnit case payload).  Lazy-fetch
+    # for the canonical viewer is its own follow-up.
+    expect(modal.locator(".trr-captured-output")).to_have_count(0)
 
 
 def test_timeline_renderer_surfaces_unhappy_states_and_diagnostics(

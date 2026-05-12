@@ -48,6 +48,24 @@ function loadViewer(overrides = {}) {
 
 function loadViewerWithAgentPlugin(overrides = {}) {
     const ctx = loadViewer(overrides);
+    // The plugin's "Open issue drawer" affordance renders through the
+    // shared lifecycle Command pipeline (PR #6319 Blocker 1 fix).  In
+    // production ``lifecycle_commands.js`` is loaded earlier in the
+    // bundle; in JS-vm tests we load it before the plugin so the
+    // symbol is in scope.
+    const lifecycleSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
+        'utf8',
+    );
+    vm.runInContext(lifecycleSource, ctx, { filename: 'lifecycle_commands.js' });
+    // ``_renderLifecycleCommandButton`` depends on ``_humanizeSnakeCase``
+    // when falling back on a derived label.  Provide a thin stub —
+    // tests pass an explicit fallbackLabel so the stub is never
+    // actually consulted, but loading it avoids a ReferenceError if
+    // some future test omits the label.
+    if (typeof ctx._humanizeSnakeCase !== 'function') {
+        ctx._humanizeSnakeCase = (s) => String(s || '');
+    }
     const pluginSource = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
         'utf8',
@@ -162,9 +180,13 @@ test('viewer: failed run renders one triage card per failed/errored test', () =>
     assert.match(html, /AssertionError: expected x to equal y/);
     // Headline content for the errored test
     assert.match(html, /TypeError: cannot read/);
-    // Failed gets is-failed class; errored gets is-error
-    assert.match(html, /cvv-headline is-failed/);
-    assert.match(html, /cvv-headline is-error/);
+    // Failed gets is-failed class; errored gets is-error.  Phase C
+    // added the 3a inline-headline variant for single-line failures —
+    // the "fixture exploded" case has no traceback body so its
+    // headline renders with the inline class instead of the
+    // two-row red-box class.  Accept either form.
+    assert.match(html, /(cvv-headline|cvv-inline-headline) is-failed/);
+    assert.match(html, /(cvv-headline|cvv-inline-headline) is-error/);
     // Passed cases still browseable via browse expander
     assert.match(html, /cvv-row-browse/);
     assert.match(html, /1 passed/);
@@ -187,7 +209,12 @@ test('viewer: triage cards render stdout and stderr expanders', () => {
     assert.match(html, /WARNING: spooky/);
 });
 
-test('viewer: errored case auto-opens its stderr expander', () => {
+test('viewer: errored case renders stderr expander COLLAPSED by default', () => {
+    // Predictable-collapse rule: stdout, stderr, and the
+    // traceback row all start closed regardless of outcome.  Previous
+    // design auto-opened stderr for errored tests "because the crash
+    // diagnostic lives in stderr" — but the predictable rule wins.
+    // The user clicks ``stderr ▸`` when they want to drill in.
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
@@ -198,15 +225,12 @@ test('viewer: errored case auto-opens its stderr expander', () => {
             extras: [],
         }],
     });
-    // The viewer marks the stderr row open=true when outcome is error
-    // and stderr is present.  Phase D added ARIA tree roles to every
-    // cvv-row, so the opening tag now also carries
-    // role="treeitem" and aria-expanded="true".  We assert on the
-    // opener prefix and the expander summary content separately.
     const stderrTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">stderr<\/span>)/);
     assert.ok(stderrTag, `stderr <details> tag not found in: ${html.slice(0, 300)}…`);
-    assert.match(stderrTag[0], /\bopen\b/);
-    assert.match(stderrTag[0], /aria-expanded="true"/);
+    assert.doesNotMatch(stderrTag[0], /\bopen\b/,
+        'stderr row must NOT carry the open attribute');
+    assert.match(stderrTag[0], /aria-expanded="false"/,
+        'stderr row must carry aria-expanded="false"');
 });
 
 test('viewer: empty payload renders cleanly with no triage and no browse', () => {
@@ -308,8 +332,14 @@ test('viewer: synthesizes triage cards from failed_tests when junit_cases is emp
     const triageCount = (html.match(/cvv-triage-card/g) || []).length;
     assert.strictEqual(triageCount, 3, `expected 3 synthesized triage cards, got ${triageCount}`);
     // Each card carries the failed-headline class so styling is
-    // consistent with JUnit-driven failures.
-    const headlineCount = (html.match(/cvv-headline is-failed/g) || []).length;
+    // consistent with JUnit-driven failures.  Phase C added the 3a
+    // ``inline`` variant (no traceback body → headline renders next to
+    // the test name) — the synthesized fallback message is a single
+    // line, so each card uses the inline variant.  The styling class
+    // is ``cvv-inline-headline is-failed`` in that branch.
+    const headlineCount =
+        (html.match(/cvv-headline is-failed/g) || []).length +
+        (html.match(/cvv-inline-headline is-failed/g) || []).length;
     assert.strictEqual(headlineCount, 3);
     // And the fallback headline explains where the data came from so
     // the operator isn't confused by the missing traceback.
@@ -379,7 +409,6 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
                     issue_title: 'fixture cohort split',
                     final_state: 'blocked',
                     summary: 'agent retried 2x then blocked on validation',
-                    run_url: '/api/dashboard/issue/4503?focus=timeline',
                 },
             }],
         }],
@@ -389,6 +418,98 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.match(html, /fixture cohort split/);
     assert.match(html, /blocked/);
     assert.match(html, /Open issue drawer/);
+    // PR #6319 Blocker 1: the Open-issue-drawer affordance must route
+    // through the typed-Command pipeline (data-lifecycle-command on
+    // a real button) so a click actually dispatches into
+    // ``runE2ELifecycleCommand`` → ``openIssueTimeline``.  Plain
+    // ``<a href="/api/...">`` had no real route behind it.
+    const buttonMatch = html.match(/<button[^>]*data-lifecycle-command="([^"]+)"[^>]*>/);
+    assert.ok(buttonMatch, `expected a data-lifecycle-command button; got: ${html.slice(0, 400)}…`);
+    const decoded = buttonMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    const cmd = JSON.parse(decoded);
+    assert.strictEqual(cmd.kind, 'open_issue_timeline');
+    assert.strictEqual(cmd.issue_number, 4503);
+    assert.strictEqual(cmd.scope_kind, 'dashboard');
+});
+
+test('plugin: agent-context plugin degrades to text-only when lifecycle_commands.js is not loaded', () => {
+    // Generic JUnit consumers (tixmeup et al.) may register the
+    // agent-context plugin but NOT load
+    // ``lifecycle_commands.js`` — they don't have a typed-Command
+    // pipeline.  The plugin must still render the linked-issue
+    // summary (issue number, title, final state, summary text)
+    // without throwing or emitting a broken button.  The
+    // Open-issue-drawer button is simply omitted when the shared
+    // command renderer is unavailable.
+    //
+    // This test loads only the viewer + the plugin (no
+    // lifecycle_commands.js) and exercises a normal linked-issue
+    // payload.  Without the guard in the plugin, the call to
+    // ``_renderLifecycleCommandButton`` would ReferenceError.
+    const ctx = loadViewer();
+    const pluginSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
+        'utf8',
+    );
+    vm.runInContext(pluginSource, ctx, { filename: 'plugins/agent_context.js (no lifecycle bundle)' });
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'driven failure', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [{
+                namespace: 'io.agent-context',
+                payload: {
+                    issue_number: 4503,
+                    issue_title: 'fixture cohort split',
+                    final_state: 'blocked',
+                    summary: 'agent retried 2x then blocked on validation',
+                },
+            }],
+        }],
+    });
+    // Plugin block still renders the data.
+    assert.match(html, /Linked issue · driven by orchestrator/);
+    assert.match(html, /#4503/);
+    assert.match(html, /fixture cohort split/);
+    assert.match(html, /blocked/);
+    // ... but with no Open-issue-drawer button (no typed-Command
+    // pipeline available to dispatch the click).
+    assert.doesNotMatch(html, /data-lifecycle-command/);
+    assert.doesNotMatch(html, /Open issue drawer/);
+});
+
+test('plugin: agent-context plugin ignores legacy run_url even if a stale payload passes one', () => {
+    // PR #6319 round 2 (Blocker 2): an earlier iteration of the
+    // plugin emitted ``<a href={run_url}>`` and the translator built a
+    // ``/api/dashboard/issue/N`` URL that had no real backing route.
+    // The runtime no longer cares about ``run_url`` — but an old
+    // backend or third-party producer might still send it.  The
+    // renderer must not surface that URL as a click target.  Prove
+    // both directions: the URL string never appears in the output,
+    // and there's no ``<a href>`` rendered at all (the drawer
+    // affordance is the typed-Command button).
+    const ctx = loadViewerWithAgentPlugin();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'stale payload', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [{
+                namespace: 'io.agent-context',
+                payload: {
+                    issue_number: 4503,
+                    issue_title: 'fixture cohort split',
+                    final_state: 'blocked',
+                    summary: 'stale payload',
+                    // Stale field — should be ignored.
+                    run_url: '/api/dashboard/issue/4503?focus=timeline',
+                },
+            }],
+        }],
+    });
+    assert.doesNotMatch(html, /\/api\/dashboard\/issue/);
+    assert.doesNotMatch(html, /<a\s[^>]*href=/);
 });
 
 test('plugin: agent-context plugin renders nothing when case lacks the namespace', () => {

@@ -335,16 +335,22 @@ def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
         "  el.focus();"
         "}"
     )
-    first_focused = page.evaluate(
-        "() => document.activeElement && document.activeElement.getAttribute('aria-label')"
-        " || (document.activeElement && document.activeElement.outerHTML.slice(0, 80))"
+    # Identify the focused treeitem by its index in the tree's
+    # treeitem list rather than outerHTML — the canonical viewer's
+    # rows share enough markup that an 80-char prefix slice can
+    # collide between two siblings.  Index-in-tree is unique.
+    active_index_script = (
+        "() => {"
+        "  const all = Array.from(document.querySelectorAll('.journey-step-validation-body .cvv-root [role=\"treeitem\"]'));"
+        "  return all.indexOf(document.activeElement);"
+        "}"
     )
+    first_index = page.evaluate(active_index_script)
+    assert first_index >= 0, f"first treeitem should be focused, got index {first_index}"
     page.keyboard.press("ArrowDown")
-    after_down_focused = page.evaluate(
-        "() => document.activeElement && document.activeElement.outerHTML.slice(0, 80)"
-    )
-    assert after_down_focused != first_focused, (
-        f"ArrowDown should move focus; before={first_focused!r}, after={after_down_focused!r}"
+    after_index = page.evaluate(active_index_script)
+    assert after_index != first_index and after_index >= 0, (
+        f"ArrowDown should move focus to a different treeitem; before index={first_index}, after index={after_index}"
     )
     after_down_role = page.evaluate(
         "() => document.activeElement && document.activeElement.getAttribute('role')"

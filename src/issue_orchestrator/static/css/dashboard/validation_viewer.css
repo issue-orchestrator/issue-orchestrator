@@ -65,6 +65,50 @@
 .cvv-headline-text {
     word-break: break-word;
 }
+
+/* 3a inline headline (Phase C): when a failure has no traceback body
+   the headline message renders next to the test name in the head row.
+   Truncates with ellipsis so card widths stay predictable. */
+.cvv-inline-headline {
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 480px;
+    flex: 0 1 auto;
+}
+.cvv-inline-headline.is-failed { color: #8c1f17; }
+.cvv-inline-headline.is-error  { color: #6f4d00; }
+.cvv-inline-headline::before {
+    content: "·";
+    color: #8a93a3;
+    margin: 0 6px 0 2px;
+}
+
+/* Built-in Copy-error icon (Phase C): one of these on every failed
+   triage card.  Generic — not plugin-scoped. */
+.cvv-copy-icon {
+    margin-left: auto;
+    border: 1px solid #d8dde4;
+    background: #fafbfc;
+    color: #5a6472;
+    cursor: pointer;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1;
+    font-family: inherit;
+}
+.cvv-copy-icon:hover {
+    background: #ffffff;
+    border-color: #b6bdc8;
+    color: #1f2329;
+}
+.cvv-copy-icon:focus-visible {
+    outline: 2px solid #3870e0;
+    outline-offset: 1px;
+}
 .cvv-badges {
     margin: 0 10px 8px;
     display: flex;
@@ -196,6 +240,24 @@
     color: #8a93a3;
     font-style: italic;
     font-size: 11px;
+}
+
+/* Skip-reason: surfaced inline when a skipped test is expanded.
+   JUnit's ``<skipped message="..."/>`` lands on
+   ``failure_details``; the viewer renders it in a muted block so
+   the user can see *why* the test was skipped without leaving the
+   dashboard. */
+.cvv-skip-reason {
+    margin: 0 10px 8px;
+    padding: 8px 10px;
+    background: #f6f8fa;
+    border: 1px solid #d8dde4;
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #5a6472;
+    white-space: pre-wrap;
+    line-height: 1.5;
 }
 
 /* ── run-level stdout/stderr (legacy excerpts) ──────────────────── */

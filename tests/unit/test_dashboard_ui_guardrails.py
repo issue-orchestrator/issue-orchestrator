@@ -1697,232 +1697,86 @@ def test_e2e_run_timeline_is_directly_addressable() -> None:
 
 
 def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
-    """Run-level issue affordances open cycle-aware E2E issue timelines."""
+    """Run-level issue affordances open cycle-aware E2E issue
+    timelines through the shared typed-Command pipeline
+    (PR #6319 round 4): the affordance no longer wires its own
+    ``openIssueTimeline(...)`` ``onclick`` — that was a second owner
+    for the same UI command.  It now carries
+    ``data-lifecycle-command`` with the typed shape
+    ``{kind: 'open_issue_timeline', issue_number, scope_kind: 'e2e_run',
+    e2e_run_id}`` and routes through
+    ``runE2ELifecycleCommandFromButton`` → ``runE2ELifecycleCommand``
+    → ``openIssueTimeline``.
+    """
     js = _read(DASHBOARD_JS)
     timeline_body = _function_body(js, "renderE2ETimeline")
     affordance_body = _function_body(js, "renderE2EIssueTimelineAffordances")
     assert "tl.issue_affordances" in timeline_body
     assert "e2e-issue-timeline-affordances" in affordance_body
-    assert "openIssueTimeline(${issueNumber}, this, {e2eRunId: ${runId}})" in affordance_body
+    # Typed command on the button, dispatched through the shared owner.
+    assert "data-lifecycle-command=" in affordance_body
+    assert "'open_issue_timeline'" in affordance_body
+    assert "scope_kind: 'e2e_run'" in affordance_body
+    assert "e2e_run_id: runId" in affordance_body
+    assert "runE2ELifecycleCommandFromButton(this)" in affordance_body
+    # No second-owner direct onclick path.
+    assert "openIssueTimeline(${issueNumber}" not in affordance_body
     css = _read_dashboard_css_bundle()
     assert ".e2e-issue-timeline-affordances" in css
     assert ".e2e-issue-timeline-btn" in css
 
 
-def test_e2e_run_modal_uses_test_centric_layout() -> None:
-    """Run modal: tests are the headline, with filter chips and per-row expansion."""
+def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
+    """Phase C of #6310 follow-up: the E2E run modal body is the
+    canonical validation viewer.  The legacy filter pills / bulk-action
+    bar / per-row triage actions are gone; per-test orchestrator
+    affordances live in the ``io.agent-context`` plugin block
+    rendered inside the canonical viewer.
+    """
     js = _read(DASHBOARD_JS)
     results_body = _function_body(js, "renderE2EResultsPanel")
-    headline_body = _function_body(js, "renderTestResultsHeadline")
-    filters_body = _function_body(js, "renderTestResultsFilters")
-    row_body = _function_body(js, "_renderTestRow")
-    expand_body = _function_body(js, "_renderTestRowExpand")
-    actions_body = _function_body(js, "_renderTestRowActions")
-    toggle_body = _function_body(js, "toggleTestRowExpand")
-    filter_body = _function_body(js, "filterTestResults")
 
-    # Headline + filters + flat list are the primary surface.
-    assert "renderTestResultsHeadline(tests)" in results_body
-    assert "renderTestResultsFilters(counts" in results_body
-    assert 'class="test-results-list"' in results_body
-    # The E2E modal injects its behaviors via `opts`, then passes the opts
-    # object into the shared renderer. The shared renderer no longer knows
-    # about runIds or e2e endpoints on its own — that decoupling is what
-    # makes the validation-modal consumer possible. The exact opts shape is
-    # asserted below.
-    assert "_renderTestRow(test, lifecycle, activeFilter, opts)" in results_body
-    assert "renderRowActions: _renderE2ETestRowActions" in results_body
-    assert "renderLifecycleBlock:" in results_body
-    assert "capturedOutputUrl:" in results_body
-    # The test-results-list MUST NOT carry a fixed id — both the E2E run
-    # modal and the issue-detail drawer render this layout, so a fixed id
-    # would create duplicates and break panel-scoped filter dispatch.
-    assert "testResultsList" not in js
+    # The panel translates the orchestrator-categorized run-detail
+    # payload to the JUnit-canonical viewer payload, then mounts the
+    # shared viewer + the run-details footer.
+    assert "e2eRunToCanonicalPayload(data)" in results_body
+    assert "renderCanonicalValidationViewer(canonical)" in results_body
+    assert "renderRunDetailsDisclosure(data)" in results_body
+    # Run-level summary chips + untracked-failures banner are the only
+    # two run-scoped surfaces above the body.
+    assert "_renderRunSummaryChips(data" in results_body
+    assert "_renderUntrackedFailuresBanner(untrackedCount)" in results_body
 
-    # Headline shows user-facing pass/fail/action/skipped/quarantined counts.
-    assert "passed" in headline_body
-    assert "failed" in headline_body
-    assert "action needed" in headline_body
-    assert "trh-stat" in headline_body
-    assert "_testOutcomeCounts(tests)" in headline_body
-    assert "data-passed-count" in headline_body
-    assert "data-failed-count" in headline_body
+    # The legacy "test-results-panel" container is gone — the new wrapper
+    # is .e2e-canonical-panel.  test_results_list / test-results-list
+    # references are also gone from the panel body.
+    assert "test-results-panel" not in results_body
+    assert 'class="test-results-list"' not in results_body
+    # Filter pills + bulk-action bar are gone.
+    assert "renderTestResultsFilters" not in results_body
+    assert "bulk-action-bar" not in results_body
+    assert "filterTestResults" not in results_body
 
-    # Filter chips are tablist with task-oriented groups.
-    assert "trf-chip" in filters_body
-    assert "data-filter=" in filters_body
-    assert 'role="tablist"' in filters_body
-    assert "filterTestResults(" in filters_body
-    assert "Action needed" in filters_body
-    assert "Tracked failures" in filters_body
-    assert "Passed on retry" in filters_body
+    # After mounting, the E2E view calls the canonical-viewer ARIA
+    # enhancer (matching the modal + drawer paths).
+    unified_body = _function_body(js, "renderUnifiedRunView")
+    assert "enhanceCanonicalValidationViewerAccessibility(cvvRoot)" in unified_body
 
-    # Per-test rows are expandable when there's error or linked lifecycle.
-    assert "data-filter-group=" in row_body
-    assert "data-expandable=" in row_body
-    assert "_renderTestResultPills(test)" in row_body
-    assert "_renderTestFailureSummary(test)" in row_body
-    assert "toggleTestRowExpand(this)" in row_body
-
-    # Per-row expand owns failure-details only. Lifecycle ("Related issue
-    # activity") moved to `_renderE2EIssueLifecycleBlock` in e2e_run_view.js,
-    # wired via `opts.renderLifecycleBlock`, so the shared module stays
-    # framework-agnostic. Row actions follow the same opt-in pattern via
-    # `_renderE2ETestRowActions`.
-    assert "trr-error-text" in expand_body
-    assert "Failure details" in expand_body
-    assert "opts.renderLifecycleBlock" in expand_body
-    # The actual lifecycle markup + buttons live in the E2E helper.
-    e2e_lifecycle_body = _function_body(js, "_renderE2EIssueLifecycleBlock")
-    assert "Related issue activity" in e2e_lifecycle_body
-    assert "Coder Session" in e2e_lifecycle_body
-    assert "Review Session" in e2e_lifecycle_body
-    assert "Validation" in e2e_lifecycle_body
-
-    # Shared row actions delegate to opts.renderRowActions — the shared
-    # module never emits Create Issue / Quarantine / Copy Error itself.
-    assert "opts.renderRowActions" in actions_body
-    assert "create_issue_dropdown" not in actions_body
-    # Those E2E-specific actions live in the E2E helper.
-    e2e_actions_body = _function_body(js, "_renderE2ETestRowActions")
-    assert "create_issue_dropdown" in e2e_actions_body
-    assert "quarantine_test" in e2e_actions_body
-    assert "copy_test_error" in e2e_actions_body
-
-    # Toggle and filter behavior helpers exist.
-    assert ".trr-row" in toggle_body
-    assert "trr-expand" in toggle_body
-    assert "filterGroup" in filter_body
-    assert ".trf-chip" in filter_body
-    # Filter dispatch must be panel-scoped, not global. Looking up the
-    # list/chips through document.* would target the wrong panel when the
-    # E2E run modal and the issue-detail drawer are open concurrently.
-    assert "btnEl.closest('.test-results-panel')" in filter_body
-    assert "document.getElementById" not in filter_body
-    assert "document.querySelectorAll" not in filter_body
+    # The translator is the seam where categories collapse onto JUnit
+    # outcomes.  It must be reachable as a top-level symbol.
+    assert "function e2eRunToCanonicalPayload" in js
 
 
-def test_e2e_test_row_history_cluster_uses_inline_labels() -> None:
-    """The recent-runs glyph cluster and flake % must carry visible labels.
-
-    The original row jammed glyphs and a bare "50%" together with no inline
-    labels — users misread the glyphs as a single test's retry sequence and
-    couldn't tell what the percent meant. Lock in the labels so the row stays
-    self-explanatory.
-    """
-    js = _read(DASHBOARD_JS)
-    cluster_body = _function_body(js, "_renderHistoryCluster")
-    row_body = _function_body(js, "_renderTestRow")
-    assert 'class="test-history-label"' in cluster_body
-    assert ">Recent<" in cluster_body
-    assert "test-history-flake" in cluster_body
-    assert "% flake" in cluster_body
-    # Row delegates to the cluster — no bare flip_rate_percent rendering left.
-    assert "_renderHistoryCluster(test)" in row_body
-    assert 'class="flip-rate"' not in row_body
-    css = _read_dashboard_css_bundle()
-    assert ".test-history-label" in css
-    assert ".test-history-flake" in css
-
-
-def test_e2e_test_row_drops_flaky_pill_in_favor_of_history_cluster() -> None:
-    """`Flaky` is no longer a peer pill alongside `Passed`/`Failed`.
-
-    Reading "Passed" and "Flaky" as two pills made the outcome look
-    contradictory. Flakiness now lives in the history cluster (glyphs + flake
-    %); the only fallback is a small inline note when there's no history.
-    """
-    js = _read(DASHBOARD_JS)
-    pills_body = _function_body(js, "_renderTestResultPills")
-    assert 'test-result-pill flaky' not in pills_body
-    assert "test-result-flaky-note" in pills_body
-    # Fallback is gated by absence of history — don't double-up with the cluster.
-    assert "_hasHistory(test)" in pills_body
-
-
-def test_e2e_test_row_suppresses_default_provenance_tag() -> None:
-    """`JUnit XML` provenance is the framework-agnostic default — no per-row tag."""
-    js = _read(DASHBOARD_JS)
-    row_body = _function_body(js, "_renderTestRow")
-    # Both runtime and junit_xml are common defaults; only show the tag for
-    # genuinely unusual sources (e.g. external_report).
-    assert "sourceKey !== 'runtime'" in row_body
-    assert "sourceKey !== 'junit_xml'" in row_body
-
-
-def test_e2e_failed_rows_render_expanded_by_default() -> None:
-    """Failed tests are the headline — expansion must not hide behind a caret."""
-    js = _read(DASHBOARD_JS)
-    expand_body = _function_body(js, "_renderTestRowExpand")
-    row_body = _function_body(js, "_renderTestRow")
-    # Expand div omits the hidden attribute when the row is failed.
-    assert "outcomeState === 'failed'" in expand_body
-    assert "startOpen" in expand_body
-    # Row's caret + aria-expanded mirror the open state so a11y stays honest.
-    assert "outcomeState === 'failed'" in row_body
-    assert 'aria-expanded="${ariaExpandedAttr}"' in row_body
-
-
-def test_e2e_test_row_lazy_loads_captured_output_on_expand() -> None:
-    """Captured stdout/stderr is fetched on demand from the JUnit XML.
-
-    Captured output is intentionally NOT persisted to SQLite (it can be MB per
-    test). Lock in the lazy-load contract: a placeholder marks the row as
-    needing fetch; the toggle handler calls /api/e2e-run/{id}/test-output and
-    fills in the placeholder. Render-time pre-fetch covers failed rows that
-    auto-expand.
-    """
-    js = _read(DASHBOARD_JS)
-    expand_body = _function_body(js, "_renderTestRowExpand")
-    toggle_body = _function_body(js, "toggleTestRowExpand")
-    fetch_body = _function_body(js, "_maybeLoadCapturedOutput")
-    auto_body = _function_body(js, "_autoLoadVisibleCapturedOutput")
-    panel_body = _function_body(js, "renderE2EResultsPanel")
-    mount_body = _function_body(js, "renderUnifiedRunView")
-    filter_body = _function_body(js, "filterTestResults")
-    # Placeholder + URL handle travel on the DOM, not in JS state. The URL
-    # is baked in via the consumer's `opts.capturedOutputUrl` callback — the
-    # shared renderer doesn't assume any specific endpoint shape, so a
-    # validation-modal consumer can point at its own URL builder.
-    assert 'class="trr-captured-output"' in expand_body
-    assert 'data-needs-fetch="1"' in expand_body
-    assert 'data-url=' in expand_body
-    assert "data-nodeid=" in expand_body
-    # No JUnit-source check in the shared renderer — that's the consumer's
-    # call. (E2E modal does the check inside its capturedOutputUrl callback;
-    # see `_e2eCapturedOutputUrl` in e2e_run_view.js.)
-    assert "sourceKey.includes('junit')" not in expand_body
-    # The captured-output slot is opt-in via opts.capturedOutputUrl. When the
-    # consumer returns '' (no URL available), no placeholder renders, which
-    # is also the standalone-default for consumers that omit the opt entirely.
-    assert "opts.capturedOutputUrl" in expand_body
-    # Toggle handler triggers fetch on first expand.
-    assert "_maybeLoadCapturedOutput(expand)" in toggle_body
-    # The fetcher reads data-url back off the DOM — endpoint-agnostic.
-    assert "placeholder.dataset.url" in fetch_body
-    assert "/api/e2e-run/" not in fetch_body  # MUST NOT be hardcoded in shared module
-    # 404 must render an empty note rather than an error.
-    assert "_renderCapturedOutputEmpty" in fetch_body
-    # E2E modal still uses /api/e2e-run/{id}/test-output as ITS URL, but
-    # via its _e2eCapturedOutputUrl helper — not in the shared renderer.
-    e2e_url_body = _function_body(js, "_e2eCapturedOutputUrl")
-    assert "/api/e2e-run/" in e2e_url_body
-    assert "/test-output" in e2e_url_body
-    assert "encodeURIComponent(nodeid)" in e2e_url_body
-    # Panel constructs runId, wraps it into opts.capturedOutputUrl, passes opts.
-    assert "data.run.id" in panel_body
-    assert "capturedOutputUrl:" in panel_body
-    # Auto-expanded failed rows kick off the fetch on initial mount, but only
-    # for rows the user can see — a failure-heavy run with most rows hidden by
-    # the default "Action needed" filter would otherwise spam dozens of fetches.
-    assert "_autoLoadVisibleCapturedOutput(content)" in mount_body
-    assert ".trr-expand:not([hidden])" in auto_body
-    assert "row.style.display === 'none'" in auto_body
-    # When the user changes the filter, newly visible rows must trigger fetch.
-    assert "_autoLoadVisibleCapturedOutput(panel)" in filter_body
-    css = _read_dashboard_css_bundle()
-    assert ".trr-captured-output" in css
-    assert ".trr-captured-channel-label" in css
+# Legacy test_results_panel.js guardrails were deleted in Phase C
+# (PR #6319 Blocker 2) — the panel module + its row-renderer helpers
+# (``_renderTestRow``, ``_renderTestRowExpand``, ``_renderTestRowActions``,
+# ``_renderHistoryCluster``, ``_renderTestResultPills``,
+# ``toggleTestRowExpand``, ``_maybeLoadCapturedOutput``,
+# ``_autoLoadVisibleCapturedOutput``, ``_e2eCapturedOutputUrl``) were
+# removed from the production bundle.  The new E2E run modal mounts
+# the canonical viewer instead, covered by
+# ``test_e2e_run_modal_uses_canonical_viewer_body`` above and the
+# Playwright smoke at ``tests/e2e_web/test_e2e_canonical_view.py``.
 
 
 def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:
@@ -1954,50 +1808,154 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     assert "button.dataset.artifactPath" in artifact_open_body
     css = _read_dashboard_css_bundle()
     assert ".run-details-disclosure" in css
-    assert ".test-results-headline" in css
-    assert ".test-results-filters" in css
-    assert ".trr-row" in css
-    assert ".trr-expand" in css
-    assert ".trr-lifecycle" in css
+    # Phase C: ``.test-results-headline`` / ``.test-results-filters``
+    # / ``.trr-*`` CSS classes were specific to the deleted
+    # ``test_results_panel.js`` panel and are no longer in the
+    # bundle.  The run-details disclosure (this test's actual
+    # subject) is unchanged.
 
 
-def test_e2e_run_modal_actions_use_data_action_dispatch() -> None:
-    """Per-test action buttons use the data-e2e-action dispatch contract, not inline handlers."""
+# ``test_e2e_run_modal_actions_use_data_action_dispatch`` and
+# ``test_e2e_result_category_owns_client_grouping`` were deleted in
+# Phase C (PR #6319 Blocker 2) — both tested helpers that lived in
+# the legacy ``test_results_panel.js`` and the per-row action
+# dispatcher in ``e2e_run_view.js`` (``_e2eRowActionButton`` /
+# ``runE2ERowActionFromButton`` / ``_testResultCategory`` /
+# ``_testOutcomeState`` / ``_testFilterGroup`` / etc.), all of which
+# are gone now.  The action contract for the new E2E view is the
+# canonical viewer + ``io.agent-context`` plugin (typed-Command
+# dispatch), covered by the new
+# ``test_e2e_run_modal_uses_canonical_viewer_body`` above and the
+# Playwright smoke ``test_e2e_canonical_view.py``.
+
+
+def test_e2e_legacy_triage_paths_are_absent_from_bundle() -> None:
+    """Round-3 reviewer ask on PR #6319: the legacy run-details and
+    test-detail UI in ``e2e_triage.js`` (and the ``currentRunDetails``
+    state) must not survive in the shipped dashboard bundle.  The
+    canonical ``showUnifiedRunView`` + ``unifiedRunData`` own the run
+    modal end-to-end now; any vestige of the old categorized
+    ``test-result-item`` / ``test-detail-view`` UI would render
+    unstyled obsolete markup if it ever fired.
+    """
     js = _read(DASHBOARD_JS)
-    row_action_button_body = _function_body(js, "_e2eRowActionButton")
-    row_action_dispatch_body = _function_body(js, "runE2ERowActionFromButton")
-    actions_body = _function_body(js, "_renderTestRowActions")
-    dropdown_body = _function_body(js, "showCreateIssueDropdown")
-    command_body = _function_body(js, "runE2ELifecycleCommand")
-    assert "data-e2e-action" in row_action_button_body
-    assert "dataset.nodeid" in row_action_dispatch_body
-    assert "case 'copy_test_error'" in row_action_dispatch_body
-    assert "Copy-error action missing nodeid" in row_action_dispatch_body
-    assert "copyTestErrorFromRun(nodeid)" in row_action_dispatch_body
-    assert "closeE2EIssue(" not in actions_body
-    assert "showCreateIssueDropdown(this, '" not in actions_body
-    assert "quarantineSingleTest('" not in actions_body
-    assert "copyTestErrorFromRun('" not in actions_body
-    assert "createSingleIssueWithAgent('" not in dropdown_body
-    assert "openIssueTimeline" in command_body
-    assert "openAgentLogAction" in command_body
-    assert "openReviewTranscript" in command_body
-    assert "openValidationFailure" in command_body
+    dead_symbols = [
+        # Legacy run-details + test-detail entry points.
+        "function showE2ERunDetailsLegacy",
+        "function showRunTestDetail",
+        # Per-test action helpers that only made sense inside the
+        # deleted detail view.
+        "function rerunTest",
+        "function copyTestCommand",
+        "function rerunCurrentTest",
+        "function copyCurrentTestCommand",
+        # Legacy state.
+        "let currentRunDetails",
+    ]
+    for symbol in dead_symbols:
+        assert symbol not in js, (
+            f"Legacy e2e_triage.js symbol {symbol!r} leaked back into the bundle"
+        )
+    # Legacy CSS class names + URL contract that those functions rendered.
+    legacy_markers = [
+        # The old per-test row's class name.
+        'class="test-result-item ',
+        # The per-test drill-down container.
+        'class="test-detail-view"',
+        'class="test-detail-header"',
+        'class="test-detail-info"',
+        'class="test-detail-actions"',
+        # The categorized-results endpoint that the legacy view called.
+        "enhanced=false",
+    ]
+    for marker in legacy_markers:
+        assert marker not in js, (
+            f"Legacy e2e_triage.js marker {marker!r} leaked into the bundle"
+        )
+    # The ``currentRunDetails`` global is gone; the canonical
+    # ``unifiedRunData`` owns the current-run id now.
+    assert "currentRunDetails" not in js
 
 
-def test_e2e_result_category_owns_client_grouping() -> None:
-    """The client trusts server result_category instead of re-deriving groups ad hoc."""
-    js = _read(DASHBOARD_JS)
-    category_body = _function_body(js, "_testResultCategory")
-    outcome_body = _function_body(js, "_testOutcomeState")
-    filter_body = _function_body(js, "_testFilterGroup")
+def test_e2e_legacy_panel_selectors_are_absent_from_css_bundle() -> None:
+    """Round-2 reviewer ask on PR #6319: the legacy panel CSS classes
+    must not ship in the dashboard CSS bundle after the panel itself
+    is gone.  Without this guardrail nothing prevents dead selectors
+    from creeping back in — and the partial shipping of an obsolete
+    UI is exactly what the reviewer flagged.
 
-    assert "RESULT_CATEGORY_OUTCOME_STATE" in js
-    assert "ACTION_NEEDED_RESULT_CATEGORIES" in js
-    assert "test.result_category" in category_body
-    assert "RESULT_CATEGORY_OUTCOME_STATE.get(category)" in outcome_body
-    assert "effectiveOutcome === 'failed' || effectiveOutcome === 'error' || category ===" not in outcome_body
-    assert "Actionable categories intentionally win" in filter_body
+    The canonical viewer (``cvv-*`` classes) and the run-details
+    disclosure (``run-details-*`` classes) own the live E2E run
+    modal styling.  Everything below was scoped to the deleted
+    ``test_results_panel.js`` and its row-action contract.
+    """
+    css = _read_dashboard_css_bundle()
+    dead_selectors = [
+        # filter pills + headline scaffold
+        ".test-results-panel",
+        ".test-results-headline",
+        ".test-results-filters",
+        ".test-results-list",
+        ".trf-chip",
+        # row + row internals
+        ".trr-row",
+        ".trr-row-main",
+        ".trr-row-copy",
+        ".trr-row-actions",
+        ".trr-caret",
+        ".trr-expand",
+        ".trr-error-text",
+        ".trr-expand-heading",
+        ".trr-captured-output",
+        ".trr-captured-channel",
+        ".trr-captured-channel-label",
+        ".trr-captured-text",
+        ".trr-captured-status",
+        ".trr-captured-error",
+        ".trr-lifecycle",
+        ".trr-lifecycle-heading",
+        ".trr-lifecycle-cycles",
+        ".trr-lifecycle-actions",
+        # headline status accents
+        ".trh-stat",
+        ".trh-passed",
+        ".trh-failed",
+        ".trh-action",
+        ".trh-warning",
+        ".trh-skipped",
+        ".trh-quarantined",
+        # per-row content
+        ".test-result-pill",
+        ".test-result-pills",
+        ".test-result-flaky-note",
+        ".test-history-label",
+        ".test-history-glyphs",
+        ".test-history-flake",
+        ".test-failure-summary",
+        ".test-row-copy",
+        ".test-suite",
+        ".test-source",
+        # per-row inline lifecycle chip
+        ".e2e-lifecycle-chip",
+    ]
+    leaks: list[str] = []
+    for selector in dead_selectors:
+        # Match the selector at a position that's actually a CSS rule
+        # (i.e. followed by ``{``, ``,``, ``:``, ``.``, ``>``, whitespace,
+        # ``[``, or end-of-line) — so a class name appearing only inside
+        # a comment block (the deletion-marker comments we left behind)
+        # doesn't trip the guard.
+        for line in css.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("/*", "//", "*")):
+                continue
+            if selector in line:
+                leaks.append(f"{selector!r} on: {line.strip()}")
+                break
+    assert not leaks, (
+        "Legacy test-results-panel CSS selectors leaked back into the "
+        "dashboard bundle:\n  " + "\n  ".join(leaks)
+    )
 
 
 def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:

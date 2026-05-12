@@ -941,8 +941,12 @@ async function quarantineSingleTest(nodeid) {
 }
 
 async function createE2EDiagnosticIssue() {
+    // Phase C / PR #6319 round 3: the canonical run view owns the
+    // current-run id via ``unifiedRunData`` (set in
+    // ``showUnifiedRunView``).  Fall back to ``e2eLastRun`` for
+    // callers reaching the diagnostic flow without an open run modal.
     const runId = e2eCurrentDiagnosis?.run_id
-        || currentRunDetails?.run?.id
+        || (typeof unifiedRunData !== 'undefined' && unifiedRunData?.run?.id)
         || e2eLastRun?.id;
     if (!runId) {
         showToast('No run data available', true);

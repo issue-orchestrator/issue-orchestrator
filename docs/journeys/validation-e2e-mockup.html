@@ -55,7 +55,20 @@
 
   /* note */
   .note { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); max-width: 920px; padding: 8px 14px; background: var(--accent-bg); border: 1px solid var(--accent); border-radius: 6px; color: #1c3779; font-size: 12px; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .note.collapsed { display: none; }
   .note code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; }
+  .note-toggle {
+    position: fixed; top: 12px; right: 16px; z-index: 11;
+    padding: 6px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  .note-toggle:hover { color: var(--text); border-color: var(--border-strong); }
 
   /* drawer */
   .drawer-wrap { position: fixed; inset: 60px 60px 24px auto; width: 880px; max-width: calc(100vw - 80px); z-index: 5; display: flex; flex-direction: column; }
@@ -151,72 +164,203 @@
     background: rgba(255,255,255,0.5);
     border-bottom: 1px solid var(--accent);
   }
+
+  /* "Strictest collapse" failure triage card.  The whole card is a
+     <details>: at landing the user sees just one row per failure —
+     icon, test name, suite, 1-line error message, Copy-error icon.
+     Click the row → body unfolds: chips, traceback/stdout/stderr
+     expanders (each still collapsed), linked-issue plugin block.
+     Predictable: every clickable thing starts closed.  Diverges
+     from the current production shape (always-visible cards) — this
+     is the design we're moving to. */
+  details.triage-card {
+    margin: 0 8px 6px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--fail);
+    border-radius: 6px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  details.triage-card.is-error { border-left-color: var(--warn); }
+  details.triage-card > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  details.triage-card > summary::-webkit-details-marker { display: none; }
+  details.triage-card > summary:hover { background: var(--surface-2); }
+  .triage-card-caret {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  details.triage-card[open] > summary .triage-card-caret { transform: rotate(90deg); }
+  .triage-card-title { font-weight: 600; font-size: 13px; flex-shrink: 0; }
+  .triage-card-suite { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+  /* 1-line inline error message shown in the summary row so the
+     user can scan failures without expanding.  Truncates with
+     ellipsis when long; the full message appears on hover via the
+     ``title`` attribute, and the full body lives in chips + leaf
+     rows under the expanded card. */
+  .triage-card-inline-headline {
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 640px;
+  }
+  .triage-card-inline-headline.is-failed { color: var(--fail-strong); }
+  .triage-card-inline-headline.is-error  { color: var(--warn); }
+  .triage-card-inline-headline::before {
+    content: "·";
+    color: var(--text-faint);
+    margin: 0 6px 0 2px;
+  }
+  .triage-card-body {
+    padding: 4px 0 8px;
+    border-top: 1px solid var(--spine);
+  }
+  .copy-icon {
+    margin-left: auto;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1;
+    font-family: inherit;
+  }
+  .copy-icon:hover {
+    background: var(--surface);
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+
+  /* ── Runs list (top-level page chrome) ─────────────────────────
+     The mockup is no longer a modal — runs render directly on the
+     page.  Each run is one row in a flat list; click to expand. */
+  .runs-page {
+    max-width: 1100px;
+    margin: 24px auto;
+    padding: 0 24px;
+  }
+  .runs-page h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    color: var(--text);
+  }
+  .runs-page h1 .small {
+    font-weight: 400;
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-left: 8px;
+  }
+
+  /* Top-level run expander.  At landing the user sees only the
+     summary row: caret + outcome icon + run# + suite + 1-line
+     count summary + duration + timestamp.  Click to unfold the
+     body — which is itself a list of collapsed group rows. */
+  details.run-row {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+  details.run-row > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    user-select: none;
+  }
+  details.run-row > summary::-webkit-details-marker { display: none; }
+  details.run-row > summary:hover { background: var(--surface-2); }
+  details.run-row > summary .caret-tri {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  details.run-row[open] > summary .caret-tri { transform: rotate(90deg); }
+  .run-title { font-weight: 600; flex-shrink: 0; }
+  .run-suite { color: var(--text-muted); flex-shrink: 0; }
+  .run-counts { color: var(--text); font-size: 12px; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-counts .c-fail { color: var(--fail-strong); }
+  .run-counts .c-error { color: var(--warn); }
+  .run-counts .c-skip { color: var(--text-muted); }
+  .run-counts .c-pass { color: var(--ok); }
+  .run-meta-text { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+  .run-body {
+    padding: 8px 14px 12px 28px;
+    border-top: 1px solid var(--spine);
+    background: var(--surface-3);
+  }
+
+  /* Outcome-grouped expander inside a run body
+     (Failed / Errored / Skipped / Passed) plus the meta groups
+     (Run details / Run artifacts).  Same idiom as the run row but
+     a level deeper.  All start closed. */
+  details.group-row {
+    border-bottom: 1px solid var(--spine);
+  }
+  details.group-row:last-child { border-bottom: 0; }
+  details.group-row > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    user-select: none;
+  }
+  details.group-row > summary::-webkit-details-marker { display: none; }
+  details.group-row > summary:hover { background: var(--surface-2); }
+  details.group-row > summary .caret-tri {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  details.group-row[open] > summary .caret-tri { transform: rotate(90deg); }
+  .group-title { font-weight: 500; }
+  .group-count { color: var(--text-muted); font-size: 12px; }
+  .group-count.is-failed { color: var(--fail-strong); }
+  .group-count.is-error { color: var(--warn); }
+  .group-summary-meta { color: var(--text-faint); font-size: 11px; margin-left: auto; }
+  .group-body {
+    padding: 6px 0 6px 14px;
+    border-left: 2px solid var(--spine);
+    margin-left: 6px;
+  }
 </style>
 </head>
 <body>
 
-<div class="dashboard-backdrop">
-  <div class="dashboard-cols">
-    <div class="dashboard-col">
-      <h3>E2E Runs</h3>
-      <div class="dashboard-card"><span class="num">#88</span> latest · ✕ failed</div>
-      <div class="dashboard-card"><span class="num">#87</span> ✓ passed</div>
-      <div class="dashboard-card"><span class="num">#86</span> ✓ passed</div>
-    </div>
-    <div class="dashboard-col">
-      <h3>Issues (driven by E2E)</h3>
-      <div class="dashboard-card"><span class="num">#4501</span> fixture: simple issue</div>
-      <div class="dashboard-card"><span class="num">#4502</span> fixture: rework</div>
-      <div class="dashboard-card"><span class="num">#4503</span> fixture: cohort split</div>
-    </div>
-    <div class="dashboard-col">
-      <h3>Active</h3>
-      <div class="dashboard-card"><span class="num">#361</span> Card timeline affordance</div>
-      <div class="dashboard-card"><span class="num">#409</span> Running flow item</div>
-    </div>
-    <div class="dashboard-col">
-      <h3>Done</h3>
-      <div class="dashboard-card"><span class="num">#406</span> Migrate validation-outcome</div>
-      <div class="dashboard-card"><span class="num">#404</span> Diagnostic papercuts</div>
-    </div>
-  </div>
-</div>
-
-<div class="note">
-  <strong>Canonical JUnit viewer + one optional field.</strong> The body of this
-  dialog is the same JUnit viewer that ships everywhere: failures triaged on top,
-  <code>+ N passed</code> browse-by-file underneath, per-test stdout / stderr /
-  traceback / actions. Generic JUnit consumers (e.g. tixmeup) see exactly that —
-  nothing else. The blue-bordered <strong>Linked issue</strong> panel under the
-  failed test is the one orchestrator-specific extension: it renders only when
-  the test case carries a <code>linked_issue</code> field, which <em>our</em>
-  parser sets when an E2E test drove the orchestrator on an issue. Generic
-  parsers don't set it → tixmeup never sees the panel. No plugin registry yet,
-  no marker protocol — just one optional case field. When we want a second
-  extension, that's when we extract a renderer hook.
-</div>
-
-<div class="drawer-wrap">
-  <div class="drawer" role="dialog" aria-label="E2E Run #88">
-
-    <div class="drawer-header">
-      <div>
-        <div class="drawer-title">E2E Run #88 — smoke suite</div>
-        <div class="drawer-sub">
-          <span class="chip fail">⚠ 1 failed</span>
-          <span>pytest_e2e · 14m 22s · ended 2026-05-11 14:14</span>
-        </div>
-      </div>
-      <button class="drawer-close" title="Close">✕</button>
-    </div>
-
-    <div class="status-banner fail">
-      ✕ One test failed and one errored. Failure is auto-expanded below.
-    </div>
-
-    <div class="drawer-body" id="body"></div>
-
-  </div>
+<div class="runs-page">
+  <h1>E2E Runs <span class="small">— smoke suite</span></h1>
+  <div id="runsList"></div>
 </div>
 
 <script>
@@ -344,20 +488,15 @@
     const stderrId = `${idPrefix}-stderr`;
     const frameworkId = `${idPrefix}-fw`;
 
-    const headline = `
-      <div class="headline ${isError ? 'is-error' : ''}">
-        <span class="headline-text"><strong>${escapeHtml(t.type)}:</strong> ${escapeHtml(t.message)}</span>
-        <button class="btn subtle" data-copy="${escapeAttr(t.type + ': ' + t.message)}">📋</button>
-      </div>
-    `;
+    // Strictest-collapse: the inline 1-line error message lives in
+    // the summary ROW (rendered by ``failedTestRow``), not in a
+    // separate headline box inside the expanded body.  So the body
+    // skips ``headline`` entirely — it would duplicate the summary
+    // row's inline message.
     const badges = `
       <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
         <span class="chip outcome ${t.outcome}">${isError ? '⚠ Errored' : '✕ Failed'}</span>
         <span class="chip">${t.duration_s >= 1 ? t.duration_s.toFixed(1) + ' s' : Math.round(t.duration_s * 1000) + ' ms'}</span>
-        ${t.flake_pct >= 20 ? `<span class="chip flaky">↻ Flaky ${t.flake_pct}%</span>` : ''}
-        ${t.tracked ? `<span class="chip tracked">→ Tracked: <a href="#" onclick="return false;">#${t.tracked.number}</a></span>` : ''}
-        ${t.linked_issue ? `<span class="chip linked">↳ Linked: <a href="#" onclick="return false;">#${t.linked_issue.number}</a></span>` : ''}
-        <span class="chip">${sparkline(t.history)}</span>
       </div>
     `;
     const tracebackContent = `
@@ -370,8 +509,12 @@
         child_html: `<pre class="code-block">${escapeHtml(t.fw_frames)}</pre>`,
       })}
     `;
+    // Traceback row defaults COLLAPSED.  The headline above already
+    // shows the 1-line error summary; the user clicks the row to
+    // drill into the body.  Predictable: same default whether the
+    // run has 1 failure or 20 — no wall-of-tracebacks at landing.
     const tracebackRow = row({
-      id: tbId, expanded: !isError,
+      id: tbId, expanded: false,
       label_html: `<span class="title">traceback</span> <span class="summary">1 user frame</span>`,
       meta_html: '',
       child_html: tracebackContent,
@@ -382,25 +525,22 @@
       meta_html: '',
       child_html: t.stdout ? `<pre class="code-block">${escapeHtml(t.stdout)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stdout captured.</span></div>`,
     });
+    // stderr row defaults COLLAPSED — including for errored tests.
+    // Previous design auto-opened stderr on errors because "the
+    // crash diagnostic is in stderr".  But the predictable rule
+    // wins: the user clicks ``stderr ▸`` if they want it.
     const stderrRow = row({
-      id: stderrId, expanded: isError && !!t.stderr,
+      id: stderrId, expanded: false,
       label_html: `<span class="title">stderr</span> <span class="summary">${t.stderr ? t.stderr.split('\n').filter(Boolean).length + ' lines' : 'empty'}</span>`,
       meta_html: '',
       child_html: t.stderr ? `<pre class="code-block">${escapeHtml(t.stderr)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stderr captured.</span></div>`,
     });
-    const actions = `
-      <div class="actions">
-        <button class="btn primary">↗ Open in editor</button>
-        <button class="btn" data-copy="${escapeAttr(t.run_command)}">⌥ Copy run command</button>
-        <button class="btn subtle">↗ Open pytest record</button>
-      </div>
-    `;
+    // Body of the expanded triage card.  Order: badges → leaf rows.
+    // No inline source snippet, no bottom actions row, no headline
+    // box (the inline summary in the parent summary row replaces it).
     return `
-      ${headline}
       ${badges}
-      ${snippet(t.src)}
       ${isError ? stderrRow + tracebackRow + stdoutRow : tracebackRow + stdoutRow + stderrRow}
-      ${actions}
     `;
   }
 
@@ -430,9 +570,9 @@
         label_html: `<span class="title">Validation artifacts</span> <span class="summary">record · output · stderr</span>`,
         meta_html: '',
         child_html: buttonRow([
-          { label: 'Open Validation Record' },
-          { label: 'Open Validation Output' },
-          { label: 'Open Validation Stderr' },
+          { label: 'Open validation record ↗' },
+          { label: 'Open validation output ↗' },
+          { label: 'Open validation stderr ↗' },
         ]),
       })}
     `;
@@ -445,8 +585,8 @@
         ${leaf({ label_html: `<strong>Session ID:</strong> e2e-88-4503-coder-1`, meta_html: '' })}
       </div>
       <div class="actions">
-        <button class="btn">View Session Recording</button>
-        <button class="btn">View Claude Log</button>
+        <button class="btn">View session recording ⧉</button>
+        <button class="btn">View Claude log ↗</button>
       </div>
     `;
     const cycle1Children = `
@@ -459,7 +599,7 @@
           icon: 'failed',
           label: 'Validation failed (3 of 89 · publish_gate · 1.8 s)',
           time: '13:06:52',
-          expanded: true,
+          expanded: false,
           child_html: innerValidationFailed,
         })}
       </div>
@@ -477,13 +617,13 @@
     return `
       ${row({
         id: `${idPrefix}-run`,
-        expanded: true,
-        label_html: `<span class="title">Run 1</span> <span class="summary">2 cycles · agent:web · 3m 21s</span>`,
+        expanded: false,
+        label_html: `${iconHtml('failed')}<span class="title">Run 1</span> <span class="summary">2 cycles · agent:web · 3m 21s</span>`,
         meta_html: '13:05 PM',
         child_html: `
           ${row({
             id: `${idPrefix}-c1`,
-            expanded: true,
+            expanded: false,
             label_html: `${iconHtml('failed')}<span class="title">Cycle 1</span> <span class="summary">Validation failed</span>`,
             meta_html: '13:05',
             child_html: cycle1Children,
@@ -514,29 +654,72 @@
   // ──────────────────────────────────────────────────────────────────
   // E2E test rows
   // ──────────────────────────────────────────────────────────────────
-  function failedTestRow(t, idPrefix, expanded) {
+  // Production-shape failure card.  The outer block is always
+  // visible — failures are the primary thing the user came for, so
+  // they're rendered as static cards rather than collapsible <details>.
+  // The user only opens/closes the small leaf rows inside (traceback,
+  // stdout, stderr, framework frames).  The ``expanded`` argument is
+  // ignored; kept for call-site compatibility.
+  function failedTestRow(t, idPrefix, _expanded) {
+    const isError = t.outcome === 'error';
     const detail = testFailureDetail(t, idPrefix);
+    const copyPayload = escapeAttr(t.type + ': ' + t.message);
+    // Production-shape io.agent-context plugin block: a COMPACT
+    // summary + ``Open issue drawer ↗`` button.  Production does NOT
+    // unfold the per-issue Runs/Cycles/Events tree here — that tree
+    // lives in the SEPARATE per-issue drawer that the button opens.
+    // The plugin block is meant to be a hand-off point, not an
+    // embedded view.
+    // Plugin block: inline drill-in (no teleport).  The plugin
+    // renders the issue's summary fields PLUS a collapsed
+    // ``▸ Issue lifecycle`` row that, when expanded, embeds the
+    // per-issue runs/cycles/events tree right here in place.
+    // Same idiom as every other expander; nothing new to learn.
+    //
+    // A small subtle "↗" link in the corner still exists for the
+    // "I want this issue as a fresh root in its own tab" workflow,
+    // but it's secondary — the primary affordance is the inline
+    // expander.  Plugin owns the labels.
     const linked = t.linked_issue ? `
       <div class="linked-issue-frame">
-        <div class="linked-issue-header">
-          ↳ Linked issue · this test drove the orchestrator on issue #${t.linked_issue.number}
+        <div class="linked-issue-header" style="display: flex; align-items: center; gap: 8px;">
+          <span style="flex: 1 1 auto;">↳ Linked issue · driven by orchestrator</span>
+          <a href="validation-timeline-mockup-v2.html" title="Open issue #${t.linked_issue.number} as a fresh page" style="font-size: 10px; color: var(--accent-strong); text-decoration: none;">↗</a>
         </div>
-        ${row({
-          id: `${idPrefix}-linked`,
-          expanded: true,
-          label_html: `<span class="title">Issue #${t.linked_issue.number}</span> <span class="summary">${escapeHtml(t.linked_issue.title)}</span>`,
-          meta_html: '',
-          child_html: linkedIssueSubtree(`${idPrefix}-iss`),
-        })}
+        <div style="padding: 8px 12px; font-size: 12px; color: var(--text);">
+          <div style="margin-bottom: 4px;"><strong>Issue:</strong> #${t.linked_issue.number} — ${escapeHtml(t.linked_issue.title)}</div>
+          <div style="margin-bottom: 4px;"><strong>Final state:</strong> <span class="chip" style="font-size: 11px;">blocked</span></div>
+          <div style="margin-bottom: 8px;"><strong>Summary:</strong> ${escapeHtml(t.type + ': ' + t.message)}</div>
+          <details class="group-row" style="margin: 0; border: 0;">
+            <summary style="padding: 6px 0; background: transparent;">
+              <span class="caret-tri">▸</span>
+              <span class="group-title">Issue lifecycle</span>
+              <span class="group-summary-meta">2 runs · 3 cycles · blocked after rework</span>
+            </summary>
+            <div class="group-body" style="margin-left: 6px; border-left: 2px solid var(--accent); padding-left: 14px;">
+              ${linkedIssueSubtree(`${idPrefix}-iss`)}
+            </div>
+          </details>
+        </div>
       </div>
     ` : '';
-    return row({
-      id: idPrefix,
-      expanded,
-      label_html: `${iconHtml(t.outcome)}<span class="title">${escapeHtml(t.name)}</span> <span class="summary">${escapeHtml(t.file)}</span>`,
-      meta_html: `<span class="chip outcome ${t.outcome}">${escapeHtml(t.type)}</span>`,
-      child_html: detail + linked,
-    });
+    const oneLineHeadline = `${t.type}: ${t.message}`;
+    return `
+      <details class="triage-card${isError ? ' is-error' : ''}">
+        <summary>
+          <span class="triage-card-caret">▸</span>
+          ${iconHtml(t.outcome)}
+          <span class="triage-card-title">${escapeHtml(t.name)}</span>
+          <span class="triage-card-suite">${escapeHtml(t.file)}</span>
+          <span class="triage-card-inline-headline ${isError ? 'is-error' : 'is-failed'}" title="${escapeAttr(oneLineHeadline)}">${escapeHtml(oneLineHeadline)}</span>
+          <button class="copy-icon" type="button" title="Copy error" data-cvv-copy="${escapeAttr(oneLineHeadline)}" onclick="event.preventDefault(); event.stopPropagation(); navigator.clipboard.writeText(this.dataset.cvvCopy).then(()=>{const o=this.textContent;this.textContent='✓';setTimeout(()=>{this.textContent=o;},900);}).catch(()=>{});">⎘</button>
+        </summary>
+        <div class="triage-card-body">
+          ${detail}
+          ${linked}
+        </div>
+      </details>
+    `;
   }
 
   function passedTestRow(name, file, linked_issue, idPrefix) {
@@ -574,16 +757,20 @@
   }
 
   function skippedTestRow(name, file, reason, idPrefix) {
+    // Skip-reason rendering mirrors the production .cvv-skip-reason
+    // block: muted monospace surface so the user can see *why* a test
+    // was skipped without leaving the dashboard.  When a skipped test
+    // carries no reason at all, the viewer falls back to a "no skip
+    // reason recorded" placeholder (shown below for ``test_silent``).
+    const reasonHtml = reason
+      ? `<div class="skip-reason" style="margin: 0 10px 8px; padding: 8px 10px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 5px; font-family: SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px; color: var(--text-muted); white-space: pre-wrap; line-height: 1.5;">${escapeHtml(reason)}</div>`
+      : `<div class="skip-empty" style="margin: 0 10px 8px; padding: 6px 10px; color: var(--text-faint); font-style: italic; font-size: 11px;">No skip reason was recorded for this test.</div>`;
     return row({
       id: idPrefix,
       expanded: false,
       label_html: `${iconHtml('skipped')}<span class="title">${escapeHtml(name)}</span> <span class="summary">${escapeHtml(file)}</span>`,
-      meta_html: '',
-      child_html: `
-        <div class="headline" style="background: var(--surface-2); border-color: var(--border); color: var(--text-muted);">
-          <span class="headline-text">${escapeHtml(reason)}</span>
-        </div>
-      `,
+      meta_html: '<span class="meta" style="margin-left: auto;">skipped</span>',
+      child_html: reasonHtml,
     });
   }
 
@@ -611,49 +798,204 @@
         ${passedTestRow('test_card_focus_opens_drawer', 'tests/e2e/test_dashboard.py', null, 'pass-ui-2')}
       `,
     })}
+    ${row({
+      // Mixed-outcome file: the file row groups passed + skipped tests
+      // together (anything not failed/errored lives in the
+      // "browse by file" branch).  Skipped tests are expanded here so
+      // the inline skip-reason block is visible in the mockup.
+      id: 'mixed-file-1',
+      expanded: true,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_platform.py</span><span class="summary">1 passed · 2 skipped</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_runs_on_linux', 'tests/e2e/test_platform.py', null, 'pass-plat-1')}
+        ${skippedTestRow(
+          'test_runs_on_macos',
+          'tests/e2e/test_platform.py',
+          "Skipped: not implemented on macOS — see #5500 for the shim",
+          'skip-plat-1'
+        )}
+        ${skippedTestRow(
+          'test_runs_on_windows',
+          'tests/e2e/test_platform.py',
+          null,
+          'skip-plat-2'
+        )}
+      `,
+    })}
     <div class="leaf" style="color: var(--text-faint); margin-top: 4px; font-size: 11px;">
       <span class="caret">●</span>
-      <span>… and 34 more passing tests (not shown in mockup)</span>
+      <span>… and 33 more passing tests (not shown in mockup)</span>
     </div>
   `;
 
-  document.getElementById('body').innerHTML = `
-    <div class="body-block-section">
-      <div class="body-block-label">run</div>
-      ${leaf({ label_html: `<strong>Suite:</strong> e2e_smoke`, meta_html: '' })}
-      ${leaf({ label_html: `<strong>Command:</strong> pytest tests/e2e -m smoke --tb=short`, meta_html: '' })}
-      ${leaf({ label_html: `<strong>Started:</strong> 2026-05-11 14:00:00 · <strong>Ended:</strong> 14:14:22`, meta_html: '' })}
-      ${leaf({ label_html: `<strong>Total:</strong> 40 tests · 38 passed · 1 failed · 1 errored · 0 skipped`, meta_html: '' })}
-    </div>
+  // ──────────────────────────────────────────────────────────────────
+  // Group-row helper: one outcome bucket inside a run body.
+  // Caret + icon + label + count.  Body is provided by caller.
+  // ──────────────────────────────────────────────────────────────────
+  function groupRow(opts) {
+    if (opts.hidden) return '';
+    const countClass = opts.outcome === 'failed' ? 'is-failed' : opts.outcome === 'error' ? 'is-error' : '';
+    const iconBit = opts.outcome ? iconHtml(opts.outcome) : '';
+    return `
+      <details class="group-row">
+        <summary>
+          <span class="caret-tri">▸</span>
+          ${iconBit}
+          <span class="group-title">${escapeHtml(opts.label)}</span>
+          ${opts.count != null ? `<span class="group-count ${countClass}">(${opts.count})</span>` : ''}
+          ${opts.meta ? `<span class="group-summary-meta">${escapeHtml(opts.meta)}</span>` : ''}
+        </summary>
+        <div class="group-body">${opts.body}</div>
+      </details>
+    `;
+  }
 
-    <div class="body-block-section">
-      <div class="body-block-label">tests</div>
-      ${failedTestRow(E2E_FAIL, 'e2e-fail', true)}
-      ${failedTestRow(E2E_ERROR, 'e2e-err', false)}
-      ${row({
-        id: 'passed-browse',
-        expanded: false,
-        label_html: `${iconHtml('passed')}<span class="title">+ 38 passed, 0 skipped</span><span class="summary">browse by file</span>`,
-        meta_html: '',
-        child_html: passedBrowse,
-      })}
-    </div>
+  // ──────────────────────────────────────────────────────────────────
+  // Run-row helper: one row in the runs list at landing.
+  // Caret + outcome icon + run# + suite + 1-line count summary +
+  // duration + timestamp.  Body is provided by caller.
+  // ──────────────────────────────────────────────────────────────────
+  function runRow(opts) {
+    return `
+      <details class="run-row">
+        <summary>
+          <span class="caret-tri">▸</span>
+          ${iconHtml(opts.outcome)}
+          <span class="run-title">Run #${opts.number}</span>
+          <span class="run-suite">${escapeHtml(opts.suite)}</span>
+          <span class="run-counts">${opts.counts_html}</span>
+          <span class="run-meta-text">${escapeHtml(opts.duration)} · ${escapeHtml(opts.timestamp)}</span>
+        </summary>
+        <div class="run-body">${opts.body}</div>
+      </details>
+    `;
+  }
 
-    <div class="body-block-section">
-      ${row({
-        id: 'run-artifacts',
-        expanded: false,
-        label_html: `<span class="title">Run artifacts</span> <span class="summary">pytest log · junit xml · suite recording</span>`,
-        meta_html: '',
-        child_html: buttonRow([
-          { label: 'Open pytest log' },
-          { label: 'Open junit XML' },
-          { label: 'Open suite recording' },
-          { label: 'Open run dir', subtle: true },
-        ]),
-      })}
+  // ──────────────────────────────────────────────────────────────────
+  // Run #88 — failed run body (1 failed, 1 errored, 36 passed, 2 skipped).
+  // ──────────────────────────────────────────────────────────────────
+  const run88FailedBody = failedTestRow(E2E_FAIL, 'e2e-fail');
+  const run88ErroredBody = failedTestRow(E2E_ERROR, 'e2e-err');
+  const run88SkippedBody = `
+    ${skippedTestRow('test_runs_on_macos', 'tests/e2e/test_platform.py',
+      "Skipped: not implemented on macOS — see #5500 for the shim", 'r88-skip-1')}
+    ${skippedTestRow('test_runs_on_windows', 'tests/e2e/test_platform.py',
+      null, 'r88-skip-2')}
+  `;
+  const run88PassedBody = `
+    ${row({
+      id: 'r88-pass-file-1', expanded: false,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_orchestrator.py</span><span class="summary">2 passed · drove issues</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_orchestrator_completes_issue', 'tests/e2e/test_orchestrator.py', { number: 4501, title: 'fixture: simple issue' }, 'r88-pass-orch-1')}
+        ${passedTestRow('test_orchestrator_completes_with_rework', 'tests/e2e/test_orchestrator.py', { number: 4502, title: 'fixture: issue requiring rework' }, 'r88-pass-orch-2')}
+      `,
+    })}
+    ${row({
+      id: 'r88-pass-file-2', expanded: false,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_dashboard.py</span><span class="summary">2 passed · UI smoke</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_simple_dashboard_loads', 'tests/e2e/test_dashboard.py', null, 'r88-pass-ui-1')}
+        ${passedTestRow('test_card_focus_opens_drawer', 'tests/e2e/test_dashboard.py', null, 'r88-pass-ui-2')}
+      `,
+    })}
+    <div class="leaf" style="color: var(--text-faint); margin-top: 4px; font-size: 11px;">
+      <span class="caret">●</span>
+      <span>… and 32 more passing tests (not shown in mockup)</span>
     </div>
   `;
+  const run88DetailsBody = `
+    ${leaf({ label_html: `<strong>Suite:</strong> e2e_smoke`, meta_html: '' })}
+    ${leaf({ label_html: `<strong>Command:</strong> pytest tests/e2e -m smoke --tb=short`, meta_html: '' })}
+    ${leaf({ label_html: `<strong>Started:</strong> 2026-05-11 14:00:00 · <strong>Ended:</strong> 14:14:22`, meta_html: '' })}
+    ${leaf({ label_html: `<strong>Commit:</strong> abc1234 · <strong>Branch:</strong> main`, meta_html: '' })}
+  `;
+  const run88ArtifactsBody = buttonRow([
+    { label: 'Open pytest log ↗' },
+    { label: 'Open junit XML ↗' },
+    { label: 'Open suite recording ⧉' },
+    { label: 'Open run dir ↗', subtle: true },
+  ]);
+
+  const run88Body = [
+    groupRow({ outcome: 'failed',  label: 'Failed',  count: 1,  body: run88FailedBody }),
+    groupRow({ outcome: 'error',   label: 'Errored', count: 1,  body: run88ErroredBody }),
+    groupRow({ outcome: 'skipped', label: 'Skipped', count: 2,  body: run88SkippedBody }),
+    groupRow({ outcome: 'passed',  label: 'Passed',  count: 36, body: run88PassedBody }),
+    groupRow({ label: 'Run details',   meta: 'suite · command · timestamps',          body: run88DetailsBody }),
+    groupRow({ label: 'Run artifacts', meta: 'pytest log · junit xml · recording',    body: run88ArtifactsBody }),
+  ].join('');
+
+  // ──────────────────────────────────────────────────────────────────
+  // Run #87 — all-passing run body (40 passed, 0 of everything else).
+  // Demonstrates: zero-count groups are HIDDEN.  Healthy runs are a
+  // 1-line entry with just "Passed (40) · Run details · Run artifacts"
+  // inside.  No failure noise.
+  // ──────────────────────────────────────────────────────────────────
+  const run87PassedBody = `
+    ${row({
+      id: 'r87-pass-file-1', expanded: false,
+      label_html: `${iconHtml('passed')}<span class="title">tests/e2e/test_orchestrator.py</span><span class="summary">3 passed</span>`,
+      meta_html: '',
+      child_html: `
+        ${passedTestRow('test_orchestrator_completes_issue', 'tests/e2e/test_orchestrator.py', { number: 4501, title: 'fixture: simple issue' }, 'r87-pass-orch-1')}
+        ${passedTestRow('test_orchestrator_completes_with_rework', 'tests/e2e/test_orchestrator.py', { number: 4502, title: 'fixture: issue requiring rework' }, 'r87-pass-orch-2')}
+        ${passedTestRow('test_orchestrator_completes_validation', 'tests/e2e/test_orchestrator.py', { number: 4503, title: 'fixture: validate cohort split' }, 'r87-pass-orch-3')}
+      `,
+    })}
+    <div class="leaf" style="color: var(--text-faint); margin-top: 4px; font-size: 11px;">
+      <span class="caret">●</span>
+      <span>… and 37 more passing tests (not shown in mockup)</span>
+    </div>
+  `;
+  const run87DetailsBody = `
+    ${leaf({ label_html: `<strong>Suite:</strong> e2e_smoke`, meta_html: '' })}
+    ${leaf({ label_html: `<strong>Command:</strong> pytest tests/e2e -m smoke --tb=short`, meta_html: '' })}
+    ${leaf({ label_html: `<strong>Started:</strong> 2026-05-10 09:30:00 · <strong>Ended:</strong> 09:42:04`, meta_html: '' })}
+    ${leaf({ label_html: `<strong>Commit:</strong> def5678 · <strong>Branch:</strong> main`, meta_html: '' })}
+  `;
+  const run87Body = [
+    // Failed / Errored / Skipped are HIDDEN — zero counts get no row.
+    groupRow({ outcome: 'passed',  label: 'Passed', count: 40, body: run87PassedBody }),
+    groupRow({ label: 'Run details',   meta: 'suite · command · timestamps',          body: run87DetailsBody }),
+    groupRow({ label: 'Run artifacts', meta: 'pytest log · junit xml · recording',    body: buttonRow([
+      { label: 'Open pytest log ↗' },
+      { label: 'Open junit XML ↗' },
+      { label: 'Open suite recording ⧉' },
+      { label: 'Open run dir ↗', subtle: true },
+    ]) }),
+  ].join('');
+
+  // ──────────────────────────────────────────────────────────────────
+  // 1-line count summary (plain text, no chips).  Colored spans
+  // carry severity without using pill-chips.
+  // ──────────────────────────────────────────────────────────────────
+  function countsLine(parts) {
+    const out = [];
+    if (parts.failed)  out.push(`<span class="c-fail">${parts.failed} failed</span>`);
+    if (parts.errored) out.push(`<span class="c-error">${parts.errored} errored</span>`);
+    if (parts.skipped) out.push(`<span class="c-skip">${parts.skipped} skipped</span>`);
+    if (parts.passed)  out.push(`<span class="c-pass">${parts.passed} passed</span>`);
+    return out.join(' · ');
+  }
+
+  document.getElementById('runsList').innerHTML = [
+    runRow({
+      number: 88, outcome: 'failed', suite: 'smoke suite',
+      counts_html: countsLine({ failed: 1, errored: 1, passed: 36, skipped: 2 }),
+      duration: '14m 22s', timestamp: '2026-05-11 14:14',
+      body: run88Body,
+    }),
+    runRow({
+      number: 87, outcome: 'passed', suite: 'smoke suite',
+      counts_html: countsLine({ passed: 40 }),
+      duration: '12m 04s', timestamp: '2026-05-10 09:30',
+      body: run87Body,
+    }),
+  ].join('');
 
   // ──────────────────────────────────────────────────────────────────
   // Toggle + copy

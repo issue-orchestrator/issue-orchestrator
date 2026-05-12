@@ -499,9 +499,11 @@ function _renderTriageCard(testCase, idPrefix) {
     const suiteName = testCase.suite_name ? String(testCase.suite_name) : '';
     const duration = _formatDuration(testCase.duration_seconds);
 
-    // Parse failure_details into a one-line headline + body.  JUnit
-    // packs both into a single text blob; we split on the first newline.
-    const { headlineMessage, tracebackBody } = _splitFailureDetails(testCase.failure_details || '');
+    // Layout selector (Phase C / 3a): a 1-line failure renders the
+    // headline message inline next to the test name, saving vertical
+    // space on cards that have no traceback to drill into.  A
+    // multi-line failure keeps the red headline box + traceback row.
+    const layout = _failureCardLayoutForCase(testCase);
 
     // The triage card is a ``role="group"`` so its child treeitems
     // (traceback / stdout / stderr) share the same tree/group ownership
@@ -511,16 +513,29 @@ function _renderTriageCard(testCase, idPrefix) {
     // ``aria-setsize`` (counted against unrelated top-level rows) and
     // ``aria-posinset`` (the children aren't members of that distant
     // sibling set, so the enhancer can't assign a position).
-    let html = `<div class="cvv-triage-card cvv-${outcome}" role="group">`;
+    let html = `<div class="cvv-triage-card cvv-${outcome} cvv-layout-${layout.variant}" role="group">`;
 
     html += '<div class="cvv-triage-head">';
     html += `<span class="cvv-ico cvv-ico-${outcome}">${outcome === 'error' ? '⚠' : '✕'}</span>`;
     html += `<span class="cvv-triage-title">${escapeHtml(displayName)}</span>`;
     if (suiteName) html += `<span class="cvv-summary">${escapeHtml(suiteName)}</span>`;
+    // 3a: inline-variant headline lives in the head row so it scans on
+    // one line.  Truncates via CSS if it overflows.
+    if (layout.variant === 'inline' && layout.headlineMessage) {
+        html += `<span class="cvv-inline-headline ${headlineKind}" title="${escapeAttr(layout.headlineMessage)}">${escapeHtml(layout.headlineMessage)}</span>`;
+    }
+    // Copy-error built-in icon: generic to every failed card,
+    // independent of any plugin.  Lives next to the test name so it's
+    // scan-accessible whether the card is opened or not.
+    if (testCase.failure_details) {
+        const copyPayload = escapeAttr(String(testCase.failure_details));
+        html += `<button class="cvv-copy-icon" type="button" title="Copy error" aria-label="Copy error text to clipboard" data-cvv-copy-text="${copyPayload}" onclick="event.stopPropagation(); _cvvCopyErrorFromButton(this);">⎘</button>`;
+    }
     html += '</div>';
 
-    if (headlineMessage) {
-        html += `<div class="cvv-headline ${headlineKind}"><span class="cvv-headline-text">${escapeHtml(headlineMessage)}</span></div>`;
+    // two-row variant: keep the existing red-headline box.
+    if (layout.variant === 'two-row' && layout.headlineMessage) {
+        html += `<div class="cvv-headline ${headlineKind}"><span class="cvv-headline-text">${escapeHtml(layout.headlineMessage)}</span></div>`;
     }
 
     html += '<div class="cvv-badges">';
@@ -528,22 +543,47 @@ function _renderTriageCard(testCase, idPrefix) {
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
 
-    if (tracebackBody) {
-        html += `<details class="cvv-row" role="treeitem" aria-expanded="true" open><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
-        html += `<pre class="cvv-pre cvv-pre-fail">${escapeHtml(tracebackBody)}</pre>`;
+    // Traceback row (two-row variant only — when there's a body to
+    // show beneath the headline).  Starts COLLAPSED.  Rationale: a
+    // run with many failures shouldn't dump every traceback on the
+    // user at landing — they came to triage and pick.  The headline
+    // box above already shows the 1-line error summary; the user
+    // clicks ``traceback ▸`` to drill into the one they want.
+    // Predictable everywhere: same default whether there's 1 failure
+    // or 20.
+    if (layout.variant === 'two-row' && layout.tracebackBody) {
+        html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">traceback</span></summary>`;
+        html += `<pre class="cvv-pre cvv-pre-fail">${escapeHtml(layout.tracebackBody)}</pre>`;
         html += '</details>';
     }
 
     html += _renderTestSystemOutErr(testCase, idPrefix, outcome === 'error');
 
     // Plugin extras: render below the test detail, before any closing
-    // actions row.  Currently no Phase-0 plugin renders into triage
-    // cards (linked-issue lives on E2E tests in Phase C), but the slot
-    // is here so the architecture is consistent.
+    // actions row.  The io.agent-context plugin renders here for E2E
+    // tests carrying linked-issue data in ``extras``.
     html += renderPluginExtras(testCase);
 
     html += '</div>';  // cvv-triage-card
     return html;
+}
+
+// Built-in Copy-error click handler.  Reads the failure text out of the
+// ``data-cvv-copy-text`` attribute and writes it to the clipboard.  No
+// plugin dependency — generic.  Falls back to a tiny inline message if
+// the Clipboard API isn't available.
+function _cvvCopyErrorFromButton(button) {
+    if (!button) return;
+    const text = button.getAttribute('data-cvv-copy-text') || '';
+    if (!text) return;
+    const navClip = (typeof navigator !== 'undefined') ? navigator.clipboard : null;
+    if (navClip && typeof navClip.writeText === 'function') {
+        navClip.writeText(text).catch(() => { /* swallow */ });
+    }
+    // Brief visual ack on the button.
+    const original = button.textContent;
+    button.textContent = '✓';
+    setTimeout(() => { button.textContent = original; }, 900);
 }
 
 // ── Browse-by-file (passed + skipped) ───────────────────────────────────────
@@ -593,13 +633,32 @@ function _renderPassedTestRow(testCase, idPrefix) {
     html += `<span class="cvv-chip cvv-chip-${outcome}">${outcome === 'skipped' ? '– Skipped' : '✓ Passed'}</span>`;
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
+    // Skipped tests carry their skip reason in ``failure_details``
+    // (the JUnit parser stores ``<skipped message="..."/>`` and any
+    // inline body text there).  Surface it inline so a user
+    // expanding a skipped row can see *why* without leaving the
+    // dashboard.  Passed tests have no equivalent — they're just
+    // green.
+    if (outcome === 'skipped') {
+        const skipReason = String(testCase.failure_details || '').trim();
+        if (skipReason) {
+            html += `<div class="cvv-skip-reason">${escapeHtml(skipReason)}</div>`;
+        } else {
+            html += '<div class="cvv-empty">No skip reason was recorded for this test.</div>';
+        }
+    }
     html += _renderTestSystemOutErr(testCase, idPrefix, false);
     html += renderPluginExtras(testCase);
     html += '</div></details>';
     return html;
 }
 
-function _renderTestSystemOutErr(testCase, idPrefix, errorOpenStderr) {
+// Render stdout + stderr expander rows.  Both default COLLAPSED.
+// (The third argument is retained for call-site compatibility but
+// is now ignored — previous design auto-opened stderr for errored
+// tests; the predictable rule is "never auto-open, user clicks to
+// drill in".)
+function _renderTestSystemOutErr(testCase, idPrefix, _errorOpenStderr) {
     let html = '';
     const stdout = testCase.system_out || '';
     const stderr = testCase.system_err || '';
@@ -610,8 +669,7 @@ function _renderTestSystemOutErr(testCase, idPrefix, errorOpenStderr) {
     html += stdout ? `<pre class="cvv-pre">${escapeHtml(stdout)}</pre>` : '<div class="cvv-empty">No stdout captured.</div>';
     html += '</details>';
 
-    const stderrOpen = !!(errorOpenStderr && stderr);
-    html += `<details class="cvv-row" role="treeitem" aria-expanded="${stderrOpen ? 'true' : 'false'}"${stderrOpen ? ' open' : ''}><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
+    html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
     html += stderr ? `<pre class="cvv-pre">${escapeHtml(stderr)}</pre>` : '<div class="cvv-empty">No stderr captured.</div>';
     html += '</details>';
 
@@ -640,6 +698,31 @@ function _synthesizeFailedCaseFromNodeId(nodeId) {
         extras: [],
         _synthesized_from_failed_tests: true,
     };
+}
+
+// Pure layout selector for failure cards (Phase C / 3a).  Returns one of
+// two variants:
+//   * ``inline``   — the failure has no traceback body; render the
+//                    headline message next to the test name in a tight
+//                    single-row card.  Saves vertical space; preserves
+//                    diagnostic info at scan time.
+//   * ``two-row``  — the failure has multi-line content; render the
+//                    headline in its own red-bordered box below the
+//                    title and add the auto-open ``traceback`` row.
+// The third return value (``none``) covers the edge case where
+// failure_details is empty entirely — no headline, no body.  Test names
+// alone carry the load in that variant.
+function _failureCardLayoutForCase(testCase) {
+    const detailsText = String(testCase && testCase.failure_details || '');
+    if (!detailsText.trim()) {
+        return { variant: 'none', headlineMessage: '', tracebackBody: '' };
+    }
+    const { headlineMessage, tracebackBody } = _splitFailureDetails(detailsText);
+    if (!headlineMessage && !tracebackBody) {
+        return { variant: 'none', headlineMessage: '', tracebackBody: '' };
+    }
+    const variant = tracebackBody ? 'two-row' : 'inline';
+    return { variant, headlineMessage, tracebackBody };
 }
 
 function _splitFailureDetails(text) {

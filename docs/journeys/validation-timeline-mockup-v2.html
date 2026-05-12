@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Per-issue timeline — same idiom as E2E view</title>
+<style>
+  /* Identical palette to validation-e2e-mockup.html so the two read
+     as the same UI when opened side-by-side.  Only the top-level
+     hierarchy differs (E2E: Runs → Outcome groups;
+     timeline: Issue → Run → Cycle → Event); below the canonical
+     viewer body, both views are pixel-identical. */
+  :root {
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #fafbfc;
+    --surface-3: #f6f8fa;
+    --border: #d8dde4;
+    --border-strong: #b6bdc8;
+    --text: #1f2329;
+    --text-muted: #5a6472;
+    --text-faint: #8a93a3;
+    --accent: #3870e0;
+    --accent-bg: #e8eefb;
+    --accent-strong: #1c4cab;
+    --ok: #1f8f3a;
+    --ok-bg: #e6f4ea;
+    --fail: #c0392f;
+    --fail-bg: #fbeae7;
+    --fail-strong: #8c1f17;
+    --warn: #b07a00;
+    --warn-bg: #fbf3dc;
+    --skip: #8a93a3;
+    --spine: #e0e4e9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .page { max-width: 1100px; margin: 24px auto; padding: 0 24px; }
+  .page h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .page .issue-meta {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+
+  /* outcome icons */
+  .ico { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; border-radius: 50%; color: white; flex-shrink: 0; }
+  .ico.passed { background: var(--ok); }
+  .ico.failed { background: var(--fail); }
+  .ico.error  { background: var(--warn); }
+  .ico.skipped{ background: var(--skip); }
+  .ico.neutral{ background: var(--text-faint); }
+
+  /* ──────────────────────────────────────────────────────────────
+     Generic expander row (used at every level of the hierarchy).
+     Same caret + icon + label + meta pattern.  All start closed.
+     Body indent + faint left spine to show depth without eating
+     much horizontal space.
+  ────────────────────────────────────────────────────────────── */
+  details.x-row {
+    border-bottom: 1px solid var(--spine);
+  }
+  details.x-row:last-child { border-bottom: 0; }
+  details.x-row > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  details.x-row > summary::-webkit-details-marker { display: none; }
+  details.x-row > summary:hover { background: var(--surface-2); }
+  details.x-row > summary .caret-tri {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  details.x-row[open] > summary .caret-tri { transform: rotate(90deg); }
+  .x-title { font-weight: 500; flex-shrink: 0; }
+  .x-summary { color: var(--text-muted); font-size: 12px; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .x-meta    { color: var(--text-faint); font-size: 11px; flex-shrink: 0; margin-left: auto; }
+  .x-body {
+    padding: 4px 0 4px 14px;
+    border-left: 2px solid var(--spine);
+    margin-left: 6px;
+  }
+
+  /* The Issue is its own top-level card so the page reads as
+     "the per-issue drawer" rather than a generic row list. */
+  .issue-card {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    background: var(--surface);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .issue-card h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
+  .issue-card .issue-sub {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  /* Failure triage card — IDENTICAL to validation-e2e-mockup.html.
+     Whole card is a <details> closed by default.  Summary row:
+     caret + icon + name + suite + 1-line error + Copy-error icon.
+     Body: chips + collapsed leaf rows + linked-issue plugin block. */
+  details.triage-card {
+    margin: 0 8px 6px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--fail);
+    border-radius: 6px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  details.triage-card.is-error { border-left-color: var(--warn); }
+  details.triage-card > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  details.triage-card > summary::-webkit-details-marker { display: none; }
+  details.triage-card > summary:hover { background: var(--surface-2); }
+  .triage-card-caret {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  details.triage-card[open] > summary .triage-card-caret { transform: rotate(90deg); }
+  .triage-card-title { font-weight: 600; font-size: 13px; flex-shrink: 0; }
+  .triage-card-suite { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+  .triage-card-inline-headline {
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 480px;
+    color: var(--fail-strong);
+  }
+  .triage-card-inline-headline::before { content: "·"; color: var(--text-faint); margin: 0 6px 0 2px; }
+  .triage-card-body {
+    padding: 4px 0 8px;
+    border-top: 1px solid var(--spine);
+  }
+
+  /* badges + leaf row helpers (same look as the E2E mockup) */
+  .badges {
+    margin: 6px 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 11px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+  }
+  .chip.outcome.failed { background: var(--fail-bg); border-color: var(--fail); color: var(--fail-strong); }
+  .chip.outcome.error  { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+  .chip.outcome.passed { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+
+  details.leaf-row {
+    border-bottom: 1px solid var(--spine);
+    background: var(--surface-3);
+    margin: 0 10px 6px;
+    border-radius: 4px;
+  }
+  details.leaf-row:last-child { border-bottom: 1px solid var(--spine); }
+  details.leaf-row > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  details.leaf-row > summary::-webkit-details-marker { display: none; }
+  details.leaf-row > summary:hover { background: var(--surface-2); }
+  details.leaf-row > summary .caret-tri {
+    width: 14px; flex-shrink: 0; color: var(--text-faint);
+    text-align: center; font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  details.leaf-row[open] > summary .caret-tri { transform: rotate(90deg); }
+  .leaf-title { font-weight: 500; }
+  .leaf-summary { color: var(--text-muted); font-size: 11px; }
+  pre.code-block {
+    margin: 0 10px 8px;
+    padding: 8px 10px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #2a2f37;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+  pre.code-block.fail {
+    background: var(--fail-bg);
+    border-color: #f1c4bd;
+  }
+
+  /* Copy icon (identical to E2E mockup) */
+  .copy-icon {
+    margin-left: auto;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1;
+    font-family: inherit;
+  }
+  .copy-icon:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+
+  /* Linked-issue plugin block — same shape as E2E mockup */
+  .linked-issue-frame {
+    margin: 6px 8px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--accent-bg);
+    overflow: hidden;
+  }
+  .linked-issue-header {
+    padding: 6px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent-strong);
+    background: rgba(255,255,255,0.5);
+    border-bottom: 1px solid var(--accent);
+  }
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--surface-2); }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="issue-card">
+    <h2>Issue #4503 — fixture: validate cohort split</h2>
+    <div class="issue-sub">state: <strong>blocked</strong> · agent:web · drove by E2E test ↗ <code>test_orchestrator_blocked_on_validation</code></div>
+  </div>
+
+  <div id="timeline"></div>
+</div>
+
+<script>
+  function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function escapeAttr(s) { return escapeHtml(s); }
+  function ico(state) {
+    const ch = state === 'passed' ? '✓' : state === 'failed' ? '✕' : state === 'error' ? '⚠' : state === 'skipped' ? '–' : '·';
+    return `<span class="ico ${state || 'neutral'}">${ch}</span>`;
+  }
+
+  // Generic expander row — same idiom as the E2E mockup's group-row.
+  function xRow(opts) {
+    const iconBit = opts.icon ? ico(opts.icon) : '';
+    return `
+      <details class="x-row">
+        <summary>
+          <span class="caret-tri">▸</span>
+          ${iconBit}
+          <span class="x-title">${escapeHtml(opts.title)}</span>
+          ${opts.summary ? `<span class="x-summary">${escapeHtml(opts.summary)}</span>` : ''}
+          ${opts.meta ? `<span class="x-meta">${escapeHtml(opts.meta)}</span>` : ''}
+        </summary>
+        <div class="x-body">${opts.body || ''}</div>
+      </details>
+    `;
+  }
+
+  // Leaf row (traceback / stdout / stderr inside a triage card body).
+  function leafRow(opts) {
+    return `
+      <details class="leaf-row">
+        <summary>
+          <span class="caret-tri">▸</span>
+          <span class="leaf-title">${escapeHtml(opts.title)}</span>
+          ${opts.summary ? `<span class="leaf-summary">${escapeHtml(opts.summary)}</span>` : ''}
+        </summary>
+        <div>${opts.body}</div>
+      </details>
+    `;
+  }
+
+  // Triage card — identical shape to the E2E mockup's failedTestRow.
+  // Note: inside the per-issue timeline, the failing tests are UNIT
+  // tests from the agent's own validation gate — they don't carry a
+  // ``linked_issue`` field (the scope is already this issue's
+  // lifecycle).  So no plugin block under these cards; the
+  // io.agent-context plugin only fires when a test's linked issue
+  // is DIFFERENT from the current scope.  This is what I meant by
+  // "the plugin suppresses itself when the scope already equals the
+  // linked issue."
+  function triageCard(t) {
+    const oneLine = `${t.type}: ${t.message}`;
+    return `
+      <details class="triage-card${t.outcome === 'error' ? ' is-error' : ''}">
+        <summary>
+          <span class="triage-card-caret">▸</span>
+          ${ico(t.outcome)}
+          <span class="triage-card-title">${escapeHtml(t.name)}</span>
+          <span class="triage-card-suite">${escapeHtml(t.file)}</span>
+          <span class="triage-card-inline-headline" title="${escapeAttr(oneLine)}">${escapeHtml(oneLine)}</span>
+          <button class="copy-icon" type="button" title="Copy error" onclick="event.preventDefault(); event.stopPropagation(); navigator.clipboard.writeText('${escapeAttr(oneLine)}').then(()=>{const o=this.textContent;this.textContent='✓';setTimeout(()=>{this.textContent=o;},900);}).catch(()=>{});">⎘</button>
+        </summary>
+        <div class="triage-card-body">
+          <div class="badges">
+            <span class="chip outcome ${t.outcome}">${t.outcome === 'error' ? '⚠ Errored' : '✕ Failed'}</span>
+            <span class="chip">${t.duration || '—'}</span>
+          </div>
+          ${leafRow({ title: 'traceback', summary: '1 user frame', body: `<pre class="code-block fail">at ${escapeHtml(t.frame || 'tests/test.py:42')}</pre>` })}
+          ${leafRow({ title: 'stdout', summary: 'empty', body: `<div style="padding: 4px 14px 10px; color: var(--text-faint); font-style: italic; font-size: 11px;">No stdout captured.</div>` })}
+          ${leafRow({ title: 'stderr', summary: 'empty', body: `<div style="padding: 4px 14px 10px; color: var(--text-faint); font-style: italic; font-size: 11px;">No stderr captured.</div>` })}
+        </div>
+      </details>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // Validation event body — the canonical viewer body, IDENTICAL
+  // to the E2E mockup's run body.  Failed group → triage cards →
+  // leaf rows.  This is the cross-view-shared shape.
+  // ──────────────────────────────────────────────────────────────
+  const failedGroupBody = `
+    ${triageCard({
+      name: 'test_cohort_split_basic',
+      file: 'tests/orchestrator/test_cohort_split.py',
+      outcome: 'failed',
+      type: 'AssertionError',
+      message: 'cohort mismatch: expected 89 buckets, got 86 (3 missing)',
+      duration: '1.4 s',
+      frame: 'test_cohort_split.py:42',
+    })}
+    ${triageCard({
+      name: 'test_cohort_split_edge_zero',
+      file: 'tests/orchestrator/test_cohort_split.py',
+      outcome: 'failed',
+      type: 'AssertionError',
+      message: 'edge bucket dropped on zero-cohort input',
+      duration: '0.2 s',
+      frame: 'test_cohort_split.py:88',
+    })}
+    ${triageCard({
+      name: 'test_cohort_split_perf',
+      file: 'tests/orchestrator/test_cohort_split.py',
+      outcome: 'failed',
+      type: 'TimingError',
+      message: 'cohort split took 4.2s, budget is 2.0s',
+      duration: '4.2 s',
+      frame: 'test_cohort_split.py:142',
+    })}
+  `;
+  const validationEventBody = `
+    ${xRow({ icon: 'failed',  title: 'Failed',  summary: '(3)',  body: failedGroupBody })}
+    ${xRow({ icon: 'passed',  title: 'Passed',  summary: '(86)', body: `<div style="padding: 6px 14px; color: var(--text-faint); font-style: italic;">…86 passing test cards (browse by file)…</div>` })}
+    ${xRow({ title: 'Validation artifacts', summary: 'record · output · stderr',
+      body: `<div style="padding: 6px 14px; display: flex; gap: 6px;">
+        <button class="btn">Open validation record ↗</button>
+        <button class="btn">Open validation output ↗</button>
+        <button class="btn">Open validation stderr ↗</button>
+      </div>` })}
+  `;
+
+  // ──────────────────────────────────────────────────────────────
+  // Cycle 1 events — each is its own collapsed expander.
+  // Validation failed event, when opened, reveals the canonical
+  // viewer body above.  Same controls as E2E.
+  // ──────────────────────────────────────────────────────────────
+  const cycle1EventsBody = `
+    ${xRow({ icon: 'passed', title: 'Coding session started', meta: '13:05:21',
+      body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">Agent: agent:web · Worktree: /tmp/wt-4503 · Session: e2e-88-4503-coder-1</div>` })}
+    ${xRow({ icon: 'passed', title: 'Agent finished coding', meta: '13:06:48',
+      body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">Completion record: 4 files (+88 −12), no problems reported.</div>` })}
+    ${xRow({ icon: 'failed', title: 'Validation failed', summary: '3 of 89 · publish_gate', meta: '13:06:52',
+      body: validationEventBody })}
+    ${xRow({ icon: 'failed', title: 'Review requested changes', meta: '13:07:00',
+      body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">Reviewer: agent:web · Risk: medium · 2 issues to address.</div>` })}
+  `;
+  const cycle2EventsBody = `
+    ${xRow({ icon: 'passed', title: 'Rework session started', meta: '13:07:14',
+      body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">Rework attempt 2/3.</div>` })}
+    ${xRow({ icon: 'passed', title: 'Rework finished', meta: '13:08:01',
+      body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">Completion record updated.</div>` })}
+    ${xRow({ icon: 'failed', title: 'Validation still failing', summary: '3 of 89 · same failures', meta: '13:08:05',
+      body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">Same 3 failures as Cycle 1 — body identical to the previous Validation event.</div>` })}
+    ${xRow({ icon: 'failed', title: 'Issue blocked — rework limit reached', meta: '13:08:42' })}
+  `;
+
+  // ──────────────────────────────────────────────────────────────
+  // Runs & cycles — top of the timeline hierarchy.  All closed
+  // by default; the user clicks to drill in.
+  // ──────────────────────────────────────────────────────────────
+  const run1Body = `
+    ${xRow({ icon: 'failed', title: 'Cycle 1', summary: 'Validation failed', meta: '13:05',
+      body: cycle1EventsBody })}
+    ${xRow({ icon: 'failed', title: 'Cycle 2 (rework)', summary: 'Validation still failing · issue blocked', meta: '13:07',
+      body: cycle2EventsBody })}
+  `;
+
+  document.getElementById('timeline').innerHTML = [
+    xRow({ icon: 'failed', title: 'Run 1', summary: '2 cycles · agent:web · 3m 21s', meta: '13:05 PM', body: run1Body }),
+    xRow({ icon: 'failed', title: 'Run 2', summary: '1 cycle · agent:web · 1m 18s', meta: '13:12 PM', body: `<div style="padding: 6px 14px; color: var(--text-muted); font-size: 12px;">…second run subtree (same shape as Run 1)…</div>` }),
+  ].join('');
+</script>
+
+</body>
+</html>
