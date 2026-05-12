@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from ..domain.event_taxonomy import EventIntent, infer_event_intent
 from ..domain.logical_run_projection import (
@@ -270,7 +270,9 @@ def derive_cycle_outcome(
 # event) falls through to the ``neutral`` tone, never ``passed``.
 # Silent green for "I don't know" is the bug the typed
 # ``OutcomeBadge`` exists to prevent.
-_OUTCOME_TONE_EXACT: dict[str, str] = {
+OutcomeTone = Literal["passed", "failed", "error", "in_progress", "neutral"]
+
+_OUTCOME_TONE_EXACT: dict[str, OutcomeTone] = {
     "Completed": "passed",
     "Approved": "passed",
     "Merged": "passed",
@@ -288,7 +290,7 @@ _OUTCOME_TONE_EXACT: dict[str, str] = {
 
 # Prefixes the projection emits with a trailing ``: <summary>`` or
 # ``— <summary>``.  Each maps to the same tone as its exact form.
-_OUTCOME_TONE_PREFIXES: tuple[tuple[str, str], ...] = (
+_OUTCOME_TONE_PREFIXES: tuple[tuple[str, OutcomeTone], ...] = (
     ("Rework limit reached", "failed"),
     ("Timed out:", "failed"),
     ("Timed out —", "failed"),
