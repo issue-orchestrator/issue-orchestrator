@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed portfolio-benchmark playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -39,7 +39,6 @@ help:
 	@echo "  test-real-gh-plus-e2e-subprocess   Same as above but using subprocess backend"
 	@echo "  test-web            Run Flow-first Playwright web UI smoke tests (headless)"
 	@echo "  test-web-headed     Run Flow-first Playwright web UI smoke tests (headed)"
-	@echo "  portfolio-benchmark Run the applied-AI benchmark artifact bundle"
 	@echo "  test-vscode         Run VS Code extension tests (local only, skipped in CI)"
 	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
@@ -434,10 +433,6 @@ test-web:
 
 test-web-headed:
 	$(PYTEST) tests/e2e_web -v --tb=short --headed $(PYTEST_TIMINGS)
-
-portfolio-benchmark: sync-deps
-	$(call TIMED_RUN,portfolio-benchmark,\
-		$(PYTHON) scripts/run_portfolio_benchmark.py $(ARGS))
 
 # VS Code extension tests (local only). Skipped in GitHub Actions.
 test-vscode:

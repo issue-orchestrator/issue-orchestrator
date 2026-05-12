@@ -4,13 +4,9 @@ Issue-Orchestrator is a control plane for AI-assisted software work. It takes Gi
 
 The goal is not to make agents trusted maintainers. The goal is to let agents contribute bounded work while the project keeps authority over quality. Agents produce changes; the orchestrator decides whether those changes move forward, go back to rework, or need a human.
 
-> **Evaluator quick-start:** see **[EVALUATION.md](EVALUATION.md)** for a one-screen proof bundle (test suite, ADRs, guardrail enforcement, benchmark artifact path, authorship, and limitations).
+> **▶ 2-minute walkthrough:** _video coming soon_
 >
 > **Core thesis:** read [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md), then [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
->
-> **Evaluating the engineering?** Read [Evaluating the System](docs/journeys/evaluating.md) for product guarantees, implementation architecture, quality signals, and where to read code.
->
-> **Evaluating it as applied AI?** Start with [Applied AI Evaluation](docs/journeys/applied-ai.md), then run the [Portfolio Benchmark](docs/journeys/benchmarking.md) for a shareable proof bundle.
 
 ## What it does
 
@@ -70,7 +66,7 @@ The product contract above is what Issue-Orchestrator enforces for target repos.
 
 Issue-Orchestrator itself is built around hexagonal architecture: Protocol ports in `src/issue_orchestrator/ports/`, adapters for external systems, a single composition root in `entrypoints/bootstrap.py`, import-linter and AST guardrails, ADRs, and tests that mock at port boundaries. That internal structure keeps orchestrator policy testable without GitHub, terminals, storage, or UI dependencies.
 
-See [Issue-Orchestrator Internal Architecture](docs/architecture/internal-architecture.md) for the implementation architecture, and [Evaluating the System](docs/journeys/evaluating.md) for the proof path.
+See [Issue-Orchestrator Internal Architecture](docs/architecture/internal-architecture.md) for the implementation architecture.
 
 ## Issue lifecycle
 
@@ -114,16 +110,6 @@ Agents cannot merge PRs. Humans merge. Validation runs automatically before code
 
 [Multi-layer hooks](docs/architecture/hooks.md) enforce these rules at the AI-agent level, git level, orchestrator level, and CI. The guardrails are installed and verified, not just described. See [Guardrails & Safety Model](docs/design/guardrails.md) for the guarantee and limitation boundaries.
 
-## Proof for evaluators
-
-If you're evaluating this as serious applied-AI engineering, start with the proof path rather than the feature list:
-
-- **[EVALUATION.md](EVALUATION.md)** - One-screen evidence bundle: test suite, ADRs, guardrail enforcement, benchmark artifact path, authorship, and limitations.
-- **[No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md)** - The operating model: agents contribute inside constraints, humans decide which constraints deserve authority.
-- **[Applied AI Evaluation](docs/journeys/applied-ai.md)** - How to frame the project without overselling autonomy.
-- **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** - Deterministic simulated scenarios with markdown, JSON, JUnit, and pytest-output artifacts.
-- **[Async E2E Runner](docs/user/e2e.md)** - Live system proof with persistent run history, signal scoring, quarantine support, and dashboard visibility.
-
 ## Quickstart
 
 ```bash
@@ -159,9 +145,7 @@ If you want your AI assistant to drive the setup for you, use the [Agent-Guided 
 
 **Beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner is newer and still maturing. Goal Pilot is a planned feature, not yet implemented. APIs may change.
 
-~100K lines of Python, a large automated test suite, and architecture decision records. For a one-screen evaluator summary, see [EVALUATION.md](EVALUATION.md).
-
-For guidance on what is stable and where to read code, see [Evaluating the System](docs/journeys/evaluating.md).
+~100K lines of Python, a large automated test suite, and architecture decision records.
 
 ## Documentation
 
@@ -170,9 +154,6 @@ Pick the path that fits:
 - **[Getting Started](docs/journeys/getting-started.md)** - Install, configure, run your first issue
 - **[Agent-Guided Onboarding](docs/journeys/agent-guided-onboarding.md)** - Let an AI assistant drive setup and first-run validation
 - **[No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md)** - Why the engineering contract matters more than the issue runner
-- **[Applied AI Evaluation](docs/journeys/applied-ai.md)** - How to present and evaluate the system as serious applied-AI engineering
-- **[Portfolio Benchmarking](docs/journeys/benchmarking.md)** - Generate a benchmark artifact bundle from deterministic scenario coverage
-- **[Evaluating the System](docs/journeys/evaluating.md)** - Product guarantees, internal architecture, guardrails, quality signals, where to read code
 - **[Developing](docs/journeys/developing.md)** - Dev setup, conventions, testing, how to make changes
 
 Reference docs:

@@ -72,7 +72,6 @@ Thumbs.db
 .issue-orchestrator/diagnostics/
 .issue-orchestrator/safety-state.json
 .issue-orchestrator/ai-gate-state.json
-.issue-orchestrator/portfolio-benchmark/
 .issue-orchestrator/backups/
 .issue-orchestrator/timeline.sqlite
 .issue-orchestrator/*.sqlite
