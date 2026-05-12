@@ -279,7 +279,7 @@ Two areas are intentionally not codified by this ADR:
 
 - Ousterhout, John. *A Philosophy of Software Design*, 2nd ed. (2021). Chapters 4 ("Modules Should Be Deep") and 5 ("Information Hiding and Leakage").
 - Parnas, David. "On the Criteria To Be Used in Decomposing Systems into Modules." *Communications of the ACM*, 1972.
-- Cockburn, Alistair. "Hexagonal Architecture." 2005. See also ADR-0011.
+- Cockburn, Alistair. "Hexagonal Architecture." 2005. See also [ADR-0011](0011-hexagonal-architecture.md).
 - Lieberherr, Karl, and Ian Holland. "Assuring Good Style for Object-Oriented Programs." *IEEE Software*, 1989. (Law of Demeter.)
 - Go's `internal/` package convention: https://go.dev/doc/go1.4#internalpackages — the directly comparable language-enforced analog of decision 13.
 - Related ADRs: [0011 Hexagonal architecture (ports and adapters)](0011-hexagonal-architecture.md), [0012 Mechanical guardrails over policy documents](0012-mechanical-guardrails.md), [0014 Observer → Planner → ActionApplier loop pattern](0014-observe-plan-apply-loop.md), [0017 Orchestrator coordinates, Planner decides](0017-orchestrator-coordinates-planner-decides.md), [0018 Git worktree isolation per agent session](0018-worktree-isolation.md).
