@@ -153,10 +153,39 @@ def test_open_e2e_run_command_rejects_non_positive_run_id() -> None:
     Zero and negative values must fail validation, not silently pass
     through to the JS guard.
     """
-    with pytest.raises(ValueError, match="run_id"):
+    with pytest.raises(ValueError):
         OpenE2ERunCommand(run_id=0)
-    with pytest.raises(ValueError, match="run_id"):
+    with pytest.raises(ValueError):
         OpenE2ERunCommand(run_id=-1)
+
+
+def test_open_e2e_run_command_rejects_string_run_id_strict() -> None:
+    """``run_id`` is strict-int — no coercion from strings.
+
+    PR #6329 round-5 blocker: Pydantic's default ``int`` type coerces
+    ``"88"`` → 88, while JSON Schema's ``type: integer`` rejects it.
+    The canonical command model uses ``Field(strict=True)`` to match
+    the wire-contract semantics — malformed strings must fail, not
+    silently normalize.
+    """
+    with pytest.raises(ValueError):
+        OpenE2ERunCommand(run_id="88")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        OpenE2ERunCommand(run_id="1")  # type: ignore[arg-type]
+
+
+def test_open_e2e_run_command_rejects_boolean_run_id_strict() -> None:
+    """``run_id`` is strict-int — no coercion from booleans either.
+
+    Python's ``bool`` is a subclass of ``int``, so without
+    ``strict=True`` Pydantic accepts ``True`` (becomes 1) and
+    ``False`` (becomes 0).  Both are malformed wire payloads that
+    JSON Schema rejects; the strict-int field rejects them too.
+    """
+    with pytest.raises(ValueError):
+        OpenE2ERunCommand(run_id=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        OpenE2ERunCommand(run_id=False)  # type: ignore[arg-type]
 
 
 def test_cycle_validation_badge_wire_shape_for_each_state() -> None:

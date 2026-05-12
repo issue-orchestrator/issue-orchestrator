@@ -118,8 +118,20 @@ def _pydantic_field_constraints(prop_schema: dict[str, Any]) -> list[str]:
     UI OpenAPI schema would generate ``int`` with no runtime check —
     so a contract that says ``run_id >= 1`` would silently accept 0
     in the Python contract layer (reviewer caught this on PR #6329).
+
+    Also emits ``strict=True`` for integer fields with explicit
+    numeric constraints (PR #6329 round-5).  JSON Schema's
+    ``type: integer`` does not coerce ``"88"`` → 88 or ``True`` → 1,
+    so the generated Pydantic model must not coerce either.  Without
+    ``strict``, Pydantic accepts both and silently normalizes a
+    malformed wire payload.  Strict is applied only to integers
+    with constraints (the narrowest fix consistent with the
+    reviewer's invariant request).
     """
     constraints: list[str] = []
+    has_numeric_constraint = any(
+        k in prop_schema for k in ("minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum")
+    )
     if "minimum" in prop_schema:
         constraints.append(f"ge={prop_schema['minimum']}")
     if "exclusiveMinimum" in prop_schema:
@@ -132,6 +144,11 @@ def _pydantic_field_constraints(prop_schema: dict[str, Any]) -> list[str]:
         constraints.append(f"min_length={prop_schema['minLength']}")
     if "maxLength" in prop_schema:
         constraints.append(f"max_length={prop_schema['maxLength']}")
+    # Numeric-constrained integers get strict scalar semantics so
+    # the generated contract matches the canonical model + JSON
+    # Schema (no coercion of strings/booleans).
+    if has_numeric_constraint and prop_schema.get("type") == "integer":
+        constraints.append("strict=True")
     return constraints
 
 

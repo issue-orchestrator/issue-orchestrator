@@ -609,7 +609,7 @@ class OpenE2ERunCommandPayload(BaseModel):
     expand_run_details: bool | None = None
     kind: Literal['open_e2e_run']
     label: str
-    run_id: int = Field(..., ge=1)
+    run_id: int = Field(..., ge=1, strict=True)
 
 class OpenIssueTimelineCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

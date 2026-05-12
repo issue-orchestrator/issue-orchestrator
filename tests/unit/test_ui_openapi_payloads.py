@@ -326,6 +326,59 @@ def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> N
         })
 
 
+def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> None:
+    """The generated UI contract enforces strict-int scalar semantics
+    on ``run_id`` — no coercion from strings or booleans.
+
+    PR #6329 round-5 blocker: ``Pydantic``'s default ``int`` field
+    accepts ``"88"`` (string) and ``True`` (boolean) by coercing
+    them to ``88`` and ``1`` respectively.  JSON Schema's
+    ``type: integer`` rejects both.  The generator now emits
+    ``Field(..., ge=1, strict=True)`` for numeric-constrained
+    integer fields so the Python contract matches the wire
+    contract — malformed scalars fail loudly, not silently
+    normalize.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import IssueItemPayload
+    from pydantic import ValidationError
+
+    # String ``run_id`` → rejected.
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": "88",  # string — should not coerce
+                "expand_run_details": False,
+            },
+        })
+
+    # Boolean True ``run_id`` → rejected.
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": True,  # bool — should not coerce to 1
+                "expand_run_details": False,
+            },
+        })
+
+    # Boolean False ``run_id`` → rejected.
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": False,
+                "expand_run_details": False,
+            },
+        })
+
+
 def test_dialog_payloads_match_ui_openapi() -> None:
     info = build_info_dialog({
         "version": "1.0",

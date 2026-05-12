@@ -144,15 +144,13 @@ class OpenE2ERunCommand(LifecycleBase):
 
     kind: Literal["open_e2e_run"] = "open_e2e_run"
     label: str = "Open E2E Run"
-    run_id: int
+    # Strict-int: reject string/boolean coercion (PR #6329 round-5).
+    # JSON Schema's ``{"type": "integer", "minimum": 1}`` does not
+    # accept ``"88"`` or ``True``; the canonical Pydantic model
+    # must match — without ``strict=True`` Pydantic would coerce
+    # both into ``88`` / ``1`` and silently normalize bad payloads.
+    run_id: int = Field(..., ge=1, strict=True)
     expand_run_details: bool = False
-
-    @field_validator("run_id")
-    @classmethod
-    def _run_id_must_be_positive(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("run_id must be a positive integer")
-        return value
 
 
 TimelineCommand = Annotated[
