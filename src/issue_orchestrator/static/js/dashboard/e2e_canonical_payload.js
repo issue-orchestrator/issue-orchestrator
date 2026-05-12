@@ -113,9 +113,22 @@ function _testToJunitCase(test, outcome) {
     const duration = (typeof safe.duration_seconds === 'number' && Number.isFinite(safe.duration_seconds))
         ? safe.duration_seconds
         : null;
-    const failureDetails = (outcome === 'failed')
-        ? _failureDetailsFromTest(safe)
-        : null;
+    // ``failure_details`` carries two different things depending on
+    // outcome:
+    //   - failed → traceback / one-liner (rendered as the failure
+    //              headline/body)
+    //   - skipped → JUnit ``<skipped message="..."/>`` reason text
+    //              (rendered inline by ``_renderPassedTestRow``)
+    // The JUnit parser stores both on ``failure_details``; preserve
+    // the raw value for skipped tests so the viewer can surface the
+    // skip reason.  Passed / errored tests have nothing to put here.
+    let failureDetails = null;
+    if (outcome === 'failed') {
+        failureDetails = _failureDetailsFromTest(safe);
+    } else if (outcome === 'skipped') {
+        const raw = String(safe.failure_details || safe.skip_reason || '').trim();
+        failureDetails = raw || null;
+    }
 
     return {
         case_id: nodeId || displayName,

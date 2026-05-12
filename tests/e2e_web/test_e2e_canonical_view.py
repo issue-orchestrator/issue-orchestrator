@@ -84,7 +84,15 @@ _STUB_RUN_DETAIL: dict[str, object] = {
         ],
         "quarantined": [],
         "skipped": [
-            {"nodeid": "tests/e2e/test_e.py::test_pending", "suite_name": "tests/e2e/test_e.py", "outcome": "skipped"},
+            {
+                "nodeid": "tests/e2e/test_e.py::test_pending",
+                "suite_name": "tests/e2e/test_e.py",
+                "outcome": "skipped",
+                # Skip-reason content (matches JUnit ``<skipped message="..."/>``)
+                # surfaces under the test row in the canonical viewer.  Verified
+                # below with a content assertion on ``.cvv-skip-reason``.
+                "failure_details": "skip(reason='waiting on upstream API key'): pending env var",
+            },
         ],
     },
     "results_summary": {"total": 6, "passed": 3, "failed": 2, "skipped": 1, "untriaged": 1, "has_issue": 1, "flaky": 0, "fixed": 0, "quarantined": 0},
@@ -224,6 +232,22 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(browse_row).to_be_visible()
     # When there ARE failures, browse-by-file starts closed.
     expect(browse_row).not_to_have_attribute("open", "")
+
+    # ── skip-reason renders inline when a skipped test row is opened
+    # (Phase C confidence: a JUnit ``<skipped message="..."/>`` value
+    # surfaces verbatim under the test row so the user doesn't have to
+    # leave the dashboard to learn why a test was skipped).
+    #
+    # Force-open every row inside the browse-by-file tree so the
+    # skipped test's body is in the DOM, then assert content.
+    page.evaluate(
+        "() => {"
+        "  document.querySelectorAll('.cvv-root details').forEach(el => { el.open = true; });"
+        "}"
+    )
+    skip_reason = cvv.locator(".cvv-skip-reason")
+    expect(skip_reason).to_have_count(1)
+    expect(skip_reason).to_contain_text("waiting on upstream API key")
 
     # ── real keypress: focus first treeitem, ArrowDown moves focus ─
     # Identify the active treeitem by its index in the tree's

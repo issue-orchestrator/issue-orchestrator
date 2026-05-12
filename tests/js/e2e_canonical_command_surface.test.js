@@ -228,32 +228,59 @@ test('cmd surface: all-passing run produces NO Commands and a browse-by-file row
 test('cmd surface: skipped tests render their skip reason verbatim, no Commands', () => {
     const ctx = loadCanonicalSurface();
     const reason = "Skipped: not implemented on macOS — see PR #5500 for the shim";
+    // The E2E run-detail payload puts the JUnit ``<skipped>`` text
+    // on ``failure_details``.  The translator must preserve it for
+    // skipped tests (not just failed ones) so the viewer can render
+    // the reason inline.
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
             skipped: [{
                 nodeid: 'tests/integration/test_platform.py::test_macos',
                 outcome: 'skipped',
-                failure_summary: reason,
+                failure_details: reason,
             }],
         },
     });
-    // The translator's _failureDetailsFromTest only sets
-    // failure_details for failed cases.  For skipped tests the
-    // translator currently returns null (failure_details is only
-    // populated when outcome=='failed').  Verify this here so the
-    // test catches the regression if we change the contract.
-    assert.strictEqual(canonical.junit_cases[0].failure_details, null);
-    // ... which means the canonical viewer currently shows the
-    // "No skip reason was recorded" placeholder for skipped tests
-    // surfaced via the E2E payload (the reason is on
-    // ``failure_summary`` in the run-detail shape, not on
-    // ``failure_details``).  Pin this behavior so we notice when
-    // a future change wires the reason through.
+    assert.strictEqual(canonical.junit_cases[0].failure_details, reason,
+        'translator must carry failure_details through for skipped tests');
+
     const html = ctx.renderCanonicalValidationViewer(canonical);
     assert.deepEqual(extractCommands(html), []);
-    assert.match(html, /No skip reason was recorded/);
+    // Reason text appears verbatim.
+    assert.match(html, /Skipped: not implemented on macOS — see PR #5500 for the shim/);
+    // Placeholder is NOT shown when we have a reason.
+    assert.doesNotMatch(html, /No skip reason was recorded/);
     // Test name still appears.
     assert.match(html, /test_macos/);
+
+    // Also accept ``skip_reason`` as an alternative source.  Some E2E
+    // payload shapes put it there; the translator should honor either.
+    const altCanonical = ctx.e2eRunToCanonicalPayload({
+        results_by_category: {
+            skipped: [{
+                nodeid: 'tests/integration/test_platform.py::test_other',
+                outcome: 'skipped',
+                skip_reason: 'flaky-on-CI: tracked in #6310',
+            }],
+        },
+    });
+    assert.strictEqual(altCanonical.junit_cases[0].failure_details,
+        'flaky-on-CI: tracked in #6310',
+        'translator should also accept ``skip_reason`` for skipped tests');
+
+    // And: if NEITHER source carries a reason, failure_details stays
+    // null and the viewer falls back to the placeholder.
+    const noneCanonical = ctx.e2eRunToCanonicalPayload({
+        results_by_category: {
+            skipped: [{
+                nodeid: 'tests/integration/test_platform.py::test_silent',
+                outcome: 'skipped',
+            }],
+        },
+    });
+    assert.strictEqual(noneCanonical.junit_cases[0].failure_details, null);
+    const noneHtml = ctx.renderCanonicalValidationViewer(noneCanonical);
+    assert.match(noneHtml, /No skip reason was recorded/);
 });
 
 test('cmd surface: skipped test surfaced via the validation-modal path renders its reason inline', () => {
