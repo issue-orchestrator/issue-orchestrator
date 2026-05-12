@@ -256,6 +256,13 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     const rendered = renderValidationDialog(data, issueNumber, runDir);
     currentDiagnosticsRunDir = rendered.runDir;
     openModal(rendered.title, rendered.html);
+    // Phase D (issue #6310 follow-up): enhance the just-mounted
+    // canonical viewer with ARIA tree semantics + keyboard nav.  The
+    // renderer already bakes role/aria-expanded into the HTML; the
+    // enhancer fills in aria-level / aria-setsize / aria-posinset and
+    // wires the delegated keydown handler.
+    const dialogCvv = document.querySelector('#modalBody .cvv-root');
+    if (dialogCvv) enhanceCanonicalValidationViewerAccessibility(dialogCvv);
 }
 
 function renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {

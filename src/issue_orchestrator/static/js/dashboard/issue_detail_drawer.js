@@ -364,6 +364,14 @@ async function toggleValidationEventInline(stepId, issueNumber, runDir) {
             body.innerHTML = renderCanonicalValidationViewer(data, {
                 renderActionSections: renderValidationFailureActionSections,
             });
+            // Phase D (issue #6310 follow-up): enhance the inline-
+            // mounted canonical viewer with ARIA tree semantics +
+            // keyboard nav.  The render-time HTML already carries the
+            // ARIA roles; the enhancer fills in aria-level /
+            // aria-setsize / aria-posinset + roving tabindex + the
+            // delegated keydown handler.
+            const cvvRoot = body.querySelector('.cvv-root');
+            if (cvvRoot) enhanceCanonicalValidationViewerAccessibility(cvvRoot);
         } catch (err) {
             const message = err && err.message ? err.message : String(err);
             body.innerHTML = `<div class="cvv-error">Failed to load validation details: ${escapeHtml(message)}</div>`;

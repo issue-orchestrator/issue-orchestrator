@@ -26,6 +26,13 @@ function makeFakeBody() {
             },
         },
         dataset: { loaded: '0', runDir: '' },
+        // Phase D (issue #6310 follow-up): after mounting the viewer
+        // HTML, the drawer calls ``body.querySelector('.cvv-root')`` so
+        // it can enhance the canonical viewer with ARIA tree
+        // accessibility.  These tests don't exercise the live DOM, so
+        // returning null is sufficient — the enhancer call is a no-op
+        // when the root isn't present.
+        querySelector(_selector) { return null; },
     };
 }
 

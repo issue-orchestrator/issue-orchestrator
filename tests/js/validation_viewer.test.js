@@ -199,9 +199,14 @@ test('viewer: errored case auto-opens its stderr expander', () => {
         }],
     });
     // The viewer marks the stderr row open=true when outcome is error
-    // and stderr is present.  We match the row opener with the stderr
-    // pre-block immediately following.
-    assert.match(html, /<details class="cvv-row" open><summary><span class="cvv-caret">▸<\/span><span class="cvv-title">stderr<\/span>/);
+    // and stderr is present.  Phase D added ARIA tree roles to every
+    // cvv-row, so the opening tag now also carries
+    // role="treeitem" and aria-expanded="true".  We assert on the
+    // opener prefix and the expander summary content separately.
+    const stderrTag = html.match(/<details[^>]*"cvv-row"[^>]*>(?=<summary[^<]*<span[^>]*>[^<]*<\/span><span class="cvv-title">stderr<\/span>)/);
+    assert.ok(stderrTag, `stderr <details> tag not found in: ${html.slice(0, 300)}…`);
+    assert.match(stderrTag[0], /\bopen\b/);
+    assert.match(stderrTag[0], /aria-expanded="true"/);
 });
 
 test('viewer: empty payload renders cleanly with no triage and no browse', () => {

@@ -265,9 +265,15 @@
     font-size: 11px;
 }
 
-/* ── focus styling (Phase D adds full ARIA tree nav; this is the
-       baseline so keyboard users at least see focus today) ─────── */
-.cvv-row > summary:focus-visible {
+/* ── focus styling (Phase D: full ARIA tree nav landed) ─────────
+       Two visible focus surfaces:
+       - the row's own summary (mouse + tab-into-summary)
+       - the treeitem itself (arrow-key roving focus lands on the
+         <details>, not its summary, so the outline must show there)
+*/
+.cvv-row > summary:focus-visible,
+.cvv-row[role="treeitem"]:focus,
+.cvv-row[role="treeitem"]:focus-visible {
     outline: 2px solid #3870e0;
     outline-offset: -2px;
 }

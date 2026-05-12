@@ -199,6 +199,161 @@ def test_validation_badge_click_expands_inline_drawer_detail(
     assert errors == []
 
 
+def test_validation_viewer_renders_aria_tree_and_supports_keyboard_nav(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """Phase D (issue #6310 follow-up): the canonical validation viewer
+    is a real ARIA tree.  ``role="tree"`` on the root, ``role="treeitem"``
+    on every row, ``role="group"`` on every children container — and on
+    every triage card so failed-run children share the same tree/group
+    ownership model as the browse rows.
+    ``enhanceCanonicalValidationViewerAccessibility`` (called after
+    mount by the drawer) fills in aria-level / aria-setsize /
+    aria-posinset and wires the WAI-ARIA keyboard contract.
+
+    The matrix of keyboard commands is covered by JS-vm tests via the
+    pure ``_treeCommandForKey`` translator and the dependency-injected
+    ``_executeTreeCommand`` executor (with a fake tree fixture).  This
+    test is the thin browser smoke that proves the wire-up works under
+    a real keypress pipeline: it focuses a treeitem with
+    ``element.focus()`` (real focus, not synthetic dispatch) and uses
+    ``page.keyboard.press(...)`` for real keypresses.
+
+    Uses a *failed* payload (reviewer Blocker 1 on PR #6316) so the
+    triage-card treeitems are exercised and we can assert their
+    position metadata is complete.
+    """
+    errors: list[str] = []
+    page.on("pageerror", lambda err: errors.append(str(err)))
+
+    # Failed payload: two failing tests + one passing test so we cover
+    # both the triage hierarchy (under .cvv-triage-card[role=group]) and
+    # the browse-by-file hierarchy (under .cvv-row-browse[role=treeitem]).
+    page.route(
+        "**/api/dialog/validation-failure/410**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body="""
+            {
+              "title": "Validation Results #410",
+              "reason": "2 tests failed",
+              "suite": "publish_gate",
+              "command": "make validate-pr",
+              "exit_code": 2,
+              "started_at": "2026-01-01T13:00:00Z",
+              "ended_at": "2026-01-01T13:06:00Z",
+              "status": "failed",
+              "failed_tests": ["tests/test_a.py::test_alpha", "tests/test_a.py::test_gamma"],
+              "junit_cases": [
+                {"case_id": "a", "display_name": "test_alpha", "suite_name": "tests/test_a.py",
+                 "outcome": "failed", "duration_seconds": 0.003,
+                 "failure_details": "AssertionError: bad\\n  at frame 1",
+                 "system_out": "before", "system_err": "after", "extras": []},
+                {"case_id": "c", "display_name": "test_gamma", "suite_name": "tests/test_a.py",
+                 "outcome": "failed", "duration_seconds": 0.004,
+                 "failure_details": "AssertionError: also bad\\n  at frame 2",
+                 "extras": []},
+                {"case_id": "b", "display_name": "test_beta", "suite_name": "tests/test_b.py",
+                 "outcome": "passed", "duration_seconds": 0.004, "extras": []}
+              ],
+              "stdout_excerpt": [],
+              "stderr_excerpt": [],
+              "summary_rows": [{"label": "Outcome", "value": "Failed"}],
+              "action_sections": []
+            }
+            """,
+        ),
+    )
+
+    _goto_dashboard(page, str(web_server["url"]))
+    page.locator(
+        ".dashboard-columns .issue-card[data-issue='410'] .card-focus"
+    ).first.click()
+    _wait_for_issue_detail_hydration(page)
+    page.locator(".journey-cycle-validation-badge.is-passed").first.click()
+
+    cvv = page.locator(".journey-step-validation-body .cvv-root").first
+    expect(cvv).to_be_visible(timeout=5000)
+
+    # ── Render-time ARIA roles are live in the DOM ──────────────────
+    expect(cvv).to_have_attribute("role", "tree")
+    expect(cvv).to_have_attribute("aria-orientation", "vertical")
+    # Triage card carries role="group" so its child treeitems share the
+    # same ownership model as browse rows (reviewer Blocker 1).
+    triage_cards = cvv.locator(".cvv-triage-card")
+    assert triage_cards.count() >= 1, "failed payload should render at least one triage card"
+    expect(triage_cards.first).to_have_attribute("role", "group")
+
+    treeitems = cvv.locator('[role="treeitem"]')
+    assert treeitems.count() >= 1
+    # Every treeitem has complete position metadata.  This is the
+    # specific regression the reviewer caught: failed-triage treeitems
+    # previously had aria-setsize but no aria-posinset.
+    levels = treeitems.evaluate_all(
+        "elements => elements.map(el => [el.getAttribute('aria-level'),"
+        " el.getAttribute('aria-setsize'), el.getAttribute('aria-posinset')])"
+    )
+    for level, setsize, posinset in levels:
+        assert level is not None and int(level) >= 1, f"aria-level missing: {level}"
+        assert setsize is not None and int(setsize) >= 1, f"aria-setsize missing: {setsize}"
+        assert posinset is not None and int(posinset) >= 1, f"aria-posinset missing: {posinset}"
+
+    # Within each triage card, the children's posinset values form a
+    # contiguous 1..N sequence — that's what a screen reader uses to
+    # announce position-within-set.
+    triage_child_meta = cvv.evaluate(
+        "root => Array.from(root.querySelectorAll('.cvv-triage-card')).map(card =>"
+        "  Array.from(card.querySelectorAll(':scope > [role=\"treeitem\"]')).map(el => ({"
+        "    setsize: el.getAttribute('aria-setsize'),"
+        "    posinset: el.getAttribute('aria-posinset'),"
+        "  }))"
+        ")"
+    )
+    for card_children in triage_child_meta:
+        assert len(card_children) > 0, "triage card should contain at least one treeitem"
+        for idx, meta in enumerate(card_children, start=1):
+            assert meta["setsize"] == str(len(card_children))
+            assert meta["posinset"] == str(idx)
+
+    # Exactly one treeitem in the tab order (roving tabindex).
+    tab_stops = treeitems.evaluate_all(
+        "elements => elements.filter(el => el.tabIndex === 0).length"
+    )
+    assert tab_stops == 1, f"expected exactly 1 tab-stop in tree, got {tab_stops}"
+
+    # ── Real keyboard input on the mounted viewer ───────────────────
+    # The matrix is JS-vm-tested via _treeCommandForKey and
+    # _executeTreeCommand.  Here we prove that real keypresses flow
+    # through the wire-up: focus the tab-stop, press ArrowDown, and
+    # verify focus moves to a different treeitem.
+    page.evaluate(
+        "() => {"
+        "  const el = document.querySelector('.journey-step-validation-body .cvv-root [role=\"treeitem\"][tabindex=\"0\"]');"
+        "  if (!el) throw new Error('no tab-stop treeitem found');"
+        "  el.focus();"
+        "}"
+    )
+    first_focused = page.evaluate(
+        "() => document.activeElement && document.activeElement.getAttribute('aria-label')"
+        " || (document.activeElement && document.activeElement.outerHTML.slice(0, 80))"
+    )
+    page.keyboard.press("ArrowDown")
+    after_down_focused = page.evaluate(
+        "() => document.activeElement && document.activeElement.outerHTML.slice(0, 80)"
+    )
+    assert after_down_focused != first_focused, (
+        f"ArrowDown should move focus; before={first_focused!r}, after={after_down_focused!r}"
+    )
+    after_down_role = page.evaluate(
+        "() => document.activeElement && document.activeElement.getAttribute('role')"
+    )
+    assert after_down_role == "treeitem", f"ArrowDown should land on a treeitem, got role={after_down_role}"
+
+    assert errors == []
+
+
 def test_validation_failure_dialog_renders_results_and_artifacts(
     page: Page,
     web_server: dict[str, object],
