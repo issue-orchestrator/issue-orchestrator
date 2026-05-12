@@ -1685,12 +1685,22 @@ def test_e2e_timeline_has_view_switcher() -> None:
 
 
 def test_e2e_run_timeline_is_directly_addressable() -> None:
-    """The run modal exposes a Timeline entrypoint that auto-expands the Run details disclosure."""
+    """The run modal exposes a Timeline entrypoint that auto-expands the Run details disclosure.
+
+    PR #6329 Blocker 2: ``openE2ERunTimeline`` no longer calls
+    ``showUnifiedRunView`` directly — it routes through the typed
+    ``open_e2e_run`` Command with ``expand_run_details: true`` so
+    the single-owner contract holds for every entrypoint.
+    """
     js = _read(DASHBOARD_JS)
     legacy_entry = _function_body(js, "openE2ERunTimeline")
     render_body = _function_body(js, "renderUnifiedRunView")
     assert "function openE2ERunTimeline(runId)" in js
-    assert "showUnifiedRunView(runId, { expandRunDetails: true })" in legacy_entry
+    # Routes through the typed Command pipeline.
+    assert "runE2ELifecycleCommand" in legacy_entry
+    assert "'open_e2e_run'" in legacy_entry
+    assert "expand_run_details: true" in legacy_entry
+    # And the renderer still honors the expand-run-details intent.
     assert "options.expandRunDetails" in render_body
     assert "runDetailsDisclosure" in render_body
     assert "renderE2ETimeline(timelineContainer, tl)" in render_body
@@ -1983,17 +1993,17 @@ def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
     # Run history rows keep the title click and expose an explicit formatted results action.
     assert "openE2ERunTimeline({{ run.e2e_run_id }})" not in dashboard
     assert ">Open run<" not in dashboard
-    # Phase D #6322: the chip click now routes through a typed
-    # Command (``open_e2e_run``) on ``data-lifecycle-command``
-    # instead of the inline ``onclick="showUnifiedRunView(...)"``.
-    # The dispatcher ``runE2ELifecycleCommand`` still calls
-    # ``showUnifiedRunView`` internally, but the template no longer
-    # carries the function name.
+    # PR #6329 reviewer Blocker 1: the chip click serializes through
+    # the view-model's ``open_run_command`` field (an
+    # ``OpenE2ERunCommand.model_dump()`` dict, contract-validated).
+    # The template no longer hand-builds the JSON payload.
     assert (
-        'data-lifecycle-command=\'{"kind":"open_e2e_run","run_id":{{ run.e2e_run_id }}}\''
+        'data-lifecycle-command="{{ run.open_run_command | tojson | forceescape }}"'
         in dashboard
     )
     assert "runE2ELifecycleCommandFromButton(this)" in dashboard
+    # And the legacy hand-built JSON shape is gone (regression guard).
+    assert 'data-lifecycle-command=\'{"kind":"open_e2e_run"' not in dashboard
     assert "e2e-run-results-btn" in dashboard
     assert 'data-action="show-e2e-run-results"' in dashboard
     # Issue rows continue to expose direct Timeline controls.
@@ -2003,7 +2013,15 @@ def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
 
 
 def test_e2e_latest_results_affordance_uses_formatted_run_modal() -> None:
-    """Latest/passed E2E runs should open formatted results, not the diagnosis modal."""
+    """Latest/passed E2E runs should open the formatted run view via the typed Command.
+
+    PR #6329 reviewer Blocker 2: ``showLatestE2ERunResults`` no
+    longer calls ``showUnifiedRunView`` directly — it dispatches
+    the typed ``open_e2e_run`` Command so every "open E2E run"
+    entrypoint has a single owner.  The dispatcher still calls
+    ``showUnifiedRunView`` internally; this function just stops
+    bypassing the pipeline.
+    """
     dashboard = _read(DASHBOARD_TEMPLATE)
     js = _read(DASHBOARD_JS)
     latest_body = _function_body(js, "showLatestE2ERunResults")
@@ -2011,7 +2029,11 @@ def test_e2e_latest_results_affordance_uses_formatted_run_modal() -> None:
     assert "Last Run Diagnosis" not in dashboard
     assert 'data-action="show-latest-e2e-run-results"' in dashboard
     assert "showE2EDiagnosis()" not in dashboard
-    assert "showUnifiedRunView(runId)" in latest_body
+    # Now goes through the typed Command pipeline.
+    assert "runE2ELifecycleCommand" in latest_body
+    assert "'open_e2e_run'" in latest_body
+    # No direct ``showUnifiedRunView(runId)`` bypass.
+    assert "showUnifiedRunView(runId)" not in latest_body
     assert "showE2EDiagnosis" not in latest_body
 
 

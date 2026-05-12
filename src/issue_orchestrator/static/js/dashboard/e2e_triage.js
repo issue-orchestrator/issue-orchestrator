@@ -1,8 +1,14 @@
 let e2eTriageData = null;
 
 async function showE2ERunDetails(runId) {
-    // Redirect to the unified run view (canonical viewer / Phase C).
-    return showUnifiedRunView(runId);
+    // Redirect to the unified run view via the typed Command pipeline
+    // (issue #6322, PR #6329 reviewer Blocker 2).
+    return runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: Number(runId),
+        expand_run_details: false,
+    });
 }
 
 // Legacy run-details + per-test detail paths removed in Phase C

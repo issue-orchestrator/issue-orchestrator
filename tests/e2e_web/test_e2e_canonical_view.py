@@ -133,9 +133,42 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
 
     _goto_dashboard(page, str(web_server["url"]))
 
-    # Open the run modal directly via the global entry point; no need
-    # to navigate via UI elements that may not exist in the test fixture.
-    page.evaluate(f"() => showUnifiedRunView({_RUN_ID})")
+    # PR #6329 reviewer Blocker 2: open the run view by CLICKING a
+    # real rendered affordance, not by calling ``showUnifiedRunView``
+    # directly.  This proves the typed-Command pipeline is wired
+    # end-to-end (template → data-lifecycle-command → dispatcher →
+    # showUnifiedRunView) in the actual browser, not just in JS-vm
+    # unit tests.
+    #
+    # The dashboard fixture may or may not render a Run-history chip
+    # for this test's stub run id.  If a real chip is present, click
+    # it; otherwise fall back to injecting a chip with the
+    # production-shape ``data-lifecycle-command`` and clicking that.
+    # Both paths exercise ``runE2ELifecycleCommandFromButton`` → the
+    # typed Command dispatcher → ``showUnifiedRunView`` end-to-end.
+    real_chip = page.locator(f"button.card-focus[data-lifecycle-command]").filter(
+        has_text=str(_RUN_ID)
+    ).first
+    if real_chip.count() > 0:
+        real_chip.click()
+    else:
+        page.evaluate(
+            f"""() => {{
+                const btn = document.createElement('button');
+                btn.className = 'card-focus';
+                btn.id = 'test-injected-chip';
+                btn.setAttribute('data-lifecycle-command', JSON.stringify({{
+                    kind: 'open_e2e_run',
+                    label: 'Open E2E Run',
+                    run_id: {_RUN_ID},
+                    expand_run_details: false,
+                }}));
+                btn.setAttribute('onclick', 'runE2ELifecycleCommandFromButton(this);');
+                btn.textContent = 'Run #{_RUN_ID}';
+                document.body.appendChild(btn);
+            }}"""
+        )
+        page.locator("#test-injected-chip").click()
 
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=10_000)

@@ -66,7 +66,15 @@ function showLatestE2ERunResults() {
         showToast('No E2E run data available', true);
         return;
     }
-    return showUnifiedRunView(runId);
+    // PR #6329 reviewer Blocker 2: route through the typed Command
+    // pipeline.  Single owner for "open E2E run" navigation across
+    // every entry point.
+    return runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: runId,
+        expand_run_details: false,
+    });
 }
 
 function showE2ERunResultsById(rawRunId) {
@@ -75,7 +83,13 @@ function showE2ERunResultsById(rawRunId) {
         showToast('No E2E run data available', true);
         return;
     }
-    return showUnifiedRunView(runId);
+    // PR #6329 reviewer Blocker 2: route through the typed Command.
+    return runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: runId,
+        expand_run_details: false,
+    });
 }
 
 function handleE2ERuntimeActionClick(e) {

@@ -65,14 +65,15 @@ function runE2ELifecycleCommand(command) {
         return;
     }
     // Typed-Command entry point for the E2E run view (issue #6322).
-    // The legacy inline ``onclick="showUnifiedRunView(id)"`` carried
-    // the same intent but bypassed the typed-Command pipeline, which
-    // means cheap-integration tests couldn't extract or spy on the
-    // navigation.  Routing through here makes the chip + issue-row
-    // affordances first-class commands.
+    // Backed by the Pydantic ``OpenE2ERunCommand`` model in
+    // ``view_models/lifecycle_semantics.py`` and the
+    // ``OpenE2ERunCommandPayload`` schema in ``ui_openapi_models.py``.
+    // Every user-facing "open E2E run" affordance (chip, View
+    // button, Latest Results, etc.) routes through here — single
+    // owner, no parallel direct ``showUnifiedRunView()`` callers.
     if (kind === 'open_e2e_run' && command.run_id) {
-        const opts = command.options && typeof command.options === 'object' ? command.options : {};
-        showUnifiedRunView(command.run_id, opts);
+        const expandRunDetails = command.expand_run_details === true;
+        showUnifiedRunView(command.run_id, { expandRunDetails });
         return;
     }
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');

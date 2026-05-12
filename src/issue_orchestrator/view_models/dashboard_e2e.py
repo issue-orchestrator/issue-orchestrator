@@ -10,6 +10,23 @@ import time
 from typing import Any
 
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
+from .lifecycle_semantics import OpenE2ERunCommand
+
+
+def _open_run_command_payload(run_id: int, *, expand_run_details: bool = False) -> dict[str, Any]:
+    """Build the typed ``open_e2e_run`` Command payload for a chip / view button.
+
+    Issue #6322 (PR #6329 review blocker): the dashboard E2E chip and
+    the issue-row View button must serialize through the typed
+    ``OpenE2ERunCommand`` Pydantic model rather than hand-building
+    JSON in the template.  This keeps the rendered
+    ``data-lifecycle-command`` attribute valid by construction and
+    catches drift at the contract layer instead of in the browser.
+    """
+    return OpenE2ERunCommand(
+        run_id=run_id,
+        expand_run_details=expand_run_details,
+    ).model_dump()
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +108,7 @@ def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any
         "is_e2e": True,
         "e2e_failed_tests": failed_tests_data,
         "e2e_run_id": run_id,
+        "open_run_command": _open_run_command_payload(run_id),
         "results_action": _e2e_run_results_action(run_id),
         "relative_time": last_run.get("relative_time", ""),
         "time": last_run.get("relative_time", ""),
@@ -163,6 +181,7 @@ def build_e2e_recent_run_items(db: Any, config: Any, e2e_status: dict[str, Any])
             "action_hint": "View run details",
             "is_e2e": True,
             "e2e_run_id": run.id,
+            "open_run_command": _open_run_command_payload(run.id),
             "results_action": _e2e_run_results_action(run.id),
             "relative_time": relative_time,
             "time": relative_time,

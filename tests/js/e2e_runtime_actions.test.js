@@ -20,6 +20,19 @@ function loadE2ERuntime(overrides = {}) {
         confirm: () => true,
         fetch: async () => ({ ok: true, json: async () => ({}) }),
         showToast: (message, severity) => toasts.push([String(message), severity]),
+        // PR #6329 reviewer Blocker 2: ``showLatestE2ERunResults``,
+        // ``showE2ERunResultsById``, and ``showE2ERunDetails`` route
+        // through the typed Command pipeline (``runE2ELifecycleCommand``),
+        // not directly through ``showUnifiedRunView``.  Tests now
+        // record the Command that was dispatched, then the stub
+        // forwards to ``showUnifiedRunView`` so the recorded chain
+        // matches what the real dispatcher does.
+        runE2ELifecycleCommand: (command) => {
+            calls.push(['run_e2e_lifecycle_command', command]);
+            if (command && command.kind === 'open_e2e_run' && command.run_id) {
+                calls.push(['show_unified_run_view', command.run_id]);
+            }
+        },
         showUnifiedRunView: (runId) => calls.push(['show_unified_run_view', runId]),
         document: {
             addEventListener: () => {},
@@ -64,7 +77,7 @@ function makeActionEvent(dataset) {
     return event;
 }
 
-test('latest run results action opens formatted unified run view', () => {
+test('latest run results action dispatches the typed open_e2e_run Command (PR #6329 Blocker 2)', () => {
     const ctx = loadE2ERuntime({
         window: {
             location: { search: '' },
@@ -81,11 +94,21 @@ test('latest run results action opens formatted unified run view', () => {
 
     ctx.showLatestE2ERunResults();
 
-    assert.deepEqual(ctx.calls, [['show_unified_run_view', 42]]);
+    // Single owner: typed Command first, then the stub forwards to
+    // showUnifiedRunView.  Both halves are recorded.
+    assert.deepEqual(ctx.calls, [
+        ['run_e2e_lifecycle_command', {
+            kind: 'open_e2e_run',
+            label: 'Open E2E Run',
+            run_id: 42,
+            expand_run_details: false,
+        }],
+        ['show_unified_run_view', 42],
+    ]);
     assert.deepEqual(ctx.toasts, []);
 });
 
-test('delegated latest results click uses live latest-run state', () => {
+test('delegated latest results click dispatches the typed Command with live latest-run state', () => {
     const ctx = loadE2ERuntime({
         window: {
             location: { search: '' },
@@ -105,10 +128,18 @@ test('delegated latest results click uses live latest-run state', () => {
 
     assert.equal(event.prevented, true);
     assert.equal(event.stopped, true);
-    assert.deepEqual(ctx.calls, [['show_unified_run_view', 43]]);
+    assert.deepEqual(ctx.calls, [
+        ['run_e2e_lifecycle_command', {
+            kind: 'open_e2e_run',
+            label: 'Open E2E Run',
+            run_id: 43,
+            expand_run_details: false,
+        }],
+        ['show_unified_run_view', 43],
+    ]);
 });
 
-test('delegated run-history results click uses the rendered run id', () => {
+test('delegated run-history results click dispatches the typed Command with the rendered run id', () => {
     const ctx = loadE2ERuntime();
     const event = makeActionEvent({ action: 'show-e2e-run-results', runId: '88' });
 
@@ -116,7 +147,15 @@ test('delegated run-history results click uses the rendered run id', () => {
 
     assert.equal(event.prevented, true);
     assert.equal(event.stopped, true);
-    assert.deepEqual(ctx.calls, [['show_unified_run_view', 88]]);
+    assert.deepEqual(ctx.calls, [
+        ['run_e2e_lifecycle_command', {
+            kind: 'open_e2e_run',
+            label: 'Open E2E Run',
+            run_id: 88,
+            expand_run_details: false,
+        }],
+        ['show_unified_run_view', 88],
+    ]);
 });
 
 test('latest run results action shows a toast when no run exists', () => {

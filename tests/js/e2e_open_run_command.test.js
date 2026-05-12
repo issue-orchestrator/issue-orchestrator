@@ -83,20 +83,30 @@ test('open_e2e_run command dispatches to showUnifiedRunView with the run_id', ()
     ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run', run_id: 88 });
     assert.strictEqual(calls.showUnifiedRunView.length, 1);
     assert.strictEqual(calls.showUnifiedRunView[0].runId, 88);
-    // No options passed → handler receives {} (the dispatcher's
-    // fall-through for command.options).
-    assert.deepEqual(calls.showUnifiedRunView[0].opts, {});
+    // No expand_run_details → handler receives ``{ expandRunDetails: false }``.
+    assert.deepEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: false });
 });
 
-test('open_e2e_run command forwards options when provided', () => {
+test('open_e2e_run command forwards expand_run_details when true', () => {
     const { ctx, calls } = _loadDispatcher();
     ctx.runE2ELifecycleCommand({
         kind: 'open_e2e_run',
         run_id: 88,
-        options: { expandRunDetails: true },
+        expand_run_details: true,
     });
     assert.strictEqual(calls.showUnifiedRunView.length, 1);
-    assert.deepStrictEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: true });
+    assert.deepEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: true });
+});
+
+test('open_e2e_run command treats non-boolean expand_run_details as false', () => {
+    const { ctx, calls } = _loadDispatcher();
+    ctx.runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        run_id: 88,
+        expand_run_details: 'yes-as-string',
+    });
+    assert.strictEqual(calls.showUnifiedRunView.length, 1);
+    assert.deepEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: false });
 });
 
 test('open_e2e_run command without run_id does NOT fire the handler', () => {
@@ -116,13 +126,6 @@ test('open_e2e_run command with run_id=0 does NOT fire the handler (falsy guard)
     assert.strictEqual(calls.showUnifiedRunView.length, 0);
 });
 
-test('open_e2e_run command ignores non-object options', () => {
-    const { ctx, calls } = _loadDispatcher();
-    ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run', run_id: 88, options: 'not-an-object' });
-    assert.strictEqual(calls.showUnifiedRunView.length, 1);
-    assert.deepEqual(calls.showUnifiedRunView[0].opts, {},
-        'options must default to {} when not an object');
-});
 
 // ── Layer B: render → extract → dispatch ──────────────────────────
 //
@@ -137,18 +140,38 @@ test('open_e2e_run command ignores non-object options', () => {
 // runE2ELifecycleCommand.
 
 function _buildChipHtml(runId) {
-    const cmdAttr = JSON.stringify({ kind: 'open_e2e_run', run_id: runId });
+    // Match the production template's rendered shape after
+    // PR #6329 reviewer Blocker 1 (typed Command contract).  The
+    // dashboard.html template now serializes the view-model's
+    // ``open_run_command`` field (a ``OpenE2ERunCommand.model_dump()``
+    // dict) through Jinja's ``| tojson | forceescape`` filter chain.
+    // ``forceescape`` HTML-escapes the JSON's double-quotes as
+    // ``&#34;`` so they can sit inside ``data-lifecycle-command="..."``.
+    const cmd = {
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: runId,
+        expand_run_details: false,
+    };
+    const cmdAttr = JSON.stringify(cmd).replace(/"/g, '&#34;');
     return (
-        `<button class="card-focus" data-lifecycle-command='${cmdAttr}' ` +
+        `<button class="card-focus" data-lifecycle-command="${cmdAttr}" ` +
         `onclick="runE2ELifecycleCommandFromButton(this);event.stopPropagation();">Run #${runId}</button>`
     );
 }
 
 function _extractCommand(html) {
-    const match = html.match(/data-lifecycle-command='([^']+)'/);
+    // Match the production attribute shape: double-quoted attribute
+    // with HTML-escaped JSON inside.
+    const match = html.match(/data-lifecycle-command="([^"]+)"/);
     if (!match) return null;
+    // Un-escape the HTML entities Jinja's ``forceescape`` produced.
+    const unescaped = match[1]
+        .replace(/&#34;/g, '"')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&');
     try {
-        return JSON.parse(match[1]);
+        return JSON.parse(unescaped);
     } catch (e) {
         return null;
     }
@@ -160,7 +183,12 @@ test('chip render → extract → dispatch: end-to-end through the typed Command
     // Extract.
     const command = _extractCommand(html);
     assert.ok(command, 'extracting data-lifecycle-command must succeed');
-    assert.deepStrictEqual(command, { kind: 'open_e2e_run', run_id: 88 });
+    assert.deepStrictEqual(command, {
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: 88,
+        expand_run_details: false,
+    });
     // Dispatch via the real dispatcher.
     ctx.runE2ELifecycleCommand(command);
     assert.strictEqual(calls.showUnifiedRunView.length, 1);
@@ -182,33 +210,41 @@ test('chip render → extract → dispatch for a different run_id (no hard-coded
 // source.  If a future edit reverts to an inline
 // ``onclick="showUnifiedRunView(...)"``, this test fails fast.
 
-test('template guardrail: dashboard chip emits data-lifecycle-command (no raw showUnifiedRunView onclick)', () => {
+test('template guardrail: dashboard chip serializes from the view-model open_run_command (no hand-built JSON)', () => {
     const tmpl = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/templates/dashboard.html'),
         'utf8',
     );
-    // The Run-history card button must use the typed Command.
+    // After PR #6329 review: templates must NOT hand-build the
+    // typed-Command JSON.  They must consume the view-model's
+    // ``open_run_command`` dict (built by ``OpenE2ERunCommand.model_dump()``)
+    // through Jinja's ``| tojson | forceescape`` filter chain.
     assert.match(
         tmpl,
-        /class="card-focus"[^>]*data-lifecycle-command='\{"kind":"open_e2e_run","run_id":\{\{ run\.e2e_run_id \}\}\}'/,
-        'dashboard.html Run-history card-focus button must carry the open_e2e_run typed Command',
+        /class="card-focus"[^>]*data-lifecycle-command="\{\{ run\.open_run_command \| tojson \| forceescape \}\}"/,
+        'dashboard.html card-focus button must serialize the view-model open_run_command (typed contract owner)',
     );
-    // The legacy ``onclick="showUnifiedRunView(...)"`` direct-call is gone
-    // from this template path.
+    // The legacy ``onclick="showUnifiedRunView(...)"`` direct-call is gone.
     assert.doesNotMatch(
         tmpl,
         /<button class="card-focus" onclick="showUnifiedRunView\(/,
         'no card-focus button may use inline showUnifiedRunView() onclick',
     );
+    // No hand-built JSON shape in the template (regression guard).
+    assert.doesNotMatch(
+        tmpl,
+        /data-lifecycle-command='\{"kind":"open_e2e_run"/,
+        'no hand-built JSON for open_e2e_run in dashboard.html (must serialize from view-model dict)',
+    );
 });
 
-test('template guardrail: issue-row View buttons emit data-lifecycle-command (no raw showUnifiedRunView onclick)', () => {
+test('template guardrail: issue-row View buttons serialize from the view-model open_run_command', () => {
     const tmpl = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/templates/issue_row.html'),
         'utf8',
     );
-    // Every View button in this template should now carry the typed Command.
-    const typedHits = (tmpl.match(/data-lifecycle-command='\{"kind":"open_e2e_run","run_id":\{\{ issue\.e2e_run_id \}\}\}'/g) || []).length;
+    // Every View button must consume the view-model's open_run_command dict.
+    const typedHits = (tmpl.match(/data-lifecycle-command="\{\{ issue\.open_run_command \| tojson \| forceescape \}\}"/g) || []).length;
     assert.ok(typedHits >= 2,
         `expected at least 2 typed-Command View buttons in issue_row.html, got ${typedHits}`);
     // No View button still uses the inline showUnifiedRunView direct-call.
@@ -216,5 +252,11 @@ test('template guardrail: issue-row View buttons emit data-lifecycle-command (no
         tmpl,
         /class="issue-action-btn view-btn" onclick="showUnifiedRunView\(/,
         'no issue-action-btn view-btn may use inline showUnifiedRunView() onclick',
+    );
+    // No hand-built JSON shape either.
+    assert.doesNotMatch(
+        tmpl,
+        /data-lifecycle-command='\{"kind":"open_e2e_run"/,
+        'no hand-built JSON for open_e2e_run in issue_row.html',
     );
 });

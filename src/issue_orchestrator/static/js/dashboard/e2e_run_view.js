@@ -320,9 +320,16 @@ function renderRunDetailsDisclosure(data) {
 }
 
 function openE2ERunTimeline(runId) {
-    // Legacy entry point: open run modal and auto-expand the Run details &
-    // artifacts disclosure (which holds the suite timeline).
-    return showUnifiedRunView(runId, { expandRunDetails: true });
+    // Open run modal and auto-expand the Run details & artifacts
+    // disclosure (which holds the suite timeline).  Routed through
+    // the typed Command pipeline (issue #6322, PR #6329 reviewer
+    // Blocker 2) — single owner for "open E2E run" navigation.
+    return runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: Number(runId),
+        expand_run_details: true,
+    });
 }
 
 /**
