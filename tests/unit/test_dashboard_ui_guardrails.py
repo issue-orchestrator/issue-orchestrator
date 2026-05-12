@@ -1812,6 +1812,87 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
 # Playwright smoke ``test_e2e_canonical_view.py``.
 
 
+def test_e2e_legacy_panel_selectors_are_absent_from_css_bundle() -> None:
+    """Round-2 reviewer ask on PR #6319: the legacy panel CSS classes
+    must not ship in the dashboard CSS bundle after the panel itself
+    is gone.  Without this guardrail nothing prevents dead selectors
+    from creeping back in — and the partial shipping of an obsolete
+    UI is exactly what the reviewer flagged.
+
+    The canonical viewer (``cvv-*`` classes) and the run-details
+    disclosure (``run-details-*`` classes) own the live E2E run
+    modal styling.  Everything below was scoped to the deleted
+    ``test_results_panel.js`` and its row-action contract.
+    """
+    css = _read_dashboard_css_bundle()
+    dead_selectors = [
+        # filter pills + headline scaffold
+        ".test-results-panel",
+        ".test-results-headline",
+        ".test-results-filters",
+        ".test-results-list",
+        ".trf-chip",
+        # row + row internals
+        ".trr-row",
+        ".trr-row-main",
+        ".trr-row-copy",
+        ".trr-row-actions",
+        ".trr-caret",
+        ".trr-expand",
+        ".trr-error-text",
+        ".trr-expand-heading",
+        ".trr-captured-output",
+        ".trr-captured-channel",
+        ".trr-captured-channel-label",
+        ".trr-captured-text",
+        ".trr-captured-status",
+        ".trr-captured-error",
+        ".trr-lifecycle",
+        ".trr-lifecycle-heading",
+        ".trr-lifecycle-cycles",
+        ".trr-lifecycle-actions",
+        # headline status accents
+        ".trh-stat",
+        ".trh-passed",
+        ".trh-failed",
+        ".trh-action",
+        ".trh-warning",
+        ".trh-skipped",
+        ".trh-quarantined",
+        # per-row content
+        ".test-result-pill",
+        ".test-result-pills",
+        ".test-result-flaky-note",
+        ".test-history-label",
+        ".test-history-glyphs",
+        ".test-history-flake",
+        ".test-failure-summary",
+        ".test-row-copy",
+        ".test-suite",
+        ".test-source",
+        # per-row inline lifecycle chip
+        ".e2e-lifecycle-chip",
+    ]
+    leaks: list[str] = []
+    for selector in dead_selectors:
+        # Match the selector at a position that's actually a CSS rule
+        # (i.e. followed by ``{``, ``,``, ``:``, ``.``, ``>``, whitespace,
+        # ``[``, or end-of-line) — so a class name appearing only inside
+        # a comment block (the deletion-marker comments we left behind)
+        # doesn't trip the guard.
+        for line in css.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("/*", "//", "*")):
+                continue
+            if selector in line:
+                leaks.append(f"{selector!r} on: {line.strip()}")
+                break
+    assert not leaks, (
+        "Legacy test-results-panel CSS selectors leaked back into the "
+        "dashboard bundle:\n  " + "\n  ".join(leaks)
+    )
+
+
 def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:
     """The E2E tab badge must not look healthy when parsed failed tests exist."""
     js = _read(DASHBOARD_JS)

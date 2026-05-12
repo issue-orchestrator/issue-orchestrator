@@ -407,7 +407,6 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
                     issue_title: 'fixture cohort split',
                     final_state: 'blocked',
                     summary: 'agent retried 2x then blocked on validation',
-                    run_url: '/api/dashboard/issue/4503?focus=timeline',
                 },
             }],
         }],
@@ -429,6 +428,39 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.strictEqual(cmd.kind, 'open_issue_timeline');
     assert.strictEqual(cmd.issue_number, 4503);
     assert.strictEqual(cmd.scope_kind, 'dashboard');
+});
+
+test('plugin: agent-context plugin ignores legacy run_url even if a stale payload passes one', () => {
+    // PR #6319 round 2 (Blocker 2): an earlier iteration of the
+    // plugin emitted ``<a href={run_url}>`` and the translator built a
+    // ``/api/dashboard/issue/N`` URL that had no real backing route.
+    // The runtime no longer cares about ``run_url`` — but an old
+    // backend or third-party producer might still send it.  The
+    // renderer must not surface that URL as a click target.  Prove
+    // both directions: the URL string never appears in the output,
+    // and there's no ``<a href>`` rendered at all (the drawer
+    // affordance is the typed-Command button).
+    const ctx = loadViewerWithAgentPlugin();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'stale payload', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [{
+                namespace: 'io.agent-context',
+                payload: {
+                    issue_number: 4503,
+                    issue_title: 'fixture cohort split',
+                    final_state: 'blocked',
+                    summary: 'stale payload',
+                    // Stale field — should be ignored.
+                    run_url: '/api/dashboard/issue/4503?focus=timeline',
+                },
+            }],
+        }],
+    });
+    assert.doesNotMatch(html, /\/api\/dashboard\/issue/);
+    assert.doesNotMatch(html, /<a\s[^>]*href=/);
 });
 
 test('plugin: agent-context plugin renders nothing when case lacks the namespace', () => {

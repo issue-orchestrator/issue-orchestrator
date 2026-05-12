@@ -9,17 +9,16 @@
 //       issue_number: 4503,
 //       issue_title: "fixture: cohort split",
 //       final_state: "blocked",
-//       run_url: "/api/dashboard/issue/4503?focus=timeline",
 //       summary: "agent retried 2x then blocked on validation",
 //     }
 //   }]
 //
-// In Phase A we render a slim summary (one-line context + a deep link
-// to the issue's drawer).  Phase C extends this to embed a thin journey
-// summary when richer payload is provided (cycles, validation events).
-// In all cases the renderer is the only thing in the codebase that
-// knows about agent-context as a domain concept — the canonical viewer
-// stays generic.
+// The Open-issue-drawer affordance routes through the shared
+// typed-Command pipeline (``open_issue_timeline`` →
+// ``runE2ELifecycleCommand`` → ``openIssueTimeline``).  The plugin
+// payload intentionally does NOT carry a deep-link URL — there's no
+// stable HTTP route to drive the drawer from, and the typed command
+// is the single owner of "open this issue's drawer."
 //
 // See ``docs/journeys/validation-viewer-redesign.md`` for the why.
 
@@ -55,14 +54,11 @@
         // Open-issue-drawer affordance routes through the shared typed-
         // Command pipeline (``lifecycle_commands.js`` →
         // ``runE2ELifecycleCommand`` → ``openIssueTimeline``) so the
-        // click actually opens the drawer.  The Phase-C reviewer
-        // (PR #6319 Blocker 1) flagged the prior plain ``<a href>``
-        // approach as broken: there's no ``/api/dashboard/issue/N``
-        // route, and the drawer-open contract has always been the
-        // typed command.  Only render the button when the shared
-        // command renderer is loaded — pure-JUnit consumers without
-        // the lifecycle bundle still get a useful (text-only) plugin
-        // block, just without the button.
+        // click actually opens the drawer.  Only render the button
+        // when the shared command renderer is loaded — pure-JUnit
+        // consumers without the lifecycle bundle still get a useful
+        // (text-only) plugin block, just without the button.  Any
+        // legacy ``run_url`` on the payload is ignored.
         let actionsHtml = '';
         if (typeof _renderLifecycleCommandButton === 'function') {
             const cmd = {
