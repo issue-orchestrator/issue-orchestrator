@@ -7,13 +7,15 @@
 
 ## TL;DR
 
-If you are acting on this convention day-to-day, these five invariants are the substance:
+If you are acting on this convention day-to-day, these seven invariants are the substance:
 
 1. **A module is a Python package.** Its `__init__.py` re-exports the public interface and only the public interface. Internals stay package-local; this is mechanically enforced by `import-linter`, not by convention (decisions 2, 5, 13).
 2. **A package is worth creating only when there is meaningful complexity to hide** behind a narrow interface. Value objects, single-function utilities, and ≤5-line shims are not modules. The deep-module test in decision 1 is the filter.
 3. **Hard-delete what's replaced.** No deprecation windows; mypy/pyright and tests catch missed callers (decision 8).
 4. **Test in two tiers where complexity warrants.** Facade-tier tests for public behavior; inner-tier tests for individual internals when failure localization matters more than the test cost (decision 7).
-5. **Forward-fix is the intended recovery model** (decisions 10 and 12), but it is **operationally deferred** until the matrix self-test in #6320 lands and proves the matrix is a real gate. Until then, regressions surface through manual review.
+5. **Inner-tier tests are allowed to know internals exist** and may break when internals reshape — this is expected, not a regression; the cost is paid locally by the engineer making the reshape (decision 7).
+6. **Touched flat modules migrate in the same PR**, in a separate commit, so opportunistic restructuring does not stretch milestone scope but also does not leave inconsistency behind (decision 9). This rule changes how engineers estimate work; surfacing it here so it does not surprise mid-task.
+7. **Forward-fix is the intended recovery model** (decisions 10 and 12), but it is **operationally deferred** until the matrix self-test in #6320 lands and proves the matrix is a real gate. Until then, regressions surface through manual review.
 
 Everything below is rationale, parameters, or detail.
 
@@ -160,6 +162,8 @@ Refactors that touch hot paths must demonstrate **≤10% slowdown** on a fixed s
 
 Non-hot-path refactors do not require measurement. Behavior preservation is verified by tests; performance preservation is verified only where regressions would cumulatively matter.
 
+**Deferred — benchmark harness scaffolding does not yet exist.** Until the harness in #6326 lands, decision 11's gate is advisory rather than enforceable; engineers should still note expected performance impact in PR descriptions on the four hot-path issues (#6228, #6235, #6237, #6262), and any obvious regression is a review-block, but the "≤10% / 3 runs averaged" rule has no automation behind it.
+
 ### 12. Forward-fix discipline
 
 When a refactor lands and surfaces a P1 in production, the response is **forward-fix**, not revert. The cross-agent matrix and inner-tier tests are the gate that makes forward-fix safe; if they failed to catch the regression, the test gap is the bug to fix alongside the symptom.
@@ -188,6 +192,8 @@ Reads as: "no production module may import any descendant of `<module>`, **excep
 
 Tests are exempt because `source_modules` excludes the `tests/` tree. The contract for each module lands in the same PR that creates the module.
 
+**The contract enforces a perimeter, not a hierarchy.** The second `ignore_imports` rule (`<module>.** -> <module>.**`) permits internals at *any* depth to import siblings at *any* depth — intra-package coupling is unrestricted by design. Decisions 5 and 6 describe how internals *should* be organized; the lint does not police internal structure beyond the package boundary. If a future case argues for restricting deep cross-cuts within a package, that's a per-module addendum, not a change to this convention.
+
 `make lint-arch` invokes `import-linter` (alongside the existing arch checks) and fails the build on contract violations. CI reports the offending caller and the missed boundary by name.
 
 **Contract-behavior tests.** A contract that's syntactically valid but semantically wrong passes silently — a contract that forbids what no caller happens to attempt is indistinguishable from a correct one until someone tries the legitimate import that the contract has accidentally banned (the bug that landed in this ADR's first draft). Every `import-linter` contract therefore ships alongside a paired test fixture at `tests/architecture/test_<module>_package_seal.py` exercising both directions:
@@ -200,13 +206,13 @@ Contract-behavior tests run under `make lint-arch` alongside the live `import-li
 
 **Public-API drift test.** A single AST-based test (lands in #6226 alongside the tooling setup) walks every primary-module package and asserts that the package's `__init__.py` re-exports only documented public names — nothing prefixed with `_`, nothing missing from `__all__` if `__all__` is defined, no wildcard re-exports leaking internals. This catches the slow erosion of the public surface that's hardest to spot in PR review.
 
-**Matrix self-test.** The cross-agent matrix (decision 10) is the highest-leverage guardrail in this milestone, and like the import-linter contracts it can fail silently if its scaffolding is broken. A matrix that always passes is indistinguishable from a matrix that's working until someone introduces a regression. The mitigation is a periodic self-test that injects a known behavioral regression and asserts the matrix catches it. The matrix self-test is **a precondition for the Q12 forward-fix discipline** to be operationally safe; until the self-test exists and passes, forward-fix is not yet viable as a recovery model and the TL;DR's decision-5 framing should be read as aspirational.
+**Matrix self-test.** The cross-agent matrix (decision 10) is the highest-leverage guardrail in this milestone, and like the import-linter contracts it can fail silently if its scaffolding is broken. A matrix that always passes is indistinguishable from a matrix that's working until someone introduces a regression. The mitigation is a periodic self-test that injects a known behavioral regression and asserts the matrix catches it. The matrix self-test is **a precondition for the decision-12 forward-fix discipline** to be operationally safe; until the self-test exists and passes, forward-fix is not yet viable as a recovery model and the TL;DR's decision-5 framing should be read as aspirational.
 
 The matrix self-test is tracked in **#6320**, scoped to M5, owned by `agent:backend`. Acceptance criteria: a deliberate behavioral break is injected into a deep-module internal, the matrix is run, at least one provider's matrix run fails on the injected regression, the injection is reverted automatically, and the self-test runs on a weekly cron and on demand.
 
 ### 14. Per-module ADRs reference this one
 
-Each M5 PR ships a short companion ADR (numbered 0029 onward) documenting:
+Each M5 PR ships a short companion ADR documenting:
 
 - The module's outer facade name and public methods.
 - The internal modules and what each is responsible for.
@@ -214,6 +220,8 @@ Each M5 PR ships a short companion ADR (numbered 0029 onward) documenting:
 - The `import-linter` contract added.
 
 Per-module ADRs do not restate the rationale here — they reference ADR-0028 and document the specifics of *this* module. Length: typically half a page.
+
+**Location**: per-module ADRs live in `docs/architecture/ADR/m5/<module-name>.md` (e.g. `m5/completion-pipeline.md`), **not** in the top-level numbered ADR sequence. Rationale: the top-level numbered ADR sequence is for milestone-spanning architectural decisions; per-module ADRs are scoped to one milestone's module-level cuts and would otherwise crowd the top-level directory. Future milestones with their own per-module decisions follow the same pattern (`docs/architecture/ADR/m6/...`).
 
 ### 15. Reviewer process
 
@@ -259,7 +267,7 @@ Two areas are intentionally not codified by this ADR:
 - Per-package `import-linter` contracts (decision 13) — landed in the PR that creates the module.
 - **Contract-behavior tests** (decision 13) — paired with each contract, verifying it permits and rejects what it claims, run on every PR.
 - **Public-API drift test** (decision 13) — AST-based, lands in #6226, catches accidental widening of `__init__.py` re-exports.
-- **Matrix self-test** (decision 13, tracked in #6320) — periodic injection of a known regression to verify the cross-agent matrix is a real gate. **Precondition for Q12 forward-fix discipline; forward-fix is operationally deferred until #6320 lands.**
+- **Matrix self-test** (decision 13, tracked in #6320) — see decision 13 for rationale.
 - `make lint-arch` invokes `import-linter` and fails the build on contract violations.
 - mypy/pyright catch missed callers when an old type is hard-deleted (decision 8).
 - Cross-agent matrix gates merge for runtime-touching modules (decision 10).
@@ -274,6 +282,6 @@ Two areas are intentionally not codified by this ADR:
 - Cockburn, Alistair. "Hexagonal Architecture." 2005. See also ADR-0011.
 - Lieberherr, Karl, and Ian Holland. "Assuring Good Style for Object-Oriented Programs." *IEEE Software*, 1989. (Law of Demeter.)
 - Go's `internal/` package convention: https://go.dev/doc/go1.4#internalpackages — the directly comparable language-enforced analog of decision 13.
-- Related ADRs: 0011 (hexagonal architecture), 0012 (mechanical guardrails), 0014 (observe-plan-apply loop), 0017 (orchestrator coordinates, planner decides), 0018 (worktree isolation).
+- Related ADRs: [0011 Hexagonal architecture (ports and adapters)](0011-hexagonal-architecture.md), [0012 Mechanical guardrails over policy documents](0012-mechanical-guardrails.md), [0014 Observer → Planner → ActionApplier loop pattern](0014-observe-plan-apply-loop.md), [0017 Orchestrator coordinates, Planner decides](0017-orchestrator-coordinates-planner-decides.md), [0018 Git worktree isolation per agent session](0018-worktree-isolation.md).
 - M5 issue tracking: #6226 (pattern-establishing PR; lands `import-linter` setup and the first contract), #6228, #6229, #6230, #6231, #6232, #6233, #6235, #6236, #6237, #6238, #6262.
-- M5 guardrail follow-ups: #6320 (matrix self-test scaffolding — precondition for Q12), #6321 (CI workflow filter for architecture-ADR changes — referenced by decision 10).
+- M5 guardrail follow-ups: #6320 (matrix self-test scaffolding — precondition for decision-12), #6321 (CI workflow filter for architecture-ADR changes — referenced by decision 10), #6326 (hot-path benchmark harness — precondition for decision 11).
