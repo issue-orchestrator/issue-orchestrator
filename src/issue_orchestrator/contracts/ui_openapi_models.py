@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Literal, TypeAlias
 
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 
@@ -491,6 +491,7 @@ class IssueItemPayload(BaseModel):
     action_hint: str | None = None
     issue_number: int | str | None = None
     issue_url: str | None = None
+    open_run_command: OpenE2ERunCommandPayload | None = None
     status: str | None = None
     title: str | None = None
     url: str | None = None
@@ -602,6 +603,13 @@ class OpenCompletionRecordCommandPayload(BaseModel):
     kind: Literal['open_completion_record']
     label: str
     path: str
+
+class OpenE2ERunCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expand_run_details: bool | None = None
+    kind: Literal['open_e2e_run']
+    label: str
+    run_id: int = Field(..., ge=1, strict=True)
 
 class OpenIssueTimelineCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -914,6 +922,6 @@ ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | 
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 
-TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload
+TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload
 
 ValidationOutcomePayload: TypeAlias = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload

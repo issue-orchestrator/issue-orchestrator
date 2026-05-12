@@ -111,6 +111,47 @@ def iter_components(data: dict[str, Any]) -> list[ComponentSchema]:
     return [ComponentSchema(name, schema) for name, schema in sorted(schemas.items())]
 
 
+def _pydantic_field_constraints(prop_schema: dict[str, Any]) -> list[str]:
+    """Map JSON-schema numeric/length constraints to Pydantic ``Field`` kwargs.
+
+    Without this, e.g. ``{"type": "integer", "minimum": 1}`` in the
+    UI OpenAPI schema would generate ``int`` with no runtime check —
+    so a contract that says ``run_id >= 1`` would silently accept 0
+    in the Python contract layer (reviewer caught this on PR #6329).
+
+    Also emits ``strict=True`` for integer fields with explicit
+    numeric constraints (PR #6329 round-5).  JSON Schema's
+    ``type: integer`` does not coerce ``"88"`` → 88 or ``True`` → 1,
+    so the generated Pydantic model must not coerce either.  Without
+    ``strict``, Pydantic accepts both and silently normalizes a
+    malformed wire payload.  Strict is applied only to integers
+    with constraints (the narrowest fix consistent with the
+    reviewer's invariant request).
+    """
+    constraints: list[str] = []
+    has_numeric_constraint = any(
+        k in prop_schema for k in ("minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum")
+    )
+    if "minimum" in prop_schema:
+        constraints.append(f"ge={prop_schema['minimum']}")
+    if "exclusiveMinimum" in prop_schema:
+        constraints.append(f"gt={prop_schema['exclusiveMinimum']}")
+    if "maximum" in prop_schema:
+        constraints.append(f"le={prop_schema['maximum']}")
+    if "exclusiveMaximum" in prop_schema:
+        constraints.append(f"lt={prop_schema['exclusiveMaximum']}")
+    if "minLength" in prop_schema:
+        constraints.append(f"min_length={prop_schema['minLength']}")
+    if "maxLength" in prop_schema:
+        constraints.append(f"max_length={prop_schema['maxLength']}")
+    # Numeric-constrained integers get strict scalar semantics so
+    # the generated contract matches the canonical model + JSON
+    # Schema (no coercion of strings/booleans).
+    if has_numeric_constraint and prop_schema.get("type") == "integer":
+        constraints.append("strict=True")
+    return constraints
+
+
 def render_python_models(components: list[ComponentSchema]) -> str:
     lines: list[str] = [
         HEADER,
@@ -119,7 +160,7 @@ def render_python_models(components: list[ComponentSchema]) -> str:
         "\n",
         "from typing import Any, Literal, TypeAlias",
         "\n",
-        "from pydantic import BaseModel, ConfigDict",
+        "from pydantic import BaseModel, ConfigDict, Field",
         "\n",
         "\n",
     ]
@@ -150,8 +191,18 @@ def render_python_models(components: list[ComponentSchema]) -> str:
             annotation = resolve_type(prop_schema)
             if prop not in required and not is_optional(prop_schema):
                 annotation = f"{annotation} | None"
-            default = "" if prop in required else " = None"
-            lines.append(f"    {prop}: {annotation}{default}")
+            constraints = _pydantic_field_constraints(prop_schema)
+            if constraints:
+                # Required props get ``Field(..., ge=N)``; optional
+                # ones get ``Field(default=None, ge=N)``.
+                if prop in required:
+                    field_call = "Field(..., " + ", ".join(constraints) + ")"
+                else:
+                    field_call = "Field(default=None, " + ", ".join(constraints) + ")"
+                lines.append(f"    {prop}: {annotation} = {field_call}")
+            else:
+                default = "" if prop in required else " = None"
+                lines.append(f"    {prop}: {annotation}{default}")
 
         lines.append("")
 

@@ -571,9 +571,18 @@ async function handleClick(row) {
     const e2eRunId = row.dataset.e2eRunId;
     const isE2e = row.dataset.isE2e === 'true';
 
-    // E2E runs open the unified run view
+    // E2E runs open the unified run view via the typed Command
+    // pipeline (issue #6322, PR #6329 reviewer Blocker 2).  All
+    // user-facing "open E2E run" navigation must serialize through
+    // ``open_e2e_run`` so there's a single owner — no parallel
+    // direct ``showUnifiedRunView()`` calls bypassing the dispatcher.
     if (isE2e && e2eRunId) {
-        showUnifiedRunView(parseInt(e2eRunId, 10));
+        runE2ELifecycleCommand({
+            kind: 'open_e2e_run',
+            label: 'Open E2E Run',
+            run_id: parseInt(e2eRunId, 10),
+            expand_run_details: false,
+        });
         return;
     }
 

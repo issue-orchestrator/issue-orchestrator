@@ -397,7 +397,13 @@
           "action": {"type": ["string", "null"]},
           "action_hint": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
-          "issue_url": {"type": ["string", "null"]}
+          "issue_url": {"type": ["string", "null"]},
+          "open_run_command": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
+              {"type": "null"}
+            ]
+          }
         }
       },
       "DashboardDataPayload": {
@@ -1194,6 +1200,17 @@
           "e2e_run_id": {"type": ["integer", "null"]}
         }
       },
+      "OpenE2ERunCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "run_id"],
+        "properties": {
+          "kind": {"const": "open_e2e_run"},
+          "label": {"type": "string"},
+          "run_id": {"type": "integer", "minimum": 1},
+          "expand_run_details": {"type": "boolean"}
+        }
+      },
       "TimelineCommandPayload": {
         "oneOf": [
           {"$ref": "#/components/schemas/ShowEventDetailsCommandPayload"},
@@ -1201,7 +1218,8 @@
           {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"},
           {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"},
           {"$ref": "#/components/schemas/OpenReviewFeedbackCommandPayload"},
-          {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"}
+          {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"},
+          {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"}
         ],
         "discriminator": {"propertyName": "kind"}
       },

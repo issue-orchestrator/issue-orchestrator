@@ -347,7 +347,7 @@
                             {% for run in e2e_runs %}
                             <div class="e2e-run-item">
                                 {% if run.e2e_run_id %}
-                                <button class="card-focus" onclick="showUnifiedRunView({{ run.e2e_run_id }});event.stopPropagation();">{{ run.title }}</button>
+                                <button class="card-focus" data-lifecycle-command="{{ run.open_run_command | tojson | forceescape }}" onclick="runE2ELifecycleCommandFromButton(this);event.stopPropagation();">{{ run.title }}</button>
                                 {% else %}
                                 <span class="card-focus">{{ run.title }}</span>
                                 {% endif %}

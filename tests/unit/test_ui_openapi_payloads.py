@@ -14,6 +14,7 @@ warnings.filterwarnings(
     message="jsonschema.RefResolver is deprecated",
 )
 
+import pytest
 from jsonschema import Draft202012Validator, RefResolver
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
@@ -175,6 +176,207 @@ def test_dashboard_view_model_matches_ui_openapi() -> None:
 
     validator = _validator("DashboardViewModelPayload")
     validator.validate(view_model.to_dict())
+
+
+def test_issue_item_open_run_command_validates_against_ui_openapi() -> None:
+    """PR #6329 reviewer Blocker 2: ``open_run_command`` is a typed
+    field on ``IssueItemPayload``, not an opaque extra.
+
+    Before the fix, ``IssueItemPayload`` was ``additionalProperties: true``
+    with no declared ``open_run_command`` schema — meaning the field
+    was accepted as an extra regardless of its shape.  The reviewer
+    pointed out that malformed payloads (e.g. ``run_id: 0`` which the
+    Pydantic model rejects) flowed through silently.
+
+    Now ``open_run_command`` is an explicit
+    ``OpenE2ERunCommandPayload | null`` field.  Valid payloads pass;
+    malformed ones (wrong ``kind``, missing ``run_id``, wrong types
+    on ``expand_run_details``) fail the JSON-schema validation.
+    """
+    validator = _validator("IssueItemPayload")
+
+    # Valid case: a well-formed open_run_command attaches to an
+    # E2E issue item.
+    valid_item = {
+        "issue_number": "E2E-88",
+        "title": "Run details",
+        "status": "passed",
+        "action": "details",
+        "action_hint": "View run details",
+        "is_e2e": True,
+        "e2e_run_id": 88,
+        "open_run_command": {
+            "kind": "open_e2e_run",
+            "label": "Open E2E Run",
+            "run_id": 88,
+            "expand_run_details": False,
+        },
+    }
+    validator.validate(valid_item)  # must not raise
+
+    # Null is allowed (non-E2E items don't carry the command).
+    valid_item_no_command = {**valid_item, "open_run_command": None}
+    validator.validate(valid_item_no_command)
+
+    # Malformed: wrong kind discriminator (using a different command kind).
+    bad_kind = {**valid_item}
+    bad_kind["open_run_command"] = {
+        "kind": "open_issue_timeline",
+        "label": "X",
+        "run_id": 88,
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_kind)
+
+    # Malformed: missing required ``run_id``.
+    bad_missing_run_id = {**valid_item}
+    bad_missing_run_id["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_missing_run_id)
+
+    # Malformed: wrong type for ``expand_run_details``.
+    bad_expand_type = {**valid_item}
+    bad_expand_type["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": 88,
+        "expand_run_details": "yes",  # must be boolean
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_expand_type)
+
+    # Malformed: ``run_id`` must be a positive integer (PR #6329
+    # round-4 blocker — the OpenAPI schema must enforce the same
+    # invariant the canonical ``OpenE2ERunCommand`` Pydantic model
+    # enforces).
+    bad_run_id_zero = {**valid_item}
+    bad_run_id_zero["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": 0,
+        "expand_run_details": False,
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_run_id_zero)
+
+    bad_run_id_negative = {**valid_item}
+    bad_run_id_negative["open_run_command"] = {
+        "kind": "open_e2e_run",
+        "label": "Open E2E Run",
+        "run_id": -5,
+        "expand_run_details": False,
+    }
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(bad_run_id_negative)
+
+
+def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> None:
+    """The GENERATED Pydantic contract must enforce the same
+    ``run_id >= 1`` invariant the canonical model enforces.
+
+    PR #6329 round-4 blocker: the generator was emitting
+    ``run_id: int`` with no constraint, so
+    ``IssueItemPayload.model_validate({...})`` silently accepted
+    ``run_id: 0``.  After extending the generator to map
+    ``minimum: 1`` → ``Field(..., ge=1)``, the generated contract
+    enforces the same invariant at the Python boundary that JSON
+    schema enforces at the validator boundary.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import IssueItemPayload
+    from pydantic import ValidationError
+
+    # Valid → succeeds.
+    valid = IssueItemPayload.model_validate({
+        "issue_number": "E2E-88",
+        "open_run_command": {
+            "kind": "open_e2e_run",
+            "label": "Open E2E Run",
+            "run_id": 88,
+            "expand_run_details": False,
+        },
+    })
+    assert valid.open_run_command is not None
+    assert valid.open_run_command.run_id == 88
+
+    # run_id=0 → rejected by the generated Pydantic model.
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": 0,
+                "expand_run_details": False,
+            },
+        })
+
+    # Negative run_id → also rejected.
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": -1,
+                "expand_run_details": False,
+            },
+        })
+
+
+def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> None:
+    """The generated UI contract enforces strict-int scalar semantics
+    on ``run_id`` — no coercion from strings or booleans.
+
+    PR #6329 round-5 blocker: ``Pydantic``'s default ``int`` field
+    accepts ``"88"`` (string) and ``True`` (boolean) by coercing
+    them to ``88`` and ``1`` respectively.  JSON Schema's
+    ``type: integer`` rejects both.  The generator now emits
+    ``Field(..., ge=1, strict=True)`` for numeric-constrained
+    integer fields so the Python contract matches the wire
+    contract — malformed scalars fail loudly, not silently
+    normalize.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import IssueItemPayload
+    from pydantic import ValidationError
+
+    # String ``run_id`` → rejected.
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": "88",  # string — should not coerce
+                "expand_run_details": False,
+            },
+        })
+
+    # Boolean True ``run_id`` → rejected.
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": True,  # bool — should not coerce to 1
+                "expand_run_details": False,
+            },
+        })
+
+    # Boolean False ``run_id`` → rejected.
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({
+            "issue_number": "E2E-88",
+            "open_run_command": {
+                "kind": "open_e2e_run",
+                "label": "Open E2E Run",
+                "run_id": False,
+                "expand_run_details": False,
+            },
+        })
 
 
 def test_dialog_payloads_match_ui_openapi() -> None:

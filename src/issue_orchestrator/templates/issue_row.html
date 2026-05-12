@@ -101,7 +101,7 @@
             </button>
             {% elif issue.e2e_run_id %}
             {# Unified view button - clicking row also opens this #}
-            <button class="issue-action-btn view-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
+            <button class="issue-action-btn view-btn" data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}" onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
                 <span aria-hidden="true">👁</span> View
             </button>
             <button class="issue-action-btn view-btn" onclick="openE2ERunTimeline({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="Open timeline for E2E run #{{ issue.e2e_run_id }}" title="Open run timeline">
@@ -117,7 +117,7 @@
             {% if issue.is_e2e %}
             {# E2E item - show View button if we have a run_id #}
             {% if issue.e2e_run_id %}
-            <button class="issue-action-btn view-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
+            <button class="issue-action-btn view-btn" data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}" onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
                 <span aria-hidden="true">👁</span> View
             </button>
             {% endif %}

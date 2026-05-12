@@ -49,6 +49,11 @@ async function showUnifiedRunView(runId, options) {
     modalTitle.textContent = `E2E Run #${runId}`;
     content.innerHTML = '<div class="loading-spinner">Loading run details...</div>';
     modal.classList.add('visible');
+    // Phase D #6322: the E2E run view is no longer a dim-backdrop
+    // modal — it's a full-page section.  Tag <body> so the dashboard
+    // chrome hides behind it via CSS (overlays.css).  Cleared by
+    // closeE2EDiagnosisModal().
+    document.body.setAttribute('data-e2e-run-view-active', '1');
 
     try {
         unifiedRunData = await _fetchE2ERunDetail(runId, 'user');
@@ -315,9 +320,16 @@ function renderRunDetailsDisclosure(data) {
 }
 
 function openE2ERunTimeline(runId) {
-    // Legacy entry point: open run modal and auto-expand the Run details &
-    // artifacts disclosure (which holds the suite timeline).
-    return showUnifiedRunView(runId, { expandRunDetails: true });
+    // Open run modal and auto-expand the Run details & artifacts
+    // disclosure (which holds the suite timeline).  Routed through
+    // the typed Command pipeline (issue #6322, PR #6329 reviewer
+    // Blocker 2) — single owner for "open E2E run" navigation.
+    return runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: Number(runId),
+        expand_run_details: true,
+    });
 }
 
 /**
@@ -498,8 +510,15 @@ async function createIssuesForUntriaged() {
 
         showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
 
-        // Refresh the view
-        showUnifiedRunView(unifiedRunData.run.id);
+        // Refresh the view via the typed Command dispatcher so EVERY
+        // route into ``showUnifiedRunView`` goes through one owner
+        // (PR #6329 single-owner contract).
+        runE2ELifecycleCommand({
+            kind: 'open_e2e_run',
+            label: 'Open E2E Run',
+            run_id: Number(unifiedRunData.run.id),
+            expand_run_details: false,
+        });
 
         // Open parent issue in new tab
         if (data.parent_issue.url) {

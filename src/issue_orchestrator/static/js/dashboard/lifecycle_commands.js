@@ -64,5 +64,17 @@ function runE2ELifecycleCommand(command) {
         openPath(command.path);
         return;
     }
+    // Typed-Command entry point for the E2E run view (issue #6322).
+    // Backed by the Pydantic ``OpenE2ERunCommand`` model in
+    // ``view_models/lifecycle_semantics.py`` and the
+    // ``OpenE2ERunCommandPayload`` schema in ``ui_openapi_models.py``.
+    // Every user-facing "open E2E run" affordance (chip, View
+    // button, Latest Results, etc.) routes through here — single
+    // owner, no parallel direct ``showUnifiedRunView()`` callers.
+    if (kind === 'open_e2e_run' && command.run_id) {
+        const expandRunDetails = command.expand_run_details === true;
+        showUnifiedRunView(command.run_id, { expandRunDetails });
+        return;
+    }
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');
 }

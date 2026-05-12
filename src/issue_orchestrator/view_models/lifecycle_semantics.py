@@ -128,13 +128,39 @@ class OpenIssueTimelineCommand(LifecycleBase):
         return self
 
 
+class OpenE2ERunCommand(LifecycleBase):
+    """Open an E2E run's detail view (issue #6322, PR #6329 review blocker).
+
+    Issued by the dashboard's E2E chip, the issue-row "View" button,
+    and any other affordance that navigates the user to a specific
+    E2E run.  The frontend dispatcher (``runE2ELifecycleCommand``)
+    routes this kind to ``showUnifiedRunView(run_id, options)``.
+
+    Adding this kind to the typed ``TimelineCommand`` union means
+    every user-facing "open E2E run" affordance serializes through
+    the same Pydantic-validated payload — no more hand-built JSON
+    strings in templates or call sites.
+    """
+
+    kind: Literal["open_e2e_run"] = "open_e2e_run"
+    label: str = "Open E2E Run"
+    # Strict-int: reject string/boolean coercion (PR #6329 round-5).
+    # JSON Schema's ``{"type": "integer", "minimum": 1}`` does not
+    # accept ``"88"`` or ``True``; the canonical Pydantic model
+    # must match — without ``strict=True`` Pydantic would coerce
+    # both into ``88`` / ``1`` and silently normalize bad payloads.
+    run_id: int = Field(..., ge=1, strict=True)
+    expand_run_details: bool = False
+
+
 TimelineCommand = Annotated[
     ShowEventDetailsCommand
     | OpenSessionRecordingCommand
     | OpenValidationDetailsCommand
     | OpenCompletionRecordCommand
     | OpenReviewFeedbackCommand
-    | OpenIssueTimelineCommand,
+    | OpenIssueTimelineCommand
+    | OpenE2ERunCommand,
     Field(discriminator="kind"),
 ]
 

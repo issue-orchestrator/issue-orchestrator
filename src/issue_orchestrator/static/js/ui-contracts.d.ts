@@ -480,6 +480,7 @@ export interface IssueItemPayload {
   action_hint?: string | null;
   issue_number?: number | string | null;
   issue_url?: string | null;
+  open_run_command?: OpenE2ERunCommandPayload | null;
   status?: string | null;
   title?: string | null;
   url?: string | null;
@@ -592,6 +593,13 @@ export interface OpenCompletionRecordCommandPayload {
   kind: "open_completion_record";
   label: string;
   path: string;
+}
+
+export interface OpenE2ERunCommandPayload {
+  expand_run_details?: boolean;
+  kind: "open_e2e_run";
+  label: string;
+  run_id: number;
 }
 
 export interface OpenIssueTimelineCommandPayload {
@@ -906,6 +914,6 @@ export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload |
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 
-export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload;
+export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload;
 
 export type ValidationOutcomePayload = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload;
