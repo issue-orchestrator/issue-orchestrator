@@ -498,6 +498,9 @@ function renderE2EDiagnosis(diagnosis) {
 
 function closeE2EDiagnosisModal() {
     document.getElementById('e2eDiagnosisModal').classList.remove('visible');
+    // Phase D #6322: clear the body flag so the dashboard chrome
+    // reappears.  Paired with the set in showUnifiedRunView().
+    document.body.removeAttribute('data-e2e-run-view-active');
 }
 
 // E2E Stats Modal

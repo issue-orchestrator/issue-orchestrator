@@ -1983,7 +1983,17 @@ def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
     # Run history rows keep the title click and expose an explicit formatted results action.
     assert "openE2ERunTimeline({{ run.e2e_run_id }})" not in dashboard
     assert ">Open run<" not in dashboard
-    assert 'showUnifiedRunView({{ run.e2e_run_id }})' in dashboard
+    # Phase D #6322: the chip click now routes through a typed
+    # Command (``open_e2e_run``) on ``data-lifecycle-command``
+    # instead of the inline ``onclick="showUnifiedRunView(...)"``.
+    # The dispatcher ``runE2ELifecycleCommand`` still calls
+    # ``showUnifiedRunView`` internally, but the template no longer
+    # carries the function name.
+    assert (
+        'data-lifecycle-command=\'{"kind":"open_e2e_run","run_id":{{ run.e2e_run_id }}}\''
+        in dashboard
+    )
+    assert "runE2ELifecycleCommandFromButton(this)" in dashboard
     assert "e2e-run-results-btn" in dashboard
     assert 'data-action="show-e2e-run-results"' in dashboard
     # Issue rows continue to expose direct Timeline controls.

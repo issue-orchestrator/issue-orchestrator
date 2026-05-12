@@ -64,5 +64,16 @@ function runE2ELifecycleCommand(command) {
         openPath(command.path);
         return;
     }
+    // Typed-Command entry point for the E2E run view (issue #6322).
+    // The legacy inline ``onclick="showUnifiedRunView(id)"`` carried
+    // the same intent but bypassed the typed-Command pipeline, which
+    // means cheap-integration tests couldn't extract or spy on the
+    // navigation.  Routing through here makes the chip + issue-row
+    // affordances first-class commands.
+    if (kind === 'open_e2e_run' && command.run_id) {
+        const opts = command.options && typeof command.options === 'object' ? command.options : {};
+        showUnifiedRunView(command.run_id, opts);
+        return;
+    }
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');
 }

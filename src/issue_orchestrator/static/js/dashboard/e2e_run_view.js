@@ -49,6 +49,11 @@ async function showUnifiedRunView(runId, options) {
     modalTitle.textContent = `E2E Run #${runId}`;
     content.innerHTML = '<div class="loading-spinner">Loading run details...</div>';
     modal.classList.add('visible');
+    // Phase D #6322: the E2E run view is no longer a dim-backdrop
+    // modal — it's a full-page section.  Tag <body> so the dashboard
+    // chrome hides behind it via CSS (overlays.css).  Cleared by
+    // closeE2EDiagnosisModal().
+    document.body.setAttribute('data-e2e-run-view-active', '1');
 
     try {
         unifiedRunData = await _fetchE2ERunDetail(runId, 'user');

@@ -27,6 +27,7 @@ lives in JS-vm tests; this is the live-pipeline proof.
 from __future__ import annotations
 
 import json
+import re
 
 from playwright.sync_api import Page, expect
 
@@ -138,6 +139,75 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
 
     modal = page.locator("#e2eDiagnosisModal.visible")
     expect(modal).to_be_visible(timeout=10_000)
+
+    # ── Phase D modal-drop (issue #6322): state + content assertions ─
+    # State: <body> carries the ``data-e2e-run-view-active`` flag
+    # while the run view is active.  The CSS rule keys off this.
+    body = page.locator("body")
+    expect(body).to_have_attribute("data-e2e-run-view-active", "1", timeout=5_000)
+
+    # State: the modal container is in normal flow, not fixed-position.
+    modal_position = page.evaluate(
+        "() => getComputedStyle(document.getElementById('e2eDiagnosisModal')).position"
+    )
+    assert modal_position == "static", (
+        f"#e2eDiagnosisModal should render in normal flow (position: static), got {modal_position}"
+    )
+
+    # CONTENT: the modal's actual computed backdrop is no longer a
+    # translucent dim overlay.  We check that ``backgroundColor``
+    # resolved to either fully transparent or an opaque page color —
+    # both prove the legacy ``rgba(black, 0.5)`` dim is gone.  This
+    # would catch a regression where the CSS override stops applying
+    # and the legacy dim backdrop returns.
+    modal_bg = page.evaluate(
+        "() => getComputedStyle(document.getElementById('e2eDiagnosisModal')).backgroundColor"
+    )
+    # Translucent (alpha < 1) non-transparent colors are the legacy
+    # overlay shape we want to reject.  Match ``rgba(...)`` and parse
+    # the alpha.
+    alpha_match = re.search(r"rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\s*\)", modal_bg)
+    if alpha_match:
+        alpha = float(alpha_match.group(1))
+        assert alpha == 0.0 or alpha == 1.0, (
+            f"#e2eDiagnosisModal backgroundColor must not be a translucent dim overlay "
+            f"(legacy modal pattern); got {modal_bg!r} with alpha={alpha}"
+        )
+
+    # CONTENT: a sibling dashboard element outside the modal is
+    # actually HIDDEN (display: none) while the run view is active.
+    # This is the visible payoff of the body-flag CSS rule — the
+    # dashboard chrome disappears when the user opens a run.
+    chrome_state = page.evaluate(
+        "() => {"
+        "  const containers = ['.container', '.dashboard-container', 'main', 'body'];"
+        "  for (const sel of containers) {"
+        "    const c = document.querySelector(sel);"
+        "    if (!c) continue;"
+        "    const siblings = Array.from(c.children).filter(el =>"
+        "      el.id !== 'e2eDiagnosisModal' && el.tagName !== 'SCRIPT'"
+        "    );"
+        "    if (siblings.length === 0) continue;"
+        "    return siblings.map(el => ({"
+        "      tag: el.tagName,"
+        "      id: el.id || null,"
+        "      display: getComputedStyle(el).display,"
+        "    }));"
+        "  }"
+        "  return [];"
+        "}"
+    )
+    if chrome_state:
+        # At least one non-modal sibling must be hidden — proves the
+        # body flag actually triggered the CSS rule.  Allow a couple
+        # of always-present elements (e.g. ``<script>``, fixed
+        # toolbars) to remain visible; the rule only hides direct
+        # children of the recognized containers.
+        hidden = [el for el in chrome_state if el["display"] == "none"]
+        assert hidden, (
+            "expected at least one non-modal sibling to be hidden by "
+            f"body[data-e2e-run-view-active]; got siblings={chrome_state}"
+        )
 
     # ── canonical viewer mounted as the body ───────────────────────
     cvv = modal.locator(".cvv-root")
@@ -286,5 +356,101 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     assert after_index != first_index and after_index >= 0, (
         f"ArrowDown should move focus to a different treeitem; before index={first_index}, after index={after_index}"
     )
+
+    # ── Phase D modal-drop: close-path content assertions ────────────
+    # The close-path is the symmetrical complement to the open-path
+    # checks above.  We verified on open: (1) body flag set,
+    # (2) modal in normal flow with no dim backdrop, (3) at least
+    # one non-modal sibling hidden by the body-flag CSS rule.
+    #
+    # On close we need the symmetrical reverse — but we can't simply
+    # invert the "sibling hidden" assertion, because in this test
+    # fixture some siblings are hidden for unrelated reasons (e.g.
+    # ``#engineRestartBanner`` is hidden by default).  Instead we
+    # capture the SPECIFIC sibling that flipped from visible→hidden
+    # when we opened, and assert it flips back.  That's strictly
+    # the body-flag CSS rule's responsibility.
+    #
+    # First, snapshot ``display`` of every relevant sibling NOW
+    # (while the run view is still open) and identify the ones the
+    # rule is hiding.  Compare to AFTER close.
+    sibling_states_open = page.evaluate(
+        "() => {"
+        "  const containers = ['.container', '.dashboard-container', 'main', 'body'];"
+        "  for (const sel of containers) {"
+        "    const c = document.querySelector(sel);"
+        "    if (!c) continue;"
+        "    const siblings = Array.from(c.children).filter(el =>"
+        "      el.id !== 'e2eDiagnosisModal' && el.tagName !== 'SCRIPT'"
+        "    );"
+        "    if (siblings.length === 0) continue;"
+        "    return siblings.map((el, idx) => ({"
+        "      key: el.id ? '#' + el.id : el.tagName + '[' + idx + ']',"
+        "      display: getComputedStyle(el).display,"
+        "    }));"
+        "  }"
+        "  return [];"
+        "}"
+    )
+
+    # Close the modal.
+    page.evaluate("() => closeE2EDiagnosisModal()")
+
+    # Body flag cleared — proves the close handler ran and the CSS
+    # rule will stop applying.
+    expect(body).not_to_have_attribute("data-e2e-run-view-active", "1", timeout=2_000)
+
+    # Modal hidden — ``.visible`` class removed.
+    expect(modal).not_to_be_visible(timeout=2_000)
+
+    # Symmetry check on the sibling states: any element that was
+    # hidden ONLY because of the body-flag rule must now be visible.
+    # We approximate "ONLY because of the body-flag rule" by:
+    # an element whose display flipped from ``none`` (while flag was
+    # set) to a visible value (after flag cleared).  Elements hidden
+    # for other reasons (engineRestartBanner, etc.) stay hidden in
+    # both states and are excluded by the flip check.
+    if sibling_states_open:
+        flipped_visible = page.evaluate(
+            "(stateMap) => {"
+            "  for (const entry of stateMap) {"
+            "    let el;"
+            "    if (entry.key.startsWith('#')) {"
+            "      el = document.querySelector(entry.key);"
+            "    } else {"
+            "      const m = entry.key.match(/^([A-Z]+)\\[(\\d+)\\]$/);"
+            "      if (!m) continue;"
+            "      const containers = ['.container', '.dashboard-container', 'main', 'body'];"
+            "      for (const sel of containers) {"
+            "        const c = document.querySelector(sel);"
+            "        if (!c) continue;"
+            "        const sibs = Array.from(c.children).filter(e =>"
+            "          e.id !== 'e2eDiagnosisModal' && e.tagName !== 'SCRIPT'"
+            "        );"
+            "        if (sibs.length === 0) continue;"
+            "        el = sibs[parseInt(m[2], 10)];"
+            "        break;"
+            "      }"
+            "    }"
+            "    if (!el) continue;"
+            "    const nowDisplay = getComputedStyle(el).display;"
+            "    if (entry.display === 'none' && nowDisplay !== 'none') {"
+            "      return { key: entry.key, before: entry.display, after: nowDisplay };"
+            "    }"
+            "  }"
+            "  return null;"
+            "}",
+            sibling_states_open,
+        )
+        # If any sibling was hidden by the body-flag rule while the
+        # run view was open, it MUST be visible now.  Otherwise the
+        # close path didn't actually un-hide the dashboard chrome.
+        had_body_flag_hidden = any(s["display"] == "none" for s in sibling_states_open)
+        if had_body_flag_hidden:
+            assert flipped_visible is not None, (
+                "expected at least one sibling that was hidden while the body flag "
+                "was set to become visible after close; none flipped.  States while "
+                f"open: {sibling_states_open}"
+            )
 
     assert errors == []
