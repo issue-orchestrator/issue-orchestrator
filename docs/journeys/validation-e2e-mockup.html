@@ -151,6 +151,48 @@
     background: rgba(255,255,255,0.5);
     border-bottom: 1px solid var(--accent);
   }
+
+  /* Production-shape failure triage card (matches the live
+     ``.cvv-triage-card`` block in ``validation_viewer.css``).
+     This is ALWAYS-VISIBLE — there is no outer <details> wrapping
+     it.  The only collapsible elements inside are the per-section
+     <details> rows (traceback / stdout / stderr).  The user lands
+     on these cards already-expanded; nothing to click to "open"
+     them. */
+  .triage-card {
+    margin: 0 8px 10px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--fail);
+    border-radius: 6px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .triage-card.is-error { border-left-color: var(--warn); }
+  .triage-card-head {
+    padding: 10px 12px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .triage-card-title { font-weight: 600; font-size: 13px; }
+  .triage-card-summary { color: var(--text-muted); font-size: 11px; }
+  .copy-icon {
+    margin-left: auto;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1;
+    font-family: inherit;
+  }
+  .copy-icon:hover {
+    background: var(--surface);
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
 </style>
 </head>
 <body>
@@ -347,17 +389,18 @@
     const headline = `
       <div class="headline ${isError ? 'is-error' : ''}">
         <span class="headline-text"><strong>${escapeHtml(t.type)}:</strong> ${escapeHtml(t.message)}</span>
-        <button class="btn subtle" data-copy="${escapeAttr(t.type + ': ' + t.message)}">📋</button>
       </div>
     `;
+    // Production renders just two chips here: the outcome chip + a
+    // duration chip.  No flake / tracked / linked / history sparkline
+    // — those are mockup-only exploration that didn't ship.  The
+    // linked-issue affordance lives in the io.agent-context plugin
+    // block at the bottom of the card; ``Failed`` and ``ms`` are the
+    // only chips a user actually sees in the live UI.
     const badges = `
       <div style="margin: 6px 8px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px;">
         <span class="chip outcome ${t.outcome}">${isError ? '⚠ Errored' : '✕ Failed'}</span>
         <span class="chip">${t.duration_s >= 1 ? t.duration_s.toFixed(1) + ' s' : Math.round(t.duration_s * 1000) + ' ms'}</span>
-        ${t.flake_pct >= 20 ? `<span class="chip flaky">↻ Flaky ${t.flake_pct}%</span>` : ''}
-        ${t.tracked ? `<span class="chip tracked">→ Tracked: <a href="#" onclick="return false;">#${t.tracked.number}</a></span>` : ''}
-        ${t.linked_issue ? `<span class="chip linked">↳ Linked: <a href="#" onclick="return false;">#${t.linked_issue.number}</a></span>` : ''}
-        <span class="chip">${sparkline(t.history)}</span>
       </div>
     `;
     const tracebackContent = `
@@ -388,19 +431,15 @@
       meta_html: '',
       child_html: t.stderr ? `<pre class="code-block">${escapeHtml(t.stderr)}</pre>` : `<div class="leaf"><span class="leaf-label" style="color: var(--text-faint); font-style: italic;">No stderr captured.</span></div>`,
     });
-    const actions = `
-      <div class="actions">
-        <button class="btn primary">↗ Open in editor</button>
-        <button class="btn" data-copy="${escapeAttr(t.run_command)}">⌥ Copy run command</button>
-        <button class="btn subtle">↗ Open pytest record</button>
-      </div>
-    `;
+    // Production has NO bottom actions row (no Open-in-editor, no
+    // Copy-run-command, no Open-pytest-record) and NO inline source
+    // snippet.  The card body is: headline → badges → traceback →
+    // stdout → stderr.  Plugin extras (linked-issue) render below
+    // via the caller in ``failedTestRow``.
     return `
       ${headline}
       ${badges}
-      ${snippet(t.src)}
       ${isError ? stderrRow + tracebackRow + stdoutRow : tracebackRow + stdoutRow + stderrRow}
-      ${actions}
     `;
   }
 
@@ -514,8 +553,16 @@
   // ──────────────────────────────────────────────────────────────────
   // E2E test rows
   // ──────────────────────────────────────────────────────────────────
-  function failedTestRow(t, idPrefix, expanded) {
+  // Production-shape failure card.  The outer block is always
+  // visible — failures are the primary thing the user came for, so
+  // they're rendered as static cards rather than collapsible <details>.
+  // The user only opens/closes the small leaf rows inside (traceback,
+  // stdout, stderr, framework frames).  The ``expanded`` argument is
+  // ignored; kept for call-site compatibility.
+  function failedTestRow(t, idPrefix, _expanded) {
+    const isError = t.outcome === 'error';
     const detail = testFailureDetail(t, idPrefix);
+    const copyPayload = escapeAttr(t.type + ': ' + t.message);
     const linked = t.linked_issue ? `
       <div class="linked-issue-frame">
         <div class="linked-issue-header">
@@ -530,13 +577,18 @@
         })}
       </div>
     ` : '';
-    return row({
-      id: idPrefix,
-      expanded,
-      label_html: `${iconHtml(t.outcome)}<span class="title">${escapeHtml(t.name)}</span> <span class="summary">${escapeHtml(t.file)}</span>`,
-      meta_html: `<span class="chip outcome ${t.outcome}">${escapeHtml(t.type)}</span>`,
-      child_html: detail + linked,
-    });
+    return `
+      <div class="triage-card${isError ? ' is-error' : ''}">
+        <div class="triage-card-head">
+          ${iconHtml(t.outcome)}
+          <span class="triage-card-title">${escapeHtml(t.name)}</span>
+          <span class="triage-card-summary">${escapeHtml(t.file)}</span>
+          <button class="copy-icon" type="button" title="Copy error" data-copy="${copyPayload}">⎘</button>
+        </div>
+        ${detail}
+        ${linked}
+      </div>
+    `;
   }
 
   function passedTestRow(name, file, linked_issue, idPrefix) {
