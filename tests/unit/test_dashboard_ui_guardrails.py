@@ -2343,3 +2343,63 @@ def test_no_hand_built_open_e2e_run_json_anywhere() -> None:
         "(the view model + tojson filter own the serialization).  "
         "Found:\n  " + "\n  ".join(f"{f}:{ln}: {src}" for f, ln, src in hits)
     )
+
+
+def test_inline_agent_attempts_expander_is_wired_into_the_bundle() -> None:
+    """Issue #6322 follow-up: the linked-failure drill-in inside the
+    canonical viewer is the inline ``▸ Attempts on issue #N`` expander
+    in ``inline_agent_attempts.js`` — not the legacy
+    ``open_issue_timeline`` typed Command and not an HTTP link.
+
+    This guardrail pins three contracts so a future refactor can't
+    silently revert to the teleport-to-drawer behaviour:
+
+      1. ``inline_agent_attempts.js`` ships in the dashboard JS bundle
+         and is loaded BEFORE ``plugins/agent_context.js`` — the
+         plugin checks for ``renderInlineAgentAttemptsExpander`` at
+         render time, so the symbol must be in scope.
+      2. The plugin renders the expander (no longer emits a typed
+         ``open_issue_timeline`` Command for issue drill-in).
+      3. The lazy-fetch helper hits
+         ``/api/issue-detail/{n}?view=ops`` — the only contract the
+         backend ops-view payload satisfies.
+    """
+    assert "inline_agent_attempts.js" in DASHBOARD_JS_CHUNKS, (
+        "inline_agent_attempts.js must be in DASHBOARD_JS_CHUNKS"
+    )
+    chunks = list(DASHBOARD_JS_CHUNKS)
+    inline_idx = chunks.index("inline_agent_attempts.js")
+    plugin_idx = chunks.index("plugins/agent_context.js")
+    assert inline_idx < plugin_idx, (
+        "inline_agent_attempts.js must load BEFORE plugins/agent_context.js — "
+        "the plugin's render-time check for renderInlineAgentAttemptsExpander "
+        f"will see undefined otherwise.  Got order: {chunks}"
+    )
+
+    plugin_src = (
+        DASHBOARD_JS_DIR / "plugins" / "agent_context.js"
+    ).read_text(encoding="utf-8")
+    # The plugin invokes the expander helper (when present).
+    assert "renderInlineAgentAttemptsExpander(issueNumber)" in plugin_src, (
+        "agent_context.js must invoke renderInlineAgentAttemptsExpander() "
+        "for the inline drill-in"
+    )
+    # No legacy typed-Command teleport for linked failures.
+    assert "open_issue_timeline" not in plugin_src, (
+        "agent_context.js must NOT emit an open_issue_timeline typed Command "
+        "(issue #6322: linked-failure drill-in is inline, not a teleport)"
+    )
+    assert "Open issue drawer" not in plugin_src, (
+        "Legacy 'Open issue drawer' affordance must not survive in agent_context.js"
+    )
+
+    inline_src = (DASHBOARD_JS_DIR / "inline_agent_attempts.js").read_text(encoding="utf-8")
+    assert (
+        "/api/issue-detail/${issueNumber}?view=ops" in inline_src
+    ), "lazy-fetch must hit /api/issue-detail/{n}?view=ops"
+    assert (
+        "window.renderInlineAgentAttemptsExpander" in inline_src
+    ), "expander helper must be published on window so the plugin can see it"
+    assert (
+        "window._handleAgentAttemptsToggle" in inline_src
+    ), "toggle handler must be on window — inline ontoggle evaluates in global scope"

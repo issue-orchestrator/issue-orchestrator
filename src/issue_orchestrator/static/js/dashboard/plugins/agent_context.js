@@ -13,12 +13,12 @@
 //     }
 //   }]
 //
-// The Open-issue-drawer affordance routes through the shared
-// typed-Command pipeline (``open_issue_timeline`` →
-// ``runE2ELifecycleCommand`` → ``openIssueTimeline``).  The plugin
-// payload intentionally does NOT carry a deep-link URL — there's no
-// stable HTTP route to drive the drawer from, and the typed command
-// is the single owner of "open this issue's drawer."
+// The linked-issue drill-in is the inline ``▸ Attempts on issue #N``
+// expander defined in ``inline_agent_attempts.js`` (issue #6322):
+// rather than teleporting to a per-issue drawer, the user expands the
+// agent's Attempts → Cycles tree inline beneath the failure summary.
+// Pure-JUnit consumers without that module (tixmeup et al.) see the
+// summary fields and nothing else — the expander silently drops in.
 //
 // See ``docs/journeys/validation-viewer-redesign.md`` for the why.
 
@@ -51,23 +51,19 @@
             ? `<span class="cvv-chip ${stateClass}">${escapeHtml(finalState)}</span>`
             : '';
 
-        // Open-issue-drawer affordance routes through the shared typed-
-        // Command pipeline (``lifecycle_commands.js`` →
-        // ``runE2ELifecycleCommand`` → ``openIssueTimeline``) so the
-        // click actually opens the drawer.  Only render the button
-        // when the shared command renderer is loaded — pure-JUnit
-        // consumers without the lifecycle bundle still get a useful
-        // (text-only) plugin block, just without the button.  Any
-        // legacy ``run_url`` on the payload is ignored.
-        let actionsHtml = '';
-        if (typeof _renderLifecycleCommandButton === 'function') {
-            const cmd = {
-                kind: 'open_issue_timeline',
-                issue_number: issueNumber,
-                scope_kind: 'dashboard',
-                label: 'Open issue drawer ↗',
-            };
-            actionsHtml = `<div class="agent-context-actions">${_renderLifecycleCommandButton(cmd, 'Open issue drawer ↗', 'btn')}</div>`;
+        // Inline "Agent attempts" expander (issue #6322): instead of
+        // teleporting to the per-issue drawer, the user expands the
+        // attempts inline.  Lazy-fetches the issue-detail payload
+        // and renders Attempts → Cycles in place.  No fallback
+        // ``↗`` to open as a fresh root — the user said they don't
+        // want it; if it becomes painful, file a follow-up.
+        //
+        // Pure-JUnit consumers without the inline-attempts bundle
+        // (e.g. tixmeup) see the summary fields and nothing else —
+        // the expander silently drops in.
+        let attemptsHtml = '';
+        if (typeof renderInlineAgentAttemptsExpander === 'function') {
+            attemptsHtml = `<div class="agent-context-actions">${renderInlineAgentAttemptsExpander(issueNumber)}</div>`;
         }
 
         let html = '<div class="cvv-plugin agent-context">';
@@ -84,7 +80,7 @@
         if (summary) {
             html += `<div class="agent-context-row"><strong>Summary:</strong> ${escapeHtml(summary)}</div>`;
         }
-        html += actionsHtml;
+        html += attemptsHtml;
         html += '</div></div>';
         return html;
     });

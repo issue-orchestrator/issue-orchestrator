@@ -271,46 +271,56 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(cvv).to_contain_text("test_untracked_failure")
     expect(cvv).to_contain_text("test_linked_failure")
 
-    # ── linked failure has the io.agent-context plugin block with
-    #    Open-issue-drawer affordance.  Phase D: open the triage card
-    #    first to reveal its body (the plugin renders inside the body).
+    # ── linked failure has the io.agent-context plugin block with the
+    #    inline ``▸ Attempts on issue #N`` expander.  Phase D: open
+    #    the triage card first to reveal its body (the plugin renders
+    #    inside the body).
     linked_card = cvv.locator(".cvv-triage-card", has_text="test_linked_failure")
     linked_card.locator("summary").first.click()
     plugin_block = linked_card.locator(".cvv-plugin.agent-context")
     expect(plugin_block).to_be_visible()
     expect(plugin_block).to_contain_text("#4503")
 
-    # PR #6319 Blocker 1: the drawer affordance routes through the
-    # typed-Command pipeline (``data-lifecycle-command`` →
-    # ``runE2ELifecycleCommand`` → ``openIssueTimeline``), not a raw
-    # ``<a href="/api/...">``.  Verify both the button shape and that
-    # a click actually dispatches into ``openIssueTimeline``.
-    drawer_button = plugin_block.locator("button", has_text="Open issue drawer").first
-    expect(drawer_button).to_be_visible()
-    cmd_attr = drawer_button.get_attribute("data-lifecycle-command") or ""
-    assert cmd_attr, "Open-issue-drawer button must carry data-lifecycle-command"
-    cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
-    assert cmd.get("kind") == "open_issue_timeline"
-    assert cmd.get("issue_number") == 4503
-    assert cmd.get("scope_kind") == "dashboard"
+    # Issue #6322 follow-up: the linked-failure drill-in is the inline
+    # ``▸ Attempts on issue #N`` expander.  No legacy
+    # "Open issue drawer" typed-Command button on the plugin block.
+    expect(plugin_block.locator("button", has_text="Open issue drawer")).to_have_count(0)
+    expander = plugin_block.locator(".agent-context-attempts-expander")
+    expect(expander).to_have_count(1)
+    expect(expander).to_be_visible()
+    assert expander.get_attribute("data-issue-number") == "4503"
+    # Closed by default — the user opens it on demand.
+    assert expander.evaluate("el => el.open") is False
+    expect(expander).to_contain_text("Attempts on issue #4503")
 
-    # Click-through proof: replace ``openIssueTimeline`` with a spy and
-    # verify it gets called with the right issue number when the
-    # button is clicked.  This catches a regression where the typed
-    # command lands on the button but the dispatcher's
-    # ``open_issue_timeline`` branch silently breaks.
+    # Click-through proof: stub ``fetch`` to record the lazy-fetch URL
+    # without hitting the real backend.  This catches a regression
+    # where the expander markup is right but the toggle handler stops
+    # firing or the URL contract drifts.
     page.evaluate(
         "() => {"
-        "  window.__openIssueTimelineCalls = [];"
-        "  window.openIssueTimeline = (issueNumber, triggerEl, opts) => {"
-        "    window.__openIssueTimelineCalls.push({issueNumber, opts: opts || null});"
+        "  window.__inlineAgentFetchCalls = [];"
+        "  const real = window.fetch;"
+        "  window.fetch = (url, opts) => {"
+        "    window.__inlineAgentFetchCalls.push(String(url));"
+        "    return Promise.resolve({ ok: true, status: 200, "
+        "      json: () => Promise.resolve({ runs: [] }), "
+        "    });"
         "  };"
+        "  window.__realFetch = real;"
         "}"
     )
-    drawer_button.click()
-    calls = page.evaluate("() => window.__openIssueTimelineCalls")
-    assert calls, "openIssueTimeline must be invoked when the drawer button is clicked"
-    assert calls[0]["issueNumber"] == 4503
+    expander.locator("summary").first.click()
+    # The expander populates its body asynchronously; wait for the
+    # fetch call to land.
+    page.wait_for_function(
+        "() => (window.__inlineAgentFetchCalls || []).length > 0",
+        timeout=5000,
+    )
+    calls = page.evaluate("() => window.__inlineAgentFetchCalls")
+    assert any("/api/issue-detail/4503" in url for url in calls), (
+        f"expected lazy fetch of /api/issue-detail/4503, got: {calls}"
+    )
 
     # ── untracked failure has NO plugin block (no linked issue) ────
     untracked_card = cvv.locator(".cvv-triage-card", has_text="test_untracked_failure")

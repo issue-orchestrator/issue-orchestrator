@@ -60,12 +60,23 @@ function _baseStubs() {
 // the renderer returns strings.
 function loadCanonicalSurface(spies = {}) {
     const ctx = { ..._baseStubs(), ...spies };
+    // ``inline_agent_attempts.js`` exposes
+    // ``renderInlineAgentAttemptsExpander`` on ``window`` — the
+    // agent-context plugin checks for it at render time.  Mirror the
+    // production bundle so the plugin's inline expander shows up.
+    ctx.Map = Map;
+    ctx.Promise = Promise;
+    ctx.setTimeout = (fn) => fn;
+    ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(_readJs('validation_viewer.js'), ctx, {
         filename: 'validation_viewer.js',
     });
     vm.runInContext(_readJs('lifecycle_commands.js'), ctx, {
         filename: 'lifecycle_commands.js',
+    });
+    vm.runInContext(_readJs('inline_agent_attempts.js'), ctx, {
+        filename: 'inline_agent_attempts.js',
     });
     vm.runInContext(_readJs('plugins/agent_context.js'), ctx, {
         filename: 'plugins/agent_context.js',
@@ -128,7 +139,12 @@ test('cmd surface: untracked-failure-only run produces NO Commands in the body',
     assert.match(html, /AssertionError: untriaged break/);
 });
 
-test('cmd surface: linked-failure run produces exactly one Open-issue-drawer Command with the right issue number', () => {
+test('cmd surface: linked-failure run renders an inline Attempts expander with the right issue number (no typed Command, no teleport)', () => {
+    // Issue #6322 follow-up: the plugin no longer teleports to the
+    // drawer via an Open-issue-drawer typed Command — it renders an
+    // inline ``▸ Attempts on issue #N`` expander that lazy-fetches
+    // the issue-detail payload and renders Attempts → Cycles in
+    // place.  No data-lifecycle-command, no ``↗`` fallback.
     const ctx = loadCanonicalSurface();
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
@@ -141,25 +157,26 @@ test('cmd surface: linked-failure run produces exactly one Open-issue-drawer Com
         },
     });
     const html = ctx.renderCanonicalValidationViewer(canonical);
-    const commands = extractCommands(html);
-    assert.strictEqual(commands.length, 1);
-    assert.deepStrictEqual(commands[0], {
-        kind: 'open_issue_timeline',
-        issue_number: 4503,
-        scope_kind: 'dashboard',
-        label: 'Open issue drawer ↗',
-    });
+    // No typed Commands for issue drill-in.
+    assert.deepEqual(extractCommands(html), []);
+    // The inline expander carries the issue number and is closed.
+    assert.match(html, /agent-context-attempts-expander/);
+    assert.match(html, /data-issue-number="4503"/);
+    assert.match(html, /Attempts on issue #4503/);
+    assert.ok(!/<details[^>]*data-issue-number="4503"[^>]*\sopen[\s>]/.test(html),
+        'inline expander must start closed');
     // The user sees the right issue + final state + summary.
     assert.match(html, /#4503/);
     assert.match(html, /publish flake/);
     assert.match(html, /TimeoutError: publish did not complete/);
 });
 
-test('cmd surface: mixed run (linked + untracked failures) produces one Command per LINKED failure only', () => {
+test('cmd surface: mixed run (linked + untracked) renders one inline expander per LINKED failure, untracked failures get no expander', () => {
     // Three failures: one linked (#4503), one linked (#4504), one
-    // untracked.  Each linked failure gets a plugin block →
-    // an Open-issue-drawer Command.  The untracked failure gets
-    // nothing in the body.
+    // untracked.  Each linked failure renders an inline Attempts
+    // expander with its own data-issue-number.  The untracked
+    // failure surfaces in the viewer body (name + headline) but
+    // gets no expander.
     const ctx = loadCanonicalSurface();
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
@@ -185,18 +202,18 @@ test('cmd surface: mixed run (linked + untracked failures) produces one Command 
         },
     });
     const html = ctx.renderCanonicalValidationViewer(canonical);
-    const commands = extractCommands(html);
-    assert.strictEqual(commands.length, 2);
-    // Order is the order the failures appear in the rendered
-    // viewer body, which matches the translator's category
-    // ordering (untriaged → has_issue → flaky).  Untracked
-    // failure has no Command, so the first Command corresponds to
-    // the first linked failure.
-    assert.strictEqual(commands[0].issue_number, 4503);
-    assert.strictEqual(commands[0].scope_kind, 'dashboard');
-    assert.strictEqual(commands[1].issue_number, 4504);
-    assert.strictEqual(commands[1].scope_kind, 'dashboard');
-    // Content sanity for the untracked failure surface (no Command,
+    // No typed Commands for issue drill-in.
+    assert.deepEqual(extractCommands(html), []);
+    // One expander per LINKED failure.
+    const expanderIssues = Array.from(
+        html.matchAll(/agent-context-attempts-expander[^>]*data-issue-number="(\d+)"/g),
+    ).map((m) => Number(m[1]));
+    assert.deepStrictEqual(expanderIssues.sort((a, b) => a - b), [4503, 4504],
+        `expected exactly one expander per linked failure; got ${JSON.stringify(expanderIssues)}`);
+    // Each expander has its corresponding human-readable title.
+    assert.match(html, /Attempts on issue #4503/);
+    assert.match(html, /Attempts on issue #4504/);
+    // Content sanity for the untracked failure surface (no expander,
     // but the test name + headline DID render).
     assert.match(html, /test_new/);
     assert.match(html, /AssertionError: brand new/);
@@ -488,10 +505,25 @@ test('dispatch: unknown kind toasts a warning (visible signal, no crash)', () =>
 // rendered Command JSON disagrees with what the dispatcher
 // expects.
 
-test('round-trip: render a linked-failure payload, extract the Command from the button, dispatch it, observe the handler call', () => {
-    // 1. Render
-    const render = loadCanonicalSurface();
-    const canonical = render.e2eRunToCanonicalPayload({
+test('round-trip: render a linked-failure payload, drive the inline expander toggle, observe the lazy fetch of /api/issue-detail', () => {
+    // After issue #6322 the linked-failure drill-in is no longer a
+    // typed Command — it's an inline ▸ Attempts expander.  The
+    // equivalent end-to-end assertion is now: render the payload,
+    // extract the data-issue-number from the expander, simulate the
+    // ``ontoggle`` firing, and observe that the expander's
+    // lazy-fetch helper hits the right URL.
+    const fetchCalls = [];
+    const ctx = loadCanonicalSurface({
+        fetch: (url) => {
+            fetchCalls.push(url);
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ runs: [] }),
+            });
+        },
+    });
+    const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
             has_issue: [{
                 nodeid: 'tests/e2e/test.py::test_x',
@@ -501,18 +533,28 @@ test('round-trip: render a linked-failure payload, extract the Command from the 
             }],
         },
     });
-    const html = render.renderCanonicalValidationViewer(canonical);
-
-    // 2. Extract the Command
-    const commands = extractCommands(html);
-    assert.strictEqual(commands.length, 1);
-
-    // 3. Dispatch into a separate vm with spies
-    const dispatch = loadDispatcherWithSpies();
-    dispatch.runE2ELifecycleCommand(commands[0]);
-
-    // 4. The right handler ran with the right args.
-    assert.deepEqual(dispatch.calls, [
-        ['openIssueTimeline', 7777, null, {}],
-    ]);
+    const html = ctx.renderCanonicalValidationViewer(canonical);
+    // 1. Inline expander is present and carries the right issue id.
+    const match = html.match(/agent-context-attempts-expander[^>]*data-issue-number="(\d+)"/);
+    assert.ok(match, 'expected the inline Attempts expander in the rendered HTML');
+    assert.strictEqual(Number(match[1]), 7777);
+    // 2. Drive the toggle handler with a fake <details> element that
+    //    matches the production markup the expander emits.  The
+    //    handler is exposed on the vm's window via the
+    //    inline_agent_attempts module's IIFE.
+    const body = {
+        innerHTML: '',
+        querySelector() { return null; },
+    };
+    const detailsEl = {
+        open: true,
+        dataset: { issueNumber: '7777', loaded: '' },
+        querySelector(sel) {
+            return sel === '.agent-context-attempts-body' ? body : null;
+        },
+    };
+    ctx._handleAgentAttemptsToggle(detailsEl);
+    // 3. The handler must have called ``fetch`` exactly once with
+    //    the ops-scoped issue-detail URL for issue 7777.
+    assert.deepStrictEqual(fetchCalls, ['/api/issue-detail/7777?view=ops']);
 });

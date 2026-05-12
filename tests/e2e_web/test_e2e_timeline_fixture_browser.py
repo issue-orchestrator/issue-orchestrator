@@ -1650,23 +1650,17 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
                 has_text=f"#{issue_number}",
             )
             expect(issue_block).to_have_count(1)
-            # The drawer button on the block must carry the typed
-            # Command — same single-owner check as the run-level
-            # affordance.
-            drawer_button = issue_block.locator(
-                "button",
-                has_text="Open issue drawer",
-            ).first
-            expect(drawer_button).to_be_visible()
-            cmd_attr = drawer_button.get_attribute("data-lifecycle-command") or ""
-            assert cmd_attr, (
-                f"plugin Open-issue-drawer button for #{issue_number} must "
-                f"carry data-lifecycle-command"
-            )
-            cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
-            assert cmd.get("kind") == "open_issue_timeline"
-            assert cmd.get("issue_number") == issue_number
-            assert cmd.get("scope_kind") == "dashboard"
+            # Issue #6322 follow-up: linked-failure drill-in is the
+            # inline ``▸ Attempts on issue #N`` expander.  The legacy
+            # "Open issue drawer" typed-Command button is gone — the
+            # plugin no longer emits ``open_issue_timeline`` for
+            # linked failures.
+            expect(
+                issue_block.locator("button", has_text="Open issue drawer")
+            ).to_have_count(0)
+            expander = issue_block.locator(".agent-context-attempts-expander")
+            expect(expander).to_have_count(1)
+            assert expander.get_attribute("data-issue-number") == str(issue_number)
 
     if passing_count > 0:
         # Passing tests live inside the browse-by-file expander.  The
@@ -1946,10 +1940,10 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
       clipboard (no per-row Copy Error button — same capability,
       different surface).
     - The linked failure carries the ``io.agent-context`` plugin
-      block with the right issue number and an Open-issue-drawer
-      affordance.  Per-row Coder Session / Timeline / Review buttons
-      are intentionally gone — navigation into the per-issue drawer is
-      the single entry point now.
+      block with the right issue number and the inline ``▸ Attempts
+      on issue #N`` expander (issue #6322 follow-up).  Per-row Coder
+      Session / Timeline / Review buttons are intentionally gone —
+      the inline drill-in is the single entry point now.
     - Filter chips are intentionally gone (cut in Phase C).
     """
     base_url = fixture_web_server["url"]
@@ -2112,12 +2106,17 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
         f"Copy-error icon must copy the failure detail; got {copied_text!r}"
     )
 
-    # ── Linked-failure plugin block carries the issue number + drawer link ─
+    # ── Linked-failure plugin block carries the issue number + inline ─
+    # ``▸ Attempts on issue #N`` expander (issue #6322 follow-up).
     # Inside the now-open card body.
     plugin = failure_card.locator(".cvv-plugin.agent-context")
     expect(plugin).to_be_visible()
     expect(plugin).to_contain_text("#5723")
-    expect(plugin).to_contain_text("Open issue drawer")
+    expect(plugin.locator("button", has_text="Open issue drawer")).to_have_count(0)
+    expander = plugin.locator(".agent-context-attempts-expander")
+    expect(expander).to_have_count(1)
+    assert expander.get_attribute("data-issue-number") == "5723"
+    expect(expander).to_contain_text("Attempts on issue #5723")
 
     # ── Passing test renders inside the canonical viewer (browse-by-file) ─
     expect(cvv).to_contain_text(expected_passed_label)
