@@ -1211,6 +1211,16 @@
           "expand_run_details": {"type": "boolean"}
         }
       },
+      "OpenInlineAgentAttemptsCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number"],
+        "properties": {
+          "kind": {"const": "open_inline_agent_attempts"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer", "minimum": 1}
+        }
+      },
       "TimelineCommandPayload": {
         "oneOf": [
           {"$ref": "#/components/schemas/ShowEventDetailsCommandPayload"},
@@ -1219,7 +1229,8 @@
           {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"},
           {"$ref": "#/components/schemas/OpenReviewFeedbackCommandPayload"},
           {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"},
-          {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"}
+          {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
+          {"$ref": "#/components/schemas/OpenInlineAgentAttemptsCommandPayload"}
         ],
         "discriminator": {"propertyName": "kind"}
       },

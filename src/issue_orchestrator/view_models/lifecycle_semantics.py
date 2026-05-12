@@ -128,6 +128,32 @@ class OpenIssueTimelineCommand(LifecycleBase):
         return self
 
 
+class OpenInlineAgentAttemptsCommand(LifecycleBase):
+    """Lazy-load the orchestrator's Attempts → Cycles tree inline
+    beneath a linked-failure card (issue #6322 follow-up).
+
+    Dispatched when the user opens the inline ``▸ Attempts on issue
+    #N`` expander inside the ``io.agent-context`` plugin block.  The
+    frontend dispatcher routes this kind to a renderer that hits
+    ``/api/issue-detail/{issue_number}?view=ops`` and populates the
+    expander body — no drawer teleport, no fresh-root link.
+
+    The typed Command pattern is what every other user-facing
+    affordance in the canonical viewer uses; routing the inline
+    expander the same way means a single owner controls "load the
+    Attempts tree for issue #N" instead of a one-off ``ontoggle``
+    handler reading a ``data-issue-number`` attribute.
+    """
+
+    kind: Literal["open_inline_agent_attempts"] = "open_inline_agent_attempts"
+    label: str = "Open Inline Agent Attempts"
+    # Strict-int: reject string/boolean coercion (same invariant as
+    # OpenE2ERunCommand.run_id).  Issue numbers are real integers
+    # everywhere in the orchestrator; loose coercion would let a
+    # stale stringified payload silently normalize.
+    issue_number: int = Field(..., ge=1, strict=True)
+
+
 class OpenE2ERunCommand(LifecycleBase):
     """Open an E2E run's detail view (issue #6322, PR #6329 review blocker).
 
@@ -160,7 +186,8 @@ TimelineCommand = Annotated[
     | OpenCompletionRecordCommand
     | OpenReviewFeedbackCommand
     | OpenIssueTimelineCommand
-    | OpenE2ERunCommand,
+    | OpenE2ERunCommand
+    | OpenInlineAgentAttemptsCommand,
     Field(discriminator="kind"),
 ]
 

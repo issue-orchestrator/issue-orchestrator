@@ -602,6 +602,12 @@ export interface OpenE2ERunCommandPayload {
   run_id: number;
 }
 
+export interface OpenInlineAgentAttemptsCommandPayload {
+  issue_number: number;
+  kind: "open_inline_agent_attempts";
+  label: string;
+}
+
 export interface OpenIssueTimelineCommandPayload {
   e2e_run_id?: number | null;
   issue_number: number;
@@ -914,6 +920,6 @@ export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload |
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 
-export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload;
+export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload;
 
 export type ValidationOutcomePayload = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload;

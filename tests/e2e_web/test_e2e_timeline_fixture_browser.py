@@ -1651,16 +1651,22 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
             )
             expect(issue_block).to_have_count(1)
             # Issue #6322 follow-up: linked-failure drill-in is the
-            # inline ``▸ Attempts on issue #N`` expander.  The legacy
-            # "Open issue drawer" typed-Command button is gone — the
-            # plugin no longer emits ``open_issue_timeline`` for
-            # linked failures.
+            # inline ``▸ Attempts on issue #N`` expander, backed by a
+            # typed ``OpenInlineAgentAttemptsCommand``.  The legacy
+            # ``open_issue_timeline`` teleport is gone.
             expect(
                 issue_block.locator("button", has_text="Open issue drawer")
             ).to_have_count(0)
             expander = issue_block.locator(".agent-context-attempts-expander")
             expect(expander).to_have_count(1)
             assert expander.get_attribute("data-issue-number") == str(issue_number)
+            cmd_attr = expander.get_attribute("data-lifecycle-command") or ""
+            assert cmd_attr, (
+                f"expander for #{issue_number} must carry data-lifecycle-command"
+            )
+            cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+            assert cmd.get("kind") == "open_inline_agent_attempts"
+            assert cmd.get("issue_number") == issue_number
 
     if passing_count > 0:
         # Passing tests live inside the browse-by-file expander.  The
@@ -2107,8 +2113,8 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
     )
 
     # ── Linked-failure plugin block carries the issue number + inline ─
-    # ``▸ Attempts on issue #N`` expander (issue #6322 follow-up).
-    # Inside the now-open card body.
+    # ``▸ Attempts on issue #N`` expander backed by a typed Command
+    # (issue #6322 follow-up).  Inside the now-open card body.
     plugin = failure_card.locator(".cvv-plugin.agent-context")
     expect(plugin).to_be_visible()
     expect(plugin).to_contain_text("#5723")
@@ -2117,6 +2123,38 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
     expect(expander).to_have_count(1)
     assert expander.get_attribute("data-issue-number") == "5723"
     expect(expander).to_contain_text("Attempts on issue #5723")
+    cmd_attr = expander.get_attribute("data-lifecycle-command") or ""
+    assert cmd_attr, "expander must carry data-lifecycle-command"
+    cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+    assert cmd.get("kind") == "open_inline_agent_attempts"
+    assert cmd.get("issue_number") == 5723
+
+    # E2E click-through proof (piggybacks on the existing run-modal
+    # test): stub ``fetch`` and prove the inline expander's
+    # ``runE2ELifecycleCommandFromToggle`` dispatch lands on the
+    # ops-view issue-detail URL.  Catches a regression where the
+    # markup is right but the dispatcher's branch breaks.
+    page.evaluate(
+        "() => {"
+        "  window.__inlineAttemptsCalls = [];"
+        "  window.fetch = (url) => {"
+        "    window.__inlineAttemptsCalls.push(String(url));"
+        "    return Promise.resolve({ ok: true, status: 200, "
+        "      json: () => Promise.resolve({ runs: [] }), "
+        "    });"
+        "  };"
+        "}"
+    )
+    expander.locator("summary").first.click()
+    page.wait_for_function(
+        "() => (window.__inlineAttemptsCalls || []).length > 0",
+        timeout=5000,
+    )
+    inline_calls = page.evaluate("() => window.__inlineAttemptsCalls")
+    assert any("/api/issue-detail/5723?view=ops" in url for url in inline_calls), (
+        f"expected lazy fetch of /api/issue-detail/5723?view=ops via the typed "
+        f"Command dispatcher; got: {inline_calls}"
+    )
 
     # ── Passing test renders inside the canonical viewer (browse-by-file) ─
     expect(cvv).to_contain_text(expected_passed_label)

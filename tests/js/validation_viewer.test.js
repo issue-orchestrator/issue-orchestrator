@@ -486,13 +486,22 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     // Issue #6322 follow-up: the drill-in is no longer a "Open
     // issue drawer" teleport button — it's an inline expander
     // (▸ Attempts on issue #N) that lazy-fetches and renders in
-    // place.  Assert the expander is wired in.
+    // place.  The expander is still backed by a typed Command
+    // (``open_inline_agent_attempts``), routed through the shared
+    // lifecycle pipeline.
     assert.match(html, /agent-context-attempts-expander/);
     assert.match(html, /Attempts on issue #4503/);
     assert.match(html, /data-issue-number="4503"/);
-    // No legacy typed-Command button for issue navigation any more.
+    assert.match(html, /ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/);
+    // No legacy ``open_issue_timeline`` teleport for the plugin's
+    // drill-in (the run-level affordance still uses it, unrelated).
     assert.doesNotMatch(html, /Open issue drawer/);
-    assert.doesNotMatch(html, /data-lifecycle-command/);
+    // Decode the typed Command on the expander.
+    const cmdMatch = html.match(/agent-context-attempts-expander[^>]*data-lifecycle-command="([^"]+)"/);
+    assert.ok(cmdMatch, 'expander must carry typed data-lifecycle-command');
+    const cmd = JSON.parse(cmdMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+    assert.strictEqual(cmd.kind, 'open_inline_agent_attempts');
+    assert.strictEqual(cmd.issue_number, 4503);
 });
 
 test('plugin: agent-context plugin degrades to text-only when inline_agent_attempts.js is not loaded', () => {

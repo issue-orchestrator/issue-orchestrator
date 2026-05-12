@@ -282,8 +282,9 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(plugin_block).to_contain_text("#4503")
 
     # Issue #6322 follow-up: the linked-failure drill-in is the inline
-    # ``▸ Attempts on issue #N`` expander.  No legacy
-    # "Open issue drawer" typed-Command button on the plugin block.
+    # ``▸ Attempts on issue #N`` expander.  The legacy
+    # "Open issue drawer" typed-Command button is gone; the inline
+    # expander is the only drill-in affordance.
     expect(plugin_block.locator("button", has_text="Open issue drawer")).to_have_count(0)
     expander = plugin_block.locator(".agent-context-attempts-expander")
     expect(expander).to_have_count(1)
@@ -293,26 +294,36 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     assert expander.evaluate("el => el.open") is False
     expect(expander).to_contain_text("Attempts on issue #4503")
 
+    # Typed-Command pipeline: the expander carries
+    # ``data-lifecycle-command`` with the
+    # ``OpenInlineAgentAttemptsCommand`` shape and dispatches
+    # through ``runE2ELifecycleCommandFromToggle`` — same
+    # single-owner contract as every other typed Command in the
+    # canonical viewer.  Plain bespoke ``ontoggle`` handlers are
+    # not allowed.
+    cmd_attr = expander.get_attribute("data-lifecycle-command") or ""
+    assert cmd_attr, "expander must carry data-lifecycle-command"
+    cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+    assert cmd.get("kind") == "open_inline_agent_attempts"
+    assert cmd.get("issue_number") == 4503
+
     # Click-through proof: stub ``fetch`` to record the lazy-fetch URL
-    # without hitting the real backend.  This catches a regression
-    # where the expander markup is right but the toggle handler stops
-    # firing or the URL contract drifts.
+    # without hitting the real backend.  Catches a regression where
+    # the typed JSON lands on the expander but the dispatcher's
+    # ``open_inline_agent_attempts`` branch silently breaks (or the
+    # URL contract drifts).
     page.evaluate(
         "() => {"
         "  window.__inlineAgentFetchCalls = [];"
-        "  const real = window.fetch;"
-        "  window.fetch = (url, opts) => {"
+        "  window.fetch = (url) => {"
         "    window.__inlineAgentFetchCalls.push(String(url));"
         "    return Promise.resolve({ ok: true, status: 200, "
         "      json: () => Promise.resolve({ runs: [] }), "
         "    });"
         "  };"
-        "  window.__realFetch = real;"
         "}"
     )
     expander.locator("summary").first.click()
-    # The expander populates its body asynchronously; wait for the
-    # fetch call to land.
     page.wait_for_function(
         "() => (window.__inlineAgentFetchCalls || []).length > 0",
         timeout=5000,

@@ -611,6 +611,12 @@ class OpenE2ERunCommandPayload(BaseModel):
     label: str
     run_id: int = Field(..., ge=1, strict=True)
 
+class OpenInlineAgentAttemptsCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int = Field(..., ge=1, strict=True)
+    kind: Literal['open_inline_agent_attempts']
+    label: str
+
 class OpenIssueTimelineCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     e2e_run_id: int | None = None
@@ -922,6 +928,6 @@ ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | 
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 
-TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload
+TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload
 
 ValidationOutcomePayload: TypeAlias = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload
