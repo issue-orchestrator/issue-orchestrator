@@ -1662,14 +1662,20 @@ def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
 
 
 def test_e2e_timeline_has_view_switcher() -> None:
-    """The Story/Ops/Debug timeline view switcher lives in the Run details disclosure."""
+    """The Story/Ops/Debug timeline view switcher lives in the Run
+    details disclosure and emits typed ``switch_e2e_timeline_view``
+    Commands (no inline ``switchE2ETimelineView()`` calls in HTML).
+    """
     js = _read(DASHBOARD_JS)
     disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
     assert "e2e-timeline-view-switcher" in disclosure_body
-    assert "switchE2ETimelineView" in disclosure_body
+    assert "'switch_e2e_timeline_view'" in disclosure_body
     assert "'user'" in disclosure_body
     assert "'ops'" in disclosure_body
     assert "'debug'" in disclosure_body
+    # No inline-onclick to the handler — buttons go through the
+    # typed-Command dispatcher.
+    assert "switchE2ETimelineView(" not in disclosure_body
 
 
 def test_e2e_run_timeline_is_directly_addressable() -> None:
@@ -2091,24 +2097,58 @@ def test_server_rendered_issue_cards_render_summary_once() -> None:
 
 
 def test_e2e_timeline_view_switcher_refetches() -> None:
-    """View switcher re-fetches timeline with view param.
+    """View switcher re-fetches its row's timeline.
 
-    Issue #6334 round-2: the switcher is row-scoped — ``runId`` comes
-    from the typed Command (not a module-level singleton); the row
-    is resolved from ``triggerEl``; the timeline container is the
-    row-scoped ``.e2e-timeline-content`` class.
+    Row-targeting policy is centralized in ``resolveRowCommandContext``;
+    the handler doesn't duplicate the ``closest('details.e2e-run-row')``
+    lookup or the row-scoped DOM queries.
     """
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "switchE2ETimelineView")
     assert "function switchE2ETimelineView(runId, view, triggerEl)" in js
-    assert "_fetchE2ERunDetail(numericRunId, view)" in body
+    assert "_fetchE2ERunDetail(ctx.runId, view)" in body
     assert "renderE2ETimeline" in body
-    # Row resolution + row-scoped writes.
-    assert "triggerEl.closest('details.e2e-run-row')" in body
-    assert "row.querySelector('.e2e-timeline-content')" in body
-    assert "row._e2eRunData = data" in body
+    # The handler routes through the single owner abstraction.
+    assert "resolveRowCommandContext(runId, triggerEl)" in body
+    # No duplicate row-targeting policy.
+    assert "triggerEl.closest('details.e2e-run-row')" not in body
+    assert "row.querySelector('.e2e-timeline-content')" not in body
     # No module-level ``unifiedRunData`` singleton.
     assert "unifiedRunData" not in body
+
+
+def test_row_command_context_is_the_single_owner_of_row_targeting() -> None:
+    """``resolveRowCommandContext`` is the only place row-targeting
+    policy lives.
+
+    The two row-mounted handlers (``switchE2ETimelineView``,
+    ``createIssuesForUntriaged``) MUST route through it.  A future
+    refactor that resurrects ``triggerEl.closest('details.e2e-run-row')``
+    or duplicate ``row.querySelector('.e2e-timeline-content')`` calls
+    outside this function reintroduces scattered ownership.
+    """
+    js = _read(DASHBOARD_JS)
+    # The abstraction exists.
+    assert "function resolveRowCommandContext(runId, triggerEl)" in js
+    # The abstraction validates: positive int + trigger resolves to
+    # a row + row dataset agrees with the typed Command's run_id.
+    ctx_body = _function_body(js, "resolveRowCommandContext")
+    assert "Number.isInteger(numericRunId)" in ctx_body
+    assert "numericRunId <= 0" in ctx_body
+    assert "triggerEl.closest('details.e2e-run-row')" in ctx_body
+    assert "rowRunId !== numericRunId" in ctx_body
+    # Frozen context shape — handlers can't mutate it.
+    assert "Object.freeze" in ctx_body
+    # Both handlers route through the abstraction.
+    for fn_name in ("switchE2ETimelineView", "createIssuesForUntriaged"):
+        body = _function_body(js, fn_name)
+        assert "resolveRowCommandContext(runId, triggerEl)" in body, (
+            f"{fn_name} must route row resolution through resolveRowCommandContext"
+        )
+        # No duplicate row-targeting policy in either handler.
+        assert "triggerEl.closest" not in body, (
+            f"{fn_name} must not duplicate triggerEl.closest lookup"
+        )
 
 
 def test_dashboard_and_e2e_ui_preserve_lifecycle_payloads() -> None:

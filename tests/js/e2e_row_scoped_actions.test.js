@@ -387,3 +387,130 @@ test('JS bundle does not write the legacy ``window.unifiedRunData`` singleton', 
     assert.strictEqual(ctx.window.unifiedRunData, undefined,
         'no window.unifiedRunData write may survive');
 });
+
+// ── Layer D: single owner of row-targeting policy ────────────────
+//
+// ``resolveRowCommandContext`` is the one place row-targeting policy
+// lives.  The two row-mounted handlers MUST go through it; if a
+// future refactor duplicates ``triggerEl.closest('details.e2e-run-row')``
+// or ``row.querySelector('.e2e-timeline-content')`` outside this
+// function, that's the bug PR #6336 round-3 review flagged.
+
+test('row-targeting policy is centralized in resolveRowCommandContext', () => {
+    const ctx = _loadFullStack();
+    // The abstraction exists and is publishable for tests.
+    assert.strictEqual(typeof ctx.resolveRowCommandContext, 'function',
+        'resolveRowCommandContext must be defined in e2e_run_view.js');
+
+    // The two row-mounted handlers must NOT duplicate the row
+    // lookup.  Read the function bodies and assert they contain
+    // exactly one call site each — to ``resolveRowCommandContext``
+    // — and zero direct ``triggerEl.closest('details.e2e-run-row')``
+    // calls outside the abstraction.
+    const source = ctx.switchE2ETimelineView.toString()
+        + '\n----\n'
+        + ctx.createIssuesForUntriaged.toString();
+    assert.ok(
+        /resolveRowCommandContext\(\s*runId\s*,\s*triggerEl\s*\)/.test(source),
+        'handlers must resolve row context via resolveRowCommandContext',
+    );
+    assert.ok(
+        !source.includes("triggerEl.closest('details.e2e-run-row')"),
+        'handlers must not duplicate the closest() lookup outside the abstraction',
+    );
+    assert.ok(
+        !source.includes("row.querySelector('.e2e-timeline-content')"),
+        'handlers must not duplicate the timeline-container query',
+    );
+    assert.ok(
+        !source.includes("row.querySelector('.unified-run-agent')"),
+        'handlers must not duplicate the agent-select query',
+    );
+});
+
+test('resolveRowCommandContext: rejects non-positive run_id', () => {
+    const ctx = _loadFullStack();
+    const row = _fakeRow(88);
+    const triggerEl = { closest: (sel) => sel === 'details.e2e-run-row' ? row : null };
+    // The Pydantic layer enforces strict-int on the wire; the
+    // runtime abstraction enforces the ``ge=1`` invariant defensively
+    // in case a Command sneaks past with a coerced 0/negative.
+    assert.strictEqual(ctx.resolveRowCommandContext(0, triggerEl), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(-1, triggerEl), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(NaN, triggerEl), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(null, triggerEl), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(undefined, triggerEl), null);
+});
+
+test('resolveRowCommandContext: rejects trigger that does not resolve to a row', () => {
+    const ctx = _loadFullStack();
+    const orphanTrigger = { closest: () => null };
+    assert.strictEqual(ctx.resolveRowCommandContext(88, orphanTrigger), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(88, null), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(88, {}), null);
+});
+
+test('resolveRowCommandContext: rejects Command run_id that disagrees with the row dataset', () => {
+    // The typed Command says run 88 but the trigger is inside a row
+    // whose ``data-e2e-run-id`` is 99 — the abstraction MUST refuse
+    // to act on this mismatch (it would be the typed payload and
+    // the DOM disagreeing about which run is targeted).
+    const ctx = _loadFullStack();
+    const row99 = _fakeRow(99);
+    const triggerInRow99 = {
+        closest: (sel) => sel === 'details.e2e-run-row' ? row99 : null,
+    };
+    assert.strictEqual(ctx.resolveRowCommandContext(88, triggerInRow99), null,
+        'typed-Command run_id disagreeing with row.dataset.e2eRunId must reject');
+});
+
+test('resolveRowCommandContext: returns a frozen context with row-scoped accessors', () => {
+    const ctx = _loadFullStack();
+    const row = _fakeRow(88, { agent: 'agent:web', untriaged: [{ nodeid: 'x' }] });
+    const trigger = { closest: (sel) => sel === 'details.e2e-run-row' ? row : null };
+    const result = ctx.resolveRowCommandContext(88, trigger);
+    assert.ok(result, 'matching run_id + valid trigger must produce a context');
+    assert.strictEqual(result.runId, 88);
+    assert.strictEqual(result.row, row);
+    assert.strictEqual(result.data, row._e2eRunData);
+    assert.strictEqual(result.timelineContainer(), row._timeline);
+    assert.strictEqual(result.viewSwitcher(), row._switcher);
+    assert.strictEqual(result.agentSelect(), row._agentSelect);
+    // ``markUnloaded`` clears the row's ``loaded`` flag so the next
+    // expand re-fetches.
+    row.dataset.loaded = '1';
+    result.markUnloaded();
+    assert.strictEqual(row.dataset.loaded, '');
+    // The context is frozen — handlers can't accidentally mutate
+    // its shape.
+    assert.ok(Object.isFrozen(result));
+});
+
+test('handlers dispatched via the typed pipeline still hit row-scoped state', async () => {
+    // Reviewer's explicit ask: "Update the JS-vm tests to continue
+    // going through the typed dispatcher so the command-pattern-to-UI
+    // layer remains covered."  This test re-confirms that — even
+    // after introducing the abstraction — a typed Command dispatched
+    // through ``runE2ELifecycleCommand`` still flows through
+    // ``resolveRowCommandContext`` and reaches the row.
+    const ctx = _loadFullStack();
+    const calls = [];
+    ctx.fetch = (url) => {
+        calls.push(url);
+        return Promise.resolve({
+            ok: true, status: 200,
+            json: () => Promise.resolve({ run: { id: 88, status: 'failed' } }),
+        });
+    };
+    const row = _fakeRow(88);
+    const trigger = _fakeButtonInRow(row, 'ops');
+
+    ctx.runE2ELifecycleCommand(
+        { kind: 'switch_e2e_timeline_view', label: 'x', run_id: 88, view: 'ops' },
+        trigger,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(calls, ['/api/e2e-run-detail/88?view=ops']);
+    assert.ok(row._timeline.innerHTML !== '', 'row timeline must be updated via the abstraction');
+});

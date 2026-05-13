@@ -1,27 +1,20 @@
-// Inline E2E runs-as-rows list (issue #6334 — replaces #e2eDiagnosisModal).
+// Inline E2E runs-as-rows list.
 //
 // The dashboard's "Run History" panel renders one ``<details>`` row
 // per E2E run.  Closed by default; expanding lazy-fetches
 // ``/api/e2e-run-detail/{run_id}`` and mounts the canonical viewer
-// body inline — no modal teleport, no dim backdrop.
+// inline.
 //
-// Single-owner typed-Command contract
-// ───────────────────────────────────
-// Each row carries an ``ExpandE2ERunCommand`` payload in
-// ``data-lifecycle-command`` and an
-// ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` hook.  The
-// shared dispatcher in ``lifecycle_commands.js`` routes
-// ``expand_e2e_run`` → ``loadE2ERunIntoRow(run_id, detailsEl)``
-// defined here.  The dashboard chip and "View Results" button still
-// emit ``OpenE2ERunCommand`` — the dispatcher re-routes
-// ``open_e2e_run`` to ``expandE2ERunRow(run_id, options)`` (also
-// defined here), which scrolls to the matching row and opens it.
+// Typed-Command contract: each row carries an ``ExpandE2ERunCommand``
+// in ``data-lifecycle-command`` and an
+// ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` hook; the
+// shared dispatcher routes ``expand_e2e_run`` →
+// ``loadE2ERunIntoRow``.  ``open_e2e_run`` (from chips elsewhere on
+// the dashboard) re-routes to ``expandE2ERunRow``, which scrolls to
+// and opens the matching row.
 //
-// The runs list itself is eager: ``renderE2ERunsList`` is called on
-// initial dashboard render from inline JSON
-// (``<script id="recentE2ERunsData" type="application/json">``) so
-// every visible row is in the DOM at first paint, ready for either
-// an expand toggle or a chip-driven open.
+// The runs list itself is eager: ``renderE2ERunsList`` mounts on
+// ``DOMContentLoaded`` from inline JSON at ``#recentE2ERunsData``.
 
 (function () {
     if (typeof window === 'undefined') return;
@@ -199,10 +192,9 @@
             if (cvvRoot && typeof enhanceCanonicalValidationViewerAccessibility === 'function') {
                 enhanceCanonicalValidationViewerAccessibility(cvvRoot);
             }
-            // Issue #6334 round-2: query the row-scoped class — the
-            // legacy ``#e2eTimelineContent`` id collided across
-            // expanded rows, and ``document.getElementById`` would
-            // route updates to whichever row rendered first.
+            // Row-scoped class — every action mounted inside the row
+            // queries within ``row`` so two expanded rows don't
+            // collide.
             const timelineContainer = body.querySelector('.e2e-timeline-content');
             if (timelineContainer && typeof renderE2ETimeline === 'function') {
                 const normalized = (typeof normalizeE2ETimelineData === 'function')
@@ -210,12 +202,10 @@
                     : data;
                 renderE2ETimeline(timelineContainer, normalized);
             }
-            // Stash the currently mounted run's data on the row.
-            // Every row-scoped action (``switchE2ETimelineView``,
-            // ``createIssuesForUntriaged``) reads ``row._e2eRunData``
-            // — no module-level or window-level shared state.  The
-            // earlier ``window.unifiedRunData`` write was the bug
-            // PR #6336 round-2 review caught.
+            // ``row._e2eRunData`` is the single source of truth for
+            // the run mounted in this row.  Row-scoped actions read
+            // it via ``resolveRowCommandContext`` — there is no
+            // module- or window-level shared run state.
             detailsEl._e2eRunData = data;
         } catch (err) {
             detailsEl.dataset.loaded = '';
@@ -249,13 +239,9 @@
             row.scrollIntoView();
         }
         if (options.expandRunDetails) {
-            // The canonical viewer mounts inside the row body and
-            // includes its own "Run details & artifacts" disclosure
-            // (class ``.run-details-disclosure``).  Fetch is async,
-            // so poll briefly for the disclosure node before opening.
-            // Issue #6334 round-2: ``.run-details-disclosure`` is a
-            // class, not an id — two expanded rows have one each,
-            // each scoped to its own row.
+            // The canonical viewer mounts the row's
+            // ``.run-details-disclosure`` lazily; poll briefly for
+            // it before flipping ``.open``.
             const start = Date.now();
             const tick = () => {
                 const disclosure = row.querySelector('.run-details-disclosure');
