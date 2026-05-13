@@ -252,6 +252,11 @@ def get_orchestrator():
     return _orchestrator
 
 
+def get_client_host() -> ClientHost:
+    """Return the current client-host adapter."""
+    return _client_host
+
+
 def _resolve_issue_session_context(issue_number: int):
     """Compatibility wrapper for callers still importing from ``web``."""
     return resolve_issue_session_context(get_orchestrator(), issue_number)
@@ -277,15 +282,25 @@ def _orchestrator_host_repo_root() -> Path | None:
     return repo_root if isinstance(repo_root, Path) else None
 
 
+def _orchestrator_worktree_base() -> Path | None:
+    """Return the configured worktree base for safe host path opens."""
+    orch = get_orchestrator()
+    if orch is None:
+        return None
+    worktree_base = getattr(getattr(orch, "config", None), "worktree_base", None)
+    return worktree_base if isinstance(worktree_base, Path) else None
+
+
 install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
 install_web_operator_dependencies(
     app,
-    get_client_host=lambda: _client_host,
+    get_client_host=get_client_host,
     broadcast_event=broadcast_event,
     trigger_server_shutdown=trigger_server_shutdown,
     get_host_repo_root=_orchestrator_host_repo_root,
+    get_worktree_base=_orchestrator_worktree_base,
 )
-install_web_diagnostics_dependencies(app, get_client_host=lambda: _client_host)
+install_web_diagnostics_dependencies(app, get_client_host=get_client_host)
 app.include_router(web_read_model_router)
 app.include_router(web_status_router)
 app.include_router(web_refresh_router)

@@ -230,6 +230,48 @@ def _write_full(
     return written
 
 
+def _write_prompt_with_timeout_diagnostics(
+    session: PersistentSession,
+    payload: bytes,
+    *,
+    response_file: Path,
+    write_deadline: float,
+    now: Callable[[], float],
+    sleep: Callable[[float], None],
+    role_label: str,
+    timeout_seconds: float,
+    write_timeout_seconds: float,
+) -> int:
+    try:
+        return _write_full(
+            session.master_fd, payload,
+            deadline=write_deadline,
+            now=now,
+            sleep=sleep,
+            role_label=role_label,
+            pid=session.proc.pid,
+        )
+    except PersistentRoundTimeoutError as exc:
+        recording_size = _safe_recording_size(session)
+        logger.warning(
+            "[send_round] prompt write timeout role=%s pid=%d alive=%s "
+            "closed=%s response_file=%s prompt_bytes=%d write_timeout=%.1fs "
+            "timeout=%.1fs recording_bytes=%s "
+            "likely_stale_persistent_session=True error=%s",
+            role_label,
+            session.proc.pid,
+            session.proc.poll() is None,
+            session.closed,
+            response_file,
+            len(payload),
+            write_timeout_seconds,
+            timeout_seconds,
+            recording_size if recording_size is not None else "n/a",
+            exc,
+        )
+        raise
+
+
 def send_round(
     session: PersistentSession,
     *,
@@ -283,13 +325,16 @@ def send_round(
 
     response_file.unlink(missing_ok=True)
     write_deadline = started_at + min(timeout_seconds, write_timeout_seconds)
-    written = _write_full(
-        session.master_fd, payload,
-        deadline=write_deadline,
+    written = _write_prompt_with_timeout_diagnostics(
+        session,
+        payload,
+        response_file=response_file,
+        write_deadline=write_deadline,
         now=now,
         sleep=sleep,
         role_label=label,
-        pid=session.proc.pid,
+        timeout_seconds=timeout_seconds,
+        write_timeout_seconds=write_timeout_seconds,
     )
     write_elapsed = now() - started_at
     logger.info(

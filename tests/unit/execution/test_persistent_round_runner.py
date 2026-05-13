@@ -11,6 +11,7 @@ coordination.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import textwrap
@@ -518,6 +519,54 @@ class TestWriteFullHandlesNonBlockingPtyWrites:
             )
 
         assert captured["deadline"] == 13.0
+
+    def test_send_round_logs_prompt_write_timeout_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+
+        class _Proc:
+            pid = 789
+
+            def poll(self) -> None:
+                return None
+
+        def fake_write_full(_fd: int, _payload: bytes, **_kwargs: object) -> int:
+            raise PersistentRoundTimeoutError(
+                "Could not write 42 bytes to PTY fd=99 role=reviewer@round-1 "
+                "within deadline (0 bytes accepted before timeout)"
+            )
+
+        monkeypatch.setattr(persistent_round_runner, "_write_full", fake_write_full)
+        session = persistent_round_runner.PersistentSession(
+            proc=_Proc(),  # type: ignore[arg-type]
+            master_fd=99,
+        )
+        clock = _FakeClock()
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="issue_orchestrator.execution.persistent_round_runner",
+        ):
+            with pytest.raises(PersistentRoundTimeoutError):
+                send_round(
+                    session,
+                    prompt="hello",
+                    response_file=tmp_path / "response.json",
+                    timeout_seconds=100.0,
+                    write_timeout_seconds=3.0,
+                    now=clock.now,
+                    sleep=clock.make_sleeper(),
+                    role_label="reviewer@round-1",
+                )
+
+        messages = "\n".join(caplog.messages)
+        assert "prompt write timeout role=reviewer@round-1 pid=789" in messages
+        assert "likely_stale_persistent_session=True" in messages
+        assert "0 bytes accepted before timeout" in messages
 
 
 # ---------------------------------------------------------------------------

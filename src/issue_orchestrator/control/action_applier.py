@@ -1255,15 +1255,52 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         assert isinstance(action, CleanupSessionAction)
 
         errors = []
+        cancellation = self._cancel_review_exchange_for_cleanup(action)
         self._cleanup_terminal_session(action, errors)
         self._cleanup_worktree(action, errors)
 
         self.events.publish(make_trace_event(EventName.CLEANUP_COMPLETED, {"issue_number": action.issue_number, "pr_number": action.pr_number}))
 
+        details = {
+            "issue_number": action.issue_number,
+            "pr_number": action.pr_number,
+            "review_exchange_lifecycle_checked": cancellation is not None,
+            "cancelled_review_exchange_jobs": list(cancellation.cancelled_job_ids)
+            if cancellation is not None
+            else [],
+        }
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return ActionResult.fail(action, "; ".join(errors), **details)
 
-        return ActionResult.ok(action, issue_number=action.issue_number, pr_number=action.pr_number)
+        return ActionResult.ok(action, **details)
+
+    def _cancel_review_exchange_for_cleanup(
+        self,
+        action: "CleanupSessionAction",
+    ) -> "ReviewExchangeCancellation | None":
+        ref = self._cleanup_review_exchange_session_ref(action)
+        return self._cancel_review_exchange_for_session_ref(
+            ref,
+            reason="session-cleanup",
+        )
+
+    def _cleanup_review_exchange_session_ref(
+        self,
+        action: "CleanupSessionAction",
+    ) -> SessionRef:
+        if action.terminal_id:
+            return SessionRef(
+                session_type=self._determine_session_type(action.terminal_id),
+                number=action.issue_number,
+            )
+        logger.warning(
+            "[APPLIER] CleanupSessionAction missing terminal_id; assuming "
+            "issue session for review-exchange cleanup issue=%s pr=%s worktree=%s",
+            action.issue_number,
+            action.pr_number,
+            action.worktree_path or "(none)",
+        )
+        return SessionRef(session_type=SessionType.ISSUE, number=action.issue_number)
 
     def _cleanup_terminal_session(self, action: "CleanupSessionAction", errors: list[str]) -> None:
         """Close terminal session if configured."""

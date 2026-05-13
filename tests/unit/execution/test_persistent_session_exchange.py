@@ -824,6 +824,9 @@ class TestTurnArtifactsPersisted:
         # operator inspecting the artifact sees the same root cause
         # the REVIEW_EXCHANGE_ROLE_TIMEOUT event reports.
         assert "simulated 60s timeout" in result.response_text
+        assert state["registry"].released == [
+            (42, "review-exchange-reviewer_no_completion")
+        ]
 
     def test_coder_timeout_persists_no_completion_result_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -886,6 +889,9 @@ class TestTurnArtifactsPersisted:
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
         assert result.protocol_error_reason == "no_completion"
         assert "coder hung at 60s" in result.response_text
+        assert state["registry"].released == [
+            (42, "review-exchange-coder_no_completion")
+        ]
 
     def test_protocol_error_response_is_persisted_with_named_reason(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1100,6 +1106,9 @@ class TestExchangeTerminationConditions:
         )
         assert outcome.status == "error"
         assert outcome.reason == "reviewer_no_completion"
+        assert state["registry"].released == [
+            (42, "review-exchange-reviewer_no_completion")
+        ]
         # Role timeout event must fire so the timeline can render the
         # per-role bailout as a failure, not as silent stoppage.
         assert any(
@@ -1107,6 +1116,47 @@ class TestExchangeTerminationConditions:
             and evt.data.get("role") == "reviewer"
             for evt in sink.events
         )
+
+    def test_exchange_exception_releases_persistent_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Unexpected exchange-driver failures must not keep cached PTYs."""
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={"reviewer": [], "coder": []},
+        )
+
+        def raise_from_driver(**_kwargs: object) -> pse.ReviewExchangeOutcome:
+            raise RuntimeError("driver failed")
+
+        monkeypatch.setattr(pse, "_drive_rounds", raise_from_driver)
+
+        with pytest.raises(RuntimeError, match="driver failed"):
+            pse.run_persistent_session_exchange(
+                session_output=session_output,
+                pair_registry=state["registry"],
+                persistent_pair_root=tmp_path / "persistent-pairs",
+                coder_worktree_path=coder_wt,
+                reviewer_worktree_factory=lambda: reviewer_wt,
+                issue_number=42,
+                issue_title="Test",
+                coder_label="agent:backend",
+                reviewer_label="agent:reviewer",
+                coder_agent=_make_agent(prompt_path),
+                reviewer_agent=_make_agent(prompt_path),
+                max_rounds=1,
+                max_no_progress=2,
+                require_validation=False,
+            )
+
+        assert state["registry"].released == [
+            (42, "review-exchange-exception")
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -3253,6 +3303,103 @@ class TestLoopBoundCounting:
             wt, "coding-1",
         ) == 3
 
+    def test_manifest_started_at_beats_touched_coding_dir_mtime(
+        self, tmp_path: Path,
+    ) -> None:
+        """A touched coding run dir must not reset a newer timeout streak.
+
+        Issue 360 reproduced this shape: review-exchange summaries were
+        chronologically newer than the coding run, but the coding run directory
+        had a later filesystem mtime. Mtime-first sorting counted one timeout,
+        hit the old coding run, and let the retry loop continue indefinitely.
+        """
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        coding_dir = sessions_dir / "20260101T000000Z__coding-1"
+        coding_dir.mkdir()
+        (coding_dir / "manifest.json").write_text(
+            json.dumps({"started_at": "2026-01-01T00:00:00+00:00"}),
+            encoding="utf-8",
+        )
+        # Newer than every review-exchange mtime, despite older started_at.
+        os.utime(coding_dir, (1700009999, 1700009999))
+
+        for idx in range(3):
+            run_dir = sessions_dir / (
+                f"2026010{idx + 2}T000000Z__review-exchange-42-r{idx}"
+            )
+            run_dir.mkdir()
+            exchange_dir = run_dir / "review-exchange"
+            exchange_dir.mkdir()
+            (run_dir / "manifest.json").write_text(
+                json.dumps({
+                    "started_at": f"2026-01-0{idx + 2}T00:00:00+00:00",
+                    "parent_session_name": "coding-1",
+                    "review_exchange_dir": str(exchange_dir),
+                }),
+                encoding="utf-8",
+            )
+            (exchange_dir / "summary.json").write_text(
+                json.dumps({
+                    "status": "error",
+                    "reason": "reviewer_no_completion",
+                }),
+                encoding="utf-8",
+            )
+            os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
+
+        so = FileSystemSessionOutput()
+        assert so.count_consecutive_review_exchange_no_completion(
+            worktree,
+            "coding-1",
+        ) == 3
+
+    def test_run_dir_timestamp_orders_partial_manifest_before_mtime(
+        self, tmp_path: Path,
+    ) -> None:
+        """A partial manifest still has a durable timestamp in its run id."""
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        coding_dir = sessions_dir / "20260101-000000Z__coding-1"
+        coding_dir.mkdir()
+        (coding_dir / "manifest.json").write_text(
+            json.dumps({"started_at": "2026-01-01T00:00:00+00:00"}),
+            encoding="utf-8",
+        )
+        os.utime(coding_dir, (1700009999, 1700009999))
+
+        run_dir = sessions_dir / "20260102-000000Z__review-exchange-42-r1"
+        run_dir.mkdir()
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir()
+        (run_dir / "manifest.json").write_text(
+            json.dumps({
+                "parent_session_name": "coding-1",
+                "review_exchange_dir": str(exchange_dir),
+            }),
+            encoding="utf-8",
+        )
+        (exchange_dir / "summary.json").write_text(
+            json.dumps({
+                "status": "error",
+                "reason": "reviewer_no_completion",
+            }),
+            encoding="utf-8",
+        )
+        os.utime(run_dir, (1700000000, 1700000000))
+
+        so = FileSystemSessionOutput()
+        assert so.count_consecutive_review_exchange_no_completion(
+            worktree,
+            "coding-1",
+        ) == 1
+
     def test_clean_ok_resets_count_to_zero(self, tmp_path: Path) -> None:
         # Sequence (oldest → newest): error, error, ok, error, error.
         # Newest-first traversal: error, error, ok → stop at ok.
@@ -4303,7 +4450,7 @@ class TestSessionCleanup:
         session_output = FileSystemSessionOutput()
 
         # Reviewer round 1 raises a non-runner-typed exception (not timeout/error).
-        # The exchange must surface REVIEW_EXCHANGE_FAILED and still close both sessions.
+        # The exchange must surface REVIEW_EXCHANGE_FAILED and evict the cached pair.
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
@@ -4334,13 +4481,9 @@ class TestSessionCleanup:
                 event_context=ctx,
             )
 
-        # B2: a mid-round exception does NOT release the pair — the
-        # pair is alive enough for the next exchange to retry the
-        # work, and lifecycle release happens at issue-completion /
-        # reset / shutdown sites instead. (B1's "release on every
-        # finally" assertion was the right invariant for B1's
-        # per-exchange ownership; B2 inverts it.)
-        assert state["registry"].released == []
+        assert state["registry"].released == [
+            (42, "review-exchange-exception")
+        ]
         # And the failure event was emitted before raising.
         assert any(
             evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events
