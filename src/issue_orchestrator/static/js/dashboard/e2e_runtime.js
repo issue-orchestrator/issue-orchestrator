@@ -386,136 +386,16 @@ async function showE2EFailures() {
     }
 }
 
-// E2E Diagnosis state
-let e2eCurrentDiagnosis = null;
-
-async function showE2EDiagnosis() {
-    if (!e2eLastRun) {
-        showToast('No E2E run data available', true);
-        return;
-    }
-
-    // Show modal with loading state
-    document.getElementById('e2eDiagnosisContent').innerHTML = '<div class="loading-spinner">Loading diagnosis...</div>';
-    document.getElementById('e2eDiagnosisModal').classList.add('visible');
-
-    try {
-        const res = await fetch(`/control/e2e/diagnosis/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`);
-        const diagnosis = await res.json();
-
-        if (!res.ok) {
-            showToast(diagnosis.error || diagnosis.detail || 'Failed to load diagnosis', true);
-            closeE2EDiagnosisModal();
-            return;
-        }
-
-        e2eCurrentDiagnosis = diagnosis;
-        renderE2EDiagnosis(diagnosis);
-    } catch (err) {
-        showToast('Failed to load diagnosis: ' + err.message, true);
-        closeE2EDiagnosisModal();
-    }
-}
-
-function renderE2EDiagnosis(diagnosis) {
-    const content = document.getElementById('e2eDiagnosisContent');
-
-    let html = `
-        <div class="diagnosis-header">
-            <span class="diagnosis-status status-${diagnosis.status}">${diagnosis.status}</span>
-            <span class="diagnosis-meta">
-                Run #${diagnosis.run_id} &middot; ${diagnosis.commit_sha ? diagnosis.commit_sha.slice(0, 7) : 'unknown'} &middot; ${diagnosis.branch || 'unknown'}
-                ${diagnosis.duration_seconds ? ` &middot; ${diagnosis.duration_seconds.toFixed(1)}s` : ''}
-            </span>
-        </div>
-
-        <div class="diagnosis-summary">
-            <div class="stat"><span class="label">Total</span><span class="value">${diagnosis.total_tests}</span></div>
-            <div class="stat passed"><span class="label">Passed</span><span class="value">${diagnosis.passed_count}</span></div>
-            <div class="stat failed"><span class="label">Failed</span><span class="value">${diagnosis.failed_count}</span></div>
-            <div class="stat flaky"><span class="label">Flaky</span><span class="value">${diagnosis.passed_on_retry_count}</span></div>
-        </div>
-    `;
-
-    // Warnings
-    if (diagnosis.warnings && diagnosis.warnings.length > 0) {
-        html += `
-            <div class="diagnosis-section warnings">
-                <h3>Warnings</h3>
-                <ul>${diagnosis.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
-            </div>
-        `;
-    }
-
-    // Suggestions
-    if (diagnosis.suggestions && diagnosis.suggestions.length > 0) {
-        html += `
-            <div class="diagnosis-section suggestions">
-                <h3>Suggestions</h3>
-                <ul>${diagnosis.suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>
-            </div>
-        `;
-    }
-
-    // Failed tests
-    if (diagnosis.failed_tests && diagnosis.failed_tests.length > 0) {
-        html += `
-            <div class="diagnosis-section">
-                <h3>Failed Tests (${diagnosis.failed_tests.length})</h3>
-                ${diagnosis.failed_tests.map(t => `
-                    <div class="failed-test">
-                        <div class="test-nodeid">${escapeHtml(t.nodeid)}</div>
-                        <pre class="test-error">${escapeHtml(t.longrepr || 'No error details')}</pre>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    }
-
-    // Flaky tests
-    if (diagnosis.flaky_tests && diagnosis.flaky_tests.length > 0) {
-        html += `
-            <div class="diagnosis-section">
-                <h3>Flaky Tests - Passed on Retry (${diagnosis.flaky_tests.length})</h3>
-                ${diagnosis.flaky_tests.map(t => `
-                    <div class="failed-test">
-                        <div class="test-nodeid">${escapeHtml(t.nodeid)}</div>
-                        <pre class="test-error">${escapeHtml(t.longrepr || 'No error details')}</pre>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    }
-
-    // Log content
-    if (diagnosis.log_content) {
-        html += `
-            <details class="diagnosis-section logs">
-                <summary>Full Log Output (${diagnosis.log_content.split('\\n').length} lines)</summary>
-                <pre>${escapeHtml(diagnosis.log_content)}</pre>
-            </details>
-        `;
-    } else if (diagnosis.log_path) {
-        html += `
-            <div class="diagnosis-section">
-                <h3>Log File</h3>
-                <p style="color: var(--text-muted);">Log file: <code>${escapeHtml(diagnosis.log_path)}</code>
-                    <button class="btn-secondary btn-sm" onclick="openPath('${escapeHtml(diagnosis.log_path)}')">Open</button>
-                </p>
-                <p style="color: var(--warn);">${diagnosis.log_exists ? 'Log content not loaded' : 'Log file not found'}</p>
-            </div>
-        `;
-    }
-
-    content.innerHTML = html;
-}
-
-function closeE2EDiagnosisModal() {
-    document.getElementById('e2eDiagnosisModal').classList.remove('visible');
-    // Phase D #6322: clear the body flag so the dashboard chrome
-    // reappears.  Paired with the set in showUnifiedRunView().
-    document.body.removeAttribute('data-e2e-run-view-active');
-}
+// Issue #6334 dropped the e2eDiagnosisModal text-only diagnosis flow
+// (``showE2EDiagnosis`` / ``renderE2EDiagnosis`` / the legacy
+// ``/control/e2e/diagnosis/{run_id}`` consumer) along with
+// ``createE2EDiagnosticIssue``.  The canonical viewer mounted inline
+// in each run row (see ``e2e_runs_list.js`` →
+// ``loadE2ERunIntoRow``) renders the richer per-test failure /
+// flaky-retry / log surfaces that the diagnosis modal used to.
+// ``diagnoseCurrentTest`` (below) now routes through the typed
+// ``open_e2e_run`` Command, which the dispatcher re-points at
+// ``expandE2ERunRow`` — single owner for "show me this run".
 
 // E2E Stats Modal
 async function showE2EStats() {
@@ -815,12 +695,21 @@ async function diagnoseCurrentTest() {
         showToast('No test selected', true);
         return;
     }
-
-    // For now, show the full run diagnosis with this test highlighted
-    // In the future, this could trigger AI analysis
-    showToast('Opening full diagnosis...', false);
+    if (!e2eLastRun || !e2eLastRun.id) {
+        showToast('No E2E run data available', true);
+        return;
+    }
+    // Route through the typed ``open_e2e_run`` Command — the
+    // dispatcher (lifecycle_commands.js) re-routes this kind to
+    // ``expandE2ERunRow``, which expands the matching row in the
+    // inline runs list and mounts the canonical viewer body inline.
     closeTestFailureModal();
-    showE2EDiagnosis();
+    runE2ELifecycleCommand({
+        kind: 'open_e2e_run',
+        label: 'Open E2E Run',
+        run_id: Number(e2eLastRun.id),
+        expand_run_details: false,
+    });
 }
 
 function closeTestFailureModal() {
@@ -957,56 +846,12 @@ async function quarantineSingleTest(nodeid) {
     }
 }
 
-async function createE2EDiagnosticIssue() {
-    // Phase C / PR #6319 round 3: the canonical run view owns the
-    // current-run id via ``unifiedRunData`` (set in
-    // ``showUnifiedRunView``).  Fall back to ``e2eLastRun`` for
-    // callers reaching the diagnostic flow without an open run modal.
-    const runId = e2eCurrentDiagnosis?.run_id
-        || (typeof unifiedRunData !== 'undefined' && unifiedRunData?.run?.id)
-        || e2eLastRun?.id;
-    if (!runId) {
-        showToast('No run data available', true);
-        return;
-    }
-
-    const agentSelect = document.getElementById('e2eDiagnosisAgent');
-    const agent = agentSelect.value;
-    if (!agent) {
-        showToast('Please select an agent to work on this issue', true);
-        agentSelect.focus();
-        return;
-    }
-
-    const btn = document.getElementById('e2eCreateIssueBtn');
-    btn.disabled = true;
-    btn.textContent = 'Creating...';
-
-    try {
-        const res = await fetch(`/control/e2e/diagnosis/${runId}/issue?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agent }),
-        });
-        const data = await res.json();
-
-        if (!res.ok) {
-            showToast(data.error || data.detail || 'Failed to create issue', true);
-            return;
-        }
-
-        showToast(`Issue #${data.issue_number} created!`);
-        closeE2EDiagnosisModal();
-
-        if (data.url) {
-            window.open(data.url, '_blank');
-        }
-    } catch (err) {
-        showToast('Failed to create issue: ' + err.message, true);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Create Issue';
-    }
-}
+// ``createE2EDiagnosticIssue`` removed in issue #6334: it depended on
+// ``#e2eDiagnosisAgent`` / ``#e2eCreateIssueBtn`` (both inside the
+// dropped ``#e2eDiagnosisModal``) and had no remaining caller — the
+// only ``onclick`` reference lived inside the modal's
+// ``style="display:none;"`` body. The bulk-create-issues flow lives on
+// the canonical viewer's untracked-failures banner
+// (``createIssuesForUntriaged`` in ``e2e_run_view.js``).
 
 // E2E Triage Functions

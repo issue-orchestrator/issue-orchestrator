@@ -128,6 +128,7 @@ export interface DashboardViewModelPayload {
   queue_refresh_seconds: number;
   queue_total: number;
   queue_total_pages: number;
+  recent_e2e_runs: RecentE2ERunsPayload;
   repo: string;
   repo_root: string;
   scope_summary: Record<string, any>;
@@ -253,6 +254,15 @@ export interface E2ERunResultCategoriesPayload {
   untriaged: TestCaseResultPayload[];
 }
 
+export interface E2ERunResultCountsPayload {
+  errored: number;
+  failed: number;
+  passed: number;
+  quarantined: number;
+  skipped: number;
+  total: number;
+}
+
 export interface E2ERunResultsSummaryPayload {
   fixed: number;
   flaky: number;
@@ -351,6 +361,12 @@ export interface E2ETimelineEventPayload {
 export interface E2ETimelinePhaseTocItemPayload {
   label: string;
   phase: string;
+}
+
+export interface ExpandE2ERunCommandPayload {
+  kind: "expand_e2e_run";
+  label: string;
+  run_id: number;
 }
 
 export interface FailedCodingAttemptPayload {
@@ -677,6 +693,25 @@ export interface PublishFailedCodingAttemptPayload {
   validation: ValidationOutcomePayload;
 }
 
+export interface RecentE2ERunSummaryPayload {
+  branch?: string | null;
+  command_summary: string;
+  commit_sha?: string | null;
+  duration_seconds?: number | null;
+  expand_command: ExpandE2ERunCommandPayload;
+  finished_at?: string | null;
+  note?: string | null;
+  outcome: OutcomeBadgePayload;
+  results: E2ERunResultCountsPayload;
+  run_id: number;
+  runner_kind: string;
+  started_at: string;
+}
+
+export interface RecentE2ERunsPayload {
+  runs: RecentE2ERunSummaryPayload[];
+}
+
 export interface ReviewApprovedPayload {
   commands: TimelineCommandPayload[];
   completed_at: string;
@@ -925,6 +960,6 @@ export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload |
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 
-export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload;
+export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload;
 
 export type ValidationOutcomePayload = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload;

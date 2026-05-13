@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from ..contracts.ui_openapi_models import (
     E2ERunDetailPayload,
     E2ETestOutputPayload,
+    RecentE2ERunsPayload,
     TestCaseIssueLinkPayload,
     E2ERunResultCategoriesPayload,
     IssueDetailPayload,
@@ -506,6 +507,45 @@ async def get_issue_detail(
         events=events,
     )
     return IssueDetailPayload.model_validate(payload)
+
+
+@web_issue_detail_router.get(
+    "/api/e2e-runs/recent",
+    response_model=RecentE2ERunsPayload,
+)
+async def get_recent_e2e_runs(
+    orchestrator: WebOrchestratorDependency,
+    limit: int = 50,
+) -> RecentE2ERunsPayload | JSONResponse:
+    """List recent E2E runs as typed ``RecentE2ERunSummary`` rows.
+
+    Backs the inline runs-as-rows panel introduced in issue #6334.
+    The runs list itself is intentionally eager (so the dashboard
+    renders all visible rows in one request); per-run detail is the
+    lazy bit, fetched from ``/api/e2e-run-detail/{run_id}`` only when
+    the user expands a row.
+
+    ``limit`` is clamped to ``[1, 200]`` to match the OpenAPI schema
+    so a client cannot trigger an unbounded scan of ``e2e_runs``.
+    """
+    if orchestrator is None:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    clamped_limit = max(1, min(int(limit), 200))
+    config = orchestrator.config
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return RecentE2ERunsPayload(runs=[])
+    from ..infra.e2e_db import E2EDB
+    from ..view_models.dashboard_e2e import build_recent_e2e_runs
+
+    def _build() -> RecentE2ERunsPayload:
+        db = E2EDB(db_path)
+        payload = build_recent_e2e_runs(db, config, limit=clamped_limit)
+        return RecentE2ERunsPayload.model_validate(payload.model_dump())
+
+    import asyncio
+
+    return await asyncio.to_thread(_build)
 
 
 @web_issue_detail_router.get(

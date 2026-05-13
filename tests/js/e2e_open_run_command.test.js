@@ -1,21 +1,22 @@
 // Cheap-integration test for the ``open_e2e_run`` typed Command
-// (issue #6322).  Three layers of the test pyramid, no DOM, no
-// Playwright.  Mirrors the pattern in
-// ``tests/js/e2e_canonical_command_surface.test.js``.
+// (issue #6322; re-pointed at the inline runs-list by issue #6334).
+// Three layers of the test pyramid, no DOM, no Playwright.  Mirrors
+// the pattern in ``tests/js/e2e_canonical_command_surface.test.js``.
 //
 // Layer A — Unit: ``runE2ELifecycleCommand({kind:'open_e2e_run',...})``
-//   dispatches to ``showUnifiedRunView`` with the right args.
+//   dispatches to ``expandE2ERunRow`` with the right args (NOT the
+//   removed ``showUnifiedRunView`` — that was the modal-driver).
 //   Malformed and unknown variants are handled (silent no-op /
 //   toast warning).
 //
 // Layer B — Render → extract → dispatch: given the chip HTML the
 //   server renders (with ``data-lifecycle-command``), regex-extract
 //   the Command, dispatch it via the real dispatcher with a spy on
-//   ``showUnifiedRunView``, assert the spy got the right args.
+//   ``expandE2ERunRow``, assert the spy got the right args.
 //
-// Layer C — Round-trip with the chip HTML: builds the actual HTML
-//   shape from the templates' inline expression and runs A+B
-//   end-to-end so a template-text drift would break the round-trip.
+// Layer C — Round-trip with the real templates: read the Jinja
+//   templates that emit the typed Command and confirm they still
+//   serialize from the view-model dict (no hand-built JSON).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -25,7 +26,8 @@ const vm = require('node:vm');
 
 function _baseStubs() {
     const calls = {
-        showUnifiedRunView: [],
+        expandE2ERunRow: [],
+        loadE2ERunIntoRow: [],
         openIssueTimeline: [],
         openAgentLogAction: [],
         openReviewTranscript: [],
@@ -46,7 +48,14 @@ function _baseStubs() {
             navigator: {},
             // Stub each handler the dispatcher routes to.  Records every
             // call so the test can assert on args.
-            showUnifiedRunView: (runId, opts) => { calls.showUnifiedRunView.push({ runId, opts }); },
+            //
+            // Issue #6334: ``open_e2e_run`` now routes to
+            // ``expandE2ERunRow`` (the inline runs-list driver),
+            // NOT to ``showUnifiedRunView`` (the dropped modal
+            // driver).  ``expand_e2e_run`` routes to
+            // ``loadE2ERunIntoRow``.
+            expandE2ERunRow: (runId, opts) => { calls.expandE2ERunRow.push({ runId, opts }); },
+            loadE2ERunIntoRow: (runId, el) => { calls.loadE2ERunIntoRow.push({ runId, el }); },
             openIssueTimeline: (n, t, o) => { calls.openIssueTimeline.push({ n, t, o }); },
             openAgentLogAction: (n, r, l, s, c) => { calls.openAgentLogAction.push({ n, r, l, s, c }); },
             openReviewTranscript: (n, r, c, s) => { calls.openReviewTranscript.push({ n, r, c, s }); },
@@ -78,13 +87,13 @@ function _loadDispatcher() {
 
 // ── Layer A: unit ─────────────────────────────────────────────────
 
-test('open_e2e_run command dispatches to showUnifiedRunView with the run_id', () => {
+test('open_e2e_run command dispatches to expandE2ERunRow with the run_id (#6334)', () => {
     const { ctx, calls } = _loadDispatcher();
     ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run', run_id: 88 });
-    assert.strictEqual(calls.showUnifiedRunView.length, 1);
-    assert.strictEqual(calls.showUnifiedRunView[0].runId, 88);
+    assert.strictEqual(calls.expandE2ERunRow.length, 1);
+    assert.strictEqual(calls.expandE2ERunRow[0].runId, 88);
     // No expand_run_details → handler receives ``{ expandRunDetails: false }``.
-    assert.deepEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: false });
+    assert.strictEqual(calls.expandE2ERunRow[0].opts.expandRunDetails, false);
 });
 
 test('open_e2e_run command forwards expand_run_details when true', () => {
@@ -94,8 +103,8 @@ test('open_e2e_run command forwards expand_run_details when true', () => {
         run_id: 88,
         expand_run_details: true,
     });
-    assert.strictEqual(calls.showUnifiedRunView.length, 1);
-    assert.deepEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: true });
+    assert.strictEqual(calls.expandE2ERunRow.length, 1);
+    assert.strictEqual(calls.expandE2ERunRow[0].opts.expandRunDetails, true);
 });
 
 test('open_e2e_run command treats non-boolean expand_run_details as false', () => {
@@ -105,8 +114,8 @@ test('open_e2e_run command treats non-boolean expand_run_details as false', () =
         run_id: 88,
         expand_run_details: 'yes-as-string',
     });
-    assert.strictEqual(calls.showUnifiedRunView.length, 1);
-    assert.deepEqual(calls.showUnifiedRunView[0].opts, { expandRunDetails: false });
+    assert.strictEqual(calls.expandE2ERunRow.length, 1);
+    assert.strictEqual(calls.expandE2ERunRow[0].opts.expandRunDetails, false);
 });
 
 test('open_e2e_run command without run_id does NOT fire the handler', () => {
@@ -116,14 +125,14 @@ test('open_e2e_run command without run_id does NOT fire the handler', () => {
     // ``open_issue_timeline`` guard checks ``command.issue_number``).
     const { ctx, calls } = _loadDispatcher();
     ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run' });
-    assert.strictEqual(calls.showUnifiedRunView.length, 0,
-        'showUnifiedRunView must NOT fire without a run_id');
+    assert.strictEqual(calls.expandE2ERunRow.length, 0,
+        'expandE2ERunRow must NOT fire without a run_id');
 });
 
 test('open_e2e_run command with run_id=0 does NOT fire the handler (falsy guard)', () => {
     const { ctx, calls } = _loadDispatcher();
     ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run', run_id: 0 });
-    assert.strictEqual(calls.showUnifiedRunView.length, 0);
+    assert.strictEqual(calls.expandE2ERunRow.length, 0);
 });
 
 
@@ -189,17 +198,19 @@ test('chip render → extract → dispatch: end-to-end through the typed Command
         run_id: 88,
         expand_run_details: false,
     });
-    // Dispatch via the real dispatcher.
+    // Dispatch via the real dispatcher.  Issue #6334: routes to
+    // ``expandE2ERunRow`` (the inline runs-list driver), not the
+    // dropped ``showUnifiedRunView`` modal.
     ctx.runE2ELifecycleCommand(command);
-    assert.strictEqual(calls.showUnifiedRunView.length, 1);
-    assert.strictEqual(calls.showUnifiedRunView[0].runId, 88);
+    assert.strictEqual(calls.expandE2ERunRow.length, 1);
+    assert.strictEqual(calls.expandE2ERunRow[0].runId, 88);
 });
 
 test('chip render → extract → dispatch for a different run_id (no hard-coded captures)', () => {
     const { ctx, calls } = _loadDispatcher();
     const html = _buildChipHtml(427);
     ctx.runE2ELifecycleCommand(_extractCommand(html));
-    assert.strictEqual(calls.showUnifiedRunView[0].runId, 427);
+    assert.strictEqual(calls.expandE2ERunRow[0].runId, 427);
 });
 
 // ── Layer C: round-trip with the real templates ───────────────────
@@ -210,31 +221,39 @@ test('chip render → extract → dispatch for a different run_id (no hard-coded
 // source.  If a future edit reverts to an inline
 // ``onclick="showUnifiedRunView(...)"``, this test fails fast.
 
-test('template guardrail: dashboard chip serializes from the view-model open_run_command (no hand-built JSON)', () => {
+test('template guardrail: dashboard renders the runs-as-rows panel via typed RecentE2ERunsPayload (#6334)', () => {
     const tmpl = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/templates/dashboard.html'),
         'utf8',
     );
-    // After PR #6329 review: templates must NOT hand-build the
-    // typed-Command JSON.  They must consume the view-model's
-    // ``open_run_command`` dict (built by ``OpenE2ERunCommand.model_dump()``)
-    // through Jinja's ``| tojson | forceescape`` filter chain.
+    // Issue #6334 retired the SSR ``class="card-focus"`` button
+    // loop that hand-emitted ``open_e2e_run`` chips.  The runs list
+    // now mounts client-side from the typed view-model payload
+    // ``recent_e2e_runs`` (a ``RecentE2ERunsPayload`` dict), embedded
+    // as inline JSON the chunk reads on DOMContentLoaded.
     assert.match(
         tmpl,
-        /class="card-focus"[^>]*data-lifecycle-command="\{\{ run\.open_run_command \| tojson \| forceescape \}\}"/,
-        'dashboard.html card-focus button must serialize the view-model open_run_command (typed contract owner)',
+        /id="recentE2ERunsData" type="application\/json"/,
+        'dashboard.html must embed the typed RecentE2ERunsPayload as inline JSON',
     );
-    // The legacy ``onclick="showUnifiedRunView(...)"`` direct-call is gone.
-    assert.doesNotMatch(
+    assert.match(
         tmpl,
-        /<button class="card-focus" onclick="showUnifiedRunView\(/,
-        'no card-focus button may use inline showUnifiedRunView() onclick',
+        /id="e2eRunsListRoot"/,
+        'dashboard.html must declare the #e2eRunsListRoot mount point',
     );
-    // No hand-built JSON shape in the template (regression guard).
+    // No hand-built JSON for the open_e2e_run shape (regression guard
+    // — kept after #6334 because issue_row.html still emits typed
+    // ``open_run_command`` chips via the view-model dict).
     assert.doesNotMatch(
         tmpl,
         /data-lifecycle-command='\{"kind":"open_e2e_run"/,
-        'no hand-built JSON for open_e2e_run in dashboard.html (must serialize from view-model dict)',
+        'no hand-built JSON for open_e2e_run in dashboard.html',
+    );
+    // Same regression guard for the new typed kind.
+    assert.doesNotMatch(
+        tmpl,
+        /data-lifecycle-command='\{"kind":"expand_e2e_run"/,
+        'no hand-built JSON for expand_e2e_run in dashboard.html — the JS chunk owns row rendering',
     );
 });
 

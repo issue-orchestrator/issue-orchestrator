@@ -52,6 +52,13 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     # ``e2e_run_view.js`` so the symbol is in scope at call time.
     "e2e_canonical_payload.js",
     "e2e_run_view.js",
+    # ``e2e_runs_list.js`` renders the inline runs-as-rows panel
+    # (issue #6334) that replaced ``#e2eDiagnosisModal``.  Loaded
+    # AFTER ``e2e_run_view.js`` so its lazy detail loader can
+    # call ``renderE2EResultsPanel`` / ``renderE2ETimeline`` /
+    # ``enhanceCanonicalValidationViewerAccessibility`` without a
+    # forward reference.
+    "e2e_runs_list.js",
 )
 
 DASHBOARD_CSS_CHUNKS: tuple[str, ...] = (

@@ -9,51 +9,11 @@
 }
 .modal-overlay.visible { display: flex; }
 
-/* Phase D #6322: drop the modal frame on the E2E run view.
-   ``#e2eDiagnosisModal`` keeps the same DOM but restyles as a
-   normal-flow full-page section.  No dim backdrop, no centered
-   flex box, no fixed positioning.  When .visible: the dashboard
-   content is hidden by ``body[data-e2e-run-view-active]`` (see
-   below) and this section fills the page.
-
-   Why keep the element id and class names: the existing show/hide
-   plumbing in e2e_runtime.js and e2e_run_view.js still toggles
-   ``.visible`` on this element.  Restyle is one CSS rule; behavior
-   stays the same. */
-#e2eDiagnosisModal.modal-overlay {
-    position: static;
-    inset: auto;
-    background: var(--bg-page, transparent);
-    align-items: stretch;
-    justify-content: stretch;
-    z-index: auto;
-}
-#e2eDiagnosisModal.modal-overlay.visible {
-    display: block;
-    width: 100%;
-    padding: 16px 24px;
-}
-#e2eDiagnosisModal > .modal {
-    width: 100%;
-    max-width: 1280px;
-    margin: 0 auto;
-    max-height: none;
-    border: 0;
-    border-radius: 0;
-    background: var(--bg-page, transparent);
-}
-#e2eDiagnosisModal > .modal > .modal-header {
-    border-bottom: 1px solid var(--border);
-}
-/* When the E2E run view is active, hide the rest of the dashboard
-   so it doesn't compete for attention.  The toggle is driven by a
-   ``data-e2e-run-view-active`` attribute on <body>, set/cleared by
-   the open/close handlers (see e2e_runtime.js). */
-body[data-e2e-run-view-active] > .container > :not(#e2eDiagnosisModal),
-body[data-e2e-run-view-active] > .dashboard-container > :not(#e2eDiagnosisModal),
-body[data-e2e-run-view-active] > main > :not(#e2eDiagnosisModal) {
-    display: none !important;
-}
+/* Issue #6334 removed the ``#e2eDiagnosisModal`` overlay and its
+   companion ``body[data-e2e-run-view-active]`` cloak.  The E2E run
+   view now mounts inline in the runs list (one ``<details>`` row
+   per run) — see ``e2e_run_row.css``.  Modal-only rules were dropped
+   to keep the bundle from carrying dead selectors. */
 /* Required when event details open directly from the E2E run drawer, before
    the issue-detail drawer's global modal elevation rule is active. */
 .modal-overlay.timeline-event-detail-overlay {

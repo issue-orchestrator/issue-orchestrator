@@ -430,11 +430,15 @@ def test_e2e_tab_and_panels_render(jinja_env):
     assert latest_results.get_text(strip=True) == "View Results"
     assert latest_results.get("data-action") == "show-latest-e2e-run-results"
     assert "Last Run Diagnosis" not in soup.select_one("#panel-e2e").get_text(" ")
-    run_results = soup.select_one(".e2e-run-results-btn")
-    assert run_results is not None
-    assert run_results.get_text(strip=True) == "View Results"
-    assert run_results.get("data-action") == "show-e2e-run-results"
-    assert run_results.get("data-run-id") == "9"
+    # Issue #6334: the per-row "View Results" button is gone — rows are
+    # ``<details>`` that expand inline.  The runs list mounts from the
+    # typed ``RecentE2ERunsPayload`` embedded as inline JSON
+    # (``#recentE2ERunsData``); ``e2e_runs_list.js`` reads it on
+    # DOMContentLoaded.
+    runs_list_root = soup.select_one("#e2eRunsListRoot")
+    assert runs_list_root is not None
+    runs_list_data = soup.select_one('#recentE2ERunsData[type="application/json"]')
+    assert runs_list_data is not None
 
 
 def test_e2e_tab_disables_results_action_when_no_run_exists(jinja_env):

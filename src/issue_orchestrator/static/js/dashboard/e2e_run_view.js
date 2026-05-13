@@ -1,4 +1,10 @@
-let unifiedRunData = null;  // Stores data for the current unified run view
+// ``unifiedRunData`` is shared state for the currently-mounted run.
+// In issue #6334 ownership moved from the modal (``showUnifiedRunView``)
+// to the inline runs-list loader (``loadE2ERunIntoRow`` in
+// ``e2e_runs_list.js``).  Kept as ``window.unifiedRunData`` so
+// ``createIssuesForUntriaged`` and other handlers below resolve it
+// from a single place regardless of which surface mounted the run.
+let unifiedRunData = null;
 const E2E_LABEL_OVERRIDES = Object.freeze({
     pytest: 'Pytest',
     command: 'Command',
@@ -34,34 +40,15 @@ async function _fetchE2ERunDetail(runId, view = 'user') {
     return payload;
 }
 
-/**
- * Show the unified run view for any E2E run.
- * This is the main entry point - called when clicking any run row.
- *
- * @param {number} runId - The E2E run ID to display
- */
-async function showUnifiedRunView(runId, options) {
-    options = options || {};
-    const modal = document.getElementById('e2eDiagnosisModal');
-    const content = document.getElementById('e2eDiagnosisContent');
-    const modalTitle = modal.querySelector('.modal-header h2');
-
-    modalTitle.textContent = `E2E Run #${runId}`;
-    content.innerHTML = '<div class="loading-spinner">Loading run details...</div>';
-    modal.classList.add('visible');
-    // Phase D #6322: the E2E run view is no longer a dim-backdrop
-    // modal — it's a full-page section.  Tag <body> so the dashboard
-    // chrome hides behind it via CSS (overlays.css).  Cleared by
-    // closeE2EDiagnosisModal().
-    document.body.setAttribute('data-e2e-run-view-active', '1');
-
-    try {
-        unifiedRunData = await _fetchE2ERunDetail(runId, 'user');
-        renderUnifiedRunView(unifiedRunData, runId, options);
-    } catch (err) {
-        content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Failed to load run details: ${escapeHtml(err.message)}</div>`;
-    }
-}
+// ``showUnifiedRunView`` (the modal mount path) and
+// ``renderUnifiedRunView`` (its renderer) were removed in issue
+// #6334 along with ``#e2eDiagnosisModal``.  The new mount path lives
+// in ``e2e_runs_list.js → loadE2ERunIntoRow``: it lazy-fetches via
+// the same ``_fetchE2ERunDetail`` helper exported below, mounts
+// ``renderE2EResultsPanel(data)`` inline in the run's row, and runs
+// the same accessibility / timeline enhancements.  The dispatcher
+// re-routes ``open_e2e_run`` to ``expandE2ERunRow`` — single owner
+// for "navigate the user to run #N".
 
 function normalizeE2ETimelineData(timelineData) {
     timelineData = timelineData || {};
@@ -320,10 +307,12 @@ function renderRunDetailsDisclosure(data) {
 }
 
 function openE2ERunTimeline(runId) {
-    // Open run modal and auto-expand the Run details & artifacts
-    // disclosure (which holds the suite timeline).  Routed through
-    // the typed Command pipeline (issue #6322, PR #6329 reviewer
-    // Blocker 2) — single owner for "open E2E run" navigation.
+    // Expand the matching ``<details>`` row in the inline runs list
+    // and auto-open the nested "Run details & artifacts" disclosure
+    // (which holds the suite timeline).  Routed through the typed
+    // Command pipeline (issue #6322, PR #6329 reviewer Blocker 2;
+    // re-pointed at ``expandE2ERunRow`` in issue #6334) — single
+    // owner for "open E2E run" navigation.
     return runE2ELifecycleCommand({
         kind: 'open_e2e_run',
         label: 'Open E2E Run',
@@ -332,54 +321,13 @@ function openE2ERunTimeline(runId) {
     });
 }
 
-/**
- * Render the run modal with a test-centric layout: tests are the headline,
- * run metadata + suite artifacts + suite timeline live in a Run details &
- * artifacts disclosure at the bottom.
- */
-function renderUnifiedRunView(data, runId, options) {
-    options = options || {};
-    const content = document.getElementById('e2eDiagnosisContent');
-    const modalTitle = document.getElementById('e2eDiagnosisModal').querySelector('.modal-header h2');
-    const run = data && data.run ? data.run : {};
-    const runDate = run.started_at ? new Date(run.started_at).toLocaleString() : 'Unknown';
-    const commitFragment = run.commit_sha ? ` · ${String(run.commit_sha).substring(0, 7)}` : '';
-    modalTitle.textContent = `Run #${run.id || runId} · ${runDate}${commitFragment}`;
-
-    const tl = normalizeE2ETimelineData(data);
-    const html = `
-        <div class="unified-run-view">
-            ${run.note ? `<div class="e2e-run-note-banner">${escapeHtml(run.note)}</div>` : ''}
-            ${renderE2EResultsPanel(data)}
-        </div>
-    `;
-    content.innerHTML = html;
-
-    // Phase C (issue #6310 follow-up): the canonical viewer is mounted
-    // as the body.  Enhance it with the ARIA tree semantics + keyboard
-    // nav that the modal and per-issue drawer mounts get.
-    const cvvRoot = content.querySelector('.cvv-root');
-    if (cvvRoot && typeof enhanceCanonicalValidationViewerAccessibility === 'function') {
-        enhanceCanonicalValidationViewerAccessibility(cvvRoot);
-    }
-    // The legacy ``_autoLoadVisibleCapturedOutput`` lazy-loaded
-    // per-row captured stdout/stderr into the old test-results-panel
-    // DOM.  The canonical viewer renders its own stdout/stderr rows
-    // and doesn't need this entry point.  Captured-output lazy-load
-    // for the canonical viewer is a follow-up (no regression in
-    // diagnostic info — failure_details still carries the headline +
-    // traceback).
-
-    const timelineContainer = document.getElementById('e2eTimelineContent');
-    if (timelineContainer) {
-        renderE2ETimeline(timelineContainer, tl);
-    }
-
-    if (options.expandRunDetails) {
-        const disclosure = document.getElementById('runDetailsDisclosure');
-        if (disclosure) disclosure.open = true;
-    }
-}
+// ``renderUnifiedRunView`` was removed in issue #6334.  Its
+// responsibilities (mount the canonical viewer, attach ARIA
+// enhancements, render the suite timeline, optionally expand the
+// "Run details & artifacts" disclosure) now live in
+// ``loadE2ERunIntoRow`` (canonical viewer + ARIA + timeline) and
+// ``expandE2ERunRow`` (post-mount disclosure expansion) in
+// ``e2e_runs_list.js``.
 
 function renderE2ETimeline(container, timelineData) {
     if (!container) return;

@@ -94,10 +94,31 @@ function runE2ELifecycleCommand(command, triggerEl = null) {
     // ``OpenE2ERunCommandPayload`` schema in ``ui_openapi_models.py``.
     // Every user-facing "open E2E run" affordance (chip, View
     // button, Latest Results, etc.) routes through here — single
-    // owner, no parallel direct ``showUnifiedRunView()`` callers.
+    // owner, no parallel direct ``expandE2ERunRow()`` callers.
+    //
+    // Issue #6334 re-pointed this branch at the inline runs-as-rows
+    // list: ``open_e2e_run`` now expands (and scrolls to) the
+    // matching ``<details>`` row instead of opening a modal.  Same
+    // typed Command, new owner — ``expandE2ERunRow`` lives in
+    // ``e2e_runs_list.js``.
     if (kind === 'open_e2e_run' && command.run_id) {
         const expandRunDetails = command.expand_run_details === true;
-        showUnifiedRunView(command.run_id, { expandRunDetails });
+        if (typeof expandE2ERunRow !== 'function') {
+            showToast('E2E runs list is not loaded.', 'warning');
+            return;
+        }
+        expandE2ERunRow(command.run_id, { expandRunDetails });
+        return;
+    }
+    // Issue #6334: ``expand_e2e_run`` fires from the ``<details>``
+    // row's ``ontoggle`` handler the first time the user opens it.
+    // The dispatcher hands the row element to ``loadE2ERunIntoRow``,
+    // which lazy-fetches ``/api/e2e-run-detail/{run_id}`` and mounts
+    // the canonical viewer body inside the row.  ``triggerEl`` is
+    // the ``<details>`` (forwarded by ``runE2ELifecycleCommandFromToggle``).
+    if (kind === 'expand_e2e_run' && command.run_id) {
+        if (typeof loadE2ERunIntoRow !== 'function') return;
+        loadE2ERunIntoRow(command.run_id, triggerEl);
         return;
     }
     // Typed-Command entry point for the inline Attempts expander

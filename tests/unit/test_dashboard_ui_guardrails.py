@@ -1636,26 +1636,21 @@ def test_timeline_surfaces_failure_longrepr_inline_on_failed_rows() -> None:
 
 def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
     """Every ``.modal-overlay`` opened from within the issue drawer
-    must render above it, and the E2E run modal must stay below.
+    must render above it.
 
-    The stacking policy has two halves:
-
-    1. DEFAULT: any ``.modal-overlay.visible`` sibling of a visible
-       ``#issueDetailDrawer`` elevates above the drawer. This covers
-       ``#modalOverlay`` (session replay, validation failure, review
-       transcript), ``#timelineModal`` (Focus button on the drawer),
-       and any future modal class member. Opening a drill-down
-       dialog from the drawer should NOT require remembering to
-       register it in a CSS enumeration.
-    2. EXCEPTION: ``#e2eDiagnosisModal`` is the drawer's launcher —
-       the user clicked an affordance inside it to open the drawer,
-       so closing the drawer should return them to the run modal.
-       It must stay BELOW the drawer.
+    Issue #6334 retired ``#e2eDiagnosisModal``: the E2E run view is
+    no longer a modal — it mounts inline in the runs-list row.  The
+    drawer-vs-modal stacking contract therefore collapses to one
+    rule: any ``.modal-overlay.visible`` sibling of a visible
+    ``#issueDetailDrawer`` elevates above the drawer.  No exceptions
+    needed.
 
     Without the default rule, new modals silently render behind the
     drawer (this was the reviewer-caught regression on the timeline
-    Focus flow). Without the exception, the run modal would pop
-    over the drawer it spawned.
+    Focus flow).  The companion guardrail
+    ``test_css_bundle_drops_e2e_diagnosis_modal_rules`` enforces the
+    modal-only rules are gone from the bundle, so we can rely on
+    that absence here rather than asserting on it.
     """
     css = _read_dashboard_css_bundle()
     # Default: generic .modal-overlay elevates above the drawer.
@@ -1663,13 +1658,6 @@ def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
         "Missing DEFAULT elevation rule — generic .modal-overlay elements "
         "opened from the issue drawer (timeline Focus, session replay, "
         "validation failure, etc.) will render behind the drawer."
-    )
-    # Exception: e2e run modal stays below.
-    assert ":has(#issueDetailDrawer.visible) #e2eDiagnosisModal.visible" in css, (
-        "Missing e2e run modal stacking override. Without it, the "
-        "run modal competes with the drawer on the default elevated "
-        "z-index and the 'drawer opens on top of run modal' contract "
-        "breaks."
     )
 
 
@@ -1685,25 +1673,32 @@ def test_e2e_timeline_has_view_switcher() -> None:
 
 
 def test_e2e_run_timeline_is_directly_addressable() -> None:
-    """The run modal exposes a Timeline entrypoint that auto-expands the Run details disclosure.
+    """The Timeline entrypoint auto-expands the Run details disclosure.
 
-    PR #6329 Blocker 2: ``openE2ERunTimeline`` no longer calls
-    ``showUnifiedRunView`` directly — it routes through the typed
-    ``open_e2e_run`` Command with ``expand_run_details: true`` so
-    the single-owner contract holds for every entrypoint.
+    Issue #6334 re-pointed ``open_e2e_run`` at the inline runs-list
+    driver (``expandE2ERunRow``).  ``openE2ERunTimeline`` still
+    dispatches the typed Command with ``expand_run_details: true``;
+    the dispatcher routes that through ``expandE2ERunRow`` which
+    opens the matching row and then auto-opens the inner
+    "Run details & artifacts" disclosure inside the row body.
     """
     js = _read(DASHBOARD_JS)
     legacy_entry = _function_body(js, "openE2ERunTimeline")
-    render_body = _function_body(js, "renderUnifiedRunView")
+    expand_body = _function_body(js, "expandE2ERunRow")
     assert "function openE2ERunTimeline(runId)" in js
     # Routes through the typed Command pipeline.
     assert "runE2ELifecycleCommand" in legacy_entry
     assert "'open_e2e_run'" in legacy_entry
     assert "expand_run_details: true" in legacy_entry
-    # And the renderer still honors the expand-run-details intent.
-    assert "options.expandRunDetails" in render_body
-    assert "runDetailsDisclosure" in render_body
-    assert "renderE2ETimeline(timelineContainer, tl)" in render_body
+    # ``expandE2ERunRow`` honors the expand-run-details intent —
+    # opens the row, then opens the inner #runDetailsDisclosure.
+    assert "options.expandRunDetails" in expand_body
+    assert "runDetailsDisclosure" in expand_body
+    # The canonical viewer mount inside the row body uses the same
+    # ``renderE2ETimeline`` call; ``loadE2ERunIntoRow`` (in
+    # ``e2e_runs_list.js``) is the owner now.
+    load_body = _function_body(js, "loadE2ERunIntoRow")
+    assert "renderE2ETimeline(timelineContainer," in load_body
 
 
 def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
@@ -1768,9 +1763,12 @@ def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
     assert "filterTestResults" not in results_body
 
     # After mounting, the E2E view calls the canonical-viewer ARIA
-    # enhancer (matching the modal + drawer paths).
-    unified_body = _function_body(js, "renderUnifiedRunView")
-    assert "enhanceCanonicalValidationViewerAccessibility(cvvRoot)" in unified_body
+    # enhancer (matching the modal + drawer paths).  Issue #6334
+    # moved the mount owner from ``renderUnifiedRunView`` (the
+    # dropped modal renderer) to ``loadE2ERunIntoRow`` (the inline
+    # row's lazy loader) — that's where the enhancer fires now.
+    load_body = _function_body(js, "loadE2ERunIntoRow")
+    assert "enhanceCanonicalValidationViewerAccessibility(cvvRoot)" in load_body
 
     # The translator is the seam where categories collapse onto JUnit
     # outcomes.  It must be reachable as a top-level symbol.
@@ -1987,26 +1985,39 @@ def test_e2e_header_badge_uses_failed_evidence_over_passed_status() -> None:
 
 
 def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
-    """Issue rows still offer Timeline controls; run history rows route through results."""
+    """Issue rows still offer Timeline controls; the dashboard runs list
+    renders inline via the typed RecentE2ERunsPayload (#6334).
+
+    Issue #6334 dropped the SSR ``e2e-run-results-btn`` / ``card-focus``
+    chip loop in dashboard.html — the runs list now mounts client-side
+    from the typed payload embedded as inline JSON.  The
+    ``open_run_command`` typed contract still lives on issue_row.html's
+    View buttons.
+    """
     dashboard = _read(DASHBOARD_TEMPLATE)
     issue_row = _read(ISSUE_ROW_TEMPLATE)
-    # Run history rows keep the title click and expose an explicit formatted results action.
+    # The dashboard's runs list mounts client-side from the typed payload.
+    assert 'id="recentE2ERunsData" type="application/json"' in dashboard
+    assert 'id="e2eRunsListRoot"' in dashboard
+    # ``openE2ERunTimeline(run.e2e_run_id)`` is no longer a dashboard
+    # inline-onclick; rows dispatch ``expand_e2e_run`` instead.
     assert "openE2ERunTimeline({{ run.e2e_run_id }})" not in dashboard
     assert ">Open run<" not in dashboard
-    # PR #6329 reviewer Blocker 1: the chip click serializes through
-    # the view-model's ``open_run_command`` field (an
-    # ``OpenE2ERunCommand.model_dump()`` dict, contract-validated).
-    # The template no longer hand-builds the JSON payload.
-    assert (
-        'data-lifecycle-command="{{ run.open_run_command | tojson | forceescape }}"'
-        in dashboard
-    )
-    assert "runE2ELifecycleCommandFromButton(this)" in dashboard
-    # And the legacy hand-built JSON shape is gone (regression guard).
+    # No hand-built JSON for the typed Command kinds (regression guard).
     assert 'data-lifecycle-command=\'{"kind":"open_e2e_run"' not in dashboard
-    assert "e2e-run-results-btn" in dashboard
-    assert 'data-action="show-e2e-run-results"' in dashboard
-    # Issue rows continue to expose direct Timeline controls.
+    assert 'data-lifecycle-command=\'{"kind":"expand_e2e_run"' not in dashboard
+    # The "View Results" top-level button (latest run) is still in
+    # dashboard.html via the e2e_summary chip — that's not in the
+    # runs-list loop and stayed put.
+    assert 'data-action="show-latest-e2e-run-results"' in dashboard
+    # Issue rows continue to expose direct Timeline controls + the
+    # typed-Command View button (issue_row.html keeps the chip shape
+    # the runs list no longer needs).
+    assert (
+        'data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}"'
+        in issue_row
+    )
+    assert "runE2ELifecycleCommandFromButton(this)" in issue_row
     assert "openE2ERunTimeline({{ issue.e2e_run_id }})" in issue_row
     assert "openIssueTimeline({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
     assert "openTimelineModal({{ issue.issue_number }})" not in issue_row
@@ -2189,22 +2200,35 @@ def test_render_compact_cards_removes_empty_placeholder_when_items_exist() -> No
 
 
 def test_e2e_run_note_rendered_in_template() -> None:
-    """The e2e run list must surface run.note so fixture errors are visible."""
-    html = _read(DASHBOARD_TEMPLATE)
-    assert "run.note" in html, (
-        "Dashboard template must render run.note for e2e runs so that "
-        "fixture errors (e.g. GH activity guard) are visible in the list"
+    """The e2e runs list must surface ``run.note`` so fixture errors
+    (e.g. GH activity guard) are visible in the list.
+
+    Issue #6334 moved the runs list from the SSR Jinja loop to the
+    client-side ``e2e_runs_list.js`` chunk.  The renderer reads
+    ``summary.note`` from the typed ``RecentE2ERunSummary`` payload
+    and emits a ``.e2e-run-row-note`` block; the field is preserved
+    on the typed model (``RecentE2ERunSummary.note: str | None``)
+    and threaded through the builder.
+    """
+    chunk = (DASHBOARD_JS_DIR / "e2e_runs_list.js").read_text(encoding="utf-8")
+    assert "summary.note" in chunk, (
+        "e2e_runs_list.js must render summary.note so fixture errors "
+        "remain visible in the list (#6334)"
     )
-    assert "e2e-run-note" in html, (
-        "Dashboard template must use the e2e-run-note class for styling"
+    assert "e2e-run-row-note" in chunk, (
+        "e2e_runs_list.js must use the .e2e-run-row-note class for styling"
     )
 
 
 def test_e2e_run_note_has_error_styling() -> None:
-    """The e2e-run-note class must have error-toned styling."""
+    """The runs-list note class must have visible styling.
+
+    Issue #6334 renamed the class to ``.e2e-run-row-note`` along
+    with the row-based layout.
+    """
     css = _read_dashboard_css_bundle()
-    assert ".e2e-run-note" in css, (
-        "Dashboard CSS must define .e2e-run-note for fixture error display"
+    assert ".e2e-run-row-note" in css, (
+        "Dashboard CSS must define .e2e-run-row-note for fixture error display"
     )
 
 
@@ -2258,42 +2282,31 @@ def test_flaky_analysis_parses_response_as_text_first() -> None:
 
 
 def test_show_unified_run_view_has_a_single_owner() -> None:
-    """``showUnifiedRunView`` is only legitimately called from the
-    typed-Command dispatcher.
+    """No direct callers of ``showUnifiedRunView`` survive.
 
-    PR #6329 reviewer Blocker 2: every user-facing "open E2E run"
-    affordance must dispatch the typed ``open_e2e_run`` Command,
-    which the dispatcher then routes to ``showUnifiedRunView``.
-    Direct ``showUnifiedRunView(...)`` callers anywhere ELSE
-    re-introduce the parallel untyped surface.
+    Issue #6334 retired ``showUnifiedRunView`` (the modal-driver) when
+    it dropped ``#e2eDiagnosisModal``.  Open-E2E-run navigation now
+    routes through ``expandE2ERunRow`` (the inline runs-list driver)
+    via the typed ``open_e2e_run`` Command — same single-owner
+    contract as before, new owner.
 
     This guardrail walks every JS file under
-    ``static/js/dashboard/`` and asserts that ``showUnifiedRunView(``
-    appears only in:
-      - ``e2e_run_view.js`` — the function's DEFINITION.
-      - ``lifecycle_commands.js`` — the typed-Command dispatcher
-        (the single legitimate non-definition call site).
-    Any new file containing ``showUnifiedRunView(`` fails this test.
-    The dispatcher's own call line is the only allowed
-    non-definition use.
+    ``static/js/dashboard/`` and asserts that no live code path
+    references ``showUnifiedRunView(``.  Comments are ignored so
+    historical deletion notes don't trip the guard.  Any new direct
+    caller — or a re-added definition — fires this test.
     """
     import re
 
-    allowed_files = {
-        "e2e_run_view.js",  # contains the function definition
-        "lifecycle_commands.js",  # the typed-Command dispatcher
-    }
     direct_callers: list[tuple[str, int, str]] = []
 
     for js_path in sorted(DASHBOARD_JS_DIR.rglob("*.js")):
         relpath = js_path.relative_to(DASHBOARD_JS_DIR).as_posix()
-        if relpath in allowed_files:
-            continue
         text = js_path.read_text(encoding="utf-8")
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            # Strip JS line/block-comment fragments before matching so
-            # ``// ... showUnifiedRunView()`` mentions in prose don't
-            # trip the guard.
+        # Strip block comments so deletion notes describing the
+        # removed function don't trip the guard.
+        text_no_block = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        for lineno, line in enumerate(text_no_block.splitlines(), start=1):
             stripped = re.sub(r"//.*$", "", line)
             if "showUnifiedRunView(" in stripped:
                 direct_callers.append((relpath, lineno, line.strip()))
@@ -2437,3 +2450,243 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
     assert (
         "function runE2ELifecycleCommandFromToggle" in dispatcher_src
     ), "lifecycle_commands.js must define runE2ELifecycleCommandFromToggle"
+
+
+# ─── Issue #6334: drop the #e2eDiagnosisModal frame ────────────────────
+
+
+def test_template_drops_e2e_diagnosis_modal_markup() -> None:
+    """The ``#e2eDiagnosisModal`` overlay was the legacy modal for
+    rendering E2E run details.  Issue #6334 replaced it with the
+    inline runs-as-rows layout — the modal markup must not survive
+    in the template.
+
+    Re-adding a modal here would resurrect the modal-vs-drawer
+    z-index war (see issue_detail.css comment) and the
+    ``data-e2e-run-view-active`` body cloak that #6334 removed.
+    """
+    html = _read(DASHBOARD_TEMPLATE)
+    assert (
+        "e2eDiagnosisModal" not in html
+    ), "dashboard.html must not contain #e2eDiagnosisModal — runs render inline (#6334)"
+    assert (
+        "e2eDiagnosisContent" not in html
+    ), "dashboard.html must not contain #e2eDiagnosisContent (modal body)"
+    assert (
+        "e2eDiagnosisAgent" not in html
+    ), "dashboard.html must not contain #e2eDiagnosisAgent (modal dead control)"
+    assert (
+        "data-e2e-run-view-active" not in html
+    ), "dashboard.html must not set data-e2e-run-view-active (modal cloak attribute)"
+
+
+def test_template_mounts_inline_runs_list_root() -> None:
+    """The runs-as-rows panel mounts into ``#e2eRunsListRoot`` and reads
+    its initial payload from ``#recentE2ERunsData`` (typed JSON).
+
+    The JS chunk ``e2e_runs_list.js`` reads the inline JSON on
+    DOMContentLoaded — no initial round-trip required.
+    """
+    html = _read(DASHBOARD_TEMPLATE)
+    assert (
+        'id="e2eRunsListRoot"' in html
+    ), "Run History panel must mount into #e2eRunsListRoot (#6334)"
+    assert (
+        'id="recentE2ERunsData"' in html
+    ), "Run History panel must embed inline JSON in #recentE2ERunsData (#6334)"
+    assert (
+        'type="application/json"' in html
+    ), "inline runs-list payload must declare type=application/json"
+
+
+def test_css_bundle_drops_e2e_diagnosis_modal_rules() -> None:
+    """Issue #6334 deleted every ``#e2eDiagnosisModal`` selector and the
+    companion ``body[data-e2e-run-view-active]`` cloak.  The CSS
+    bundle (every chunk concatenated) must carry no live ``modal``
+    rules for the dropped overlay.
+
+    Carrying dead selectors keeps the bundle bigger than it needs to
+    be and (worse) leaves the modal showable via a one-line JS
+    revert.  This guardrail makes the drop sticky.
+    """
+    css = _read_dashboard_css_bundle()
+    # The ``#`` selector itself must not appear in any rule.
+    assert (
+        "#e2eDiagnosisModal" not in css
+        or _modal_only_in_comments(css)
+    ), "dashboard CSS must not carry #e2eDiagnosisModal rules (#6334)"
+    assert (
+        "data-e2e-run-view-active" not in css
+        or _cloak_only_in_comments(css)
+    ), "dashboard CSS must not carry body[data-e2e-run-view-active] cloak rules (#6334)"
+
+
+def _modal_only_in_comments(css: str) -> bool:
+    """Allow ``#e2eDiagnosisModal`` to appear in a /* … */ comment
+    (so the deletion note in overlays.css doesn't break this test)."""
+    # Strip /* … */ block comments, then verify the symbol is gone.
+    stripped = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    return "#e2eDiagnosisModal" not in stripped
+
+
+def _cloak_only_in_comments(css: str) -> bool:
+    stripped = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    return "data-e2e-run-view-active" not in stripped
+
+
+def test_js_bundle_drops_legacy_e2e_diagnosis_modal_callers() -> None:
+    """Companion to the CSS guardrail: the JS bundle must not retain
+    the dead modal-driver functions (``showE2EDiagnosis``,
+    ``closeE2EDiagnosisModal``, ``renderE2EDiagnosis``,
+    ``createE2EDiagnosticIssue``) that issue #6334 removed.  These
+    referenced DOM ids that no longer exist; carrying them would
+    leave runtime errors latent if anyone re-introduced a caller.
+    """
+    js = _read_dashboard_js_bundle()
+    # Strip JS line comments + block comments so deletion notes in
+    # the source don't break the guardrail.
+    stripped = re.sub(r"/\*.*?\*/", "", js, flags=re.DOTALL)
+    stripped = re.sub(r"//[^\n]*", "", stripped)
+    for symbol in (
+        "function showE2EDiagnosis(",
+        "function renderE2EDiagnosis(",
+        "function closeE2EDiagnosisModal(",
+        "function createE2EDiagnosticIssue(",
+    ):
+        assert symbol not in stripped, (
+            f"{symbol!r} must not survive in the dashboard JS bundle (#6334)"
+        )
+
+
+def test_e2e_runs_list_chunk_registered_after_e2e_run_view() -> None:
+    """``e2e_runs_list.js`` calls ``renderE2EResultsPanel`` /
+    ``renderE2ETimeline`` (defined in ``e2e_run_view.js``), so it
+    must load AFTER ``e2e_run_view.js`` in the bundle.  A re-order
+    that drops this invariant would break the inline canonical
+    viewer mount on the first row expand.
+    """
+    chunks = list(DASHBOARD_JS_CHUNKS)
+    assert "e2e_run_view.js" in chunks
+    assert "e2e_runs_list.js" in chunks, (
+        "e2e_runs_list.js must be registered in DASHBOARD_JS_CHUNKS (#6334)"
+    )
+    assert chunks.index("e2e_runs_list.js") > chunks.index("e2e_run_view.js"), (
+        "e2e_runs_list.js must load AFTER e2e_run_view.js — its lazy "
+        "loader calls renderE2EResultsPanel/renderE2ETimeline (#6334)"
+    )
+
+
+def test_e2e_runs_list_uses_typed_command_pipeline() -> None:
+    """Issue #6334: each ``<details>`` row in the runs-as-rows panel
+    must carry a typed ``expand_e2e_run`` Command in
+    ``data-lifecycle-command`` and dispatch on ``ontoggle`` through
+    the shared ``runE2ELifecycleCommandFromToggle`` pipeline — the
+    same single-owner contract every other affordance uses.
+
+    Prevents drift back to a bespoke ``ontoggle="_handleE2ERunRow(...)"``
+    handler reading from a one-off attribute (the bug PR #6333
+    fixed for the inline Attempts expander).
+    """
+    src = (DASHBOARD_JS_DIR / "e2e_runs_list.js").read_text(encoding="utf-8")
+    assert (
+        "'expand_e2e_run'" in src or '"expand_e2e_run"' in src
+    ), "e2e_runs_list.js must emit the typed kind 'expand_e2e_run'"
+    assert (
+        'ontoggle="runE2ELifecycleCommandFromToggle' in src
+    ), "row <details> must dispatch via runE2ELifecycleCommandFromToggle (single-owner toggle)"
+    assert (
+        'data-lifecycle-command="' in src
+    ), "row must carry the typed Command in data-lifecycle-command"
+
+    # Dispatcher wiring.
+    dispatcher_src = (DASHBOARD_JS_DIR / "lifecycle_commands.js").read_text(encoding="utf-8")
+    assert (
+        "'expand_e2e_run'" in dispatcher_src
+    ), "lifecycle_commands.js must dispatch 'expand_e2e_run'"
+    assert (
+        "loadE2ERunIntoRow(command.run_id" in dispatcher_src
+    ), "dispatcher must call loadE2ERunIntoRow(run_id, triggerEl)"
+    assert (
+        "expandE2ERunRow(command.run_id" in dispatcher_src
+    ), "dispatcher must re-route open_e2e_run to expandE2ERunRow(run_id, options)"
+    assert (
+        "showUnifiedRunView(command.run_id" not in dispatcher_src
+    ), "open_e2e_run must NOT route to the dropped showUnifiedRunView modal call (#6334)"
+
+
+def test_recent_e2e_runs_builder_emits_typed_payload() -> None:
+    """The runs-list builder in ``dashboard_e2e.py`` must produce
+    typed ``RecentE2ERunSummary`` rows with a matching
+    ``ExpandE2ERunCommand``.
+
+    Builder smoke test catches drift between the DB row shape
+    (``E2ERun``) and the typed payload — adding a new ``E2ERun``
+    field, for instance, can't quietly break the row renderer
+    without surfacing here.
+    """
+    from types import SimpleNamespace
+
+    from issue_orchestrator.view_models.dashboard_e2e import build_recent_e2e_runs
+
+    class _DB:
+        def list_runs(self, orchestrator_id, limit):
+            assert orchestrator_id == "test"
+            return [
+                SimpleNamespace(
+                    id=1,
+                    started_at="2026-05-12T10:00:00Z",
+                    finished_at="2026-05-12T10:05:00Z",
+                    status="passed",
+                    duration_seconds=300.0,
+                    commit_sha="abc1234",
+                    branch="main",
+                    runner_kind="pytest",
+                    command=["pytest", "tests/e2e"],
+                    pytest_args=[],
+                    note=None,
+                ),
+                SimpleNamespace(
+                    id=2,
+                    started_at="2026-05-12T11:00:00Z",
+                    finished_at=None,
+                    status="running",
+                    duration_seconds=None,
+                    commit_sha=None,
+                    branch="feature",
+                    runner_kind="pytest",
+                    command=[],
+                    pytest_args=["-v"],
+                    note="Retry of #1",
+                ),
+            ]
+
+        def get_test_summary(self, run_id):
+            return {"counts": {"passed": 36, "failed": 1, "passed_on_retry": 2,
+                               "quarantined": 0, "skipped": 1, "total": 40}}
+
+    config = SimpleNamespace(orchestrator_id="test")
+    payload = build_recent_e2e_runs(_DB(), config, limit=50)
+    assert len(payload.runs) == 2
+
+    first = payload.runs[0]
+    assert first.run_id == 1
+    assert first.outcome.label == "Passed"
+    assert first.outcome.tone == "passed"
+    # passed + passed_on_retry collapse into the single "passed"
+    # bucket on the row — the canonical viewer keeps the per-retry
+    # detail.
+    assert first.results.passed == 38
+    assert first.results.failed == 1
+    assert first.expand_command.kind == "expand_e2e_run"
+    assert first.expand_command.run_id == 1
+    assert first.command_summary == "pytest tests/e2e"
+
+    # Running run — outcome tone is ``in_progress``, not ``passed``.
+    # OutcomeBadge contract: unknown / non-terminal mustn't be green.
+    second = payload.runs[1]
+    assert second.outcome.label == "Running"
+    assert second.outcome.tone == "in_progress"
+    assert second.note == "Retry of #1"
+    # Empty command + pytest_args=['-v'] should fall back to
+    # ``pytest -v`` for display.
+    assert second.command_summary == "pytest -v"

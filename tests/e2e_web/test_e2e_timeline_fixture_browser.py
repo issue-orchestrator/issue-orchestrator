@@ -687,21 +687,20 @@ def _route_synthetic_passed_run_detail(
     )
 
 
-def _expect_formatted_passed_run_modal(page: Page) -> None:
-    # Phase C of #6310 follow-up: the E2E run modal body is now the
-    # canonical validation viewer (``.cvv-root``).  The legacy
-    # ``.test-results-headline`` / ``.trr-row`` structure is gone;
-    # passing tests live inside the canonical viewer's browse-by-file
-    # row (closed by default but their node-id + display name still
-    # appear in the rendered HTML).
-    modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=5000)
-    expect(modal.locator(".diagnosis-header")).to_have_count(0)
-    cvv = modal.locator(".cvv-root").first
+def _expect_formatted_passed_run_modal(page: Page, run_id: int) -> None:
+    # Issue #6334: the E2E run view mounts inline inside its row in
+    # the runs-as-rows list — no more ``#e2eDiagnosisModal``.  This
+    # helper asserts the same canonical-viewer contents the legacy
+    # modal would have shown, just scoped to the row body.
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    expect(row).to_have_count(1, timeout=5000)
+    expect(row).to_have_js_property("open", True)
+    expect(row.locator(".diagnosis-header")).to_have_count(0)
+    cvv = row.locator(".cvv-root").first
     expect(cvv).to_be_visible(timeout=5000)
     expect(cvv).to_have_attribute("data-cvv-status", "passed")
     # Run-level chips show "passed" status + 1 passing.
-    summary = modal.locator(".e2e-run-summary")
+    summary = row.locator(".e2e-run-summary")
     expect(summary).to_be_visible()
     expect(summary).to_contain_text("passed")
     expect(summary).to_contain_text("1 passing")
@@ -1004,26 +1003,24 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     assert detail_cycle_summary == suite_cycle_summary
     assert detail_cycle_count == suite_cycle_count
 
-    # Open the run drawer. The list-row "Open run" / "Timeline" buttons were
-    # removed in the test-centric redesign — the title click is now the
-    # single entry point. Tests are the modal's headline; the run timeline
-    # lives inside the "Run details" disclosure at the bottom.
+    # Open the run view inline (#6334).  The row's summary click
+    # dispatches the typed ``expand_e2e_run`` Command through the
+    # shared dispatcher; the canonical viewer mounts inside
+    # ``.e2e-run-row-content``.  Run id is on the row itself
+    # (``data-e2e-run-id``) — no modal header to inspect.
     _open_e2e_tab(page)
-    run_item = page.locator(
-        ".e2e-run-item",
-        has=page.locator("button.card-focus"),
-    ).first
-    expect(run_item).to_be_visible(timeout=5000)
-    title_btn = run_item.locator("button.card-focus").first
-    expect(title_btn).to_be_visible(timeout=5000)
-    title_btn.click()
-
-    modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=15_000)
-    expect(page.locator("#e2eDiagnosisModal .modal-header h2")).to_contain_text(
-        f"Run #{run_id}",
-        timeout=15_000,
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    expect(row).to_have_count(1, timeout=5000)
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", True)
+    expect(row.locator(".e2e-run-row-id")).to_contain_text(
+        f"Run #{run_id}", timeout=15_000,
     )
+    # ``modal`` is kept as the local variable name so the deep
+    # assertions below (canonical viewer mount, run-level affordances,
+    # ARIA, etc.) read the same way they did pre-#6334.  It now means
+    # "the expanded row body", not "the modal".
+    modal = row
 
     # Phase C of #6310 follow-up: the canonical validation viewer is
     # the modal's body.  Run-level summary chips replace the legacy
@@ -1439,20 +1436,13 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # so a future regression in the recording endpoint, the PTY event
     # decoding, or the replay initialization cannot silently pass.
     #
-    # The E2E run drawer is expected to REMAIN visible behind the
-    # issue detail drawer — closing the issue drawer should return the
-    # user to the run drawer, not the dashboard. The stacking contract:
-    #
-    #   .modal-overlay (#e2eDiagnosisModal) .........  z-index 30
-    #   #issueDetailDrawer ..........................  z-index 35
-    #   #modalOverlay (session-replay, elevated) ....  z-index 45
-    #
-    # so every interaction layer above is reachable without dismissing
-    # the one beneath. We verify that invariant here.
-    expect(page.locator("#e2eDiagnosisModal.visible")).to_have_count(
-        1,
-        timeout=5000,
-    )
+    # Issue #6334: the E2E run row stays open underneath any modal /
+    # drawer the user opens from inside it — same intent as the
+    # legacy modal-vs-drawer stacking contract, but mechanically much
+    # simpler: the row is normal-flow content, drawers/modals stack
+    # on top via their existing z-index rules.  Verify the row is
+    # still ``[open]`` here.
+    expect(row).to_have_js_property("open", True)
 
     session_recording_btn = journey.locator(
         ".timeline-event-actions > .timeline-action-btn",
@@ -1582,25 +1572,20 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     latest_cycle = issue_lifecycle.cycles[-1]
     assert latest_cycle.coder.session_recording.kind == "available"
 
+    # Issue #6334: open the run inline by clicking its row's summary.
     _open_e2e_tab(page)
-    run_item = page.locator(
-        ".e2e-run-item",
-        has=page.locator("button.card-focus"),
-    ).first
-    expect(run_item).to_be_visible(timeout=5000)
-    title_btn = run_item.locator("button.card-focus").first
-    expect(title_btn).to_be_visible(timeout=5000)
-    title_btn.click()
-
-    modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=5000)
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    expect(row).to_have_count(1, timeout=5000)
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", True)
+    modal = row  # ``modal`` is the legacy variable name kept for diff clarity
 
     # Phase C: canonical viewer is mounted; run-summary chips visible.
     # ``cvv-root`` may have zero bounding box when the fixture has no
     # tests — use presence rather than visibility for the viewer.
     cvv = modal.locator(".cvv-root")
-    expect(cvv).to_have_count(1)
-    expect(modal.locator(".e2e-run-summary")).to_be_visible(timeout=5000)
+    expect(cvv).to_have_count(1, timeout=10_000)
+    expect(modal.locator(".e2e-run-summary")).to_be_visible(timeout=10_000)
 
     # ── Real-data automated smoke: the canonical viewer rendered the
     #    actual fixture-backed payload, not just an empty shell. ────
@@ -1815,22 +1800,19 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
             body=json.dumps(synthetic_payload),
         ),
     )
+    # Issue #6334: open the run inline by clicking its row's summary.
     _open_e2e_tab(page)
-    run_item = page.locator(
-        ".e2e-run-item",
-        has=page.locator("button.card-focus"),
-    ).first
-    expect(run_item).to_be_visible(timeout=5000)
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    expect(row).to_have_count(1, timeout=5000)
     page.evaluate(
         """() => {
             window.__openedPaths = [];
             window.openPath = (path) => window.__openedPaths.push(String(path));
         }"""
     )
-    run_item.locator("button.card-focus").first.click()
-
-    modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=5000)
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", True)
+    modal = row  # legacy variable name kept for diff clarity
 
     # Phase C: the canonical viewer holds the test list.  For a
     # single passing test the body's status is passed and the test
@@ -1882,25 +1864,23 @@ def test_run_history_view_results_opens_formatted_passed_run_modal(
     page: Page,
     fixture_web_server: dict[str, object],
 ) -> None:
-    """Run-history View Results opens formatted results, not diagnosis."""
+    """Run-history row click opens the canonical viewer inline (#6334).
+
+    The legacy SSR "View Results" button per row was retired with the
+    modal — the row's summary is now the click target, dispatching the
+    typed ``expand_e2e_run`` Command through the shared dispatcher.
+    """
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
 
     page.goto(f"{base_url}/", wait_until="domcontentloaded")
     _route_synthetic_passed_run_detail(page, str(base_url), run_id)
     _open_e2e_tab(page)
-    run_item = page.locator(
-        ".e2e-run-item",
-        has=page.locator(".e2e-run-results-btn"),
-    ).first
-    expect(run_item).to_be_visible(timeout=5000)
-    results_button = run_item.locator(".e2e-run-results-btn").first
-    expect(results_button).to_be_visible(timeout=5000)
-    expect(results_button).to_be_enabled(timeout=5000)
-    expect(results_button).to_have_text("View Results")
-    results_button.click()
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    expect(row).to_have_count(1, timeout=5000)
+    row.locator("summary").first.click()
 
-    _expect_formatted_passed_run_modal(page)
+    _expect_formatted_passed_run_modal(page, run_id)
 
 
 def test_latest_view_results_opens_formatted_passed_run_modal(
@@ -1928,7 +1908,7 @@ def test_latest_view_results_opens_formatted_passed_run_modal(
     expect(latest_results).to_have_text("View Results")
     latest_results.click()
 
-    _expect_formatted_passed_run_modal(page)
+    _expect_formatted_passed_run_modal(page, run_id)
 
 
 def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugin(
@@ -2050,15 +2030,13 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
             body=json.dumps(synthetic),
         ),
     )
+    # Issue #6334: open the run inline by clicking its row's summary.
     _open_e2e_tab(page)
-    run_item = page.locator(
-        ".e2e-run-item",
-        has=page.locator("button.card-focus"),
-    ).first
-    expect(run_item).to_be_visible(timeout=5000)
-    run_item.locator("button.card-focus").first.click()
-    modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=5000)
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    expect(row).to_have_count(1, timeout=5000)
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", True)
+    modal = row  # legacy variable name kept for diff clarity
 
     # ── Canonical viewer mounted with the right shape ─────────────────
     cvv = modal.locator(".cvv-root").first

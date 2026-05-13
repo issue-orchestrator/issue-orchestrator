@@ -159,8 +159,12 @@ class OpenE2ERunCommand(LifecycleBase):
 
     Issued by the dashboard's E2E chip, the issue-row "View" button,
     and any other affordance that navigates the user to a specific
-    E2E run.  The frontend dispatcher (``runE2ELifecycleCommand``)
-    routes this kind to ``showUnifiedRunView(run_id, options)``.
+    E2E run.  Issue #6334 re-points the dispatcher at the runs-as-rows
+    layout: instead of opening ``#e2eDiagnosisModal``, the typed
+    Command now expands (and scrolls to) the matching ``<details>``
+    row in the inline runs list.  ``expand_run_details`` opens the
+    nested "Run details & artifacts" disclosure once the row has
+    populated.
 
     Adding this kind to the typed ``TimelineCommand`` union means
     every user-facing "open E2E run" affordance serializes through
@@ -179,6 +183,27 @@ class OpenE2ERunCommand(LifecycleBase):
     expand_run_details: bool = False
 
 
+class ExpandE2ERunCommand(LifecycleBase):
+    """Expand a run's row in the inline runs-as-rows list (issue #6334).
+
+    Carried by every ``<details>`` row in the E2E "Run History" list.
+    Dispatched from ``runE2ELifecycleCommandFromToggle`` when the user
+    first opens the row, which routes to a loader that lazy-fetches
+    ``/api/e2e-run-detail/{run_id}`` and mounts the canonical viewer
+    body inline — no modal teleport.
+
+    Lives next to ``OpenE2ERunCommand`` for symmetry: ``open_e2e_run``
+    is "navigate to run #N from anywhere on the dashboard"
+    (chip / View button); ``expand_e2e_run`` is "the user just
+    toggled this specific row in the list".  Same run_id invariants
+    (strict int, ge=1) so a stringified payload can't sneak past.
+    """
+
+    kind: Literal["expand_e2e_run"] = "expand_e2e_run"
+    label: str = "Expand E2E Run"
+    run_id: int = Field(..., ge=1, strict=True)
+
+
 TimelineCommand = Annotated[
     ShowEventDetailsCommand
     | OpenSessionRecordingCommand
@@ -187,6 +212,7 @@ TimelineCommand = Annotated[
     | OpenReviewFeedbackCommand
     | OpenIssueTimelineCommand
     | OpenE2ERunCommand
+    | ExpandE2ERunCommand
     | OpenInlineAgentAttemptsCommand,
     Field(discriminator="kind"),
 ]
@@ -695,6 +721,83 @@ class OutcomeBadge(LifecycleBase):
     tone: Literal["passed", "failed", "error", "in_progress", "neutral"]
 
 
+class E2ERunResultCounts(LifecycleBase):
+    """Per-outcome test-result counts for a single E2E run (issue #6334).
+
+    Used by the inline runs-list header to render
+    "1 failed · 1 errored · 36 passed · 2 skipped" without forcing the
+    UI to flatten the canonical ``E2ERunResultCategoriesPayload`` —
+    that one carries arrays of test cases, this one carries just the
+    counts the row needs at first paint.
+    """
+
+    passed: int = Field(..., ge=0)
+    failed: int = Field(..., ge=0)
+    errored: int = Field(..., ge=0)
+    skipped: int = Field(..., ge=0)
+    quarantined: int = Field(..., ge=0)
+    total: int = Field(..., ge=0)
+
+
+class RecentE2ERunSummary(LifecycleBase):
+    """One row in the inline E2E runs list (issue #6334).
+
+    Carries the minimum the row needs to render closed: outcome badge,
+    started/duration, commit/branch, runner kind + command summary,
+    per-outcome counts, optional note.  Plus the typed
+    ``expand_command`` (``ExpandE2ERunCommand``) that the row's
+    ``<details>`` element carries in ``data-lifecycle-command`` and
+    dispatches when first opened.
+
+    The canonical viewer body that mounts on expand is fetched
+    separately from ``/api/e2e-run-detail/{run_id}`` — keeping the
+    list payload small means the dashboard can render N rows with
+    one round-trip and only pull the heavy per-run timeline when a
+    user actually drills in.
+    """
+
+    run_id: int = Field(..., ge=1, strict=True)
+    outcome: OutcomeBadge
+    started_at: Timestamp
+    finished_at: Timestamp | None = None
+    duration_seconds: float | None = None
+    commit_sha: str | None = None
+    branch: str | None = None
+    runner_kind: str
+    command_summary: str
+    results: E2ERunResultCounts
+    note: str | None = None
+    expand_command: ExpandE2ERunCommand
+
+    @model_validator(mode="after")
+    def _expand_command_targets_run(self) -> "RecentE2ERunSummary":
+        if self.expand_command.run_id != self.run_id:
+            raise ValueError(
+                f"expand_command.run_id={self.expand_command.run_id} must match "
+                f"summary run_id={self.run_id}"
+            )
+        return self
+
+
+class RecentE2ERunsPayload(LifecycleBase):
+    """Response payload for ``GET /api/e2e-runs/recent`` (issue #6334).
+
+    Wraps a list of ``RecentE2ERunSummary`` plus a duplicate-free
+    invariant so the frontend never has to dedupe by run_id.
+    """
+
+    runs: tuple[RecentE2ERunSummary, ...]
+
+    @model_validator(mode="after")
+    def _unique_run_ids(self) -> "RecentE2ERunsPayload":
+        seen: set[int] = set()
+        for run in self.runs:
+            if run.run_id in seen:
+                raise ValueError(f"duplicate run_id={run.run_id} in payload")
+            seen.add(run.run_id)
+        return self
+
+
 class IssueCycle(LifecycleBase):
     cycle_number: int
     coder: CodingAttempt
@@ -1126,8 +1229,10 @@ __all__ = [
     "E2EFailureEvidence",
     "E2ERunIteration",
     "E2ERunLifecycle",
+    "E2ERunResultCounts",
     "E2ESuiteTimelineContainer",
     "E2ETestExecution",
+    "ExpandE2ERunCommand",
     "FailedCodingAttempt",
     "FailedE2ETestExecution",
     "IssueCycle",
@@ -1149,6 +1254,8 @@ __all__ = [
     "OpenValidationDetailsCommand",
     "PassedE2ETestExecution",
     "PublishFailedCodingAttempt",
+    "RecentE2ERunSummary",
+    "RecentE2ERunsPayload",
     "ReviewApproved",
     "ReviewChangesRequested",
     "ReviewFailed",

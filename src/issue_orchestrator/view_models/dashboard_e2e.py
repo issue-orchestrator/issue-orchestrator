@@ -7,10 +7,22 @@ import copy
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
-from .lifecycle_semantics import OpenE2ERunCommand
+from .lifecycle_semantics import (
+    E2ERunResultCounts,
+    ExpandE2ERunCommand,
+    OpenE2ERunCommand,
+    OutcomeBadge,
+    RecentE2ERunSummary,
+    RecentE2ERunsPayload,
+)
+
+# Mirror the tone Literal so the tone dict + the OutcomeBadge call
+# site agree at type-check time.  PR #6333 round-3 (lifecycle
+# tone-table typing) established this pattern.
+_OutcomeTone = Literal["passed", "failed", "error", "in_progress", "neutral"]
 
 
 def _open_run_command_payload(run_id: int, *, expand_run_details: bool = False) -> dict[str, Any]:
@@ -202,6 +214,120 @@ def _e2e_run_status_label(status: str | None) -> str:
         "canceled": "Canceled",
         "error": "Error",
     }.get(str(status or "").lower(), str(status or "Unknown"))
+
+
+# Issue #6334: tone mapping for the runs-list outcome badge.  The
+# E2E run row carries a typed ``OutcomeBadge`` (same type powering
+# JourneyRun / IssueCycle outcomes), so the UI reads ``tone`` to
+# pick its CSS class instead of string-matching status text — the
+# same bug the OutcomeBadge migration killed for the inline Attempts
+# expander (PR #6333).  Unknown status → ``neutral``, never silently
+# ``passed``.
+_E2E_RUN_STATUS_TONES: dict[str, _OutcomeTone] = {
+    "passed": "passed",
+    "failed": "failed",
+    "warning": "passed",  # passed-on-retry — terminal-success
+    "running": "in_progress",
+    "canceled": "neutral",
+    "error": "error",
+}
+
+
+def _e2e_run_outcome_badge(status: str | None) -> OutcomeBadge:
+    normalized = str(status or "").lower()
+    tone = _E2E_RUN_STATUS_TONES.get(normalized, "neutral")
+    return OutcomeBadge(label=_e2e_run_status_label(status), tone=tone)
+
+
+def _format_command_summary(command: list[str], pytest_args: list[str]) -> str:
+    """Return the user-readable command summary for a run row.
+
+    Mirrors ``_formatRunCommand`` in ``e2e_run_view.js`` so the inline
+    row and the canonical viewer agree on what the command looked like
+    — single owner for "what command did this run execute" is the
+    persisted ``E2ERun.command`` (or pytest args as a fallback).
+    """
+    if command:
+        return " ".join(command)
+    if pytest_args:
+        return " ".join(["pytest", *pytest_args])
+    return ""
+
+
+def _e2e_results_counts(db: Any, run_id: int) -> E2ERunResultCounts:
+    """Map ``E2EDB.get_test_summary`` into the runs-list typed counts.
+
+    ``get_test_summary`` separates ``passed`` from ``passed_on_retry``;
+    for the row badge we collapse both into ``passed`` (the user cares
+    that the test eventually passed, the retry detail surfaces on
+    expand via the canonical viewer).  ``errored`` is not a distinct
+    bucket today — pytest "errored" results are reported through
+    ``failed`` with ``outcome='error'`` on the per-test record, which
+    the canonical viewer differentiates.  Row-level "errored" stays
+    ``0`` until the underlying summary tracks it explicitly; surfacing
+    it as failed would lie about the count, surfacing it as passed
+    would be the silent-green bug.
+    """
+    try:
+        summary = db.get_test_summary(run_id)
+    except Exception:
+        logger.exception("get_test_summary failed for run %r", run_id)
+        return E2ERunResultCounts(
+            passed=0, failed=0, errored=0, skipped=0, quarantined=0, total=0,
+        )
+    counts = summary.get("counts") or {}
+    passed = int(counts.get("passed", 0) or 0) + int(counts.get("passed_on_retry", 0) or 0)
+    failed = int(counts.get("failed", 0) or 0)
+    skipped = int(counts.get("skipped", 0) or 0)
+    quarantined = int(counts.get("quarantined", 0) or 0)
+    total = int(counts.get("total", 0) or 0)
+    return E2ERunResultCounts(
+        passed=passed,
+        failed=failed,
+        errored=0,
+        skipped=skipped,
+        quarantined=quarantined,
+        total=total,
+    )
+
+
+def build_recent_e2e_runs(db: Any, config: Any, limit: int = 50) -> RecentE2ERunsPayload:
+    """Issue #6334: build the typed payload for the runs-as-rows list.
+
+    Sister to ``build_e2e_recent_run_items`` (which produces the
+    legacy dict-shape for the SSR Jinja loop and the dashboard chip
+    pipeline).  The runs-list view in dashboard.html now renders
+    from this typed payload so each row carries an
+    ``ExpandE2ERunCommand`` in its ``data-lifecycle-command``
+    attribute — same single-owner contract as every other typed
+    affordance in the canonical viewer.
+    """
+    if limit <= 0:
+        return RecentE2ERunsPayload(runs=())
+    rows: list[RecentE2ERunSummary] = []
+    seen_ids: set[int] = set()
+    for run in db.list_runs(orchestrator_id=config.orchestrator_id, limit=limit):
+        run_id = int(run.id)
+        if run_id <= 0 or run_id in seen_ids:
+            continue
+        seen_ids.add(run_id)
+        rows.append(
+            RecentE2ERunSummary(
+                run_id=run_id,
+                outcome=_e2e_run_outcome_badge(run.status),
+                started_at=str(run.started_at or ""),
+                finished_at=run.finished_at,
+                duration_seconds=run.duration_seconds,
+                commit_sha=run.commit_sha,
+                branch=run.branch,
+                runner_kind=run.runner_kind or "pytest",
+                command_summary=_format_command_summary(run.command, run.pytest_args),
+                results=_e2e_results_counts(db, run_id),
+                note=run.note,
+                expand_command=ExpandE2ERunCommand(run_id=run_id),
+            )
+        )
+    return RecentE2ERunsPayload(runs=tuple(rows))
 
 
 def _e2e_run_results_action(run_id: Any) -> dict[str, Any] | None:
