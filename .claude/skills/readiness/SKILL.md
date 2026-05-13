@@ -1,6 +1,6 @@
 ---
 name: readiness
-description: Assess whether a target repo has the prerequisites for AI-agent orchestration to be effective — PR/CI discipline, reviewer in place, issue sizing, architecture documented and enforced, tests at public boundaries, mechanical definition-of-done, abstraction quality. Conversational chaperone — escalates checks (installs, probes) only with per-step authorization. Use before scaling agent work on a repo, when an orchestrator is burning cycles and you suspect repo discipline, or to periodically re-score. Has `--read-only` for evaluation without installs or probes.
+description: Assess whether a target repo has the prerequisites for AI-agent orchestration to be effective — PR/CI discipline, reviewer in place, issue sizing, architecture documented and enforced, tests at public boundaries, mechanical definition-of-done, abstraction quality. Conversational chaperone — escalates checks (installs, probes) only with per-step authorization. Use before scaling agent work on a repo, when an orchestrator is burning cycles and you suspect repo discipline, or to periodically re-score. Supports a **read-only mode** the user requests in their prompt (e.g., "in read-only mode"); in that mode the skill restricts itself to static inspection and read-only API calls — no installs, probes, or remote writes. This is a request-mode, not a CLI flag.
 ---
 
 # Readiness
@@ -28,7 +28,7 @@ If the user is unsure, propose detection (size, dependency footprint, presence o
 ## Operating rules
 
 - **No installs, network writes, or probe pushes without per-step authorization.** Do not bundle authorizations across pillars.
-- **`--read-only` mode**: zero installs, zero probes, zero remote writes. Pillars unverifiable without those tools are reported as `unverified`, not `failing`. The report explicitly notes its bounded scope.
+- **Read-only mode** (request-only, not a CLI flag — user says e.g. "in read-only mode" or "without installs/probes" in their prompt): zero installs, zero probes, zero remote writes. Pillars unverifiable without those tools are reported as `unverified`, not `failing`. The report explicitly notes its bounded scope.
 - **Late-binding detection**: do not assume specific tools. Examine the repo, identify language/build system, reason about appropriate checks. Web search for current tooling is allowed with user OK. The skill does not ship with detector packs — detection is a research problem solved at runtime.
 - **Cite evidence inline** — file paths, command outputs, line numbers. Don't assert without showing.
 - **Acknowledge proxy gaps explicitly** in the report.
@@ -189,7 +189,7 @@ Markdown report at a path the user picks (default: `./readiness-report.md`):
 - **Punch list**: draft GitHub issues; mechanical first (cheaper wins), then structural and process; each with a one-paragraph problem statement and a suggested approach. Issues are draft text — the user creates them on GitHub manually unless they explicitly authorize otherwise.
 - **Honest summary**: 3–5 sentences. **Not a numeric score** — a qualitative readiness statement.
 
-If `--read-only`: the report's header and summary explicitly state "no installs, no probes, no remote writes — this assessment is bounded by what static inspection can see."
+If read-only mode was requested: the report's header and summary explicitly state "no installs, no probes, no remote writes — this assessment is bounded by what static inspection can see."
 
 ## Anti-patterns
 

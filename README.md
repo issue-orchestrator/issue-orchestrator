@@ -114,7 +114,9 @@ Agents cannot merge PRs. Humans merge. Validation runs automatically before code
 
 The orchestrator works best on repos with basic discipline: PR-required branches, CI that gates merge, architecture you can name, tests at public boundaries, and a culture of adding tests when you add code. Under-disciplined repos burn cycles — fixing CI, fighting flaky tests, rediscovering layer boundaries.
 
-Run `/readiness` from your target repo to check before scaling agent work. The skill is conversational and read-only by default; it grades the repo against 11 pillars (PR/CI discipline, architecture documented + enforced, tests at boundaries, mechanical DoD, reviewer in place, issue sizing, abstraction quality, deep modules, tests grow with code) and produces a punch list of fixes. v0.1 — expect rough edges and iteration.
+Ask your AI assistant (Claude Code, Codex, or similar) to use the `readiness` skill in this repo (at [`.claude/skills/readiness/SKILL.md`](.claude/skills/readiness/SKILL.md)) to assess a target repo before scaling agent work on it. The skill is conversational and grades the target against 11 pillars (PR/CI discipline, architecture documented + enforced, tests at boundaries, mechanical DoD, reviewer in place, issue sizing, abstraction quality, deep modules, tests grow with code), producing a punch list of fixes.
+
+Request **read-only mode** in your prompt (e.g., "use the readiness skill in read-only mode") if you want the assessment bounded to static inspection and read-only API calls — no installs, probes, or remote writes. In Claude Code, the skill is also auto-discoverable via the skill system when this repo is the working directory. v0.1 — expect rough edges and iteration.
 
 ## Quickstart
 
