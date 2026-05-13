@@ -334,6 +334,7 @@ function _onTreeToggle(event) {
     const target = event.target;
     if (target && target.tagName === 'DETAILS' && target.getAttribute('role') === 'treeitem') {
         target.setAttribute('aria-expanded', target.open ? 'true' : 'false');
+        if (target.open) _loadCapturedOutputOnDemand(target);
     }
 }
 
@@ -751,21 +752,225 @@ function _renderTestSystemOutErr(testCase, idPrefix, _errorOpenStderr) {
     let html = '';
     const stdout = testCase.system_out || '';
     const stderr = testCase.system_err || '';
-    const stdoutLines = stdout ? stdout.split('\n').filter((l) => l.length > 0).length : 0;
-    const stderrLines = stderr ? stderr.split('\n').filter((l) => l.length > 0).length : 0;
+    const capturedOutputUrl = _capturedOutputUrlFromCase(testCase);
+    const capturedOutput = _capturedOutputAvailabilityFromCase(testCase);
+    const hasCapturedOutputMetadata = _hasCapturedOutputAvailabilityMetadata(testCase);
+    const caseId = String(testCase.case_id || idPrefix || '');
 
-    html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">stdout</span><span class="cvv-summary">${stdoutLines === 0 ? 'empty' : `${stdoutLines} line${stdoutLines === 1 ? '' : 's'}`}</span></summary>`;
-    html += stdout ? `<pre class="cvv-pre">${escapeHtml(stdout)}</pre>` : '<div class="cvv-empty">No stdout captured.</div>';
-    html += '</details>';
-
-    html += `<details class="cvv-row" role="treeitem" aria-expanded="false"><summary><span class="cvv-caret">▸</span><span class="cvv-title">stderr</span><span class="cvv-summary">${stderrLines === 0 ? 'empty' : `${stderrLines} line${stderrLines === 1 ? '' : 's'}`}</span></summary>`;
-    html += stderr ? `<pre class="cvv-pre">${escapeHtml(stderr)}</pre>` : '<div class="cvv-empty">No stderr captured.</div>';
-    html += '</details>';
+    html += _renderCapturedOutputRow(
+        'stdout',
+        stdout,
+        capturedOutput.stdout_available ? capturedOutputUrl : '',
+        caseId,
+        {
+            authoritativeUnavailable: hasCapturedOutputMetadata && !capturedOutput.stdout_available,
+        },
+    );
+    html += _renderCapturedOutputRow(
+        'stderr',
+        stderr,
+        capturedOutput.stderr_available ? capturedOutputUrl : '',
+        caseId,
+        {
+            authoritativeUnavailable: hasCapturedOutputMetadata && !capturedOutput.stderr_available,
+        },
+    );
 
     return html;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function _capturedOutputUrlFromCase(testCase) {
+    const value = testCase && testCase.captured_output_url;
+    return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function _capturedOutputAvailabilityFromCase(testCase) {
+    const capturedOutput = testCase && testCase.captured_output && typeof testCase.captured_output === 'object'
+        ? testCase.captured_output
+        : {};
+    return {
+        stdout_available: capturedOutput.stdout_available === true,
+        stderr_available: capturedOutput.stderr_available === true,
+    };
+}
+
+function _hasCapturedOutputAvailabilityMetadata(testCase) {
+    return !!(
+        testCase
+        && testCase.captured_output
+        && typeof testCase.captured_output === 'object'
+    );
+}
+
+function _renderCapturedOutputRow(channel, text, capturedOutputUrl, caseId, options) {
+    const safeText = typeof text === 'string' ? text : '';
+    const hasText = safeText.length > 0;
+    const opts = options || {};
+    if (!hasText && !capturedOutputUrl && opts.authoritativeUnavailable) {
+        return (
+            '<div class="cvv-row cvv-output-disabled" role="treeitem" aria-disabled="true">' +
+            `<span class="cvv-caret" aria-hidden="true"></span><span class="cvv-title">${escapeHtml(channel)}</span>` +
+            '<span class="cvv-summary">not captured</span>' +
+            `<span class="cvv-empty cvv-output-body">No ${escapeHtml(channel)} captured.</span>` +
+            '</div>'
+        );
+    }
+    const summary = hasText ? _lineCountLabel(safeText) : capturedOutputUrl ? 'available' : 'empty';
+    const lazyAttrs = capturedOutputUrl
+        ? (
+            ` data-cvv-output-url="${escapeAttr(capturedOutputUrl)}"` +
+            ` data-cvv-output-channel="${escapeAttr(channel)}"` +
+            ` data-cvv-output-case-id="${escapeAttr(caseId)}"` +
+            ' data-cvv-output-state="idle"'
+        )
+        : '';
+    const body = hasText
+        ? `<pre class="cvv-pre cvv-output-body">${escapeHtml(safeText)}</pre>`
+        : capturedOutputUrl
+            ? `<div class="cvv-empty cvv-output-body" role="status" aria-live="polite">Captured ${escapeHtml(channel)} available.</div>`
+            : `<div class="cvv-empty cvv-output-body">No ${escapeHtml(channel)} captured.</div>`;
+    return (
+        `<details class="cvv-row" role="treeitem" aria-expanded="false"${lazyAttrs}>` +
+        `<summary><span class="cvv-caret">▸</span><span class="cvv-title">${escapeHtml(channel)}</span><span class="cvv-summary">${escapeHtml(summary)}</span></summary>` +
+        body +
+        '</details>'
+    );
+}
+
+function _lineCountLabel(text) {
+    const lines = String(text || '').split('\n').filter((line) => line.length > 0).length;
+    if (lines === 0) return 'empty';
+    return `${lines} line${lines === 1 ? '' : 's'}`;
+}
+
+function _loadCapturedOutputOnDemand(row) {
+    if (!row || !row.dataset || !row.open) return;
+    const url = String(row.dataset.cvvOutputUrl || '').trim();
+    if (!url) return;
+    if (row.dataset.cvvOutputState === 'loaded' || row.dataset.cvvOutputState === 'loading') return;
+    if (typeof fetch !== 'function') {
+        _markCapturedOutputRowsUnavailable(row, 'Captured output loader is unavailable.');
+        return;
+    }
+
+    const rows = _capturedOutputRowsForUrl(row);
+    for (const outputRow of rows) {
+        outputRow.dataset.cvvOutputState = 'loading';
+        _setCapturedOutputRowBody(
+            outputRow,
+            `Loading captured ${_capturedOutputChannel(outputRow)}...`,
+            'loading',
+        );
+    }
+
+    fetch(url)
+        .then(async (response) => {
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const message = payload && (payload.error || payload.detail)
+                    ? String(payload.error || payload.detail)
+                    : `HTTP ${response.status}`;
+                throw new Error(message);
+            }
+            _applyCapturedOutputPayload(rows, payload);
+        })
+        .catch((error) => {
+            const message = error && error.message
+                ? `Captured output unavailable: ${error.message}`
+                : 'Captured output unavailable.';
+            _markCapturedOutputRowsUnavailable(row, message);
+        });
+}
+
+function _capturedOutputRowsForUrl(row) {
+    const url = String(row && row.dataset && row.dataset.cvvOutputUrl || '');
+    const parent = row && row.parentElement;
+    // Rendered stdout/stderr rows are siblings under one test row body; detached
+    // unit-test fixtures can only update the row that initiated the fetch.
+    const candidates = parent && typeof parent.querySelectorAll === 'function'
+        ? Array.from(parent.querySelectorAll('details[data-cvv-output-url]'))
+        : [row];
+    return candidates.filter((candidate) => (
+        candidate && candidate.dataset && candidate.dataset.cvvOutputUrl === url
+    ));
+}
+
+function _applyCapturedOutputPayload(rows, payload) {
+    for (const row of rows) {
+        const channel = _capturedOutputChannel(row);
+        const text = channel === 'stderr'
+            ? _optionalOutputText(payload && payload.system_err)
+            : _optionalOutputText(payload && payload.system_out);
+        _setCapturedOutputRowLoaded(row, channel, text);
+    }
+}
+
+function _optionalOutputText(value) {
+    return typeof value === 'string' ? value : '';
+}
+
+function _setCapturedOutputRowLoaded(row, channel, text) {
+    row.dataset.cvvOutputState = 'loaded';
+    _setCapturedOutputSummary(row, _lineCountLabel(text));
+    if (text) {
+        _replaceCapturedOutputBody(
+            row,
+            `<pre class="cvv-pre cvv-output-body">${escapeHtml(text)}</pre>`,
+        );
+    } else {
+        _replaceCapturedOutputBody(
+            row,
+            `<div class="cvv-empty cvv-output-body">No ${escapeHtml(channel)} captured.</div>`,
+        );
+    }
+}
+
+function _markCapturedOutputRowsUnavailable(row, message) {
+    for (const outputRow of _capturedOutputRowsForUrl(row)) {
+        outputRow.dataset.cvvOutputState = 'error';
+        _setCapturedOutputSummary(outputRow, 'unavailable');
+        _setCapturedOutputRowBody(outputRow, message, 'error');
+    }
+}
+
+function _setCapturedOutputRowBody(row, message, state) {
+    const roleAttrs = state === 'loading' ? ' role="status" aria-live="polite"' : '';
+    _replaceCapturedOutputBody(
+        row,
+        `<div class="cvv-empty cvv-output-body"${roleAttrs}>${escapeHtml(message)}</div>`,
+    );
+    _setCapturedOutputSummary(row, state === 'loading' ? 'loading' : 'unavailable');
+}
+
+function _replaceCapturedOutputBody(row, html) {
+    const body = _capturedOutputBody(row);
+    if (body) {
+        body.outerHTML = html;
+    } else if (typeof row.insertAdjacentHTML === 'function') {
+        row.insertAdjacentHTML('beforeend', html);
+    }
+}
+
+function _capturedOutputBody(row) {
+    const children = Array.from(row && row.children ? row.children : []);
+    return children.find((child) => (
+        child && child.classList && child.classList.contains('cvv-output-body')
+    )) || null;
+}
+
+function _capturedOutputChannel(row) {
+    const channel = String(row && row.dataset && row.dataset.cvvOutputChannel || '');
+    return channel === 'stderr' ? 'stderr' : 'stdout';
+}
+
+function _setCapturedOutputSummary(row, text) {
+    const summary = row && typeof row.querySelector === 'function'
+        ? row.querySelector(':scope > summary .cvv-summary') || row.querySelector('.cvv-summary')
+        : null;
+    if (summary) summary.textContent = text;
+}
 
 // Build a minimal failed JUnitCasePayload-shaped object from a raw
 // node-ID string.  Used when the endpoint reports failures via the

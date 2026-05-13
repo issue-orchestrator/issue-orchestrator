@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS e2e_test_results (
     display_name TEXT,
     suite_name TEXT,
     result_source TEXT NOT NULL DEFAULT 'runtime',
+    stdout_available INTEGER NOT NULL DEFAULT 0,
+    stderr_available INTEGER NOT NULL DEFAULT 0,
     outcome TEXT NOT NULL,
     duration_seconds REAL,
     longrepr TEXT,

@@ -208,6 +208,18 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
     font-size: 12px;
 }
 .cvv-row > summary::-webkit-details-marker { display: none; }
+.cvv-output-disabled {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    color: #5a6472;
+    font-size: 12px;
+}
+.cvv-output-disabled .cvv-empty {
+    margin: 0 0 0 auto;
+    padding: 0;
+}
 .cvv-caret {
     width: 14px;
     flex-shrink: 0;

@@ -127,6 +127,14 @@ class E2EDB:
                 conn.execute(
                     "ALTER TABLE e2e_test_results ADD COLUMN result_source TEXT NOT NULL DEFAULT 'runtime'"
                 )
+            if "stdout_available" not in result_columns:
+                conn.execute(
+                    "ALTER TABLE e2e_test_results ADD COLUMN stdout_available INTEGER NOT NULL DEFAULT 0"
+                )
+            if "stderr_available" not in result_columns:
+                conn.execute(
+                    "ALTER TABLE e2e_test_results ADD COLUMN stderr_available INTEGER NOT NULL DEFAULT 0"
+                )
             self._backfill_legacy_run_commands(conn)
 
     def _backfill_legacy_run_commands(self, conn: sqlite3.Connection) -> None:
@@ -723,6 +731,8 @@ class E2EDB:
         display_name: str | None = None,
         suite_name: str | None = None,
         result_source: str = "runtime",
+        stdout_available: bool = False,
+        stderr_available: bool = False,
     ) -> None:
         """Insert or update a test result.
 
@@ -733,13 +743,16 @@ class E2EDB:
                 """
                 INSERT INTO e2e_test_results (
                     run_id, nodeid, display_name, suite_name, result_source,
+                    stdout_available, stderr_available,
                     outcome, duration_seconds, longrepr, retry_outcome,
                     is_quarantined, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id, nodeid) DO UPDATE SET
                     display_name = COALESCE(excluded.display_name, e2e_test_results.display_name),
                     suite_name = COALESCE(excluded.suite_name, e2e_test_results.suite_name),
                     result_source = excluded.result_source,
+                    stdout_available = e2e_test_results.stdout_available OR excluded.stdout_available,
+                    stderr_available = e2e_test_results.stderr_available OR excluded.stderr_available,
                     outcome = excluded.outcome,
                     duration_seconds = excluded.duration_seconds,
                     longrepr = excluded.longrepr,
@@ -752,6 +765,8 @@ class E2EDB:
                     display_name,
                     suite_name,
                     result_source,
+                    1 if stdout_available else 0,
+                    1 if stderr_available else 0,
                     outcome,
                     duration_seconds,
                     longrepr,
@@ -771,6 +786,8 @@ class E2EDB:
         display_name: str | None = None,
         suite_name: str | None = None,
         result_source: str = "external_report",
+        stdout_available: bool = False,
+        stderr_available: bool = False,
     ) -> None:
         """Generic wrapper for non-pytest case results."""
         self.upsert_test_result(
@@ -782,6 +799,8 @@ class E2EDB:
             display_name=display_name,
             suite_name=suite_name,
             result_source=result_source,
+            stdout_available=stdout_available,
+            stderr_available=stderr_available,
         )
 
     def replace_run_artifacts(
@@ -836,6 +855,8 @@ class E2EDB:
                 display_name=case.display_name,
                 suite_name=case.suite_name,
                 result_source="junit_xml",
+                stdout_available=case.system_out is not None,
+                stderr_available=case.system_err is not None,
             )
 
     def update_retry_outcome(

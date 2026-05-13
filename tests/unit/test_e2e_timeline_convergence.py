@@ -886,6 +886,7 @@ class TestE2ERunDetailEndpoint:
         from issue_orchestrator.contracts.ui_openapi_models import TestCaseResultPayload
         from issue_orchestrator.entrypoints.web import set_orchestrator
         from issue_orchestrator.infra.e2e_db import E2EDB
+        from issue_orchestrator.infra.e2e_reports import E2ERunArtifactRecord
 
         store_key = TimelineKey.for_e2e_run(6).to_store_key()
         records = [
@@ -936,6 +937,7 @@ class TestE2ERunDetailEndpoint:
             display_name="runtime.verify_primary_search",
             suite_name="tixmeup.e2e.smoke",
             result_source="junit_xml",
+            stdout_available=True,
         )
         db.upsert_result_case(
             run_id=6,
@@ -946,6 +948,7 @@ class TestE2ERunDetailEndpoint:
             display_name="runtime.verify_checkout",
             suite_name="tixmeup.e2e.smoke",
             result_source="junit_xml",
+            stderr_available=True,
         )
         db.record_failure_issue(
             nodeid="tixmeup.e2e.smoke::runtime.verify_checkout",
@@ -953,6 +956,23 @@ class TestE2ERunDetailEndpoint:
             parent_issue_number=99,
             first_failing_run_id=6,
             first_failing_sha="abc123",
+        )
+        junit_path = mock_orch.config.repo_root / "junit.xml"
+        # Run-detail should read captured-output availability from SQLite, not
+        # parse JUnit XML on the request path.
+        junit_path.write_text(
+            "<testsuite><not-well-formed",
+            encoding="utf-8",
+        )
+        db.replace_run_artifacts(
+            6,
+            [
+                E2ERunArtifactRecord(
+                    kind="junit_xml",
+                    label="JUnit XML: junit.xml",
+                    path=str(junit_path),
+                )
+            ],
         )
 
         set_orchestrator(mock_orch)
@@ -974,10 +994,18 @@ class TestE2ERunDetailEndpoint:
             assert passed[0]["nodeid"] == "tixmeup.e2e.smoke::runtime.verify_primary_search"
             assert passed[0]["result_category"] == "passed"
             assert set(passed[0]) == set(TestCaseResultPayload.model_fields)
+            assert passed[0]["captured_output"] == {
+                "stdout_available": True,
+                "stderr_available": False,
+            }
             has_issue = results_by_category["has_issue"]
             assert len(has_issue) == 1
             assert has_issue[0]["result_category"] == "has_issue"
             assert set(has_issue[0]) == set(TestCaseResultPayload.model_fields)
+            assert has_issue[0]["captured_output"] == {
+                "stdout_available": False,
+                "stderr_available": True,
+            }
             assert has_issue[0]["existing_issue"] == {
                 "number": 1234,
                 "status": "open",

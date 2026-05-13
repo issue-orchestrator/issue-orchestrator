@@ -1085,6 +1085,10 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
                 "flip_rate": 0.0,
                 "flip_rate_percent": 0.0,
                 "is_likely_flaky": False,
+                "captured_output": {
+                    "stdout_available": True,
+                    "stderr_available": False,
+                },
             }
         ],
         "quarantined": [],
