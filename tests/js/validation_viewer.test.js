@@ -273,6 +273,111 @@ test('viewer: triage cards render stdout and stderr expanders', () => {
     assert.match(html, /WARNING: spooky/);
 });
 
+test('viewer: lazy E2E captured-output rows do not render as empty before fetch', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'tests/e2e/test_chatty.py::test_output',
+            display_name: 'test_output',
+            outcome: 'passed',
+            suite_name: 'tests/e2e/test_chatty.py',
+            captured_output_url: '/api/e2e-run/88/test-output?nodeid=tests%2Fe2e%2Ftest_chatty.py%3A%3Atest_output',
+            captured_output: {
+                stdout_available: true,
+                stderr_available: false,
+            },
+            extras: [],
+        }],
+    });
+    assert.match(html, /data-cvv-output-url="\/api\/e2e-run\/88\/test-output\?nodeid=tests%2Fe2e%2Ftest_chatty.py%3A%3Atest_output"/);
+    assert.match(html, /data-cvv-output-channel="stdout"/);
+    assert.match(html, /Captured stdout available\./);
+    assert.match(html, /cvv-output-disabled/);
+    assert.match(html, /aria-disabled="true"/);
+    assert.match(html, /No stderr captured\./);
+    assert.doesNotMatch(html, /No stdout captured\./);
+    assert.doesNotMatch(html, /data-cvv-output-channel="stderr"/);
+    assert.doesNotMatch(html, /<span class="cvv-title">stdout<\/span><span class="cvv-summary">empty<\/span>/);
+});
+
+test('viewer: skipped E2E case with no captured output renders disabled output rows', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'tests/e2e/test_quiet.py::test_skipped',
+            display_name: 'test_skipped',
+            outcome: 'skipped',
+            suite_name: 'tests/e2e/test_quiet.py',
+            captured_output: {
+                stdout_available: false,
+                stderr_available: false,
+            },
+            extras: [],
+        }],
+    });
+    const disabledRows = (html.match(/cvv-output-disabled/g) || []).length;
+    assert.strictEqual(disabledRows, 2);
+    assert.match(html, /No stdout captured\./);
+    assert.match(html, /No stderr captured\./);
+    assert.doesNotMatch(html, /data-cvv-output-channel=/);
+    assert.doesNotMatch(html, /<span class="cvv-title">stdout<\/span><span class="cvv-summary">empty<\/span>/);
+});
+
+test('viewer: opening one available captured-output row fetches once and fills sibling channels', async () => {
+    const ctx = loadViewer();
+    const calls = [];
+    ctx.fetch = (url) => {
+        calls.push(url);
+        return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+                system_out: 'stdout line',
+                system_err: 'stderr line',
+            }),
+        });
+    };
+    const url = '/api/e2e-run/88/test-output?nodeid=a';
+    const makeRow = (channel) => {
+        const summary = { textContent: '' };
+        const body = {
+            outerHTML: '',
+            classList: { contains: (name) => name === 'cvv-output-body' },
+        };
+        return {
+            open: true,
+            dataset: {
+                cvvOutputUrl: url,
+                cvvOutputChannel: channel,
+                cvvOutputState: 'idle',
+            },
+            children: [body],
+            querySelector: () => summary,
+            parentElement: null,
+            _summary: summary,
+            _body: body,
+        };
+    };
+    const stdoutRow = makeRow('stdout');
+    const stderrRow = makeRow('stderr');
+    const parent = { querySelectorAll: () => [stdoutRow, stderrRow] };
+    stdoutRow.parentElement = parent;
+    stderrRow.parentElement = parent;
+
+    ctx._loadCapturedOutputOnDemand(stdoutRow);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(calls, [url]);
+    assert.strictEqual(stdoutRow.dataset.cvvOutputState, 'loaded');
+    assert.strictEqual(stderrRow.dataset.cvvOutputState, 'loaded');
+    assert.strictEqual(stdoutRow._summary.textContent, '1 line');
+    assert.strictEqual(stderrRow._summary.textContent, '1 line');
+    assert.match(stdoutRow._body.outerHTML, /stdout line/);
+    assert.match(stderrRow._body.outerHTML, /stderr line/);
+});
+
 test('viewer: errored case renders stderr expander COLLAPSED by default', () => {
     // Predictable-collapse rule: stdout, stderr, and the
     // traceback row all start closed regardless of outcome.  Previous

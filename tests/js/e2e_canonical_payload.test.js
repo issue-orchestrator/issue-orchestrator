@@ -60,6 +60,74 @@ test('translator: pure-pass run produces only passed cases and status=passed', (
     }
 });
 
+test('translator: JUnit-sourced cases carry lazy captured-output URLs', () => {
+    const ctx = loadModule();
+    const out = ctx.e2eRunToCanonicalPayload({
+        run: { id: 88 },
+        results_by_category: {
+            passed: [{
+                nodeid: 'tests/e2e/test_chatty.py::test_output',
+                suite_name: 'tests/e2e/test_chatty.py',
+                result_source: 'junit_xml',
+                outcome: 'passed',
+                captured_output: {
+                    stdout_available: true,
+                    stderr_available: false,
+                },
+            }],
+        },
+    });
+    assert.strictEqual(
+        out.junit_cases[0].captured_output_url,
+        '/api/e2e-run/88/test-output?nodeid=tests%2Fe2e%2Ftest_chatty.py%3A%3Atest_output',
+    );
+    assert.deepEqual(out.junit_cases[0].captured_output, {
+        stdout_available: true,
+        stderr_available: false,
+    });
+    assert.strictEqual(out.junit_cases[0].system_out, null);
+    assert.strictEqual(out.junit_cases[0].system_err, null);
+});
+
+test('translator: cases without captured-output availability do not claim lazy captured output', () => {
+    const ctx = loadModule();
+    const out = ctx.e2eRunToCanonicalPayload({
+        run: { id: 88 },
+        results_by_category: {
+            passed: [{
+                nodeid: 'tests/e2e/test_quiet.py::test_output',
+                result_source: 'junit_xml',
+                outcome: 'passed',
+            }],
+        },
+    });
+    assert.strictEqual(out.junit_cases[0].captured_output_url, undefined);
+    assert.strictEqual(out.junit_cases[0].captured_output, undefined);
+});
+
+test('translator: unavailable captured-output metadata survives without lazy URL', () => {
+    const ctx = loadModule();
+    const out = ctx.e2eRunToCanonicalPayload({
+        run: { id: 88 },
+        results_by_category: {
+            skipped: [{
+                nodeid: 'tests/e2e/test_quiet.py::test_skipped',
+                result_source: 'junit_xml',
+                outcome: 'skipped',
+                captured_output: {
+                    stdout_available: false,
+                    stderr_available: false,
+                },
+            }],
+        },
+    });
+    assert.strictEqual(out.junit_cases[0].captured_output_url, undefined);
+    assert.deepEqual(out.junit_cases[0].captured_output, {
+        stdout_available: false,
+        stderr_available: false,
+    });
+});
+
 test('translator: untriaged failure → failed outcome, no extras', () => {
     const ctx = loadModule();
     const out = ctx.e2eRunToCanonicalPayload({

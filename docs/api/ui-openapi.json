@@ -838,6 +838,15 @@
           "run_id": {"type": "integer"}
         }
       },
+      "CapturedOutputAvailabilityPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stdout_available", "stderr_available"],
+        "properties": {
+          "stdout_available": {"type": "boolean"},
+          "stderr_available": {"type": "boolean"}
+        }
+      },
       "TestCaseResultPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -861,7 +870,8 @@
           "result_category",
           "flip_rate",
           "flip_rate_percent",
-          "is_likely_flaky"
+          "is_likely_flaky",
+          "captured_output"
         ],
         "properties": {
           "nodeid": {"type": "string"},
@@ -888,7 +898,8 @@
           "result_category": {"type": "string"},
           "flip_rate": {"type": "number"},
           "flip_rate_percent": {"type": "number"},
-          "is_likely_flaky": {"type": "boolean"}
+          "is_likely_flaky": {"type": "boolean"},
+          "captured_output": {"$ref": "#/components/schemas/CapturedOutputAvailabilityPayload"}
         }
       },
       "E2ERunResultCategoriesPayload": {

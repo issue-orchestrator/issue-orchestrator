@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -151,6 +152,10 @@ def _validation_case_to_public(case: Any) -> dict[str, Any]:
         "flip_rate": 0.0,
         "flip_rate_percent": 0.0,
         "is_likely_flaky": False,
+        # Issue-session validation does not yet have a lazy captured-output
+        # endpoint in this shared TestCaseResultPayload path. Keep these
+        # false instead of advertising rows the viewer cannot fetch.
+        "captured_output": _empty_captured_output_availability(),
     }
 
 
@@ -271,6 +276,10 @@ def _public_e2e_results_by_category(
 
 
 def _public_e2e_result_case(result: dict[str, Any]) -> dict[str, Any]:
+    captured_output = {
+        "stdout_available": result.get("stdout_available") is True,
+        "stderr_available": result.get("stderr_available") is True,
+    }
     return {
         "nodeid": result["nodeid"],
         "case_id": result["case_id"],
@@ -292,7 +301,37 @@ def _public_e2e_result_case(result: dict[str, Any]) -> dict[str, Any]:
         "flip_rate": result["flip_rate"],
         "flip_rate_percent": result["flip_rate_percent"],
         "is_likely_flaky": result["is_likely_flaky"],
+        "captured_output": captured_output,
     }
+
+
+def _empty_captured_output_availability() -> dict[str, bool]:
+    return {
+        "stdout_available": False,
+        "stderr_available": False,
+    }
+
+
+def _iter_junit_case_rows(
+    junit_paths: list[Any],
+    *,
+    run_id: int,
+) -> Iterator[tuple[Path, Any, Any]]:
+    """Yield source path, raw case, and pytest-normalized case from run XMLs."""
+    from ..infra.e2e_reports import parse_junit_report_cached
+
+    for path_like in junit_paths:
+        path = Path(path_like)
+        if not path.exists():
+            logger.warning("JUnit XML for run %s missing on disk: %s", run_id, path)
+            continue
+        try:
+            raw_cases, normalized_cases = parse_junit_report_cached(path)
+        except ValueError:
+            logger.warning("Skipping malformed JUnit XML for run %s: %s", run_id, path)
+            continue
+        for raw_case, norm_case in zip(raw_cases, normalized_cases):
+            yield path, raw_case, norm_case
 
 
 def _public_e2e_existing_issue(issue: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -649,7 +688,9 @@ async def get_e2e_run_detail(
             status_code=500,
         )
     results_summary = dict(run_details["summary"])
-    results_by_category = _public_e2e_results_by_category(run_details["tests_by_category"])
+    results_by_category = _public_e2e_results_by_category(
+        run_details["tests_by_category"],
+    )
     payload["run"] = run_payload
     payload["results_summary"] = results_summary
     payload["results_by_category"] = results_by_category
@@ -680,27 +721,19 @@ def _captured_output_from_junit(
     Uses the parser's mtime-keyed cache so a failure-heavy run reparses the
     same on-disk XML at most once per file change.
     """
-    from ..infra.e2e_reports import parse_junit_report_cached
-
-    for path in junit_paths:
-        if not path.exists():
-            logger.warning("JUnit XML for run %s missing on disk: %s", run_id, path)
-            continue
-        try:
-            raw_cases, normalized_cases = parse_junit_report_cached(path)
-        except ValueError:
-            logger.warning("Skipping malformed JUnit XML for run %s: %s", run_id, path)
-            continue
-        for raw_case, norm_case in zip(raw_cases, normalized_cases):
-            matches = nodeid in (raw_case.case_id, norm_case.case_id)
-            has_output = raw_case.system_out is not None or raw_case.system_err is not None
-            if matches and has_output:
-                return {
-                    "nodeid": nodeid,
-                    "system_out": raw_case.system_out,
-                    "system_err": raw_case.system_err,
-                    "source_path": str(path),
-                }
+    for path, raw_case, norm_case in _iter_junit_case_rows(
+        junit_paths,
+        run_id=run_id,
+    ):
+        matches = nodeid in (raw_case.case_id, norm_case.case_id)
+        has_output = raw_case.system_out is not None or raw_case.system_err is not None
+        if matches and has_output:
+            return {
+                "nodeid": nodeid,
+                "system_out": raw_case.system_out,
+                "system_err": raw_case.system_err,
+                "source_path": str(path),
+            }
     return None
 
 
@@ -716,10 +749,9 @@ async def get_e2e_run_test_output(
 ) -> E2ETestOutputPayload | JSONResponse:
     """Lazy-load captured stdout/stderr for one test from the run's JUnit XML.
 
-    Captured output is intentionally NOT persisted to SQLite — it can be many
-    megabytes per test. We re-parse the on-disk JUnit XML on demand.
+    Captured output bodies are intentionally NOT persisted to SQLite — they can
+    be many megabytes per test. We re-parse the on-disk JUnit XML on demand.
     """
-    from pathlib import Path
     from ..infra.e2e_db import E2EDB
 
     if not orchestrator:
