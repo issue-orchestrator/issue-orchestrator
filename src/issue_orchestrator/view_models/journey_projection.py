@@ -282,7 +282,11 @@ _OUTCOME_TONE_EXACT: dict[str, OutcomeTone] = {
     "Blocked": "failed",
     "Timed out": "failed",
     "Needs human": "failed",
+    "Needs human investigation": "failed",
     "Agent blocked": "failed",
+    "Session failed": "failed",
+    "Publishing failed": "failed",
+    "Validation failed": "failed",
     "In progress": "in_progress",
     "Superseded": "neutral",
     "Rework": "in_progress",
@@ -290,14 +294,39 @@ _OUTCOME_TONE_EXACT: dict[str, OutcomeTone] = {
 
 # Prefixes the projection emits with a trailing ``: <summary>`` or
 # ``— <summary>``.  Each maps to the same tone as its exact form.
+#
+# Order matters: ``outcome_badge`` walks this tuple in order and
+# takes the first prefix match, so MORE-SPECIFIC prefixes
+# (``Validation failed — retrying``) must precede LESS-SPECIFIC
+# ones (``Validation failed —``).  The PR #6333 round-2 reviewer
+# blocker was the absence of every entry below "Failed:" — labels
+# emitted by ``blocked_explanation_for_event`` (the projection's
+# own helper) were falling through to ``neutral``, rendering
+# blocked/needs-human/publish-failed outcomes as grey instead of
+# red.
 _OUTCOME_TONE_PREFIXES: tuple[tuple[str, OutcomeTone], ...] = (
     ("Rework limit reached", "failed"),
     ("Timed out:", "failed"),
     ("Timed out —", "failed"),
     ("Timed out -", "failed"),
     ("Agent blocked:", "failed"),
+    ("Agent reported blocked:", "failed"),
     ("Blocked:", "failed"),
     ("Needs human:", "failed"),
+    ("Needs human input:", "failed"),
+    ("Needs investigation:", "failed"),
+    # ``Validation failed — retrying`` (from
+    # ``session.validation_retry_needed``) is mid-flight, not
+    # terminal — keep it ``in_progress``.  The retry-specific
+    # prefix MUST come before the broader ``Validation failed —``
+    # entry below.
+    ("Validation failed — retrying", "in_progress"),
+    ("Validation failed —", "failed"),
+    ("Validation failed:", "failed"),
+    ("Publishing failed —", "failed"),
+    ("Publishing failed:", "failed"),
+    ("Session failed —", "failed"),
+    ("Session failed:", "failed"),
     ("Failed:", "failed"),
 )
 
