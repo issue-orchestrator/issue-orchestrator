@@ -102,6 +102,30 @@ test('translator: cases without captured-output availability do not claim lazy c
         },
     });
     assert.strictEqual(out.junit_cases[0].captured_output_url, undefined);
+    assert.strictEqual(out.junit_cases[0].captured_output, undefined);
+});
+
+test('translator: unavailable captured-output metadata survives without lazy URL', () => {
+    const ctx = loadModule();
+    const out = ctx.e2eRunToCanonicalPayload({
+        run: { id: 88 },
+        results_by_category: {
+            skipped: [{
+                nodeid: 'tests/e2e/test_quiet.py::test_skipped',
+                result_source: 'junit_xml',
+                outcome: 'skipped',
+                captured_output: {
+                    stdout_available: false,
+                    stderr_available: false,
+                },
+            }],
+        },
+    });
+    assert.strictEqual(out.junit_cases[0].captured_output_url, undefined);
+    assert.deepEqual(out.junit_cases[0].captured_output, {
+        stdout_available: false,
+        stderr_available: false,
+    });
 });
 
 test('translator: untriaged failure → failed outcome, no extras', () => {

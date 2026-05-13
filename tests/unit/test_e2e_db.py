@@ -173,6 +173,7 @@ class TestE2EDB:
                     suite_name="suite",
                     outcome="passed",
                     duration_seconds=1.2,
+                    system_out="captured stdout",
                 ),
                 JUnitCaseResult(
                     case_id="suite::test_fails",
@@ -181,6 +182,7 @@ class TestE2EDB:
                     outcome="failed",
                     duration_seconds=2.4,
                     failure_details="AssertionError\nexpected 1",
+                    system_err="captured stderr",
                 ),
             ],
         )
@@ -190,7 +192,38 @@ class TestE2EDB:
         by_case_id = {result["case_id"]: result for result in results}
         assert by_case_id["suite::test_passes"]["display_name"] == "test_passes"
         assert by_case_id["suite::test_passes"]["result_source"] == "junit_xml"
+        assert by_case_id["suite::test_passes"]["stdout_available"] is True
+        assert by_case_id["suite::test_passes"]["stderr_available"] is False
         assert by_case_id["suite::test_fails"]["failure_summary"] == "AssertionError"
+        assert by_case_id["suite::test_fails"]["stdout_available"] is False
+        assert by_case_id["suite::test_fails"]["stderr_available"] is True
+
+    def test_runtime_updates_preserve_persisted_captured_output_availability(
+        self,
+        db: E2EDB,
+    ):
+        """Runtime result refreshes should not clear JUnit-ingested availability."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+
+        db.record_junit_cases(
+            run_id,
+            [
+                JUnitCaseResult(
+                    case_id="suite::test_chatty",
+                    display_name="test_chatty",
+                    suite_name="suite",
+                    outcome="passed",
+                    duration_seconds=1.2,
+                    system_out="captured stdout",
+                    system_err="captured stderr",
+                ),
+            ],
+        )
+        db.upsert_test_result(run_id, "suite::test_chatty", "passed", 1.3, None)
+
+        result = db.run_details(run_id)["results"][0]
+        assert result["stdout_available"] is True
+        assert result["stderr_available"] is True
 
     def test_upsert_test_result_update(self, db: E2EDB):
         """Test that upsert updates existing results."""

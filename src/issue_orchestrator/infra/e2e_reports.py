@@ -15,9 +15,10 @@ from xml.etree.ElementTree import ParseError as XmlParseError
 
 CaseOutcome = Literal["passed", "failed", "error", "skipped"]
 
-# Captured stdout/stderr from JUnit are read on-demand from disk (see the
-# /api/e2e-run/{id}/test-output endpoint) — never persisted to SQLite. Cap each
-# channel to keep parser memory bounded when a test produces megabytes of logs.
+# Captured stdout/stderr bodies from JUnit are read on-demand from disk (see the
+# /api/e2e-run/{id}/test-output endpoint), while SQLite stores only availability
+# booleans. Cap each channel to keep parser memory bounded when a test produces
+# megabytes of logs.
 MAX_CAPTURED_OUTPUT_CHARS = 100_000
 CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR = (
     "Configured JUnit XML paths did not resolve to any files"

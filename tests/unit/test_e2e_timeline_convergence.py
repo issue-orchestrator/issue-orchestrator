@@ -937,6 +937,7 @@ class TestE2ERunDetailEndpoint:
             display_name="runtime.verify_primary_search",
             suite_name="tixmeup.e2e.smoke",
             result_source="junit_xml",
+            stdout_available=True,
         )
         db.upsert_result_case(
             run_id=6,
@@ -947,6 +948,7 @@ class TestE2ERunDetailEndpoint:
             display_name="runtime.verify_checkout",
             suite_name="tixmeup.e2e.smoke",
             result_source="junit_xml",
+            stderr_available=True,
         )
         db.record_failure_issue(
             nodeid="tixmeup.e2e.smoke::runtime.verify_checkout",
@@ -956,18 +958,10 @@ class TestE2ERunDetailEndpoint:
             first_failing_sha="abc123",
         )
         junit_path = mock_orch.config.repo_root / "junit.xml"
+        # Run-detail should read captured-output availability from SQLite, not
+        # parse JUnit XML on the request path.
         junit_path.write_text(
-            """\
-<testsuite name="suite">
-  <testcase classname="tixmeup.e2e.smoke" name="runtime.verify_primary_search" time="0.10">
-    <system-out>search stdout</system-out>
-  </testcase>
-  <testcase classname="tixmeup.e2e.smoke" name="runtime.verify_checkout" time="1.00">
-    <failure message="checkout failed">checkout failed</failure>
-    <system-err>checkout stderr</system-err>
-  </testcase>
-</testsuite>
-""",
+            "<testsuite><not-well-formed",
             encoding="utf-8",
         )
         db.replace_run_artifacts(

@@ -301,6 +301,30 @@ test('viewer: lazy E2E captured-output rows do not render as empty before fetch'
     assert.doesNotMatch(html, /<span class="cvv-title">stdout<\/span><span class="cvv-summary">empty<\/span>/);
 });
 
+test('viewer: skipped E2E case with no captured output renders disabled output rows', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [{
+            case_id: 'tests/e2e/test_quiet.py::test_skipped',
+            display_name: 'test_skipped',
+            outcome: 'skipped',
+            suite_name: 'tests/e2e/test_quiet.py',
+            captured_output: {
+                stdout_available: false,
+                stderr_available: false,
+            },
+            extras: [],
+        }],
+    });
+    const disabledRows = (html.match(/cvv-output-disabled/g) || []).length;
+    assert.strictEqual(disabledRows, 2);
+    assert.match(html, /No stdout captured\./);
+    assert.match(html, /No stderr captured\./);
+    assert.doesNotMatch(html, /data-cvv-output-channel=/);
+    assert.doesNotMatch(html, /<span class="cvv-title">stdout<\/span><span class="cvv-summary">empty<\/span>/);
+});
+
 test('viewer: opening one available captured-output row fetches once and fills sibling channels', async () => {
     const ctx = loadViewer();
     const calls = [];

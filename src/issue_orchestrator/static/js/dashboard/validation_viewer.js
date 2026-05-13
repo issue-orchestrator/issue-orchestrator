@@ -887,6 +887,8 @@ function _loadCapturedOutputOnDemand(row) {
 function _capturedOutputRowsForUrl(row) {
     const url = String(row && row.dataset && row.dataset.cvvOutputUrl || '');
     const parent = row && row.parentElement;
+    // Rendered stdout/stderr rows are siblings under one test row body; detached
+    // unit-test fixtures can only update the row that initiated the fetch.
     const candidates = parent && typeof parent.querySelectorAll === 'function'
         ? Array.from(parent.querySelectorAll('details[data-cvv-output-url]'))
         : [row];

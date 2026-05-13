@@ -152,6 +152,9 @@ def _validation_case_to_public(case: Any) -> dict[str, Any]:
         "flip_rate": 0.0,
         "flip_rate_percent": 0.0,
         "is_likely_flaky": False,
+        # Issue-session validation does not yet have a lazy captured-output
+        # endpoint in this shared TestCaseResultPayload path. Keep these
+        # false instead of advertising rows the viewer cannot fetch.
         "captured_output": _empty_captured_output_availability(),
     }
 
@@ -261,31 +264,22 @@ def _public_e2e_run_payload(run: dict[str, Any], run_id: int) -> dict[str, Any]:
 
 def _public_e2e_results_by_category(
     results_by_category: dict[str, Any],
-    *,
-    captured_output_by_nodeid: dict[str, dict[str, bool]],
 ) -> dict[str, list[dict[str, Any]]]:
     """Project internal E2E result rows to the public UI contract."""
     return {
         category: [
-            _public_e2e_result_case(
-                result,
-                captured_output_by_nodeid=captured_output_by_nodeid,
-            )
+            _public_e2e_result_case(result)
             for result in list(results_by_category[category])
         ]
         for category in E2ERunResultCategoriesPayload.model_fields
     }
 
 
-def _public_e2e_result_case(
-    result: dict[str, Any],
-    *,
-    captured_output_by_nodeid: dict[str, dict[str, bool]],
-) -> dict[str, Any]:
-    captured_output = captured_output_by_nodeid.get(
-        result["nodeid"],
-        _empty_captured_output_availability(),
-    )
+def _public_e2e_result_case(result: dict[str, Any]) -> dict[str, Any]:
+    captured_output = {
+        "stdout_available": result.get("stdout_available") is True,
+        "stderr_available": result.get("stderr_available") is True,
+    }
     return {
         "nodeid": result["nodeid"],
         "case_id": result["case_id"],
@@ -318,64 +312,12 @@ def _empty_captured_output_availability() -> dict[str, bool]:
     }
 
 
-def _captured_output_availability_from_junit(
-    db_artifacts: list[dict[str, Any]],
-    *,
-    run_id: int,
-) -> dict[str, dict[str, bool]]:
-    """Return per-nodeid captured-output availability without loading bodies.
-
-    This runs when a row is expanded, not for the collapsed run list. It only
-    records booleans; the potentially large stdout/stderr text still comes from
-    the per-test endpoint when the user opens a channel row.
-    """
-    availability: dict[str, dict[str, bool]] = {}
-    junit_paths = [
-        artifact["path"]
-        for artifact in db_artifacts
-        if artifact.get("kind") == "junit_xml" and isinstance(artifact.get("path"), str)
-    ]
-    for _path, raw_case, norm_case in _iter_junit_case_pairs(
-        junit_paths,
-        run_id=run_id,
-    ):
-        stdout_available = raw_case.system_out is not None
-        stderr_available = raw_case.system_err is not None
-        if not stdout_available and not stderr_available:
-            continue
-        _record_captured_output_availability(
-            availability,
-            raw_case.case_id,
-            stdout_available=stdout_available,
-            stderr_available=stderr_available,
-        )
-        _record_captured_output_availability(
-            availability,
-            norm_case.case_id,
-            stdout_available=stdout_available,
-            stderr_available=stderr_available,
-        )
-    return availability
-
-
-def _record_captured_output_availability(
-    availability: dict[str, dict[str, bool]],
-    nodeid: str,
-    *,
-    stdout_available: bool,
-    stderr_available: bool,
-) -> None:
-    current = availability.setdefault(nodeid, _empty_captured_output_availability())
-    current["stdout_available"] = current["stdout_available"] or stdout_available
-    current["stderr_available"] = current["stderr_available"] or stderr_available
-
-
-def _iter_junit_case_pairs(
+def _iter_junit_case_rows(
     junit_paths: list[Any],
     *,
     run_id: int,
 ) -> Iterator[tuple[Path, Any, Any]]:
-    """Yield raw and pytest-normalized JUnit cases from run-scoped XMLs."""
+    """Yield source path, raw case, and pytest-normalized case from run XMLs."""
     from ..infra.e2e_reports import parse_junit_report_cached
 
     for path_like in junit_paths:
@@ -746,13 +688,8 @@ async def get_e2e_run_detail(
             status_code=500,
         )
     results_summary = dict(run_details["summary"])
-    captured_output_by_nodeid = _captured_output_availability_from_junit(
-        list(run_details.get("artifacts") or []),
-        run_id=run_id,
-    )
     results_by_category = _public_e2e_results_by_category(
         run_details["tests_by_category"],
-        captured_output_by_nodeid=captured_output_by_nodeid,
     )
     payload["run"] = run_payload
     payload["results_summary"] = results_summary
@@ -784,7 +721,7 @@ def _captured_output_from_junit(
     Uses the parser's mtime-keyed cache so a failure-heavy run reparses the
     same on-disk XML at most once per file change.
     """
-    for path, raw_case, norm_case in _iter_junit_case_pairs(
+    for path, raw_case, norm_case in _iter_junit_case_rows(
         junit_paths,
         run_id=run_id,
     ):
@@ -812,8 +749,8 @@ async def get_e2e_run_test_output(
 ) -> E2ETestOutputPayload | JSONResponse:
     """Lazy-load captured stdout/stderr for one test from the run's JUnit XML.
 
-    Captured output is intentionally NOT persisted to SQLite — it can be many
-    megabytes per test. We re-parse the on-disk JUnit XML on demand.
+    Captured output bodies are intentionally NOT persisted to SQLite — they can
+    be many megabytes per test. We re-parse the on-disk JUnit XML on demand.
     """
     from ..infra.e2e_db import E2EDB
 

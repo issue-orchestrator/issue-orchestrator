@@ -97,6 +97,8 @@ class E2ETestResult:
     display_name: Optional[str]
     suite_name: Optional[str]
     result_source: str
+    stdout_available: bool
+    stderr_available: bool
     outcome: str
     duration_seconds: Optional[float]
     longrepr: Optional[str]
@@ -113,6 +115,8 @@ class E2ETestResult:
             display_name=row["display_name"] if "display_name" in row.keys() else None,
             suite_name=row["suite_name"] if "suite_name" in row.keys() else None,
             result_source=row["result_source"] if "result_source" in row.keys() else "runtime",
+            stdout_available=bool(row["stdout_available"]) if "stdout_available" in row.keys() else False,
+            stderr_available=bool(row["stderr_available"]) if "stderr_available" in row.keys() else False,
             outcome=row["outcome"],
             duration_seconds=row["duration_seconds"],
             longrepr=row["longrepr"],
@@ -149,6 +153,8 @@ class E2ETestResult:
             "label": self.label,
             "suite_name": self.suite_name,
             "result_source": self.result_source,
+            "stdout_available": self.stdout_available,
+            "stderr_available": self.stderr_available,
             "outcome": self.outcome,
             "duration_seconds": self.duration_seconds,
             "longrepr": self.longrepr,

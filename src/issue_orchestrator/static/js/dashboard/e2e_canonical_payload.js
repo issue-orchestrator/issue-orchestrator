@@ -149,9 +149,12 @@ function _testToJunitCase(test, outcome, runId) {
     };
     const capturedOutputUrl = _capturedOutputUrlForTest(safe, runId);
     const capturedOutput = _capturedOutputAvailabilityForTest(safe);
+    const hasCapturedOutputMetadata = _hasCapturedOutputAvailabilityMetadata(safe);
+    if (hasCapturedOutputMetadata) {
+        junitCase.captured_output = capturedOutput;
+    }
     if (capturedOutputUrl && (capturedOutput.stdout_available || capturedOutput.stderr_available)) {
         junitCase.captured_output_url = capturedOutputUrl;
-        junitCase.captured_output = capturedOutput;
     }
     return junitCase;
 }
@@ -227,6 +230,14 @@ function _capturedOutputAvailabilityForTest(test) {
         stdout_available: capturedOutput.stdout_available === true,
         stderr_available: capturedOutput.stderr_available === true,
     };
+}
+
+function _hasCapturedOutputAvailabilityMetadata(test) {
+    return !!(
+        test
+        && test.captured_output
+        && typeof test.captured_output === 'object'
+    );
 }
 
 // (Phase C originally introduced a ``flakinessChipForTest`` helper here
