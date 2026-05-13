@@ -152,7 +152,9 @@
                 `<span class="e2e-run-row-counts">${counts}</span>` +
                 (meta ? `<span class="e2e-run-row-meta">${meta}</span>` : '') +
             `</summary>` +
-            `<div class="e2e-run-row-body">${note}<div class="e2e-run-row-content"></div></div>` +
+            `<div class="e2e-run-row-body">` +
+                `${note}<div class="e2e-run-row-content"></div>` +
+            `</div>` +
             `</details>`
         );
     }
@@ -170,7 +172,7 @@
         const body = detailsEl.querySelector('.e2e-run-row-content');
         if (!body) return;
         detailsEl.dataset.loaded = '1';
-        body.innerHTML = '<div class="loading-spinner">Loading run details…</div>';
+        body.innerHTML = '<div class="loading-spinner" role="status" aria-live="polite">Loading run details…</div>';
         try {
             const res = await fetch(`/api/e2e-run-detail/${n}?view=user`);
             const data = await res.json().catch(() => ({}));

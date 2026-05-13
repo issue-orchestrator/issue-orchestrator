@@ -39,6 +39,20 @@ def _read_dashboard_css_bundle() -> str:
     )
 
 
+def _css_rule_bodies(source: str, selector: str) -> list[str]:
+    pattern = re.compile(
+        rf"(?m)^{re.escape(selector)}\s*\{{(?P<body>.*?)^\}}",
+        re.DOTALL,
+    )
+    return [match.group("body") for match in pattern.finditer(source)]
+
+
+def _last_css_rule_body(source: str, selector: str) -> str:
+    bodies = _css_rule_bodies(source, selector)
+    assert bodies, f"CSS rule for {selector!r} not found"
+    return bodies[-1]
+
+
 def _function_body(source: str, name: str) -> str:
     marker = f"function {name}("
     start = source.find(marker)
@@ -84,6 +98,40 @@ def test_toast_severity_variants_have_css_rules() -> None:
     for severity in ("info", "success", "warning", "error"):
         assert re.search(rf"#toast\.{severity}\s*\{{[^}}]*border-color:", css, re.DOTALL)
         assert re.search(rf"#toast\.{severity}\s*\{{[^}}]*background:", css, re.DOTALL)
+
+
+def test_e2e_run_history_css_contract_prevents_clipped_rows() -> None:
+    """Cheap guardrail for the Run History layout contract.
+
+    The true "is it clipped?" check needs a browser layout engine, so
+    Playwright owns that proof. This unit guardrail catches the common
+    regression cheaply: resurrecting a nested 65vh scroller or removing
+    the row/focus sizing rules from the E2E run-history stylesheet.
+    """
+    css = _read_dashboard_css_bundle()
+    cards_css = _read(DASHBOARD_CSS_DIR / "cards.css")
+
+    assert ".e2e-runs-list" not in cards_css
+    assert ".e2e-run-item" not in cards_css
+
+    list_rule = _last_css_rule_body(css, ".e2e-runs-list")
+    assert "max-height: none;" in list_rule
+    assert "overflow: visible;" in list_rule
+
+    row_rule = _last_css_rule_body(css, ".e2e-run-row")
+    assert "overflow: visible;" in row_rule
+    assert "scroll-margin-top: 12px;" in row_rule
+
+    summary_rule = _last_css_rule_body(css, ".e2e-run-row-summary")
+    assert "min-height: 44px;" in summary_rule
+    assert "line-height: 1.35;" in summary_rule
+
+    assert re.search(
+        r"\.e2e-run-row-summary:focus-visible\s*\{[^}]*"
+        r"outline:\s*2px solid var\(--accent\);",
+        css,
+        re.DOTALL,
+    )
 
 
 def test_show_toast_uses_module_timer_and_click_dismiss() -> None:

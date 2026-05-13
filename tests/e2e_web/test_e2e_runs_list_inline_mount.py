@@ -19,6 +19,9 @@ end-to-end live-pipeline proof.
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 import json
 
 from playwright.sync_api import Page, expect
@@ -130,6 +133,64 @@ def _goto_dashboard_e2e_tab(page: Page, base_url: str) -> None:
     page.wait_for_function("() => window.dashboardBundleLoaded === true", timeout=15_000)
 
 
+def _inject_runs_list(page: Page, payload: dict[str, object]) -> None:
+    page.evaluate(
+        """(payload) => {
+            const container = document.querySelector('#panel-e2e')
+                || document.querySelector('main')
+                || document.body;
+            if (!document.getElementById('e2eRunsListRoot')) {
+                const root = document.createElement('div');
+                root.id = 'e2eRunsListRoot';
+                container.appendChild(root);
+            }
+            const root = document.getElementById('e2eRunsListRoot');
+            root.innerHTML = window.renderE2ERunsList(payload);
+        }""",
+        payload,
+    )
+
+
+def _many_recent_runs_payload(count: int = 19) -> dict[str, object]:
+    runs: list[dict[str, object]] = []
+    for offset in range(count):
+        run_id = _RUN_ID + offset
+        failed = offset in {0, 7, 11}
+        started_at = datetime(2026, 5, 12, 1, 0, 0, tzinfo=timezone.utc) - timedelta(days=offset)
+        finished_at = started_at + timedelta(minutes=3)
+        runs.append(
+            {
+                "run_id": run_id,
+                "outcome": {
+                    "label": "Failed" if failed else "Passed",
+                    "tone": "failed" if failed else "passed",
+                },
+                "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "duration_seconds": 199.7 + offset,
+                "commit_sha": f"{run_id:07x}",
+                "branch": "HEAD",
+                "runner_kind": "pytest",
+                "command_summary": "sh scripts/run-issue-orchestrator-suite.sh",
+                "results": {
+                    "passed": 4 if failed else 5,
+                    "failed": 1 if failed else 0,
+                    "errored": 0,
+                    "skipped": 0,
+                    "quarantined": 0,
+                    "total": 5,
+                },
+                "note": None,
+                "expand_command": {
+                    "kind": "expand_e2e_run",
+                    "label": "Expand E2E Run",
+                    "run_id": run_id,
+                },
+            }
+        )
+    return {"runs": runs}
+
+
 def test_inline_runs_list_renders_rows_and_mounts_canonical_viewer_on_expand(
     page: Page,
     web_server: dict[str, object],
@@ -164,21 +225,7 @@ def test_inline_runs_list_renders_rows_and_mounts_canonical_viewer_on_expand(
     # call the renderer directly — the production code path is
     # exactly this (``renderE2ERunsList`` reads typed payload, mounts
     # into ``#e2eRunsListRoot``).
-    page.evaluate(
-        f"""(payload) => {{
-            const container = document.querySelector('#panel-e2e')
-                || document.querySelector('main')
-                || document.body;
-            if (!document.getElementById('e2eRunsListRoot')) {{
-                const root = document.createElement('div');
-                root.id = 'e2eRunsListRoot';
-                container.appendChild(root);
-            }}
-            const root = document.getElementById('e2eRunsListRoot');
-            root.innerHTML = window.renderE2ERunsList(payload);
-        }}""",
-        _STUB_RECENT_RUNS_PAYLOAD,
-    )
+    _inject_runs_list(page, _STUB_RECENT_RUNS_PAYLOAD)
 
     # The modal is gone — assert it's not in the DOM at all (the
     # issue body's explicit guardrail).  Note: ``to_have_count(0)``
@@ -244,6 +291,100 @@ def test_inline_runs_list_renders_rows_and_mounts_canonical_viewer_on_expand(
 
     # No page errors during the run.
     assert not errors, f"unexpected page errors: {errors}"
+
+
+def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
+    page: Page,
+    web_server: dict[str, object],
+) -> None:
+    """The Run History list must not become a cramped nested scroller.
+
+    This is layout-dependent, so it belongs in Playwright: the old
+    ``cards.css`` rule capped ``.e2e-runs-list`` at ``65vh`` and made
+    expanded rows feel clipped.  The run-history stylesheet now owns
+    the list layout explicitly and lets the page scroll.
+    """
+    page.set_viewport_size({"width": 1600, "height": 800})
+    page.route(
+        f"**/api/e2e-run-detail/{_RUN_ID}**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(_STUB_RUN_DETAIL),
+        ),
+    )
+
+    _goto_dashboard_e2e_tab(page, str(web_server["url"]))
+    _inject_runs_list(page, _many_recent_runs_payload())
+
+    first_row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{_RUN_ID}']")
+    first_summary = first_row.locator("summary.e2e-run-row-summary")
+    first_summary.click()
+    expect(first_row.locator(".cvv-root")).to_be_visible(timeout=10_000)
+    page.evaluate(
+        """() => {
+            const root = document.getElementById('e2eRunsListRoot');
+            const sentinel = document.createElement('button');
+            sentinel.type = 'button';
+            sentinel.id = 'e2eRunHistoryFocusSentinel';
+            sentinel.textContent = 'Focus sentinel';
+            root.parentElement.insertBefore(sentinel, root);
+            sentinel.focus();
+        }"""
+    )
+    page.keyboard.press("Tab")
+    expect(first_summary).to_be_focused()
+
+    metrics = page.evaluate(
+        """() => {
+            const list = document.querySelector('.e2e-runs-list');
+            const rows = Array.from(document.querySelectorAll('details.e2e-run-row'));
+            const summaries = rows.map((row) => row.querySelector('summary'));
+            const listStyle = getComputedStyle(list);
+            const closedSummaryHeights = summaries.slice(1).map((summary) =>
+                summary.getBoundingClientRect().height
+            );
+            const clippedChildren = summaries.some((summary) => {
+                const summaryRect = summary.getBoundingClientRect();
+                return Array.from(summary.children).some((child) => {
+                    const childRect = child.getBoundingClientRect();
+                    return childRect.top < summaryRect.top - 0.5
+                        || childRect.bottom > summaryRect.bottom + 0.5;
+                });
+            });
+            const focusStyle = getComputedStyle(summaries[0]);
+            const listRect = list.getBoundingClientRect();
+            return {
+                listOverflowY: listStyle.overflowY,
+                listMaxHeight: listStyle.maxHeight,
+                listHeight: listRect.height,
+                listClientHeight: list.clientHeight,
+                listScrollHeight: list.scrollHeight,
+                viewportHeight: window.innerHeight,
+                minClosedSummaryHeight: Math.min(...closedSummaryHeights),
+                clippedChildren,
+                firstSummaryFocused: document.activeElement === summaries[0],
+                firstSummaryControls: summaries[0].getAttribute('aria-controls'),
+                firstBodyRole: rows[0].querySelector('.e2e-run-row-body').getAttribute('role'),
+                firstBodyLabel: rows[0].querySelector('.e2e-run-row-body').getAttribute('aria-labelledby'),
+                focusOutlineStyle: focusStyle.outlineStyle,
+                focusOutlineWidth: focusStyle.outlineWidth,
+            };
+        }"""
+    )
+
+    assert metrics["listOverflowY"] == "visible"
+    assert metrics["listMaxHeight"] == "none"
+    assert metrics["listHeight"] > metrics["viewportHeight"] * 0.75
+    assert abs(metrics["listScrollHeight"] - metrics["listClientHeight"]) <= 2
+    assert metrics["minClosedSummaryHeight"] >= 44
+    assert metrics["clippedChildren"] is False
+    assert metrics["firstSummaryFocused"] is True
+    assert metrics["firstSummaryControls"] is None
+    assert metrics["firstBodyRole"] is None
+    assert metrics["firstBodyLabel"] is None
+    assert metrics["focusOutlineStyle"] != "none"
+    assert metrics["focusOutlineWidth"] != "0px"
 
 
 def test_two_rows_expanded_act_independently(
