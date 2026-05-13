@@ -198,6 +198,8 @@ class TestHistoryEndpoints:
         assert event_arg.event_type == EventName.ISSUE_UNBLOCKED
         assert event_arg.data["issue_number"] == 4057
         assert event_arg.data["reason"] == "reset_retry_requested"
+        assert event_arg.data["source"] == "web.reset-retry"
+        assert event_arg.data["pending_labels"] == [lm.reset_retry_pending]
         assert event_arg.data["from_scratch"] is False
 
     def test_reset_retry_from_scratch_sets_scratch_pending_label(self):
@@ -249,6 +251,11 @@ class TestHistoryEndpoints:
         assert lm.reset_retry_scratch_pending in added_labels
         event_arg = mock_orch.deps.events.publish.call_args.args[0]
         assert event_arg.data["from_scratch"] is True
+        assert event_arg.data["source"] == "web.reset-retry"
+        assert event_arg.data["pending_labels"] == [
+            lm.reset_retry_pending,
+            lm.reset_retry_scratch_pending,
+        ]
 
     def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
         """Scratch reset should remove stale in-memory PR/rework state before requeue."""

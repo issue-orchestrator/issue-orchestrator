@@ -13,6 +13,7 @@ The dashboard will be available at http://127.0.0.1:19080/
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import logging
 import os
 import signal
@@ -25,13 +26,22 @@ from typing import Any
 
 import uvicorn
 
-import ipaddress
-
 from .control_api import (
     configure_api_token,
     control_app,
     install_access_log_redaction,
 )
+from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
+from ..infra import browser_session
+from ..infra.api_token import resolve_agent_callback_token, resolve_api_token
+from ..infra.client_urls import resolve_client_dashboard_url
+from ..infra.supervisor import ENGINE_LOG_LEVEL_ENV
+from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
+
+logger = logging.getLogger(__name__)
+
+# Flag to signal reaper thread to stop
+_reaper_stop = threading.Event()
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -51,16 +61,11 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
-from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
-from ..infra import browser_session
-from ..infra.api_token import resolve_agent_callback_token, resolve_api_token
-from ..infra.client_urls import resolve_client_dashboard_url
-from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
-logger = logging.getLogger(__name__)
 
-# Flag to signal reaper thread to stop
-_reaper_stop = threading.Event()
+def _set_default_engine_log_level(debug: bool) -> None:
+    if debug:
+        os.environ.setdefault(ENGINE_LOG_LEVEL_ENV, "DEBUG")
 
 
 class _TrayProcessHandle:
@@ -254,6 +259,7 @@ def main() -> int:
 
     # Default engine target repo to where Control Center was launched from.
     os.environ.setdefault("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(Path.cwd().resolve()))
+    _set_default_engine_log_level(args.debug)
 
     # Configure logging
     log_level = logging.DEBUG if args.debug else logging.INFO

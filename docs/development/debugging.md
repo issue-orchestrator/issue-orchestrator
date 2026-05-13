@@ -65,6 +65,16 @@ grep -E "\[EVENT\]|\[STATE_MACHINE\]|Launched|Queued|review" "$LOG" | tail -100
 
 The runtime log now lives under repo state, not a fixed home-directory path.
 
+To include DEBUG diagnostics in that log, start the engine with debug logging:
+
+```bash
+issue-orchestrator start --debug
+```
+
+For Repository Engines launched by Control Center, start Control Center with
+`--debug`, or set `ISSUE_ORCHESTRATOR_ENGINE_LOG_LEVEL=DEBUG` before starting
+Control Center. The supervisor passes that value through to the engine process.
+
 ### 3. Session run directories
 
 ```bash

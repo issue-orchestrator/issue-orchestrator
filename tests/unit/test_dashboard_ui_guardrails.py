@@ -284,6 +284,17 @@ def test_dashboard_refreshes_on_history_reconciled_sse() -> None:
     assert "refreshViewModel({ reloadOnListChange: true })" in body
 
 
+def test_dashboard_refreshes_list_on_issue_unblocked_sse() -> None:
+    """Reset+retry emits issue.unblocked; the dashboard must reload rows."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "wireEventListeners")
+
+    assert "'issue.unblocked'" in body
+    issue_unblocked_index = body.index("'issue.unblocked'")
+    refresh_index = body.index("refreshViewModel({ reloadOnListChange: true })")
+    assert issue_unblocked_index < refresh_index
+
+
 def test_card_focus_renders_combined_issue_label_in_template() -> None:
     """Cards must show the formatted label (M9-009 · #274) instead of bare #number."""
     html = _read(DASHBOARD_TEMPLATE)

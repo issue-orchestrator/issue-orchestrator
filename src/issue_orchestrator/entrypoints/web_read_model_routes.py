@@ -84,6 +84,71 @@ def _render_issue_rows_sync(template, view_model) -> list[dict[str, Any]]:
     return rows
 
 
+def _issue_numbers(items: list[dict[str, Any]]) -> list[int]:
+    numbers: list[int] = []
+    for item in items:
+        issue_number = item.get("issue_number")
+        if isinstance(issue_number, int):
+            numbers.append(issue_number)
+    return numbers
+
+
+def _flow_column_summary(view_model: Any) -> str:
+    parts: list[str] = []
+    for column in getattr(view_model, "flow_columns", []) or []:
+        column_id = column.get("id", "?")
+        items = column.get("items", []) or []
+        count = column.get("count", len(items))
+        preview = _issue_numbers(items)
+        parts.append(f"{column_id}={count}:{preview}")
+    return " ".join(parts) if parts else "(none)"
+
+
+def _reset_retry_pending_issue_numbers(view_model: Any, orchestrator: Any) -> list[int]:
+    lm = getattr(getattr(orchestrator, "deps", None), "label_manager", None)
+    if lm is None:
+        return []
+    pending_labels = {
+        lm.reset_retry_pending,
+        lm.reset_retry_scratch_pending,
+    }
+    numbers: set[int] = set()
+    item_groups = (
+        "queue_items",
+        "blocked_items",
+        "awaiting_merge_items",
+        "active_items",
+        "completed_items",
+    )
+    for group in item_groups:
+        for item in getattr(view_model, group, []) or []:
+            labels = set(item.get("orchestrator_labels", []) or [])
+            issue_number = item.get("issue_number")
+            if labels.intersection(pending_labels) and isinstance(issue_number, int):
+                numbers.add(issue_number)
+    return sorted(numbers)
+
+
+def _log_view_model_response(
+    *,
+    kind: str,
+    query: DashboardQueryParams,
+    view_model: Any,
+    orchestrator: Any,
+    row_count: int | None = None,
+) -> None:
+    logger.debug(
+        "[dashboard] %s response: page=%s tab=%s rows=%s flow=%s "
+        "reset_retry_pending=%s",
+        kind,
+        query.queue_page,
+        query.active_tab,
+        row_count if row_count is not None else "(not-rendered)",
+        _flow_column_summary(view_model),
+        _reset_retry_pending_issue_numbers(view_model, orchestrator),
+    )
+
+
 @web_read_model_router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -> HTMLResponse:
     """Render the main dashboard, or the login form when unauthenticated.
@@ -121,6 +186,12 @@ async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -
         query.queue_page,
         query.active_tab,
         query.e2e_page,
+    )
+    _log_view_model_response(
+        kind="page",
+        query=query,
+        view_model=view_model,
+        orchestrator=orchestrator,
     )
     vm_elapsed = time.time() - vm_start
     render_start = time.time()
@@ -166,6 +237,12 @@ async def get_view_model(
         query.active_tab,
         query.e2e_page,
     )
+    _log_view_model_response(
+        kind="view-model",
+        query=query,
+        view_model=view_model,
+        orchestrator=orchestrator,
+    )
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
 
@@ -185,17 +262,32 @@ async def get_view_model_snapshot(
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    queue_page = page
-    active_tab = tab
+    query = DashboardQueryParams(
+        queue_page=page,
+        e2e_page=e2e_page,
+        active_tab=tab,
+    )
 
     templates = get_templates()
     row_template = templates.get_template("issue_row.html")
 
     def _build_snapshot_sync() -> tuple[Any, list[dict[str, Any]]]:
-        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
+        vm = _build_dashboard_vm_sync(
+            orchestrator,
+            query.queue_page,
+            query.active_tab,
+            query.e2e_page,
+        )
         return vm, _render_issue_rows_sync(row_template, vm)
 
     view_model, rows = await asyncio.to_thread(_build_snapshot_sync)
+    _log_view_model_response(
+        kind="snapshot",
+        query=query,
+        view_model=view_model,
+        orchestrator=orchestrator,
+        row_count=len(rows),
+    )
 
     return ViewModelSnapshotPayload.model_validate({
         "view_model": view_model.to_dict(),
@@ -224,6 +316,13 @@ async def get_issue_rows(
         return vm, _render_issue_rows_sync(template, vm)
 
     view_model, rows = await asyncio.to_thread(_build_rows_sync)
+    _log_view_model_response(
+        kind="issue-rows",
+        query=query,
+        view_model=view_model,
+        orchestrator=orchestrator,
+        row_count=len(rows),
+    )
 
     return IssueRowsPayload.model_validate({
         "rows": rows,

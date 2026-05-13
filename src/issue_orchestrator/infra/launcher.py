@@ -131,6 +131,7 @@ def _start_with_supervisor(
     port: Optional[int],
     expected_identity: Optional[dict[str, Any]],
     start_paused: bool,
+    log_level: Optional[str],
 ) -> dict[str, Any]:
     if config.instances > 1 and instance_id is None:
         start_instances_kwargs: dict[str, Any] = {
@@ -141,6 +142,8 @@ def _start_with_supervisor(
             start_instances_kwargs["expected_identity"] = expected_identity
         if start_paused:
             start_instances_kwargs["start_paused"] = True
+        if log_level is not None:
+            start_instances_kwargs["log_level"] = log_level
         infos = sv.start_instances(**start_instances_kwargs)
         return {
             "instances": [
@@ -159,6 +162,8 @@ def _start_with_supervisor(
         start_kwargs["expected_identity"] = expected_identity
     if start_paused:
         start_kwargs["start_paused"] = True
+    if log_level is not None:
+        start_kwargs["log_level"] = log_level
     info = sv.start(**start_kwargs)
 
     supervisor_data = {
@@ -179,6 +184,7 @@ def launch_subprocess(
     port: Optional[int] = None,
     expected_identity: Optional[dict[str, Any]] = None,
     start_paused: bool = False,
+    log_level: Optional[str] = None,
     supervisor_ops: Optional[SupervisorOps] = None,
     doctor_fn: Optional[DoctorFn] = None,
 ) -> LaunchResult:
@@ -193,6 +199,7 @@ def launch_subprocess(
         runner: Optional command runner for guardrails checks.
         instance_id: Optional instance ID for multi-instance mode.
         port: Optional port override.
+        log_level: Optional repository engine log level override.
         supervisor_ops: Optional supervisor operations (DI for tests).
         doctor_fn: Callable that runs doctor checks. Defaults to
             ``run_doctor``.  Tests can inject a no-op to skip checks.
@@ -221,6 +228,7 @@ def launch_subprocess(
             port=port,
             expected_identity=expected_identity,
             start_paused=start_paused,
+            log_level=log_level,
         )
 
         return LaunchResult(
