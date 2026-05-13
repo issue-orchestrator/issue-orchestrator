@@ -19,6 +19,9 @@ end-to-end live-pipeline proof.
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 import json
 
 from playwright.sync_api import Page, expect
@@ -153,6 +156,8 @@ def _many_recent_runs_payload(count: int = 19) -> dict[str, object]:
     for offset in range(count):
         run_id = _RUN_ID + offset
         failed = offset in {0, 7, 11}
+        started_at = datetime(2026, 5, 12, 1, 0, 0, tzinfo=timezone.utc) - timedelta(days=offset)
+        finished_at = started_at + timedelta(minutes=3)
         runs.append(
             {
                 "run_id": run_id,
@@ -160,8 +165,8 @@ def _many_recent_runs_payload(count: int = 19) -> dict[str, object]:
                     "label": "Failed" if failed else "Passed",
                     "tone": "failed" if failed else "passed",
                 },
-                "started_at": f"2026-05-{12 - min(offset, 10):02d}T01:00:00Z",
-                "finished_at": f"2026-05-{12 - min(offset, 10):02d}T01:03:00Z",
+                "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "duration_seconds": 199.7 + offset,
                 "commit_sha": f"{run_id:07x}",
                 "branch": "HEAD",
@@ -346,6 +351,7 @@ def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
                 minClosedSummaryHeight: Math.min(...closedSummaryHeights),
                 clippedChildren,
                 firstSummaryControls: summaries[0].getAttribute('aria-controls'),
+                firstBodyRole: rows[0].querySelector('.e2e-run-row-body').getAttribute('role'),
                 firstBodyLabel: rows[0].querySelector('.e2e-run-row-body').getAttribute('aria-labelledby'),
                 focusOutlineStyle: focusStyle.outlineStyle,
                 focusOutlineWidth: focusStyle.outlineWidth,
@@ -359,8 +365,9 @@ def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
     assert abs(metrics["listScrollHeight"] - metrics["listClientHeight"]) <= 2
     assert metrics["minClosedSummaryHeight"] >= 40
     assert metrics["clippedChildren"] is False
-    assert metrics["firstSummaryControls"] == f"e2e-run-row-content-{_RUN_ID}"
-    assert metrics["firstBodyLabel"] == f"e2e-run-row-summary-{_RUN_ID}"
+    assert metrics["firstSummaryControls"] is None
+    assert metrics["firstBodyRole"] is None
+    assert metrics["firstBodyLabel"] is None
     assert metrics["focusOutlineStyle"] != "none"
     assert metrics["focusOutlineWidth"] != "0px"
 

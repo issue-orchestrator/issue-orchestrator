@@ -105,15 +105,14 @@ def test_e2e_run_history_css_contract_prevents_clipped_rows() -> None:
 
     The true "is it clipped?" check needs a browser layout engine, so
     Playwright owns that proof. This unit guardrail catches the common
-    regression cheaply: resurrecting the nested 65vh scroller from
-    ``cards.css`` or removing the row/focus sizing rules in the later
-    E2E run-history stylesheet.
+    regression cheaply: resurrecting a nested 65vh scroller or removing
+    the row/focus sizing rules from the E2E run-history stylesheet.
     """
     css = _read_dashboard_css_bundle()
+    cards_css = _read(DASHBOARD_CSS_DIR / "cards.css")
 
-    assert DASHBOARD_CSS_CHUNKS.index("cards.css") < DASHBOARD_CSS_CHUNKS.index(
-        "e2e_run_detail.css"
-    )
+    assert ".e2e-runs-list" not in cards_css
+    assert ".e2e-run-item" not in cards_css
 
     list_rule = _last_css_rule_body(css, ".e2e-runs-list")
     assert "max-height: none;" in list_rule

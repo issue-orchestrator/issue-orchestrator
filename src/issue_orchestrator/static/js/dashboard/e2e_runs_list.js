@@ -133,8 +133,6 @@
         const outcomeLabel = (summary.outcome && summary.outcome.label) || 'Unknown';
         const counts = _renderCountSpans(summary.results);
         const meta = _renderMeta(summary);
-        const summaryId = `e2e-run-row-summary-${runId}`;
-        const contentId = `e2e-run-row-content-${runId}`;
         const note = summary.note
             ? `<div class="e2e-run-row-note">${escapeHtml(summary.note)}</div>`
             : '';
@@ -146,7 +144,7 @@
             `data-loaded="" ` +
             `data-lifecycle-command="${payloadAttr}" ` +
             `ontoggle="runE2ELifecycleCommandFromToggle(this)">` +
-            `<summary class="e2e-run-row-summary" id="${summaryId}" aria-controls="${contentId}">` +
+            `<summary class="e2e-run-row-summary">` +
                 `<span class="e2e-run-row-caret" aria-hidden="true">▸</span>` +
                 `<span class="cvv-ico cvv-ico-${tone}" aria-hidden="true">${_toneGlyph(tone)}</span>` +
                 `<span class="e2e-run-row-id">Run #${runId}</span>` +
@@ -154,7 +152,7 @@
                 `<span class="e2e-run-row-counts">${counts}</span>` +
                 (meta ? `<span class="e2e-run-row-meta">${meta}</span>` : '') +
             `</summary>` +
-            `<div class="e2e-run-row-body" id="${contentId}" role="region" aria-labelledby="${summaryId}">` +
+            `<div class="e2e-run-row-body">` +
                 `${note}<div class="e2e-run-row-content"></div>` +
             `</div>` +
             `</details>`

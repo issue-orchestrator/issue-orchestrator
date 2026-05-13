@@ -421,18 +421,6 @@ body.column-focus-mode .column-expanded {
     flex-wrap: wrap;
     gap: 6px;
 }
-.e2e-runs-list {
-    display: grid;
-    gap: 8px;
-    max-height: 65vh;
-    overflow: auto;
-}
-.e2e-run-item {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 8px;
-    background: var(--bg-panel-soft);
-}
 .e2e-run-actions {
     display: flex;
     flex-wrap: wrap;
