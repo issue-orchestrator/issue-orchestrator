@@ -24,21 +24,16 @@
  * within it (session-replay via #modalOverlay, timeline focus via
  * #timelineModal, validation-failure, review-transcript, etc.) must
  * render above the drawer so it is reachable. Default-elevate every
- * .modal-overlay above the drawer and list the exceptions below.
+ * .modal-overlay above the drawer.
  *
- * Exception: #e2eDiagnosisModal is the run drawer the user launched
- * the issue drawer FROM — it must stay BELOW the issue drawer so the
- * user returns to it when the drawer is closed. The ID selector
- * outranks .modal-overlay in CSS specificity, so this override wins.
- *
- * If a new modal is added that ALSO serves as a drawer launcher
- * rather than a drill-down dialog, add it to the exception list.
+ * Issue #6334 dropped the ``#e2eDiagnosisModal`` exception: the E2E
+ * run view is no longer a modal — it mounts inline in the runs list
+ * (one ``<details>`` row per run), so there is no overlay-vs-drawer
+ * z-index war for that surface.  If a future modal serves as a
+ * drawer launcher again, add it back to an exception list here.
  */
 :root:has(#issueDetailDrawer.visible) .modal-overlay.visible {
     z-index: 45;
-}
-:root:has(#issueDetailDrawer.visible) #e2eDiagnosisModal.visible {
-    z-index: 30;
 }
 
 .timeline-failure-detail {

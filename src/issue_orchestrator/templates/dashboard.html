@@ -341,34 +341,15 @@
                     </div>
                 </article>
                 <article class="e2e-runs-card">
-                    <h2>Run History <span class="count">{{ e2e_total }}</span></h2>
-                    <div class="e2e-runs-list">
-                        {% if e2e_runs %}
-                            {% for run in e2e_runs %}
-                            <div class="e2e-run-item">
-                                {% if run.e2e_run_id %}
-                                <button class="card-focus" data-lifecycle-command="{{ run.open_run_command | tojson | forceescape }}" onclick="runE2ELifecycleCommandFromButton(this);event.stopPropagation();">{{ run.title }}</button>
-                                {% else %}
-                                <span class="card-focus">{{ run.title }}</span>
-                                {% endif %}
-                                <div class="card-line card-muted">{{ run.status_label if run.status_label else run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
-                                {% if run.note %}<div class="card-line card-muted e2e-run-note">{{ run.note }}</div>{% endif %}
-                                {% if run.results_action %}
-                                <div class="e2e-run-actions">
-                                    <button class="issue-action-btn e2e-run-results-btn" data-action="show-e2e-run-results" data-run-id="{{ run.results_action.run_id }}" aria-label="View formatted results for E2E run #{{ run.results_action.run_id }}" title="View formatted test results">{{ run.results_action.label }}</button>
-                                </div>
-                                {% endif %}
-                                {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
-                                <div class="attention-actions">
-                                    <button class="issue-action-btn" onclick="triageE2ERun();event.stopPropagation();">Triage</button>
-                                </div>
-                                {% endif %}
-                            </div>
-                            {% endfor %}
-                        {% else %}
-                            <div class="empty-state">No E2E run history.</div>
-                        {% endif %}
-                    </div>
+                    <h2>Run History <span class="count">{{ recent_e2e_runs.runs | length if recent_e2e_runs and recent_e2e_runs.runs else e2e_total }}</span></h2>
+                    {# Issue #6334: runs render as inline <details> rows
+                       via static/js/dashboard/e2e_runs_list.js — no modal.
+                       The typed RecentE2ERunsPayload is embedded inline so
+                       the first paint has zero round-trips; the JS chunk
+                       reads from #recentE2ERunsData on DOMContentLoaded.
+                    #}
+                    <script id="recentE2ERunsData" type="application/json">{{ recent_e2e_runs | tojson if recent_e2e_runs else '{"runs":[]}' }}</script>
+                    <div id="e2eRunsListRoot" class="e2e-runs-list-root"></div>
                 </article>
             </section>
             {% endif %}
@@ -498,22 +479,6 @@
                 <button class="issue-action-btn" onclick="resetFlowRefreshPrefs()">Reset</button>
                 <button class="issue-action-btn" onclick="closeFlowRefreshPrefs()">Cancel</button>
                 <button class="issue-action-btn active" onclick="saveFlowRefreshPrefs()">Save</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal-overlay" id="e2eDiagnosisModal" onclick="if(event.target===this) closeE2EDiagnosisModal();">
-        <div class="modal modal-large" onclick="event.stopPropagation()">
-            <div class="modal-header">
-                <h2>E2E Run Details</h2>
-                <button class="modal-close" onclick="closeE2EDiagnosisModal()">&times;</button>
-            </div>
-            <div class="modal-body" id="e2eDiagnosisContent">
-                <div class="timeline-loading">Loading...</div>
-            </div>
-            <div class="modal-body" style="display:none;">
-                <select id="e2eDiagnosisAgent"></select>
-                <button id="e2eCreateIssueBtn"></button>
             </div>
         </div>
     </div>

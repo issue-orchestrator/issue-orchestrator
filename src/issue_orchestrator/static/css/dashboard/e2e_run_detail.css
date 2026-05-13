@@ -420,3 +420,105 @@
     display: flex;
     flex-direction: column;
 }
+
+/* ─── Issue #6334: inline E2E runs-as-rows list ─────────────────
+   Each E2E run renders as a ``<details>`` row in the Run History
+   panel.  Closed by default; expanding lazy-fetches
+   ``/api/e2e-run-detail/{run_id}`` and mounts the canonical viewer
+   inline (see ``e2e_runs_list.js`` → ``loadE2ERunIntoRow``).  No
+   modal — these rules govern the row chrome, summary line, and
+   the inline-mounted viewer body. */
+.e2e-runs-list-root {
+    display: block;
+}
+.e2e-runs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.e2e-runs-list-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 8px 4px;
+}
+.e2e-run-row {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    overflow: hidden;
+}
+.e2e-run-row[open] {
+    box-shadow: 0 1px 0 var(--border) inset;
+}
+.e2e-run-row-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.e2e-run-row-summary::-webkit-details-marker { display: none; }
+.e2e-run-row-caret {
+    color: var(--text-muted);
+    font-size: 11px;
+    width: 12px;
+    text-align: center;
+    transition: transform 120ms ease;
+}
+.e2e-run-row[open] > .e2e-run-row-summary .e2e-run-row-caret {
+    transform: rotate(90deg);
+}
+.e2e-run-row-id {
+    font-weight: 600;
+    color: var(--text);
+}
+.e2e-run-row-outcome {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--bg-panel-soft);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+.e2e-run-row-outcome-passed       { color: #1f8f3a; border-color: #1f8f3a; background: #e6f4ea; }
+.e2e-run-row-outcome-failed       { color: #8c1f17; border-color: #c0392f; background: #fbeae7; }
+.e2e-run-row-outcome-error        { color: #8a4d00; border-color: #d68b29; background: #fbf1de; }
+.e2e-run-row-outcome-in_progress  { color: #1c4cab; border-color: #3870e0; background: #e8eefb; }
+.e2e-run-row-outcome-neutral      { color: #4f586b; border-color: var(--border); background: var(--bg-panel-soft); }
+.e2e-run-row-counts {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.e2e-run-count                  { white-space: nowrap; }
+.e2e-run-count-passed           { color: #1f8f3a; }
+.e2e-run-count-failed           { color: #c0392f; font-weight: 600; }
+.e2e-run-count-error            { color: #d68b29; font-weight: 600; }
+.e2e-run-count-neutral          { color: var(--text-muted); }
+.e2e-run-row-meta {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+}
+.e2e-run-row-body {
+    padding: 8px 12px 12px;
+    border-top: 1px solid var(--border);
+}
+.e2e-run-row-note {
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    background: var(--bg-panel-soft);
+    border-left: 3px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.e2e-run-row-error {
+    color: var(--danger, #c0392f);
+    padding: 8px 4px;
+    font-size: 12px;
+}

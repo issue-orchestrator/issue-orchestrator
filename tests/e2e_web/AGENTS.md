@@ -28,20 +28,25 @@ When you do write one, push as much as possible into the *setup* (which fixtures
 
 ```python
 # GOOD — one focused observable per test
-def test_run_modal_opens_when_run_card_is_clicked(page, fixture_web_server):
+def test_run_row_expands_when_clicked(page, fixture_web_server):
     page.goto(fixture_web_server["url"])
-    page.locator("[data-testid='run-card']").first.click()
-    expect(page.locator("#e2eDiagnosisModal.visible")).to_be_visible()
+    run_id = fixture_web_server["run_id"]
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{run_id}']")
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", True)
+    expect(row.locator(".cvv-root")).to_be_visible()
 
 # BAD — verifies HTML structure that JS-vm could verify in 5 ms
-def test_run_modal_has_correct_pill_classes(page, fixture_web_server):
+def test_run_row_has_correct_pill_classes(page, fixture_web_server):
     ...
-    pills = modal.locator(".test-result-pill")
+    pills = row.locator(".test-result-pill")
     expect(pills.first).to_have_class(...)
     expect(pills.nth(1)).to_have_text("Tracked")
 ```
 
-Move pill-class / text-content assertions to `tests/js/`. Leave Playwright to verify the modal *opens at all*.
+Move pill-class / text-content assertions to `tests/js/`. Leave Playwright to verify the row *opens and mounts the canonical viewer at all*.
+
+(Issue #6334 retired ``#e2eDiagnosisModal``; the canonical viewer mounts inline in each run's ``<details class="e2e-run-row">`` row.)
 
 ## When migrating: shrink, don't delete
 

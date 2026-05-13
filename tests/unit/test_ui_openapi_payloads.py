@@ -392,6 +392,233 @@ def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> 
         })
 
 
+def test_expand_e2e_run_command_payload_matches_openapi() -> None:
+    """Issue #6334: every ``<details>`` row in the inline runs-as-rows
+    list carries an ``ExpandE2ERunCommand`` payload.  The OpenAPI
+    schema and the generated Pydantic contract enforce the same
+    invariants as ``OpenE2ERunCommand``:
+
+      * ``kind`` is the literal ``expand_e2e_run``.
+      * ``run_id`` is a positive integer (``minimum: 1``).
+      * Strict-int scalar semantics — no coercion from strings or
+        booleans.  A stale stringified payload from a refresh must
+        fail validation, not silently normalize to a real run.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        ExpandE2ERunCommandPayload,
+    )
+    from pydantic import ValidationError
+
+    validator = _validator("ExpandE2ERunCommandPayload")
+    valid = {
+        "kind": "expand_e2e_run",
+        "label": "Expand E2E Run",
+        "run_id": 88,
+    }
+    validator.validate(valid)
+    ExpandE2ERunCommandPayload.model_validate(valid)
+
+    # Wrong kind discriminator.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "kind": "open_e2e_run"})
+
+    # Non-positive run_id.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "run_id": 0})
+    with pytest.raises(ValidationError):
+        ExpandE2ERunCommandPayload.model_validate({**valid, "run_id": 0})
+    with pytest.raises(ValidationError):
+        ExpandE2ERunCommandPayload.model_validate({**valid, "run_id": -1})
+
+    # Strict-int: reject string + boolean coercion at the Python layer.
+    with pytest.raises(ValidationError):
+        ExpandE2ERunCommandPayload.model_validate({**valid, "run_id": "88"})
+    with pytest.raises(ValidationError):
+        ExpandE2ERunCommandPayload.model_validate({**valid, "run_id": True})
+
+
+def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
+    """Issue #6334 round-2: Story/Ops/Debug buttons inside an
+    expanded row emit a typed ``SwitchE2ETimelineViewCommand``.
+
+    The OpenAPI schema and the generated Pydantic contract enforce
+    the same invariants as ``OpenE2ERunCommand.run_id`` plus a
+    Literal-constrained ``view`` field.  A typo in ``view`` (e.g.
+    ``"detail"`` instead of ``"debug"``) must fail validation, not
+    silently route to the wrong API call.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        SwitchE2ETimelineViewCommandPayload,
+    )
+    from pydantic import ValidationError
+
+    validator = _validator("SwitchE2ETimelineViewCommandPayload")
+    valid = {
+        "kind": "switch_e2e_timeline_view",
+        "label": "Switch suite timeline to Ops",
+        "run_id": 88,
+        "view": "ops",
+    }
+    validator.validate(valid)
+    SwitchE2ETimelineViewCommandPayload.model_validate(valid)
+
+    # ``view`` enum is strict.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "view": "detail"})
+    with pytest.raises(ValidationError):
+        SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "view": "detail"})
+
+    # Strict-int + ge=1 on ``run_id`` (same family invariant).
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "run_id": 0})
+    with pytest.raises(ValidationError):
+        SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "run_id": "88"})
+
+
+def test_create_e2e_untriaged_issues_command_payload_matches_openapi() -> None:
+    """Issue #6334 round-2: the "Create issue(s)" button inside an
+    expanded row's untracked-failures banner emits a typed
+    ``CreateE2EUntriagedIssuesCommand``.
+
+    Same run_id invariants as the rest of the E2E command family.
+    The agent does NOT live in the payload — it's read at click
+    time from the row-scoped ``.unified-run-agent`` select.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        CreateE2EUntriagedIssuesCommandPayload,
+    )
+    from pydantic import ValidationError
+
+    validator = _validator("CreateE2EUntriagedIssuesCommandPayload")
+    valid = {
+        "kind": "create_e2e_untriaged_issues",
+        "label": "Create issue(s)",
+        "run_id": 88,
+    }
+    validator.validate(valid)
+    CreateE2EUntriagedIssuesCommandPayload.model_validate(valid)
+
+    # Payload may not carry agent / nodeids — those are runtime reads.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "agent": "agent:web"})
+
+    with pytest.raises(ValidationError):
+        CreateE2EUntriagedIssuesCommandPayload.model_validate({**valid, "run_id": "88"})
+    with pytest.raises(ValidationError):
+        CreateE2EUntriagedIssuesCommandPayload.model_validate({**valid, "run_id": 0})
+
+
+def test_recent_e2e_runs_payload_matches_openapi() -> None:
+    """Issue #6334: the runs-as-rows panel renders from
+    ``RecentE2ERunsPayload``, a typed wrapper around a list of
+    ``RecentE2ERunSummary``.  Each row carries a typed
+    ``OutcomeBadge``, per-outcome counts, and the typed
+    ``ExpandE2ERunCommand`` it dispatches on toggle.
+
+    Cross-payload invariant: ``expand_command.run_id`` MUST match
+    the row's own ``run_id`` — caught by the Pydantic model
+    validator (a mismatched expand_command would dispatch the
+    wrong run id to the lazy loader).
+
+    Top-level invariant: no two summaries share a ``run_id`` — the
+    JS dispatcher resolves rows by ``data-e2e-run-id``, so a
+    duplicate would silently route to whichever row got rendered
+    first.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        ExpandE2ERunCommandPayload,
+        OutcomeBadgePayload,
+        RecentE2ERunSummaryPayload,
+        RecentE2ERunsPayload,
+    )
+    from pydantic import ValidationError
+
+    summary_validator = _validator("RecentE2ERunSummaryPayload")
+    payload_validator = _validator("RecentE2ERunsPayload")
+
+    summary = {
+        "run_id": 88,
+        "outcome": {"label": "Passed", "tone": "passed"},
+        "started_at": "2026-05-12T10:00:00Z",
+        "finished_at": "2026-05-12T10:05:00Z",
+        "duration_seconds": 300.0,
+        "commit_sha": "abc1234",
+        "branch": "main",
+        "runner_kind": "pytest",
+        "command_summary": "pytest tests/e2e",
+        "results": {
+            "passed": 36, "failed": 1, "errored": 0,
+            "skipped": 2, "quarantined": 0, "total": 39,
+        },
+        "note": None,
+        "expand_command": {
+            "kind": "expand_e2e_run",
+            "label": "Expand E2E Run",
+            "run_id": 88,
+        },
+    }
+    summary_validator.validate(summary)
+    RecentE2ERunSummaryPayload.model_validate(summary)
+
+    payload = {"runs": [summary]}
+    payload_validator.validate(payload)
+    RecentE2ERunsPayload.model_validate(payload)
+
+    # Single-run case still validates — explicit per the issue body
+    # ("Single-run case renders as a 1-element list so the idiom
+    # holds even with one run.").
+    payload_validator.validate({"runs": []})
+    RecentE2ERunsPayload.model_validate({"runs": []})
+
+    # Non-positive run_id rejected at the schema layer.
+    with pytest.raises(JsonSchemaValidationError):
+        summary_validator.validate({**summary, "run_id": 0})
+
+    # Strict-int on run_id at the Python layer.
+    with pytest.raises(ValidationError):
+        RecentE2ERunSummaryPayload.model_validate({**summary, "run_id": "88"})
+
+    # Top-level Pydantic also exposes the strict-int via the wire
+    # generator — the JSON Schema doesn't enforce it, so the strict
+    # contract lives on the source ``RecentE2ERunSummary`` /
+    # ``ExpandE2ERunCommand`` in lifecycle_semantics.  Confirm the
+    # source models enforce both invariants (run_id match + uniqueness).
+    from issue_orchestrator.view_models.lifecycle_semantics import (
+        ExpandE2ERunCommand,
+        RecentE2ERunSummary,
+        RecentE2ERunsPayload as SourceRecentE2ERunsPayload,
+        E2ERunResultCounts,
+    )
+
+    # expand_command.run_id mismatch → reject.
+    counts = E2ERunResultCounts(passed=0, failed=0, errored=0, skipped=0, quarantined=0, total=0)
+    badge = OutcomeBadge(label="Passed", tone="passed")
+    with pytest.raises(ValidationError):
+        RecentE2ERunSummary(
+            run_id=42,
+            outcome=badge,
+            started_at="2026-05-12T10:00:00Z",
+            runner_kind="pytest",
+            command_summary="pytest",
+            results=counts,
+            expand_command=ExpandE2ERunCommand(run_id=99),
+        )
+
+    # Duplicate run_ids in payload → reject.
+    s1 = RecentE2ERunSummary(
+        run_id=1, outcome=badge, started_at="2026-05-12T10:00:00Z",
+        runner_kind="pytest", command_summary="pytest", results=counts,
+        expand_command=ExpandE2ERunCommand(run_id=1),
+    )
+    s2 = RecentE2ERunSummary(
+        run_id=1, outcome=badge, started_at="2026-05-12T10:00:00Z",
+        runner_kind="pytest", command_summary="pytest", results=counts,
+        expand_command=ExpandE2ERunCommand(run_id=1),
+    )
+    with pytest.raises(ValidationError):
+        SourceRecentE2ERunsPayload(runs=(s1, s2))
+
+
 def test_open_inline_agent_attempts_command_payload_matches_openapi() -> None:
     """Issue #6322 follow-up: the inline ``▸ Attempts on issue #N``
     expander emits a typed ``OpenInlineAgentAttemptsCommandPayload``

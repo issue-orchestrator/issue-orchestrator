@@ -1,22 +1,21 @@
-"""Phase C of #6310 follow-up: Playwright smoke for the new E2E run modal.
+"""Phase C of #6310 follow-up: Playwright smoke for the canonical viewer
+mount on an E2E run.
 
-The legacy filter-pill / per-row-action panel has been replaced by the
-canonical validation viewer (the same component that backs the
-validation modal and the per-issue drawer's inline expansion).  This
-test pins:
+Issue #6334 retired the ``#e2eDiagnosisModal`` overlay; the canonical
+viewer now mounts inline inside the run's ``<details>`` row in the
+inline runs-as-rows list.  The test pins the same end-to-end pipeline
+it always did, just inside the row body:
 
-- The modal mounts ``.cvv-root`` as its body.
+- The runs list renders ``<details class="e2e-run-row">`` rows from
+  the typed ``RecentE2ERunsPayload`` (no modal).
+- Clicking a row's summary lazy-fetches ``/api/e2e-run-detail/{run_id}``
+  and mounts ``.cvv-root`` inside ``.e2e-run-row-content``.
 - Run-level summary chips show the right counts.
 - Failed tests render as triage cards; failures with a linked issue
-  carry the ``io.agent-context`` plugin block beneath them with the
-  Open-issue-drawer affordance.
-- Failed tests without a linked issue carry the plugin block too, but
-  in the "no linked issue" branch (and the run-level
-  untracked-failures banner offers the Create-issue affordance).
-- The canonical viewer is ARIA-enhanced after mount (Phase D
-  ``enhanceCanonicalValidationViewerAccessibility`` was called):
-  ``role="tree"``, every ``role="treeitem"`` has ``aria-level``,
-  ``aria-setsize``, and ``aria-posinset`` filled in.
+  carry the ``io.agent-context`` plugin block beneath them.
+- The canonical viewer is ARIA-enhanced after mount
+  (``role="tree"``, every ``role="treeitem"`` has ``aria-level``,
+  ``aria-setsize``, and ``aria-posinset``).
 - Real keyboard input moves focus on the mounted tree.
 
 A single test exercises the whole path with a stubbed run-detail
@@ -27,7 +26,6 @@ lives in JS-vm tests; this is the live-pipeline proof.
 from __future__ import annotations
 
 import json
-import re
 
 from playwright.sync_api import Page, expect
 
@@ -89,9 +87,6 @@ _STUB_RUN_DETAIL: dict[str, object] = {
                 "nodeid": "tests/e2e/test_e.py::test_pending",
                 "suite_name": "tests/e2e/test_e.py",
                 "outcome": "skipped",
-                # Skip-reason content (matches JUnit ``<skipped message="..."/>``)
-                # surfaces under the test row in the canonical viewer.  Verified
-                # below with a content assertion on ``.cvv-skip-reason``.
                 "failure_details": "skip(reason='waiting on upstream API key'): pending env var",
             },
         ],
@@ -107,15 +102,76 @@ _STUB_RUN_DETAIL: dict[str, object] = {
 }
 
 
+_STUB_RECENT_RUNS: dict[str, object] = {
+    "runs": [
+        {
+            "run_id": _RUN_ID,
+            "outcome": {"label": "Failed", "tone": "failed"},
+            "started_at": "2026-05-12T01:00:00Z",
+            "finished_at": "2026-05-12T01:01:00Z",
+            "duration_seconds": 60.0,
+            "commit_sha": "abc1234",
+            "branch": "main",
+            "runner_kind": "pytest",
+            "command_summary": "pytest tests/e2e --junit-xml=junit.xml",
+            "results": {
+                "passed": 3, "failed": 2, "errored": 0,
+                "skipped": 1, "quarantined": 0, "total": 6,
+            },
+            "note": None,
+            "expand_command": {
+                "kind": "expand_e2e_run",
+                "label": "Expand E2E Run",
+                "run_id": _RUN_ID,
+            },
+        },
+    ],
+}
+
+
 def _goto_dashboard(page: Page, base_url: str) -> None:
-    page.goto(base_url, wait_until="domcontentloaded", timeout=90_000)
+    # Navigate straight to the E2E tab so the runs-list root is in
+    # the DOM on first paint (the E2E panel is gated by ``active_tab``).
+    page.goto(f"{base_url}/?tab=e2e", wait_until="domcontentloaded", timeout=90_000)
     page.wait_for_function("() => window.dashboardBundleLoaded === true", timeout=15_000)
+
+
+def _inject_runs_list(page: Page, payload: dict[str, object]) -> None:
+    """Render the runs-list with the given typed payload.
+
+    The default ``web_server`` fixture's mock orchestrator has E2E
+    disabled, so the SSR HTML lacks the ``#e2eRunsListRoot`` mount
+    point.  This injects the mount point and calls the production
+    renderer directly — same code path the JS chunk runs on
+    DOMContentLoaded.
+    """
+    page.evaluate(
+        """(payload) => {
+            const container = document.querySelector('#panel-e2e')
+                || document.querySelector('main')
+                || document.body;
+            if (!document.getElementById('e2eRunsListRoot')) {
+                const root = document.createElement('div');
+                root.id = 'e2eRunsListRoot';
+                container.appendChild(root);
+            }
+            const root = document.getElementById('e2eRunsListRoot');
+            root.innerHTML = window.renderE2ERunsList(payload);
+        }""",
+        payload,
+    )
 
 
 def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     page: Page,
     web_server: dict[str, object],
 ) -> None:
+    """Issue #6322 / #6334: canonical viewer mounts inline in the run row.
+
+    Test name preserved from the modal era for git-blame continuity;
+    the assertions now target the inline runs-list row (``#6334``
+    dropped ``#e2eDiagnosisModal``).
+    """
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
@@ -132,124 +188,27 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     )
 
     _goto_dashboard(page, str(web_server["url"]))
+    _inject_runs_list(page, _STUB_RECENT_RUNS)
 
-    # PR #6329 reviewer Blocker 2: open the run view by CLICKING a
-    # real rendered affordance, not by calling ``showUnifiedRunView``
-    # directly.  This proves the typed-Command pipeline is wired
-    # end-to-end (template → data-lifecycle-command → dispatcher →
-    # showUnifiedRunView) in the actual browser, not just in JS-vm
-    # unit tests.
-    #
-    # The dashboard fixture may or may not render a Run-history chip
-    # for this test's stub run id.  If a real chip is present, click
-    # it; otherwise fall back to injecting a chip with the
-    # production-shape ``data-lifecycle-command`` and clicking that.
-    # Both paths exercise ``runE2ELifecycleCommandFromButton`` → the
-    # typed Command dispatcher → ``showUnifiedRunView`` end-to-end.
-    real_chip = page.locator(f"button.card-focus[data-lifecycle-command]").filter(
-        has_text=str(_RUN_ID)
-    ).first
-    if real_chip.count() > 0:
-        real_chip.click()
-    else:
-        page.evaluate(
-            f"""() => {{
-                const btn = document.createElement('button');
-                btn.className = 'card-focus';
-                btn.id = 'test-injected-chip';
-                btn.setAttribute('data-lifecycle-command', JSON.stringify({{
-                    kind: 'open_e2e_run',
-                    label: 'Open E2E Run',
-                    run_id: {_RUN_ID},
-                    expand_run_details: false,
-                }}));
-                btn.setAttribute('onclick', 'runE2ELifecycleCommandFromButton(this);');
-                btn.textContent = 'Run #{_RUN_ID}';
-                document.body.appendChild(btn);
-            }}"""
-        )
-        page.locator("#test-injected-chip").click()
+    # The dropped modal is not in the DOM.
+    expect(page.locator("#e2eDiagnosisModal")).to_have_count(0)
 
-    modal = page.locator("#e2eDiagnosisModal.visible")
-    expect(modal).to_be_visible(timeout=10_000)
+    # Locate the row by run_id and click its summary to expand.  The
+    # row's ``ontoggle`` dispatches through the typed-Command pipeline
+    # (``runE2ELifecycleCommandFromToggle`` → ``loadE2ERunIntoRow``).
+    row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{_RUN_ID}']")
+    expect(row).to_have_count(1)
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", True)
 
-    # ── Phase D modal-drop (issue #6322): state + content assertions ─
-    # State: <body> carries the ``data-e2e-run-view-active`` flag
-    # while the run view is active.  The CSS rule keys off this.
-    body = page.locator("body")
-    expect(body).to_have_attribute("data-e2e-run-view-active", "1", timeout=5_000)
-
-    # State: the modal container is in normal flow, not fixed-position.
-    modal_position = page.evaluate(
-        "() => getComputedStyle(document.getElementById('e2eDiagnosisModal')).position"
-    )
-    assert modal_position == "static", (
-        f"#e2eDiagnosisModal should render in normal flow (position: static), got {modal_position}"
-    )
-
-    # CONTENT: the modal's actual computed backdrop is no longer a
-    # translucent dim overlay.  We check that ``backgroundColor``
-    # resolved to either fully transparent or an opaque page color —
-    # both prove the legacy ``rgba(black, 0.5)`` dim is gone.  This
-    # would catch a regression where the CSS override stops applying
-    # and the legacy dim backdrop returns.
-    modal_bg = page.evaluate(
-        "() => getComputedStyle(document.getElementById('e2eDiagnosisModal')).backgroundColor"
-    )
-    # Translucent (alpha < 1) non-transparent colors are the legacy
-    # overlay shape we want to reject.  Match ``rgba(...)`` and parse
-    # the alpha.
-    alpha_match = re.search(r"rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\s*\)", modal_bg)
-    if alpha_match:
-        alpha = float(alpha_match.group(1))
-        assert alpha == 0.0 or alpha == 1.0, (
-            f"#e2eDiagnosisModal backgroundColor must not be a translucent dim overlay "
-            f"(legacy modal pattern); got {modal_bg!r} with alpha={alpha}"
-        )
-
-    # CONTENT: a sibling dashboard element outside the modal is
-    # actually HIDDEN (display: none) while the run view is active.
-    # This is the visible payoff of the body-flag CSS rule — the
-    # dashboard chrome disappears when the user opens a run.
-    chrome_state = page.evaluate(
-        "() => {"
-        "  const containers = ['.container', '.dashboard-container', 'main', 'body'];"
-        "  for (const sel of containers) {"
-        "    const c = document.querySelector(sel);"
-        "    if (!c) continue;"
-        "    const siblings = Array.from(c.children).filter(el =>"
-        "      el.id !== 'e2eDiagnosisModal' && el.tagName !== 'SCRIPT'"
-        "    );"
-        "    if (siblings.length === 0) continue;"
-        "    return siblings.map(el => ({"
-        "      tag: el.tagName,"
-        "      id: el.id || null,"
-        "      display: getComputedStyle(el).display,"
-        "    }));"
-        "  }"
-        "  return [];"
-        "}"
-    )
-    if chrome_state:
-        # At least one non-modal sibling must be hidden — proves the
-        # body flag actually triggered the CSS rule.  Allow a couple
-        # of always-present elements (e.g. ``<script>``, fixed
-        # toolbars) to remain visible; the rule only hides direct
-        # children of the recognized containers.
-        hidden = [el for el in chrome_state if el["display"] == "none"]
-        assert hidden, (
-            "expected at least one non-modal sibling to be hidden by "
-            f"body[data-e2e-run-view-active]; got siblings={chrome_state}"
-        )
-
-    # ── canonical viewer mounted as the body ───────────────────────
-    cvv = modal.locator(".cvv-root")
-    expect(cvv).to_be_visible(timeout=5000)
+    # ── canonical viewer mounted as the row body ────────────────────
+    cvv = row.locator(".cvv-root")
+    expect(cvv).to_be_visible(timeout=10_000)
     expect(cvv).to_have_attribute("data-cvv-status", "failed")
     expect(cvv).to_have_attribute("role", "tree")
 
     # ── run-level summary chips show the right counts ──────────────
-    summary = modal.locator(".e2e-run-summary")
+    summary = row.locator(".e2e-run-summary")
     expect(summary).to_be_visible()
     expect(summary).to_contain_text("failed")
     expect(summary).to_contain_text("6 cases")
@@ -257,61 +216,42 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(summary).to_contain_text("3 passing")
     expect(summary).to_contain_text("1 skipped")
 
-    # ── Phase D outcome groups: Failed (1) is a collapsed group; open
-    #    it to reveal the failed test's triage card.  (The untracked
-    #    failure has outcome="failed" too in this fixture, so both
-    #    failures live under the same Failed group.)
+    # ── outcome-grouped expanders: Failed group has 1 collapsed group ─
     failed_group = cvv.locator(".cvv-group-failed")
     expect(failed_group).to_have_count(1)
     failed_group.locator("summary").first.click()
 
-    # ── two failure triage cards inside the Failed group ───────────
     triage_cards = cvv.locator(".cvv-triage-card")
     expect(triage_cards).to_have_count(2)
     expect(cvv).to_contain_text("test_untracked_failure")
     expect(cvv).to_contain_text("test_linked_failure")
 
-    # ── linked failure has the io.agent-context plugin block with the
-    #    inline ``▸ Attempts on issue #N`` expander.  Phase D: open
-    #    the triage card first to reveal its body (the plugin renders
-    #    inside the body).
+    # ── linked failure carries the io.agent-context plugin block ────
     linked_card = cvv.locator(".cvv-triage-card", has_text="test_linked_failure")
     linked_card.locator("summary").first.click()
     plugin_block = linked_card.locator(".cvv-plugin.agent-context")
     expect(plugin_block).to_be_visible()
     expect(plugin_block).to_contain_text("#4503")
 
-    # Issue #6322 follow-up: the linked-failure drill-in is the inline
-    # ``▸ Attempts on issue #N`` expander.  The legacy
-    # "Open issue drawer" typed-Command button is gone; the inline
-    # expander is the only drill-in affordance.
+    # Issue #6322 follow-up: the inline ``▸ Attempts on issue #N``
+    # expander is the only drill-in affordance.  No legacy
+    # "Open issue drawer" button.
     expect(plugin_block.locator("button", has_text="Open issue drawer")).to_have_count(0)
     expander = plugin_block.locator(".agent-context-attempts-expander")
     expect(expander).to_have_count(1)
     expect(expander).to_be_visible()
     assert expander.get_attribute("data-issue-number") == "4503"
-    # Closed by default — the user opens it on demand.
     assert expander.evaluate("el => el.open") is False
     expect(expander).to_contain_text("Attempts on issue #4503")
 
-    # Typed-Command pipeline: the expander carries
-    # ``data-lifecycle-command`` with the
-    # ``OpenInlineAgentAttemptsCommand`` shape and dispatches
-    # through ``runE2ELifecycleCommandFromToggle`` — same
-    # single-owner contract as every other typed Command in the
-    # canonical viewer.  Plain bespoke ``ontoggle`` handlers are
-    # not allowed.
     cmd_attr = expander.get_attribute("data-lifecycle-command") or ""
     assert cmd_attr, "expander must carry data-lifecycle-command"
     cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
     assert cmd.get("kind") == "open_inline_agent_attempts"
     assert cmd.get("issue_number") == 4503
 
-    # Click-through proof: stub ``fetch`` to record the lazy-fetch URL
-    # without hitting the real backend.  Catches a regression where
-    # the typed JSON lands on the expander but the dispatcher's
-    # ``open_inline_agent_attempts`` branch silently breaks (or the
-    # URL contract drifts).
+    # Click-through proof: stub ``fetch`` so we can record the lazy
+    # URL the expander hits.
     page.evaluate(
         "() => {"
         "  window.__inlineAgentFetchCalls = [];"
@@ -338,7 +278,7 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(untracked_card.locator(".cvv-plugin.agent-context")).to_have_count(0)
 
     # ── run-level untracked-failures banner is visible ─────────────
-    banner = modal.locator(".e2e-untracked-banner")
+    banner = row.locator(".e2e-untracked-banner")
     expect(banner).to_be_visible()
     expect(banner).to_contain_text("1 failing test has no linked issue")
 
@@ -360,9 +300,7 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     )
     assert tab_stops == 1
 
-    # ── Phase D outcome groups: Passed and Skipped groups render
-    #    collapsed when they have cases.  No more "browse-by-file"
-    #    single-row — passed and skipped are separate groups now.
+    # ── Passed and Skipped groups render collapsed ─────────────────
     passed_group = cvv.locator(".cvv-group-passed")
     expect(passed_group).to_have_count(1)
     expect(passed_group).not_to_have_attribute("open", "")
@@ -370,13 +308,7 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(skipped_group).to_have_count(1)
     expect(skipped_group).not_to_have_attribute("open", "")
 
-    # ── skip-reason renders inline when a skipped test row is opened
-    # (Phase C confidence: a JUnit ``<skipped message="..."/>`` value
-    # surfaces verbatim under the test row so the user doesn't have to
-    # leave the dashboard to learn why a test was skipped).
-    #
-    # Force-open every row inside the browse-by-file tree so the
-    # skipped test's body is in the DOM, then assert content.
+    # ── skip-reason renders inline when a skipped test row is opened ─
     page.evaluate(
         "() => {"
         "  document.querySelectorAll('.cvv-root details').forEach(el => { el.open = true; });"
@@ -387,9 +319,6 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     expect(skip_reason).to_contain_text("waiting on upstream API key")
 
     # ── real keypress: focus first treeitem, ArrowDown moves focus ─
-    # Identify the active treeitem by its index in the tree's
-    # treeitem list rather than outerHTML — the canonical viewer's
-    # rows share enough markup that a short prefix slice can collide.
     activeIndexScript = (
         "() => {"
         "  const all = Array.from(document.querySelectorAll('.cvv-root [role=\"treeitem\"]'));"
@@ -411,100 +340,12 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
         f"ArrowDown should move focus to a different treeitem; before index={first_index}, after index={after_index}"
     )
 
-    # ── Phase D modal-drop: close-path content assertions ────────────
-    # The close-path is the symmetrical complement to the open-path
-    # checks above.  We verified on open: (1) body flag set,
-    # (2) modal in normal flow with no dim backdrop, (3) at least
-    # one non-modal sibling hidden by the body-flag CSS rule.
-    #
-    # On close we need the symmetrical reverse — but we can't simply
-    # invert the "sibling hidden" assertion, because in this test
-    # fixture some siblings are hidden for unrelated reasons (e.g.
-    # ``#engineRestartBanner`` is hidden by default).  Instead we
-    # capture the SPECIFIC sibling that flipped from visible→hidden
-    # when we opened, and assert it flips back.  That's strictly
-    # the body-flag CSS rule's responsibility.
-    #
-    # First, snapshot ``display`` of every relevant sibling NOW
-    # (while the run view is still open) and identify the ones the
-    # rule is hiding.  Compare to AFTER close.
-    sibling_states_open = page.evaluate(
-        "() => {"
-        "  const containers = ['.container', '.dashboard-container', 'main', 'body'];"
-        "  for (const sel of containers) {"
-        "    const c = document.querySelector(sel);"
-        "    if (!c) continue;"
-        "    const siblings = Array.from(c.children).filter(el =>"
-        "      el.id !== 'e2eDiagnosisModal' && el.tagName !== 'SCRIPT'"
-        "    );"
-        "    if (siblings.length === 0) continue;"
-        "    return siblings.map((el, idx) => ({"
-        "      key: el.id ? '#' + el.id : el.tagName + '[' + idx + ']',"
-        "      display: getComputedStyle(el).display,"
-        "    }));"
-        "  }"
-        "  return [];"
-        "}"
-    )
+    # ── close-path: collapsing the row hides the viewer (no modal cloak) ─
+    # Issue #6334 retired the body[data-e2e-run-view-active] cloak; the
+    # row simply closes via standard <details> semantics.  The viewer
+    # body remains in the DOM (lazy-load cache for re-expansion) but
+    # is no longer visible.
+    row.locator("summary").first.click()
+    expect(row).to_have_js_property("open", False)
 
-    # Close the modal.
-    page.evaluate("() => closeE2EDiagnosisModal()")
-
-    # Body flag cleared — proves the close handler ran and the CSS
-    # rule will stop applying.
-    expect(body).not_to_have_attribute("data-e2e-run-view-active", "1", timeout=2_000)
-
-    # Modal hidden — ``.visible`` class removed.
-    expect(modal).not_to_be_visible(timeout=2_000)
-
-    # Symmetry check on the sibling states: any element that was
-    # hidden ONLY because of the body-flag rule must now be visible.
-    # We approximate "ONLY because of the body-flag rule" by:
-    # an element whose display flipped from ``none`` (while flag was
-    # set) to a visible value (after flag cleared).  Elements hidden
-    # for other reasons (engineRestartBanner, etc.) stay hidden in
-    # both states and are excluded by the flip check.
-    if sibling_states_open:
-        flipped_visible = page.evaluate(
-            "(stateMap) => {"
-            "  for (const entry of stateMap) {"
-            "    let el;"
-            "    if (entry.key.startsWith('#')) {"
-            "      el = document.querySelector(entry.key);"
-            "    } else {"
-            "      const m = entry.key.match(/^([A-Z]+)\\[(\\d+)\\]$/);"
-            "      if (!m) continue;"
-            "      const containers = ['.container', '.dashboard-container', 'main', 'body'];"
-            "      for (const sel of containers) {"
-            "        const c = document.querySelector(sel);"
-            "        if (!c) continue;"
-            "        const sibs = Array.from(c.children).filter(e =>"
-            "          e.id !== 'e2eDiagnosisModal' && e.tagName !== 'SCRIPT'"
-            "        );"
-            "        if (sibs.length === 0) continue;"
-            "        el = sibs[parseInt(m[2], 10)];"
-            "        break;"
-            "      }"
-            "    }"
-            "    if (!el) continue;"
-            "    const nowDisplay = getComputedStyle(el).display;"
-            "    if (entry.display === 'none' && nowDisplay !== 'none') {"
-            "      return { key: entry.key, before: entry.display, after: nowDisplay };"
-            "    }"
-            "  }"
-            "  return null;"
-            "}",
-            sibling_states_open,
-        )
-        # If any sibling was hidden by the body-flag rule while the
-        # run view was open, it MUST be visible now.  Otherwise the
-        # close path didn't actually un-hide the dashboard chrome.
-        had_body_flag_hidden = any(s["display"] == "none" for s in sibling_states_open)
-        if had_body_flag_hidden:
-            assert flipped_visible is not None, (
-                "expected at least one sibling that was hidden while the body flag "
-                "was set to become visible after close; none flipped.  States while "
-                f"open: {sibling_states_open}"
-            )
-
-    assert errors == []
+    assert not errors, f"unexpected page errors: {errors}"

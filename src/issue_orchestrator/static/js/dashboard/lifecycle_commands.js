@@ -88,16 +88,42 @@ function runE2ELifecycleCommand(command, triggerEl = null) {
         openPath(command.path);
         return;
     }
-    // Typed-Command entry point for the E2E run view (issue #6322).
-    // Backed by the Pydantic ``OpenE2ERunCommand`` model in
-    // ``view_models/lifecycle_semantics.py`` and the
-    // ``OpenE2ERunCommandPayload`` schema in ``ui_openapi_models.py``.
-    // Every user-facing "open E2E run" affordance (chip, View
-    // button, Latest Results, etc.) routes through here — single
-    // owner, no parallel direct ``showUnifiedRunView()`` callers.
+    // ``open_e2e_run`` is the typed "navigate the user to run #N"
+    // Command emitted by chips, View buttons, and other affordances
+    // anywhere on the dashboard.  Routes to the inline runs-list
+    // driver ``expandE2ERunRow``, which opens (and scrolls to) the
+    // matching row.  ``expand_run_details`` opens the row's nested
+    // "Run details & artifacts" disclosure once it mounts.
     if (kind === 'open_e2e_run' && command.run_id) {
         const expandRunDetails = command.expand_run_details === true;
-        showUnifiedRunView(command.run_id, { expandRunDetails });
+        if (typeof expandE2ERunRow !== 'function') {
+            showToast('E2E runs list is not loaded.', 'warning');
+            return;
+        }
+        expandE2ERunRow(command.run_id, { expandRunDetails });
+        return;
+    }
+    // ``expand_e2e_run`` fires from the row's ``ontoggle`` the first
+    // time it opens.  ``triggerEl`` is the ``<details>`` itself,
+    // forwarded by ``runE2ELifecycleCommandFromToggle``.
+    if (kind === 'expand_e2e_run' && command.run_id) {
+        if (typeof loadE2ERunIntoRow !== 'function') return;
+        loadE2ERunIntoRow(command.run_id, triggerEl);
+        return;
+    }
+    // ``switch_e2e_timeline_view`` and ``create_e2e_untriaged_issues``
+    // are emitted by buttons inside an expanded row.  Both handlers
+    // route through ``resolveRowCommandContext`` (single owner of
+    // row-targeting policy) — the dispatcher just forwards the
+    // typed payload + trigger element.
+    if (kind === 'switch_e2e_timeline_view' && command.run_id && command.view) {
+        if (typeof switchE2ETimelineView !== 'function') return;
+        switchE2ETimelineView(command.run_id, command.view, triggerEl);
+        return;
+    }
+    if (kind === 'create_e2e_untriaged_issues' && command.run_id) {
+        if (typeof createIssuesForUntriaged !== 'function') return;
+        createIssuesForUntriaged(command.run_id, triggerEl);
         return;
     }
     // Typed-Command entry point for the inline Attempts expander

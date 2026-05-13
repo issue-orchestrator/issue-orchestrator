@@ -289,6 +289,29 @@
         }
       }
     },
+    "/api/e2e-runs/recent": {
+      "get": {
+        "summary": "List recent E2E runs for the inline runs-as-rows panel",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent E2E runs payload",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RecentE2ERunsPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/e2e-run-detail/{run_id}": {
       "get": {
         "summary": "Get E2E run detail payload",
@@ -472,6 +495,7 @@
           "e2e_page",
           "e2e_total_pages",
           "e2e_total",
+          "recent_e2e_runs",
           "dashboard_data"
         ],
         "properties": {
@@ -510,6 +534,7 @@
           "e2e_page": {"type": "integer"},
           "e2e_total_pages": {"type": "integer"},
           "e2e_total": {"type": "integer"},
+          "recent_e2e_runs": {"$ref": "#/components/schemas/RecentE2ERunsPayload"},
           "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"}
         }
       },
@@ -1211,6 +1236,37 @@
           "expand_run_details": {"type": "boolean"}
         }
       },
+      "ExpandE2ERunCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "run_id"],
+        "properties": {
+          "kind": {"const": "expand_e2e_run"},
+          "label": {"type": "string"},
+          "run_id": {"type": "integer", "minimum": 1}
+        }
+      },
+      "SwitchE2ETimelineViewCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "run_id", "view"],
+        "properties": {
+          "kind": {"const": "switch_e2e_timeline_view"},
+          "label": {"type": "string"},
+          "run_id": {"type": "integer", "minimum": 1},
+          "view": {"enum": ["user", "ops", "debug"]}
+        }
+      },
+      "CreateE2EUntriagedIssuesCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "run_id"],
+        "properties": {
+          "kind": {"const": "create_e2e_untriaged_issues"},
+          "label": {"type": "string"},
+          "run_id": {"type": "integer", "minimum": 1}
+        }
+      },
       "OpenInlineAgentAttemptsCommandPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1230,9 +1286,58 @@
           {"$ref": "#/components/schemas/OpenReviewFeedbackCommandPayload"},
           {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"},
           {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
+          {"$ref": "#/components/schemas/ExpandE2ERunCommandPayload"},
+          {"$ref": "#/components/schemas/SwitchE2ETimelineViewCommandPayload"},
+          {"$ref": "#/components/schemas/CreateE2EUntriagedIssuesCommandPayload"},
           {"$ref": "#/components/schemas/OpenInlineAgentAttemptsCommandPayload"}
         ],
         "discriminator": {"propertyName": "kind"}
+      },
+      "E2ERunResultCountsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["passed", "failed", "errored", "skipped", "quarantined", "total"],
+        "properties": {
+          "passed": {"type": "integer", "minimum": 0},
+          "failed": {"type": "integer", "minimum": 0},
+          "errored": {"type": "integer", "minimum": 0},
+          "skipped": {"type": "integer", "minimum": 0},
+          "quarantined": {"type": "integer", "minimum": 0},
+          "total": {"type": "integer", "minimum": 0}
+        }
+      },
+      "RecentE2ERunSummaryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id", "outcome", "started_at", "runner_kind",
+          "command_summary", "results", "expand_command"
+        ],
+        "properties": {
+          "run_id": {"type": "integer", "minimum": 1},
+          "outcome": {"$ref": "#/components/schemas/OutcomeBadgePayload"},
+          "started_at": {"type": "string"},
+          "finished_at": {"type": ["string", "null"]},
+          "duration_seconds": {"type": ["number", "null"]},
+          "commit_sha": {"type": ["string", "null"]},
+          "branch": {"type": ["string", "null"]},
+          "runner_kind": {"type": "string"},
+          "command_summary": {"type": "string"},
+          "results": {"$ref": "#/components/schemas/E2ERunResultCountsPayload"},
+          "note": {"type": ["string", "null"]},
+          "expand_command": {"$ref": "#/components/schemas/ExpandE2ERunCommandPayload"}
+        }
+      },
+      "RecentE2ERunsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runs"],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/RecentE2ERunSummaryPayload"}
+          }
+        }
       },
       "CompletionRecordEvidencePayload": {
         "type": "object",

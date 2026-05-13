@@ -18,7 +18,9 @@ from ..infra import gh_audit
 from .dashboard_e2e import E2E_PAGE_SIZE
 from .dashboard_e2e import build_e2e_items
 from .dashboard_e2e import build_e2e_view_model
+from .dashboard_e2e import build_recent_e2e_runs
 from .dashboard_e2e import get_e2e_status
+from .lifecycle_semantics import RecentE2ERunsPayload
 from .dashboard_assets import DASHBOARD_CSS_CHUNKS
 from .dashboard_assets import DASHBOARD_JS_CHUNKS
 from .dashboard_flow import apply_lane_precedence
@@ -74,6 +76,10 @@ class DashboardViewModel:
     e2e_page: int
     e2e_total_pages: int
     e2e_total: int
+    # Issue #6334: typed payload powering the inline runs-as-rows
+    # panel.  Template embeds it as JSON; the JS chunk
+    # ``e2e_runs_list.js`` reads it on DOMContentLoaded.
+    recent_e2e_runs: RecentE2ERunsPayload
 
     agents: dict[str, Any]
     agent_names: list[str]
@@ -115,6 +121,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "recent_e2e_runs": self.recent_e2e_runs.model_dump(mode="json"),
             "dashboard_css_chunks": DASHBOARD_CSS_CHUNKS,
             "dashboard_js_chunks": DASHBOARD_JS_CHUNKS,
             "dashboard_data": self.dashboard_data(),
@@ -180,6 +187,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "recent_e2e_runs": self.recent_e2e_runs.model_dump(mode="json"),
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1246,6 +1254,8 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    recent_e2e_runs = _build_recent_e2e_runs_payload(config)
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1282,6 +1292,30 @@ def build_dashboard_view_model(
         e2e_page=e2e_page,
         e2e_total_pages=e2e_total_pages,
         e2e_total=e2e_total,
+        recent_e2e_runs=recent_e2e_runs,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
     )
+
+
+def _build_recent_e2e_runs_payload(config: Any) -> RecentE2ERunsPayload:
+    """Build the typed runs-as-rows payload for the inline panel (issue #6334).
+
+    Tolerates a missing e2e DB (fresh repo / E2E disabled) by returning
+    an empty payload — the JS chunk renders the empty state and the
+    rest of the dashboard is unaffected.
+    """
+    if config is None or not getattr(config, "e2e", None) or not config.e2e.enabled:
+        return RecentE2ERunsPayload(runs=())
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config.repo_root else None
+    if db_path is None or not db_path.exists():
+        return RecentE2ERunsPayload(runs=())
+    try:
+        from ..infra.e2e_db import E2EDB
+
+        db = E2EDB(db_path)
+        return build_recent_e2e_runs(db, config, limit=100)
+    except Exception:
+        # Same defensive shape as ``_build_e2e_db_items`` — a broken
+        # e2e.db should not take the dashboard down with it.
+        return RecentE2ERunsPayload(runs=())
