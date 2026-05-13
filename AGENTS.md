@@ -38,6 +38,15 @@ If a user says “discuss” or “explore”, do not implement until you:
 
 For UI-facing changes, follow `.claude/skills/frontend-design/SKILL.md`; task is incomplete without required non-UI behavior tests and UI guardrail tests.
 
+Accessibility is required scope for every UI change:
+- Preserve semantic controls first (native buttons, links, inputs, `details`/`summary`) before adding ARIA.
+- All interactive controls must be keyboard reachable, have a visible focus state, and expose an accessible name.
+- Expanded/collapsed content must keep its semantic relationship (`aria-controls`, labelled regions, or native disclosure semantics as appropriate).
+- Layout changes must not clip text, focus rings, controls, or expanded content at supported viewport sizes.
+- Color cannot be the only status signal; maintain text/icons and sufficient contrast in light and dark themes.
+
+Reviewers must explicitly check accessibility for UI changes. If issues exist, list them as implementation-required findings; if none exist, state: `Accessibility review: no issues found.`
+
 ## What This Is
 
 **issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `coding-done`/`reviewer-done`, and manages the full lifecycle including code review and triage.

@@ -147,8 +147,32 @@ test('renderE2ERunsList: produces N <details> rows each carrying typed expand_e2
         (html.match(/ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/g) || []).length === 2,
         'each row must dispatch via runE2ELifecycleCommandFromToggle',
     );
+    assert.ok(
+        html.includes('id="e2e-run-row-summary-101" aria-controls="e2e-run-row-content-101"'),
+        'summary must name the controlled row detail region for assistive tech',
+    );
+    assert.ok(
+        html.includes('id="e2e-run-row-content-101" role="region" aria-labelledby="e2e-run-row-summary-101"'),
+        'expanded body must be a labelled region tied to the summary',
+    );
     // No bespoke per-element handler.
     assert.ok(!html.includes('_handleE2ERunRow'), 'no legacy per-element handler may survive');
+});
+
+test('renderE2ERunRow: summary/body accessibility ids are unique per run', () => {
+    const ctx = _loadRunsListModule();
+    const html = ctx.renderE2ERunsList({ runs: [_row(88), _row(99)] });
+
+    for (const runId of [88, 99]) {
+        assert.ok(
+            html.includes(`id="e2e-run-row-summary-${runId}" aria-controls="e2e-run-row-content-${runId}"`),
+            `run ${runId} summary must point at its own body`,
+        );
+        assert.ok(
+            html.includes(`id="e2e-run-row-content-${runId}" role="region" aria-labelledby="e2e-run-row-summary-${runId}"`),
+            `run ${runId} body must be labelled by its own summary`,
+        );
+    }
 });
 
 test('renderE2ERunsList: empty payload renders the empty state', () => {

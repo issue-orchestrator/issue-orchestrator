@@ -133,6 +133,8 @@
         const outcomeLabel = (summary.outcome && summary.outcome.label) || 'Unknown';
         const counts = _renderCountSpans(summary.results);
         const meta = _renderMeta(summary);
+        const summaryId = `e2e-run-row-summary-${runId}`;
+        const contentId = `e2e-run-row-content-${runId}`;
         const note = summary.note
             ? `<div class="e2e-run-row-note">${escapeHtml(summary.note)}</div>`
             : '';
@@ -144,7 +146,7 @@
             `data-loaded="" ` +
             `data-lifecycle-command="${payloadAttr}" ` +
             `ontoggle="runE2ELifecycleCommandFromToggle(this)">` +
-            `<summary class="e2e-run-row-summary">` +
+            `<summary class="e2e-run-row-summary" id="${summaryId}" aria-controls="${contentId}">` +
                 `<span class="e2e-run-row-caret" aria-hidden="true">▸</span>` +
                 `<span class="cvv-ico cvv-ico-${tone}" aria-hidden="true">${_toneGlyph(tone)}</span>` +
                 `<span class="e2e-run-row-id">Run #${runId}</span>` +
@@ -152,7 +154,9 @@
                 `<span class="e2e-run-row-counts">${counts}</span>` +
                 (meta ? `<span class="e2e-run-row-meta">${meta}</span>` : '') +
             `</summary>` +
-            `<div class="e2e-run-row-body">${note}<div class="e2e-run-row-content"></div></div>` +
+            `<div class="e2e-run-row-body" id="${contentId}" role="region" aria-labelledby="${summaryId}">` +
+                `${note}<div class="e2e-run-row-content"></div>` +
+            `</div>` +
             `</details>`
         );
     }
@@ -170,7 +174,7 @@
         const body = detailsEl.querySelector('.e2e-run-row-content');
         if (!body) return;
         detailsEl.dataset.loaded = '1';
-        body.innerHTML = '<div class="loading-spinner">Loading run details…</div>';
+        body.innerHTML = '<div class="loading-spinner" role="status" aria-live="polite">Loading run details…</div>';
         try {
             const res = await fetch(`/api/e2e-run-detail/${n}?view=user`);
             const data = await res.json().catch(() => ({}));
